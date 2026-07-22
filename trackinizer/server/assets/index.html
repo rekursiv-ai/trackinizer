@@ -1,0 +1,2035 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trackinizer</title>
+<style>
+  /* Tokyo Night palette. */
+  :root {
+    --bg: #1a1b26;
+    --bg-row: #24283b;
+    --bg-hover: #2f3549;
+    --fg: #c0caf5;
+    --muted: #565f89;
+    --line: #3b4261;
+    --accent: #7aa2f7;
+    --accent-dim: #4b6093;
+    --success: #9ece6a;
+    --warning: #e0af68;
+    --danger: #f7768e;
+    --info: #7dcfff;
+    --purple: #bb9af7;
+    --orange: #ff9e64;
+
+    --status-active: var(--success);
+    --status-complete: var(--info);
+    --status-abandoned: var(--muted);
+    --status-invalid: var(--danger);
+    --judg-proven: var(--success);
+    --judg-disproven: var(--danger);
+    --judg-unproven: var(--warning);
+    --judg-undecidable: var(--purple);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 13px/1.4 ui-monospace, "SF Mono", "Cascadia Code",
+          "Fira Code", "JetBrains Mono", Menlo, monospace;
+    background: var(--bg); color: var(--fg);
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 16px; background: var(--bg-row);
+    border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 {
+    font-size: 14px; margin: 0; cursor: pointer; color: var(--accent);
+    font-weight: bold;
+  }
+  header h1 small { color: var(--muted); font-weight: normal; margin-left: 6px; }
+  header nav {
+    display: flex; align-items: center; gap: 6px; flex: 1; flex-wrap: wrap;
+  }
+  header select, header input[type="search"], header button {
+    font: inherit; padding: 4px 8px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--fg); border-radius: 3px;
+  }
+  header input[type="search"] { min-width: 240px; flex: 1; max-width: 600px; }
+  header button { cursor: pointer; }
+  header button:hover { border-color: var(--accent); }
+  main { padding: 16px; max-width: 1200px; margin: 0 auto; }
+  h2 {
+    color: var(--accent); font-size: 16px; margin: 0 0 12px; font-weight: normal;
+  }
+  h3 {
+    color: var(--muted); font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.5px; margin: 16px 0 6px;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  button {
+    background: var(--bg-row); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 3px; padding: 4px 10px; font-family: inherit; font-size: 12px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  button.danger { color: var(--danger); border-color: var(--danger); }
+  button.danger:hover { background: var(--danger); color: var(--bg); }
+  button.add-btn {
+    background: transparent; border: 1px dashed var(--line); color: var(--muted);
+    font-size: 11px; padding: 2px 6px;
+  }
+  button.add-btn:hover { color: var(--accent); border-color: var(--accent); }
+  input, textarea, select {
+    background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 3px; padding: 4px 8px; font-family: inherit; font-size: 13px;
+  }
+  input:focus, textarea:focus, select:focus {
+    outline: none; border-color: var(--accent);
+  }
+  .pill {
+    display: inline-block; padding: 1px 6px; border-radius: 2px;
+    font-size: 10px; font-weight: bold; text-transform: uppercase;
+    letter-spacing: 0.5px; color: var(--bg); white-space: nowrap;
+  }
+  .pill.status-active { background: var(--status-active); }
+  .pill.status-complete { background: var(--status-complete); }
+  .pill.status-abandoned { background: var(--status-abandoned); }
+  .pill.status-invalid { background: var(--status-invalid); }
+  .pill.judg-proven { background: var(--judg-proven); }
+  .pill.judg-disproven { background: var(--judg-disproven); }
+  .pill.judg-unproven { background: var(--judg-unproven); }
+  .pill.judg-undecidable { background: var(--judg-undecidable); }
+  table {
+    width: 100%; border-collapse: collapse; background: var(--bg-row);
+    border: 1px solid var(--line);
+  }
+  th, td {
+    padding: 6px 10px; text-align: left;
+    border-bottom: 1px solid var(--line); vertical-align: top;
+  }
+  th {
+    background: var(--bg); font-weight: bold; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted);
+  }
+  tr:hover td { background: var(--bg-hover); }
+  td.ref { font-size: 12px; white-space: nowrap; color: var(--accent); }
+  td.cost { text-align: right; font-variant-numeric: tabular-nums; }
+  .empty { color: var(--muted); padding: 24px; text-align: center; }
+  .detail { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+  .detail .card {
+    background: var(--bg-row); border: 1px solid var(--line);
+    border-radius: 3px; padding: 12px;
+  }
+  .detail-header {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-bottom: 12px;
+  }
+  .detail-header h2 { margin: 0; flex: 0 0 auto; }
+  .detail-header .state-actions {
+    margin-left: auto; display: flex; gap: 4px; flex-wrap: wrap;
+  }
+  .detail-header .state-actions button { font-size: 11px; padding: 2px 8px; }
+  .detail .field { display: flex; gap: 8px; margin: 4px 0; align-items: baseline; }
+  .detail .field label { color: var(--muted); min-width: 100px; font-size: 12px; }
+  .detail .field .value { flex: 1; white-space: pre-wrap; word-break: break-word; }
+  .detail .field button { font-size: 10px; padding: 1px 6px; }
+  .editable {
+    cursor: pointer; padding: 1px 4px; border-radius: 2px;
+    border: 1px dashed transparent;
+  }
+  .editable:hover {
+    background: var(--bg); border-color: var(--accent-dim);
+  }
+  .description-display {
+    background: var(--bg); padding: 10px; border-radius: 3px;
+    border: 1px solid var(--line); cursor: text; min-height: 40px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .description-display.empty-display { color: var(--muted); font-style: italic; }
+  .description-display:hover { border-color: var(--accent-dim); }
+  .description-display.md { white-space: normal; word-break: normal; }
+  .description-display.md p { margin: 0 0 6px; }
+  .description-display.md p:last-child { margin-bottom: 0; }
+  .description-display.md ul, .description-display.md ol {
+    margin: 6px 0 6px 20px;
+  }
+  .description-display.md pre {
+    background: var(--bg-row); border: 1px solid var(--line);
+    border-radius: 3px; padding: 8px; overflow-x: auto; margin: 6px 0;
+  }
+  .description-display.md code {
+    background: var(--bg-row); padding: 1px 4px; border-radius: 2px; font-size: 12px;
+  }
+  .description-display.md pre code { background: none; padding: 0; }
+  .description-display.md h1, .description-display.md h2,
+  .description-display.md h3 { margin: 8px 0 4px; color: var(--accent); }
+  .description-edit { width: 100%; min-height: 160px; resize: vertical; }
+  .description-actions { display: flex; gap: 6px; margin-top: 6px; }
+  .edges { display: flex; flex-direction: column; gap: 4px; }
+  .edges .group { margin-bottom: 8px; }
+  .edges .group-header {
+    color: var(--muted); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .edges .peer {
+    margin-left: 12px; display: flex; align-items: center; gap: 6px;
+  }
+  .edges .peer .x {
+    visibility: hidden; color: var(--danger); cursor: pointer;
+    font-weight: bold; padding: 0 4px;
+  }
+  .edges .peer:hover .x { visibility: visible; }
+  .changes-feed {
+    max-height: 600px; overflow-y: auto;
+    border: 1px solid var(--line); border-radius: 3px;
+  }
+  .change-row {
+    padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12px;
+  }
+  .change-row:last-child { border-bottom: none; }
+  .change-row:hover { background: var(--bg-hover); }
+  .change-row .when { color: var(--muted); font-size: 11px; }
+  .change-row .kind { color: var(--info); }
+  form.submit-form {
+    background: var(--bg-row); border: 1px solid var(--line);
+    padding: 16px; border-radius: 3px; max-width: 700px;
+  }
+  form.submit-form label {
+    display: block; margin: 10px 0 4px;
+    color: var(--muted); font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  form.submit-form input,
+  form.submit-form textarea,
+  form.submit-form select { width: 100%; }
+  form.submit-form textarea { min-height: 80px; resize: vertical; }
+  form.submit-form .hint {
+    font-size: 11px; color: var(--muted); margin-top: 2px;
+  }
+  form.submit-form button.submit {
+    margin-top: 16px; padding: 6px 16px; cursor: pointer;
+    background: var(--accent); color: var(--bg); border-color: var(--accent);
+  }
+  .toast {
+    position: fixed; bottom: 16px; right: 16px;
+    padding: 10px 14px; border-radius: 3px;
+    background: var(--bg-row); color: var(--fg);
+    border: 1px solid var(--line); font-size: 13px; max-width: 400px;
+    z-index: 200;
+  }
+  .toast.error { color: var(--danger); border-color: var(--danger); }
+  .banner-error {
+    background: var(--danger); color: var(--bg);
+    padding: 8px 12px; border-radius: 3px; margin-bottom: 12px;
+  }
+  .editor input, .editor select, .editor textarea {
+    font: inherit; padding: 2px 4px; border: 1px solid var(--line);
+  }
+  details.section { margin: 12px 0; }
+  details.section > summary { cursor: pointer; padding: 4px 0; color: var(--muted); }
+
+  /* AgentSession transcript: one card per captured turn. */
+  .turn { border: 1px solid var(--line); border-radius: 4px; margin: 6px 0; padding: 6px 8px; }
+  .turn-head { display: flex; gap: 8px; align-items: baseline; font-size: 11px; color: var(--muted); }
+  .turn-kind { color: var(--info); font-weight: 600; }
+  .turn-seq { margin-left: auto; }
+  .turn-source { color: var(--muted); }
+  .turn-body { margin-top: 4px; white-space: normal; word-break: break-word; }
+  .turn-body pre { white-space: pre-wrap; word-break: break-word; margin: 4px 0; }
+  .turn-tool code { font-size: 12px; }
+  .turn-diff { background: var(--bg-row); }
+  .turn-error { color: var(--danger, #c0392b); }
+  .turn-compaction { color: var(--muted); font-style: italic; }
+  details.turn-thinking > summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+
+  /* Modal + picker. */
+  #modal-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none;
+    z-index: 100; justify-content: center; align-items: flex-start;
+    padding-top: 60px;
+  }
+  #modal-bg.open { display: flex; }
+  #modal {
+    background: var(--bg-row); border: 1px solid var(--line); border-radius: 4px;
+    padding: 16px; min-width: 480px; max-width: 720px; width: 90%; max-height: 80vh;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  #modal h2 { margin: 0 0 12px; }
+  #modal .modal-body { overflow-y: auto; flex: 1; }
+  #modal .modal-footer {
+    margin-top: 12px; display: flex; gap: 6px; justify-content: flex-end;
+  }
+  #modal .picker-input { width: 100%; margin-bottom: 8px; }
+  #modal .picker-row {
+    display: flex; gap: 8px; align-items: center;
+    padding: 4px 6px; cursor: pointer;
+    border-bottom: 1px solid var(--line);
+  }
+  #modal .picker-row:hover { background: var(--bg-hover); }
+  #modal .picker-row .title { flex: 1; }
+  #modal .picker-row .ref-label {
+    color: var(--accent); font-size: 11px; white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="home"><a href="/" style="color:inherit;text-decoration:none">Trackinizer</a><small id="connection">·</small></h1>
+  <nav>
+    <select id="kind-picker">
+      <option value="">List kind...</option>
+    </select>
+    <select id="new-picker">
+      <option value="">New...</option>
+    </select>
+    <input type="search" id="search-box" placeholder="search title/description...">
+    <button id="recent-btn">recent</button>
+    <a href="/console" style="margin-left:auto">Console</a>
+    <a id="user-nav-me" href="/me">Profile</a>
+    <a id="user-nav-admin" href="/admin" style="display:none">Admin</a>
+    <a id="user-nav-logout" href="#">Sign out</a>
+  </nav>
+</header>
+
+<main id="main"></main>
+
+<div id="modal-bg" onclick="if(event.target===this)closeModal()">
+  <div id="modal"></div>
+</div>
+
+<!--
+  Markdown renderer + sanitizer for inquiry descriptions. Both are pinned
+  to specific versions with subresource integrity (SRI) hashes so a CDN
+  swap or supply-chain compromise can't silently replace the sanitizer
+  and turn stored descriptions into an XSS vector. To upgrade, fetch the
+  new artifact, recompute its hash with:
+      curl -fsSL <url> | openssl dgst -sha384 -binary | openssl base64 -A
+  and update both the URL pin and the integrity attribute together.
+-->
+<script
+  src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
+  integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi"
+  crossorigin="anonymous"
+></script>
+<script
+  src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"
+  integrity="sha384-XQqX/4yiUGu+oyr87jvWzRuqBUK/adrY0DunhL+tID9m/9dwSpV8h9Fk/Sg6ifVQ"
+  crossorigin="anonymous"
+></script>
+<script>
+"use strict";
+
+// ---- Constants -------------------------------------------------------------
+
+// The inquiry-kind taxonomy comes from /api/meta/enums (mirrored from the Python
+// type Literals). Declared empty and filled in place at boot (below), so the
+// downstream tables that capture them by reference see the populated values. No
+// hand-typed copy lives here -- the same drift cure as the edge topology.
+const ALL_KINDS = [];
+
+// Kinds the SPA can only view, never create from the web form: an
+// AgentSession is minted by `trax run`, not a human filling in a dialog. This is
+// a deliberate UI policy, not a mirror of a Python literal, so it stays here.
+const VIEW_ONLY_KINDS = new Set(["AgentSession"]);
+
+// The closed-set vocabularies come from the server's /api/meta/enums, which
+// reflects the Python type Literals -- the single source of truth. These arrays
+// are filled in place at boot (below), so the SUBMIT_SCHEMAS / edge tables that
+// capture them by reference see the populated values. No hand-maintained copy of
+// any enum lives in this page.
+const STATUS_VALUES = [];
+const JUDGEMENT_VALUES = [];
+const ISSUE_KIND_VALUES = [];
+const PUBLICATION_TYPE_VALUES = [];
+const EDGE_KINDS = [];
+
+// The edge topology (edge_kind -> {from_kinds, to_kinds}) comes from
+// /api/meta/edges, which reflects the same Python registry the schema CHECK
+// derives from. The SPA edge picker derives direction from this -- no
+// hand-typed copy -- so a citation-direction change updates one server place
+// and the SPA follows.
+const EDGE_TOPOLOGY = {};
+
+// Kind-specific field -> owning kind token. Such fields route under
+// /api/<kind>/<id>/<field>; base fields and cost axes stay under
+// /api/inquiries. Filled at boot from /api/meta/fields (which re-exports the
+// server's wire.routes.field_owner_kind), so no hand-typed copy can lag the
+// route table -- the same drift cure as the enums and edge topology. Declared
+// here (before loadMeta) so the boot IIFE can fill it without a TDZ error.
+const FIELD_OWNER_KIND = {};
+
+function fetchJsonSync(path) {
+  const req = new XMLHttpRequest();
+  req.open("GET", path, false);
+  req.send(null);
+  if (req.status !== 200) {
+    throw new Error("failed to load " + path + ": " + req.status);
+  }
+  return JSON.parse(req.responseText);
+}
+
+(function loadMeta() {
+  // Synchronous fetches before any schema literal below captures these
+  // structures. Blocking at parse time keeps every downstream reference valid
+  // without threading async through the whole UI; the payloads are tiny.
+  //
+  // Any non-200 throws and would otherwise propagate out of the <script>,
+  // aborting every statement below (router, SSE) and leaving a blank page with
+  // no explanation. Catch it, surface a reload prompt in <main>, and re-throw
+  // so the rest of the boot sequence does not run against half-filled metadata.
+  try {
+    const enums = fetchJsonSync("/api/meta/enums");
+    STATUS_VALUES.push(...enums.status);
+    JUDGEMENT_VALUES.push(...enums.judgement);
+    ISSUE_KIND_VALUES.push(...enums.issue_kind);
+    PUBLICATION_TYPE_VALUES.push(...enums.publication_type);
+    EDGE_KINDS.push(...enums.edge_kind);
+    ALL_KINDS.push(...enums.inquiry_kind_all);
+    Object.assign(EDGE_TOPOLOGY, fetchJsonSync("/api/meta/edges"));
+    Object.assign(FIELD_OWNER_KIND, fetchJsonSync("/api/meta/fields"));
+  } catch (err) {
+    console.error("failed to load app metadata", err);
+    const main = document.getElementById("main");
+    if (main) {
+      main.replaceChildren(
+        errBanner("failed to load app metadata; reload the page"),
+      );
+    }
+    throw err;
+  }
+})();
+
+function edgeDisplayName(edgeKind, selfRole) {
+  // Labels come from EDGE_TOPOLOGY (/api/meta/edges -> forward/inverse), the
+  // single server-side source (types.edges.EDGE_POLICIES), never a hand-typed
+  // copy here. Every edge is stored child -> parent: the from-side (child) reads
+  // the outbound ``forward`` label, the to-side (parent) reads ``inverse``.
+  const topo = EDGE_TOPOLOGY[edgeKind];
+  if (!topo) return edgeKind;
+  return selfRole === "from" ? topo.forward : topo.inverse;
+}
+
+// What target kinds the schema's CHECK accepts for each edge_kind, in each
+// role. selfRole = "from" means we're picking the *to* endpoint (outbound);
+// selfRole = "to" means we're picking the *from* endpoint (backlink-side add).
+// Derived entirely from EDGE_TOPOLOGY (/api/meta/edges), so any citation-
+// direction change needs no SPA edit.
+function edgeAllowedKinds(edgeKind, selfRole, selfKind) {
+  const topo = EDGE_TOPOLOGY[edgeKind];
+  // An unknown edge kind admits nothing -- hide the group rather than offer a
+  // pick the schema will 409 (the parity test makes this branch unreachable in
+  // practice, but "can't construct safely -> don't offer" is the safe default).
+  if (!topo) return [];
+  // Picking the OTHER endpoint: from-side self picks the to_kinds, and vice
+  // versa.
+  return selfRole === "from" ? topo.to_kinds : topo.from_kinds;
+}
+
+const SUBMIT_SCHEMAS = {
+  Issue:           { extras: [
+    { name: "issue_kind", label: "issue kind", type: "multi-select", options: ISSUE_KIND_VALUES, default: ["task"] },
+    { name: "validation", label: "validation", type: "text" },
+    { name: "priority", label: "priority (integer; lower is higher)", type: "integer", default: 20 },
+    { name: "narrows", label: "narrows (broader Issue UUIDs, comma-separated)", type: "narrows" },
+    { name: "requires", label: "requires (prerequisite Issue UUIDs, comma-separated)", type: "uuids" },
+  ]},
+  Artifact:        { extras: [] },
+  Experiment:      { extras: [
+    { name: "codechanges", label: "codechanges (UUIDs of CodeChanges, comma-separated)", type: "uuids" },
+    { name: "outcome", label: "outcome (free text)", type: "text" },
+  ]},
+  Paper:           { extras: [
+    { name: "abstract",     label: "abstract", type: "text" },
+    { name: "authors",      label: "authors (comma-separated)", type: "strings" },
+    { name: "publication_type", label: "publication type", type: "select", options: PUBLICATION_TYPE_VALUES },
+    { name: "venue",        label: "venue (series / journal name)", type: "text" },
+    { name: "subvenue",     label: "subvenue (track / workshop / book / school)", type: "text" },
+    { name: "publish_date", label: "publish date (ISO 8601)", type: "text" },
+    { name: "source",       label: "source (arXiv:.../doi:.../http(s)://...)", type: "text" },
+    { name: "google_scholar_cluster_id", label: "google scholar cluster id (data-cid; paper identity)", type: "text" },
+    { name: "google_scholar_cites_id", label: "google scholar cites id (cited-by pivot; only if cited)", type: "text" },
+  ]},
+  Belief:          { extras: [
+    { name: "judgement",     label: "judgement (author-owned)", type: "select", options: JUDGEMENT_VALUES, default: "unproven" },
+    { name: "confidence",    label: "confidence [0,1]", type: "float", default: 0.5 },
+    { name: "proved_by",     label: "proved_by (Artifact Kind#seq or UUID, comma-separated)", type: "typed-refs" },
+    { name: "favored_by",    label: "favored_by (Artifact Kind#seq or UUID, comma-separated)", type: "typed-refs" },
+  ]},
+  CodeChange:      { extras: [
+    { name: "sha", label: "git SHA (full or short)", type: "text", required: true },
+  ]},
+  WebResult:       { extras: [
+    { name: "url", label: "URL", type: "text", required: true },
+  ]},
+  WebSearch:       { extras: [
+    { name: "query",    label: "query", type: "text", required: true },
+    { name: "provider", label: "provider (google, arxiv, ...)", type: "text" },
+  ]},
+};
+
+// ---- API client ------------------------------------------------------------
+
+function uuidv4() {
+  // `crypto.randomUUID` is only defined in secure contexts (HTTPS or
+  // localhost); fall back to a hand-rolled RFC4122 v4 so plain-HTTP
+  // deployments still work.
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+}
+
+async function api(path, opts = {}) {
+  // Always build a fresh headers object -- {...opts} would share the
+  // caller's headers reference, and the Idempotency-Key assignment below
+  // would mutate it across calls (notably any module-scope default
+  // headers).
+  const init = { ...opts, headers: { "Accept": "application/json", ...(opts.headers || {}) } };
+  if (opts.body && typeof opts.body !== "string") {
+    init.body = JSON.stringify(opts.body);
+    init.headers["Content-Type"] = "application/json";
+  }
+  // Mutating requests carry Idempotency-Key so the server can use it as
+  // change_log.id; a retry of the same request collides on the PK and
+  // returns the original outcome instead of double-applying. GETs are
+  // dedup-eligible by definition.
+  const method = (init.method || "GET").toUpperCase();
+  if (method !== "GET" && !init.headers["Idempotency-Key"]) {
+    init.headers["Idempotency-Key"] = uuidv4();
+  }
+  const resp = await fetch(path, init);
+  if (!resp.ok) {
+    let detail = await resp.text();
+    try { detail = JSON.parse(detail).detail || detail; } catch (_) {}
+    throw new Error(`${resp.status}: ${detail}`);
+  }
+  if (resp.status === 204 || resp.headers.get("Content-Length") === "0") return null;
+  return resp.json();
+}
+
+// Author resolution: ?author=X overrides; localStorage "trackinizer.author"
+// persists between visits; falls back to "user". Set via UI input or the URL.
+function currentAuthor() {
+  const fromQuery = new URLSearchParams(location.search).get("author");
+  if (fromQuery) {
+    localStorage.setItem("trackinizer.author", fromQuery);
+    return fromQuery;
+  }
+  return localStorage.getItem("trackinizer.author") || "user";
+}
+
+const Api = {
+  list: (kind, status = null) => {
+    const params = new URLSearchParams({ kind });
+    if (status) params.set("status", status);
+    return api(`/api/inquiries?${params}`);
+  },
+  get: (id) => api(`/api/web/get/${id}`),
+  byShortRef: (kind, seq) => api(`/api/inquiries/${kind}/${seq}`),
+  lookup: (id) => api(`/api/web/lookup/${id}`),
+  search: (q, kind = null, limit = 50) => {
+    const params = new URLSearchParams({ q, limit: String(limit) });
+    if (kind) params.set("kind", kind);
+    return api(`/api/web/search?${params}`);
+  },
+  recent: (limit = 50) => api(`/api/web/recent_changes?limit=${limit}`),
+  // One page of a session's captured turns, oldest first. The path is a
+  // single literal (no concatenation) so the assets-drift scan covers it.
+  sessionEvents: (id, limit = 200) =>
+    api(`/api/sessions/${id}/events?limit=${limit}`),
+  // An experiment's logged metric points, in (key, step) order. Single literal
+  // so the assets-drift scan covers it (viewer-gated read, like sessionEvents).
+  // Requests the route's max page (MAX_LIST_LIMIT=1000), not the interactive
+  // 50-row default, so the chart shows as much of the run as one page allows.
+  // A run longer than the cap is truncated -- renderMetrics surfaces that so a
+  // partial series is never mistaken for the whole run (it is NOT auto-paged).
+  experimentMetrics: (id, limit = 1000) =>
+    api(`/api/experiments/${id}/metrics?limit=${limit}`),
+  // Enqueue a message to inject into a live session. The server attests the
+  // sender from the principal; any body ``source`` is ignored.
+  enqueueInbound: (id, text) =>
+    api(`/api/sessions/${id}/inbound`, { method: "POST", body: { text } }),
+  submit: (kind, body) =>
+    api(`/api/inquiries/${kind.toLowerCase()}`, { method: "POST", body }),
+  // Per-field overwrite. Callers pass a field-keyed body
+  // ({[field]: value, actor, reason?}); the REST surface wants
+  // {value, actor, reason} on PUT <fieldPath>.
+  edit: (id, field, body) => {
+    const { actor, reason, expected, ...rest } = body;
+    const value = field in rest ? rest[field] : rest.value;
+    const put = { value, actor };
+    if (reason) put.reason = reason;
+    if (expected !== undefined) put.expected = expected;
+    return api(fieldPath(id, field), { method: "PUT", body: put });
+  },
+  addEdge: (body) => {
+    const { from_id, to_id, edge_kind, ...rest } = body;
+    return api(
+      `/api/edges/${from_id}/${edge_kind}/${to_id}`,
+      { method: "POST", body: rest },
+    );
+  },
+  // Set each provided annotation via its own PUT (the REST surface has
+  // one route per edge-annotation field); list fields stay PUT-overwrite.
+  annotateEdge: async (body) => {
+    const { from_id, to_id, edge_kind, actor, ...annotations } = body;
+    const base = `/api/edges/${from_id}/${edge_kind}/${to_id}`;
+    for (const [field, value] of Object.entries(annotations)) {
+      if (value === undefined) continue;
+      await api(`${base}/${field}`, { method: "PUT", body: { value, actor } });
+    }
+    return null;
+  },
+  removeEdge: (body) => {
+    const { from_id, to_id, edge_kind, actor } = body;
+    return api(`/api/edges/${from_id}/${edge_kind}/${to_id}`, {
+      method: "DELETE",
+      body: { actor },
+    });
+  },
+  purge: (id, actor, reason) => api(`/api/inquiries/${id}`, {
+    method: "DELETE",
+    body: { actor, reason: reason || "" },
+  }),
+};
+
+// ---- Ref parsing -----------------------------------------------------------
+
+// A parse-time snapshot of ALL_KINDS, valid because loadMeta (the IIFE above)
+// has already filled ALL_KINDS by the time this line runs. Nothing pushes to
+// ALL_KINDS after boot; if anything ever did, this map would silently lag it.
+const KIND_LOWER = Object.fromEntries(ALL_KINDS.map(k => [k.toLowerCase(), k]));
+
+function fieldPath(id, field) {
+  const owner = FIELD_OWNER_KIND[field];
+  const base = owner ? `/api/${owner}` : "/api/inquiries";
+  return `${base}/${id}/${encodeURIComponent(field)}`;
+}
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_FIND_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
+const SHORT_RE = /^([A-Za-z]+)#(\d+)$/;
+
+async function resolveRef(value) {
+  const trimmed = (value || "").trim();
+  if (!trimmed) throw new Error("empty ref");
+  if (UUID_RE.test(trimmed)) {
+    const looked = await Api.lookup(trimmed);
+    return { id: trimmed, kind: looked.kind };
+  }
+  const m = SHORT_RE.exec(trimmed);
+  if (m) {
+    const kind = KIND_LOWER[m[1].toLowerCase()];
+    if (!kind) throw new Error(`unknown kind ${m[1]}`);
+    const inq = await Api.byShortRef(kind, parseInt(m[2], 10));
+    return { id: inq.id, kind: inq.kind };
+  }
+  throw new Error(`cannot parse ref ${trimmed}`);
+}
+
+async function resolveRefList(text) {
+  const parts = (text || "").split(",").map(s => s.trim()).filter(Boolean);
+  return Promise.all(parts.map(resolveRef));
+}
+
+// ---- DOM helpers -----------------------------------------------------------
+
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") node.className = v;
+    else if (k === "style" && typeof v === "object") Object.assign(node.style, v);
+    else if (k.startsWith("on") && typeof v === "function") node.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined && v !== false) node.setAttribute(k, v);
+  }
+  for (const c of children) {
+    if (c === null || c === undefined || c === false) continue;
+    if (Array.isArray(c)) {
+      for (const cc of c) {
+        if (cc === null || cc === undefined || cc === false) continue;
+        node.appendChild(cc instanceof Node ? cc : document.createTextNode(String(cc)));
+      }
+    } else {
+      node.appendChild(c instanceof Node ? c : document.createTextNode(String(c)));
+    }
+  }
+  return node;
+}
+
+function refLink(kind, id, seq, title = "") {
+  return el("a", { href: `#/inquiry/${id}`, title: title },
+    `${kind}#${seq}`);
+}
+
+// Canonical landing-page resolvers for scheme-tagged Paper.source identifiers,
+// keyed by lowercased scheme. The table mirrors idutils' IDUTILS_LANDING_URLS
+// (inveniosoftware/idutils, the de-facto PID resolver), trimmed to the
+// bibliographic schemes a Paper.source plausibly carries; `${pid}` is the
+// remainder after the scheme. isbn/issn have no idutils landing page, so they
+// use Open Library / the ISSN portal -- both stable and id-based.
+const SOURCE_RESOLVERS = {
+  doi:    (id) => `https://doi.org/${id}`,
+  arxiv:  (id) => `https://arxiv.org/abs/${id}`,
+  pmid:   (id) => `https://pubmed.ncbi.nlm.nih.gov/${id}/`,
+  pmcid:  (id) => `https://pmc.ncbi.nlm.nih.gov/articles/${id}/`,
+  handle: (id) => `https://hdl.handle.net/${id}`,
+  hdl:    (id) => `https://hdl.handle.net/${id}`,
+  ark:    (id) => `https://n2t.net/ark:/${id.replace(/^\/?ark:\/?/i, "")}`,
+  urn:    (id) => `https://nbn-resolving.org/${id}`,
+  ascl:   (id) => `https://ascl.net/${id}`,
+  ads:    (id) => `https://ui.adsabs.harvard.edu/abs/${id}`,
+  orcid:  (id) => `https://orcid.org/${id}`,
+  ror:    (id) => `https://ror.org/${id}`,
+  hal:    (id) => `https://hal.science/${id}`,
+  swh:    (id) => `https://archive.softwareheritage.org/${id}`,
+  isbn:   (id) => `https://openlibrary.org/isbn/${id.replace(/[ -]/g, "")}`,
+  issn:   (id) => `https://portal.issn.org/resource/ISSN/${id}`,
+};
+
+// Resolve a scheme-tagged Paper.source to a browsable URL. The scheme set is
+// OPEN (see is_valid_source in inquiries.py): known schemes hit their canonical
+// resolver, http(s) passes through, and any unrecognized scheme falls back to a
+// Google search of the whole value so the link is never dead. Returns null only
+// when the value has no `<scheme>:<non-empty>` shape at all.
+function sourceUrl(value) {
+  if (!value) return null;
+  const m = /^([A-Za-z][A-Za-z0-9+.\-]*):\s*(\S.*)$/.exec(value.trim());
+  if (!m) return null;
+  const scheme = m[1].toLowerCase();
+  const rest = m[2].trim();
+  if (scheme === "http" || scheme === "https") return value.trim();
+  const resolve = SOURCE_RESOLVERS[scheme];
+  if (resolve) return resolve(rest);
+  return `https://www.google.com/search?q=${encodeURIComponent(value.trim())}`;
+}
+
+// Google Scholar handles are opaque tokens (stored verbatim, never parsed). The
+// CLUSTER id (`data-cid`, a paper's stable Scholar identity) resolves to its
+// all-versions cluster page via `?cluster=`; the CITES id (the cited-by pivot)
+// resolves to the citing-papers list via `?cites=`. Both are trimmed and
+// URL-encoded so an opaque token with a leading `-` or URL-special char is safe.
+function scholarClusterUrl(value) {
+  if (!value) return null;
+  const id = value.trim();
+  if (!id) return null;
+  return `https://scholar.google.com/scholar?cluster=${encodeURIComponent(id)}`;
+}
+
+function scholarCitesUrl(value) {
+  if (!value) return null;
+  const id = value.trim();
+  if (!id) return null;
+  return `https://scholar.google.com/scholar?cites=${encodeURIComponent(id)}`;
+}
+
+// A WebResult.url is free text; only treat it as a clickable link when it is an
+// absolute http(s) URL. Returns the safe href or null (so a non-URL value stays
+// plain text and a `javascript:` / relative value never becomes a link).
+function httpUrl(value) {
+  if (!value) return null;
+  const trimmed = value.trim();
+  try {
+    const u = new URL(trimmed);
+    return (u.protocol === "http:" || u.protocol === "https:") ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+function statusPill(status) {
+  return el("span", { class: `pill status-${status}` }, status);
+}
+
+function judgementPill(judgement) {
+  return el("span", { class: `pill judg-${judgement}` }, judgement);
+}
+
+function fmtTime(iso) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const pad = n => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function toast(msg, isError = false) {
+  const existing = document.querySelector(".toast");
+  if (existing) existing.remove();
+  const t = el("div", { class: "toast" + (isError ? " error" : "") }, msg);
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 4000);
+}
+
+function setMain(...nodes) {
+  const main = document.getElementById("main");
+  main.replaceChildren();
+  for (const n of nodes) {
+    if (n === null || n === undefined) continue;
+    main.appendChild(n);
+  }
+}
+
+function errBanner(msg) {
+  return el("div", { class: "banner-error" }, String(msg));
+}
+
+// ---- Markdown + UUID linkification -----------------------------------------
+
+// Lock down link/url shapes the sanitizer accepts. Defaults already strip
+// javascript: URLs, but pinning the regex explicitly here means a future
+// DOMPurify default change can't quietly relax this surface.
+const SAFE_URI_RE = /^(?:(?:https?|mailto):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
+
+function renderMarkdown(body) {
+  if (!body) return el("div", { class: "description-display empty-display" }, "(empty)");
+  const div = el("div", { class: "description-display" });
+  // CDN markdown is optional: offline debugging stays usable, and we avoid vendoring sanitizer code that must be kept current.
+  if (window.marked && window.DOMPurify) {
+    div.classList.add("md");
+    div.innerHTML = window.DOMPurify.sanitize(window.marked.parse(body), {
+      ALLOWED_URI_REGEXP: SAFE_URI_RE,
+    });
+  } else {
+    div.textContent = body;
+  }
+  linkifyUuids(div);
+  linkifyShortRefs(div);
+  return div;
+}
+
+function linkifyUuids(root) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+  const targets = [];
+  while (walker.nextNode()) {
+    if (walker.currentNode.parentNode.nodeName !== "A") {
+      targets.push(walker.currentNode);
+    }
+  }
+  for (const node of targets) {
+    UUID_FIND_RE.lastIndex = 0;
+    if (!UUID_FIND_RE.test(node.nodeValue)) continue;
+    UUID_FIND_RE.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    let m;
+    while ((m = UUID_FIND_RE.exec(node.nodeValue)) !== null) {
+      if (m.index > last) frag.appendChild(document.createTextNode(node.nodeValue.slice(last, m.index)));
+      frag.appendChild(el("a", { href: `#/lookup/${m[0]}` }, m[0].slice(0, 8)));
+      last = UUID_FIND_RE.lastIndex;
+    }
+    if (last < node.nodeValue.length) frag.appendChild(document.createTextNode(node.nodeValue.slice(last)));
+    node.parentNode.replaceChild(frag, node);
+  }
+}
+
+// Short-refs (`Belief#45`, `Paper#24`) in rendered descriptions become links.
+// Built from ALL_KINDS so the pattern never drifts from the schema. Each link
+// routes to `#/ref/<Kind>/<seq>`, resolved lazily by `resolveRef` on navigation
+// (no eager request per ref at render time). The leading `(?<![\w#])` guard
+// avoids matching inside an already-linkified UUID-free token or a `##` artifact.
+// Uses a regex lookbehind (Safari 16.4+, March 2023; all current evergreen
+// browsers) -- fine for this single-operator internal tool; revisit if the SPA
+// must support pre-2023 Safari.
+const SHORT_FIND_RE = ALL_KINDS.length
+  ? new RegExp(`(?<![\\w#])(${ALL_KINDS.join("|")})#(\\d+)\\b`, "g")
+  : null;
+
+function linkifyShortRefs(root) {
+  if (!SHORT_FIND_RE) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+  const targets = [];
+  while (walker.nextNode()) {
+    if (walker.currentNode.parentNode.nodeName !== "A") {
+      targets.push(walker.currentNode);
+    }
+  }
+  for (const node of targets) {
+    SHORT_FIND_RE.lastIndex = 0;
+    if (!SHORT_FIND_RE.test(node.nodeValue)) continue;
+    SHORT_FIND_RE.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    let m;
+    while ((m = SHORT_FIND_RE.exec(node.nodeValue)) !== null) {
+      if (m.index > last) frag.appendChild(document.createTextNode(node.nodeValue.slice(last, m.index)));
+      frag.appendChild(el("a", { href: `#/ref/${m[1]}/${m[2]}` }, m[0]));
+      last = SHORT_FIND_RE.lastIndex;
+    }
+    if (last < node.nodeValue.length) frag.appendChild(document.createTextNode(node.nodeValue.slice(last)));
+    node.parentNode.replaceChild(frag, node);
+  }
+}
+
+// ---- Modal + picker --------------------------------------------------------
+
+function openModal(title, bodyEl, footerEls) {
+  const m = document.getElementById("modal");
+  m.replaceChildren(
+    el("h2", {}, title),
+    el("div", { class: "modal-body" }, bodyEl),
+    footerEls && footerEls.length ? el("div", { class: "modal-footer" }, ...footerEls) : null,
+  );
+  document.getElementById("modal-bg").classList.add("open");
+}
+
+function closeModal() {
+  document.getElementById("modal-bg").classList.remove("open");
+}
+
+// Picker dialog: search the server, click a row to pick (single mode) or
+// check boxes and confirm (multi mode). ``onPick`` receives the picked
+// item (single) or an array of picks (multi). ``allowedKinds`` is an
+// array of Inquiry.InquiryKind names; null/undefined = any kind.
+function openPicker(title, onPick, allowedKinds, opts) {
+  opts = opts || {};
+  const results = el("div", {}, el("div", { class: "empty" }, "type to search"));
+  const search = el("input", {
+    type: "search",
+    class: "picker-input",
+    placeholder: 'search title/description; "phrase ok"; title:re / description:re',
+    autocomplete: "off",
+  });
+  const selected = new Map();  // id -> {id, kind, seq, title}
+  let lastQ = "";
+  let inFlight = null;
+
+  const addBtn = el("button", { class: "primary", onclick: async () => {
+    if (!selected.size) return;
+    closeModal();
+    await onPick(Array.from(selected.values()));
+  }}, "add (0)");
+  const refreshAddBtn = () => { addBtn.textContent = `add (${selected.size})`; };
+
+  const renderHit = (h) => {
+    const item = { id: h.id, kind: h.kind, seq: h.seq, title: h.title || "" };
+    const pill = statusPill(h.status);
+    const refLabel = el("span", { class: "ref-label" }, `${h.kind}#${h.seq}`);
+    const title = el("span", { class: "title" }, h.title || "(untitled)");
+    if (opts.multi) {
+      const cb = el("input", {
+        type: "checkbox",
+        onchange: (e) => {
+          if (e.target.checked) selected.set(h.id, item);
+          else selected.delete(h.id);
+          refreshAddBtn();
+        },
+      });
+      if (selected.has(h.id)) cb.checked = true;
+      return el("label", { class: "picker-row", style: { cursor: "pointer" } },
+        cb, refLabel, title, pill);
+    }
+    return el("div", {
+      class: "picker-row",
+      onclick: () => { closeModal(); onPick(item); },
+    }, refLabel, title, pill);
+  };
+
+  const refresh = async () => {
+    const q = search.value.trim();
+    if (q === lastQ) return;
+    lastQ = q;
+    if (!q) {
+      results.replaceChildren(el("div", { class: "empty" }, "type to search"));
+      return;
+    }
+    const ticket = Symbol();
+    inFlight = ticket;
+    try {
+      const single = allowedKinds && allowedKinds.length === 1 ? allowedKinds[0] : null;
+      const hits = await Api.search(q, single, 100);
+      if (inFlight !== ticket) return;
+      const filtered = allowedKinds ? hits.filter(h => allowedKinds.includes(h.kind)) : hits;
+      const rows = filtered.map(renderHit);
+      results.replaceChildren(...(rows.length ? rows : [el("div", { class: "empty" }, "no matches")]));
+    } catch (err) {
+      if (inFlight !== ticket) return;
+      results.replaceChildren(errBanner(err.message));
+    }
+  };
+  search.addEventListener("input", refresh);
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeModal();
+  });
+  const footer = opts.multi
+    ? [addBtn, el("button", { onclick: closeModal }, "cancel")]
+    : [el("button", { onclick: closeModal }, "cancel")];
+  openModal(title, el("div", {}, search, results), footer);
+  setTimeout(() => search.focus(), 50);
+}
+
+async function applyBatch(op, items) {
+  for (const item of items) {
+    await op(item);
+  }
+}
+
+// ---- Views -----------------------------------------------------------------
+
+async function viewRecent() {
+  setMain(el("h2", {}, "Recent changes"));
+  try {
+    const rows = await Api.recent(80);
+    if (rows.length === 0) {
+      setMain(el("h2", {}, "Recent changes"), el("div", { class: "empty" }, "no changes yet"));
+      return;
+    }
+    const feed = el("div", { class: "changes-feed card" });
+    for (const c of rows) {
+      const row = el("div", { class: "change-row" },
+        el("span", { class: "when" }, fmtTime(c.created) + " · "),
+        el("span", { class: "kind" }, c.kind),
+        " on ",
+        el("a", { href: `#/inquiry/${c.subject_id}` }, `${c.subject_kind}#${c.subject_id.substring(0, 8)}`),
+        " by " + (c.actor || "(system)"),
+      );
+      if (c.reason) {
+        row.appendChild(el("div", { style: { color: "var(--muted)", marginTop: "2px" } }, c.reason));
+      }
+      feed.appendChild(row);
+    }
+    setMain(el("h2", {}, "Recent changes"), feed);
+  } catch (err) {
+    setMain(el("h2", {}, "Recent changes"), errBanner(err.message));
+  }
+}
+
+async function viewList(kind) {
+  setMain(el("h2", {}, `${kind} (loading...)`));
+  try {
+    const rows = await Api.list(kind);
+    if (rows.length === 0) {
+      setMain(el("h2", {}, kind), el("div", { class: "empty" }, "no rows"));
+      return;
+    }
+    const table = el("table");
+    const headerRow = ["Ref", "Status"];
+    if (kind === "Issue") headerRow.push("Kind", "Priority");
+    if (kind === "Belief") headerRow.push("Judgement", "Confidence");
+    headerRow.push("Title", "Labels", "Owner", "Modified");
+    table.appendChild(el("thead", {}, el("tr", {}, ...headerRow.map(h => el("th", {}, h)))));
+    const tbody = el("tbody");
+    for (const r of rows) {
+      const tr = el("tr");
+      tr.appendChild(el("td", { class: "ref" }, refLink(r.kind, r.id, r.seq, r.title)));
+      tr.appendChild(el("td", {}, statusPill(r.status)));
+      if (kind === "Issue") tr.appendChild(el("td", {}, (r.issue_kind || []).join(", ")));
+      if (kind === "Issue") tr.appendChild(el("td", {}, r.priority ?? "—"));
+      if (kind === "Belief") tr.appendChild(el("td", {}, r.judgement ? judgementPill(r.judgement) : "—"));
+      if (kind === "Belief") tr.appendChild(el("td", {}, r.confidence ?? "—"));
+      tr.appendChild(el("td", {}, r.title || ""));
+      tr.appendChild(el("td", {}, (r.labels || []).join(", ")));
+      tr.appendChild(el("td", {}, r.owner || ""));
+      tr.appendChild(el("td", { style: { color: "var(--muted)", fontSize: "11px" } }, fmtTime(r.modified)));
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    setMain(el("h2", {}, `${kind} (${rows.length})`), table);
+  } catch (err) {
+    setMain(el("h2", {}, kind), errBanner(err.message));
+  }
+}
+
+async function viewInquiry(id) {
+  setMain(el("h2", {}, "Loading..."));
+  try {
+    const view = await Api.get(id);
+    renderInquiry(view);
+  } catch (err) {
+    setMain(errBanner(err.message));
+  }
+}
+
+function renderInquiry(view) {
+  const self = view.self;
+  const left = el("div", { class: "card" });
+  left.appendChild(el("div", { class: "detail-header" },
+    el("h2", {}, `${self.kind}#${self.seq}  `,
+      statusPill(self.status),
+      self.judgement ? [" ", judgementPill(self.judgement)] : null,
+    ),
+    el("div", { class: "state-actions" }, ...stateButtons(self)),
+  ));
+
+  left.appendChild(buildField("id", self.id, { readonly: true, mono: true }));
+  left.appendChild(buildEditableField("title", self.id, self.title));
+  left.appendChild(buildDescriptionField(self.id, self.description));
+  left.appendChild(buildEditableField("owner", self.id, self.owner));
+  left.appendChild(buildEditableField(
+    "account", self.id, self.account,
+    { hint: "auth identity this row is attributed to; must be an active user" },
+  ));
+  left.appendChild(buildEditableField(
+    "labels", self.id, (self.labels || []).join(","),
+    { hint: "comma-separated" },
+  ));
+  left.appendChild(buildEditableField(
+    "subscribers", self.id, (self.subscribers || []).join(","),
+    { hint: "comma-separated agent ids" },
+  ));
+  left.appendChild(buildEditableField(
+    "status", self.id, self.status,
+    { control: "select", options: STATUS_VALUES },
+  ));
+  if (self.kind === "Belief") {
+    left.appendChild(buildEditableField(
+      "judgement", self.id, self.judgement,
+      { control: "select", options: JUDGEMENT_VALUES },
+    ));
+    left.appendChild(buildEditableField("confidence", self.id, self.confidence ?? 0.5));
+  }
+  if (self.kind === "Issue") {
+    left.appendChild(buildEditableField(
+      "issue_kind", self.id, (self.issue_kind || []).join(","),
+      { hint: "feature, bug, task, question (comma-separated)" },
+    ));
+    left.appendChild(buildEditableField("validation", self.id, self.validation, { multiline: true }));
+    left.appendChild(buildEditableField("priority", self.id, self.priority ?? 20));
+  }
+  if (self.kind === "Experiment") {
+    left.appendChild(buildEditableField("outcome", self.id, self.outcome, { multiline: true }));
+    left.appendChild(buildEditableField(
+      "codechanges", self.id, (self.codechanges || []).join(","),
+      { hint: "UUIDs of CodeChanges (comma-separated)" },
+    ));
+    // ``config`` is a JSON object (hyperparameters), set via API/CLI; shown
+    // read-only as pretty JSON here (a whole-object edit is not a scalar field).
+    if (self.config) {
+      left.appendChild(buildField(
+        "config", JSON.stringify(self.config, null, 2), { mono: true },
+      ));
+    }
+  }
+  if (self.kind === "Paper") {
+    left.appendChild(buildEditableField("abstract", self.id, self.abstract, { multiline: true }));
+    left.appendChild(buildEditableField(
+      "authors", self.id, (self.authors || []).join(","),
+      { hint: "comma-separated, byline order" },
+    ));
+    left.appendChild(buildEditableField(
+      "publication_type", self.id, self.publication_type,
+      { control: "select", options: PUBLICATION_TYPE_VALUES },
+    ));
+    left.appendChild(buildEditableField("venue", self.id, self.venue));
+    left.appendChild(buildEditableField("subvenue", self.id, self.subvenue));
+    left.appendChild(buildEditableField("publish_date", self.id, self.publish_date));
+    left.appendChild(buildEditableField("source", self.id, self.source, { link: true }));
+    left.appendChild(buildEditableField(
+      "google_scholar_cluster_id", self.id, self.google_scholar_cluster_id,
+      { linkFn: scholarClusterUrl },
+    ));
+    left.appendChild(buildEditableField(
+      "google_scholar_cites_id", self.id, self.google_scholar_cites_id,
+      { linkFn: scholarCitesUrl },
+    ));
+  }
+  if (self.kind === "WebSearch") {
+    left.appendChild(buildEditableField("query", self.id, self.query));
+    left.appendChild(buildEditableField("provider", self.id, self.provider));
+    // Findings are recorded as `produced_by` edges (WebResult/Paper ->
+    // WebSearch), not a column, so they surface in the edges card, not here.
+  }
+  if (self.kind === "CodeChange") {
+    left.appendChild(buildField("sha", self.sha, { mono: true }));
+  }
+  if (self.kind === "WebResult") {
+    left.appendChild(buildField("url", self.url, { link: true }));
+  }
+  if (self.kind === "AgentSession") {
+    left.appendChild(buildField("cli", self.cli || "—"));
+    left.appendChild(buildField("cli session id", self.cli_session_id || "—", { mono: true }));
+    left.appendChild(buildField("started", self.started ? fmtTime(self.started) : "—", { readonly: true }));
+    // No `ended` means the session is still live -- the active/previous split.
+    left.appendChild(buildField("ended", self.ended ? fmtTime(self.ended) : "live", { readonly: true }));
+    // Rooms it is addressable in (@actor:room); editable as a list field.
+    left.appendChild(buildEditableField(
+      "rooms", self.id, (self.rooms || []).join(","),
+      { hint: "comma-separated; address as @owner:room" },
+    ));
+  }
+  const cost = self.marginal_cost || {};
+  const totalCost = (cost.agent_usd || 0) + (cost.resource_usd || 0);
+  left.appendChild(buildField("marginal cost",
+    `$${totalCost.toFixed(6)} (agent $${(cost.agent_usd || 0).toFixed(6)} + resource $${(cost.resource_usd || 0).toFixed(6)})`,
+    { readonly: true },
+  ));
+  left.appendChild(buildField("created", fmtTime(self.created), { readonly: true }));
+  left.appendChild(buildField("modified", fmtTime(self.modified), { readonly: true }));
+
+  // Right pane: edges + backlinks + changes
+  const right = el("div");
+  right.appendChild(renderEdgeGroups("Before (Parents)", view.edges || {}, self, "from"));
+  right.appendChild(renderEdgeGroups("After (Children)", view.backlinks || {}, self, "to"));
+  right.appendChild(renderChanges(view.changes || []));
+
+  setMain(el("div", { class: "detail" }, left, right));
+
+  // An experiment's metrics are a separate, paginated read (the points live
+  // outside `inquiries`). Fetch after the synchronous render so the detail view
+  // paints immediately, then fill the chart/table in -- mirroring the session
+  // transcript pattern below.
+  if (self.kind === "Experiment") {
+    const metrics = el("div", { class: "card" }, el("h3", {}, "Metrics (loading...)"));
+    left.appendChild(metrics);
+    const metricsLimit = 1000;  // MAX_LIST_LIMIT; a full page means truncation.
+    Api.experimentMetrics(self.id, metricsLimit)
+      .then(resp => renderMetrics(metrics, resp.points || [], metricsLimit))
+      .catch(err => { metrics.replaceChildren(el("h3", {}, "Metrics"), errBanner(err.message)); });
+  }
+
+  // A session's transcript is a separate, paginated read (the events live
+  // outside `inquiries`). Fetch it after the synchronous render so the
+  // detail view paints immediately, then fill the turn stream in.
+  if (self.kind === "AgentSession") {
+    const turns = el("div", { class: "card" }, el("h3", {}, "Transcript (loading...)"));
+    left.appendChild(turns);
+    Api.sessionEvents(self.id)
+      .then(resp => renderTranscript(turns, resp.events || []))
+      .catch(err => { turns.replaceChildren(el("h3", {}, "Transcript"), errBanner(err.message)); });
+    // A live session (no `ended`) can be messaged: the input enqueues an
+    // inbound message that the session's `trax run` injects into the CLI.
+    if (!self.ended) {
+      left.appendChild(buildInboundBox(self.id));
+    }
+  }
+}
+
+// Render an experiment's metric points into `container`, grouped by key. Each
+// key gets one row: an inline SVG sparkline over its (step -> value) series,
+// its latest value, and its point count. Points arrive in (key, step) order
+// from the server, so grouping is a single pass. No external chart library:
+// the sparkline is a hand-built <polyline>, sized to the value range per key.
+function renderMetrics(container, points, limit) {
+  // A full page (points.length === limit) means the run has MORE points beyond
+  // this window: the read is a single page, not auto-paged, so the sparkline and
+  // "latest" reflect only the fetched prefix in (key, step) order. Surface it so
+  // a truncated series is never mistaken for the whole run (mirrors the CLI's
+  // "showing first N" warning). ``limit`` may be undefined (no truncation known).
+  const truncated = limit !== undefined && points.length >= limit;
+  const header = truncated
+    ? `Metrics (${points.length}, truncated -- more exist)`
+    : `Metrics (${points.length})`;
+  container.replaceChildren(el("h3", {}, header));
+  if (!points.length) {
+    container.appendChild(el("div", { class: "hint", style: { color: "var(--muted)" } }, "no metrics logged"));
+    return;
+  }
+  const byKey = new Map();
+  for (const p of points) {
+    if (!byKey.has(p.key)) byKey.set(p.key, []);
+    byKey.get(p.key).push(p);
+  }
+  const table = el("table");
+  // With a truncated page the per-key last value is page-local, not the run's
+  // true latest -- label the column accordingly so it is not misread.
+  const latestLabel = truncated ? "last (page)" : "latest";
+  table.appendChild(el("thead", {}, el("tr", {},
+    el("th", {}, "metric"), el("th", {}, "series"),
+    el("th", {}, latestLabel), el("th", {}, "points"),
+  )));
+  const tbody = el("tbody");
+  for (const [key, series] of byKey) {
+    const latest = series[series.length - 1].value;
+    tbody.appendChild(el("tr", {},
+      el("td", { class: "mono" }, key),
+      el("td", {}, sparkline(series)),
+      el("td", { class: "mono" }, fmtMetric(latest)),
+      el("td", {}, String(series.length)),
+    ));
+  }
+  table.appendChild(tbody);
+  container.appendChild(table);
+}
+
+// Format a metric value compactly: integers bare, else up to 6 significant
+// digits (matching the `trax metrics` CLI's `%.6g`).
+function fmtMetric(v) {
+  return Number.isInteger(v) ? String(v) : Number(v.toPrecision(6)).toString();
+}
+
+// A tiny inline-SVG sparkline over a metric's (step -> value) series. Values
+// are normalized to the [0,1] range of THIS metric (a flat series draws a
+// mid-line). Width scales with point count, capped so a long run stays legible.
+function sparkline(series) {
+  const w = Math.min(200, Math.max(40, series.length * 4));
+  const h = 24;
+  const vals = series.map(p => p.value);
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const span = hi - lo || 1;
+  const n = series.length;
+  const pts = series.map((p, i) => {
+    const x = n === 1 ? w / 2 : (i / (n - 1)) * w;
+    const y = h - ((p.value - lo) / span) * h;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", String(w));
+  svg.setAttribute("height", String(h));
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+  line.setAttribute("points", pts);
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke", "var(--accent, #4a9eff)");
+  line.setAttribute("stroke-width", "1.5");
+  svg.appendChild(line);
+  return svg;
+}
+
+// Render a session's captured turns into `container` as markdown. Each
+// event's `kind` selects how its `message` is shown; an unknown kind falls
+// back to a JSON dump so nothing is silently dropped. System/developer
+// priming (SystemMessage) is hidden by default behind a checkbox, since the
+// CLI itself never shows it to the user.
+function renderTranscript(container, events) {
+  const systemCount = events.filter(e => e.kind === "SystemMessage").length;
+  let showSystem = false;
+  const turns = el("div");
+  const paint = () => {
+    turns.replaceChildren();
+    const shown = showSystem ? events : events.filter(e => e.kind !== "SystemMessage");
+    if (shown.length === 0) {
+      turns.appendChild(el("div", { class: "empty" }, "no turns captured yet"));
+    }
+    for (const ev of shown) turns.appendChild(renderTurn(ev));
+  };
+  const header = el("div", { class: "detail-header" },
+    el("h3", {}, `Transcript (${events.length})`));
+  if (systemCount > 0) {
+    const box = el("input", { type: "checkbox" });
+    box.addEventListener("change", () => { showSystem = box.checked; paint(); });
+    header.appendChild(el("label", { class: "hint", style: { fontSize: "11px" } },
+      box, ` show ${systemCount} system message${systemCount === 1 ? "" : "s"}`));
+  }
+  container.replaceChildren(header, turns);
+  paint();
+}
+
+// A chat box for a live session: enqueue a message to inject into the CLI.
+// The send is fire-and-forget (drop-if-absent): a queued receipt is shown,
+// not a delivery guarantee. The injected message will also appear in the
+// transcript once the agent consumes it (captured as a normal turn).
+function buildInboundBox(sessionId) {
+  const input = el("input", {
+    type: "text",
+    placeholder: "message this session (@injected into the CLI)...",
+    style: { flex: "1" },
+  });
+  const status = el("span", { class: "hint", style: { color: "var(--muted)", fontSize: "11px" } });
+  const send = async () => {
+    const text = input.value.trim();
+    if (!text) return;
+    try {
+      const resp = await Api.enqueueInbound(sessionId, text);
+      input.value = "";
+      status.textContent = `queued (${resp.queued} pending)`;
+    } catch (err) {
+      status.textContent = `failed: ${err.message}`;
+    }
+  };
+  input.addEventListener("keypress", e => { if (e.key === "Enter") send(); });
+  return el("div", { class: "card" },
+    el("h3", {}, "Send to session"),
+    el("div", { style: { display: "flex", gap: "8px", alignItems: "center" } },
+      input,
+      el("button", { class: "primary", onclick: send }, "send"),
+    ),
+    status,
+  );
+}
+
+function renderTurn(ev) {
+  const m = ev.message || {};
+  const head = el("div", { class: "turn-head" },
+    el("span", { class: "turn-kind" }, ev.kind),
+    ev.model ? el("span", { class: "turn-model" }, ev.model) : null,
+    el("span", { class: "turn-seq" }, `#${ev.seq}`),
+  );
+  const body = el("div", { class: "turn-body" });
+  if (ev.kind === "UserMessage" || ev.kind === "AgentSendMessage") {
+    if (m.source) head.appendChild(el("span", { class: "turn-source" }, `from ${m.source}`));
+    body.appendChild(renderMarkdown(m.text || ""));
+  } else if (ev.kind === "SystemMessage") {
+    if (m.role) head.appendChild(el("span", { class: "turn-source" }, m.role));
+    body.appendChild(renderMarkdown(m.text || ""));
+  } else if (ev.kind === "AssistantMessage") {
+    if (m.thinking) {
+      body.appendChild(el("details", { class: "turn-thinking" },
+        el("summary", {}, "thinking"), renderMarkdown(m.thinking)));
+    }
+    if (m.text) body.appendChild(renderMarkdown(m.text));
+    for (const tc of (m.tool_calls || [])) {
+      body.appendChild(el("div", { class: "turn-tool" },
+        el("code", {}, `${tc.name}(${JSON.stringify(tc.args || {})})`)));
+    }
+  } else if (ev.kind === "ToolResult") {
+    if (m.diff) {
+      body.appendChild(el("pre", { class: "turn-diff" }, m.diff));
+    } else {
+      body.appendChild(el("pre", { class: m.is_error ? "turn-error" : "" }, m.content || ""));
+    }
+  } else if (ev.kind === "Compaction") {
+    body.appendChild(el("div", { class: "turn-compaction" },
+      `compacted ${m.token_before || 0} → ${m.token_after || 0} tokens`));
+    if (m.text) body.appendChild(renderMarkdown(m.text));
+  } else if (ev.kind === "SlashCommand") {
+    // A CLI command the human typed (e.g. /exit); the model never saw it.
+    body.appendChild(el("div", { class: "turn-tool" },
+      el("code", {}, `/${m.command || ""}${m.args ? " " + m.args : ""}`)));
+  } else {
+    body.appendChild(el("pre", {}, JSON.stringify(m, null, 2)));
+  }
+  return el("div", { class: "turn" }, head, body);
+}
+
+function buildField(label, value, opts = {}) {
+  // ``link`` renders an http(s) value as a new-tab hyperlink (WebResult.url);
+  // a non-URL value stays plain text. The anchor is built via ``el`` (DOM, not
+  // innerHTML) and ``rel=noopener noreferrer`` so it is XSS- and tabnabbing-safe.
+  const href = opts.link ? httpUrl(value) : null;
+  const content = href
+    ? el("a", { href, target: "_blank", rel: "noopener noreferrer" }, value)
+    : (value || "");
+  const valDiv = el("div", { class: "value" + (opts.mono ? " mono" : "") }, content);
+  if (opts.mono) valDiv.style.fontFamily = "ui-monospace, monospace";
+  const field = el("div", { class: "field" },
+    el("label", {}, label),
+    valDiv,
+  );
+  if (opts.hint) {
+    field.appendChild(el("div", { class: "hint", style: { color: "var(--muted)", fontSize: "11px" } }, opts.hint));
+  }
+  return field;
+}
+
+function buildEditableField(field, id, value, opts = {}) {
+  // A linkable field (Paper.source, google_scholar_*) shows the raw value as a
+  // hyperlink when it resolves to a URL, while the "edit" button still mutates
+  // the raw text. ``opts.linkFn`` picks the resolver (defaulting to sourceUrl
+  // when ``opts.link`` is set); the span keeps the .editable/.value classes
+  // either way so layout is uniform.
+  const linkFn = opts.linkFn || (opts.link ? sourceUrl : null);
+  const url = linkFn ? linkFn(value) : null;
+  const valSpan = el("span", { class: "editable value" },
+    url ? el("a", { href: url, target: "_blank", rel: "noopener noreferrer" }, value) : (value || "(empty)"));
+  const button = el("button", { onclick: () => startEdit(field, id, value, valSpan, opts) }, "edit");
+  const wrap = el("div", { class: "field" }, el("label", {}, field), valSpan, button);
+  if (opts.hint) wrap.appendChild(el("div", { class: "hint", style: { color: "var(--muted)", fontSize: "11px" } }, opts.hint));
+  return wrap;
+}
+
+// Description gets full-width markdown rendering with click-to-edit (textarea
+// modal). UUIDs in the rendered body become #/lookup/<id> links.
+function buildDescriptionField(id, description) {
+  const wrap = el("div", { class: "field", style: { flexDirection: "column", alignItems: "stretch" } });
+  wrap.appendChild(el("label", {}, "description"));
+  const display = renderMarkdown(description);
+  display.title = "click to edit";
+  display.addEventListener("click", () => editDescription(id, description, wrap, display));
+  wrap.appendChild(display);
+  return wrap;
+}
+
+function editDescription(id, current, wrap, display) {
+  const ta = el("textarea", { class: "description-edit" });
+  ta.value = current || "";
+  const save = el("button", { class: "primary", onclick: async () => {
+    try {
+      await Api.edit(id, "description", { description: ta.value, actor: currentAuthor() });
+      toast("saved: description");
+      viewInquiry(id);
+    } catch (err) { toast(err.message, true); }
+  }}, "save (⌘↵)");
+  const cancel = el("button", { onclick: () => viewInquiry(id) }, "cancel");
+  ta.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); save.click(); }
+    if (e.key === "Escape") cancel.click();
+  });
+  display.replaceWith(el("div", {},
+    ta, el("div", { class: "description-actions" }, save, cancel),
+  ));
+  setTimeout(() => ta.focus(), 0);
+}
+
+function startEdit(field, id, currentValue, valSpan, opts) {
+  let editor;
+  if (opts.control === "select") {
+    editor = el("select");
+    for (const opt of opts.options || []) {
+      const o = el("option", { value: opt }, opt);
+      if (opt === currentValue) o.setAttribute("selected", "");
+      editor.appendChild(o);
+    }
+  } else if (opts.multiline) {
+    editor = el("textarea", {}, currentValue || "");
+  } else {
+    editor = el("input", { type: "text", value: currentValue || "" });
+  }
+  const save = el("button", { onclick: async () => {
+    let value = editor.value;
+    let body = {};
+    if (
+      field === "labels" || field === "subscribers" ||
+      field === "issue_kind" || field === "rooms"
+    ) {
+      value = value.split(",").map(s => s.trim()).filter(Boolean);
+    } else if (field === "codechanges") {
+      value = value.split(",").map(s => s.trim()).filter(Boolean);
+    } else if (field === "priority") {
+      value = parseInt(value, 10);
+    } else if (field === "confidence") {
+      value = parseFloat(value);
+    }
+    body[field] = value;
+    body.actor = currentAuthor();
+    try {
+      await Api.edit(id, field, body);
+      toast(`saved: ${field}`);
+      viewInquiry(id);
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }}, "save");
+  const cancel = el("button", { onclick: () => viewInquiry(id) }, "cancel");
+  const editorBox = el("span", { class: "editor" }, editor, " ", save, " ", cancel);
+  valSpan.replaceWith(editorBox);
+  editor.focus();
+}
+
+// Render outbound or backlink edge groups, grouped by edge_kind, with
+// per-group picker-driven "+ add" and per-row "× remove".
+function renderEdgeGroups(title, edges, self, selfRole) {
+  const card = el("div", { class: "card" });
+  card.appendChild(el("h3", {}, title));
+  const reload = () => viewInquiry(self.id);
+  const relevantEdgeKinds = EDGE_KINDS.filter(ek => isEdgeKindRelevant(ek, selfRole, self.kind));
+  if (!Object.keys(edges).length && !relevantEdgeKinds.length) {
+    card.appendChild(el("div", { class: "empty", style: { padding: "8px" } }, "(none)"));
+    return card;
+  }
+  const groupKinds = new Set([...Object.keys(edges), ...relevantEdgeKinds]);
+  for (const edgeKind of EDGE_KINDS) {
+    if (!groupKinds.has(edgeKind)) continue;
+    const peers = edges[edgeKind] || [];
+    const group = el("div", { class: "group" });
+    const displayName = edgeDisplayName(edgeKind, selfRole);
+    const header = el("div", { class: "group-header" }, displayName);
+    const allowed = edgeAllowedKinds(edgeKind, selfRole, self.kind);
+    if (isEdgeKindRelevant(edgeKind, selfRole, self.kind)) {
+      header.appendChild(el("button", {
+        class: "add-btn",
+        onclick: () => openPicker(
+          `add ${displayName} ${selfRole === "from" ? "→" : "←"} ${self.kind}#${self.seq}`,
+          (picks) => applyBatch(
+            (p) => addEdgeFromSide(self, p, edgeKind, selfRole),
+            picks,
+          ).then(reload),
+          allowed,
+          { multi: true },
+        ),
+      }, "+ add"));
+    }
+    group.appendChild(header);
+    if (peers.length === 0) {
+      group.appendChild(el("div", { class: "peer empty", style: { color: "var(--muted)" } }, "(none)"));
+    } else {
+      for (const peer of peers) {
+        const arrow = selfRole === "from" ? "→ " : "← ";
+        const peerLine = el("div", { class: "peer" },
+          arrow,
+          refLink(peer.kind, peer.id, peer.seq, peer.title),
+          peer.status ? [" ", statusPill(peer.status)] : null,
+          peer.judgement ? [" ", judgementPill(peer.judgement)] : null,
+          " · ", peer.title || "",
+          edgeAnnotation(peer),
+          el("span", {
+            class: "x", title: "annotate",
+            onclick: () => editEdgeAnnotation(self, peer, edgeKind, selfRole),
+          }, "✎"),
+          el("span", {
+            class: "x", title: "remove",
+            onclick: async () => {
+              if (!confirm(`Remove ${displayName} edge ${selfRole === "from" ? "to" : "from"} ${peer.kind}#${peer.seq}?`)) return;
+              try {
+                await removeEdgeFromSide(self, peer, edgeKind, selfRole);
+                toast(`removed ${displayName}`);
+                viewInquiry(self.id);
+              } catch (err) { toast(err.message, true); }
+            },
+          }, "×"),
+        );
+        group.appendChild(peerLine);
+      }
+    }
+    card.appendChild(group);
+  }
+  return card;
+}
+
+// Schema-aware predicate: would the picked side have any valid candidate?
+// Both checks derive from EDGE_TOPOLOGY (/api/meta/edges): self's own kind must
+// be legal in ITS role (from-side self in from_kinds, to-side self in to_kinds),
+// and the OTHER endpoint must admit some kind. One uniform rule for every edge
+// kind -- no per-kind direction hard-coding, so any citation-direction change
+// needs no SPA edit.
+function isEdgeKindRelevant(edgeKind, selfRole, selfKind) {
+  const topo = EDGE_TOPOLOGY[edgeKind];
+  if (!topo) return false;
+  const selfKinds = selfRole === "from" ? topo.from_kinds : topo.to_kinds;
+  if (!selfKinds.includes(selfKind)) return false;
+  const allowed = edgeAllowedKinds(edgeKind, selfRole, selfKind);
+  return !!(allowed && allowed.length);
+}
+
+function edgeAnnotation(peer) {
+  const parts = [];
+  if (peer.valence !== undefined && peer.valence !== null) parts.push(`val=${peer.valence}`);
+  if (peer.labels && peer.labels.length) parts.push(`labels=${peer.labels.join(",")}`);
+  if (peer.note) parts.push(peer.note);
+  return parts.length ? el("span", { style: { color: "var(--muted)" } }, ` [${parts.join("; ")}]`) : null;
+}
+
+function editEdgeAnnotation(self, peer, edgeKind, selfRole) {
+  const note = prompt("edge note", peer.note || "");
+  if (note === null) return;
+  const valRaw = prompt("edge valence [-1,1] or blank (proves/favors only)", peer.valence ?? "");
+  if (valRaw === null) return;
+  const labelsRaw = prompt("edge labels, comma-separated", (peer.labels || []).join(","));
+  if (labelsRaw === null) return;
+  const from = selfRole === "from" ? self.id : peer.id;
+  const to = selfRole === "from" ? peer.id : self.id;
+  Api.annotateEdge({
+    from_id: from,
+    to_id: to,
+    edge_kind: edgeKind,
+    actor: currentAuthor(),
+    note,
+    valence: valRaw === "" ? null : parseFloat(valRaw),
+    labels: labelsRaw.split(",").map(s => s.trim()).filter(Boolean),
+  }).then(() => {
+    toast(`annotated ${edgeDisplayName(edgeKind, selfRole)}`);
+    viewInquiry(self.id);
+  }).catch(err => toast(err.message, true));
+}
+
+function addEdgeFromSide(self, peer, edgeKind, selfRole) {
+  const note = prompt("edge note", "");
+  if (note === null) return Promise.resolve();
+  const valRaw = prompt("edge valence [-1,1] or blank (proves/favors only)", "");
+  if (valRaw === null) return Promise.resolve();
+  const labelsRaw = prompt("edge labels, comma-separated", "");
+  if (labelsRaw === null) return Promise.resolve();
+  let priorityRaw = "";
+  if (edgeKind === "narrows" || edgeKind === "requires") {
+    priorityRaw = prompt("edge priority or blank", "");
+    if (priorityRaw === null) return Promise.resolve();
+  }
+  const from = selfRole === "from" ? self.id : peer.id;
+  const to   = selfRole === "from" ? peer.id : self.id;
+  const body = {
+    from_id: from,
+    to_id: to,
+    edge_kind: edgeKind,
+    actor: currentAuthor(),
+    note,
+    valence: valRaw === "" ? null : parseFloat(valRaw),
+    labels: labelsRaw.split(",").map(s => s.trim()).filter(Boolean),
+  };
+  if (priorityRaw !== "") body.priority = parseInt(priorityRaw, 10);
+  return Api.addEdge(body);
+}
+
+function removeEdgeFromSide(self, peer, edgeKind, selfRole) {
+  const from = selfRole === "from" ? self.id : peer.id;
+  const to   = selfRole === "from" ? peer.id : self.id;
+  return Api.removeEdge({ from_id: from, to_id: to, edge_kind: edgeKind, actor: currentAuthor() });
+}
+
+function renderChanges(changes) {
+  const card = el("div", { class: "card" });
+  card.appendChild(el("h3", {}, `Changes (${changes.length})`));
+  if (changes.length === 0) {
+    card.appendChild(el("div", { class: "empty", style: { padding: "8px" } }, "(none)"));
+    return card;
+  }
+  const feed = el("div", { class: "changes-feed" });
+  for (const c of changes) {
+    const row = el("div", { class: "change-row" },
+      el("div", { class: "when" }, fmtTime(c.created) + " · " + (c.actor || "(system)")),
+      el("div", {}, el("span", { class: "kind" }, c.kind), c.reason ? ` — ${c.reason}` : ""),
+    );
+    feed.appendChild(row);
+  }
+  card.appendChild(feed);
+  return card;
+}
+
+// Quick-flip buttons for status / judgement / supersede / purge. Per-kind
+// variants reflect the lifecycle the user usually wants one click away.
+function stateButtons(self) {
+  const btns = [];
+  const reload = () => viewInquiry(self.id);
+
+  const setStatus = async (status, prompt_reason) => {
+    let reason = "";
+    if (prompt_reason) {
+      const r = prompt(`reason for ${status}?`, "");
+      if (r === null) return;
+      reason = r;
+    }
+    try {
+      await Api.edit(self.id, "status", { status, actor: currentAuthor(), reason });
+      toast(`status = ${status}`);
+      reload();
+    } catch (err) { toast(err.message, true); }
+  };
+  const setJudgement = async (judgement) => {
+    const r = prompt(`reason for ${judgement}?`, "");
+    if (r === null) return;
+    try {
+      await Api.edit(self.id, "judgement", { judgement, actor: currentAuthor(), reason: r });
+      toast(`judgement = ${judgement}`);
+      reload();
+    } catch (err) { toast(err.message, true); }
+  };
+
+  if (self.kind === "Belief") {
+    if (self.judgement !== "proven") {
+      btns.push(el("button", { onclick: () => setJudgement("proven") }, "proven"));
+    }
+    if (self.judgement !== "disproven") {
+      btns.push(el("button", { onclick: () => setJudgement("disproven") }, "disproven"));
+    }
+    if (self.judgement !== "undecidable") {
+      btns.push(el("button", { onclick: () => setJudgement("undecidable") }, "undecidable"));
+    }
+  }
+  if (self.status === "active") {
+    btns.push(el("button", { onclick: () => setStatus("complete") }, "complete"));
+    btns.push(el("button", { onclick: () => setStatus("abandoned", true) }, "abandon"));
+    btns.push(el("button", { class: "danger", onclick: () => setStatus("invalid", true) }, "invalidate"));
+  }
+  btns.push(el("button", { onclick: () => openPicker(
+    `supersede ${self.kind}#${self.seq} with...`,
+    async (picked) => {
+      try {
+        // supersedes edge stores new -> old (from = successor, to = predecessor).
+        // "Supersede self with picked" means picked is the new successor,
+        // self is the predecessor. The previous from/to assignment was
+        // reversed and silently retired the new item instead of the old.
+        await Api.addEdge({
+          from_id: picked.id, to_id: self.id,
+          edge_kind: "supersedes", actor: currentAuthor(),
+        });
+        toast("supersedes edge added");
+        reload();
+      } catch (err) { toast(err.message, true); }
+    },
+    ALL_KINDS,
+  )}, "supersede"));
+  btns.push(el("button", { class: "danger", onclick: () => purgeInquiry(self.id, self.kind) }, "PURGE"));
+  return btns;
+}
+
+async function purgeInquiry(id, kind) {
+  const reason = prompt(`PURGE ${kind} ${id}?\n(type a reason or cancel)`, "");
+  if (reason === null) return;
+  try {
+    await Api.purge(id, currentAuthor(), reason);
+    toast(`purged ${kind}`);
+    location.hash = "#/recent";
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+// ---- Submit forms ----------------------------------------------------------
+
+function viewSubmit(kind) {
+  const schema = SUBMIT_SCHEMAS[kind];
+  if (!schema) {
+    setMain(el("div", { class: "empty" }, `unknown kind: ${kind}`));
+    return;
+  }
+  const form = el("form", { class: "submit-form", onsubmit: (e) => { e.preventDefault(); submitForm(kind, form); } });
+  form.appendChild(el("h2", {}, `New ${kind}`));
+
+  addInput(form, "title", "title (required)", { required: true });
+  addInput(form, "description", "description (markdown)", { multiline: true });
+  addInput(form, "labels", "labels", { hint: "comma-separated" });
+  addInput(form, "owner", "owner", { hint: "agent id; defaults to your shell user" });
+  for (const ex of schema.extras) {
+    if (ex.type === "select") {
+      const sel = el("select", { name: ex.name });
+      for (const opt of ex.options) {
+        const o = el("option", { value: opt }, opt);
+        if (opt === ex.default) o.setAttribute("selected", "");
+        sel.appendChild(o);
+      }
+      form.appendChild(el("label", {}, ex.label));
+      form.appendChild(sel);
+    } else if (ex.type === "multi-select") {
+      form.appendChild(el("label", {}, ex.label));
+      const sel = el("select", { name: ex.name, multiple: true });
+      for (const opt of ex.options) {
+        const o = el("option", { value: opt }, opt);
+        if ((ex.default || []).includes(opt)) o.setAttribute("selected", "");
+        sel.appendChild(o);
+      }
+      form.appendChild(sel);
+    } else if (ex.multiline) {
+      form.appendChild(el("label", {}, ex.label));
+      form.appendChild(el("textarea", { name: ex.name }));
+    } else {
+      addInput(form, ex.name, ex.label, { hint: ex.hint, required: ex.required });
+    }
+  }
+  form.appendChild(el("button", { type: "submit", class: "submit" }, `Submit ${kind}`));
+  setMain(form);
+}
+
+function addInput(form, name, label, opts = {}) {
+  form.appendChild(el("label", {}, label));
+  const input = opts.multiline
+    ? el("textarea", { name })
+    : el("input", { type: "text", name });
+  if (opts.required) input.setAttribute("required", "");
+  form.appendChild(input);
+  if (opts.hint) form.appendChild(el("div", { class: "hint" }, opts.hint));
+}
+
+async function submitForm(kind, form) {
+  const data = new FormData(form);
+  const body = {
+    title: data.get("title"),
+    description: data.get("description") || "",
+    owner: data.get("owner") || "",
+    actor: currentAuthor(),
+  };
+  const labels = (data.get("labels") || "").toString();
+  body.labels = labels.split(",").map(s => s.trim()).filter(Boolean);
+
+  const schema = SUBMIT_SCHEMAS[kind];
+  for (const ex of schema.extras) {
+    const raw = (data.get(ex.name) || "").toString();
+    if (ex.type === "typed-refs") {
+      try {
+        // Belief citation inline-refs are (id, kind, valence); a positive
+        // default (+0.5) means "proves/favors". For-vs-against is the sign.
+        body[ex.name] = (await resolveRefList(raw)).map(r => [r.id, r.kind, 0.5]);
+      } catch (err) {
+        toast(`${ex.name}: ${err.message}`, true);
+        return;
+      }
+    } else if (ex.type === "narrows") {
+      body[ex.name] = raw.split(",").map(s => s.trim()).filter(Boolean).map(id => [id, null]);
+    } else if (ex.type === "uuids" || ex.type === "strings") {
+      // Comma-separated list -> array of strings (UUIDs for `uuids`, free text
+      // for `strings`, e.g. Paper authors which the server stores as a list).
+      body[ex.name] = raw.split(",").map(s => s.trim()).filter(Boolean);
+    } else if (ex.type === "multi-select") {
+      body[ex.name] = data.getAll(ex.name).map(v => v.toString());
+    } else if (ex.type === "integer") {
+      body[ex.name] = raw ? parseInt(raw, 10) : ex.default;
+    } else if (ex.type === "float") {
+      body[ex.name] = raw ? parseFloat(raw) : ex.default;
+    } else if (ex.type === "select") {
+      body[ex.name] = raw || ex.default;
+    } else {
+      body[ex.name] = raw;
+    }
+  }
+  try {
+    const out = await Api.submit(kind, body);
+    toast(`created ${kind}: ${out.id}`);
+    location.hash = `#/inquiry/${out.id}`;
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+// ---- Search ----------------------------------------------------------------
+
+async function viewSearch(query) {
+  setMain(el("h2", {}, `Search: ${query}`));
+  if (!query) {
+    setMain(el("h2", {}, "Search"), el("div", { class: "empty" }, "enter a query above"));
+    return;
+  }
+  try {
+    const rows = await Api.search(query);
+    if (rows.length === 0) {
+      setMain(el("h2", {}, `Search: ${query}`), el("div", { class: "empty" }, "no matches"));
+      return;
+    }
+    const table = el("table");
+    table.appendChild(el("thead", {}, el("tr", {},
+      ...["Ref", "Status", "Title"].map(h => el("th", {}, h)))));
+    const tbody = el("tbody");
+    for (const r of rows) {
+      tbody.appendChild(el("tr", {},
+        el("td", { class: "ref" }, refLink(r.kind, r.id, r.seq, r.title)),
+        el("td", {}, statusPill(r.status)),
+        el("td", {}, r.title || ""),
+      ));
+    }
+    table.appendChild(tbody);
+    setMain(el("h2", {}, `Search: ${query} (${rows.length})`), table);
+  } catch (err) {
+    setMain(errBanner(err.message));
+  }
+}
+
+async function viewLookup(uuidish) {
+  setMain(el("h2", {}, "Looking up..."));
+  try {
+    const r = await Api.lookup(uuidish);
+    location.hash = `#/inquiry/${r.id}`;
+  } catch (err) {
+    setMain(errBanner(err.message));
+  }
+}
+
+// Resolve a short-ref (`#/ref/Belief/45`) to its inquiry and redirect. Used by
+// the description linkifier; a missing ref shows the same error banner as a bad
+// UUID lookup rather than a broken navigation.
+async function viewRef(kind, seq) {
+  setMain(el("h2", {}, "Looking up..."));
+  try {
+    const { id } = await resolveRef(`${kind}#${seq}`);
+    location.hash = `#/inquiry/${id}`;
+  } catch (err) {
+    setMain(errBanner(err.message));
+  }
+}
+
+// ---- Router ----------------------------------------------------------------
+
+function parseHash() {
+  const raw = (location.hash || "#/recent").replace(/^#\//, "");
+  const [path, q] = raw.split("?");
+  const params = new URLSearchParams(q || "");
+  return { path: path.split("/"), params };
+}
+
+function route() {
+  closeModal();
+  const { path, params } = parseHash();
+  switch (path[0]) {
+    case "":
+    case "recent":
+      viewRecent(); break;
+    case "list":
+      viewList(path[1] || "Issue"); break;
+    case "inquiry":
+      viewInquiry(path[1]); break;
+    case "new":
+      viewSubmit(path[1] || "Issue"); break;
+    case "search":
+      viewSearch(params.get("q") || ""); break;
+    case "lookup":
+      viewLookup(path[1]); break;
+    case "ref":
+      viewRef(path[1], path[2]); break;
+    default:
+      viewRecent();
+  }
+}
+
+// ---- Boot ------------------------------------------------------------------
+
+function buildPickers() {
+  const kindPicker = document.getElementById("kind-picker");
+  const newPicker = document.getElementById("new-picker");
+  for (const k of ALL_KINDS) {
+    kindPicker.appendChild(el("option", { value: k }, k));
+    if (!VIEW_ONLY_KINDS.has(k)) {
+      newPicker.appendChild(el("option", { value: k }, `New ${k}`));
+    }
+  }
+  kindPicker.addEventListener("change", e => {
+    if (e.target.value) location.hash = `#/list/${e.target.value}`;
+    e.target.selectedIndex = 0;
+  });
+  newPicker.addEventListener("change", e => {
+    if (e.target.value) location.hash = `#/new/${e.target.value}`;
+    e.target.selectedIndex = 0;
+  });
+}
+
+function buildSearch() {
+  const search = document.getElementById("search-box");
+  search.addEventListener("keypress", e => {
+    if (e.key === "Enter") {
+      location.hash = `#/search?q=${encodeURIComponent(search.value)}`;
+    }
+  });
+}
+
+function startSse() {
+  // Native EventSource auto-reconnects on transient errors; only abort on
+  // the terminal CLOSED state. Calling sse.close() on every error -- as
+  // the original code did -- disabled recovery entirely and left the UI
+  // stale after the first hiccup.
+  const sse = new EventSource("/api/web/subscribe");
+  sse.onmessage = (e) => {
+    let payload;
+    try {
+      payload = JSON.parse(e.data);
+    } catch (_) {
+      return;
+    }
+    const { path } = parseHash();
+    if (path[0] === "inquiry" && path[1] === payload.id) {
+      viewInquiry(payload.id);
+    } else if (path[0] === "list") {
+      viewList(path[1] || "Issue");
+    } else if (path[0] === "recent" || path[0] === "" || !path[0]) {
+      viewRecent();
+    }
+  };
+  sse.onerror = () => {
+    if (sse.readyState === EventSource.CLOSED) {
+      console.warn("SSE permanently closed");
+    }
+  };
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeModal();
+});
+
+document.getElementById("home").addEventListener("click", () => { location.hash = "#/recent"; });
+document.getElementById("recent-btn").addEventListener("click", () => { location.hash = "#/recent"; });
+window.addEventListener("hashchange", route);
+
+document.getElementById("user-nav-logout").addEventListener("click", async (e) => {
+  e.preventDefault();
+  try { await fetch("/auth/logout", { method: "POST", credentials: "same-origin" }); } catch (_) {}
+  location.href = "/auth/login_page";
+});
+
+(async () => {
+  try {
+    const r = await fetch("/api/me/profile", { credentials: "same-origin" });
+    if (!r.ok) return;
+    const me = await r.json();
+    if (me && me.role === "admin") {
+      document.getElementById("user-nav-admin").style.display = "";
+    }
+  } catch (_) { /* ignore */ }
+})();
+
+buildPickers();
+buildSearch();
+route();
+startSse();
+
+</script>
+</body>
+</html>

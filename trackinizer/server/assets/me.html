@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Profile - Trackinizer</title>
+<style>
+  :root {
+    --bg: #1a1b26;
+    --bg-row: #24283b;
+    --bg-hover: #2f3549;
+    --fg: #c0caf5;
+    --muted: #565f89;
+    --line: #3b4261;
+    --accent: #7aa2f7;
+    --success: #9ece6a;
+    --warning: #e0af68;
+    --danger: #f7768e;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 13px/1.4 ui-monospace, "SF Mono", "Cascadia Code",
+          "Fira Code", "JetBrains Mono", Menlo, monospace;
+    background: var(--bg); color: var(--fg);
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 16px; background: var(--bg-row);
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 14px; margin: 0; color: var(--accent); font-weight: bold; }
+  header nav { margin-left: auto; display: flex; gap: 8px; }
+  header a { color: var(--accent); text-decoration: none; }
+  header a:hover { text-decoration: underline; }
+  main { padding: 16px; max-width: 980px; margin: 0 auto; }
+  h2 { color: var(--accent); font-size: 16px; margin: 16px 0 8px; font-weight: normal; }
+  h3 {
+    color: var(--muted); font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.5px; margin: 16px 0 6px;
+  }
+  table {
+    width: 100%; border-collapse: collapse; background: var(--bg-row);
+    border: 1px solid var(--line); margin-top: 4px;
+  }
+  th, td {
+    padding: 6px 10px; text-align: left;
+    border-bottom: 1px solid var(--line); vertical-align: top;
+  }
+  th {
+    background: var(--bg); font-weight: bold; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted);
+  }
+  tr:hover td { background: var(--bg-hover); }
+  td.muted { color: var(--muted); }
+  button {
+    background: var(--bg-row); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 3px; padding: 4px 10px; font: inherit; font-size: 12px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  button.danger { color: var(--danger); border-color: var(--danger); }
+  button.danger:hover { background: var(--danger); color: var(--bg); }
+  .profile { background: var(--bg-row); border: 1px solid var(--line);
+             border-radius: 3px; padding: 12px; }
+  .profile .field { display: flex; gap: 8px; margin: 4px 0; }
+  .profile .field label { color: var(--muted); min-width: 80px; }
+  input[type="text"], select {
+    background: var(--bg); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 3px; padding: 4px 8px; font: inherit;
+  }
+  select { background: var(--bg-row); }
+  .new-secret {
+    background: var(--bg-row); border: 1px solid var(--warning);
+    border-radius: 3px; padding: 12px; margin: 12px 0;
+  }
+  .new-secret code {
+    display: block; background: var(--bg); padding: 8px;
+    border: 1px solid var(--line); border-radius: 3px;
+    margin: 6px 0; word-break: break-all; user-select: all;
+  }
+  .new-secret .row { display: flex; gap: 8px; align-items: center; }
+  .banner-error {
+    background: var(--danger); color: var(--bg);
+    padding: 8px 12px; border-radius: 3px; margin-bottom: 12px;
+  }
+  .pill {
+    display: inline-block; padding: 1px 6px; border-radius: 2px;
+    font-size: 10px; font-weight: bold; text-transform: uppercase;
+    color: var(--bg);
+  }
+  .pill.revoked { background: var(--muted); }
+  .pill.active  { background: var(--success); }
+  .empty { color: var(--muted); padding: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><a href="/" style="color:inherit;text-decoration:none">Trackinizer</a> &middot; Profile</h1>
+  <nav>
+    <a href="/me">Profile</a>
+    <a id="adminlink" href="/admin" style="display:none">Admin</a>
+    <a href="#" id="logout">Sign out</a>
+  </nav>
+</header>
+
+<main>
+  <div id="error" style="display:none" class="banner-error"></div>
+
+  <h2>Profile</h2>
+  <div class="profile" id="profile">Loading...</div>
+
+  <h2>API tokens</h2>
+  <div>
+    <form id="create-form" style="display:flex; gap:6px; margin-bottom:8px;">
+      <input type="text" id="token-name" placeholder="Token name (e.g. laptop)" required>
+      <select id="token-role" title="Token role (bounded by your user role)"></select>
+      <button type="submit" class="primary">Create new token</button>
+    </form>
+  </div>
+  <div id="new-secret" class="new-secret" style="display:none">
+    <strong>Save this token now. It won't be shown again.</strong>
+    <code id="new-secret-value"></code>
+    <div class="row">
+      <button id="copy-btn">Copy</button>
+      <button id="ack-btn" class="primary">I've saved it</button>
+    </div>
+  </div>
+  <table>
+    <thead>
+      <tr><th>Name</th><th>Prefix</th><th>Role</th><th>Created</th><th>Last used</th><th>Status</th><th></th></tr>
+    </thead>
+    <tbody id="tokens-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+  </table>
+</main>
+
+<script>
+function uuidv4() {
+  // `crypto.randomUUID` is only defined in secure contexts (HTTPS or
+  // localhost); fall back to a hand-rolled RFC4122 v4 so plain-HTTP
+  // deployments still work.
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+}
+
+async function api(path, opts = {}) {
+  // Mutating requests carry an Idempotency-Key so the server can use it as
+  // change_log.id; a retry of the same request collides on the PK and
+  // returns the original outcome instead of double-applying. GETs are
+  // dedup-eligible by definition. The server middleware reads exactly this
+  // header name (see server/api/idempotency.py).
+  const method = (opts.method || "GET").toUpperCase();
+  const headers = {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    ...(opts.headers || {}),
+  };
+  if (method !== "GET" && !headers["Idempotency-Key"]) {
+    headers["Idempotency-Key"] = uuidv4();
+  }
+  const resp = await fetch(path, { ...opts, headers });
+  if (!resp.ok) {
+    let detail;
+    try { detail = (await resp.json()).detail; } catch (_) { detail = resp.statusText; }
+    throw new Error(`${resp.status}: ${detail}`);
+  }
+  return resp.json();
+}
+
+function showError(msg) {
+  const el = document.getElementById("error");
+  el.textContent = msg;
+  el.style.display = "block";
+}
+
+function fmtDate(iso) {
+  if (!iso) return "-";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const pad = n => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+const ROLES = ["viewer", "writer", "admin"];
+
+// Caller's user role: needed to bound role <select>s. Set by renderProfile.
+let USER_ROLE = "viewer";
+
+function rolesUpTo(ceiling) {
+  // Roles the caller can grant to a token: every level at or below the
+  // user's role under ROLES ordering.
+  return ROLES.slice(0, ROLES.indexOf(ceiling) + 1);
+}
+
+function buildRoleSelect(current, ceiling) {
+  const sel = document.createElement("select");
+  for (const r of rolesUpTo(ceiling)) {
+    const opt = document.createElement("option");
+    opt.value = r; opt.textContent = r;
+    if (r === current) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  return sel;
+}
+
+function renderProfile(me) {
+  const div = document.getElementById("profile");
+  div.innerHTML = "";
+  const fields = [["Email", me.email], ["Name", me.name], ["Role", me.role]];
+  for (const [k, v] of fields) {
+    const row = document.createElement("div");
+    row.className = "field";
+    const lbl = document.createElement("label"); lbl.textContent = k;
+    const val = document.createElement("span"); val.textContent = v;
+    row.appendChild(lbl); row.appendChild(val);
+    div.appendChild(row);
+  }
+  USER_ROLE = me.role;
+  // Populate the create-token role <select> bounded by USER_ROLE; default
+  // to the user's own role so "Create" without changing the select keeps
+  // pre-Phase-6 semantics.
+  const createSelect = document.getElementById("token-role");
+  createSelect.innerHTML = "";
+  for (const r of rolesUpTo(USER_ROLE)) {
+    const opt = document.createElement("option");
+    opt.value = r; opt.textContent = r;
+    if (r === USER_ROLE) opt.selected = true;
+    createSelect.appendChild(opt);
+  }
+  if (me.role === "admin") {
+    document.getElementById("adminlink").style.display = "inline";
+  }
+}
+
+async function loadTokens() {
+  const body = document.getElementById("tokens-body");
+  body.innerHTML = "";
+  const { tokens } = await api("/api/me/tokens");
+  if (tokens.length === 0) {
+    body.innerHTML = '<tr><td colspan="7" class="empty">No tokens yet.</td></tr>';
+    return;
+  }
+  for (const tok of tokens) {
+    const tr = document.createElement("tr");
+    const revoked = tok.revoked_at != null;
+    tr.innerHTML = `
+      <td>${escapeHtml(tok.name)}</td>
+      <td><code>${escapeHtml(tok.prefix)}...</code></td>
+      <td></td>
+      <td class="muted">${fmtDate(tok.created_at)}</td>
+      <td class="muted">${fmtDate(tok.last_used_at)}</td>
+      <td>${revoked
+        ? '<span class="pill revoked">revoked</span>'
+        : '<span class="pill active">active</span>'}</td>
+      <td></td>
+    `;
+    // Role cell: dropdown for live keys, static text for revoked ones --
+    // a revoked key's ceiling is moot.
+    const roleCell = tr.children[2];
+    if (revoked) {
+      roleCell.textContent = tok.role;
+      roleCell.className = "muted";
+    } else {
+      const sel = buildRoleSelect(tok.role, USER_ROLE);
+      sel.addEventListener("change", () => changeTokenRole(tok.id, sel.value));
+      roleCell.appendChild(sel);
+    }
+    if (!revoked) {
+      const actions = tr.children[6];
+      const btn = document.createElement("button");
+      btn.className = "danger";
+      btn.textContent = "Revoke";
+      btn.addEventListener("click", () => revokeToken(tok.id));
+      actions.appendChild(btn);
+    }
+    body.appendChild(tr);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+async function createToken(name, role) {
+  const out = await api("/api/me/tokens", {
+    method: "POST", body: JSON.stringify({ name, role }),
+  });
+  const box = document.getElementById("new-secret");
+  document.getElementById("new-secret-value").textContent = out.secret;
+  box.style.display = "block";
+  await loadTokens();
+}
+
+async function revokeToken(id) {
+  if (!confirm("Revoke this token? CLIs/agents using it will lose access.")) return;
+  await api(`/api/me/tokens/${id}/revoke`, { method: "POST" });
+  await loadTokens();
+}
+
+async function changeTokenRole(id, role) {
+  try {
+    await api(`/api/me/tokens/${id}/role`, {
+      method: "PUT", body: JSON.stringify({ role }),
+    });
+    await loadTokens();
+  } catch (err) {
+    showError(err.message);
+    await loadTokens();
+  }
+}
+
+document.getElementById("create-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const input = document.getElementById("token-name");
+  const name = input.value.trim();
+  const role = document.getElementById("token-role").value;
+  if (!name) return;
+  try {
+    await createToken(name, role);
+    input.value = "";
+  } catch (err) {
+    showError(err.message);
+  }
+});
+
+document.getElementById("copy-btn").addEventListener("click", async () => {
+  const v = document.getElementById("new-secret-value").textContent;
+  try { await navigator.clipboard.writeText(v); } catch (_) { /* best-effort */ }
+});
+
+document.getElementById("ack-btn").addEventListener("click", () => {
+  document.getElementById("new-secret").style.display = "none";
+  document.getElementById("new-secret-value").textContent = "";
+});
+
+document.getElementById("logout").addEventListener("click", async (e) => {
+  e.preventDefault();
+  const f = document.createElement("form");
+  f.method = "POST"; f.action = "/auth/logout";
+  document.body.appendChild(f); f.submit();
+});
+
+(async () => {
+  try {
+    const me = await api("/api/me/profile");
+    renderProfile(me);
+    await loadTokens();
+  } catch (err) {
+    showError(err.message);
+  }
+})();
+</script>
+</body>
+</html>
