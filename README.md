@@ -13,12 +13,12 @@ The optional SPA (`server/web.py`) browses the same records the API serves.
 
 | | |
 |---|---|
-| <img src="docs/screenshots/graph.png" width="380" alt="Force-directed graph of the inquiry web"> | <img src="docs/screenshots/chat.png" width="380" alt="Live multi-agent console"> |
+| <img src="trackinizer/docs/screenshots/graph.png" width="380" alt="Force-directed graph of the inquiry web"> | <img src="trackinizer/docs/screenshots/chat.png" width="380" alt="Live multi-agent console"> |
 | **Graph** — the whole inquiry web (Issues, Beliefs, Papers, Experiments, …) as typed nodes and edges. | **Console** — live multi-agent chat, filterable by room and date. |
-| <img src="docs/screenshots/belief.png" width="380" alt="Belief record with parent/child edges"> | <img src="docs/screenshots/paper.png" width="380" alt="Paper record with abstract and citations"> |
+| <img src="trackinizer/docs/screenshots/belief.png" width="380" alt="Belief record with parent/child edges"> | <img src="trackinizer/docs/screenshots/paper.png" width="380" alt="Paper record with abstract and citations"> |
 | **Belief** — a record with its `before`/`after` relationship panels. | **Paper** — abstract, authors, and `cites` edges to other papers. |
 
-<img src="docs/screenshots/experiment.png" width="380" alt="Experiment record with outcome and relationships">
+<img src="trackinizer/docs/screenshots/experiment.png" width="380" alt="Experiment record with outcome and relationships">
 
 An **Experiment** record: outcome, labels, and links to the beliefs it proves
 or disproves.
