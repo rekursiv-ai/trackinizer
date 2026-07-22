@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trackinizer Console</title>
+<style>
+  /* Tokyo Night palette, shared with index.html. */
+  :root {
+    --bg: #1a1b26;
+    --bg-row: #24283b;
+    --bg-hover: #2f3549;
+    --fg: #c0caf5;
+    --muted: #565f89;
+    --line: #3b4261;
+    --accent: #7aa2f7;
+    --success: #9ece6a;
+    --danger: #f7768e;
+    --warning: #e0af68;
+    --info: #7dcfff;
+    --ts: #515a82;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font: 13px/1.45 ui-monospace, "SF Mono", "Cascadia Code",
+          "Fira Code", "JetBrains Mono", Menlo, monospace;
+    background: var(--bg); color: var(--fg);
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 16px; background: var(--bg-row);
+    border-bottom: 1px solid var(--line); flex: 0 0 auto;
+  }
+  header h1 { font-size: 14px; margin: 0; color: var(--accent); font-weight: bold; }
+  header h1 a { color: inherit; text-decoration: none; }
+  header .conn { color: var(--muted); margin-left: 4px; font-size: 11px; }
+  header nav { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  header a { color: var(--accent); text-decoration: none; }
+  header a:hover { text-decoration: underline; }
+
+  #feed {
+    flex: 1 1 auto; overflow-y: auto; padding: 8px 16px;
+  }
+  .row {
+    padding: 1px 0; white-space: pre-wrap; word-break: break-word;
+  }
+  .row .ts { color: var(--ts); margin-right: 6px; }
+  .row .who { font-weight: bold; }
+  .row .room { color: var(--muted); }
+  .row .arrow { color: var(--muted); margin: 0 4px; }
+  .row .kind { color: var(--muted); font-size: 11px; margin-left: 4px; }
+  .row.k-AssistantMessage .body { opacity: 0.92; }
+  .row.k-ToolResult .body { color: var(--muted); }
+  .row.k-SystemMessage .body { color: var(--muted); font-style: italic; }
+  .row.k-SlashCommand .body { color: var(--warning); }
+  .row.k-UserMessage .body, .row.k-AgentSendMessage .body { color: var(--info); }
+  .body { display: inline; }
+  .body.cont { display: block; margin-left: 2ch; }
+
+  #filter-bar {
+    flex: 0 0 auto; display: flex; gap: 14px; align-items: center;
+    flex-wrap: wrap; padding: 6px 16px;
+    background: var(--bg-row); border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line); font-size: 12px;
+  }
+  #filter-bar .group { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  #filter-bar .label { color: var(--muted); }
+  .pill {
+    cursor: pointer; padding: 1px 7px; border-radius: 10px;
+    border: 1px solid var(--line); display: inline-flex; align-items: center; gap: 5px;
+  }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .pill .dot.online { background: var(--success); }
+  .pill.off { opacity: 0.35; }
+  .pill:hover { border-color: var(--accent); }
+  #filter-bar input[type="datetime-local"], #filter-bar select {
+    font: inherit; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 3px; padding: 2px 6px;
+  }
+  #filter-bar button {
+    font: inherit; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 3px; padding: 2px 8px; cursor: pointer;
+  }
+  #filter-bar button:hover { border-color: var(--accent); }
+  #filter-bar button.active { border-color: var(--accent); color: var(--accent); }
+
+  #input-bar {
+    flex: 0 0 auto; display: flex; gap: 8px; padding: 8px 16px;
+    background: var(--bg-row); border-top: 1px solid var(--line);
+  }
+  #input-bar input {
+    flex: 1; font: inherit; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 3px; padding: 6px 8px;
+  }
+  #input-bar input:focus { outline: none; border-color: var(--accent); }
+  #input-bar button {
+    font: inherit; background: var(--accent); color: var(--bg);
+    border: none; border-radius: 3px; padding: 6px 16px; cursor: pointer; font-weight: bold;
+  }
+  #status { padding: 2px 16px; font-size: 11px; color: var(--muted); flex: 0 0 auto; min-height: 18px; }
+  .empty { color: var(--muted); padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><a href="/console">Console</a><span class="conn" id="conn">·</span></h1>
+  <nav>
+    <a href="/">Inquiries</a>
+    <a href="/me">Profile</a>
+  </nav>
+</header>
+
+<div id="feed"><div class="empty">connecting...</div></div>
+<div id="status"></div>
+
+<div id="filter-bar">
+  <div class="group">
+    <span class="label">rooms</span>
+    <span id="room-pills"></span>
+  </div>
+  <div class="group">
+    <span class="label">agents</span>
+    <span id="agent-pills"></span>
+  </div>
+  <div class="group">
+    <span class="label">range</span>
+    <button id="range-live" class="active" title="follow live tail">live</button>
+    <input type="datetime-local" id="range-since" title="from (history)">
+    <input type="datetime-local" id="range-until" title="to (history)">
+    <button id="range-apply">apply</button>
+  </div>
+</div>
+
+<div id="input-bar">
+  <input type="text" id="input"
+    placeholder="@agent message   ·   @agent:room scoped   ·   @* broadcast to all visible agents"
+    autocomplete="off">
+  <button id="send">send</button>
+</div>
+
+<script>
+"use strict";
+
+// ---- State -----------------------------------------------------------------
+
+const State = {
+  // Composite keyset cursor {created, session_id, seq} of the last event
+  // shown. The next poll resumes strictly past it. Null until the first page.
+  cursor: null,
+  // True until the first live page lands: that page is fetched with tail=true
+  // (newest N) so a large backlog doesn't replay from the beginning.
+  needTail: true,
+  // Historical mode bounds; null in live mode.
+  histSince: null,
+  histUntil: null,
+  live: true,
+  // Filters: empty set = no filter (show all). Sets of room / actor names.
+  rooms: new Set(),
+  agents: new Set(),
+  // Discovered universe of rooms/agents (for the filter pills) and which
+  // agents are currently live (ended IS NULL is not in the feed, so we treat
+  // any agent seen in the most recent poll window as "active"-ish: the server
+  // feed has no liveness flag, so the dot reflects "seen recently").
+  knownRooms: new Set(),
+  knownAgents: new Set(),
+  agentColor: new Map(),
+  seen: new Set(),  // dedup key `${session_id}:${seq}`
+  buffer: [],       // retained recent events, re-rendered when filters change
+  painted: false,   // has the current window painted at least once?
+  polling: false,
+  errorStreak: 0,   // consecutive failed polls; drives backoff
+};
+
+// TokyoNight-ish 10-color palette; each agent gets a stable color on first
+// appearance, mirroring the switchboard convention.
+const PALETTE = [
+  "#7aa2f7", "#bb9af7", "#9ece6a", "#e0af68", "#f7768e",
+  "#7dcfff", "#ff9e64", "#2ac3de", "#b4f9f8", "#c0caf5",
+];
+
+function colorFor(agent) {
+  if (!State.agentColor.has(agent)) {
+    State.agentColor.set(agent, PALETTE[State.agentColor.size % PALETTE.length]);
+  }
+  return State.agentColor.get(agent);
+}
+
+// ---- DOM helpers ------------------------------------------------------------
+
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") n.className = v;
+    else if (k === "style" && typeof v === "object") Object.assign(n.style, v);
+    else if (k.startsWith("on") && typeof v === "function") n.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined && v !== false) n.setAttribute(k, v);
+  }
+  for (const c of kids) {
+    if (c === null || c === undefined || c === false) continue;
+    n.appendChild(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return n;
+}
+
+function fmtTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const p = n => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// Local datetime-local value (YYYY-MM-DDTHH:MM) -> ISO string, or null.
+function localToIso(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// ---- API --------------------------------------------------------------------
+
+async function api(path, opts = {}) {
+  const init = { ...opts, headers: { "Accept": "application/json", ...(opts.headers || {}) } };
+  if (opts.body && typeof opts.body !== "string") {
+    init.body = JSON.stringify(opts.body);
+    init.headers["Content-Type"] = "application/json";
+  }
+  const resp = await fetch(path, init);
+  if (!resp.ok) {
+    let detail = await resp.text();
+    try { detail = JSON.parse(detail).detail || detail; } catch (_) {}
+    throw new Error(`${resp.status}: ${detail}`);
+  }
+  if (resp.status === 204 || resp.headers.get("Content-Length") === "0") return null;
+  return resp.json();
+}
+
+function feedUrl() {
+  const p = new URLSearchParams();
+  if (State.cursor) {
+    // Resume strictly past the last shown event via the composite cursor.
+    p.set("after_created", State.cursor.created);
+    p.set("after_session", State.cursor.session_id);
+    p.set("after_seq", String(State.cursor.seq));
+  } else if (State.live && State.needTail) {
+    // First live page: take the newest PAGE_LIMIT so a backlog doesn't make
+    // the live tail replay from the beginning.
+    p.set("tail", "true");
+  }
+  if (!State.live) {
+    if (State.histSince) p.set("since", State.histSince);
+    if (State.histUntil) p.set("until", State.histUntil);
+  }
+  // Room/agent filtering is applied client-side over the retained buffer so
+  // multi-select works; the feed route's room/actor params stay available for
+  // other callers but the console does not use them.
+  p.set("limit", String(PAGE_LIMIT));
+  return `/api/web/feed?${p}`;
+}
+
+// ---- Message body extraction ------------------------------------------------
+
+// Pull a one-line-ish display body out of a typed message, by kind.
+function bodyText(ev) {
+  const m = ev.message || {};
+  switch (ev.kind) {
+    case "UserMessage":
+    case "AgentSendMessage":
+      return m.text || "";
+    case "SystemMessage":
+      return m.text || "";
+    case "AssistantMessage": {
+      const parts = [];
+      if (m.text) parts.push(m.text);
+      for (const tc of (m.tool_calls || [])) {
+        parts.push(`→ ${tc.name}(${JSON.stringify(tc.args || {})})`);
+      }
+      return parts.join("\n") || (m.thinking ? "(thinking)" : "");
+    }
+    case "ToolResult":
+      return m.diff || m.content || (m.is_error ? "(error)" : "");
+    case "Compaction":
+      return `compacted ${m.token_before || 0} → ${m.token_after || 0} tokens`;
+    case "SlashCommand":
+      return `/${m.command || ""}${m.args ? " " + m.args : ""}`;
+    default:
+      return JSON.stringify(m);
+  }
+}
+
+// ---- Rendering --------------------------------------------------------------
+
+function passesFilter(ev) {
+  if (State.agents.size && !State.agents.has(ev.actor)) return false;
+  if (State.rooms.size) {
+    const evRooms = ev.rooms || [];
+    if (!evRooms.some(r => State.rooms.has(r))) return false;
+  }
+  return true;
+}
+
+function renderRow(ev) {
+  const color = colorFor(ev.actor);
+  const roomTag = (ev.rooms && ev.rooms.length)
+    ? el("span", { class: "room" }, ` [${ev.rooms.join(",")}]`)
+    : null;
+  const head = el("span", {},
+    el("span", { class: "ts" }, fmtTime(ev.created)),
+    el("span", { class: "who", style: { color } }, ev.actor || "(anon)"),
+    roomTag,
+    el("span", { class: "kind" }, ` ${ev.kind}`),
+    el("span", { class: "arrow" }, "·"),
+  );
+  const text = bodyText(ev);
+  const lines = text.split("\n");
+  const row = el("div", { class: `row k-${ev.kind}` }, head,
+    el("span", { class: "body" }, lines[0] || ""));
+  for (const extra of lines.slice(1)) {
+    row.appendChild(el("span", { class: "body cont" }, extra));
+  }
+  return row;
+}
+
+function atBottom(feed) {
+  return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
+}
+
+// Cap on retained events. The console is a live tail, not an archive: keeping
+// every event since connect would grow the DOM and the `seen`/`shown` buffers
+// without bound on a long-running session. We hold the most recent
+// MAX_BUFFER events and re-render the filtered view from that buffer.
+const MAX_BUFFER = 5_000;
+// Live poll cadence and per-page event cap.
+const POLL_MS = 1_500;
+const PAGE_LIMIT = 300;
+// Upper bound on the exponential backoff applied while polls keep failing,
+// so an offline server is probed at most this slowly (not every POLL_MS).
+const MAX_BACKOFF_MS = 30_000;
+
+function appendEvents(events) {
+  const fresh = [];
+  let pillsDirty = false;
+  for (const ev of events) {
+    const key = `${ev.session_id}:${ev.seq}`;
+    if (State.seen.has(key)) continue;
+    State.seen.add(key);
+    State.buffer.push(ev);
+    fresh.push(ev);
+    if (ev.actor && !State.knownAgents.has(ev.actor)) { State.knownAgents.add(ev.actor); pillsDirty = true; }
+    for (const r of (ev.rooms || [])) {
+      if (!State.knownRooms.has(r)) { State.knownRooms.add(r); pillsDirty = true; }
+    }
+  }
+  // Trim the oldest events past the cap, dropping their dedup keys so the set
+  // cannot grow without bound on a long-lived tail. An eviction shifts the
+  // buffer head, so the cheap incremental append no longer matches the DOM --
+  // fall back to a full rebuild in that case.
+  let evicted = false;
+  if (State.buffer.length > MAX_BUFFER) {
+    for (const ev of State.buffer.splice(0, State.buffer.length - MAX_BUFFER)) {
+      State.seen.delete(`${ev.session_id}:${ev.seq}`);
+    }
+    evicted = true;
+  }
+  if (pillsDirty) renderPills();
+  // Incremental append is O(fresh) and is the steady-state path; a full
+  // rebuild (O(buffer)) is only needed when the buffer head moved or the
+  // feed still shows its placeholder. ``State.painted`` guards the first
+  // paint so a quiet first poll replaces "loading..." with the empty state
+  // rather than leaving the placeholder forever (R-042).
+  if (evicted || !State.painted) {
+    renderFeed();
+  } else if (fresh.length) {
+    appendRows(fresh);
+  }
+}
+
+// Full rebuild of the visible feed from the filtered buffer. Used on filter
+// changes and buffer-head moves; the steady-state poll path uses appendRows.
+function renderFeed() {
+  State.painted = true;
+  const feed = document.getElementById("feed");
+  const stick = atBottom(feed);
+  const rows = State.buffer.filter(passesFilter).map(renderRow);
+  feed.replaceChildren(
+    ...(rows.length ? rows : [el("div", { class: "empty" }, "no matching turns")]),
+  );
+  if (stick) feed.scrollTop = feed.scrollHeight;
+}
+
+// Incrementally append only the fresh events that pass the active filter,
+// avoiding an O(buffer) rebuild every poll. Stickiness is measured before the
+// append so streaming output keeps following the tail.
+function appendRows(fresh) {
+  const feed = document.getElementById("feed");
+  const stick = atBottom(feed);
+  const placeholder = feed.querySelector(".empty");
+  const rows = fresh.filter(passesFilter).map(renderRow);
+  if (!rows.length) return;
+  if (placeholder) placeholder.remove();
+  for (const row of rows) feed.appendChild(row);
+  if (stick) feed.scrollTop = feed.scrollHeight;
+}
+
+// Clear the buffer and cursor for a fresh window (live<->history switch).
+function resetFeed() {
+  State.cursor = null;
+  State.needTail = State.live;  // live restart re-tails; history reads forward
+  State.seen.clear();
+  State.buffer = [];
+  State.painted = false;
+  document.getElementById("feed").replaceChildren(
+    el("div", { class: "empty" }, "loading..."),
+  );
+}
+
+// ---- Filter pills -----------------------------------------------------------
+
+function togglePill(set, name) {
+  if (set.has(name)) set.delete(name); else set.add(name);
+  renderPills();
+  renderFeed();  // filters are applied client-side over the retained buffer
+}
+
+function renderPills() {
+  const roomBox = document.getElementById("room-pills");
+  const agentBox = document.getElementById("agent-pills");
+  roomBox.replaceChildren(...[...State.knownRooms].sort().map(r =>
+    el("span", {
+      class: "pill" + (State.rooms.size && !State.rooms.has(r) ? " off" : ""),
+      onclick: () => togglePill(State.rooms, r),
+    }, r)));
+  agentBox.replaceChildren(...[...State.knownAgents].sort().map(a =>
+    el("span", {
+      class: "pill" + (State.agents.size && !State.agents.has(a) ? " off" : ""),
+      onclick: () => togglePill(State.agents, a),
+    },
+      el("span", { class: "dot online", style: { background: colorFor(a) } }),
+      el("span", { style: { color: colorFor(a) } }, a))));
+}
+
+// ---- Targeting input --------------------------------------------------------
+
+// Broadcast targets for `@*`: the distinct (actor, room) pairs visible under
+// the active filters. Derived from the rendered buffer so it honours room/agent
+// pills, and so a multi-room agent gets one target per room it appears in
+// (a bare `@actor` to a multi-room session is rejected server-side). An agent
+// seen with no room yields a single roomless target.
+function broadcastTargets() {
+  const seen = new Set();
+  const out = [];
+  for (const ev of State.buffer.filter(passesFilter)) {
+    const rooms = (ev.rooms && ev.rooms.length) ? ev.rooms : [null];
+    for (const room of rooms) {
+      const key = `${ev.actor}\u0000${room}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ actor: ev.actor, room });
+    }
+  }
+  return out;
+}
+
+// Parse the input line into {targets:[{actor,room}], text}. Grammar:
+//   @actor text          one agent
+//   @actor:room text     scoped to a room
+//   @a,@b text           multiple
+//   @* text              broadcast to every agent/room pair currently visible
+//                        under the active filters (the rendered buffer)
+async function sendInput() {
+  const input = document.getElementById("input");
+  const raw = input.value.trim();
+  if (!raw) return;
+  const status = document.getElementById("status");
+  let targets = [];
+  let text = raw;
+  if (!raw.startsWith("@")) {
+    status.textContent = "prefix a target: @agent message";
+    return;
+  }
+  const sp = raw.indexOf(" ");
+  if (sp < 0) { status.textContent = "no message body"; return; }
+  const spec = raw.slice(1, sp);
+  text = raw.slice(sp + 1).trim();
+  if (spec === "*") {
+    targets = broadcastTargets();
+    if (!targets.length) { status.textContent = "no visible agents to broadcast to"; return; }
+  } else {
+    for (const part of spec.split(",")) {
+      // Split on the first ':' only; an actor name has no ':' but a room
+      // could in principle, so keep the remainder intact (R-031).
+      const idx = part.indexOf(":");
+      const actor = idx < 0 ? part : part.slice(0, idx);
+      const room = idx < 0 ? null : part.slice(idx + 1);
+      if (!actor) { status.textContent = `empty actor in '${part}'`; return; }
+      if (idx >= 0 && !room) { status.textContent = `empty room scope in '${part}'`; return; }
+      targets.push({ actor, room });
+    }
+  }
+  if (!targets.length) { status.textContent = "no targets"; return; }
+  input.value = "";
+  let delivered = 0;
+  const undelivered = [];
+  for (const t of targets) {
+    try {
+      const resp = await api("/api/messages", {
+        method: "POST",
+        headers: { "Idempotency-Key": uuid() },
+        body: { actor: t.actor, room: t.room, text },
+      });
+      const n = (resp.delivered || []).length;
+      delivered += n;
+      if (!n) undelivered.push(t.room ? `@${t.actor}:${t.room}` : `@${t.actor}`);
+    } catch (err) {
+      undelivered.push(`@${t.actor} (${err.message})`);
+    }
+  }
+  status.textContent = undelivered.length
+    ? `sent to ${delivered} session(s); undelivered: ${undelivered.join(", ")}`
+    : `sent to ${delivered} session(s)`;
+}
+
+function uuid() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+  const h = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+}
+
+// ---- Polling loop -----------------------------------------------------------
+
+async function poll() {
+  if (State.polling) return;
+  State.polling = true;
+  try {
+    const resp = await api(feedUrl());
+    setConn(true);
+    State.errorStreak = 0;  // recovered; next tick returns to POLL_MS
+    appendEvents(resp.events || []);
+    // Once the first (tail) page lands, subsequent polls resume by cursor.
+    State.needTail = false;
+    // Advance the composite cursor so the next poll resumes strictly past the
+    // last shown event. Applies in both live and history mode -- history pages
+    // forward through its window until drained.
+    if (resp.next_after) State.cursor = resp.next_after;
+  } catch (err) {
+    State.errorStreak += 1;  // back off so a dead server is not hammered
+    setConn(false, err.message);
+  } finally {
+    State.polling = false;
+  }
+}
+
+// Delay before the next live poll: POLL_MS normally, exponentially backed off
+// (capped at MAX_BACKOFF_MS) while polls keep failing, so a dead or
+// unreachable server is probed ever more slowly instead of every POLL_MS.
+function nextPollDelay() {
+  if (State.errorStreak === 0) return POLL_MS;
+  return Math.min(POLL_MS * 2 ** State.errorStreak, MAX_BACKOFF_MS);
+}
+
+function setConn(ok, msg) {
+  const c = document.getElementById("conn");
+  c.textContent = ok ? " ● live" : " ○ offline";
+  c.style.color = ok ? "var(--success)" : "var(--danger)";
+  if (!ok && msg) document.getElementById("status").textContent = msg;
+}
+
+// ---- Boot -------------------------------------------------------------------
+
+document.getElementById("send").addEventListener("click", sendInput);
+document.getElementById("input").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); sendInput(); }
+});
+
+document.getElementById("range-live").addEventListener("click", () => {
+  State.live = true;
+  document.getElementById("range-live").classList.add("active");
+  resetFeed();
+  poll();
+});
+
+document.getElementById("range-apply").addEventListener("click", () => {
+  State.histSince = localToIso(document.getElementById("range-since").value);
+  State.histUntil = localToIso(document.getElementById("range-until").value);
+  if (!State.histSince && !State.histUntil) {
+    document.getElementById("status").textContent = "set a from/to time first";
+    return;
+  }
+  State.live = false;
+  document.getElementById("range-live").classList.remove("active");
+  resetFeed();
+  poll();
+});
+
+// Self-scheduling live loop (not a fixed setInterval) so the cadence can back
+// off on errors. Each tick reschedules itself after nextPollDelay().
+async function liveTick() {
+  if (State.live) await poll();
+  setTimeout(liveTick, nextPollDelay());
+}
+poll();
+setTimeout(liveTick, POLL_MS);
+
+</script>
+</body>
+</html>

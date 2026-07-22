@@ -1,0 +1,8 @@
+{
+  "name": "loop-pglite-env",
+  "dependencies": {
+    "@electric-sql/pglite": "0.5.3",
+    "@electric-sql/pglite-pgvector": "0.0.4",
+    "@electric-sql/pglite-socket": "0.2.4"
+  }
+}

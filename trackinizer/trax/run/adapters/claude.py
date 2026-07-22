@@ -1,0 +1,219 @@
+"""Claude Code adapter.
+
+Sessions live at ``~/.claude/projects/<path-hash>/<session-id>.jsonl``,
+append-only, one JSON object per line. A top-level ``type`` discriminates;
+for ``user`` / ``assistant`` lines the real category lives in
+``message.content``: a bare string is a user prompt, a ``content[]`` block
+list carries ``thinking`` / ``text`` / ``tool_use`` (assistant) or
+``tool_result`` (a user line echoing tool output).
+
+``parse`` normalizes one line into typed :data:`Message`s -- an ``assistant``
+line aggregates its text + thinking + every ``tool_use`` block into one
+:class:`AssistantMessage` (tool calls nested), matching the model, while a
+``user`` line emits one :class:`ToolResult` per ``tool_result`` block (claude
+batches parallel results into one line). Verified against claude 2.1.158
+logs. See ``docs/cli-scraping-investigation.md`` for the empirical layout.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping, Sequence
+from pathlib import Path
+from typing import cast
+
+import json
+
+from trackinizer.lib.custom_json import JSON, json_freeze
+from trackinizer.trax.run.adapters.base import Event
+from trackinizer.types.agent_session_events import (
+    AssistantMessage,
+    Message,
+    ToolCall,
+    ToolResult,
+    UnknownMessage,
+    UserMessage,
+)
+
+
+# Top-level ``type`` values that are CLI bookkeeping, not a captured turn.
+# None carry a ``message`` field (verified against on-disk session logs):
+# ``mode`` / ``permission-mode`` are UI-state markers, ``system`` is a meta
+# record (``isMeta`` / ``durationMs`` / ``gitBranch``), and
+# ``file-history-snapshot`` is an editor file-state dump.
+_SKIP_TYPES = frozenset(
+    {
+        "attachment",
+        "ai-title",
+        "queue-operation",
+        "last-prompt",
+        "mode",
+        "permission-mode",
+        "file-history-snapshot",
+        "system",
+    }
+)
+
+
+class ClaudeAdapter:
+    """Reads the ``claude`` CLI's per-project session JSONL files."""
+
+    name: str = "claude"
+    cli_binary: str = "claude"
+    whole_file: bool = False
+
+    @property
+    def _projects_dir(self) -> Path:
+        # Resolve ``$HOME`` per call, not at import: a test (or a run under a
+        # switched HOME) must see the current home, not the value frozen when
+        # the module first loaded.
+        return Path.home() / ".claude" / "projects"
+
+    def session_dirs(self) -> Iterable[Path]:
+        projects = self._projects_dir
+        if not projects.is_dir():
+            return ()
+        # Claude shards sessions per project (hashed cwd); return every
+        # project dir and let the runner find the ``*.jsonl`` files.
+        return tuple(d for d in projects.iterdir() if d.is_dir())
+
+    def matches_session_file(self, path: Path) -> bool:
+        return path.suffix == ".jsonl" and path.parent.parent == self._projects_dir
+
+    def session_id_from_path(self, path: Path) -> str | None:
+        """Claude's own session id is the ``<session-id>.jsonl`` filename stem.
+
+        Used to correlate a resumed run to its prior AgentSession (the same id
+        names the same claude session across ``--resume``). Returns ``None`` for
+        a path that is not one of this adapter's session files.
+        """
+        if path.suffix != ".jsonl":
+            return None
+        return path.stem or None
+
+    def parse(self, raw: bytes, *, whole_file: bool) -> Iterable[Event]:
+        del whole_file  # claude is line-oriented; one line in.
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return ()
+        if not isinstance(parsed, Mapping):
+            return ()
+        obj = json_freeze(cast(Mapping[str, object], parsed))
+        return tuple(Event(message=m) for m in _to_messages(obj))
+
+
+def _to_messages(obj: JSON) -> tuple[Message, ...]:
+    """Normalize one claude line into zero or more typed messages."""
+    line_type = obj.get("type")
+    if line_type in _SKIP_TYPES:
+        return ()
+    if line_type == "user":
+        return _user_messages(obj)
+    if line_type == "assistant":
+        return (_assistant_message(obj),)
+    return (UnknownMessage(raw=obj),)
+
+
+def _user_messages(obj: JSON) -> tuple[Message, ...]:
+    """A ``user`` line: one ``ToolResult`` per echoed block, or a typed prompt.
+
+    Claude batches parallel tool results into one user line's ``content[]``,
+    so every ``tool_result`` block becomes its own :class:`ToolResult`; a line
+    with none is a human prompt.
+    """
+    results = tuple(
+        ToolResult(
+            call_id=_str(block.get("tool_use_id")),
+            content=_text_of(block.get("content")),
+            is_error=bool(block.get("is_error")),
+        )
+        for block in _content_blocks(obj)
+        if block.get("type") == "tool_result"
+    )
+    return results or (UserMessage(text=_message_text(obj)),)
+
+
+def _assistant_message(obj: JSON) -> Message:
+    """An ``assistant`` line: text + thinking + every tool_use, in one turn."""
+    text_parts: list[str] = []
+    thinking_parts: list[str] = []
+    thinking_signature = ""
+    # Keyed by id so a duplicate ``tool_use`` id (last-wins) cannot trip
+    # ``AssistantMessage``'s duplicate-id invariant -- which raises in
+    # ``__post_init__``, is swallowed by the runner's ``_process_chunk``, and
+    # silently drops the whole turn (R-41). A dict preserves first-seen order.
+    tool_calls: dict[str, ToolCall] = {}
+    for block in _content_blocks(obj):
+        btype = block.get("type")
+        if btype == "text":
+            text_parts.append(_str(block.get("text")))
+        elif btype == "thinking":
+            # Join multiple thinking blocks like text; the last *non-empty*
+            # signature wins (R2R-036). Assigning would drop earlier blocks, and
+            # only signed blocks (Anthropic signs the final one) overwrite, so a
+            # later unsigned block does not clear an earlier signature.
+            thinking_parts.append(_str(block.get("thinking")))
+            signature = _str(block.get("signature"))
+            if signature:
+                thinking_signature = signature
+        elif btype == "tool_use":
+            call = ToolCall(
+                id=_str(block.get("id")),
+                name=_str(block.get("name")),
+                args=_mapping(block.get("input")),
+            )
+            tool_calls[call.id] = call
+    return AssistantMessage(
+        text="".join(text_parts),
+        thinking="".join(thinking_parts),
+        thinking_signature=thinking_signature,
+        tool_calls=tuple(tool_calls.values()),
+    )
+
+
+def _content_blocks(obj: JSON) -> tuple[JSON, ...]:
+    """The ``message.content`` block list, or empty when it's a bare string."""
+    message = obj.get("message")
+    if not isinstance(message, Mapping):
+        return ()
+    content = cast(JSON, message).get("content")
+    if not isinstance(content, Sequence) or isinstance(content, str):
+        return ()
+    return tuple(
+        cast(JSON, b)
+        for b in cast("Sequence[object]", content)
+        if isinstance(b, Mapping)
+    )
+
+
+def _message_text(obj: JSON) -> str:
+    """The user prompt text: a bare-string ``content`` or joined text blocks."""
+    message = obj.get("message")
+    if isinstance(message, Mapping):
+        content = cast(JSON, message).get("content")
+        if isinstance(content, str):
+            return content
+    return "".join(
+        _str(b.get("text")) for b in _content_blocks(obj) if b.get("type") == "text"
+    )
+
+
+def _text_of(value: object) -> str:
+    """Coerce a ``tool_result.content`` (str or block list) to text."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Sequence):
+        return "".join(
+            _str(cast(JSON, b).get("text")) for b in value if isinstance(b, Mapping)
+        )
+    return ""
+
+
+def _str(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _mapping(value: object) -> dict[str, object]:
+    return (
+        dict(cast("Mapping[str, object]", value)) if isinstance(value, Mapping) else {}
+    )

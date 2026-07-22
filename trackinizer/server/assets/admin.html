@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin - Trackinizer</title>
+<style>
+  :root {
+    --bg: #1a1b26;
+    --bg-row: #24283b;
+    --bg-hover: #2f3549;
+    --fg: #c0caf5;
+    --muted: #565f89;
+    --line: #3b4261;
+    --accent: #7aa2f7;
+    --success: #9ece6a;
+    --warning: #e0af68;
+    --danger: #f7768e;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 13px/1.4 ui-monospace, "SF Mono", "Cascadia Code",
+          "Fira Code", "JetBrains Mono", Menlo, monospace;
+    background: var(--bg); color: var(--fg);
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 16px; background: var(--bg-row);
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 14px; margin: 0; color: var(--accent); font-weight: bold; }
+  header nav { margin-left: auto; display: flex; gap: 8px; }
+  header a { color: var(--accent); text-decoration: none; }
+  header a:hover { text-decoration: underline; }
+  main { padding: 16px; max-width: 1200px; margin: 0 auto; }
+  h2 {
+    color: var(--accent); font-size: 16px; margin: 16px 0 8px; font-weight: normal;
+  }
+  table {
+    width: 100%; border-collapse: collapse; background: var(--bg-row);
+    border: 1px solid var(--line); margin-top: 4px;
+  }
+  th, td {
+    padding: 6px 10px; text-align: left;
+    border-bottom: 1px solid var(--line); vertical-align: top;
+  }
+  th {
+    background: var(--bg); font-weight: bold; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted);
+  }
+  tr:hover td { background: var(--bg-hover); }
+  td.muted { color: var(--muted); }
+  button, select, input[type="text"] {
+    background: var(--bg-row); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 3px; padding: 4px 8px; font: inherit; font-size: 12px;
+  }
+  input[type="text"] { background: var(--bg); }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  button.danger { color: var(--danger); border-color: var(--danger); }
+  button.danger:hover { background: var(--danger); color: var(--bg); }
+  .pill {
+    display: inline-block; padding: 1px 6px; border-radius: 2px;
+    font-size: 10px; font-weight: bold; text-transform: uppercase;
+    color: var(--bg);
+  }
+  .pill.active   { background: var(--success); }
+  .pill.disabled { background: var(--muted); }
+  .banner-error {
+    background: var(--danger); color: var(--bg);
+    padding: 8px 12px; border-radius: 3px; margin-bottom: 12px;
+  }
+  form.invite {
+    background: var(--bg-row); border: 1px solid var(--line);
+    border-radius: 3px; padding: 12px; display: flex; gap: 8px;
+    align-items: center; flex-wrap: wrap;
+  }
+  form.invite label { color: var(--muted); font-size: 11px; }
+  .empty { color: var(--muted); padding: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><a href="/" style="color:inherit;text-decoration:none">Trackinizer</a> &middot; Admin</h1>
+  <nav>
+    <a href="/me">Profile</a>
+    <a href="/admin">Admin</a>
+    <a href="#" id="logout">Sign out</a>
+  </nav>
+</header>
+
+<main>
+  <div id="error" style="display:none" class="banner-error"></div>
+
+  <h2>Users</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Email</th><th>Name</th><th>Role</th><th>Status</th>
+        <th>Created</th><th>Last login</th><th></th>
+      </tr>
+    </thead>
+    <tbody id="users-body">
+      <tr><td colspan="7" class="empty">Loading...</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Invite</h2>
+  <form id="invite-form" class="invite">
+    <label>Email or pattern</label>
+    <input type="text" id="invite-email" placeholder="user@example.com or *@example.com" required>
+    <label>Role</label>
+    <select id="invite-role">
+      <option value="viewer">viewer</option>
+      <option value="writer" selected>writer</option>
+      <option value="admin">admin</option>
+    </select>
+    <button class="primary" type="submit">Add to allowlist</button>
+  </form>
+
+  <h2>Allowlist</h2>
+  <table>
+    <thead>
+      <tr><th>Email / pattern</th><th>Role</th><th>Added</th><th></th></tr>
+    </thead>
+    <tbody id="allowlist-body">
+      <tr><td colspan="4" class="empty">Loading...</td></tr>
+    </tbody>
+  </table>
+</main>
+
+<script>
+function uuidv4() {
+  // `crypto.randomUUID` is only defined in secure contexts (HTTPS or
+  // localhost); fall back to a hand-rolled RFC4122 v4 so plain-HTTP
+  // deployments still work.
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+}
+
+async function api(path, opts = {}) {
+  // Mutating requests carry an Idempotency-Key so the server can use it as
+  // change_log.id; a retry of the same request collides on the PK and
+  // returns the original outcome instead of double-applying. GETs are
+  // dedup-eligible by definition. The server middleware reads exactly this
+  // header name (see server/api/idempotency.py).
+  const method = (opts.method || "GET").toUpperCase();
+  const headers = {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    ...(opts.headers || {}),
+  };
+  if (method !== "GET" && !headers["Idempotency-Key"]) {
+    headers["Idempotency-Key"] = uuidv4();
+  }
+  const resp = await fetch(path, { ...opts, headers });
+  if (!resp.ok) {
+    let detail;
+    try { detail = (await resp.json()).detail; } catch (_) { detail = resp.statusText; }
+    throw new Error(`${resp.status}: ${detail}`);
+  }
+  if (resp.status === 204) return null;
+  return resp.json();
+}
+
+function showError(msg) {
+  const el = document.getElementById("error");
+  el.textContent = msg;
+  el.style.display = "block";
+}
+
+function clearError() {
+  const el = document.getElementById("error");
+  el.textContent = ""; el.style.display = "none";
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+function fmtDate(iso) {
+  if (!iso) return "-";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const pad = n => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+const ROLES = ["viewer", "writer", "admin"];
+
+async function loadUsers() {
+  const body = document.getElementById("users-body");
+  body.innerHTML = "";
+  const { users } = await api("/api/admin/users");
+  if (users.length === 0) {
+    body.innerHTML = '<tr><td colspan="7" class="empty">No users yet.</td></tr>';
+    return;
+  }
+  for (const u of users) {
+    const tr = document.createElement("tr");
+    tr.dataset.userId = u.id;
+    const disabled = u.status !== "active";
+    tr.innerHTML = `
+      <td>${escapeHtml(u.email)}</td>
+      <td>${escapeHtml(u.name)}</td>
+      <td></td>
+      <td><span class="pill ${disabled ? "disabled" : "active"}">${escapeHtml(u.status)}</span></td>
+      <td class="muted">${fmtDate(u.created_at)}</td>
+      <td class="muted">${fmtDate(u.last_login)}</td>
+      <td></td>
+    `;
+    // Role dropdown.
+    const sel = document.createElement("select");
+    for (const r of ROLES) {
+      const opt = document.createElement("option");
+      opt.value = r; opt.textContent = r;
+      if (u.role === r) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.addEventListener("change", () => changeRole(u.id, sel.value));
+    tr.children[2].appendChild(sel);
+    // Action buttons. The admin UI now hard-deletes via Remove; the
+    // backend's /disable + /enable routes survive for future
+    // "suspend without losing audit" workflows.
+    const actions = tr.children[6];
+    const btn = document.createElement("button");
+    btn.textContent = "Remove"; btn.className = "danger";
+    btn.addEventListener("click", () => removeUser(u.id, u.email));
+    actions.appendChild(btn);
+    body.appendChild(tr);
+  }
+}
+
+async function changeRole(userId, role) {
+  clearError();
+  try {
+    await api(`/api/admin/users/${userId}/role`, {
+      method: "PUT", body: JSON.stringify({ role }),
+    });
+    await loadUsers();
+  } catch (err) { showError(err.message); }
+}
+
+async function removeUser(userId, email) {
+  if (!confirm(
+    `Remove ${email}? This hard-deletes the user and their API keys. ` +
+    `Audit-log rows survive with a NULL api_key_id link. ` +
+    `Action is irreversible.`
+  )) return;
+  clearError();
+  try {
+    await api(`/api/admin/users/${userId}`, { method: "DELETE" });
+    const tr = document.querySelector(`tr[data-user-id="${userId}"]`);
+    if (tr) tr.remove();
+  } catch (err) { showError(err.message); }
+}
+
+async function loadAllowlist() {
+  const body = document.getElementById("allowlist-body");
+  body.innerHTML = "";
+  const { entries } = await api("/api/admin/allowlist");
+  if (entries.length === 0) {
+    body.innerHTML = '<tr><td colspan="4" class="empty">No entries.</td></tr>';
+    return;
+  }
+  for (const e of entries) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><code>${escapeHtml(e.email_or_pattern)}</code></td>
+      <td></td>
+      <td class="muted">${fmtDate(e.added_at)}</td>
+      <td></td>
+    `;
+    // Role dropdown -- same idiom as the users-table dropdown above.
+    const sel = document.createElement("select");
+    for (const r of ROLES) {
+      const opt = document.createElement("option");
+      opt.value = r; opt.textContent = r;
+      if (e.role === r) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.addEventListener("change", () => changeAllowlistRole(e.email_or_pattern, sel.value));
+    tr.children[1].appendChild(sel);
+    const btn = document.createElement("button");
+    btn.className = "danger"; btn.textContent = "Remove";
+    btn.addEventListener("click", () => removeEntry(e.email_or_pattern));
+    tr.children[3].appendChild(btn);
+    body.appendChild(tr);
+  }
+}
+
+async function changeAllowlistRole(emailOrPattern, role) {
+  clearError();
+  try {
+    await api(
+      `/api/admin/allowlist/${encodeURIComponent(emailOrPattern)}/role`,
+      { method: "PUT", body: JSON.stringify({ role }) },
+    );
+    await loadAllowlist();
+  } catch (err) {
+    showError(err.message);
+    await loadAllowlist();
+  }
+}
+
+async function removeEntry(emailOrPattern) {
+  if (!confirm(`Remove ${emailOrPattern} from the allowlist?`)) return;
+  clearError();
+  try {
+    await api(
+      `/api/admin/allowlist/${encodeURIComponent(emailOrPattern)}`,
+      { method: "DELETE" },
+    );
+    await loadAllowlist();
+  } catch (err) { showError(err.message); }
+}
+
+document.getElementById("invite-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  clearError();
+  const email = document.getElementById("invite-email").value.trim();
+  const role = document.getElementById("invite-role").value;
+  if (!email) return;
+  try {
+    await api("/api/admin/allowlist", {
+      method: "POST",
+      body: JSON.stringify({ email_or_pattern: email, role }),
+    });
+    document.getElementById("invite-email").value = "";
+    await loadAllowlist();
+  } catch (err) { showError(err.message); }
+});
+
+document.getElementById("logout").addEventListener("click", async (e) => {
+  e.preventDefault();
+  const f = document.createElement("form");
+  f.method = "POST"; f.action = "/auth/logout";
+  document.body.appendChild(f); f.submit();
+});
+
+(async () => {
+  try {
+    await loadUsers();
+    await loadAllowlist();
+  } catch (err) {
+    showError(err.message);
+  }
+})();
+</script>
+</body>
+</html>

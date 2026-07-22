@@ -1,0 +1,230 @@
+// grammar.lark -- the complete trax CLI: read this one file to author any command.
+// GENERATED (regen: python trax/docs/grammar_gen.py). lowercase=rule, UPPER=keyword
+// set (listed below). ? optional, * zero+, + one+, | choice. Tokens are argv words
+// (shell quotes "foo bar" into one VALUE); keywords case-insensitive, values verbatim.
+// Examples below omit the leading `trax`. Shape is here; value/validity rules are in
+// the SEMANTICS block at the bottom -- together they are the whole tool.
+// HOW IT PARSES: one left-to-right pass. The grammar is intentionally ambiguous
+// (terminals overlap, constructs nest), resolved by ONE rule: GREEDY, longest-match
+// (the parse-level analogue of a lexer's maximal munch) -- when a token could
+// extend the current construct or start a new one, it EXTENDS. So an inline
+// create's fields run to the first non-field; edge metadata runs to the first
+// non-meta; a following edge DESCENDS into a just-made node
+// (A produced B produced C == A->B->C); a trailing `del` binds to the edge,
+// not the row. A token's ROLE thus depends on what precedes it -- the same `label`
+// is a row field, edge metadata, or a filter field by position. The query form is
+// LR-Regular: classifying it (list vs bulk-edit) can need lookahead to a selector
+// arbitrarily far right, so `owner to Josh status is active` is one bulk edit.
+//
+// trax [GLOBAL-FLAG...] (VERB ... | KIND ...) [WRITE-FLAG...]      flags peeled first:
+//   --makeitso   apply a bulk write matching >1 row (else just preview)
+//   --as ACTOR   --reason TEXT     audit attribution (on a write; `run --as` differs)
+//   --format table|json|ids   --limit N   --sort priority|seq|recent|oldest|valence
+//   --show-ids   --profile/--host/--port
+// A field VALUE of `-` reads stdin; a value starting with `@` reads that file path.
+
+start: invocation
+invocation: verb_command | row_command
+
+// VERB: a report/management verb + its own argparse flags.  next --format ids
+verb_command: VERB VERB_ARG*
+
+// ROW: a KIND, then the token after it decides what the command is (there is no
+// `create` verb -- a field with no preceding ref or selector IS the create):
+//   nothing            -> list every row of the kind          issue
+//   a seq/uuid ref     -> act on that existing row            issue 7 status to complete
+//   a range/filter     -> list query, or bulk-edit if a mutation rides it
+//   a FIELD only       -> CREATE a new row from the fields    issue title to "Retry bug"
+// A field-led command and a bulk-edit share the same clauses; the SELECTOR decides:
+// a range/filter present -> bulk-edit existing rows; none -> create one new row.
+row_command: KIND command
+command: query_command           // list / bulk-edit / create (selector decides)
+       | query_command metric_action   // cross-experiment: a filtered/bare list + a metric slice
+       | subject_list tail_seq   // ref(s): one ref+tails = edit; many refs = show
+       | tail_seq                // tails on a just-named subject
+subject_list: subject_atom+
+subject_atom: SEQ | UUID | KIND SEQ | KIND UUID
+
+// QUERY / BULK-EDIT: ranges+filters pick rows; a set_mutation makes it a bulk edit
+// of every match (--makeitso past one row). Order-free: trax routes each
+// `field OP value` by its OP -- a filter op (is/re/..) is a selector, to/add/del is
+// a mutation -- so selectors and mutations may interleave with no separator. An
+// extra KIND widens the query to that kind too (multi-kind list).
+//   issue status is active   |   issue belief 1..20 status is active  (issues+beliefs)
+//   issue 1..50 owner to jvd --makeitso  (bulk)   |   issue owner to a status is active
+query_command: query_clause+
+query_clause:  KIND | range | filter | set_mutation
+range:  RANGE                          // intervals use `..` (NOT `-`): 1..50  ..10  227,228..
+filter: FILTER_FIELD FILTER_OP VALUE   // owner is Josh ; title re bug
+      | FILTER_FIELD VALUELESS_OP      // owner isnull ; kind notnull
+
+// TAILS on the subject, left to right.  DEL and a bare relation projection are
+// TERMINAL (must be last).  A scalar FIELD may be set at most once per command.
+tail_seq: tail*
+tail: set_mutation | cost_action | edge_action | relation_action | read_field | metric_action | DEL
+// Setting ANY field needs the operator -- `FIELD to VALUE`, never bare
+// `FIELD VALUE` (`title to x`, not `title x`; `priority to high`, not `priority
+// high`). The same holds inside an inline create.
+set_mutation: FIELD TO VALUE              // title to x
+            | LIST_FIELD list_op VALUE    // label add backend
+            | REF_LIST_FIELD list_op ref  // codechange add codechange 9
+list_op:  TO | ADD | DEL
+cost_action: COST_FIELD ADD VALUE         // agent-cost add 1.25 (signed)
+read_field:  FIELD                        // bare field = read it
+relation_action: EDGE_KEYWORD SEQ?        // no target = list related rows
+
+// METRIC: read/write one Experiment's metric grid ((key,step)->value), or rank
+// across the bare `experiment` list (cross-experiment). The grid is numpy
+// boolean-mask indexing in words: `at` clauses AND into a mask, `to` writes it,
+// no `to` reads it, `sort`/`limit` window a read. Clauses are ORDER-FREE (the
+// parser routes each by its lead word), so masks/write/sort/limit may interleave;
+// the shape below lists the four clause kinds, not a fixed order. See
+// metric-grammar.md for the authoritative spec.
+//   experiment 42 metric at key is loss at step is 3 to 0.5   (one-cell write)
+//   experiment 42 metric at loss sort desc limit 5            (loss's 5 largest)
+//   experiment metric at loss at step is 100 sort desc limit 5  (rank, cross-exp)
+// FIELD is a grid axis key/step/value; OP is a METRIC_OP comparator (is/ne/lt/le/
+// gt/ge -- the grid has no regex/presence ops) or the step-axis reduction max/min
+// (NO value: `at step max` = highest step). A bare
+// `at <word>` (word not key/step/value) is the shorthand `at key is <word>`.
+// SEMANTIC (parser-enforced, grammar-accepted): max/min apply to step only; a
+// write forbids sort/limit; a bulk write (multi-cell mask) needs --makeitso.
+metric_action: METRIC metric_clause*
+metric_clause: metric_mask | metric_write | metric_sort | metric_limit
+metric_mask: AT METRIC_FIELD METRIC_OP VALUE   // at step is 4
+           | AT METRIC_FIELD METRIC_REDUCE                       // at step max
+           | AT VALUE                                            // at loss (== at key is loss)
+metric_write: TO VALUE                     // to 0.5  (assign the mask; absent = read)
+metric_sort:  SORT (ASC | DESC)            // sort desc  (a read/rank ordering)
+metric_limit: LIMIT VALUE                  // limit 5    (window a read/rank)
+
+// EDGE: link the subject to a row (existing ref or one created inline). Same
+// EDGE_KEYWORD with no target is the relation projection above.  `del` unlinks.
+//   issue 7 requires issue 8   |   issue 7 narrows issue 3 priority to high (edge meta)
+// Edge metadata may appear BEFORE the target (always unambiguous -- nothing else
+// to attach to yet, so collision words need no marker) and/or AFTER it. After the
+// target, the COLLISION words (priority/label/labels, also row fields) require the
+// `edge` marker; the edge-only words (note/valence) are bare. A bare collision
+// word after the target is NOT edge metadata (maximal munch rolls it up to the
+// nearest field-taking construct), closing the old silent footgun.
+edge_action: EDGE_KEYWORD pre_meta* edge_target post_meta* edge_term?
+edge_term: DEL
+// The `edge` marker is OPTIONAL on every meta word and forces the edge reading.
+// Bare: safe words (note/valence) always read as edge; collision words
+// (priority/label/labels, also row fields) read as edge only PRE-target (nothing
+// else to attach to yet). Post-target a bare collision word rolls up to the
+// nearest field-taking construct, so it needs the marker.
+pre_meta:  EDGE? edge_meta                    // pre-target: collision words bare OK
+post_meta: safe_meta | EDGE edge_meta          // post-target: collision words need EDGE
+edge_meta:    safe_meta | collide_meta
+safe_meta:    ("note" | "valence") TO VALUE
+collide_meta: "priority" TO VALUE | ("label" | "labels") list_op VALUE
+edge_target: ref | deep_create | BEGIN group_create END
+ref: KIND SEQ | KIND UUID | UUID
+
+// INLINE CREATE: an edge target that is a new row. The cursor DESCENDS into it, so
+// a following edge binds to IT (chain):
+//   issue title to A produced belief title to B produced paper 3  == A->B->paper3
+// For SIBLINGS under one anchor, wrap each child in begin..end (end pops the cursor
+// back to the anchor) so the next edge re-attaches to the anchor, not the child:
+//   issue title to root requires begin issue title to leaf-a end requires begin issue title to leaf-b end
+//   == root requires leaf-a AND root requires leaf-b (two new siblings, not a chain).
+// A create body must LEAD with a field. After that first field, three classes
+// INTERLEAVE in any order: fields, cost deltas, and the UNAMBIGUOUS producer-edge
+// metadata `note`/`valence` (edge-only words, so their position is free):
+//   `title to T note to N status to complete` == `title to T status to complete note to N`.
+// The COLLISION words `label`/`labels`/`priority` name BOTH a row field and an
+// edge annotation; in a create body they are ROW fields (via inline_field), and
+// their edge-annotation meaning is reachable only AFTER an explicit edge ref
+// (edge_meta below). The first edge closes the node: after it a field is an error
+// and metadata binds to the child. >=1 field required (parser rejects a body with
+// none). `safe_meta` is the note/valence subset of edge_meta.
+deep_create: KIND (inline_field | cost_action | safe_meta | EDGE edge_meta)+ (edge_action cost_action*)*
+inline_field: FIELD TO VALUE | list_set | REF_LIST_FIELD (TO | ADD) ref
+list_set: LIST_FIELD TO VALUE (LIST_FIELD ADD VALUE)*   // seed then append
+group_create: KIND (inline_field | cost_action | safe_meta | EDGE edge_meta)+ (edge_action cost_action*)*
+
+// ---- terminals (keyword sets; spellings overlap across classes, e.g.
+// codechange is KIND+REF_LIST_FIELD, resolved by position) ----
+VERB: "blocked" | "profile" | "version" | "recent" | "search" | "board" | "graph" | "cost" | "help" | "next" | "send" | "run" | "id"
+KIND: "agentsession" | "codechange" | "experiment" | "webresult" | "websearch" | "artifact" | "belief" | "issue" | "paper"
+EDGE_KEYWORD: "disfavored_by" | "superseded_by" | "broadened_by" | "disproved_by" | "narrowed_by" | "produced_by" | "required_by" | "blocked_by" | "favored_by" | "supersedes" | "disfavors" | "disproves" | "proved_by" | "broadens" | "cited_by" | "produced" | "produces" | "requires" | "narrows" | "blocks" | "favors" | "proves" | "cites"
+FIELD: "google_scholar_cluster_id" | "google_scholar_cites_id" | "publication_type" | "cli_session_id" | "publish_date" | "description" | "confidence" | "validation" | "judgement" | "abstract" | "priority" | "provider" | "subvenue" | "account" | "outcome" | "started" | "source" | "status" | "owner" | "query" | "title" | "venue" | "cli" | "sha" | "url"
+LIST_FIELD: "subscribers" | "issue_kind" | "subscriber" | "issuekind" | "authors" | "author" | "labels" | "label" | "kind"
+REF_LIST_FIELD: "codechanges" | "codechange"
+COST_FIELD: "resource-cost" | "agent-cost"
+FILTER_FIELD: "google_scholar_cluster_id" | "google_scholar_cites_id" | "publication_type" | "cli_session_id" | "resource-cost" | "publish_date" | "codechanges" | "description" | "subscribers" | "agent-cost" | "codechange" | "confidence" | "issue_kind" | "subscriber" | "validation" | "issuekind" | "judgement" | "abstract" | "modified" | "priority" | "provider" | "subvenue" | "account" | "authors" | "created" | "outcome" | "started" | "author" | "labels" | "source" | "status" | "label" | "owner" | "query" | "title" | "venue" | "kind" | "cli" | "seq" | "sha" | "url" | "id"
+FILTER_OP: "nre" | "ge" | "gt" | "is" | "le" | "lt" | "ne" | "re"
+VALUELESS_OP: "notnull" | "isnull"
+TO: "to"
+ADD: "add"
+DEL: "del"
+EDGE: "edge"
+BEGIN: "begin"
+END: "end"
+METRIC: "metric"
+AT: "at"
+SORT: "sort"
+LIMIT: "limit"
+ASC: "asc"
+DESC: "desc"
+METRIC_FIELD: "value" | "step" | "key"   // grid axes (key/step/value)
+METRIC_OP: "ge" | "gt" | "is" | "le" | "lt" | "ne"   // grid comparators (is/ne/lt/...)
+METRIC_REDUCE: "max" | "min"   // step-axis reductions: final/first
+SEQ:   /\d+/                 // a row number: 7  (a kind-qualified ref may also be written Kind#seq, e.g. issue#7)
+UUID:  /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/
+RANGE: /((\d+\.\.\d*|\.\.\d+|\d+),)*(\d+\.\.\d*|\.\.\d+)(,(\d+\.\.\d*|\.\.\d+|\d+))*/   // 1..50  ..10  227,228..  (each interval needs >=1 bound)
+VALUE:    /\S+/
+VERB_ARG: /\S+/
+
+%import common.WS
+%ignore WS
+
+// ==== SEMANTICS: rules the shape accepts but the tool enforces (generated) ====
+// ENUM VALUES (a set to one of these fields must use a listed value;
+// all other fields take free text -- title, description, validation, etc.):
+//   status: active complete abandoned invalid   judgement: proven disproven unproven undecidable
+//   issue_kind/kind: feature bug task question   publication_type: article inproceedings book thesis techreport misc
+//   priority: an int, or critical=0 high=10 medium=20 low=30 backlog=40
+//   confidence/valence: a float (valence in [-1,1], sign = for/against)
+// FIELD VALIDITY (a field is writable only on these kinds):
+//   any kind: account, agent-cost, description, label, labels, owner, resource-cost, status, subscriber, subscribers, title
+//   Issue: + issue_kind, issuekind, kind, priority, validation
+//   Experiment: + codechange, codechanges, outcome
+//   Paper: + abstract, author, authors, google_scholar_cites_id, google_scholar_cluster_id, publication_type, publish_date, source, subvenue, venue
+//   Belief: + confidence, judgement
+//   CodeChange: + sha
+//   WebResult: + url
+//   WebSearch: + provider, query
+//   AgentSession: + cli, cli_session_id, started
+// EDGE DIRECTION (edges store child->parent; a reverse-voice alias writes the
+// SAME edge, e.g. `belief 3 proved_by paper 5` == `paper 5 proves belief 3`;
+// proves/favors carry a signed valence, dis* negates it = against):
+//   narrows: broadened_by narrows   (reverse voice: broadens narrowed_by)
+//   requires: blocked_by requires   (reverse voice: blocks required_by)
+//   produced_by: produced_by   (reverse voice: produced produces)
+//   proves: disproves proves   (reverse voice: disproved_by proved_by)
+//   favors: disfavors favors   (reverse voice: disfavored_by favored_by)
+//   supersedes: supersedes   (reverse voice: superseded_by)
+//   cites_paper: cites   (reverse voice: cited_by)
+// VERBS (full usage, generated from each verb's argparse). What they do:
+//   next=next unblocked Issue; blocked/board/graph=Issue views; search=text
+//   search; recent=audit feed; cost=cost rollup; id=show row by uuid;
+//   profile=manage server profiles; send=message a live agent session;
+//   run=wrap an agent CLI (claude/gemini/codex) and sync its session.
+//   blocked
+//   board [--width V]
+//   cost issue|artifact|experiment|paper|belief|codechange|webresult|websearch|agentsession SEQ [--deep] [--format text|json]
+//   graph [--open-only]
+//   help [TOPIC]
+//   id UUID [--format table|json] [--changes]
+//   next [--format text|json|ids]
+//   profile [NAME] [ url|actor|token [to V] | current NAME | del ]
+//   recent [--limit V] [--format text|json]
+//   run claude|gemini|codex [--out V] [--verbose] [--dry-run] [--no-sync] [--as V] [--room V]
+//   search QUERY... [--kind V] [--limit V] [--format table|json|ids]
+//   send TARGET TEXT...
+//   version
+//   ^ run --as NAME = the session's owner; doubles as its routing handle
+//     (others address it @NAME), uniquified on collision (scientist#2).
+//     send TARGET = @actor[:room] of a live session; QUERY/TEXT are free words.
