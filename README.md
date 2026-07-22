@@ -11,17 +11,25 @@ that contract over Postgres + HTTP.
 
 The optional SPA (`server/web.py`) browses the same records the API serves.
 
-| | |
-|---|---|
-| <img src="trackinizer/docs/screenshots/graph.png" width="380" alt="Force-directed graph of the inquiry web"> | <img src="trackinizer/docs/screenshots/chat.png" width="380" alt="Live multi-agent console"> |
-| **Graph** — the whole inquiry web (Issues, Beliefs, Papers, Experiments, …) as typed nodes and edges. | **Console** — live multi-agent chat, filterable by room and date. |
-| <img src="trackinizer/docs/screenshots/belief.png" width="380" alt="Belief record with parent/child edges"> | <img src="trackinizer/docs/screenshots/paper.png" width="380" alt="Paper record with abstract and citations"> |
-| **Belief** — a record with its `before`/`after` relationship panels. | **Paper** — abstract, authors, and `cites` edges to other papers. |
+**Graph** — the whole inquiry web (Issues, Beliefs, Papers, Experiments, …) as typed nodes and edges.
 
-<img src="trackinizer/docs/screenshots/experiment.png" width="380" alt="Experiment record with outcome and relationships">
+<img src="trackinizer/docs/screenshots/graph.png" width="640" alt="Force-directed graph of the inquiry web">
 
-An **Experiment** record: outcome, labels, and links to the beliefs it proves
-or disproves.
+**Console** — live multi-agent chat, filterable by room and date.
+
+<img src="trackinizer/docs/screenshots/chat.png" width="640" alt="Live multi-agent console">
+
+**Belief** — a record with its `before`/`after` relationship panels.
+
+<img src="trackinizer/docs/screenshots/belief.png" width="640" alt="Belief record with parent/child edges">
+
+**Paper** — abstract, authors, and `cites` edges to other papers.
+
+<img src="trackinizer/docs/screenshots/paper.png" width="640" alt="Paper record with abstract and citations">
+
+**Experiment** — outcome, labels, and links to the beliefs it proves or disproves.
+
+<img src="trackinizer/docs/screenshots/experiment.png" width="640" alt="Experiment record with outcome and relationships">
 
 ## Module layout
 
