@@ -184,29 +184,9 @@ class TestStoreBootstrap:
             for c in engine.conn.execute.call_args_list
             if "INSERT INTO applied_migrations" in c.args[0]
         ]
-        # A fresh database records the baseline *and* every numbered migration
-        # (their bodies are already in the baseline, so they are marked applied
-        # without executing), so a later deploy never re-runs them.
-        assert inserts == [
-            "schema.sql",
-            "schema.001.sql",
-            "schema.002.sql",
-            "schema.003.sql",
-            "schema.004.sql",
-            "schema.005.sql",
-            "schema.006.sql",
-            "schema.007.sql",
-            "schema.008.sql",
-            "schema.009.sql",
-            "schema.010.sql",
-            "schema.011.sql",
-            "schema.012.sql",
-            "schema.013.sql",
-            "schema.014.sql",
-            "schema.015.sql",
-            "schema.016.sql",
-            "schema.017.sql",
-        ]
+        # A fresh database records the baseline. The schema is squashed to a
+        # single baseline, so there are no numbered migrations to mark.
+        assert inserts == ["schema.sql"]
 
     @pytest.mark.asyncio
     async def test_bootstrap_skips_baseline_for_existing_db(self) -> None:
@@ -227,29 +207,9 @@ class TestStoreBootstrap:
             for c in engine.conn.execute.call_args_list
             if "INSERT INTO applied_migrations" in c.args[0]
         ]
-        # The baseline is already applied; the not-yet-applied numbered
-        # migrations run and are recorded (their bodies execute against the old
-        # shape this existing DB still has).
-        assert inserts == [
-            "schema.001.sql",
-            "schema.002.sql",
-            "schema.003.sql",
-            "schema.004.sql",
-            "schema.005.sql",
-            "schema.006.sql",
-            "schema.007.sql",
-            "schema.008.sql",
-            "schema.009.sql",
-            "schema.010.sql",
-            "schema.011.sql",
-            "schema.012.sql",
-            "schema.013.sql",
-            "schema.014.sql",
-            "schema.015.sql",
-            "schema.016.sql",
-            "schema.017.sql",
-        ]
-        assert any("agentsession_rooms" in s for s in sqls)
+        # The baseline is already applied and the schema is squashed to a single
+        # baseline, so there are no numbered migrations left to run or record.
+        assert inserts == []
 
     @pytest.mark.asyncio
     async def test_bootstrap_partial_state_does_not_recreate_baseline(
@@ -262,10 +222,7 @@ class TestStoreBootstrap:
         ``is_fresh_database`` (the ``to_regclass('public.inquiries')`` probe)
         reports not-fresh, so bootstrap must NOT re-create the baseline
         (``CREATE TABLE`` against existing tables would error). It records the
-        baseline and replays the numbered migrations -- each written to be
-        idempotent against a DB already at the current baseline, so the replay
-        is a safe no-op (convergence proven against real Postgres in
-        ``schema_migration_test.test_bootstrap_converges_from_partial_state_empty_ledger``).
+        baseline so a later deploy never replays it.
         """
         conn = make_conn()
         # Ledger empty; ``inquiries`` already exists (manual/partial setup).
@@ -282,26 +239,7 @@ class TestStoreBootstrap:
             for c in engine.conn.execute.call_args_list
             if "INSERT INTO applied_migrations" in c.args[0]
         }
-        assert recorded == {
-            "schema.sql",
-            "schema.001.sql",
-            "schema.002.sql",
-            "schema.003.sql",
-            "schema.004.sql",
-            "schema.005.sql",
-            "schema.006.sql",
-            "schema.007.sql",
-            "schema.008.sql",
-            "schema.009.sql",
-            "schema.010.sql",
-            "schema.011.sql",
-            "schema.012.sql",
-            "schema.013.sql",
-            "schema.014.sql",
-            "schema.015.sql",
-            "schema.016.sql",
-            "schema.017.sql",
-        }
+        assert recorded == {"schema.sql"}
 
     @pytest.mark.asyncio
     async def test_bootstrap_reconciles_lagging_sequences(self) -> None:

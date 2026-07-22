@@ -161,7 +161,7 @@ published Python client carries no server dependencies.
    `codechanges` validators). `server/store.py` imports `primitives`,
    so the side effect lands before any `Store` instance is constructed.
 
-5. **`server/sql.py` is orthogonal.** It loads `assets/schema.NNN.sql`
+5. **`server/sql.py` is orthogonal.** It loads `assets/schema.sql`
    from disk. `server/schema_gen.py` substitutes generated bodies into
    the loaded text at bootstrap; the two never import each other.
 

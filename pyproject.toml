@@ -360,7 +360,7 @@ invalid-key = "ignore"
 [tool.codespell]
 builtin = "clear,rare,code"
 ignore-words = ".codespell-ignore"
-skip = "htmlcov,.doctrees,*.pyc,*.ico,*.png,*.jpg,*.PNG,*.inv,*.dot,*.css,*.egg-info,uv.lock,__pycache__,.git,.venv,typings,**/third_party/,*.sql"
+skip = "htmlcov,.doctrees,*.pyc,*.ico,*.png,*.jpg,*.PNG,*.inv,*.dot,*.css,*.html,*.egg-info,uv.lock,__pycache__,.git,.venv,typings,**/third_party/,*.sql"
 
 [tool.uv]
 package = true

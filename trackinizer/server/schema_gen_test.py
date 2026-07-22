@@ -180,43 +180,11 @@ class TestSchema:
         assert "{edge_kinds}" not in sql
         assert "{inquiry_kinds}" not in sql
 
-    def test_schema_migrations_enumerate_baseline_then_numbered(self) -> None:
-        # Baseline first, then numbered migrations in lexical order. ``001``
-        # adds room-scoped messaging; ``002`` widens the producer edge CHECK to
-        # any-Inquiry producer; ``003`` makes the optional base columns
-        # nullable; ``004`` renames three edge kinds for naming consistency;
-        # ``005`` is one logical change in three arms (one migration per push):
-        # arm A renames the base field ``summary`` -> ``title``, arm B adds the
-        # Paper bibliography columns, arm C flips favors/disfavors edges to
-        # ``Artifact -> Belief`` (``docs/db_schema_migration.md`` Roadmap A).
-        # ``006`` adds the ``agent_session_events.kind`` CHECK rendered from the
-        # current Kind literal (drop-then-add, so it widens a stale render).
-        # ``010`` recasts the edge model around child -> parent provenance:
-        # relevance -> signed valence, renames narrows/requires/produced_by,
-        # collapses citation polarity into valence, drops refutes_experiment.
-        # Squash back to a clean baseline once the only deployed DB has consumed
-        # them.
+    def test_schema_migrations_enumerate_baseline_only(self) -> None:
+        # The schema is squashed to a single clean baseline: ``schema.sql`` is
+        # the only schema asset, with no numbered ``schema.NNN.sql`` migrations.
         migrations = list(dict(schema_migrations()))
-        assert migrations == [
-            "schema.sql",
-            "schema.001.sql",
-            "schema.002.sql",
-            "schema.003.sql",
-            "schema.004.sql",
-            "schema.005.sql",
-            "schema.006.sql",
-            "schema.007.sql",
-            "schema.008.sql",
-            "schema.009.sql",
-            "schema.010.sql",
-            "schema.011.sql",
-            "schema.012.sql",
-            "schema.013.sql",
-            "schema.014.sql",
-            "schema.015.sql",
-            "schema.016.sql",
-            "schema.017.sql",
-        ]
+        assert migrations == ["schema.sql"]
 
     def test_canonical_schema_contains_artifact_audit_columns(self) -> None:
         sql = substitute_schema_placeholders(load_sql("schema"))

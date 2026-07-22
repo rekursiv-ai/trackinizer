@@ -328,10 +328,11 @@ ships `{placeholders}` that `substitute_schema_placeholders()` fills at
 - literal-set lists `{edge_kinds}`, `{inquiry_kinds}`, `{artifact_kinds}`,
   `{change_kinds}` from the PEP-695 `Literal` aliases.
 
-Migrations: `schema_migrations()` yields the `schema.sql` baseline then any
-`schema.NNN.sql` in order; `Store.bootstrap` applies them under an advisory
-lock and records each in `applied_migrations`. Deploying schema changes is
-`docs/db_schema_migration.md`.
+Migrations: `schema_migrations()` yields the `schema.sql` baseline, followed
+by any numbered `schema.NNN.sql` files an evolving deployment accumulates;
+`Store.bootstrap` applies them under an advisory lock and records each in
+`applied_migrations`. The schema currently ships as a single clean baseline
+(no numbered files). Deploying schema changes is `docs/db_schema_migration.md`.
 
 ## Wire
 
