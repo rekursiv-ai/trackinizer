@@ -1,0 +1,1114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trackinizer -- Graph</title>
+<style>
+  /* Tokyo Night palette, shared with index.html. */
+  :root {
+    --bg: #1a1b26;
+    --bg-row: #24283b;
+    --bg-hover: #2f3549;
+    --fg: #c0caf5;
+    --muted: #565f89;
+    --line: #3b4261;
+    --accent: #7aa2f7;
+    --success: #9ece6a;
+    --warning: #e0af68;
+    --danger: #f7768e;
+    --info: #7dcfff;
+    --purple: #bb9af7;
+    --orange: #ff9e64;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+  body {
+    font: 13px/1.4 ui-monospace, "SF Mono", "Cascadia Code",
+          "Fira Code", "JetBrains Mono", Menlo, monospace;
+    background: var(--bg); color: var(--fg);
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 16px; background: var(--bg-row);
+    border-bottom: 1px solid var(--line);
+    position: absolute; top: 0; left: 0; right: 0; z-index: 10;
+  }
+  header h1 {
+    font-size: 14px; margin: 0; color: var(--accent); font-weight: bold;
+  }
+  header a { color: var(--muted); text-decoration: none; }
+  header a:hover { color: var(--fg); }
+  header button, header select {
+    font: inherit; color: var(--muted); background: transparent;
+    border: 1px solid var(--line); border-radius: 3px; padding: 2px 8px;
+    cursor: pointer;
+  }
+  header button:hover, header select:hover {
+    color: var(--fg); border-color: var(--accent);
+  }
+  header select option { background: var(--bg-row); color: var(--fg); }
+  header input#search {
+    font: inherit; color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 3px; padding: 2px 8px;
+    width: 220px;
+  }
+  header input#search:focus { outline: none; border-color: var(--accent); }
+  /* Search results dropdown, anchored under the search box. */
+  #results {
+    position: absolute; top: 38px; z-index: 30; max-height: 320px;
+    overflow-y: auto; background: var(--bg-row); border: 1px solid var(--line);
+    border-radius: 4px; min-width: 280px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  #results[hidden] { display: none; }
+  #results .r {
+    display: block; width: 100%; text-align: left; padding: 4px 10px;
+    background: transparent; border: none; color: var(--fg); cursor: pointer;
+    font: inherit; border-bottom: 1px solid var(--line);
+  }
+  #results .r:hover, #results .r.sel { background: var(--bg-hover); }
+  #results .r .rk { font-size: 11px; }
+  #results .empty { padding: 6px 10px; color: var(--muted); }
+  #status { color: var(--muted); margin-left: auto; }
+  #graph { position: absolute; inset: 0; }
+  /* Legend overlay: color key for node + edge kinds. */
+  /* Detail drawer: click a node to inspect it in place (no navigate-away). */
+  #panel {
+    position: absolute; top: 0; right: 0; bottom: 0; width: 340px; z-index: 20;
+    background: var(--bg-row); border-left: 1px solid var(--line);
+    overflow-y: auto; padding: 14px 16px 24px;
+    box-shadow: -8px 0 24px rgba(0,0,0,0.35);
+  }
+  #panel[hidden] { display: none; }
+  #panel-close {
+    position: absolute; top: 8px; right: 10px; font-size: 18px; line-height: 1;
+    color: var(--muted); background: transparent; border: none; cursor: pointer;
+  }
+  #panel-close:hover { color: var(--fg); }
+  #panel .p-kind { font-weight: bold; font-size: 12px; }
+  #panel .p-title { margin: 4px 0 8px; font-size: 14px; color: var(--fg); }
+  #panel .p-meta { color: var(--muted); margin: 2px 0; font-size: 12px; }
+  #panel .p-desc {
+    margin: 8px 0; padding: 8px; background: var(--bg); border-radius: 3px;
+    white-space: pre-wrap; max-height: 220px; overflow-y: auto;
+    color: var(--fg); font-size: 12px;
+  }
+  #panel h3 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--muted); margin: 14px 0 4px;
+  }
+  #panel .p-edge {
+    display: block; width: 100%; text-align: left; padding: 3px 6px;
+    margin: 2px 0; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 3px; color: var(--fg); cursor: pointer; font: inherit;
+  }
+  #panel .p-edge:hover { border-color: var(--accent); }
+  #panel .p-edge .ek { color: var(--muted); }
+  #panel a.p-open {
+    display: inline-block; margin-top: 12px; color: var(--accent);
+    text-decoration: none;
+  }
+  #panel a.p-open:hover { text-decoration: underline; }
+
+  #legend {
+    position: absolute; left: 12px; bottom: 12px; z-index: 10;
+    background: rgba(36, 40, 59, 0.9); border: 1px solid var(--line);
+    border-radius: 4px; padding: 8px 10px; max-width: 260px;
+  }
+  #legend h2 {
+    font-size: 11px; margin: 0 0 4px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  #legend .row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+  #legend .swatch {
+    width: 10px; height: 10px; border-radius: 50%; flex: none;
+  }
+  #legend .line {
+    /* Edge hues are intentionally muted; widen the legend stroke so the quiet
+       structural colors stay legible against the dark legend panel. */
+    width: 16px; height: 0; border-top-width: 3px; border-top-style: solid;
+    flex: none;
+  }
+  #legend .grp + .grp { margin-top: 6px; }
+  #legend .toggle { cursor: pointer; user-select: none; }
+  #legend .toggle:hover { color: var(--fg); }
+  #legend .toggle.off { opacity: 0.35; text-decoration: line-through; }
+  #legend .count { color: var(--muted); margin-left: auto; padding-left: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Trackinizer</h1>
+  <a href="/">&larr; back to list</a>
+  <input id="search" type="search" placeholder="search title / #seq / kind"
+    autocomplete="off" />
+  <button id="fit" type="button">fit view</button>
+  <select id="limit" title="max recent nodes (older referenced nodes still shown)">
+    <option value="100">100 nodes</option>
+    <option value="1000" selected>1k nodes</option>
+    <option value="5000">5k nodes</option>
+  </select>
+  <button id="replay" type="button">replay</button>
+  <select id="speed" title="replay speed">
+    <option value="0.25">0.25x speed</option>
+    <option value="0.5">0.5x speed</option>
+    <option value="1" selected>1x speed</option>
+    <option value="2">2x speed</option>
+    <option value="4">4x speed</option>
+    <option value="10">10x speed</option>
+  </select>
+  <span id="status">connecting...</span>
+</header>
+<div id="results" hidden></div>
+<div id="graph"></div>
+<aside id="panel" hidden>
+  <button id="panel-close" type="button" title="close (Esc)">&times;</button>
+  <div id="panel-body"></div>
+</aside>
+<div id="legend">
+  <div class="grp"><h2>nodes</h2><div id="legend-nodes"></div></div>
+  <div class="grp"><h2>edges</h2><div id="legend-edges"></div></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/force-graph@1.51.4/dist/force-graph.min.js"></script>
+<script>
+"use strict";
+
+// Four independent color channels, each given a DISTINCT visual treatment so a
+// hue in one never reads as related to the same hue in another:
+//   1. NODE fill  -- saturated, evenly-spaced categorical hue wheel (kinds pop).
+//   2. EDGE stroke -- desaturated/muted (structure recedes as scaffolding).
+//   3. VALENCE    -- a vivid diverging teal/orange pair (evidence direction).
+//   4. STATUS_RING -- a tiny semantic set, none of which are node-fill hues.
+// The kind sets themselves come from /api/web/graph's legend so a new domain
+// kind shows up uncolored (falling back to --muted) rather than silently
+// vanishing; these maps assign the intended hue.
+
+// NODE fill: a 9-hue categorical wheel, hues spaced ~40 deg apart at a constant
+// HSL S~70% / L~66% so each kind reads at roughly equal perceived brightness on
+// the #1a1b26 bg (no kind screams) and stays separable for common CVD types.
+// Hue order: red->orange->amber->green->teal->blue->indigo->violet->magenta.
+const NODE_COLORS = {
+  Issue: "#5e8cf0",        // h214 blue
+  Belief: "#a98cf0",       // h262 violet
+  Experiment: "#6fcf8e",   // h142 green
+  Paper: "#4fc7d4",        // h186 teal
+  CodeChange: "#e8995a",   // h28  orange
+  WebResult: "#d4b94f",    // h50  amber
+  WebSearch: "#e86f8e",    // h344 magenta
+  AgentSession: "#7d7df0", // h240 indigo
+  Artifact: "#d46f6f",     // h0   red
+};
+// EDGE stroke (structural edges only): low-saturation slate tints (HSL S~22%,
+// L~55%) so links recede behind the saturated nodes. Each kind gets a distinct
+// hue family but all stay quiet -- structure is scaffolding, not focus.
+const EDGE_COLORS = {
+  narrows: "#7b86a8",      // cool slate -- specialization
+  requires: "#a89b7b",     // warm sand -- dependency
+  produced_by: "#6b7390",  // dim slate -- provenance
+  proves: "#7ba88f",       // muted sage -- (overridden by valence)
+  favors: "#7ba1a8",       // muted teal -- (overridden by valence)
+  supersedes: "#a87b86",   // muted rose -- replacement
+};
+const FALLBACK = "#565f89";
+
+const nodeColor = (kind) => NODE_COLORS[kind] || FALLBACK;
+// VALENCE: a vivid colorblind-safe DIVERGING pair -- teal (supports) vs orange
+// (argues against). Deliberately NOT a node-fill hue and far more saturated than
+// the muted structural edges, so evidence direction pops and never reads as a
+// node or as plain structure. Teal/orange stays separable under red-green CVD.
+const VALENCE_POS = "#2bb3a3";  // teal -- supports the claim
+const VALENCE_NEG = "#e8762b";  // orange -- argues against the claim
+const isCitation = (kind) => kind === "proves" || kind === "favors";
+function edgeColor(link) {
+  if (isCitation(link.edge_kind) && typeof link.valence === "number") {
+    return link.valence < 0 ? VALENCE_NEG : VALENCE_POS;
+  }
+  return EDGE_COLORS[link.edge_kind] || FALLBACK;
+}
+// favors is the soft (context) citation; render it dashed to read apart from
+// the load-bearing proves.
+const edgeDashed = (link) => link.edge_kind === "favors";
+// Edge thickness encodes prominence, mirroring node size:
+//  - citations scale with evidential weight |valence|;
+//  - structural edges scale with how central they are -- an edge into a hub or
+//    root (high-degree endpoint) is the graph's backbone and reads heavier than
+//    a peripheral link. Endpoint degree comes from the same `neighbors` map
+//    node size uses, so the two prominence cues agree.
+function edgeWidth(link) {
+  if (isCitation(link.edge_kind) && typeof link.valence === "number") {
+    return 0.75 + 3.5 * Math.abs(link.valence);
+  }
+  const a = (neighbors.get(endpointId(link.source)) || EMPTY_SET).size;
+  const b = (neighbors.get(endpointId(link.target)) || EMPTY_SET).size;
+  return Math.min(5, 0.75 + 0.6 * Math.sqrt(Math.max(a, b)));
+}
+
+// A link endpoint is a node id before force-graph resolves it and a node
+// object after; return the id either way.
+function endpointId(endpoint) {
+  return (endpoint && endpoint.id) || endpoint;
+}
+
+// Retired nodes (abandoned / invalid) recede; their ring color and dimming
+// come from status. active/complete stay bright.
+const RETIRED = new Set(["abandoned", "invalid"]);
+// STATUS_RING: a 4-step semantic set drawn from NEUTRALS + one alert, none of
+// which is a node-fill hue, so the ring always contrasts against any fill it
+// sits on. Ordered live -> done -> dormant -> alert by lightness/saturation.
+const STATUS_RING = {
+  active: "#eceff5",      // near-white -- live work, brightest ring
+  complete: "#9aa5ce",    // light slate -- done, calm
+  abandoned: "#444b6e",   // dark slate -- dormant, recedes
+  invalid: "#ffb454",     // amber alert -- needs attention (not a fill hue)
+};
+
+const statusEl = document.getElementById("status");
+const setStatus = (text) => { statusEl.textContent = text; };
+
+// Auto-fit the viewport when the layout settles, so every node -- including
+// disconnected ones the charge force pushes to the rim -- stays in frame
+// without manual hunting. Re-armed on each commit() as new nodes land.
+let fitOnSettle = true;
+
+// Kinds the user has toggled OFF in the legend (hidden from the view).
+const hiddenKinds = new Set();
+// The hovered node + its 1-hop neighbors; when set, everything else dims so a
+// dense cluster becomes readable. Empty = no highlight (full brightness).
+let highlightNodes = new Set();
+let highlightLinks = new Set();
+const neighbors = new Map(); // node id -> Set of adjacent node ids
+const nodeById = new Map();
+
+const Graph = ForceGraph()(document.getElementById("graph"))
+  .backgroundColor("#1a1b26")
+  .nodeRelSize(5)
+  .nodeVisibility((n) => !hiddenKinds.has(n.kind))
+  .nodeLabel((n) => `<div style="color:${nodeColor(n.kind)}">`
+    + `<b>${n.kind} #${n.seq}</b>`
+    + ` <span style="color:#565f89">${n.status || ""}</span></div>`
+    + `<div>${escapeHtml(n.title || "(untitled)")}</div>`)
+  .nodeCanvasObject((n, ctx, scale) => drawNode(n, ctx, scale))
+  .nodePointerAreaPaint((n, color, ctx) => {
+    // Hit area matches the drawn node radius so hover/click line up with what
+    // is painted; the shadow canvas shares the graph's transform.
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, nodeRadius(n), 0, 2 * Math.PI);
+    ctx.fill();
+  })
+  .linkVisibility((l) => linkVisible(l))
+  .linkColor((l) => (dimLink(l) ? "rgba(86,95,137,0.15)" : edgeColor(l)))
+  .linkLineDash((l) => (edgeDashed(l) ? [4, 3] : null))
+  .linkWidth((l) => edgeWidth(l))
+  .linkDirectionalArrowLength(4)
+  .linkDirectionalArrowRelPos(1)
+  .onNodeHover((n) => { if (!selectedId) setHighlight(n); })
+  .onNodeClick((n) => selectNode(n))
+  .onBackgroundClick(() => clearSelection())
+  .onEngineStop(() => {
+    // Fit once when the layout first settles after a (re)load, but never while
+    // an animation is mid-flight -- fitting to a half-grown, partly-unpositioned
+    // graph computes a degenerate bbox and zooms everything off-screen (blank).
+    if (fitOnSettle && !animating) { fitOnSettle = false; fitView(); }
+  });
+
+// Balance two opposing pulls so clusters spread internally but separate
+// components do not fly off:
+//  - charge: strong node-to-node REPULSION so a cluster's own nodes push apart
+//    and stay readable; a capped range stops one node shoving the whole graph;
+//  - link distance: a comfortable rest length between connected nodes;
+//  - gravity: a VERY weak center-seek -- just enough to keep disconnected
+//    components from drifting off forever (nothing links one component to
+//    another), but far too gentle to crunch a cluster's internal spread.
+//    Repulsion dominates locally; gravity only matters at long range.
+Graph.d3Force("charge").strength(-70).distanceMax(280);
+Graph.d3Force("link").distance(55).strength(0.6);
+Graph.d3Force("gravity", radialGravity(0.02));
+Graph.d3VelocityDecay(0.58);
+
+// A center-seeking force: each tick pulls every node a TINY fraction toward the
+// origin (k = strength * alpha). Strength ~0.01-0.1; large values crush the
+// layout. Replaces a d3.forceX/forceY pair (not exposed by the force-graph UMD
+// bundle) with one tiny custom force.
+function radialGravity(strength) {
+  let nodes = [];
+  function force(alpha) {
+    const k = strength * alpha;
+    for (const n of nodes) {
+      n.vx -= (n.x || 0) * k;
+      n.vy -= (n.y || 0) * k;
+    }
+  }
+  force.initialize = (n) => { nodes = n; };
+  return force;
+}
+
+function dimLink(link) {
+  return highlightNodes.size > 0 && !highlightLinks.has(link);
+}
+
+// Hide an edge when either endpoint's kind is filtered out, so a hidden node
+// never leaves dangling edges. Endpoints may be node objects (post-resolve) or
+// id strings; resolve the kind via nodeById either way.
+function linkVisible(link) {
+  return !kindHidden(link.source) && !kindHidden(link.target);
+}
+
+function kindHidden(endpoint) {
+  const node = (endpoint && endpoint.kind) ? endpoint : nodeById.get(endpointId(endpoint));
+  return node ? hiddenKinds.has(node.kind) : false;
+}
+
+// Node radius encodes importance as connectedness: a hub (the root belief, a
+// gate) reads bigger than a leaf (one webresult). Area scales with degree
+// (radius with its sqrt) so a 9-edge hub is not 9x a 1-edge leaf, and a tight
+// 4..14 clamp keeps it a subtle size cue, not giant bubbles (per UX review).
+function nodeRadius(node) {
+  const degree = (neighbors.get(node.id) || EMPTY_SET).size;
+  let r = Math.min(14, 4 + 2.2 * Math.sqrt(degree));
+  // Root issues -- an Issue with no structural parent -- anchor a whole tree,
+  // so make them clearly the largest, most prominent nodes.
+  if (isRootIssue(node)) r = Math.max(r, 12) + 4;
+  return r;
+}
+const EMPTY_SET = new Set();
+
+// An Issue that is not the child of any narrows/requires edge: the top of a
+// decomposition tree. (A lone Issue with no edges yet is also treated as a
+// root so a freshly-seeded graph shows its anchor prominently.)
+function isRootIssue(node) {
+  return node.kind === "Issue" && !hasParent.has(node.id);
+}
+
+// Node ids that are the from-side (child) of a structural narrows/requires
+// edge, hence NOT roots. Populated by addEdge.
+const hasParent = new Set();
+
+// Draw a node as a kind-colored fill with a status ring; dim it when a
+// highlight is active and it is not in the highlighted neighborhood, or when
+// its status is retired.
+function drawNode(node, ctx, globalScale) {
+  const dimmed = (highlightNodes.size > 0 && !highlightNodes.has(node.id))
+    || RETIRED.has(node.status);
+  const r = nodeRadius(node);
+  const fill = nodeColor(node.kind);
+
+  // Beliefs additionally encode their verdict + certainty (the most
+  // decision-relevant nodes): confidence -> fill opacity (washed out = unsure),
+  // judgement -> fill treatment, inside the node glyph (no extra legend dim,
+  // and NOT size -- that channel is prominence). Other kinds draw solid.
+  const isBelief = node.kind === "Belief";
+  const conf = (isBelief && typeof node.confidence === "number")
+    ? node.confidence : 1;
+  const fillAlpha = dimmed ? 0.25 : 0.35 + 0.65 * conf;  // floor so it stays visible
+  const judgement = isBelief ? node.judgement : null;
+
+  ctx.beginPath();
+  ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
+  if (judgement === "disproven") {
+    // Hollow: ring only, no fill -- a struck-down claim reads as "emptied".
+    ctx.globalAlpha = dimmed ? 0.25 : 1;
+  } else {
+    ctx.globalAlpha = fillAlpha;
+    ctx.fillStyle = fill;
+    ctx.fill();
+    if (judgement === "undecidable") {
+      // Half-tone: a second faint wash hints "cannot be settled".
+      ctx.globalAlpha = fillAlpha * 0.4;
+      ctx.fillStyle = "#1a1b26";
+      ctx.fill();
+    }
+  }
+  // Status ring (also the belief outline when hollow).
+  ctx.globalAlpha = dimmed ? 0.25 : 1;
+  ctx.lineWidth = 1.5 / globalScale;
+  ctx.strokeStyle = judgement === "disproven"
+    ? fill                                   // hollow belief: outline in its kind hue
+    : (STATUS_RING[node.status] || FALLBACK);
+  ctx.stroke();
+  // Proven: a small solid inner dot, a "confirmed" mark.
+  if (judgement === "proven" && !dimmed) {
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, r * 0.4, 0, 2 * Math.PI);
+    ctx.fillStyle = STATUS_RING.complete;
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function setHighlight(node) {
+  highlightNodes = new Set();
+  highlightLinks = new Set();
+  if (node) {
+    highlightNodes.add(node.id);
+    for (const peer of neighbors.get(node.id) || []) highlightNodes.add(peer);
+    for (const link of data.links) {
+      const s = link.source.id || link.source;
+      const t = link.target.id || link.target;
+      if (s === node.id || t === node.id) highlightLinks.add(link);
+    }
+  }
+  refresh();  // repaint now; the settled sim won't redraw on its own.
+}
+
+// -- Selection + detail panel -----------------------------------------------
+// Clicking a node SELECTS it: the 1-hop neighborhood highlight latches (so
+// moving the mouse away no longer clears it) and a detail drawer opens so the
+// node can be inspected without navigating away. Background-click or Esc clears.
+let selectedId = null;
+
+function selectNode(node) {
+  selectedId = node.id;
+  setHighlight(node);          // latched: onNodeHover won't override it.
+  openPanel(node.id);
+}
+
+function clearSelection() {
+  if (!selectedId) return;
+  selectedId = null;
+  setHighlight(null);
+  closePanel();
+}
+
+// Force force-graph to repaint NOW. The sim pauses redraws once settled
+// (autoPauseRedraw), so a state change that only affects drawing -- the
+// highlight set/clear -- otherwise won't show until the next interaction (e.g.
+// a zoom). Re-applying a render accessor triggers one frame.
+function refresh() {
+  Graph.nodeColor(Graph.nodeColor());
+}
+
+async function openPanel(id) {
+  const panel = document.getElementById("panel");
+  const body = document.getElementById("panel-body");
+  panel.hidden = false;
+  body.innerHTML = '<div class="p-meta">loading...</div>';
+  try {
+    const detail = await fetchJson(`/api/web/get/${id}`);
+    renderPanel(detail);
+  } catch (err) {
+    body.innerHTML = `<div class="p-meta">failed: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function closePanel() {
+  document.getElementById("panel").hidden = true;
+}
+
+function renderPanel(detail) {
+  const s = detail.self;
+  const body = document.getElementById("panel-body");
+  const rows = [];
+  rows.push(`<div class="p-kind" style="color:${nodeColor(s.kind)}">`
+    + `${s.kind} #${s.seq}</div>`);
+  rows.push(`<div class="p-title">${escapeHtml(s.title || "(untitled)")}</div>`);
+  rows.push(metaRow("status", s.status));
+  // Decision-relevant per-kind fields.
+  if (s.judgement) rows.push(metaRow("judgement", s.judgement));
+  if (typeof s.confidence === "number") {
+    rows.push(metaRow("confidence", s.confidence.toFixed(2)));
+  }
+  if (typeof s.priority === "number") rows.push(metaRow("priority", s.priority));
+  if (s.outcome) rows.push(metaRow("outcome", s.outcome));
+  if (s.provider) rows.push(metaRow("provider", s.provider));
+  if (s.source) rows.push(metaRow("source", s.source));
+  if (s.description) {
+    rows.push(`<div class="p-desc">${escapeHtml(s.description)}</div>`);
+  }
+  rows.push(edgeSection("edges (parents / cited)", detail.edges));
+  rows.push(edgeSection("backlinks (children / citing)", detail.backlinks));
+  rows.push(`<a class="p-open" href="/#/inquiry/${s.id}">open full page &rarr;</a>`);
+  body.innerHTML = rows.join("");
+  // Wire edge buttons to jump-select their peer (if it is in the graph).
+  for (const btn of body.querySelectorAll(".p-edge[data-peer]")) {
+    btn.addEventListener("click", () => jumpTo(btn.dataset.peer));
+  }
+}
+
+function metaRow(label, value) {
+  return `<div class="p-meta">${label}: <span style="color:var(--fg)">`
+    + `${escapeHtml(String(value))}</span></div>`;
+}
+
+function edgeSection(title, grouped) {
+  if (!grouped || Object.keys(grouped).length === 0) return "";
+  const parts = [`<h3>${title}</h3>`];
+  for (const [kind, peers] of Object.entries(grouped)) {
+    for (const p of peers) {
+      const present = nodeById.has(p.id) ? "" : " (not shown)";
+      parts.push(`<button class="p-edge" data-peer="${p.id}">`
+        + `<span class="ek">${kind}</span> ${escapeHtml(p.title || p.id.slice(0, 8))}`
+        + present + `</button>`);
+    }
+  }
+  return parts.join("");
+}
+
+// Center + select a node by id (from an edge button), if it is in the graph.
+function jumpTo(id) {
+  const node = nodeById.get(id);
+  if (!node) { window.location.href = `/#/inquiry/${id}`; return; }
+  Graph.centerAt(node.x, node.y, 600);
+  Graph.zoom(Math.max(Graph.zoom(), 2.5), 600);
+  selectNode(node);
+}
+
+// -- Search / locate --------------------------------------------------------
+// Filter the in-memory nodes by title substring, ``#seq`` (or bare digits), or
+// kind, and jump to a pick. Pure client-side over data already loaded.
+let searchSel = -1;
+let searchHits = [];
+
+function runSearch(query) {
+  const results = document.getElementById("results");
+  const q = query.trim().toLowerCase();
+  if (!q) { results.hidden = true; searchHits = []; return; }
+  // ``#42`` or a bare number matches seq; otherwise substring over title/kind.
+  const seqMatch = q.replace(/^#/, "");
+  const bySeq = /^\d+$/.test(seqMatch);
+  searchHits = data.nodes.filter((n) => {
+    if (bySeq) return String(n.seq) === seqMatch;
+    return (n.title || "").toLowerCase().includes(q)
+      || n.kind.toLowerCase().includes(q);
+  }).slice(0, 40);
+  searchSel = -1;
+  renderResults();
+}
+
+function renderResults() {
+  const results = document.getElementById("results");
+  if (searchHits.length === 0) {
+    results.innerHTML = '<div class="empty">no matches</div>';
+    results.hidden = false;
+    return;
+  }
+  results.innerHTML = searchHits.map((n, i) =>
+    `<button class="r${i === searchSel ? " sel" : ""}" data-id="${n.id}">`
+    + `<span class="rk" style="color:${nodeColor(n.kind)}">${n.kind} #${n.seq}</span> `
+    + escapeHtml(n.title || "(untitled)") + `</button>`,
+  ).join("");
+  for (const btn of results.querySelectorAll(".r")) {
+    btn.addEventListener("click", () => { pickResult(btn.dataset.id); });
+  }
+  results.hidden = false;
+}
+
+function pickResult(id) {
+  document.getElementById("results").hidden = true;
+  document.getElementById("search").value = "";
+  jumpTo(id);
+}
+
+// Arrow-key / Enter navigation within the results dropdown.
+function searchKey(e) {
+  if (searchHits.length === 0) return;
+  if (e.key === "ArrowDown") {
+    searchSel = Math.min(searchSel + 1, searchHits.length - 1); renderResults();
+    e.preventDefault();
+  } else if (e.key === "ArrowUp") {
+    searchSel = Math.max(searchSel - 1, 0); renderResults(); e.preventDefault();
+  } else if (e.key === "Enter") {
+    pickResult(searchHits[Math.max(0, searchSel)].id); e.preventDefault();
+  }
+}
+
+// Source of truth.
+//
+// force-graph mutates whatever object you hand graphData() IN PLACE: it
+// resolves each link's ``source``/``target`` from an id-string to the actual
+// node object, and stamps nodes with x/y/vx/vy. Two rules follow:
+//
+//  - NODES: keep ONE stable object per id (in ``nodeById``) and reuse it every
+//    commit. force-graph matches nodes by object identity to carry positions
+//    forward, so a stable object = a stable layout (a fresh clone each frame
+//    would reset positions and thrash). The stamped x/y/vx/vy live on it.
+//  - LINKS: force-graph rewrites link.source/target into node OBJECTS, so we
+//    can never re-feed a link we already gave it (its endpoints are objects
+//    now, and after a reset those may be stale). We keep our own clean link
+//    records (``rawLinks``, string endpoints) and rebuild a FRESH link array
+//    with string endpoints on every commit. That is what prevents the
+//    "Cannot create property 'vx' on string" crash on refresh/replay.
+const rawLinks = [];
+const seen = new Set();
+// A pair can carry several edges (e.g. produced_by + favors), and the same
+// edge is reported from both endpoints (one node's `edges`, the other's
+// `backlinks`), so dedup by (from, to, kind) to avoid stacked duplicate links.
+const seenEdges = new Set();
+const pendingEdges = new Map();
+
+// The live payload handed to force-graph; ``data.nodes`` holds the stable node
+// objects (mutated in place with positions), ``data.links`` is rebuilt fresh
+// each commit. Never push into these directly -- go through addNode/addEdge.
+const data = { nodes: [], links: [] };
+const newNodeIds = new Set();
+
+function addNode(node) {
+  if (seen.has(node.id)) return false;
+  seen.add(node.id);
+  // One stable object per id; force-graph stamps it with x/y/vx/vy and we
+  // reuse it across commits so its position persists.
+  const stable = {
+    id: node.id, kind: node.kind, seq: node.seq, title: node.title,
+    status: node.status, created: node.created,
+    judgement: node.judgement, confidence: node.confidence,
+  };
+  nodeById.set(node.id, stable);
+  data.nodes.push(stable);
+  neighbors.set(node.id, new Set());
+  newNodeIds.add(node.id);
+  flushPendingEdges();
+  return true;
+}
+
+function addEdge(edge) {
+  const key = `${edge.from_id}|${edge.to_id}|${edge.edge_kind}`;
+  if (seenEdges.has(key)) return false;
+  if (!seen.has(edge.from_id) || !seen.has(edge.to_id)) {
+    pendingEdges.set(key, { ...edge });
+    return false;
+  }
+  seenEdges.add(key);
+  pendingEdges.delete(key);
+  rawLinks.push({
+    source: edge.from_id,
+    target: edge.to_id,
+    edge_kind: edge.edge_kind,
+    valence: edge.valence,
+  });
+  neighbors.get(edge.from_id).add(edge.to_id);
+  neighbors.get(edge.to_id).add(edge.from_id);
+  // Edges point child(from) -> parent(to). A node that is the FROM-side of a
+  // narrows/requires edge has a structural parent, so it is not a root. Track
+  // that so root issues (top of a tree) can be drawn larger.
+  if (edge.edge_kind === "narrows" || edge.edge_kind === "requires") {
+    hasParent.add(edge.from_id);
+  }
+  return true;
+}
+
+function flushPendingEdges() {
+  for (const edge of [...pendingEdges.values()]) addEdge(edge);
+}
+
+function resetData() {
+  data.nodes = [];
+  data.links = [];
+  rawLinks.length = 0;
+  seen.clear();
+  seenEdges.clear();
+  pendingEdges.clear();
+  neighbors.clear();
+  nodeById.clear();
+  hasParent.clear();
+  newNodeIds.clear();
+}
+
+function commit() {
+  // ``data.nodes`` already holds the stable, position-carrying node objects.
+  // Rebuild ``data.links`` FRESH with string endpoints so force-graph never
+  // re-processes a link whose source/target it already resolved to an object.
+  flushPendingEdges();
+  seedNewNodePositions();
+  dampExistingVelocities();
+  data.links = rawLinks.map((l) => ({ ...l }));
+  Graph.graphData(data);
+  warmSimulation();
+  newNodeIds.clear();
+  updateLegendCounts();
+  // Keep the replay snapshot current with the full graph whenever we are at
+  // rest (SSE growth, initial load complete); skip during an animation, whose
+  // intermediate states are partial.
+  if (!animating) captureSnapshot();
+}
+
+function seedNewNodePositions() {
+  for (const id of newNodeIds) {
+    const node = nodeById.get(id);
+    if (!node || Number.isFinite(node.x) || data.nodes.length === 1) continue;
+    const anchor = firstPositionedNeighbor(id) || graphCenter();
+    const r = 36 + 12 * Math.sqrt((neighbors.get(id) || EMPTY_SET).size);
+    const angle = ((data.nodes.length * 137.5) % 360) * Math.PI / 180;
+    node.x = anchor.x + r * Math.cos(angle);
+    node.y = anchor.y + r * Math.sin(angle);
+    node.vx = 0;
+    node.vy = 0;
+  }
+}
+
+function firstPositionedNeighbor(id) {
+  for (const peerId of neighbors.get(id) || EMPTY_SET) {
+    const peer = nodeById.get(peerId);
+    if (peer && Number.isFinite(peer.x) && Number.isFinite(peer.y)) {
+      return peer;
+    }
+  }
+  return null;
+}
+
+function graphCenter() {
+  let x = 0;
+  let y = 0;
+  let count = 0;
+  for (const n of data.nodes) {
+    if (newNodeIds.has(n.id) || !Number.isFinite(n.x) || !Number.isFinite(n.y)) {
+      continue;
+    }
+    x += n.x;
+    y += n.y;
+    count++;
+  }
+  return count ? { x: x / count, y: y / count } : { x: 0, y: 0 };
+}
+
+function dampExistingVelocities() {
+  for (const n of data.nodes) {
+    if (newNodeIds.has(n.id)) continue;
+    n.vx = (n.vx || 0) * 0.25;
+    n.vy = (n.vy || 0) * 0.25;
+  }
+}
+
+function warmSimulation() {
+  if (!animating) Graph.d3ReheatSimulation();
+}
+
+// Zoom to frame all nodes, but only once positions are real: a graph whose
+// nodes are still at the origin (just added, not yet simulated) has a
+// zero-size bbox, and zoomToFit on it zooms to a degenerate scale (blank
+// canvas). Guard on a finite, non-trivial bounding box.
+function fitView() {
+  // Frame only VISIBLE, POSITIONED nodes. Two ways the frame goes wrong
+  // otherwise: (1) hidden kinds (legend-filtered) still count toward the bbox,
+  // so the view centers on empty space where those nodes sit; (2) a node just
+  // added but not yet simulated sits at x/y ~0, dragging the bbox to the
+  // origin. The nodeFilter excludes both.
+  const visible = (n) =>
+    !hiddenKinds.has(n.kind) && Number.isFinite(n.x) && Number.isFinite(n.y);
+  const bbox = Graph.getGraphBbox(visible);
+  if (!bbox) return;  // nothing positioned/visible yet -- skip rather than zoom to a degenerate frame.
+  const w = bbox.x[1] - bbox.x[0];
+  const h = bbox.y[1] - bbox.y[0];
+  if (!Number.isFinite(w) || !Number.isFinite(h)) return;
+  // getGraphBbox returns node CENTERS (ignores radius); the generous padding
+  // clears the largest (clamped ~18u) node and gives top/bottom breathing room.
+  Graph.zoomToFit(450, 70, visible);
+}
+
+// Animate a graph forming in authoring order. Clears the canvas, then re-adds
+// nodes oldest-first (``created``) so the draw shows the real growth history
+// rather than the whole graph snapping in. Edges are stored younger(child) ->
+// older(parent), so oldest-first means a node's parents are already present
+// when it lands and its edges fire immediately. Client-side only.
+//
+// ``opts``: either ``{budgetMs}`` (finish within a fixed wall-clock budget --
+// used by the fast initial paint, several nodes per fixed tick) or
+// ``{paceFn}`` (a function returning the current per-node delay in ms, called
+// fresh BEFORE EACH node -- used by the replay button so dropping a node
+// is rescheduled at the live speed; changing the speed mid-replay takes effect
+// on the very next node).
+let animating = false;
+// Bumped on every animateGrowth call. A scheduled step belonging to an older
+// generation is a stale callback from a superseded run (e.g. the user hit
+// replay again mid-animation) and aborts itself, so a restart cleanly
+// abandons the previous animation.
+let animGen = 0;
+
+// Default replay pace: one node every ~70ms at 1x. (The dropdown's 0.25x..4x
+// scales around this, so 4x is a brisk ~18ms/node and 0.25x a deliberate
+// ~280ms/node.)
+const REPLAY_STEP_MS = 70;
+
+function animateGrowth(rawNodes, rawEdges, opts, onDone) {
+  const gen = ++animGen;
+  animating = true;
+  const order = [...rawNodes].sort(
+    (a, b) => String(a.created || "").localeCompare(String(b.created || "")),
+  );
+  const edgesFrom = new Map();
+  for (const e of rawEdges) {
+    if (!edgesFrom.has(e.from_id)) edgesFrom.set(e.from_id, []);
+    if (!edgesFrom.has(e.to_id)) edgesFrom.set(e.to_id, []);
+    edgesFrom.get(e.from_id).push(e);
+    edgesFrom.get(e.to_id).push(e);
+  }
+  // Reset all graph + bookkeeping state to empty before re-adding.
+  resetData();
+  setHighlight(null);
+  commit();
+
+  let i = 0;
+  const stale = () => gen !== animGen;
+  const finish = () => {
+    if (stale()) return;
+    animating = false;
+    // Capture the now-complete graph as the replay source. commit() skips
+    // captureSnapshot() while animating, so without this the snapshot stays at
+    // its empty initializer and a later Replay re-grows an empty graph (0 nodes)
+    // even though the visible graph is fully populated.
+    captureSnapshot();
+    // Let the sim run a beat so nodes have real positions, then frame them
+    // once. Fitting immediately (nodes still near origin) would zoom blank.
+    setTimeout(() => { if (!stale()) { fitView(); if (onDone) onDone(); } }, 600);
+  };
+
+  if (opts.paceFn) {
+    // Live-pace replay: one node per step, the delay re-read each time so the
+    // speed dropdown takes effect immediately while the animation runs.
+    const step = () => {
+      if (stale()) return;
+      if (i >= order.length) { finish(); return; }  // guard BEFORE indexing
+      const node = order[i++];
+      addNode(node);
+      for (const e of edgesFrom.get(node.id) || []) addEdge(e);
+      commit();
+      setTimeout(step, Math.max(16, opts.paceFn()));
+    };
+    setTimeout(step, Math.max(16, opts.paceFn()));
+    return;
+  }
+
+  // Budget paint: several nodes per fixed 33ms tick so a big graph fits time.
+  const ticks = Math.min(order.length, Math.max(1, Math.round(opts.budgetMs / 33)));
+  const perTick = Math.max(1, Math.ceil(order.length / ticks));
+  const timer = setInterval(() => {
+    if (stale()) { clearInterval(timer); return; }
+    for (let k = 0; k < perTick && i < order.length; k++, i++) {
+      const node = order[i];
+      addNode(node);
+      for (const e of edgesFrom.get(node.id) || []) addEdge(e);
+    }
+    commit();
+    if (i >= order.length) {
+      clearInterval(timer);
+      finish();
+    }
+  }, 33);
+}
+
+// The full graph as last seen at rest (not mid-animation), so replay always
+// re-grows the COMPLETE graph -- even when fired while a replay is running
+// (which holds only a partial graph at that instant). Refreshed by commit()
+// whenever no animation is in flight.
+let fullSnapshot = { nodes: [], edges: [] };
+
+function captureSnapshot() {
+  fullSnapshot = {
+    nodes: data.nodes.map((n) => ({
+      id: n.id, kind: n.kind, seq: n.seq, title: n.title,
+      status: n.status, created: n.created,
+    })),
+    edges: rawLinks.map((l) => ({
+      from_id: l.source, to_id: l.target,
+      edge_kind: l.edge_kind, valence: l.valence,
+    })),
+  };
+}
+
+function currentSpeed() {
+  return parseFloat(document.getElementById("speed").value) || 1;
+}
+
+function replayGrowth() {
+  // No early-return and the button stays ENABLED: firing mid-animation must
+  // restart from the beginning. animateGrowth bumps the generation token, so
+  // the in-flight run's scheduled steps detect they are stale and abort, and a
+  // fresh run starts. Replay the FULL graph from the at-rest snapshot, not the
+  // partial mid-animation state.
+  animateGrowth(
+    fullSnapshot.nodes,
+    fullSnapshot.edges,
+    { paceFn: () => REPLAY_STEP_MS / currentSpeed() },
+    () => { setStatus(`${data.nodes.length} nodes -- live`); },
+  );
+}
+
+async function fetchJson(url) {
+  const resp = await fetch(url, { headers: { accept: "application/json" } });
+  if (!resp.ok) throw new Error(`${url} -> ${resp.status}`);
+  return resp.json();
+}
+
+// Initial paint: pull the whole graph, animate it forming quickly (~1s), then
+// stream live additions over SSE.
+async function init() {
+  buildLegend();
+  document.getElementById("fit").addEventListener("click", fitView);
+  document.getElementById("replay").addEventListener("click", replayGrowth);
+  document.getElementById("panel-close").addEventListener("click", clearSelection);
+  const search = document.getElementById("search");
+  search.addEventListener("input", () => runSearch(search.value));
+  search.addEventListener("keydown", searchKey);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      document.getElementById("results").hidden = true;
+      search.blur();
+      clearSelection();
+    } else if (e.target === document.body) {
+      if (e.key === "f") fitView();
+      else if (e.key === "/") { e.preventDefault(); search.focus(); }
+    }
+  });
+  // Changing the node cap reloads the graph at the new limit.
+  document.getElementById("limit").addEventListener("change", loadGraph);
+  await loadGraph();
+  subscribe();
+}
+
+// Fetch the graph at the currently-selected node cap and animate it forming.
+// Re-runnable: changing the limit dropdown reloads. Existing data is reset by
+// animateGrowth so a reload replaces the graph rather than appending.
+async function loadGraph() {
+  const limit = document.getElementById("limit").value;
+  setStatus("loading...");
+  try {
+    const graph = await fetchJson(`/api/web/graph?limit=${limit}`);
+    animateGrowth(graph.nodes, graph.edges, { budgetMs: 1000 }, () => {
+      setStatus(`${data.nodes.length} nodes -- live`);
+    });
+  } catch (err) {
+    setStatus(`load failed: ${err.message}`);
+    // Surface the real error (stack) to the console rather than swallowing it.
+    console.error("graph load failed:", err);
+  }
+}
+
+// One mutated id per SSE frame: fetch the node + its edges, append, re-heat.
+function subscribe() {
+  const es = new EventSource("/api/web/subscribe");
+  // Coalesce NOTIFY ids into a queue and drain them ONE fetch at a time on a
+  // throttled loop. During a crawl the server emits a burst of NOTIFYs; firing
+  // a concurrent /api/web/get per id floods the single-connection (pglite)
+  // backend and races its writes, which surfaces as transient 500s. Serial,
+  // paced draining keeps at most one in-flight read so it never contends.
+  es.onmessage = (ev) => {
+    let id;
+    try { id = JSON.parse(ev.data).id; } catch { return; }
+    if (id) enqueueLiveId(id);
+  };
+  es.onerror = () => setStatus(`${data.nodes.length} nodes -- reconnecting...`);
+  drainLiveQueue();
+}
+
+const liveQueue = [];
+const liveQueued = new Set();
+
+function enqueueLiveId(id) {
+  if (liveQueued.has(id)) return;
+  liveQueued.add(id);
+  liveQueue.push(id);
+}
+
+async function drainLiveQueue() {
+  // Self-rescheduling: process one id, then wait a beat before the next.
+  const id = liveQueue.shift();
+  if (id !== undefined) {
+    liveQueued.delete(id);
+    try {
+      const detail = await fetchJson(`/api/web/get/${id}`);
+      const self = detail.self;
+      // A NOTIFY also fires for an existing node when a NEW edge touches it, so
+      // collect edges even when the node is already present (addNode/addEdge
+      // no-op on anything seen) -- this is what makes an edge between two
+      // existing nodes appear live, not just on reload.
+      addNode({
+        id: self.id, kind: self.kind, seq: self.seq, title: self.title,
+        status: self.status, created: self.created,
+        judgement: self.judgement, confidence: self.confidence,
+      });
+      collectEdges(self.id, detail.edges, "out");
+      collectEdges(self.id, detail.backlinks, "in");
+      commit();
+      setStatus(`${data.nodes.length} nodes -- live`);
+    } catch {
+      // Transient (e.g. the backend was busy writing); re-queue once so the id
+      // is not lost, and the next drain retries it after the pacing delay.
+      enqueueLiveId(id);
+    }
+  }
+  setTimeout(drainLiveQueue, liveQueue.length ? 120 : 400);
+}
+
+function collectEdges(selfId, grouped, direction) {
+  if (!grouped) return;
+  for (const [kind, peers] of Object.entries(grouped)) {
+    for (const peer of peers) {
+      // out = self is the from-side child; in = peer is the from-side child.
+      const fromId = direction === "out" ? selfId : peer.id;
+      const toId = direction === "out" ? peer.id : selfId;
+      addEdge({
+        from_id: fromId, to_id: toId, edge_kind: kind, valence: peer.valence,
+      });
+    }
+  }
+}
+
+// Per-kind <span> holding the live node count, keyed by kind, refreshed on
+// every commit.
+const countEls = new Map();
+
+function buildLegend() {
+  const nodes = document.getElementById("legend-nodes");
+  for (const kind of Object.keys(NODE_COLORS)) {
+    // Node rows are interactive: clicking toggles that kind's visibility, so
+    // the legend doubles as a filter control (dead legend -> live panel).
+    nodes.appendChild(nodeLegendRow(kind));
+  }
+  const edges = document.getElementById("legend-edges");
+  for (const kind of Object.keys(EDGE_COLORS)) {
+    edges.appendChild(edgeLegendRow(kind));
+  }
+}
+
+function nodeLegendRow(kind) {
+  const row = document.createElement("div");
+  row.className = "row toggle";
+  const mark = document.createElement("span");
+  mark.className = "swatch";
+  mark.style.background = nodeColor(kind);
+  const text = document.createElement("span");
+  text.textContent = kind;
+  const count = document.createElement("span");
+  count.className = "count";
+  countEls.set(kind, count);
+  row.append(mark, text, count);
+  row.addEventListener("click", () => {
+    if (hiddenKinds.has(kind)) hiddenKinds.delete(kind);
+    else hiddenKinds.add(kind);
+    row.classList.toggle("off", hiddenKinds.has(kind));
+    // Re-apply both accessors so nodes AND their edges hide/show together.
+    Graph.nodeVisibility(Graph.nodeVisibility());
+    Graph.linkVisibility(Graph.linkVisibility());
+  });
+  return row;
+}
+
+function edgeLegendRow(kind) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const mark = document.createElement("span");
+  mark.className = "line";
+  mark.style.borderTopColor = EDGE_COLORS[kind] || FALLBACK;
+  mark.style.borderTopStyle = kind === "favors" ? "dashed" : "solid";
+  const text = document.createElement("span");
+  text.textContent = kind;
+  row.append(mark, text);
+  return row;
+}
+
+function updateLegendCounts() {
+  const tally = new Map();
+  for (const n of data.nodes) tally.set(n.kind, (tally.get(n.kind) || 0) + 1);
+  for (const [kind, el] of countEls) el.textContent = tally.get(kind) || 0;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+
+init();
+</script>
+</body>
+</html>

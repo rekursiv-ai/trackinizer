@@ -1,0 +1,253 @@
+name: Import public changes
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      public_base_ref:
+        description: >-
+          Public ref of the already-synced base tree. Leave empty to resolve
+          it from the target's last landed import (the usual recovery path).
+        required: false
+      public_head_ref:
+        description: Public ref to import. Defaults to this workflow run SHA.
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: copybarista-import-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  import-change:
+    name: Import public changes to source
+    runs-on: ubuntu-latest
+    env:
+      DISPATCH_PUBLIC_BASE_REF: ${{ inputs.public_base_ref }}
+      DISPATCH_PUBLIC_HEAD_REF: ${{ inputs.public_head_ref }}
+      TARGET_REPO: ${{ vars.COPYBARISTA_SOURCE_REPO }}
+      TARGET_PROJECT_PATH: ${{ vars.COPYBARISTA_TARGET_PROJECT_PATH }}
+      COPYBARISTA_TOOL_PROJECT_PATH: ${{ vars.COPYBARISTA_TOOL_PROJECT_PATH }}
+      COPYBARISTA_IMPORT_BRANCH_PREFIX: "trackinizer/import/"
+      COPYBARISTA_SYNC_LABEL: "Trackinizer"
+      COPYBARISTA_SYNC_USER_NAME: "copybarista"
+      COPYBARISTA_SYNC_USER_EMAIL: "rekursiv-bot@rekursiv.ai"
+
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        !startsWith(github.event.pull_request.head.ref, 'trackinizer/export/')
+      ) ||
+      (
+        github.event_name == 'push' &&
+        github.event.before != '0000000000000000000000000000000000000000' &&
+        github.event.head_commit.author.email != 'rekursiv-bot@rekursiv.ai' &&
+        !contains(github.event.head_commit.message, 'trackinizer/export/') &&
+        !contains(github.event.head_commit.message, 'Trackinizer export branch:')
+      )
+
+    steps:
+      - name: Set sync paths
+        run: |
+          echo "IMPORT_REPORT=$RUNNER_TEMP/copybarista-import-report.json" >> "$GITHUB_ENV"
+          echo "TRUSTED_IMPORT_SCRIPT=$RUNNER_TEMP/sync_import_change.py" >> "$GITHUB_ENV"
+
+      - id: settings
+        name: Check settings
+        env:
+          IMPORT_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
+        run: |
+          missing=false
+          if [ -z "$IMPORT_TOKEN" ]; then
+            echo "::error::Set COPYBARISTA_IMPORT_TOKEN with repo and workflow scopes."
+            missing=true
+          fi
+          if [ -z "$TARGET_REPO" ]; then
+            echo "::error::Set COPYBARISTA_SOURCE_REPO."
+            missing=true
+          fi
+          if [ -z "$TARGET_PROJECT_PATH" ]; then
+            echo "::error::Set COPYBARISTA_TARGET_PROJECT_PATH."
+            missing=true
+          fi
+          if [ -z "$COPYBARISTA_TOOL_PROJECT_PATH" ]; then
+            echo "::error::Set COPYBARISTA_TOOL_PROJECT_PATH."
+            missing=true
+          fi
+          if [ "$missing" = "true" ]; then
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              exit 1
+            fi
+            echo "::notice::Public-to-source import is not configured; skipping."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+      # The target checkout precedes ref resolution so a push/dispatch can
+      # derive the merge baseline from what the target actually imported last,
+      # not from the pushed commit's parent (which drifts ahead whenever an
+      # import fails to land). Needs full history for the import-commit walk.
+      - uses: actions/checkout@v4
+        if: steps.settings.outputs.enabled == 'true'
+        with:
+          repository: ${{ env.TARGET_REPO }}
+          token: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
+          ref: main
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        if: steps.settings.outputs.enabled == 'true'
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+        if: steps.settings.outputs.enabled == 'true'
+      - name: Install system packages
+        if: steps.settings.outputs.enabled == 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ripgrep fd-find
+
+      # Capture the target's own import helper before running it, so baseline
+      # resolution below reuses the tested `last_synced_public_sha` logic rather
+      # than a second, drift-prone shell reimplementation. The target checkout
+      # has persist-credentials disabled; this reads its history only.
+      - name: Capture trusted import helper
+        if: steps.settings.outputs.enabled == 'true'
+        run: |
+          install -m 600 \
+            "target/$COPYBARISTA_TOOL_PROJECT_PATH/scripts/sync_import_change.py" \
+            "$TRUSTED_IMPORT_SCRIPT"
+
+      - id: refs
+        name: Resolve public refs
+        if: steps.settings.outputs.enabled == 'true'
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base_ref="${{ github.event.pull_request.base.sha }}"
+            head_ref="${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            base_ref="$DISPATCH_PUBLIC_BASE_REF"
+            head_ref="$DISPATCH_PUBLIC_HEAD_REF"
+            if [ -z "$head_ref" ]; then
+              head_ref="${GITHUB_SHA}"
+            fi
+          else
+            head_ref="${GITHUB_SHA}"
+            base_ref=""
+          fi
+          # On push (and any run that left base_ref empty), resolve the baseline
+          # from the target's last landed import via the tested helper. Its
+          # commit subject records the imported public SHA -- the tree the
+          # target reflects -- which is the correct three-way-merge common
+          # ancestor. --fallback-sha is the branch tip before this push
+          # (github.event.before); it is used only on a genuine first import
+          # (no landed history), where merge-import tolerates an older base.
+          if [ -z "$base_ref" ]; then
+            base_ref="$(uv --quiet run --no-project python \
+              "$TRUSTED_IMPORT_SCRIPT" --print-synced-base \
+              --target-dir target \
+              --base-branch main \
+              --sync-label "$COPYBARISTA_SYNC_LABEL" \
+              --fallback-sha "${{ github.event.before }}")"
+          fi
+          if [ -z "$base_ref" ] || [ "$base_ref" = "0000000000000000000000000000000000000000" ]; then
+            echo "::error::Cannot resolve public base ref for import."
+            exit 1
+          fi
+          for ref in "$base_ref" "$head_ref"; do
+            if ! git check-ref-format --allow-onelevel "$ref"; then
+              echo "::error::Invalid public ref: $ref"
+              exit 1
+            fi
+          done
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.settings.outputs.enabled == 'true'
+        with:
+          ref: ${{ steps.refs.outputs.base_ref }}
+          path: public-base
+      - uses: actions/checkout@v4
+        if: steps.settings.outputs.enabled == 'true'
+        with:
+          ref: ${{ steps.refs.outputs.head_ref }}
+          path: public-head
+
+      # Resolve head to its concrete commit SHA. `head_ref` may be a symbolic
+      # ref (a dispatch may pass a branch name), but the import commit subject
+      # must record a SHA so the next run's baseline walk can match it. This is
+      # the exact tree the target will reflect after this import lands.
+      - id: head_sha
+        name: Resolve public head SHA
+        if: steps.settings.outputs.enabled == 'true'
+        run: echo "sha=$(git -C public-head rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Import public tree into target repository
+        if: steps.settings.outputs.enabled == 'true'
+        run: |
+          public_base_ref="${{ steps.refs.outputs.base_ref }}"
+          public_head_ref="${{ steps.refs.outputs.head_ref }}"
+          public_head_sha="${{ steps.head_sha.outputs.sha }}"
+          uv --quiet run --no-project python \
+            "$TRUSTED_IMPORT_SCRIPT" \
+            --public-base public-base \
+            --public-head public-head \
+            --target-dir target \
+            --target-repo "$TARGET_REPO" \
+            --project-path "$TARGET_PROJECT_PATH" \
+            --base-branch main \
+            --public-repo "$GITHUB_REPOSITORY" \
+            --public-sha "$public_head_sha" \
+            --public-base-ref "$public_base_ref" \
+            --public-head-ref "$public_head_ref" \
+            --branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX" \
+            --sync-label "$COPYBARISTA_SYNC_LABEL" \
+            --report "$IMPORT_REPORT" \
+            --type-check-target . \
+            --open-pr false
+
+      - name: Open or update target import PR
+        if: steps.settings.outputs.enabled == 'true' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.COPYBARISTA_IMPORT_TOKEN }}
+        run: |
+          public_base_ref="${{ steps.refs.outputs.base_ref }}"
+          public_head_ref="${{ steps.refs.outputs.head_ref }}"
+          public_head_sha="${{ steps.head_sha.outputs.sha }}"
+          # The target checkout uses persist-credentials: false so the import
+          # token never reaches the validation step (which executes imported
+          # public code). The PR step needs git auth to push the import branch,
+          # so configure a token auth header scoped to this target checkout only.
+          auth_header="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -C target config http."https://github.com/".extraheader \
+            "AUTHORIZATION: basic $auth_header"
+          uv --quiet run --no-project python "$TRUSTED_IMPORT_SCRIPT" \
+            --target-dir target \
+            --target-repo "$TARGET_REPO" \
+            --project-path "$TARGET_PROJECT_PATH" \
+            --base-branch main \
+            --public-repo "$GITHUB_REPOSITORY" \
+            --public-sha "$public_head_sha" \
+            --public-base-ref "$public_base_ref" \
+            --public-head-ref "$public_head_ref" \
+            --branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX" \
+            --sync-label "$COPYBARISTA_SYNC_LABEL" \
+            --report "$IMPORT_REPORT" \
+            --open-pr true \
+            --open-pr-only
+
+      - name: Upload import report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: copybarista-import-report
+          path: ${{ env.IMPORT_REPORT }}
+          if-no-files-found: ignore
