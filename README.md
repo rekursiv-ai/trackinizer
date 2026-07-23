@@ -1,11 +1,60 @@
-# Trackinizer
+# trackinizer
 
-Centralized agent database for inquiries (Issues + Artifacts), work, and
-knowledge. Three storage tables (`inquiries`, `edges`, `change_log`) backed
-by Postgres (real or PGlite). FastAPI on top.
+[![PyPI version](https://img.shields.io/pypi/v/trackinizer.svg)](https://pypi.org/project/trackinizer/)
+[![CI](https://github.com/rekursiv-ai/trackinizer/actions/workflows/package-validation.yml/badge.svg?branch=main)](https://github.com/rekursiv-ai/trackinizer/actions/workflows/package-validation.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](pyproject.toml)
+
+Centralized agent database for inquiries (Issues + Artifacts), work, and knowledge. Three
+storage tables (`inquiries`, `edges`, `change_log`) backed by Postgres (real or embedded
+PGlite), a FastAPI HTTP layer on top, a typed Python client SDK, and `trax`, a CLI for
+creating, querying, and linking work items and the artifacts (papers, beliefs, experiments,
+code changes, web results) that cite them. It exists so that multi-agent coding/research
+workflows have one shared, queryable place to track schedulable work and the evidence behind
+conclusions, instead of scattering both across markdown files and ad hoc JSON blobs.
+
+> *If your agents produce more findings, experiments, and citations than anyone can keep
+> straight in scattered markdown files.*
 
 `types/` is the design contract. Every other module is a realization of
 that contract over Postgres + HTTP.
+
+## Install
+
+```bash
+pip install trackinizer
+```
+
+```bash
+uv add trackinizer
+```
+
+Requires Python 3.12+. The default `pglite` database engine spawns a Node.js child
+process, so Node must be on `PATH` even for local, single-user use -- see System
+dependencies under Development below.
+
+## Quickstart
+
+Start the server against embedded PGlite with ephemeral (throwaway) data and auth disabled,
+good for a first local run:
+
+```bash
+python -m trackinizer.server --no-auth --ephemeral
+```
+
+In another terminal, drive it with `trax` (installed as a console script by `pip install
+trackinizer`; with no profile configured it talks to `http://127.0.0.1:8765`, the server's
+default):
+
+```bash
+trax help                                                    # list verbs and per-kind help
+trax issue title to "Write the quickstart" priority to high  # create an Issue
+trax issue                                                   # list all Issues
+```
+
+`trax issue 1` shows the row just created; `trax issue 1 status to complete` mutates a
+field. See `trackinizer/trax/docs/GRAMMAR.md` for the full CLI grammar and
+`trackinizer/trax/README.md` for more worked examples (profiles, edges, `trax run`).
 
 ## The UI
 
@@ -242,15 +291,62 @@ uv run python -m trackinizer.server --engine pg --dsn ...  # against real Postgr
 uv run python -m trackinizer.server --no-web               # API only
 ```
 
-See `example.sh` for a worked end-to-end submit/edit/query session.
+See `trackinizer/example.sh` for a worked end-to-end submit/edit/query session.
 
-## System dependencies
-
-Integration tests (`@pytest.mark.integration`) provision a real Postgres
-via `pytest-postgresql` and require pgvector. PGlite bundles its own
-`vector` extension, so the default `pglite` engine has no system deps.
+## Development
 
 ```bash
-sudo apt-get install -y postgresql postgresql-18-pgvector   # Ubuntu/Debian
-brew install postgresql@17 pgvector                         # macOS
+uv sync --all-groups
+uv run pytest
 ```
+
+`uv sync --all-groups` pulls in the `debug`, `lint`, `test`, and `typecheck` dependency
+groups (see `pyproject.toml`). Tests are organized in tiers by pytest marker; the default
+`addopts` runs only the fast, no-network tier, and the rest are opt-in via `-m`:
+
+```bash
+uv run pytest                              # default: unit tests, no network/real DB
+uv run pytest -m integration                # needs a local Postgres -- see below
+uv run pytest -m ci_smoke                   # slower packaging smoke tests
+uv run pytest -m performance                 # timing-sensitive tests
+RUN_REAL_LLM=1 uv run pytest -m real_llm     # spawns a live LLM CLI (claude/codex/...)
+```
+
+Before opening a pull request, also run the checks in `CONTRIBUTING.md` (`ruff check`,
+`ruff format --check`, `codespell`, `ty check`, `basedpyright`).
+
+### System dependencies
+
+- **Node.js** on `PATH` -- the default `pglite` database engine (used by
+  `trackinizer.server` itself, not just tests) spawns a Node child process under the
+  hood (`py-pglite` -> `@electric-sql/pglite`). PGlite bundles its own `vector`
+  extension, so this is the only system dependency the default engine needs.
+- **libpq, test-only** -- `@pytest.mark.integration` tests provision a real, scratch
+  Postgres via `pytest-postgresql` and require pgvector. `pytest-postgresql` is
+  registered as a pytest plugin (a `pytest11` entry point), so it is auto-loaded by
+  pytest at startup on *every* run, before any test is selected or `conftest.py` even
+  executes; the plugin imports `psycopg`, which needs `libpq` to import at all. So on a
+  machine with the `test` dependency group installed but no system `libpq`, `pytest`
+  fails at collection for the whole suite, not just the integration-marked tests --
+  installing `libpq` (below) is required to run `pytest` at all, even for the unit tier.
+
+```bash
+sudo apt-get install -y nodejs postgresql libpq-dev postgresql-18-pgvector   # Ubuntu/Debian
+brew install node postgresql@17 pgvector                                    # macOS
+```
+
+(On macOS, `libpq` ships as part of the `postgresql` formula.)
+
+## See also
+
+Sibling libraries in the [rekursiv-ai](https://github.com/rekursiv-ai) family:
+
+- [sagent](https://github.com/rekursiv-ai/sagent) — The self-mutating multi-provider coding-agent CLI and typed Python library.
+- [wesearch](https://github.com/rekursiv-ai/wesearch) — Web search, resilient page fetch, and scholarly-paper lookup without a browser stack.
+- [configgle](https://github.com/rekursiv-ai/configgle) — Hierarchical experiment configuration in typed pure-Python dataclasses instead of YAML.
+- [priml](https://github.com/rekursiv-ai/priml) — Composable PyTorch building blocks: models, optimizers, losses, and a step-based training loop.
+- [madcatter](https://github.com/rekursiv-ai/madcatter) — Rich-based Markdown renderer for the terminal; ships the `mdcat` CLI.
+
+## License
+
+Apache License 2.0

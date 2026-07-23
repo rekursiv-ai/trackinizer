@@ -176,17 +176,17 @@ Every domain noun is an `Inquiry`. Two branches:
   `WebSearch`.
 
 Every edge is stored child -> parent: `from` is the younger/dependent
-vertex, `to` is its older parent. There are exactly six edge kinds.
+vertex, `to` is its older parent. There are exactly seven edge kinds.
 
 ```text
               OLDER (parent)
 
-  {narrow,require}s   {supersedes,produced_by}   {prove,favor}s
-         ▲                      ▲                       ▲
-         │                      │                       │
-       Issue                 Inquiry          {Belief,Experiment}
-         │                      │                       │
-         └─ from = child ───────┴───────────────────────┘
+  {narrow,require}s   {supersedes,produced_by}   {prove,favor}s   cites_paper
+         ▲                      ▲                       ▲             ▲
+         │                      │                       │             │
+       Issue                 Inquiry          {Belief,Experiment}    Paper
+         │                      │                       │             │
+         └─ from = child ───────┴───────────────────────┴─────────────┘
 
               NEWER (child)
 ```
@@ -199,6 +199,7 @@ vertex, `to` is its older parent. There are exactly six edge kinds.
 | `supersedes` | successor Inquiry -> predecessor Inquiry |
 | `proves` | citing Artifact -> cited {Belief, Experiment} |
 | `favors` | citing Artifact -> cited {Belief, Experiment} |
+| `cites_paper` | citing (younger) Paper -> cited (older) Paper |
 
 Issues decompose only into Issues. Produced Artifacts are provenance, not
 children in an ownership tree. Artifacts record outputs and evidence; they
@@ -239,11 +240,16 @@ Ordered embedded lists live as row-level arrays here, not in `edges`:
 - `subscribers TEXT[]` -- agent ids notified on changes.
 - `experiment_codechanges UUID[]` -- chronological `CodeChange` ids on
   `Experiment`.
-- `websearch_results JSONB` -- ordered `(id, kind)` pairs on `WebSearch`
-  (`kind` is `WebResult` or `Paper`).
 
 The rule: edges for unordered graph relationships; embedded arrays for
-ordered, append-mostly lists where rank matters on every read.
+ordered, append-mostly lists where rank matters on every read. `WebSearch`
+findings are the edge case (so to speak): a search's results are not a
+stored column but `produced_by` edges (`WebResult`/`Paper` -> `WebSearch`,
+the finding is the younger child of the search that surfaced it), because
+found Artifacts are many-to-one -- two searches surfacing the same `Paper`
+share one node, each carrying its own `produced_by` edge to its search --
+so membership has to live on the edge set, not an array. See
+`types/inquiries.py`'s `WebSearch` docstring.
 
 **Column naming.** A base field (applies to every kind) is bare
 (`status`, `owner`). A kind-specific column carries its owning kind as a
