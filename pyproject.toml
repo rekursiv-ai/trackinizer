@@ -71,6 +71,9 @@ dev = [
     {include-group = "typecheck"},
 ]
 
+[project.scripts]
+trax = "trackinizer.trax.cli:main"
+
 [project.urls]
 Homepage = "https://www.rekursiv.ai"
 Repository = "https://github.com/rekursiv-ai/trackinizer"
