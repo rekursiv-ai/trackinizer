@@ -172,5 +172,5 @@ class SlashCommandDetector:
         )
         try:
             self._on_command(command, self._clock())
-        except Exception:  # noqa: BLE001 -- a sink bug must skip one command, not crash the pump.
+        except Exception:
             _logger.warning("slash-command sink failed for %r", command, exc_info=True)

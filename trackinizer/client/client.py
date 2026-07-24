@@ -692,10 +692,10 @@ class Client:
         edge_kind: str,
         *,
         actor: Inquiry.Actor,
-        priority: int | None | Absent = ABSENT,
-        note: str | None | Absent = ABSENT,
-        valence: float | None | Absent = ABSENT,
-        labels: Sequence[str] | None | Absent = ABSENT,
+        priority: int | Absent | None = ABSENT,
+        note: str | Absent | None = ABSENT,
+        valence: float | Absent | None = ABSENT,
+        labels: Sequence[str] | Absent | None = ABSENT,
     ) -> None:
         """Set edge annotation fields, one PUT per field actually sent.
 

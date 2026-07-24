@@ -489,17 +489,15 @@ reason  optional; default is empty string
 ```
 {
   <SubmitKind JSON from wire/bodies.py>,
-  "actor": "<actor>"
+  "actor": "<actor>",
+  "reason": "<text>"
 }
 ```
 
 ```
 actor   optional audit label; omitted means server uses principal email
+reason  optional; default is empty string
 ```
-
-`SubmitBase` (the shared base every `SubmitKind` extends) has no `reason`
-field -- `reason` is settable only on edits (section 3.3-3.5) and edge
-creation (section 3.8), not on inquiry creation.
 
 ### 3.7 Inquiry batch create body
 

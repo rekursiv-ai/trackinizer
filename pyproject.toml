@@ -71,9 +71,6 @@ dev = [
     {include-group = "typecheck"},
 ]
 
-[project.scripts]
-trax = "trackinizer.trax.cli:main"
-
 [project.urls]
 Homepage = "https://www.rekursiv.ai"
 Repository = "https://github.com/rekursiv-ai/trackinizer"
@@ -186,6 +183,7 @@ ignore = [
 
     # Standard style relaxations.
     "A002",    # Builtin argument shadowing.
+    "BLE001",  # Blind exception (teardown/back-channel handlers must not raise).
     "E501",    # Line too long. (Will be fixed by formatter.)
     "EM101",   # Raw string in exception.
     "EM102",   # F-string in exception.

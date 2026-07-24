@@ -211,7 +211,15 @@ jobs:
             --branch-prefix "$COPYBARISTA_IMPORT_BRANCH_PREFIX" \
             --sync-label "$COPYBARISTA_SYNC_LABEL" \
             --report "$IMPORT_REPORT" \
-            --type-check-target . \
+            --validation-command 'uv sync --frozen --all-groups' \
+            --validation-command 'uv run ruff check --no-fix --no-cache .' \
+            --validation-command 'uv run ruff format --check --no-cache .' \
+            --validation-command 'uv run codespell .' \
+            --validation-command 'uv run ty check' \
+            --validation-command 'uv run basedpyright --threads=6 trackinizer' \
+            --validation-command 'uv run pytest' \
+            --validation-command 'uv run python -c "import trackinizer"' \
+            --validation-command 'uv build' \
             --open-pr false
 
       - name: Open or update target import PR

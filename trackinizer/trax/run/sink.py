@@ -359,7 +359,7 @@ class ResilientSink:
         if self._primary is not None:
             try:
                 return self._primary.open()
-            except Exception as err:  # noqa: BLE001 -- an open failure degrades like an emit failure.
+            except Exception as err:
                 self._degrade(err)
         return None
 
@@ -373,7 +373,7 @@ class ResilientSink:
             try:
                 self._primary.emit(adapter_name, event)
                 return
-            except Exception as err:  # noqa: BLE001 -- any sink failure must degrade, not crash the drain thread.
+            except Exception as err:
                 self._degrade(err)
         self._ensure_fallback().emit(adapter_name, event)
 
@@ -382,7 +382,7 @@ class ResilientSink:
             try:
                 self._primary.flush()
                 return
-            except Exception as err:  # noqa: BLE001 -- a flush failure degrades like an emit failure.
+            except Exception as err:
                 self._degrade(err)
         if self._fallback is not None:
             self._fallback.flush()
@@ -391,7 +391,7 @@ class ResilientSink:
         if self._primary is not None:
             try:
                 self._primary.close()
-            except Exception as err:  # noqa: BLE001 -- close failures degrade like emit failures.
+            except Exception as err:
                 self._degrade(err)
         if self._fallback is not None:
             self._fallback.close()
