@@ -119,6 +119,7 @@ class TestCoverageStoreEdits:
     )
     async def test_null_edit_storage_contracts(
         self,
+        *,
         method: str,
         column: str,
         old: object,

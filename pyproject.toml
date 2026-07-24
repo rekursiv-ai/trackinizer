@@ -161,6 +161,7 @@ ignore = [
     "ANN",     # Flake8 annotations. (We use pyright for type checking.)
     "C90",     # McCabe complexity.
     "COM812",  # Missing trailing comma. (select=ALL warning is unfixable.)
+    "CPY001",  # Missing copyright notice. (License is in LICENSE, not per-file.)
 
     # Relax docstring rules.
     "D100",    # Undocumented public module.

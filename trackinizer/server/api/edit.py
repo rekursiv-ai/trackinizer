@@ -84,7 +84,7 @@ def _make_put(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON]]
             )
         else:
             change_id = await _set_value(
-                route, target_id, body.value, body, store, identity
+                route, target_id, body.value, body, store, identity=identity
             )
         return _mutation_response(target_id, change_id)
 
@@ -147,6 +147,7 @@ async def _set_value(
     value: object,
     body: ActorMixin,
     store: Store,
+    *,
     identity: AuthIdentity,
 ) -> uuid.UUID | None:
     """Execute a blind ``PUT`` overwrite; return the change id, or ``None`` for a no-op.
@@ -195,7 +196,7 @@ async def _clear_value(
             actor=_actor_of(body, identity),
             reason=body.reason,
         )
-    return await _set_value(route, target_id, None, body, store, identity)
+    return await _set_value(route, target_id, None, body, store, identity=identity)
 
 
 async def _run_compare_and_set(

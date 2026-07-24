@@ -110,6 +110,7 @@ async def lookup_route(
 async def list_inquiries_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
     kind: Annotated[list[Inquiry.InquiryKind], Query()],
     status: Inquiry.Status | None = None,
     limit: int = DEFAULT_LIST_LIMIT,
@@ -279,6 +280,7 @@ async def get_change_route(
 async def list_change_log_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
     since: datetime | None = None,
     after_id: uuid.UUID | None = None,
     actor: Inquiry.Actor | None = None,

@@ -153,6 +153,7 @@ async def create_edge_route(
     to_id: uuid.UUID,
     req: CreateEdge,
     request: Request,
+    *,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> MutableJSON:
     store = get_store(request)
@@ -178,6 +179,7 @@ async def delete_edge_route(
     to_id: uuid.UUID,
     req: FieldMutation,
     request: Request,
+    *,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> MutableJSON:
     store = get_store(request)
@@ -201,6 +203,7 @@ def _make_edge_put(route: EdgeFieldRoute) -> Callable[..., Awaitable[MutableJSON
         to_id: uuid.UUID,
         body: FieldSet[object],
         request: Request,
+        *,
         identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     ) -> MutableJSON:
         store = get_store(request)
@@ -232,6 +235,7 @@ def _make_edge_delete(route: EdgeFieldRoute) -> Callable[..., Awaitable[MutableJ
         to_id: uuid.UUID,
         body: FieldMutation,
         request: Request,
+        *,
         identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     ) -> MutableJSON:
         store = get_store(request)
@@ -260,6 +264,7 @@ async def patch_edge_labels_route(
     to_id: uuid.UUID,
     req: FieldOp[str],
     request: Request,
+    *,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> MutableJSON:
     """Add or remove one label on an edge, the only ``PATCH``-able annotation."""
