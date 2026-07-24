@@ -603,10 +603,10 @@ class FakeClient:
         edge_kind: str,
         *,
         actor: str,
-        priority: int | None | Absent = _ABSENT,
-        note: str | None | Absent = _ABSENT,
-        valence: float | None | Absent = _ABSENT,
-        labels: Sequence[str] | None | Absent = _ABSENT,
+        priority: int | Absent | None = _ABSENT,
+        note: str | Absent | None = _ABSENT,
+        valence: float | Absent | None = _ABSENT,
+        labels: Sequence[str] | Absent | None = _ABSENT,
     ) -> None:
         metadata: dict[str, object] = {"actor": actor}
         if not isinstance(priority, Absent):

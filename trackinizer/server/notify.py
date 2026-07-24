@@ -138,7 +138,7 @@ async def _publish_notifications(
                 NOTIFY_CHANNEL,
                 _notify_payload(notification.subject_id),
             )
-        except Exception as exc:  # noqa: BLE001 -- best-effort post-commit fanout.
+        except Exception as exc:
             logging.getLogger(__name__).warning(
                 "post-commit NOTIFY failed for %s: %s",
                 notification.subject_id,

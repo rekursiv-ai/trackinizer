@@ -21,6 +21,24 @@ A well-formed Paper has attempted (filled OR gap-noted) every field:
 `doi` resolution, companion WebResults, and ≥1 label. Report which fields stayed
 empty and WHY (source had no value vs. not attempted — the latter is a bug).
 
+## `abstract` vs `description` — do not conflate
+
+- **`abstract`** is the paper's OWN abstract, quoted (lightly trimmed/whitespace-
+  collapsed) from the source. It is verbatim third-party text. **Never** write
+  your own analysis, relevance-to-our-project notes, "closest prior art"
+  verdicts, or any editorializing here — that corrupts the record and misleads
+  every future reader who trusts `abstract` to be the source's words.
+- **`description`** is YOUR long-form body: editorial commentary, why this paper
+  matters to the current work, how it relates to a Belief, caveats, the
+  edge-relevance rationale. Put every first-person / project-specific note here.
+- Rule of thumb: if a sentence would not appear in the published paper, it does
+  not belong in `abstract`. It belongs in `description` (or on the citation
+  edge's `note`).
+
+There is no separate `doi` field — a DOI goes in `source` as `doi:10.xxxx/yyy`.
+For an arXiv paper, `source` = `arXiv:NNNN.NNNNN` and the DOI (if resolved) may
+be noted in `description`.
+
 ## Source cascade (attempt each in order; first hit wins)
 
 | Field | Cascade | Notes |
@@ -167,6 +185,9 @@ fields become fillable.
 
 ## Common mistakes
 
+- **Writing your own analysis into `abstract`** instead of `description` — the
+  abstract must stay the source's verbatim words (see §`abstract` vs
+  `description`).
 - Dropping a non-arXiv citer instead of making it a `misc` node.
 - FABRICATING a `-01-01`/epoch date with no source behind it (leave empty
   instead) — but do NOT strip a genuine year-only `-01-01` a source actually

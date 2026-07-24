@@ -227,7 +227,7 @@ def _run_pump_in_thread(pump: PtyPump) -> tuple[threading.Thread, list[int]]:
     def _target() -> None:
         try:
             rc.append(pump.run())
-        except Exception:  # noqa: BLE001 -- teardown-race artifact, not under test.
+        except Exception:
             rc.append(-1)
 
     t = threading.Thread(target=_target, daemon=True)

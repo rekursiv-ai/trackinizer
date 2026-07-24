@@ -384,7 +384,7 @@ def _inbound_poll_loop(
                 for text, source, room in client.drain_inbound(session_id):
                     pump.inject(_render_inbound(text, source, room))
                 warned = False  # recovered; allow a fresh warning next outage
-        except Exception:  # noqa: BLE001 -- a flaky back-channel must not crash the run.
+        except Exception:
             # Warn once per outage on stderr (mirrors the capture sink's
             # degrade banner) so a token expiry / network drop is visible,
             # not a silent stop; repeats stay at DEBUG to avoid flooding.
@@ -554,7 +554,7 @@ def _drain_tick(
             spawn_time=spawn_time,
         )
         sink.flush()
-    except Exception:  # noqa: BLE001 -- a transient drain error must not stop capture.
+    except Exception:
         _logger.warning("trax run: drain pass failed; continuing", exc_info=True)
 
 
@@ -759,7 +759,7 @@ def _process_chunk(
     """
     try:
         events = tuple(adapter.parse(raw, whole_file=whole_file))
-    except Exception:  # noqa: BLE001 -- a parser bug must skip one chunk, not stop capture.
+    except Exception:
         # ``exc_info`` so the swallowed failure carries a traceback: without it
         # a malformed-output loss is an opaque one-liner with no clue which
         # adapter path raised (K6-004).
