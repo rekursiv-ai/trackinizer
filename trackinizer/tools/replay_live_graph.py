@@ -366,7 +366,7 @@ def _insert_chunk(
         if sid not in id_map:
             continue
         for from_id, to_id, kind, valence in _detail_edges(sid, d, valid_kinds):
-            _write_edge(target, id_map, from_id, to_id, kind, valence)
+            _write_edge(target, id_map, from_id, to_id, kind, valence=valence)
 
 
 def _detail_label(detail: dict[str, Any]) -> str:
@@ -473,7 +473,7 @@ def _replay(
 
     written = 0
     for from_id, to_id, kind, valence in edges:
-        if _write_edge(target, id_map, from_id, to_id, kind, valence):
+        if _write_edge(target, id_map, from_id, to_id, kind, valence=valence):
             written += 1
             if written % _BATCH == 0:
                 _log.info("[replay]   edges %d/%d", written, len(edges))
@@ -485,6 +485,7 @@ def _write_edge(
     from_id: str,
     to_id: str,
     kind: str,
+    *,
     valence: float | None,
 ) -> bool:
     """Create one edge on the target, rewired to the replayed ids.
@@ -548,7 +549,7 @@ def _replay_traversal(
         new_id = target.submit(node["kind"], _node_body(node))
         id_map[node["id"]] = str(new_id)
         for edge in edges_from[node["id"]]:
-            _write_edge(target, id_map, edge[0], edge[1], edge[2], edge[3])
+            _write_edge(target, id_map, edge[0], edge[1], edge[2], valence=edge[3])
         if (index + 1) % 50 == 0:
             _log.info("[replay]   inserted %d/%d nodes", index + 1, len(order))
         if delay > 0:

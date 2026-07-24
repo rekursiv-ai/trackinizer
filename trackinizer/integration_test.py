@@ -402,12 +402,18 @@ class TestIntegrationEndToEnd:
         # input); one INSERT per value, distinct steps to avoid a PK collision
         # masking the CHECK.
         inserts = (
-            "INSERT INTO experiment_metrics (experiment_id, key, step, value) "
-            "VALUES ($1, 'loss', 0, 'NaN'::float8)",
-            "INSERT INTO experiment_metrics (experiment_id, key, step, value) "
-            "VALUES ($1, 'loss', 1, 'Infinity'::float8)",
-            "INSERT INTO experiment_metrics (experiment_id, key, step, value) "
-            "VALUES ($1, 'loss', 2, '-Infinity'::float8)",
+            (
+                "INSERT INTO experiment_metrics (experiment_id, key, step, value) "
+                "VALUES ($1, 'loss', 0, 'NaN'::float8)"
+            ),
+            (
+                "INSERT INTO experiment_metrics (experiment_id, key, step, value) "
+                "VALUES ($1, 'loss', 1, 'Infinity'::float8)"
+            ),
+            (
+                "INSERT INTO experiment_metrics (experiment_id, key, step, value) "
+                "VALUES ($1, 'loss', 2, '-Infinity'::float8)"
+            ),
         )
         async with integ_store.engine.acquire() as conn:
             for stmt in inserts:

@@ -367,8 +367,10 @@ class TestAdminUsers:
             "BEGIN",
             "SELECT pg_advisory_xact_lock(hashtext('admin_roster'))",
             "UPDATE users SET status = 'disabled' WHERE id = $1",
-            "UPDATE api_keys SET revoked_at = clock_timestamp() "
-            "WHERE user_id = $1 AND revoked_at IS NULL",
+            (
+                "UPDATE api_keys SET revoked_at = clock_timestamp() "
+                "WHERE user_id = $1 AND revoked_at IS NULL"
+            ),
             "ROLLBACK",
         ]
 

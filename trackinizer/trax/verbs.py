@@ -653,6 +653,7 @@ class Kind(Command):
         source: Ref,
         target: Ref,
         args: argparse.Namespace,
+        *,
         client_factory: Callable[[], Client],
     ) -> None:
         client = client_factory()
@@ -685,6 +686,7 @@ class Kind(Command):
         target: Ref,
         metadata: Mapping[str, object],
         args: argparse.Namespace,
+        *,
         client_factory: Callable[[], Client],
     ) -> None:
         """Link an edge that carries metadata, upserting it in one call.
@@ -1078,7 +1080,7 @@ class Kind(Command):
                 source,
                 target,
                 args,
-                client_factory,
+                client_factory=client_factory,
             )
             return
         cls.run_add_edge(
@@ -1087,7 +1089,7 @@ class Kind(Command):
             target,
             action.metadata,
             args,
-            client_factory,
+            client_factory=client_factory,
         )
 
     @classmethod

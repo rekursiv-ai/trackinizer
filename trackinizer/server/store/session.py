@@ -283,7 +283,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                     Snapshot(
                         agentsession_ended=cast(datetime, row["agentsession_ended"])
                     ),
-                    Snapshot(agentsession_ended=None),
+                    new=Snapshot(agentsession_ended=None),
                     api_key_id=api_key_id,
                     actor=actor,
                 )
@@ -294,7 +294,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                         "AgentSession",
                         "status",
                         Snapshot(status=cast("Inquiry.Status", row["status"])),
-                        Snapshot(status="active"),
+                        new=Snapshot(status="active"),
                         api_key_id=api_key_id,
                         actor=actor,
                     )
@@ -746,7 +746,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                             "str | None", row["agentsession_cli_session_id"]
                         )
                     ),
-                    Snapshot(agentsession_cli_session_id=cli_session_id),
+                    new=Snapshot(agentsession_cli_session_id=cli_session_id),
                     api_key_id=api_key_id,
                     actor=actor,
                 )
@@ -770,7 +770,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 "AgentSession",
                 "agentsession_ended",
                 Snapshot(agentsession_ended=None),
-                Snapshot(agentsession_ended=ended),
+                new=Snapshot(agentsession_ended=ended),
                 api_key_id=api_key_id,
                 actor=actor,
             )
@@ -781,7 +781,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                     "AgentSession",
                     "status",
                     Snapshot(status=cast("Inquiry.Status", row["status"])),
-                    Snapshot(status=status),
+                    new=Snapshot(status=status),
                     api_key_id=api_key_id,
                     actor=actor,
                 )

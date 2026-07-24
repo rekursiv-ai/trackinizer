@@ -152,6 +152,7 @@ async def session_events_route(
 async def read_session_events_route(
     session_id: UUID,
     request: Request,
+    *,
     limit: int = DEFAULT_LIST_LIMIT,
     offset: int = 0,
     seq_range: Annotated[list[str] | None, Query()] = None,
@@ -266,7 +267,7 @@ async def send_message_route(
                     status_code=409,
                     detail=(
                         f"@{body.actor} is in rooms {sorted(rooms)}; "
-                        f"address one explicitly (e.g. @{body.actor}:{sorted(rooms)[0]})"
+                        f"address one explicitly (e.g. @{body.actor}:{min(rooms)})"
                     ),
                 )
 

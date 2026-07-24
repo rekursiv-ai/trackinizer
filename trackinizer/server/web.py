@@ -338,6 +338,7 @@ async def web_subscribe(
 async def web_feed(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
     after_created: datetime | None = None,
     after_session: UUID | None = None,
     after_seq: int | None = None,

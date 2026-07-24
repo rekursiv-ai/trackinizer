@@ -267,7 +267,14 @@ def _spawn_and_drain(
 
     def _drain_loop() -> None:
         _drain_filesystem_loop(
-            adapter, sink, stats, config, stop, baseline, slash_queue, spawn_time
+            adapter,
+            sink,
+            stats,
+            config,
+            stop,
+            baseline=baseline,
+            slash_queue=slash_queue,
+            spawn_time=spawn_time,
         )
 
     drain_thread = threading.Thread(target=_drain_loop, daemon=True)
@@ -462,6 +469,7 @@ def _drain_filesystem_loop(
     stats: _Stats,
     config: RunConfig,
     stop: threading.Event,
+    *,
     baseline: frozenset[Path],
     slash_queue: deque[tuple[SlashCommand, datetime]],
     spawn_time: float,
@@ -496,11 +504,11 @@ def _drain_filesystem_loop(
             stats,
             config,
             slash_queue,
-            offsets,
-            buffers,
-            baseline,
-            stamps,
-            spawn_time,
+            offsets=offsets,
+            buffers=buffers,
+            baseline=baseline,
+            stamps=stamps,
+            spawn_time=spawn_time,
         )
         if stop.wait(poll_interval):
             break
@@ -510,11 +518,11 @@ def _drain_filesystem_loop(
         stats,
         config,
         slash_queue,
-        offsets,
-        buffers,
-        baseline,
-        stamps,
-        spawn_time,
+        offsets=offsets,
+        buffers=buffers,
+        baseline=baseline,
+        stamps=stamps,
+        spawn_time=spawn_time,
     )
 
 
@@ -524,6 +532,7 @@ def _drain_tick(
     stats: _Stats,
     config: RunConfig,
     slash_queue: deque[tuple[SlashCommand, datetime]],
+    *,
     offsets: dict[Path, int],
     buffers: dict[Path, bytearray],
     baseline: frozenset[Path],
@@ -548,8 +557,8 @@ def _drain_tick(
             stats,
             config,
             offsets,
-            buffers,
-            baseline,
+            buffers=buffers,
+            baseline=baseline,
             stamps=stamps,
             spawn_time=spawn_time,
         )
@@ -591,9 +600,9 @@ def _scan_and_read(
     stats: _Stats,
     config: RunConfig,
     offsets: dict[Path, int],
+    *,
     buffers: dict[Path, bytearray],
     baseline: frozenset[Path],
-    *,
     stamps: dict[Path, tuple[int, int]] | None = None,
     spawn_time: float = 0.0,
 ) -> None:
@@ -644,7 +653,16 @@ def _scan_and_read(
             cli_session_id = adapter.session_id_from_path(path)
             if cli_session_id is not None:
                 sink.set_cli_session_id(cli_session_id)
-            _drain_file(path, adapter, sink, stats, config, offsets, buffers, stamps)
+            _drain_file(
+                path,
+                adapter,
+                sink,
+                stats,
+                config,
+                offsets=offsets,
+                buffers=buffers,
+                stamps=stamps,
+            )
 
 
 def _drain_file(
@@ -653,6 +671,7 @@ def _drain_file(
     sink: Sink,
     stats: _Stats,
     config: RunConfig,
+    *,
     offsets: dict[Path, int],
     buffers: dict[Path, bytearray],
     stamps: dict[Path, tuple[int, int]],
@@ -664,9 +683,11 @@ def _drain_file(
     JSONL) follow a byte offset and emit per newline-terminated line.
     """
     if adapter.whole_file:
-        _drain_whole_file(path, adapter, sink, stats, config, stamps)
+        _drain_whole_file(path, adapter, sink, stats, config, stamps=stamps)
         return
-    _drain_appended_lines(path, adapter, sink, stats, config, offsets, buffers)
+    _drain_appended_lines(
+        path, adapter, sink, stats, config, offsets=offsets, buffers=buffers
+    )
 
 
 def _drain_whole_file(
@@ -675,6 +696,7 @@ def _drain_whole_file(
     sink: Sink,
     stats: _Stats,
     config: RunConfig,
+    *,
     stamps: dict[Path, tuple[int, int]],
 ) -> None:
     """Re-read a whole-file session and parse its full body when it changes.
@@ -707,6 +729,7 @@ def _drain_appended_lines(
     sink: Sink,
     stats: _Stats,
     config: RunConfig,
+    *,
     offsets: dict[Path, int],
     buffers: dict[Path, bytearray],
 ) -> None:
@@ -812,8 +835,8 @@ def _dry_run_drain(
                 stats,
                 config,
                 offsets,
-                buffers,
-                frozenset(),
+                buffers=buffers,
+                baseline=frozenset(),
                 stamps=stamps,
             )
             sink.flush()
@@ -823,7 +846,14 @@ def _dry_run_drain(
         pass
     # Final sweep so a file written between the last poll and stop still lands.
     _scan_and_read(
-        adapter, sink, stats, config, offsets, buffers, frozenset(), stamps=stamps
+        adapter,
+        sink,
+        stats,
+        config,
+        offsets,
+        buffers=buffers,
+        baseline=frozenset(),
+        stamps=stamps,
     )
     sink.flush()
     return 0

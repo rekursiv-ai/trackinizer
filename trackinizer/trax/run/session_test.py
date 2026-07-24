@@ -172,7 +172,7 @@ def _scan_once(
     sink = _RecordingSink()
     stats = _Stats()
     config = RunConfig(cli_name="fake")
-    _scan_and_read(adapter, sink, stats, config, {}, {}, baseline)
+    _scan_and_read(adapter, sink, stats, config, {}, buffers={}, baseline=baseline)
     return stats, sink
 
 
@@ -231,7 +231,14 @@ class TestSessionScoping:
         stats = _Stats()
         config = RunConfig(cli_name="fake")
         _scan_and_read(
-            adapter, sink, stats, config, {}, {}, baseline, spawn_time=spawn_time
+            adapter,
+            sink,
+            stats,
+            config,
+            {},
+            buffers={},
+            baseline=baseline,
+            spawn_time=spawn_time,
         )
         # A's file is older than B's spawn -> not B's -> not drained.
         assert sink.events == []
@@ -248,7 +255,14 @@ class TestSessionScoping:
         stats = _Stats()
         config = RunConfig(cli_name="fake")
         _scan_and_read(
-            adapter, sink, stats, config, {}, {}, frozenset(), spawn_time=spawn_time
+            adapter,
+            sink,
+            stats,
+            config,
+            {},
+            buffers={},
+            baseline=frozenset(),
+            spawn_time=spawn_time,
         )
         assert stats.counts == {"UserMessage": 3}
 
@@ -289,7 +303,16 @@ class TestWholeFileDrain:
         config = RunConfig(cli_name="fake")
         stamps: dict[Path, tuple[int, int]] = {}
 
-        _scan_and_read(adapter, sink, stats, config, {}, {}, frozenset(), stamps=stamps)
+        _scan_and_read(
+            adapter,
+            sink,
+            stats,
+            config,
+            {},
+            buffers={},
+            baseline=frozenset(),
+            stamps=stamps,
+        )
         assert [cast("UserMessage", e.message).text for _, _, e in sink.events] == ["a"]
 
         # Same byte length, different content; bump mtime so a time-based
@@ -299,7 +322,16 @@ class TestWholeFileDrain:
         os.utime(log, (first_mtime + 1, first_mtime + 1))
         assert log.stat().st_size == len(json.dumps({"messages": ["a"]}))
 
-        _scan_and_read(adapter, sink, stats, config, {}, {}, frozenset(), stamps=stamps)
+        _scan_and_read(
+            adapter,
+            sink,
+            stats,
+            config,
+            {},
+            buffers={},
+            baseline=frozenset(),
+            stamps=stamps,
+        )
         assert [cast("UserMessage", e.message).text for _, _, e in sink.events] == [
             "a",
             "b",
@@ -349,8 +381,8 @@ class TestGeminiMultiFileDrain:
             stats,
             config,
             {},
-            {},
-            frozenset(),
+            buffers={},
+            baseline=frozenset(),
             stamps=stamps,
         )
 
@@ -446,9 +478,9 @@ class TestDrainLoopSurvivesTransientError:
                 stats,
                 config,
                 stop,
-                frozenset(),
-                slash_queue,
-                0.0,
+                baseline=frozenset(),
+                slash_queue=slash_queue,
+                spawn_time=0.0,
             )
 
         worker = threading.Thread(target=_run, daemon=True)
