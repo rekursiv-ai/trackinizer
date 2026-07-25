@@ -54,6 +54,7 @@ from trackinizer.types.agent_session_events import (
     UserMessage,
 )
 from trackinizer.types.cost import Cost
+from trackinizer.types.edges import Edge
 from trackinizer.types.errors import (
     ConflictError,
     NotFoundError,
@@ -5102,6 +5103,51 @@ class TestFirstEdgeInfersProduced:
         assert citing_row.produced_by == ()
         assert citing_row.produces == ()
 
+    async def _paper_and_belief(self, store: Store) -> tuple[uuid.UUID, uuid.UUID]:
+        """Create an older Belief (claim) and a younger Paper (evidence)."""
+        belief = await store.submit_belief(
+            SubmitBelief(account="tester@example.com", title="claim")
+        )
+        paper = await store.submit_paper(
+            SubmitPaper(
+                account="tester@example.com",
+                title="evidence",
+                source="arXiv:2401.00002",
+            )
+        )
+        await self._set_created(store, belief, datetime(2020, 1, 1, tzinfo=UTC))
+        await self._set_created(store, paper, datetime(2024, 1, 2, tzinfo=UTC))
+        return belief, paper
+
+    @pytest.mark.parametrize("edge_kind", ["favors", "proves"])
+    async def test_lone_citation_of_belief_infers_no_produced_by(
+        self, integ_store: Store, edge_kind: Edge.Kind
+    ) -> None:
+        # Epistemic-neutrality: a Paper favoring/proving a Belief is a CITATION,
+        # not a provenance claim. proves/favors are absent from
+        # PRODUCED_INFERENCE_PRECEDENCE, so a pair whose only edge is such a
+        # citation gets NO inferred produced_by. Regression: these kinds were once
+        # ranked in PRECEDENCE, which stamped one bogus "Belief produced_by Paper"
+        # parent per citing paper -- a cited claim would accrue a fake producer for
+        # every piece of evidence marshalled to support it.
+        belief, paper = await self._paper_and_belief(integ_store)
+        await integ_store.add_edge(
+            from_id=paper, to_id=belief, edge_kind=edge_kind, actor="alice"
+        )
+        async with integ_store.engine.acquire() as conn:
+            produced = await conn.fetchval(
+                "SELECT count(*) FROM edges WHERE edge_kind = 'produced_by' "
+                "AND ((from_id = $1 AND to_id = $2) OR (from_id = $2 AND to_id = $1))",
+                belief,
+                paper,
+            )
+        assert produced == 0
+        # The Belief gained no provenance parent; the Paper cites it via the
+        # epistemic edge, which is the only relationship stored.
+        belief_row = cast(Belief, await integ_store.get_inquiry(belief))
+        assert belief_row.produced_by == ()
+        assert belief_row.produces == ()
+
     async def test_cites_paper_allows_mutual_citation(self, integ_store: Store) -> None:
         # A historical bibliography is an EXTERNAL fact we record, not a DAG we
         # own: two papers can legitimately cite each other (companion papers,
@@ -5197,13 +5243,15 @@ class TestFirstEdgeInfersProduced:
             )
         assert caused_by_inferred == 0
 
-    async def test_inferred_produced_by_across_artifact_subtree(
+    async def test_lone_proves_of_belief_infers_no_produced_by(
         self, integ_store: Store
     ) -> None:
-        # The docstring promise: a Belief produces the searches its inquiry
-        # spawns. A proves edge (Artifact -> claim, stored WebSearch -> Belief)
-        # between an older Belief and a younger WebSearch infers the younger
-        # WebSearch was produced_by the older Belief.
+        # A ``proves`` edge is a CITATION (Artifact -> claim), not provenance: a
+        # WebSearch proving a Belief was NOT produced by that Belief -- the search
+        # is independent evidence that later bears on the claim. proves is
+        # provenance-neutral, so a lone proves between them infers no produced_by.
+        # (A Belief genuinely producing a search it spawned is recorded by an
+        # explicit produced_by edge, not inferred from a citation.)
         belief = await integ_store.submit_belief(
             SubmitBelief(account="tester@example.com", title="claim")
         )
@@ -5212,14 +5260,14 @@ class TestFirstEdgeInfersProduced:
         )
         await self._set_created(integ_store, belief, datetime(2020, 1, 1, tzinfo=UTC))
         await self._set_created(integ_store, search, datetime(2020, 1, 2, tzinfo=UTC))
-        # proves stores Artifact -> {Belief, Experiment}: the WebSearch (younger
-        # citing artifact) points up to the older Belief it bears on.
+        # proves stores Artifact -> {Belief, Experiment}: the WebSearch (citing
+        # artifact) points up to the older Belief it bears on.
         await integ_store.add_edge(
             from_id=search, to_id=belief, edge_kind="proves", actor="alice"
         )
         belief_row = cast(Belief, await integ_store.get_inquiry(belief))
-        assert search in {e.id for e in belief_row.produces}
-        assert "WebSearch" in {e.kind for e in belief_row.produces}
+        assert belief_row.produces == ()
+        assert belief_row.produced_by == ()
 
 
 if __name__ == "__main__":  # pragma: no cover -- entry point only.

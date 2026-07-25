@@ -133,16 +133,24 @@ def test_produced_inference_precedence_and_neutral_partition_every_edge_kind() -
     assert len(PRODUCED_INFERENCE_PRECEDENCE) == len(set(PRODUCED_INFERENCE_PRECEDENCE))
 
 
-def test_cites_paper_is_provenance_neutral() -> None:
-    """``cites_paper`` is neutral: absent from PRECEDENCE and SUPPRESSED both.
+def test_citation_kinds_are_provenance_neutral() -> None:
+    """Every citation kind is neutral: absent from PRECEDENCE and SUPPRESSED both.
 
-    Absent from PRECEDENCE, a lone cites_paper between two papers never wins the
-    inference (winner is None), so no ``produced_by`` is stamped. Absent from
-    SUPPRESSED, it never vetoes inference from a coexisting non-neutral edge.
+    A citation records that the citer points AT a target, never that the target
+    produced the citer -- true for ``cites_paper`` (Paper->Paper) and equally for
+    the epistemic ``proves``/``favors`` (Artifact->Belief/Experiment): the
+    evidence predates and is independent of the claim it later supports. Absent
+    from PRECEDENCE, a lone citation never wins inference (winner is None), so no
+    ``produced_by`` is stamped. Absent from SUPPRESSED, it never vetoes inference
+    from a coexisting structural edge.
+
+    Regression: ``proves``/``favors`` were mistakenly ranked in PRECEDENCE, which
+    stamped one bogus ``produced_by`` parent on a cited Belief per citing Paper.
     """
-    assert "cites_paper" in PRODUCED_INFERENCE_NEUTRAL
-    assert "cites_paper" not in PRODUCED_INFERENCE_PRECEDENCE
-    assert "cites_paper" not in PRODUCED_INFERENCE_SUPPRESSED
+    for kind in ("cites_paper", "proves", "favors"):
+        assert kind in PRODUCED_INFERENCE_NEUTRAL
+        assert kind not in PRODUCED_INFERENCE_PRECEDENCE
+        assert kind not in PRODUCED_INFERENCE_SUPPRESSED
 
 
 def test_every_edge_kind_has_an_acyclicity_policy() -> None:
@@ -184,13 +192,15 @@ def test_produces_docstring_does_not_claim_universal_inference() -> None:
 
 
 def test_only_produced_by_is_suppressed_for_idempotency() -> None:
-    """Inference is universal; the lone suppressed kind is ``produced_by``.
+    """Inference fires on structural kinds; the lone suppressed kind is ``produced_by``.
 
-    Every edge kind stores younger -> older, so a first edge of any kind infers
-    the same ``younger produced_by older`` -- no kind is age-inverted, so none
-    contradicts the inference. The only skip is idempotency: a pair already
-    carrying a ``produced_by`` is never re-stamped. The set stays a subset of
-    the precedence list.
+    Each STRUCTURAL kind (PRECEDENCE) stores younger -> older AND implies the
+    older produced the younger, so a first such edge infers the same ``younger
+    produced_by older`` -- none is age-inverted, so none contradicts the
+    inference. The only skip is idempotency: a pair already carrying a
+    ``produced_by`` is never re-stamped. The set stays a subset of the precedence
+    list. (Citation kinds are neutral, not suppressed -- see
+    ``test_citation_kinds_are_provenance_neutral``.)
     """
     assert set(PRODUCED_INFERENCE_PRECEDENCE) >= PRODUCED_INFERENCE_SUPPRESSED
     assert {"produced_by"} == PRODUCED_INFERENCE_SUPPRESSED
