@@ -453,49 +453,55 @@ common cases need no SQL change.
 
 
 # Precedence for first-edge provenance inference (Store._infer_produced_on_conn).
-# Inference is UNIVERSAL: every kind stores younger -> older, so the first edge
-# of ANY kind between a pair infers the same ``younger produced_by older`` edge.
-# This list therefore does NOT decide direction or whether to stamp -- only WHICH
-# present kind's name labels the audit reason when several connect the pair (a
-# cosmetic choice: ordered strongest-origination-signal first). The lone
-# exception is ``produced_by`` leading: it already *is* provenance, so its
-# presence means "already recorded" and (via PRODUCED_INFERENCE_SUPPRESSED below)
-# suppresses a redundant second stamp.
-PRODUCED_INFERENCE_PRECEDENCE: tuple[Edge.Kind, ...] = (
+# Inference is universal ONLY over STRUCTURAL edge kinds (this list): each stores
+# younger -> older AND implies the older produced the younger, so the first such
+# edge between a pair infers the same ``younger produced_by older`` edge. This
+# list does NOT decide direction or whether to stamp -- only WHICH present kind's
+# name labels the audit reason when several connect the pair (a cosmetic choice:
+# ordered strongest-origination-signal first). ``produced_by`` leads because it
+# already *is* provenance, so its presence means "already recorded" and (via
+# PRODUCED_INFERENCE_SUPPRESSED below) suppresses a redundant second stamp.
+#
+# CITATION kinds (``proves``, ``favors``, ``cites_paper``) are deliberately NOT
+# here -- see PRODUCED_INFERENCE_NEUTRAL: a citation is not a production claim.
+PRODUCED_INFERENCE_PRECEDENCE: tuple[
+    Edge.Kind, ...
+] = (  # config-globals: ignore -- structural leg of the Edge.Kind partition (PRECEDENCE|NEUTRAL, SUPPRESSED subset), pinned by edge_topology_test invariants; a fixed taxonomy property, not a tunable knob
     "produced_by",
     "narrows",
     "requires",
-    "proves",
-    "favors",
     "supersedes",
 )
 
-# Inference is universal: the first edge of ANY kind between a pair infers
-# ``younger produced_by older``, since every kind stores younger -> older, so the
-# inferred edge always agrees with the triggering one (``X supersedes Y`` implies
-# X younger, hence ``X produced_by Y`` -- same direction). The ONLY skip is
-# idempotency: a pair that already carries a ``produced_by`` needs no second one.
-#
-# ``cites_paper`` is deliberately absent from BOTH this set and PRECEDENCE above:
-# a historical citation is provenance-NEUTRAL. Absent from PRECEDENCE, it can
-# never be the winner, so a lone ``cites_paper`` between two papers infers no
-# ``produced_by`` (winner is None) -- correct, since "A cites B" is not "B
-# produced A". Absent from SUPPRESSED, it never vetoes inference either: when a
-# real epistemic edge also connects the pair, that edge wins and drives
-# provenance normally. Do not add ``cites_paper`` to either list.
+# Idempotency skip: a pair that already carries a ``produced_by`` needs no
+# second one. ``produced_by`` ranks first in PRECEDENCE (so it wins the reason
+# label) AND is the lone SUPPRESSED member (so a pre-existing provenance edge
+# vetoes inferring a duplicate). Citation kinds are handled by NEUTRAL below,
+# not here: they must never veto a coexisting structural edge's inference.
 PRODUCED_INFERENCE_SUPPRESSED: frozenset[Edge.Kind] = frozenset({"produced_by"})
 
 # Provenance-NEUTRAL edge kinds: deliberately absent from PRECEDENCE (and so
 # from SUPPRESSED). A pair whose only edge is a neutral kind infers NO
 # produced_by (no precedence member matches, so the inference winner is None),
 # yet the kind never appears in SUPPRESSED either, so it cannot veto inference
-# from a coexisting non-neutral edge. ``cites_paper`` is neutral because a
-# historical citation ("A cites B") is not a provenance claim ("B produced A")
-# and would systematically mis-stamp older-cited-by-younger as production.
+# from a coexisting non-neutral edge.
+#
+# All THREE citation kinds are neutral, for one reason: a citation records that
+# the citer points AT a claim/source, never that the target produced the citer.
+# - ``cites_paper``: "A cites B" is not "B produced A".
+# - ``proves`` / ``favors``: an Artifact (Paper/Experiment) citing a Belief did
+#   not get produced BY that Belief -- the evidence predates and is independent
+#   of the claim it is later marshalled to support. Ranking them in PRECEDENCE
+#   mis-stamped every citation as ``younger_claim produced_by older_paper`` (or
+#   vice-versa by age), giving a cited Belief one bogus ``produced_by`` parent
+#   per citing Paper. Provenance for a Belief comes from the Issue/Belief that
+#   spawned it (a real ``produced_by`` edge), not from its evidence.
 # Invariant (edge_topology_test): PRECEDENCE and NEUTRAL partition Edge.Kind --
 # every kind either ranks in the inference or is explicitly neutral, so a new
 # kind cannot silently fall through with undefined provenance behavior.
-PRODUCED_INFERENCE_NEUTRAL: frozenset[Edge.Kind] = frozenset({"cites_paper"})
+PRODUCED_INFERENCE_NEUTRAL: frozenset[Edge.Kind] = frozenset(
+    {"cites_paper", "proves", "favors"}
+)
 
 
 def edge_topology() -> dict[str, dict[str, list[str]]]:

@@ -42,7 +42,7 @@ from trackinizer.types.columns import (
 from trackinizer.types.cost import Cost
 
 
-CITATION_VALENCE_DEFAULT: float = 0.5
+CITATION_VALENCE_DEFAULT: float = 0.5  # config-globals: ignore -- domain invariant (neutral-support midpoint of the citation model), single-sourced across 5 layers (wire Field default, trax grammar incl. negation, server fallback+projection); not a per-experiment knob
 """The signed valence a ``proves`` / ``favors`` citation takes when written
 without an explicit value: mild support.
 
@@ -120,27 +120,6 @@ _TUPLE_COLUMNS: frozenset[str] = frozenset(
         "rooms",
         "authors",
     }
-)
-
-
-# The base identity/metadata columns ``Inquiry.from_row`` reads
-# unconditionally for every kind. A row missing any of these is a partial
-# projection, not a materializable inquiry; ``from_row`` rejects it with a
-# clear ValueError rather than a bare KeyError mid-construction. The
-# ``marginal_cost_*`` columns are not listed: ``Cost.from_row`` defaults a
-# missing axis to zero, so they are optional.
-_BASE_ROW_COLUMNS: tuple[str, ...] = (
-    "id",
-    "seq",
-    "owner",
-    "account",
-    "status",
-    "title",
-    "description",
-    "labels",
-    "subscribers",
-    "created",
-    "modified",
 )
 
 
@@ -356,10 +335,13 @@ class Inquiry:
 
         The participating kinds are exactly ``PRODUCED_INFERENCE_PRECEDENCE``;
         its complement is ``PRODUCED_INFERENCE_NEUTRAL`` (both in
-        ``types/edges.py``), and the two PARTITION ``Edge.Kind``. A neutral kind
-        (currently only ``cites_paper``, a historical bibliography we record but
-        do not own) is deliberately excluded: a pair whose sole edge is neutral
-        infers NO ``produced_by`` -- "A cites B" is not "B produced A". A neutral
+        ``types/edges.py``), and the two PARTITION ``Edge.Kind``. The neutral
+        kinds are exactly the CITATIONS -- ``cites_paper`` (Paper->Paper
+        bibliography) and the epistemic ``proves``/``favors`` (Artifact->claim
+        evidence) -- because a citation records that the citer points AT a target,
+        never that the target produced the citer. A pair whose sole edge is
+        neutral infers NO ``produced_by`` -- "A cites B" is not "B produced A",
+        and a Paper favoring a Belief was not produced by that Belief. A neutral
         kind never vetoes inference either: if a participating edge also connects
         the pair, that edge drives the inference normally.
 
@@ -434,7 +416,22 @@ class Inquiry:
         # them first so a partial-projection row raises a clear ValueError
         # naming the missing column, matching the kind-specific loop's
         # ``col not in row`` contract -- not a bare KeyError mid-construction.
-        missing = [col for col in _BASE_ROW_COLUMNS if col not in row]
+        # ``marginal_cost_*`` columns are not listed: ``Cost.from_row`` defaults
+        # a missing axis to zero, so they are optional.
+        base_row_columns = (
+            "id",
+            "seq",
+            "owner",
+            "account",
+            "status",
+            "title",
+            "description",
+            "labels",
+            "subscribers",
+            "created",
+            "modified",
+        )
+        missing = [col for col in base_row_columns if col not in row]
         if missing:
             raise ValueError(
                 f"{cls.__name__}.from_row: row missing base columns {missing}"
