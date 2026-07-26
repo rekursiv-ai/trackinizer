@@ -40,7 +40,7 @@ KINDS: tuple[Kind, ...] = get_args(Kind.__value__)
 """Runtime tuple of every :data:`Kind`, for validation and iteration."""
 
 
-_MAX_MESSAGE_CHARS = 16_384  # config-globals: ignore -- wire message-size limit (protocol contract), not a tunable
+_MAX_MESSAGE_CHARS: Final = 16_384
 """Upper bound on an inbound/routed message body. Caps the bytes a single
 ``inject`` writes to the PTY under the pump lock (each write stalls human
 keystrokes for its duration) and the memory a process-local queue holds."""

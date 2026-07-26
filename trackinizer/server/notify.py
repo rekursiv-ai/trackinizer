@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
+from typing import Final
 from uuid import UUID
 
 import json
@@ -40,7 +41,7 @@ __all__ = [
 ]
 
 
-NOTIFY_CHANNEL = "trackinizer"  # config-globals: ignore -- Postgres LISTEN/NOTIFY channel name (wire/protocol contract), not a tunable
+NOTIFY_CHANNEL: Final = "trackinizer"
 """Postgres ``LISTEN/NOTIFY`` channel for post-commit inquiry change fan-out."""
 
 

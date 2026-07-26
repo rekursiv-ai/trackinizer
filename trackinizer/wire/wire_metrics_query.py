@@ -16,7 +16,7 @@ Kept import-pure (no ``server`` / ``trax`` / fastapi), like every wire module.
 
 from __future__ import annotations
 
-from typing import Literal, get_args
+from typing import Final, Literal, get_args
 
 import uuid
 
@@ -51,11 +51,11 @@ type MetricAxis = Literal["key", "step", "value"]
 """A grid axis a mask clause constrains: the metric name, the step ordinal, or
 the stored value."""
 
-METRIC_AXES: tuple[MetricAxis, ...] = (
+METRIC_AXES: Final[tuple[MetricAxis, ...]] = (
     "key",
     "step",
     "value",
-)  # config-globals: ignore -- metric grid axis table, structural
+)
 """Runtime tuple of every grid axis, for validation and iteration."""
 
 
@@ -157,15 +157,13 @@ class MetricRankResponse(BaseModel):
     rows: list[MetricRankRow]
 
 
-EXPERIMENT_METRIC_QUERY_PATH = "/api/experiments/{experiment_id}/metrics/query"  # config-globals: ignore -- API route (wire contract)
+EXPERIMENT_METRIC_QUERY_PATH: Final = "/api/experiments/{experiment_id}/metrics/query"
 """POST a :class:`MetricQueryRequest` to read one experiment's masked cells."""
 
-EXPERIMENT_METRIC_WRITE_PATH = "/api/experiments/{experiment_id}/metrics/write"  # config-globals: ignore -- API route (wire contract)
+EXPERIMENT_METRIC_WRITE_PATH: Final = "/api/experiments/{experiment_id}/metrics/write"
 """POST a :class:`MetricQueryRequest` (with ``write`` set) to assign the mask."""
 
-METRIC_RANK_PATH = (
-    "/api/metrics/rank"  # config-globals: ignore -- API route (wire contract)
-)
+METRIC_RANK_PATH: Final = "/api/metrics/rank"
 """POST a :class:`MetricRankRequest` for a cross-experiment masked read/rank."""
 
 

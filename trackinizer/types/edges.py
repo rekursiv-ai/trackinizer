@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Literal, Self, get_args
+from typing import Final, Literal, Self, get_args
 from uuid import UUID
 
 from trackinizer.types.columns import ColumnSpec, Row
@@ -464,9 +464,7 @@ common cases need no SQL change.
 #
 # CITATION kinds (``proves``, ``favors``, ``cites_paper``) are deliberately NOT
 # here -- see PRODUCED_INFERENCE_NEUTRAL: a citation is not a production claim.
-PRODUCED_INFERENCE_PRECEDENCE: tuple[
-    Edge.Kind, ...
-] = (  # config-globals: ignore -- structural leg of the Edge.Kind partition (PRECEDENCE|NEUTRAL, SUPPRESSED subset), pinned by edge_topology_test invariants; a fixed taxonomy property, not a tunable knob
+PRODUCED_INFERENCE_PRECEDENCE: Final[tuple[Edge.Kind, ...]] = (
     "produced_by",
     "narrows",
     "requires",

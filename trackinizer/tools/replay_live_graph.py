@@ -32,7 +32,7 @@ Examples:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, cast, get_args
+from typing import Any, Final, cast, get_args
 
 import argparse
 import logging
@@ -67,9 +67,7 @@ def _opt_float(value: object) -> float | None:
 # The subset of fields the graph view (and a faithful-enough replay) needs,
 # per kind. Everything else on the live row is dropped: the demo only renders
 # kind, title, status, and the typed edges.
-_KIND_FIELDS: dict[
-    str, tuple[str, ...]
-] = {  # config-globals: ignore -- per-kind field-projection map, structural not a knob
+_KIND_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "Issue": ("title", "status", "issue_kind", "priority"),
     "Belief": ("title", "status", "judgement", "confidence"),
     "Experiment": ("title", "status", "outcome"),
@@ -81,7 +79,7 @@ _KIND_FIELDS: dict[
     "Artifact": ("title", "status"),
 }
 
-_DEFAULT_SOURCE = "https://trackinizer.rekursiv.ai"  # config-globals: ignore -- fixed default source URL, not a knob
+_DEFAULT_SOURCE: Final = "https://trackinizer.rekursiv.ai"
 """The live trackinizer the replay reads from unless ``--source`` overrides it.
 Auth (the API key) still comes from the saved trax profile."""
 

@@ -12,7 +12,7 @@ and ``bootstrap()`` substitutes the generated body.
 
 from __future__ import annotations
 
-from typing import Literal, cast, get_args
+from typing import Final, Literal, cast, get_args
 
 import re
 
@@ -83,9 +83,7 @@ SEQ_FOR_KIND: dict[Inquiry.InquiryKind, str] = {
 # Canonical column ordering for the change_log mirror block. Matches
 # the order in the original hand-written schema so a diff between
 # old/new is empty.
-CHANGE_LOG_COLUMN_ORDER: tuple[
-    str, ...
-] = (  # config-globals: ignore -- column order (schema contract), not a tunable
+CHANGE_LOG_COLUMN_ORDER: Final[tuple[str, ...]] = (
     "title",
     "description",
     "labels",
@@ -121,9 +119,7 @@ CHANGE_LOG_COLUMN_ORDER: tuple[
     "agentsession_rooms",
 )
 
-_EDGE_METADATA_COLUMN_ORDER: tuple[
-    str, ...
-] = (  # config-globals: ignore -- column order (schema contract), not a tunable
+_EDGE_METADATA_COLUMN_ORDER: Final[tuple[str, ...]] = (
     "priority",
     "note",
     "valence",
@@ -133,9 +129,7 @@ _EDGE_METADATA_COLUMN_ORDER: tuple[
 _EDGE_METADATA_SPECS: dict[str, ColumnSpec] = column_specs(Edge)
 
 
-INQUIRY_KIND_ORDER: tuple[
-    Inquiry.InquiryKind, ...
-] = (  # config-globals: ignore -- per-kind column emission order (schema contract), not a tunable
+INQUIRY_KIND_ORDER: Final[tuple[Inquiry.InquiryKind, ...]] = (
     "Issue",
     "Artifact",
     "Belief",

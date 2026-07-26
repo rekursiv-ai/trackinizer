@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from math import isfinite
-from typing import Literal, cast
+from typing import Final, Literal, cast
 from uuid import UUID
 
 import asyncpg
@@ -45,9 +45,7 @@ __all__ = [
 # nullable (every column is NOT NULL in the PK / CHECK-guarded grid), so those
 # ops are rejected rather than silently mistranslated. ``is`` is equality,
 # uniform with the inquiry filter grammar.
-_OP_TO_SQL: dict[
-    str, str
-] = {  # config-globals: ignore -- FilterOp->SQL operator map (structural), not a tunable
+_OP_TO_SQL: Final[dict[str, str]] = {
     "is": "=",
     "ne": "<>",
     "lt": "<",
@@ -70,9 +68,7 @@ assert set(_OP_TO_SQL) == set(METRIC_COMPARE_OPS), (
 # text, ``step`` as bigint (the storage column), ``value`` as float8. Casting
 # the parameter (not the column) keeps the predicate index-eligible on the
 # ``(experiment_id, key, step)`` PK.
-_AXIS_CAST: dict[
-    str, str
-] = {  # config-globals: ignore -- axis->SQL cast map (structural, tied to storage columns), not a tunable
+_AXIS_CAST: Final[dict[str, str]] = {
     "key": "text",
     "step": "bigint",
     "value": "float8",

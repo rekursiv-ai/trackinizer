@@ -59,24 +59,16 @@ __all__ = [
 
 router = APIRouter()
 
-GOOGLE_AUTHORIZE_URL: Final[str] = (
-    "https://accounts.google.com/o/oauth2/v2/auth"  # config-globals: ignore -- external OAuth endpoint URL (wire contract), not a tunable
-)
-GOOGLE_TOKEN_URL: Final[str] = "https://oauth2.googleapis.com/token"  # noqa: S105 -- OAuth endpoint URL.  # config-globals: ignore -- external OAuth endpoint URL (wire contract), not a tunable
-GOOGLE_USERINFO_URL: Final[str] = (
-    "https://openidconnect.googleapis.com/v1/userinfo"  # config-globals: ignore -- external OAuth endpoint URL (wire contract), not a tunable
-)
+GOOGLE_AUTHORIZE_URL: Final[str] = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL: Final[str] = "https://oauth2.googleapis.com/token"  # noqa: S105 -- OAuth endpoint URL.
+GOOGLE_USERINFO_URL: Final[str] = "https://openidconnect.googleapis.com/v1/userinfo"
 
 # email/profile populate the userinfo fields inserted into users; openid
 # is required by the OIDC spec.
-_OAUTH_SCOPE: Final[str] = (
-    "openid email profile"  # config-globals: ignore -- OIDC scope string (protocol contract), not a tunable
-)
+_OAUTH_SCOPE: Final[str] = "openid email profile"
 
 # Where to land after login when no ?next= was given or the cookie was lost.
-_DEFAULT_NEXT_URL: Final[str] = (
-    "/"  # config-globals: ignore -- structural default landing path, not a tunable
-)
+_DEFAULT_NEXT_URL: Final[str] = "/"
 
 
 @router.get("/auth/login")

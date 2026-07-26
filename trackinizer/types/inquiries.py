@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
-from typing import Any, Literal, Self, cast, get_args
+from typing import Any, Final, Literal, Self, cast, get_args
 from uuid import UUID, uuid4
 
 import re
@@ -42,7 +42,7 @@ from trackinizer.types.columns import (
 from trackinizer.types.cost import Cost
 
 
-CITATION_VALENCE_DEFAULT: float = 0.5  # config-globals: ignore -- domain invariant (neutral-support midpoint of the citation model), single-sourced across 5 layers (wire Field default, trax grammar incl. negation, server fallback+projection); not a per-experiment knob
+CITATION_VALENCE_DEFAULT: Final[float] = 0.5
 """The signed valence a ``proves`` / ``favors`` citation takes when written
 without an explicit value: mild support.
 

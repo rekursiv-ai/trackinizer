@@ -11,7 +11,7 @@ and add/sub on ``labels`` reuses ``FieldOp``. The scalar annotations
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Literal, cast
+from typing import Annotated, Final, Literal, cast
 
 import uuid
 
@@ -44,12 +44,10 @@ from trackinizer.wire.routes import (
 
 router = APIRouter()
 
-_OK: MutableJSON = {
-    "ok": True
-}  # config-globals: ignore -- fixed response payload (wire contract), not a tunable
+_OK: Final[MutableJSON] = {"ok": True}
 
-_SKIPPED_AFTER_FAILURE = "skipped after earlier failure"  # config-globals: ignore -- fixed error message string, not a tunable
-_GENERIC_BATCH_ERROR = "edge could not be created"  # config-globals: ignore -- fixed error message string, not a tunable
+_SKIPPED_AFTER_FAILURE: Final = "skipped after earlier failure"
+_GENERIC_BATCH_ERROR: Final = "edge could not be created"
 
 
 @router.get("/api/edges/{from_id}/{edge_kind}/{to_id}")

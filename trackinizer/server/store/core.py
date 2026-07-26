@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import suppress
+from typing import Final
 from uuid import UUID
 
 import asyncio
@@ -68,10 +69,10 @@ __all__ = [
 # error, released connection, operation in progress): a deterministic bug that
 # must surface, not be retried. Match on the connection-closed phrasing rather
 # than the (shared) exception class.
-_TRANSIENT_FAULT_MARKERS = (
+_TRANSIENT_FAULT_MARKERS: Final = (
     "connection is closed",
     "closed in the middle",
-)  # config-globals: ignore -- asyncpg error-message markers matched to classify faults (protocol strings), not a tunable
+)
 
 
 def _is_transient_pglite_fault(err: BaseException) -> bool:

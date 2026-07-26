@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Any, Final, Self, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import uuid
@@ -172,7 +172,7 @@ def new_uuid() -> uuid.UUID:
     return uuid.uuid4()
 
 
-_INTEG_TABLES = (
+_INTEG_TABLES: Final = (
     "change_log",
     "edges",
     "inquiry_embeddings",
@@ -183,7 +183,7 @@ _INTEG_TABLES = (
     "api_keys",
     "allowlist",
     "users",
-)  # config-globals: ignore -- test fixture constant
+)
 """Truncated by :func:`truncate_all` between integration tests.
 
 ``change_log.subject_id`` is deliberately FK-free (so ``purged`` rows
@@ -191,7 +191,7 @@ survive); only ``edges`` and ``inquiry_embeddings`` actually cascade
 from ``inquiries``. The order puts dependent tables first so the
 TRUNCATE works under any combination of CASCADE/RESTRICT modes."""
 
-_INTEG_SEQUENCES = (
+_INTEG_SEQUENCES: Final = (
     "seq_issue",
     "seq_artifact",
     "seq_experiment",
@@ -201,7 +201,7 @@ _INTEG_SEQUENCES = (
     "seq_webresult",
     "seq_websearch",
     "seq_agentsession",
-)  # config-globals: ignore -- test fixture constant
+)
 """Per-kind short-ref sequences reset between integration tests so
 ``Issue#1`` numbering is independent of test ordering."""
 

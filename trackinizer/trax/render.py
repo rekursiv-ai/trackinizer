@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextvars import ContextVar
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import argparse
 import json
@@ -67,7 +67,7 @@ def resolve_labels(labels: Sequence[str] | None) -> list[str]:
     return out
 
 
-_BAR = "─"  # config-globals: ignore -- box-drawing render glyph, not a knob
+_BAR: Final = "─"
 
 
 type _RowFn = Callable[[dict[str, Any]], str]
