@@ -106,20 +106,6 @@ PGLITE_DATA_DIRNAME: Final = "pglite-data"
 backing data when ``persist=True``. Surviving restarts simply means this
 directory keeps its contents between Node process lifetimes."""
 
-_CONN_OPEN_ATTEMPTS: Final = 12
-"""asyncpg connect attempts against a freshly-booted, healthy Node (see
-:meth:`PGliteEngine._open_conn`). ``pglite-socket`` 0.2 signals ready slightly
-before it accepts wire traffic; a series of short-backoff retries covers that
-window without masking a genuinely dead server (which fails every attempt). The
-window widens under heavy CPU contention (``pytest -n`` booting many Node
-children alongside subprocess-spawning tests), so the count and the linear
-backoff together budget ~20s -- generous against saturation, yet fast to give up
-on a server that never accepts (each failed connect returns promptly)."""
-
-_CONN_OPEN_BACKOFF_SECONDS: Final = 0.25
-"""Linear backoff base between connect attempts in :meth:`PGliteEngine._open_conn`
-(attempt ``k`` waits ``k * this``), so the total wait grows to a few seconds."""
-
 
 class PGliteEngine:
     """In-process Postgres via ``py-pglite``; in-process ``asyncio.Queue`` bus.
@@ -321,7 +307,12 @@ class PGliteEngine:
         assert self._manager is not None, "engine not entered"
         return _ConnGuard(self._live_conn, self._lock)
 
-    async def _open_conn(self) -> asyncpg.Connection[asyncpg.Record]:
+    async def _open_conn(
+        self,
+        *,
+        attempts: int = 12,
+        backoff_seconds: float = 0.25,
+    ) -> asyncpg.Connection[asyncpg.Record]:
         """Open one configured asyncpg connection to the running PGlite.
 
         ``pglite-socket`` 0.2's ``server.start()`` resolves before the WASM
@@ -332,10 +323,21 @@ class PGliteEngine:
         connect-retry against the already-running Node closes the gap. This is
         distinct from the cold-start ``_start_with_retries`` loop, which re-spawns
         Node; here the process is healthy and only the connection needs a beat.
+
+        Args:
+          attempts: asyncpg connect attempts against the healthy Node. The
+            window widens under heavy CPU contention (``pytest -n`` booting many
+            Node children), so ``attempts`` and ``backoff_seconds`` together
+            budget ~20s -- generous against saturation, yet fast to give up on a
+            server that never accepts (each failed connect returns promptly).
+          backoff_seconds: Linear backoff base between attempts (attempt ``k``
+            waits ``k * backoff_seconds``), so the total wait grows to a few
+            seconds.
+
         """
         assert self._manager is not None, "engine not entered"
         last_error: BaseException | None = None
-        for attempt in range(_CONN_OPEN_ATTEMPTS):
+        for attempt in range(attempts):
             try:
                 conn = await asyncpg.connect(
                     dsn=self._manager.get_asyncpg_uri(),
@@ -346,7 +348,7 @@ class PGliteEngine:
                 )
             except (asyncpg.PostgresError, OSError) as err:
                 last_error = err
-                await asyncio.sleep(_CONN_OPEN_BACKOFF_SECONDS * (attempt + 1))
+                await asyncio.sleep(backoff_seconds * (attempt + 1))
                 continue
             await _init_connection(conn)
             return conn
@@ -466,10 +468,6 @@ class PostgresEngine:
         return self._bus.subscribe(channel)
 
 
-_SUBSCRIBER_QUEUE_MAXSIZE: Final = 1024
-"""Bound on each subscriber queue; oldest payloads drop past this depth."""
-
-
 class _LocalBus:
     """In-process fan-out from a single publisher to N subscriber queues.
 
@@ -495,9 +493,18 @@ class _LocalBus:
                     q.get_nowait()
                 q.put_nowait(payload)
 
-    async def subscribe(self, channel: str) -> AsyncGenerator[str, None]:
-        """Subscribe to ``channel`` and yield messages until the consumer exits."""
-        q: asyncio.Queue[str] = asyncio.Queue(maxsize=_SUBSCRIBER_QUEUE_MAXSIZE)
+    async def subscribe(
+        self, channel: str, *, queue_maxsize: int = 1024
+    ) -> AsyncGenerator[str, None]:
+        """Subscribe to ``channel`` and yield messages until the consumer exits.
+
+        Args:
+          channel: Channel name to subscribe to.
+          queue_maxsize: Bound on this subscriber's queue; oldest payloads drop
+            past this depth.
+
+        """
+        q: asyncio.Queue[str] = asyncio.Queue(maxsize=queue_maxsize)
         self._subscribers.setdefault(channel, set()).add(q)
         try:
             while True:
