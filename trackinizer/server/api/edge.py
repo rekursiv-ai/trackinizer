@@ -11,7 +11,7 @@ and add/sub on ``labels`` reuses ``FieldOp``. The scalar annotations
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Final, Literal, cast
+from typing import Annotated, Literal, cast
 
 import uuid
 
@@ -43,11 +43,6 @@ from trackinizer.wire.routes import (
 
 
 router = APIRouter()
-
-_OK: Final[MutableJSON] = {"ok": True}
-
-_SKIPPED_AFTER_FAILURE: Final = "skipped after earlier failure"
-_GENERIC_BATCH_ERROR: Final = "edge could not be created"
 
 
 @router.get("/api/edges/{from_id}/{edge_kind}/{to_id}")
@@ -93,7 +88,7 @@ async def create_edge_batch_route(
         except Exception as err:
             items.append(_EdgeBatchFailure(index=index, error=_safe_batch_error(err)))
             items.extend(
-                _EdgeBatchFailure(index=skipped, error=_SKIPPED_AFTER_FAILURE)
+                _EdgeBatchFailure(index=skipped, error="skipped after earlier failure")
                 for skipped in range(index + 1, len(req.items))
             )
             return {"ok": False, "items": [r.model_dump() for r in items]}
@@ -143,7 +138,7 @@ def _safe_batch_error(err: Exception) -> str:
     """
     if isinstance(err, (ConflictError, ValidationError)):
         return str(err)
-    return _GENERIC_BATCH_ERROR
+    return "edge could not be created"
 
 
 @router.post("/api/edges/{from_id}/{edge_kind}/{to_id}")
