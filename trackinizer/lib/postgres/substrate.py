@@ -20,7 +20,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, Self
+from typing import Final, Protocol, Self
 
 import asyncio
 import hashlib
@@ -101,14 +101,12 @@ class DatabaseEngine(Protocol):
         ...
 
 
-PGLITE_DATA_DIRNAME = (
-    "pglite-data"  # config-globals: ignore -- fixed on-disk dirname, not a tunable knob
-)
+PGLITE_DATA_DIRNAME: Final = "pglite-data"
 """Directory name (relative to ``workdir``) where persistent PGlite stores its
 backing data when ``persist=True``. Surviving restarts simply means this
 directory keeps its contents between Node process lifetimes."""
 
-_CONN_OPEN_ATTEMPTS = 12  # config-globals: ignore -- PGlite connect-retry count; internal substrate resilience constant, no per-task config
+_CONN_OPEN_ATTEMPTS: Final = 12
 """asyncpg connect attempts against a freshly-booted, healthy Node (see
 :meth:`PGliteEngine._open_conn`). ``pglite-socket`` 0.2 signals ready slightly
 before it accepts wire traffic; a series of short-backoff retries covers that
@@ -118,7 +116,7 @@ children alongside subprocess-spawning tests), so the count and the linear
 backoff together budget ~20s -- generous against saturation, yet fast to give up
 on a server that never accepts (each failed connect returns promptly)."""
 
-_CONN_OPEN_BACKOFF_SECONDS = 0.25  # config-globals: ignore -- PGlite connect-retry backoff; internal substrate resilience constant, no per-task config
+_CONN_OPEN_BACKOFF_SECONDS: Final = 0.25
 """Linear backoff base between connect attempts in :meth:`PGliteEngine._open_conn`
 (attempt ``k`` waits ``k * this``), so the total wait grows to a few seconds."""
 
@@ -468,7 +466,7 @@ class PostgresEngine:
         return self._bus.subscribe(channel)
 
 
-_SUBSCRIBER_QUEUE_MAXSIZE = 1024  # config-globals: ignore -- asyncio subscriber queue bound; internal NOTIFY backpressure constant, not a knob
+_SUBSCRIBER_QUEUE_MAXSIZE: Final = 1024
 """Bound on each subscriber queue; oldest payloads drop past this depth."""
 
 
@@ -545,7 +543,7 @@ class _ConnGuard:
         self._lock.release()
 
 
-_LOCK_OWNER_ATTR = "_loop_conn_guard_owner"  # config-globals: ignore -- connection-guard owner attribute name (an identifier), not a knob
+_LOCK_OWNER_ATTR: Final = "_loop_conn_guard_owner"
 
 
 def _lock_owner(lock: asyncio.Lock) -> asyncio.Task[object] | None:
@@ -630,8 +628,8 @@ _PGLITE_PACKAGE_LOCK = Path(__file__).parent / "pglite-package-lock.json"
 # A crashed/killed installer cannot remove its ``.lock`` directory; treat one
 # older than this (comfortably past the install timeout) as abandoned and
 # reclaim it so a single ``kill -9`` never wedges every future engine start.
-_INSTALL_TIMEOUT_SECONDS = 300.0  # config-globals: ignore -- PGlite extension-install lock timeout; internal substrate constant, no per-task config
-_INSTALL_LOCK_STALE_SECONDS = 900.0  # config-globals: ignore -- PGlite extension-install stale-lock window; internal substrate constant, no per-task config
+_INSTALL_TIMEOUT_SECONDS: Final = 300.0
+_INSTALL_LOCK_STALE_SECONDS: Final = 900.0
 # The stale threshold must exceed the install timeout: a lock's mtime is set
 # once at acquisition and never heartbeated, so a live installer is only safe
 # from reclaim while its whole install fits inside the stale window. Raise (not
@@ -779,7 +777,7 @@ def _real_sleep(seconds: float) -> None:
 # new dependency, survives ``kill -9``): a booter claims any free ``slot-<i>``
 # dir, holds it across the boot, and removes it on completion.
 
-_BOOT_SLOT_STALE_SECONDS = 60.0  # config-globals: ignore -- boot-slot stale-reclaim window; internal substrate constant, no per-task config
+_BOOT_SLOT_STALE_SECONDS: Final = 60.0
 """A boot slot held longer than this is treated as orphaned by a killed booter
 and reclaimed. Must comfortably exceed a worst-case cold start (Node spawn +
 WASM boot + first connect, ~10s under load) so a live boot is never evicted,
@@ -829,7 +827,7 @@ class _BootSlot:
         return self.path.name
 
 
-_BOOT_OWNER_PREFIX = "owner-"  # config-globals: ignore -- boot-slot owner dir prefix (a string tag), not a knob
+_BOOT_OWNER_PREFIX: Final = "owner-"
 
 
 def _boot_owner_path(slot: _BootSlot) -> Path:
@@ -879,7 +877,7 @@ def _release_boot_slot(slot: _BootSlot) -> None:
         slot.path.rmdir()
 
 
-_EXTENSION_JS = {  # config-globals: ignore -- extension registry (npm/JS symbol map), not a tunable knob
+_EXTENSION_JS: Final = {
     "pgvector": ("vector", "@electric-sql/pglite-pgvector"),
 }
 """Mapping ``pglite-extension-name -> (JS-symbol, npm-module)``.

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, cast, override
+from typing import ClassVar, Final, cast, override
 
 import argparse
 import os
@@ -218,7 +218,7 @@ Fields: url actor token
             return Profile(url=LOCALHOST_FALLBACK_URL)
 
 
-LOCALHOST_FALLBACK_URL = "http://127.0.0.1:8765"  # config-globals: ignore -- fixed localhost fallback URL, not a knob
+LOCALHOST_FALLBACK_URL: Final = "http://127.0.0.1:8765"
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

@@ -11,7 +11,7 @@ consistently.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Literal, cast
+from typing import Final, Literal, cast
 
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.edges import EDGE_POLICIES
@@ -113,7 +113,7 @@ declaration site.
 """
 
 
-_COST_SUBTREE_SQL: str = (  # config-globals: ignore -- SQL query fragment (structural), not a tunable
+_COST_SUBTREE_SQL: Final[str] = (
     "WITH RECURSIVE subtree(id) AS ("
     "    SELECT $1::uuid "
     "    UNION "

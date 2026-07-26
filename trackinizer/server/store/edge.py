@@ -10,7 +10,7 @@ insert an edge and emit paired ``edge_added`` audits on both endpoints,
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import cast
+from typing import Final, cast
 from uuid import UUID
 
 from trackinizer.lib.custom_types import ABSENT, Absent
@@ -44,7 +44,7 @@ __all__ = [
 ]
 
 
-INFERRED_PROVENANCE_REASON = "inferred provenance"  # config-globals: ignore -- provenance-reason prefix consumers discriminate on (protocol string), not a tunable
+INFERRED_PROVENANCE_REASON: Final = "inferred provenance"
 """Stable prefix on the audit ``reason`` of an auto-inferred ``produces`` edge.
 
 A consumer (UI, analytics) tells an inferred provenance edge from a

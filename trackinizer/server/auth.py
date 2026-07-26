@@ -26,7 +26,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Final, Literal, cast
 
 import base64
 import binascii
@@ -82,32 +82,28 @@ __all__ = [
 
 # scrypt cost: ~50ms per hash, within the OWASP 2023 minimum. Encoded
 # into every hash so a future bump rotates per-row, leaving old rows valid.
-_SCRYPT_N: int = (
-    2**14
-)  # config-globals: ignore -- scrypt cost encoded into every stored hash (format contract), not a tunable
-_SCRYPT_R: int = 8  # config-globals: ignore -- scrypt cost encoded into every stored hash (format contract), not a tunable
-_SCRYPT_P: int = 1  # config-globals: ignore -- scrypt cost encoded into every stored hash (format contract), not a tunable
-_SCRYPT_DKLEN: int = 32  # config-globals: ignore -- scrypt derived-key length in stored hash (format contract), not a tunable
-_SCRYPT_SALT_BYTES: int = 16  # config-globals: ignore -- scrypt salt size in stored hash (format contract), not a tunable
-_SCRYPT_MAX_N: int = (
-    2**20
-)  # config-globals: ignore -- upper bound validating parsed stored-hash params (structural), not a tunable
-_SCRYPT_MAX_R: int = 128  # config-globals: ignore -- upper bound validating parsed stored-hash params (structural), not a tunable
-_SCRYPT_MAX_P: int = 128  # config-globals: ignore -- upper bound validating parsed stored-hash params (structural), not a tunable
+_SCRYPT_N: Final[int] = 2**14
+_SCRYPT_R: Final[int] = 8
+_SCRYPT_P: Final[int] = 1
+_SCRYPT_DKLEN: Final[int] = 32
+_SCRYPT_SALT_BYTES: Final[int] = 16
+_SCRYPT_MAX_N: Final[int] = 2**20
+_SCRYPT_MAX_R: Final[int] = 128
+_SCRYPT_MAX_P: Final[int] = 128
 
 # Entropy bytes in a freshly minted secret; 32 gives ~43 base64 chars.
 # The ``trax_`` prefix tags leaked tokens so they're greppable in logs.
 _TOKEN_BYTES: int = 32  # config-globals: ignore -- token entropy size (security parameter), shared by 2 call sites
-_TOKEN_LABEL: str = "trax_"  # noqa: S105 -- not a hardcoded password.  # config-globals: ignore -- token prefix tag baked into every token (format contract), not a tunable
+_TOKEN_LABEL: Final[str] = "trax_"  # noqa: S105 -- not a hardcoded password.
 
 # Visible prefix stored per api_keys row. Drives UI display and scopes
 # scrypt-verify to the rows sharing that prefix.
-TOKEN_PREFIX_LEN: int = 12  # config-globals: ignore -- stored api_keys prefix width (storage/lookup contract), not a tunable
+TOKEN_PREFIX_LEN: Final[int] = 12
 
-BOOTSTRAP_ADMIN_ENV: str = "TRACKINIZER_BOOTSTRAP_ADMIN"  # config-globals: ignore -- env-var name (config key), not a tunable
-BOOTSTRAP_TOKEN_FILE_ENV: str = "TRACKINIZER_BOOTSTRAP_TOKEN_FILE"  # noqa: S105 -- env-var name, not a credential.  # config-globals: ignore -- env-var name (config key), not a tunable
+BOOTSTRAP_ADMIN_ENV: Final[str] = "TRACKINIZER_BOOTSTRAP_ADMIN"
+BOOTSTRAP_TOKEN_FILE_ENV: Final[str] = "TRACKINIZER_BOOTSTRAP_TOKEN_FILE"  # noqa: S105 -- env-var name, not a credential.
 
-_BEARER_PREFIX: str = "Bearer "  # config-globals: ignore -- HTTP Authorization scheme prefix (wire contract), not a tunable
+_BEARER_PREFIX: Final[str] = "Bearer "
 
 # Throttle for ``last_used_at`` writes. Without it, a hot key (e.g. a CI
 # bot) serializes every request on one row lock just to refresh a timestamp
@@ -126,11 +122,11 @@ type UserStatus = Literal["active", "disabled"]
 
 # Weakest-to-strongest so role comparison is an index lookup. Viewers
 # read, writers mutate, admins manage users.
-ROLE_ORDER: tuple[Role, ...] = (
+ROLE_ORDER: Final[tuple[Role, ...]] = (
     "viewer",
     "writer",
     "admin",
-)  # config-globals: ignore -- fixed weak-to-strong role ordering table (structural), not a tunable
+)
 
 
 class RoleCeilingError(Exception):
@@ -156,7 +152,7 @@ def effective_role(user_role: Role, key_role: Role) -> Role:
 # Synthetic identity returned under ``--no-auth``. Fixed UUID so audit rows
 # across runs share a key; the email is obviously fake.
 _NO_AUTH_USER_ID: uuid.UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
-_NO_AUTH_EMAIL: str = "no-auth@localhost"  # config-globals: ignore -- synthetic fixed identity sentinel, not a tunable
+_NO_AUTH_EMAIL: Final[str] = "no-auth@localhost"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

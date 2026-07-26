@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import get_args
+from typing import Final, get_args
 
 import argparse
 
@@ -78,7 +78,7 @@ from trackinizer.wire.wire_metrics_query import (
 # Everything ABOVE the ``// --- terminals ---`` banner. The terminal block below
 # the banner is generated and appended by :func:`render_grammar`. Edit binding
 # structure here; edit the keyword inventory in the source tables, never here.
-_STRUCTURE = r"""// grammar.lark -- the complete trax CLI: read this one file to author any command.
+_STRUCTURE: Final = r"""// grammar.lark -- the complete trax CLI: read this one file to author any command.
 // GENERATED (regen: python trax/docs/grammar_gen.py). lowercase=rule, UPPER=keyword
 // set (listed below). ? optional, * zero+, + one+, | choice. Tokens are argv words
 // (shell quotes "foo bar" into one VALUE); keywords case-insensitive, values verbatim.
@@ -223,7 +223,7 @@ deep_create: KIND (inline_field | cost_action | safe_meta | EDGE edge_meta)+ (ed
 inline_field: FIELD TO VALUE | list_set | REF_LIST_FIELD (TO | ADD) ref
 list_set: LIST_FIELD TO VALUE (LIST_FIELD ADD VALUE)*   // seed then append
 group_create: KIND (inline_field | cost_action | safe_meta | EDGE edge_meta)+ (edge_action cost_action*)*
-"""  # config-globals: ignore -- grammar structural template, not a knob
+"""
 
 
 # The pattern terminals (regex, not keyword sets). RANGE is a comma-union that
@@ -233,11 +233,11 @@ group_create: KIND (inline_field | cost_action | safe_meta | EDGE edge_meta)+ (e
 # LEAST ONE bound (`222..`, `..10`, `222..260`). A bare `..` (no bound either
 # side) is rejected -- it lowers to a fully-open SeqRange that wire/seq_ranges.py
 # refuses, so the grammar must refuse it too (K6-001).
-_PATTERN_TERMINALS = r"""SEQ:   /\d+/                 // a row number: 7  (a kind-qualified ref may also be written Kind#seq, e.g. issue#7)
+_PATTERN_TERMINALS: Final = r"""SEQ:   /\d+/                 // a row number: 7  (a kind-qualified ref may also be written Kind#seq, e.g. issue#7)
 UUID:  /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/
 RANGE: /((\d+\.\.\d*|\.\.\d+|\d+),)*(\d+\.\.\d*|\.\.\d+)(,(\d+\.\.\d*|\.\.\d+|\d+))*/   // 1..50  ..10  227,228..  (each interval needs >=1 bound)
 VALUE:    /\S+/
-VERB_ARG: /\S+/"""  # config-globals: ignore -- grammar terminal regex table, structural not a knob
+VERB_ARG: /\S+/"""
 
 
 def _literal_terminal(name: str, spellings: Sequence[str], comment: str = "") -> str:

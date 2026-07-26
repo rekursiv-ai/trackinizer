@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Final, Literal
 
 from trackinizer.types.columns import (
     column_specs,
@@ -48,9 +48,7 @@ __all__ = [
 # backtracking in the validation compile. 512 chars comfortably fits any real
 # column value or regex while capping that cost (mirrors the message-body caps
 # in ``wire_sessions.py``).
-MAX_FILTER_VALUE_CHARS = (
-    512  # config-globals: ignore -- wire operand-size limit, protocol contract
-)
+MAX_FILTER_VALUE_CHARS: Final = 512
 
 
 # Every inquiry class, so the derived NOT-NULL set below spans the whole
@@ -61,9 +59,7 @@ _INQUIRY_KIND_CLASSES: tuple[type[Inquiry], ...] = (Inquiry, *KIND_TO_CLASS.valu
 
 
 FilterOp = Literal["is", "ne", "re", "nre", "lt", "le", "gt", "ge", "isnull", "notnull"]
-FILTER_OPS: tuple[
-    FilterOp, ...
-] = (  # config-globals: ignore -- filter operator table, structural
+FILTER_OPS: Final[tuple[FilterOp, ...]] = (
     "is",
     "ne",
     "re",

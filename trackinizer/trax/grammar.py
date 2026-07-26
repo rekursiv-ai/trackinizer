@@ -20,7 +20,7 @@ from dataclasses import (
     dataclass,
     field as dataclass_field,
 )
-from typing import Literal, TypeGuard, cast, get_args
+from typing import Final, Literal, TypeGuard, cast, get_args
 
 import re
 import uuid
@@ -377,18 +377,14 @@ EDGE_ALIASES: Mapping[str, Edge] = {
     "cited_by": Edge(name="cites_paper", reverse=True),
 }
 ISSUE_KINDS: tuple[Issue.Kind, ...] = get_args(Issue.Kind.__value__)
-PRIORITY_ALIASES: Mapping[
-    str, int
-] = {  # config-globals: ignore -- grammar alias table, structural not a knob
+PRIORITY_ALIASES: Final[Mapping[str, int]] = {
     "critical": 0,
     "high": 10,
     "medium": 20,
     "low": 30,
     "backlog": 40,
 }
-SORT_CHOICES: tuple[
-    str, ...
-] = (  # config-globals: ignore -- grammar choice table, structural not a knob
+SORT_CHOICES: Final[tuple[str, ...]] = (
     "priority",
     "seq",
     "recent",
@@ -399,9 +395,7 @@ SORT_CHOICES: tuple[
 # ``inbound`` flag reads the vertex's inbound (from-side) edges; a forward
 # spelling reads its outbound (to-side) edges. ``dis*`` spellings share the
 # stored kind with their plain forms (polarity is the valence sign).
-RELATION_ALIASES: Mapping[
-    str, tuple[str, bool]
-] = {  # config-globals: ignore -- grammar relation alias table, structural not a knob
+RELATION_ALIASES: Final[Mapping[str, tuple[str, bool]]] = {
     "narrows": ("narrows", False),
     "broadened_by": ("narrows", False),
     "narrowed_by": ("narrows", True),

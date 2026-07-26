@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import ClassVar, cast, get_args, override
+from typing import ClassVar, Final, cast, get_args, override
 
 import argparse
 import math
@@ -85,9 +85,7 @@ from trackinizer.wire.wire_metrics_query import (
 # closed :data:`Edge.Kind` literal. A unit test pins the key set to
 # ``get_args(Edge.Kind)`` so adding an edge kind forces a label entry here
 # rather than raising a raw ``KeyError`` deep in ``_edge_payload`` (I4).
-LABELS_BY_EDGE_KIND: Mapping[
-    Edge.Kind, tuple[str, str]
-] = {  # config-globals: ignore -- edge-kind label table, structural
+LABELS_BY_EDGE_KIND: Final[Mapping[Edge.Kind, tuple[str, str]]] = {
     # ``(from_label, to_label)`` per stored edge kind. Every edge is stored
     # child -> parent, so the from-side is the younger/dependent vertex.
     "narrows": ("narrower", "broader"),
@@ -106,15 +104,11 @@ LABELS_BY_EDGE_KIND: Mapping[
 # SIGN of valence, not a separate stored kind, so the CLI re-derives the dis*
 # title/labels from a negative valence -- one place the polarity convention is
 # applied for display.
-_NEGATIVE_CITATION_TITLE: Mapping[
-    Edge.Kind, str
-] = {  # config-globals: ignore -- citation-polarity title map, structural
+_NEGATIVE_CITATION_TITLE: Final[Mapping[Edge.Kind, str]] = {
     "proves": "disproves",
     "favors": "disfavors",
 }
-_NEGATIVE_CITATION_LABELS: Mapping[
-    Edge.Kind, tuple[str, str]
-] = {  # config-globals: ignore -- citation-polarity label map, structural
+_NEGATIVE_CITATION_LABELS: Final[Mapping[Edge.Kind, tuple[str, str]]] = {
     "proves": ("citing artifact", "disproven claim"),
     "favors": ("citing artifact", "disfavored claim"),
 }

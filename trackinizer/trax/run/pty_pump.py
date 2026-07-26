@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from types import FrameType
-from typing import IO, Any
+from typing import IO, Any, Final
 
 import contextlib
 import errno
@@ -51,18 +51,18 @@ type _TermAttr = list[Any]
 
 # Bracketed-paste bookends: the TUI buffers everything between them as one
 # atomic paste (``EnableBracketedPaste`` is on in both target CLIs).
-_PASTE_START = b"\x1b[200~"  # config-globals: ignore -- bracketed-paste control sequence, protocol not a knob
-_PASTE_END = b"\x1b[201~"  # config-globals: ignore -- bracketed-paste control sequence, protocol not a knob
+_PASTE_START: Final = b"\x1b[200~"
+_PASTE_END: Final = b"\x1b[201~"
 
-_SUBMIT = b"\r"  # config-globals: ignore -- carriage-return submit byte, PTY protocol not a knob
+_SUBMIT: Final = b"\r"
 
 # Fallback PTY size (rows, cols) when the wrapper's stdin carries none (piped
 # or redirected). A 0x0 PTY makes child TUIs render one char per line and
 # breaks their input handling, so a non-tty run still gets a usable geometry.
-_DEFAULT_WINSIZE = (
+_DEFAULT_WINSIZE: Final = (
     24,
     80,
-)  # config-globals: ignore -- structural fallback geometry for a non-tty PTY, not a knob
+)
 
 
 def encode_injection(text: str) -> bytes:

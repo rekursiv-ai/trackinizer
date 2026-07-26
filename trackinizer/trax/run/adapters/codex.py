@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 
 import json
 
@@ -168,10 +168,10 @@ def _session_meta(obj: JSON) -> Message:
 # ``user``-role message the CLI never shows; it is recognizable by this
 # prefix. It is primed context, not something the human typed, so it maps to
 # a SystemMessage rather than a UserMessage.
-_ENV_CONTEXT_PREFIXES = (
+_ENV_CONTEXT_PREFIXES: Final = (
     "# AGENTS.md instructions for ",
     "<INSTRUCTIONS>",
-)  # config-globals: ignore -- codex protocol marker prefixes, structural not a knob
+)
 
 
 def _role_message(payload: JSON) -> Message:

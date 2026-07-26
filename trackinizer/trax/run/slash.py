@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Final
 
 import logging
 
@@ -34,21 +35,17 @@ _logger = logging.getLogger(__name__)
 # printable (>= 0x20, outside an escape sequence) is appended as line text.
 _ENTER = frozenset((0x0D, 0x0A))  # CR submits; LF too, except inside a paste.
 _BACKSPACE = frozenset((0x7F, 0x08))  # DEL and BS both erase one char.
-_WORD_ERASE = 0x17  # config-globals: ignore -- terminal control byte (Ctrl-W)
+_WORD_ERASE: Final = 0x17
 _CLEAR_LINE = frozenset((0x15, 0x03))  # Ctrl-U (line-kill) / Ctrl-C (abandon).
-_ESC = 0x1B  # config-globals: ignore -- terminal control byte (ANSI ESC)
+_ESC: Final = 0x1B
 _ESC_INTRODUCERS = frozenset((0x5B, 0x4F))  # ``[`` (CSI) / ``O`` (SS3).
 
 # Bracketed-paste markers, sans the leading ESC (which the accumulator strips
 # before classifying). The terminal brackets pasted text in these so a TUI can
 # treat it as one atomic block; the detector uses them to keep an embedded
 # newline literal rather than a submit.
-_PASTE_START = (
-    b"[200~"  # config-globals: ignore -- terminal control sequence (bracketed-paste)
-)
-_PASTE_END = (
-    b"[201~"  # config-globals: ignore -- terminal control sequence (bracketed-paste)
-)
+_PASTE_START: Final = b"[200~"
+_PASTE_END: Final = b"[201~"
 
 
 class SlashCommandDetector:

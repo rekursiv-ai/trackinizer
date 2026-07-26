@@ -11,6 +11,7 @@ this base only needs to own the genuinely shared state and the leaf
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Final
 from uuid import UUID
 
 import asyncio
@@ -25,7 +26,7 @@ __all__ = [
 ]
 
 
-EMBEDDING_DIM = 384  # config-globals: ignore -- embedding dim fixed by stored schema (pgvector column width), shared across store modules; not a tunable  # MiniLM-L6-v2 sentence-embedding dim.
+EMBEDDING_DIM: Final = 384  # MiniLM-L6-v2 sentence-embedding dim.
 
 
 class _StoreShared:

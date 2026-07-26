@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
-from typing import Annotated, Literal, Self
+from typing import Annotated, Final, Literal, Self
 
 import uuid
 
@@ -42,9 +42,7 @@ from trackinizer.types.inquiries import (
 )
 
 
-BATCH_MAX_ITEMS = (
-    1000  # config-globals: ignore -- wire batch/size limit, protocol contract
-)
+BATCH_MAX_ITEMS: Final = 1000
 
 
 __all__ = [

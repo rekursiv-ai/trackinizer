@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Self
+from typing import Final, Literal, Self
 
 import argparse
 import os
@@ -174,7 +174,7 @@ def default_datadir() -> Path:
     return data_dir("trackinizer") / "pgdata"
 
 
-_EPHEMERAL_DIRNAME = "pgdata-ephemeral"  # config-globals: ignore -- fixed on-disk directory name (layout constant), not a tunable
+_EPHEMERAL_DIRNAME: Final = "pgdata-ephemeral"
 """Parent dir for per-process ephemeral PGlite workdirs (see :func:`_ephemeral_workdir`)."""
 
 
