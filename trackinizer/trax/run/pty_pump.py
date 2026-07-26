@@ -51,22 +51,18 @@ type _TermAttr = list[Any]
 
 # Bracketed-paste bookends: the TUI buffers everything between them as one
 # atomic paste (``EnableBracketedPaste`` is on in both target CLIs).
-_PASTE_START = b"\x1b[200~"
-_PASTE_END = b"\x1b[201~"
+_PASTE_START = b"\x1b[200~"  # config-globals: ignore -- bracketed-paste control sequence, protocol not a knob
+_PASTE_END = b"\x1b[201~"  # config-globals: ignore -- bracketed-paste control sequence, protocol not a knob
 
-# Enter, sent as its own write this long after the paste. Must exceed codex's
-# ``PASTE_ENTER_SUPPRESS_WINDOW`` (120ms) so it submits rather than being
-# folded into the paste burst. 150ms clears it with margin.
-_ENTER_DELAY_SEC = 0.15
-_SUBMIT = b"\r"
-
-_READ_SIZE = 65_536
-_POLL_SEC = 0.05
+_SUBMIT = b"\r"  # config-globals: ignore -- carriage-return submit byte, PTY protocol not a knob
 
 # Fallback PTY size (rows, cols) when the wrapper's stdin carries none (piped
 # or redirected). A 0x0 PTY makes child TUIs render one char per line and
 # breaks their input handling, so a non-tty run still gets a usable geometry.
-_DEFAULT_WINSIZE = (24, 80)
+_DEFAULT_WINSIZE = (
+    24,
+    80,
+)  # config-globals: ignore -- structural fallback geometry for a non-tty PTY, not a knob
 
 
 def encode_injection(text: str) -> bytes:
@@ -104,7 +100,10 @@ class PtyPump:
         self,
         argv: Sequence[str],
         *,
-        enter_delay_sec: float = _ENTER_DELAY_SEC,
+        # Enter, sent as its own write this long after the paste. Must exceed
+        # codex's ``PASTE_ENTER_SUPPRESS_WINDOW`` (120ms) so it submits rather
+        # than being folded into the paste burst. 150ms clears it with margin.
+        enter_delay_sec: float = 0.15,
         env: Mapping[str, str] | None = None,
         on_input: Callable[[bytes], None] | None = None,
     ) -> None:
@@ -235,7 +234,7 @@ class PtyPump:
                 self.terminate()
                 self._reap()
 
-    def _pump(self, stdin_fd: int, out_fd: int) -> int:
+    def _pump(self, stdin_fd: int, out_fd: int, *, poll_sec: float = 0.05) -> int:
         """Copy stdin<->master until the child exits.
 
         ``stdin_fd``/``out_fd`` may be -1 when the wrapper's own stdio is not
@@ -247,7 +246,7 @@ class PtyPump:
         while True:
             watch = [fd for fd in (stdin_fd, self._master_fd) if fd >= 0]
             try:
-                readable, _, _ = select.select(watch, [], [], _POLL_SEC)
+                readable, _, _ = select.select(watch, [], [], poll_sec)
             except OSError as err:
                 if err.errno == errno.EINTR:  # SIGWINCH interrupted the wait.
                     continue
@@ -264,7 +263,7 @@ class PtyPump:
                 break
         return self._reap()
 
-    def _forward(self, src_fd: int, dst_fd: int) -> bool:
+    def _forward(self, src_fd: int, dst_fd: int, *, read_size: int = 65_536) -> bool:
         """Copy one chunk ``src_fd`` -> ``dst_fd``; False on EOF/error.
 
         A ``dst_fd`` of -1 (no real destination, e.g. captured stdout under a
@@ -275,7 +274,7 @@ class PtyPump:
         place that frames stdin->master.
         """
         try:
-            data = os.read(src_fd, _READ_SIZE)
+            data = os.read(src_fd, read_size)
         except OSError:
             return False
         if not data:

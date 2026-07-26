@@ -67,7 +67,9 @@ def _opt_float(value: object) -> float | None:
 # The subset of fields the graph view (and a faithful-enough replay) needs,
 # per kind. Everything else on the live row is dropped: the demo only renders
 # kind, title, status, and the typed edges.
-_KIND_FIELDS: dict[str, tuple[str, ...]] = {
+_KIND_FIELDS: dict[
+    str, tuple[str, ...]
+] = {  # config-globals: ignore -- per-kind field-projection map, structural not a knob
     "Issue": ("title", "status", "issue_kind", "priority"),
     "Belief": ("title", "status", "judgement", "confidence"),
     "Experiment": ("title", "status", "outcome"),
@@ -79,15 +81,7 @@ _KIND_FIELDS: dict[str, tuple[str, ...]] = {
     "Artifact": ("title", "status"),
 }
 
-_BATCH = 200
-
-_CHUNK = 5
-"""Seed-crawl insert granularity: how many nodes per ``submit_batch`` during the
-incremental, oldest-first stream. Small so the graph grows visibly node-group
-by node-group (and the SSE stream pushes each chunk live), but >1 so the
-embedded pglite target is never bursted by per-row writes."""
-
-_DEFAULT_SOURCE = "https://trackinizer.rekursiv.ai"
+_DEFAULT_SOURCE = "https://trackinizer.rekursiv.ai"  # config-globals: ignore -- fixed default source URL, not a knob
 """The live trackinizer the replay reads from unless ``--source`` overrides it.
 Auth (the API key) still comes from the saved trax profile."""
 
@@ -275,11 +269,16 @@ def _crawl_and_insert(
     seeds: list[str],
     *,
     delay: float,
+    # Insert granularity: how many nodes per ``submit_batch`` during the
+    # incremental, oldest-first stream. Small so the graph grows visibly
+    # node-group by node-group (and the SSE stream pushes each chunk live), but
+    # >1 so the embedded pglite target is never bursted by per-row writes.
+    chunk: int = 5,
 ) -> int:
     """Crawl the connected subgraph from ``seeds`` and stream it in, in order.
 
     The crawl INTERLEAVES discovery and insertion: as the BFS from the seeds
-    reaches each node it is inserted right away (in small ``_CHUNK`` batches),
+    reaches each node it is inserted right away (in small ``chunk`` batches),
     so the target -- and an open ``/graph`` page via SSE -- starts filling
     almost immediately instead of waiting for the whole component to be read
     first. Each chunk is sorted by source ``created`` before insert, so the
@@ -323,7 +322,7 @@ def _crawl_and_insert(
             if peer_id not in seen:
                 seen[peer_id] = source.get(f"/api/web/get/{peer_id}")
                 frontier.append(peer_id)
-        if len(pending) >= _CHUNK:
+        if len(pending) >= chunk:
             flush()
     flush()
 
@@ -454,6 +453,8 @@ def _replay(
     target: Client,
     nodes: list[dict[str, Any]],
     edges: list[tuple[str, str, str, float | None]],
+    *,
+    batch: int = 200,
 ) -> None:
     """Create every node, then every edge, on the target via batched submits.
 
@@ -463,8 +464,8 @@ def _replay(
     requests.
     """
     id_map: dict[str, str] = {}
-    for start in range(0, len(nodes), _BATCH):
-        chunk = nodes[start : start + _BATCH]
+    for start in range(0, len(nodes), batch):
+        chunk = nodes[start : start + batch]
         items = [(n["kind"], _node_body(n)) for n in chunk]
         new_ids = target.submit_batch(items)
         for old, new in zip(chunk, new_ids, strict=True):
@@ -475,7 +476,7 @@ def _replay(
     for from_id, to_id, kind, valence in edges:
         if _write_edge(target, id_map, from_id, to_id, kind, valence=valence):
             written += 1
-            if written % _BATCH == 0:
+            if written % batch == 0:
                 _log.info("[replay]   edges %d/%d", written, len(edges))
 
 

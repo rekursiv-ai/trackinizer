@@ -83,7 +83,9 @@ SEQ_FOR_KIND: dict[Inquiry.InquiryKind, str] = {
 # Canonical column ordering for the change_log mirror block. Matches
 # the order in the original hand-written schema so a diff between
 # old/new is empty.
-CHANGE_LOG_COLUMN_ORDER: tuple[str, ...] = (
+CHANGE_LOG_COLUMN_ORDER: tuple[
+    str, ...
+] = (  # config-globals: ignore -- column order (schema contract), not a tunable
     "title",
     "description",
     "labels",
@@ -119,7 +121,9 @@ CHANGE_LOG_COLUMN_ORDER: tuple[str, ...] = (
     "agentsession_rooms",
 )
 
-_EDGE_METADATA_COLUMN_ORDER: tuple[str, ...] = (
+_EDGE_METADATA_COLUMN_ORDER: tuple[
+    str, ...
+] = (  # config-globals: ignore -- column order (schema contract), not a tunable
     "priority",
     "note",
     "valence",
@@ -129,7 +133,9 @@ _EDGE_METADATA_COLUMN_ORDER: tuple[str, ...] = (
 _EDGE_METADATA_SPECS: dict[str, ColumnSpec] = column_specs(Edge)
 
 
-INQUIRY_KIND_ORDER: tuple[Inquiry.InquiryKind, ...] = (
+INQUIRY_KIND_ORDER: tuple[
+    Inquiry.InquiryKind, ...
+] = (  # config-globals: ignore -- per-kind column emission order (schema contract), not a tunable
     "Issue",
     "Artifact",
     "Belief",

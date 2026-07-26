@@ -44,10 +44,12 @@ from trackinizer.wire.routes import (
 
 router = APIRouter()
 
-_OK: MutableJSON = {"ok": True}
+_OK: MutableJSON = {
+    "ok": True
+}  # config-globals: ignore -- fixed response payload (wire contract), not a tunable
 
-_SKIPPED_AFTER_FAILURE = "skipped after earlier failure"
-_GENERIC_BATCH_ERROR = "edge could not be created"
+_SKIPPED_AFTER_FAILURE = "skipped after earlier failure"  # config-globals: ignore -- fixed error message string, not a tunable
+_GENERIC_BATCH_ERROR = "edge could not be created"  # config-globals: ignore -- fixed error message string, not a tunable
 
 
 @router.get("/api/edges/{from_id}/{edge_kind}/{to_id}")

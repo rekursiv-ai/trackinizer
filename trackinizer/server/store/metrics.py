@@ -45,7 +45,9 @@ __all__ = [
 # nullable (every column is NOT NULL in the PK / CHECK-guarded grid), so those
 # ops are rejected rather than silently mistranslated. ``is`` is equality,
 # uniform with the inquiry filter grammar.
-_OP_TO_SQL: dict[str, str] = {
+_OP_TO_SQL: dict[
+    str, str
+] = {  # config-globals: ignore -- FilterOp->SQL operator map (structural), not a tunable
     "is": "=",
     "ne": "<>",
     "lt": "<",
@@ -68,18 +70,13 @@ assert set(_OP_TO_SQL) == set(METRIC_COMPARE_OPS), (
 # text, ``step`` as bigint (the storage column), ``value`` as float8. Casting
 # the parameter (not the column) keeps the predicate index-eligible on the
 # ``(experiment_id, key, step)`` PK.
-_AXIS_CAST: dict[str, str] = {
+_AXIS_CAST: dict[
+    str, str
+] = {  # config-globals: ignore -- axis->SQL cast map (structural, tied to storage columns), not a tunable
     "key": "text",
     "step": "bigint",
     "value": "float8",
 }
-
-
-# Upper bound on experiment ids in one cross-experiment query. Bounds the
-# ``experiment_id = ANY($1)`` array (and thus the index-scan fan-out) so one
-# leaderboard call cannot sweep an unbounded id set; mirrors the row ceiling
-# ``MAX_LIST_LIMIT`` the list endpoint enforces.
-_MAX_QUERY_EXPERIMENTS = 1000
 
 
 class _MetricsMixin(_StoreShared):
@@ -224,6 +221,7 @@ class _MetricsMixin(_StoreShared):
         masks: Sequence[MetricMaskClause],
         sort: Literal["asc", "desc"] | None = None,
         limit: int | None = None,
+        max_query_experiments: int = 1000,
     ) -> list[tuple[UUID, MetricPoint]]:
         """Read the masked cells of one or more experiments' metric grids.
 
@@ -244,13 +242,18 @@ class _MetricsMixin(_StoreShared):
         Args:
           experiment_ids: The runs to read across (one = single-experiment,
             many = cross-experiment / rank). Capped at
-            :data:`_MAX_QUERY_EXPERIMENTS`.
+            ``max_query_experiments``.
           masks: ``at <axis> <op> <value>`` clauses, ANDed into one predicate.
           sort: Order the selected cells by value ascending / descending; when
             ``None`` the ``(experiment_id, key, step)`` order is kept.
           limit: Row ceiling applied after selection; ``None`` defaults to
             ``DEFAULT_LIST_LIMIT``, and any value is capped at
             ``MAX_LIST_LIMIT``.
+          max_query_experiments: Upper bound on experiment ids in one
+            cross-experiment query. Bounds the ``experiment_id = ANY($1)`` array
+            (and thus the index-scan fan-out) so one leaderboard call cannot
+            sweep an unbounded id set; mirrors the row ceiling ``MAX_LIST_LIMIT``
+            the list endpoint enforces.
 
         Returns:
           cells: ``(experiment_id, MetricPoint)`` per selected cell.
@@ -258,13 +261,13 @@ class _MetricsMixin(_StoreShared):
         Raises:
           ConflictError: An unsupported op on a metric axis, a ``max`` / ``min``
             reduction off the ``step`` axis, a non-numeric ``step`` / ``value``
-            operand, or more than :data:`_MAX_QUERY_EXPERIMENTS` experiments.
+            operand, or more than ``max_query_experiments`` experiments.
 
         """
-        if len(experiment_ids) > _MAX_QUERY_EXPERIMENTS:
+        if len(experiment_ids) > max_query_experiments:
             raise ConflictError(
                 f"too many experiments ({len(experiment_ids)}); "
-                f"cap is {_MAX_QUERY_EXPERIMENTS}"
+                f"cap is {max_query_experiments}"
             )
         params: list[object] = [list(experiment_ids)]
         predicates: list[str] = []

@@ -77,17 +77,27 @@ __all__ = [
 ]
 
 
-SESSION_COOKIE_NAME: Final[str] = "trackinizer_session"
-OAUTH_STATE_COOKIE_NAME: Final[str] = "trackinizer_oauth_state"
+SESSION_COOKIE_NAME: Final[str] = (
+    "trackinizer_session"  # config-globals: ignore -- fixed cookie name (wire/protocol contract), not a tunable
+)
+OAUTH_STATE_COOKIE_NAME: Final[str] = (
+    "trackinizer_oauth_state"  # config-globals: ignore -- fixed cookie name (wire/protocol contract), not a tunable
+)
 
 # Salts namespace the signature so a session cookie cannot be replayed as
 # an OAuth state cookie (or vice-versa) even though both share one key.
-_SESSION_SALT: Final[str] = "trackinizer.session.v1"
-_OAUTH_STATE_SALT: Final[str] = "trackinizer.oauth_state.v1"
+_SESSION_SALT: Final[str] = (
+    "trackinizer.session.v1"  # config-globals: ignore -- signature-namespacing salt (protocol constant), not a tunable
+)
+_OAUTH_STATE_SALT: Final[str] = (
+    "trackinizer.oauth_state.v1"  # config-globals: ignore -- signature-namespacing salt (protocol constant), not a tunable
+)
 
 # OAuth round-trip should finish in seconds; ten minutes is generous and
 # bounds replay risk on a stolen state cookie.
-OAUTH_STATE_MAX_AGE_SECONDS: Final[int] = 10 * 60
+OAUTH_STATE_MAX_AGE_SECONDS: Final[int] = (
+    10 * 60
+)  # config-globals: ignore -- shared default; threading would duplicate across 3 call sites (issue/read/clear) and the exported wire constant
 
 
 def set_session_cookie(

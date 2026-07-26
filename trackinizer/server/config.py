@@ -41,7 +41,9 @@ class ConfigError(Exception):
     """
 
 
-_DEFAULT_SESSION_MAX_AGE_SECONDS: int = 30 * 24 * 60 * 60
+_DEFAULT_SESSION_MAX_AGE_SECONDS: int = (
+    30 * 24 * 60 * 60
+)  # config-globals: ignore -- shared default; threading would duplicate across the Config field default and the env-parse fallback
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -172,15 +174,8 @@ def default_datadir() -> Path:
     return data_dir("trackinizer") / "pgdata"
 
 
-_EPHEMERAL_DIRNAME = "pgdata-ephemeral"
+_EPHEMERAL_DIRNAME = "pgdata-ephemeral"  # config-globals: ignore -- fixed on-disk directory name (layout constant), not a tunable
 """Parent dir for per-process ephemeral PGlite workdirs (see :func:`_ephemeral_workdir`)."""
-
-_EPHEMERAL_STALE_SECONDS = 60 * 60
-"""An ephemeral workdir older than this is assumed abandoned by a crashed server
-and pruned on the next ephemeral boot. Comfortably exceeds any real boot so a
-live sibling is never reclaimed; graceful shutdown removes a server's own dir via
-the engine's ``__aexit__`` (``own_workdir=True``), and this only sweeps dirs a
-hard crash (kill -9) left behind."""
 
 
 def _ephemeral_root() -> Path:
@@ -188,8 +183,15 @@ def _ephemeral_root() -> Path:
     return data_dir("trackinizer") / _EPHEMERAL_DIRNAME
 
 
-def _prune_stale_ephemeral_dirs(root: Path) -> None:
+def _prune_stale_ephemeral_dirs(root: Path, *, stale_seconds: int = 60 * 60) -> None:
     """Remove ephemeral workdirs left behind by hard-killed servers.
+
+    ``stale_seconds``: an ephemeral workdir older than this is assumed abandoned
+    by a crashed server and pruned on the next ephemeral boot. Comfortably
+    exceeds any real boot so a live sibling is never reclaimed; graceful shutdown
+    removes a server's own dir via the engine's ``__aexit__``
+    (``own_workdir=True``), and this only sweeps dirs a hard crash (kill -9) left
+    behind.
 
     Each ephemeral server normally rmtree's its own dir on graceful shutdown via
     the engine's ``__aexit__`` (``own_workdir=True``; see :mod:`trackinizer.lib.postgres`
@@ -210,7 +212,7 @@ def _prune_stale_ephemeral_dirs(root: Path) -> None:
                 continue
             with suppress(OSError):
                 if _owner_dead(child.name) and (
-                    time.time() - child.stat().st_mtime > _EPHEMERAL_STALE_SECONDS
+                    time.time() - child.stat().st_mtime > stale_seconds
                 ):
                     shutil.rmtree(child, ignore_errors=True)
 

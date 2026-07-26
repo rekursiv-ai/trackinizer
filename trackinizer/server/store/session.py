@@ -41,15 +41,6 @@ __all__ = [
 ]
 
 
-_MAX_ACTOR_RESERVE_ATTEMPTS = 16
-"""Cap on ``start_session``'s reserve-then-insert retries before giving up.
-
-Each retry advances the ``#N`` suffix past a name a concurrent start grabbed,
-so far more attempts than concurrent live sessions for one actor could ever
-need; exhausting it means a pathological storm and surfaces as a
-``ConflictError`` rather than a bare loop-exit or a raw asyncpg leak."""
-
-
 class _SessionMixin(_SubmitMixin, _EditMixin):
     """Agent-session lifecycle and the cross-session event feed.
 
@@ -98,6 +89,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         *,
         requested_actor: str,
         api_key_id: UUID | None = None,
+        max_reserve_attempts: int = 16,
     ) -> tuple[UUID, str, int]:
         """Open or RESUME a session, returning ``(id, granted_owner, next_seq)``.
 
@@ -159,8 +151,12 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                     set_client_change_id(None)
                     return existing, owner, next_seq
         last_error: asyncpg.UniqueViolationError | None = None
-        # Bounded so a pathological storm can't spin forever.
-        for _ in range(_MAX_ACTOR_RESERVE_ATTEMPTS):
+        # Bounded so a pathological storm can't spin forever. Each retry advances
+        # the ``#N`` suffix past a name a concurrent start grabbed, so far more
+        # attempts than concurrent live sessions for one actor could ever need;
+        # exhausting it means a pathological storm and surfaces as a
+        # ``ConflictError`` rather than a bare loop-exit or a raw asyncpg leak.
+        for _ in range(max_reserve_attempts):
             granted = await self.reserve_session_actor(requested_actor)
             try:
                 session_id = await self.submit_agentsession(
@@ -196,7 +192,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         # leak or a bare loop-exit. The chained cause keeps the diagnostic.
         raise ConflictError(
             f"could not reserve a routing name for {requested_actor!r} after "
-            f"{_MAX_ACTOR_RESERVE_ATTEMPTS} attempts"
+            f"{max_reserve_attempts} attempts"
         ) from last_error
 
     @staticmethod

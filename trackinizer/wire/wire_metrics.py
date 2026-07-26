@@ -28,15 +28,19 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-_MAX_KEY_CHARS = 512
+_MAX_KEY_CHARS = (
+    512  # config-globals: ignore -- wire batch/size limit, protocol contract
+)
 """Upper bound on a metric key. A key is matched/stored verbatim and indexed
 in the primary key; an unbounded key would bloat the index for no gain."""
 
-_BIGINT_MAX = 2**63 - 1
+_BIGINT_MAX = 2**63 - 1  # config-globals: ignore -- int64 max, protocol bound
 """Max value of the ``step`` BIGINT storage column. Bounds the wire ``step`` so
 an out-of-range value is a clean 422, not a bigint-overflow 500 at INSERT."""
 
-_MAX_POINTS_PER_BATCH = 10_000
+_MAX_POINTS_PER_BATCH = (
+    10_000  # config-globals: ignore -- wire batch/size limit, protocol contract
+)
 """Upper bound on points in one ``log`` request. Bounds the memory + INSERT cost
 of a single call (the whole batch is parsed into memory and sent as one
 ``unnest`` INSERT), so one writer cannot pin a backend with a giant body. Higher
@@ -146,7 +150,7 @@ class ReadMetricsResponse(BaseModel):
     points: list[MetricPoint]
 
 
-EXPERIMENT_METRICS_PATH = "/api/experiments/{experiment_id}/metrics"
+EXPERIMENT_METRICS_PATH = "/api/experiments/{experiment_id}/metrics"  # config-globals: ignore -- API route (wire contract)
 
 
 # Every non-field API path in the metrics family, as a FastAPI route template.

@@ -96,8 +96,9 @@ class _ClientSpy(Client):
         body: object = None,
         params: Mapping[str, object] | None = None,
         change_id: uuid.UUID | None = None,
+        retry_attempts: int = 3,
     ) -> Any:
-        del change_id, params
+        del change_id, params, retry_attempts
         self.request_calls.append((method, path, body))
         # ``submit`` and other write paths route through the HTTP verb
         # helpers (``post``/``put``/``patch``/``delete``), which call

@@ -223,7 +223,7 @@ deep_create: KIND (inline_field | cost_action | safe_meta | EDGE edge_meta)+ (ed
 inline_field: FIELD TO VALUE | list_set | REF_LIST_FIELD (TO | ADD) ref
 list_set: LIST_FIELD TO VALUE (LIST_FIELD ADD VALUE)*   // seed then append
 group_create: KIND (inline_field | cost_action | safe_meta | EDGE edge_meta)+ (edge_action cost_action*)*
-"""
+"""  # config-globals: ignore -- grammar structural template, not a knob
 
 
 # The pattern terminals (regex, not keyword sets). RANGE is a comma-union that
@@ -237,7 +237,7 @@ _PATTERN_TERMINALS = r"""SEQ:   /\d+/                 // a row number: 7  (a kin
 UUID:  /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/
 RANGE: /((\d+\.\.\d*|\.\.\d+|\d+),)*(\d+\.\.\d*|\.\.\d+)(,(\d+\.\.\d*|\.\.\d+|\d+))*/   // 1..50  ..10  227,228..  (each interval needs >=1 bound)
 VALUE:    /\S+/
-VERB_ARG: /\S+/"""
+VERB_ARG: /\S+/"""  # config-globals: ignore -- grammar terminal regex table, structural not a knob
 
 
 def _literal_terminal(name: str, spellings: Sequence[str], comment: str = "") -> str:

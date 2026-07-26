@@ -61,7 +61,10 @@ class _Row(Protocol):
 # the pair in one place is what makes ``ne``/``nre`` single-sourced: the
 # affirmative predicate carries the semantics, and NULL handling, and the
 # negation is a mechanical ``not``.
-_NEGATED_OPS: dict[FilterOp, FilterOp] = {"ne": "is", "nre": "re"}
+_NEGATED_OPS: dict[FilterOp, FilterOp] = {
+    "ne": "is",
+    "nre": "re",
+}  # config-globals: ignore -- filter operator map, structural
 
 
 def match_filter(row: _Row, filt: RowFilter) -> bool:

@@ -105,28 +105,14 @@ def _field_path(target_id: uuid.UUID, field: str) -> str:
     return inquiry_field_path(field).format(target_id=target_id)
 
 
-# Hard cap on a single HTTP round-trip, so a hung or firewalled server
-# can't stall every ``trax`` invocation indefinitely.
-DEFAULT_TIMEOUT_SEC: float = 30.0
+def _truncate(text: str, limit: int = 2_048) -> str:
+    """Return ``text`` capped at ``limit`` chars, with an ellipsis marker.
 
-# Idle-socket lifetime in the client pool. Kept below the smallest
-# upstream idle timeout in the path (Cloudflare's ~100s, Caddy's 2m) so
-# the client is the one that decides when to evict.
-_KEEPALIVE_EXPIRY_SEC: float = 90.0
-
-# Attempts a mutating request gets after a 5xx or read timeout. Three
-# bounds the worst-case wait (~1s) while covering the common cases: one
-# bad pool socket, one transient 502.
-_RETRY_ATTEMPTS: int = 3
-
-# Cap on how much server error text rides into a ``ClientError`` message.
-# An unbounded body would balloon logs/memory and could echo a secret
-# verbatim; a 2KB prefix keeps the diagnostic useful while bounding both.
-_MAX_ERROR_TEXT_CHARS: int = 2_048
-
-
-def _truncate(text: str, limit: int = _MAX_ERROR_TEXT_CHARS) -> str:
-    """Return ``text`` capped at ``limit`` chars, with an ellipsis marker."""
+    ``limit`` caps how much server error text rides into a ``ClientError``
+    message: an unbounded body would balloon logs/memory and could echo a
+    secret verbatim; a 2KB prefix keeps the diagnostic useful while bounding
+    both.
+    """
     return text if len(text) <= limit else f"{text[:limit]}... (truncated)"
 
 
@@ -256,7 +242,7 @@ class Client:
         *,
         author: str = "",
         api_key: str = "",
-        timeout_sec: float = DEFAULT_TIMEOUT_SEC,
+        timeout_sec: float = 30.0,
     ) -> None:
         self.base_url = server_url(base_url, "base_url")
         self.author = author
@@ -278,7 +264,10 @@ class Client:
                 write=10.0,
                 pool=5.0,
             ),
-            limits=httpx.Limits(keepalive_expiry=_KEEPALIVE_EXPIRY_SEC),
+            # Idle-socket lifetime in the pool. Kept below the smallest upstream
+            # idle timeout in the path (Cloudflare's ~100s, Caddy's 2m) so the
+            # client is the one that decides when to evict.
+            limits=httpx.Limits(keepalive_expiry=90.0),
             transport=httpx.HTTPTransport(retries=1),
             headers=headers,
         )
@@ -1116,7 +1105,11 @@ class Client:
         body: object = None,
         params: Mapping[str, object] | None = None,
         change_id: uuid.UUID | None = None,
+        retry_attempts: int = 3,
     ) -> Any:
+        # ``retry_attempts`` is how many tries a mutating request gets after a
+        # 5xx or read timeout. Three bounds the worst-case wait (~1s) while
+        # covering the common cases: one bad pool socket, one transient 502.
         # Only mutations need an Idempotency-Key (GETs are stateless).
         # Mint one if the caller didn't, so every retry in this loop
         # reuses the *same* UUID and the server sees a replay rather than
@@ -1127,7 +1120,7 @@ class Client:
                 change_id = uuid.uuid4()
             headers["Idempotency-Key"] = str(change_id)
         clean = _clean_params(params)
-        for attempt in range(_RETRY_ATTEMPTS):
+        for attempt in range(retry_attempts):
             try:
                 response = self._http.request(
                     method,
@@ -1154,19 +1147,19 @@ class Client:
                 httpx.ReadTimeout,
                 httpx.PoolTimeout,
             ) as err:
-                if attempt == _RETRY_ATTEMPTS - 1:
+                if attempt == retry_attempts - 1:
                     raise ClientError(f"{method} {path} failed: {err}") from err
                 time.sleep(0.1 * (3**attempt))
                 continue
             if (
                 response.status_code in (500, 502, 503, 504)
-                and attempt < _RETRY_ATTEMPTS - 1
+                and attempt < retry_attempts - 1
             ):
                 time.sleep(0.1 * (3**attempt))
                 continue
             break
         else:
-            raise AssertionError("unreachable: _RETRY_ATTEMPTS >= 1")
+            raise AssertionError("unreachable: retry_attempts >= 1")
         if response.status_code >= 400:
             error_code = ""
             try:

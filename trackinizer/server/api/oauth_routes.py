@@ -59,17 +59,24 @@ __all__ = [
 
 router = APIRouter()
 
-GOOGLE_AUTHORIZE_URL: Final[str] = "https://accounts.google.com/o/oauth2/v2/auth"
-GOOGLE_TOKEN_URL: Final[str] = "https://oauth2.googleapis.com/token"  # noqa: S105 -- OAuth endpoint URL.
-GOOGLE_USERINFO_URL: Final[str] = "https://openidconnect.googleapis.com/v1/userinfo"
+GOOGLE_AUTHORIZE_URL: Final[str] = (
+    "https://accounts.google.com/o/oauth2/v2/auth"  # config-globals: ignore -- external OAuth endpoint URL (wire contract), not a tunable
+)
+GOOGLE_TOKEN_URL: Final[str] = "https://oauth2.googleapis.com/token"  # noqa: S105 -- OAuth endpoint URL.  # config-globals: ignore -- external OAuth endpoint URL (wire contract), not a tunable
+GOOGLE_USERINFO_URL: Final[str] = (
+    "https://openidconnect.googleapis.com/v1/userinfo"  # config-globals: ignore -- external OAuth endpoint URL (wire contract), not a tunable
+)
 
 # email/profile populate the userinfo fields inserted into users; openid
 # is required by the OIDC spec.
-_OAUTH_SCOPE: Final[str] = "openid email profile"
+_OAUTH_SCOPE: Final[str] = (
+    "openid email profile"  # config-globals: ignore -- OIDC scope string (protocol contract), not a tunable
+)
 
 # Where to land after login when no ?next= was given or the cookie was lost.
-_DEFAULT_NEXT_URL: Final[str] = "/"
-_HTTPX_TIMEOUT_SECONDS: Final[float] = 10.0
+_DEFAULT_NEXT_URL: Final[str] = (
+    "/"  # config-globals: ignore -- structural default landing path, not a tunable
+)
 
 
 @router.get("/auth/login")
@@ -395,7 +402,7 @@ def _log_google_failure(op: str, *, endpoint: str, response: httpx.Response) -> 
     )
 
 
-def _http_client() -> httpx.AsyncClient:
+def _http_client(*, timeout_seconds: float = 10.0) -> httpx.AsyncClient:
     """Build the httpx client used for both Google round-trips.
 
     Tests monkey-patch this module-level helper to inject an
@@ -403,7 +410,7 @@ def _http_client() -> httpx.AsyncClient:
     call sites through one helper lets a single patch cover them without
     threading a client argument into each route.
     """
-    return httpx.AsyncClient(timeout=_HTTPX_TIMEOUT_SECONDS)
+    return httpx.AsyncClient(timeout=timeout_seconds)
 
 
 async def _upsert_user_on_login(

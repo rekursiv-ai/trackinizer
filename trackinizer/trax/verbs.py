@@ -85,7 +85,9 @@ from trackinizer.wire.wire_metrics_query import (
 # closed :data:`Edge.Kind` literal. A unit test pins the key set to
 # ``get_args(Edge.Kind)`` so adding an edge kind forces a label entry here
 # rather than raising a raw ``KeyError`` deep in ``_edge_payload`` (I4).
-LABELS_BY_EDGE_KIND: Mapping[Edge.Kind, tuple[str, str]] = {
+LABELS_BY_EDGE_KIND: Mapping[
+    Edge.Kind, tuple[str, str]
+] = {  # config-globals: ignore -- edge-kind label table, structural
     # ``(from_label, to_label)`` per stored edge kind. Every edge is stored
     # child -> parent, so the from-side is the younger/dependent vertex.
     "narrows": ("narrower", "broader"),
@@ -104,11 +106,15 @@ LABELS_BY_EDGE_KIND: Mapping[Edge.Kind, tuple[str, str]] = {
 # SIGN of valence, not a separate stored kind, so the CLI re-derives the dis*
 # title/labels from a negative valence -- one place the polarity convention is
 # applied for display.
-_NEGATIVE_CITATION_TITLE: Mapping[Edge.Kind, str] = {
+_NEGATIVE_CITATION_TITLE: Mapping[
+    Edge.Kind, str
+] = {  # config-globals: ignore -- citation-polarity title map, structural
     "proves": "disproves",
     "favors": "disfavors",
 }
-_NEGATIVE_CITATION_LABELS: Mapping[Edge.Kind, tuple[str, str]] = {
+_NEGATIVE_CITATION_LABELS: Mapping[
+    Edge.Kind, tuple[str, str]
+] = {  # config-globals: ignore -- citation-polarity label map, structural
     "proves": ("citing artifact", "disproven claim"),
     "favors": ("citing artifact", "disfavored claim"),
 }
@@ -1364,17 +1370,14 @@ def _inline_create_body(
     return body
 
 
-_DEFAULT_PRIORITY = 20
-
-
-def _priority_or_default(priority: object) -> int:
+def _priority_or_default(priority: object, *, default: int = 20) -> int:
     """Issue priority for sorting/display, defaulting only absent/None to 20.
 
     An explicit priority ``0`` (P0) is preserved -- the falsy-``or`` idiom would
     mis-map it to the medium default and sort/show a critical row as ordinary
     (F33).
     """
-    return _DEFAULT_PRIORITY if priority is None else int(cast(int, priority))
+    return default if priority is None else int(cast(int, priority))
 
 
 def _apply_create_defaults(kind: Inquiry.InquiryKind, body: dict[str, object]) -> None:

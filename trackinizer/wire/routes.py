@@ -35,7 +35,9 @@ from trackinizer.types.inquiries import (
 # Prefix of the flattened cost axes. These are numeric deltas routed
 # through the Store's ``add_cost`` and have no ``set_<column>`` setter, so
 # the route table marks them specially instead of deriving a method name.
-_COST_PREFIX = "marginal_cost_"
+_COST_PREFIX = (
+    "marginal_cost_"  # config-globals: ignore -- API column-name prefix (wire contract)
+)
 
 # Every inquiry class, so the table covers each kind's own columns plus the
 # shared base: ``Inquiry`` first (base columns), then each concrete kind from
@@ -271,5 +273,5 @@ type HttpVerb = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 # ``DEFAULT_LIST_LIMIT`` applies when a caller omits ``limit``;
 # ``MAX_LIST_LIMIT`` is the ceiling the server enforces on any supplied
 # ``limit``.
-DEFAULT_LIST_LIMIT = 50
-MAX_LIST_LIMIT = 1000
+DEFAULT_LIST_LIMIT = 50  # config-globals: ignore -- shared default; threading would duplicate across N call sites
+MAX_LIST_LIMIT = 1000  # config-globals: ignore -- shared pagination ceiling; threading would duplicate across N call sites

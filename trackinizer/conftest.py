@@ -183,7 +183,7 @@ _INTEG_TABLES = (
     "api_keys",
     "allowlist",
     "users",
-)
+)  # config-globals: ignore -- test fixture constant
 """Truncated by :func:`truncate_all` between integration tests.
 
 ``change_log.subject_id`` is deliberately FK-free (so ``purged`` rows
@@ -201,7 +201,7 @@ _INTEG_SEQUENCES = (
     "seq_webresult",
     "seq_websearch",
     "seq_agentsession",
-)
+)  # config-globals: ignore -- test fixture constant
 """Per-kind short-ref sequences reset between integration tests so
 ``Issue#1`` numbering is independent of test ordering."""
 

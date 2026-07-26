@@ -32,7 +32,9 @@ from trackinizer.server.store.core import Store
 # defaulting can refer to known values.
 TEST_USER_ID: uuid.UUID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 TEST_API_KEY_ID: uuid.UUID = uuid.UUID("22222222-2222-2222-2222-222222222222")
-TEST_USER_EMAIL: str = "test-user@example.com"
+TEST_USER_EMAIL: str = (
+    "test-user@example.com"  # config-globals: ignore -- test fixture constant
+)
 
 
 def make_test_identity(

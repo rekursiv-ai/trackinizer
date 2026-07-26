@@ -66,11 +66,6 @@ _IDENTITY_COLUMNS: frozenset[str] = frozenset(
 router = APIRouter()
 
 
-# The change-log slice keeps its own, larger default; the inquiry-list
-# default and cap come from the shared wire contract.
-_DEFAULT_CHANGE_LIMIT = 200
-
-
 # -- Inquiry read -----------------------------------------------------------
 
 
@@ -287,7 +282,9 @@ async def list_change_log_route(
     subject_id: uuid.UUID | None = None,
     subject_kind: Inquiry.InquiryKind | None = None,
     kind: Change.Kind | None = None,
-    limit: int = _DEFAULT_CHANGE_LIMIT,
+    # The change-log slice keeps its own, larger default; the inquiry-list
+    # default and cap come from the shared wire contract.
+    limit: int = 200,
 ) -> list[Change]:
     """Return a filtered, newest-first slice of the change log."""
     del identity

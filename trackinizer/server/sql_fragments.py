@@ -113,7 +113,7 @@ declaration site.
 """
 
 
-_COST_SUBTREE_SQL: str = (
+_COST_SUBTREE_SQL: str = (  # config-globals: ignore -- SQL query fragment (structural), not a tunable
     "WITH RECURSIVE subtree(id) AS ("
     "    SELECT $1::uuid "
     "    UNION "
