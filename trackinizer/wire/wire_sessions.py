@@ -22,7 +22,7 @@ The turn-kind enum lives in ``types`` and is re-exported here as
 from __future__ import annotations
 
 from datetime import datetime
-from typing import get_args
+from typing import Final, get_args
 
 import uuid
 
@@ -40,7 +40,7 @@ KINDS: tuple[Kind, ...] = get_args(Kind.__value__)
 """Runtime tuple of every :data:`Kind`, for validation and iteration."""
 
 
-_MAX_MESSAGE_CHARS = 16_384
+_MAX_MESSAGE_CHARS = 16_384  # config-globals: ignore -- wire message-size limit (protocol contract), not a tunable
 """Upper bound on an inbound/routed message body. Caps the bytes a single
 ``inject`` writes to the PTY under the pump lock (each write stalls human
 keystrokes for its duration) and the memory a process-local queue holds."""
@@ -429,13 +429,14 @@ class SessionEndResponse(BaseModel):
     ended: datetime | None = None
 
 
-SESSION_START_PATH = "/api/sessions/start"
-SESSION_EVENTS_PATH = "/api/sessions/{session_id}/events"
-SESSION_END_PATH = "/api/sessions/{session_id}/end"
-SESSION_INBOUND_PATH = "/api/sessions/{session_id}/inbound"
-SEND_MESSAGE_PATH = "/api/messages"
-VERSION_PATH = "/api/version"
-FEED_PATH = "/api/web/feed"
+# API route paths -- wire contract shared with the client, not tunables.
+SESSION_START_PATH: Final = "/api/sessions/start"
+SESSION_EVENTS_PATH: Final = "/api/sessions/{session_id}/events"
+SESSION_END_PATH: Final = "/api/sessions/{session_id}/end"
+SESSION_INBOUND_PATH: Final = "/api/sessions/{session_id}/inbound"
+SEND_MESSAGE_PATH: Final = "/api/messages"
+VERSION_PATH: Final = "/api/version"
+FEED_PATH: Final = "/api/web/feed"
 
 
 # Every non-field API path the client, SPA, or deploy probe depends on, as a

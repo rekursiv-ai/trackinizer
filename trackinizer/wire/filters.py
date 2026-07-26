@@ -48,7 +48,9 @@ __all__ = [
 # backtracking in the validation compile. 512 chars comfortably fits any real
 # column value or regex while capping that cost (mirrors the message-body caps
 # in ``wire_sessions.py``).
-MAX_FILTER_VALUE_CHARS = 512
+MAX_FILTER_VALUE_CHARS = (
+    512  # config-globals: ignore -- wire operand-size limit, protocol contract
+)
 
 
 # Every inquiry class, so the derived NOT-NULL set below spans the whole
@@ -59,7 +61,9 @@ _INQUIRY_KIND_CLASSES: tuple[type[Inquiry], ...] = (Inquiry, *KIND_TO_CLASS.valu
 
 
 FilterOp = Literal["is", "ne", "re", "nre", "lt", "le", "gt", "ge", "isnull", "notnull"]
-FILTER_OPS: tuple[FilterOp, ...] = (
+FILTER_OPS: tuple[
+    FilterOp, ...
+] = (  # config-globals: ignore -- filter operator table, structural
     "is",
     "ne",
     "re",

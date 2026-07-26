@@ -82,36 +82,40 @@ __all__ = [
 
 # scrypt cost: ~50ms per hash, within the OWASP 2023 minimum. Encoded
 # into every hash so a future bump rotates per-row, leaving old rows valid.
-_SCRYPT_N: int = 2**14
-_SCRYPT_R: int = 8
-_SCRYPT_P: int = 1
-_SCRYPT_DKLEN: int = 32
-_SCRYPT_SALT_BYTES: int = 16
-_SCRYPT_MAX_N: int = 2**20
-_SCRYPT_MAX_R: int = 128
-_SCRYPT_MAX_P: int = 128
+_SCRYPT_N: int = (
+    2**14
+)  # config-globals: ignore -- scrypt cost encoded into every stored hash (format contract), not a tunable
+_SCRYPT_R: int = 8  # config-globals: ignore -- scrypt cost encoded into every stored hash (format contract), not a tunable
+_SCRYPT_P: int = 1  # config-globals: ignore -- scrypt cost encoded into every stored hash (format contract), not a tunable
+_SCRYPT_DKLEN: int = 32  # config-globals: ignore -- scrypt derived-key length in stored hash (format contract), not a tunable
+_SCRYPT_SALT_BYTES: int = 16  # config-globals: ignore -- scrypt salt size in stored hash (format contract), not a tunable
+_SCRYPT_MAX_N: int = (
+    2**20
+)  # config-globals: ignore -- upper bound validating parsed stored-hash params (structural), not a tunable
+_SCRYPT_MAX_R: int = 128  # config-globals: ignore -- upper bound validating parsed stored-hash params (structural), not a tunable
+_SCRYPT_MAX_P: int = 128  # config-globals: ignore -- upper bound validating parsed stored-hash params (structural), not a tunable
 
 # Entropy bytes in a freshly minted secret; 32 gives ~43 base64 chars.
 # The ``trax_`` prefix tags leaked tokens so they're greppable in logs.
-_TOKEN_BYTES: int = 32
-_TOKEN_LABEL: str = "trax_"  # noqa: S105 -- not a hardcoded password.
+_TOKEN_BYTES: int = 32  # config-globals: ignore -- token entropy size (security parameter), shared by 2 call sites
+_TOKEN_LABEL: str = "trax_"  # noqa: S105 -- not a hardcoded password.  # config-globals: ignore -- token prefix tag baked into every token (format contract), not a tunable
 
 # Visible prefix stored per api_keys row. Drives UI display and scopes
 # scrypt-verify to the rows sharing that prefix.
-TOKEN_PREFIX_LEN: int = 12
+TOKEN_PREFIX_LEN: int = 12  # config-globals: ignore -- stored api_keys prefix width (storage/lookup contract), not a tunable
 
-BOOTSTRAP_ADMIN_ENV: str = "TRACKINIZER_BOOTSTRAP_ADMIN"
-BOOTSTRAP_TOKEN_FILE_ENV: str = "TRACKINIZER_BOOTSTRAP_TOKEN_FILE"  # noqa: S105 -- env-var name, not a credential.
+BOOTSTRAP_ADMIN_ENV: str = "TRACKINIZER_BOOTSTRAP_ADMIN"  # config-globals: ignore -- env-var name (config key), not a tunable
+BOOTSTRAP_TOKEN_FILE_ENV: str = "TRACKINIZER_BOOTSTRAP_TOKEN_FILE"  # noqa: S105 -- env-var name, not a credential.  # config-globals: ignore -- env-var name (config key), not a tunable
 
-_BEARER_PREFIX: str = "Bearer "
+_BEARER_PREFIX: str = "Bearer "  # config-globals: ignore -- HTTP Authorization scheme prefix (wire contract), not a tunable
 
 # Throttle for ``last_used_at`` writes. Without it, a hot key (e.g. a CI
 # bot) serializes every request on one row lock just to refresh a timestamp
 # the UI shows at minute granularity. Each Store caps the write to one per
 # key per interval. The entry cap bounds memory under a flood of distinct
 # keys, evicting the oldest tracked entry when full.
-LAST_USED_BUMP_INTERVAL_SEC: float = 60.0
-LAST_USED_BUMPED_AT_MAX_ENTRIES: int = 10_000
+LAST_USED_BUMP_INTERVAL_SEC: float = 60.0  # config-globals: ignore -- shared default consumed by store/core.py; threading would cross the module boundary
+LAST_USED_BUMPED_AT_MAX_ENTRIES: int = 10_000  # config-globals: ignore -- shared default consumed by store/core.py; threading would cross the module boundary
 # Module-level so tests can monkeypatch the throttle's clock.
 monotonic_clock = time.monotonic
 
@@ -122,7 +126,11 @@ type UserStatus = Literal["active", "disabled"]
 
 # Weakest-to-strongest so role comparison is an index lookup. Viewers
 # read, writers mutate, admins manage users.
-ROLE_ORDER: tuple[Role, ...] = ("viewer", "writer", "admin")
+ROLE_ORDER: tuple[Role, ...] = (
+    "viewer",
+    "writer",
+    "admin",
+)  # config-globals: ignore -- fixed weak-to-strong role ordering table (structural), not a tunable
 
 
 class RoleCeilingError(Exception):
@@ -148,7 +156,7 @@ def effective_role(user_role: Role, key_role: Role) -> Role:
 # Synthetic identity returned under ``--no-auth``. Fixed UUID so audit rows
 # across runs share a key; the email is obviously fake.
 _NO_AUTH_USER_ID: uuid.UUID = uuid.UUID("00000000-0000-0000-0000-000000000001")
-_NO_AUTH_EMAIL: str = "no-auth@localhost"
+_NO_AUTH_EMAIL: str = "no-auth@localhost"  # config-globals: ignore -- synthetic fixed identity sentinel, not a tunable
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

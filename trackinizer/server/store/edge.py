@@ -44,7 +44,7 @@ __all__ = [
 ]
 
 
-INFERRED_PROVENANCE_REASON = "inferred provenance"
+INFERRED_PROVENANCE_REASON = "inferred provenance"  # config-globals: ignore -- provenance-reason prefix consumers discriminate on (protocol string), not a tunable
 """Stable prefix on the audit ``reason`` of an auto-inferred ``produces`` edge.
 
 A consumer (UI, analytics) tells an inferred provenance edge from a

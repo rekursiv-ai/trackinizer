@@ -236,7 +236,7 @@ async def web_get(
     }
 
 
-_GRAPH_NODE_COLS = (
+_GRAPH_NODE_COLS = (  # config-globals: ignore -- SQL SELECT column list bound to the schema, structural not a knob
     "id, kind, seq, title, status, created, belief_judgement, belief_confidence"
 )
 
@@ -606,7 +606,7 @@ def _row_to_dict(row: asyncpg.Record) -> WebView:
 
 _SNAPSHOT_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(Snapshot))
 
-_CHANGE_SELECT = (
+_CHANGE_SELECT = (  # config-globals: ignore -- fixed SQL query text bound to the schema, structural not a knob
     "SELECT c.*, COALESCE(k_user.email, actor_user.email) AS principal "
     "FROM change_log c "
     "LEFT JOIN api_keys k ON k.id = c.api_key_id "
@@ -667,7 +667,7 @@ def _snapshot_to_dict(row: asyncpg.Record, *, prefix: str) -> WebView:
     return out
 
 
-_PEER_COLUMNS = (
+_PEER_COLUMNS = (  # config-globals: ignore -- SQL SELECT fragment bound to the schema, structural not a knob
     "t.kind AS peer_kind, t.seq AS peer_seq, t.title AS peer_title, "
     "t.status AS peer_status, t.belief_judgement AS peer_judgement"
 )

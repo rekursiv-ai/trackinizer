@@ -25,7 +25,7 @@ __all__ = [
 ]
 
 
-EMBEDDING_DIM = 384  # MiniLM-L6-v2 sentence-embedding dim.
+EMBEDDING_DIM = 384  # config-globals: ignore -- embedding dim fixed by stored schema (pgvector column width), shared across store modules; not a tunable  # MiniLM-L6-v2 sentence-embedding dim.
 
 
 class _StoreShared:

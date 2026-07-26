@@ -336,34 +336,25 @@ def _spawn_and_drain(
     return rc
 
 
-# Worst-case wait for a worker thread to stop after ``stop`` is set. Generous
-# enough that a normal in-flight flush (a retrying client POST) completes, but
-# bounded so a permanently wedged network call cannot hang the process.
-_JOIN_WATCHDOG_SEC: float = 30.0
-
-# Grace below ``spawn_time`` when deciding a session file is "this run's" by
-# mtime (#283). Absorbs whole-second filesystem mtime granularity and minor
-# clock skew, so a just-created file is never wrongly rejected; an earlier
-# run's file is many seconds older (CLI boot takes seconds), so the grace
-# never re-opens the cross-pollination window.
-_SPAWN_MTIME_GRACE_SEC: float = 2.0
-
-
-def _join_with_watchdog(thread: threading.Thread, name: str) -> None:
+def _join_with_watchdog(
+    thread: threading.Thread, name: str, *, watchdog_sec: float = 30.0
+) -> None:
     """Join ``thread`` with a generous bound, warning if it outlives the watchdog.
 
     A too-short ``join`` made thread ownership non-binding, so ``sink.close``
     could race an in-flight ``emit`` / ``flush`` (R2R-024). This waits up to
-    :data:`_JOIN_WATCHDOG_SEC` so the worker normally stops first, then logs and
-    returns if the thread is still alive (a wedged blocking call) rather than
-    hanging ``trax run`` forever; ``LockedSink.close`` then declines to block on
-    the lock that straggler still holds.
+    ``watchdog_sec`` so the worker normally stops first, then logs and returns if
+    the thread is still alive (a wedged blocking call) rather than hanging ``trax
+    run`` forever; ``LockedSink.close`` then declines to block on the lock that
+    straggler still holds. The default is generous enough that a normal in-flight
+    flush (a retrying client POST) completes, but bounded so a permanently wedged
+    network call cannot hang the process.
     """
-    thread.join(timeout=_JOIN_WATCHDOG_SEC)
+    thread.join(timeout=watchdog_sec)
     if thread.is_alive():
         sys.stderr.write(
             f"[trax run] {name} thread did not stop within "
-            f"{_JOIN_WATCHDOG_SEC:.0f}s; proceeding to close\n"
+            f"{watchdog_sec:.0f}s; proceeding to close\n"
         )
 
 
@@ -605,6 +596,7 @@ def _scan_and_read(
     baseline: frozenset[Path],
     stamps: dict[Path, tuple[int, int]] | None = None,
     spawn_time: float = 0.0,
+    mtime_grace_sec: float = 2.0,
 ) -> None:
     """Walk the session dirs once, draining each file this run created.
 
@@ -642,10 +634,11 @@ def _scan_and_read(
             # sub-second wall clock) and minor clock skew; an earlier run's file
             # is reliably many seconds older (CLI boot takes seconds), so the
             # grace never re-opens the cross-pollination window.
-            if (
-                spawn_time
-                and path.stat().st_mtime < spawn_time - _SPAWN_MTIME_GRACE_SEC
-            ):
+            # ``mtime_grace_sec`` absorbs whole-second filesystem mtime
+            # granularity and minor clock skew, so a just-created file is never
+            # wrongly rejected; an earlier run's file is many seconds older (CLI
+            # boot takes seconds), so the grace never re-opens the window.
+            if spawn_time and path.stat().st_mtime < spawn_time - mtime_grace_sec:
                 continue
             # Backfill the CLI's own session id (the file names it) so a fresh
             # run becomes resumable on its next ``--resume``. First non-empty

@@ -42,7 +42,9 @@ from trackinizer.types.inquiries import (
 )
 
 
-BATCH_MAX_ITEMS = 1000
+BATCH_MAX_ITEMS = (
+    1000  # config-globals: ignore -- wire batch/size limit, protocol contract
+)
 
 
 __all__ = [

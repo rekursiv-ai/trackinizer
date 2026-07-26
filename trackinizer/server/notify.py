@@ -40,7 +40,7 @@ __all__ = [
 ]
 
 
-NOTIFY_CHANNEL = "trackinizer"
+NOTIFY_CHANNEL = "trackinizer"  # config-globals: ignore -- Postgres LISTEN/NOTIFY channel name (wire/protocol contract), not a tunable
 """Postgres ``LISTEN/NOTIFY`` channel for post-commit inquiry change fan-out."""
 
 

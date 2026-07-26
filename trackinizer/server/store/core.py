@@ -61,19 +61,6 @@ __all__ = [
     "set_client_change_id",
 ]
 
-_BOOTSTRAP_ATTEMPTS = 6
-"""Fresh ``bootstrap`` passes before a transient PGlite WASM fault gives up.
-
-Under whole-suite ``pytest -n`` load PGlite's WASM Postgres can trap
-(``RuntimeError: unreachable`` inside ``execProtocolRawSync``) part-way through
-the bootstrap DDL; the Node child then exits and the next ``engine.acquire()``
-rebuilds a fresh one (``PGliteEngine._live_conn``). A trapped transaction
-commits nothing, so the idempotent pass safely replays. Several attempts absorb
-a cluster of traps (each independently recoverable) while a deterministic
-failure -- bad DDL, missing extension -- is not in the caught set and still
-raises on the first pass. Each retry fires only on a caught fault, so a healthy
-boot pays nothing."""
-
 # asyncpg raises a plain ``InterfaceError('connection is closed')`` (and a
 # mid-operation ``ConnectionDoesNotExistError`` whose message mentions "closed
 # in the middle") when the PGlite Node drops the socket -- the transient case
@@ -81,7 +68,10 @@ boot pays nothing."""
 # error, released connection, operation in progress): a deterministic bug that
 # must surface, not be retried. Match on the connection-closed phrasing rather
 # than the (shared) exception class.
-_TRANSIENT_FAULT_MARKERS = ("connection is closed", "closed in the middle")
+_TRANSIENT_FAULT_MARKERS = (
+    "connection is closed",
+    "closed in the middle",
+)  # config-globals: ignore -- asyncpg error-message markers matched to classify faults (protocol strings), not a tunable
 
 
 def _is_transient_pglite_fault(err: BaseException) -> bool:
@@ -151,8 +141,20 @@ class _LifecycleMixin(_StoreShared):
                     conn, row["id"], embedder.name, await embedder.embed(row["title"])
                 )
 
-    async def bootstrap(self) -> None:
+    async def bootstrap(self, *, attempts: int = 6) -> None:
         """Apply the canonical schema when this database has not seen it.
+
+        ``attempts`` is the number of fresh passes before a transient PGlite WASM
+        fault gives up. Under whole-suite ``pytest -n`` load PGlite's WASM
+        Postgres can trap (``RuntimeError: unreachable`` inside
+        ``execProtocolRawSync``) part-way through the bootstrap DDL; the Node
+        child then exits and the next ``engine.acquire()`` rebuilds a fresh one
+        (``PGliteEngine._live_conn``). A trapped transaction commits nothing, so
+        the idempotent pass safely replays. Several attempts absorb a cluster of
+        traps (each independently recoverable) while a deterministic failure --
+        bad DDL, missing extension -- is not in the caught set and still raises on
+        the first pass. Each retry fires only on a caught fault, so a healthy boot
+        pays nothing.
 
         Retries the whole pass on a transient PGlite fault. Bootstrap holds one
         connection across a burst of heavy DDL; on the PGlite substrate that DDL
@@ -174,18 +176,18 @@ class _LifecycleMixin(_StoreShared):
         pass rather than burn the retry budget. A missing schema asset
         (``FileNotFoundError``) likewise surfaces immediately.
         """
-        for attempt in range(_BOOTSTRAP_ATTEMPTS):
+        for attempt in range(attempts):
             try:
                 await self._bootstrap_once()
                 return
             except (asyncpg.PostgresConnectionError, ConnectionRefusedError):
-                if attempt == _BOOTSTRAP_ATTEMPTS - 1:
+                if attempt == attempts - 1:
                     raise
                 await asyncio.sleep(0.25 * (attempt + 1))
             except asyncpg.InterfaceError as err:
                 if not _is_transient_pglite_fault(err):
                     raise  # asyncpg API misuse -- deterministic, do not retry
-                if attempt == _BOOTSTRAP_ATTEMPTS - 1:
+                if attempt == attempts - 1:
                     raise
                 await asyncio.sleep(0.25 * (attempt + 1))
 

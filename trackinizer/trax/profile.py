@@ -218,7 +218,7 @@ Fields: url actor token
             return Profile(url=LOCALHOST_FALLBACK_URL)
 
 
-LOCALHOST_FALLBACK_URL = "http://127.0.0.1:8765"
+LOCALHOST_FALLBACK_URL = "http://127.0.0.1:8765"  # config-globals: ignore -- fixed localhost fallback URL, not a knob
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

@@ -67,7 +67,7 @@ def resolve_labels(labels: Sequence[str] | None) -> list[str]:
     return out
 
 
-_BAR = "─"
+_BAR = "─"  # config-globals: ignore -- box-drawing render glyph, not a knob
 
 
 type _RowFn = Callable[[dict[str, Any]], str]

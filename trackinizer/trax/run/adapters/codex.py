@@ -168,7 +168,10 @@ def _session_meta(obj: JSON) -> Message:
 # ``user``-role message the CLI never shows; it is recognizable by this
 # prefix. It is primed context, not something the human typed, so it maps to
 # a SystemMessage rather than a UserMessage.
-_ENV_CONTEXT_PREFIXES = ("# AGENTS.md instructions for ", "<INSTRUCTIONS>")
+_ENV_CONTEXT_PREFIXES = (
+    "# AGENTS.md instructions for ",
+    "<INSTRUCTIONS>",
+)  # config-globals: ignore -- codex protocol marker prefixes, structural not a knob
 
 
 def _role_message(payload: JSON) -> Message:
