@@ -296,28 +296,27 @@ Slash args forward verbatim to `trax`. A bare number routes to `trax issue <seq>
 Re-running `description to @body.md` (or `to -`) overwrites; that is the
 recovery path when a body lands too thin.
 
-## Per-kind authoring expectations (child skills)
+## Per-kind authoring expectations (child docs)
 
 This skill teaches the GRAMMAR (how to write a row). WHAT a complete, well-formed
-row of each kind must CONTAIN lives in a per-kind **child skill** — each fires on
-its own task intent (e.g. "upload a paper" → `trax-paper`) and is the content SoT
-for that kind (not field lists — `types/inquiries.py` owns fields). The child
-skill files are `trax/docs/skills/<kind>.md`, surfaced as skills
-`trax/{issue,paper,belief,experiment,codechange,webresult,websearch,agentsession}`:
+row of each kind must CONTAIN lives in a per-kind **child doc** — the content SoT
+for that kind (not field lists — `types/inquiries.py` owns fields). These are
+plain docs, NOT invocable skills: skill discovery scans one directory level, so
+these nested files never register as `Skill` names. **`Read` the file directly**
+at `trax/<kind>/SKILL.md` before authoring a substantial row of that kind:
 
-| Child | Fires when authoring a… |
+| Read this doc | Before authoring a… |
 |---|---|
-| `trax-issue` | Issue / bug report (context, success criteria, verification) |
-| `trax-paper` | Paper (bib cascade, DOI, companion WebResults, `cites` vs `proves`) |
-| `trax-belief` | Belief (falsifiable claim, judgement/confidence, signed citations) |
-| `trax-experiment` | Experiment (codechanges, outcome, config, proved_by) |
-| `trax-codechange` | CodeChange (full SHA, produced-link) |
-| `trax-webresult` | WebResult (url, companion-of-paper) |
-| `trax-websearch` | WebSearch (query, provider, findings as edges) |
-| `trax-agentsession` | AgentSession (envelope vs events asymmetry) |
+| `trax/issue/SKILL.md` | Issue / bug report (context, success criteria, verification) |
+| `trax/paper/SKILL.md` | Paper (bib cascade, DOI, companion WebResults, `cites` vs `proves`) |
+| `trax/belief/SKILL.md` | Belief (falsifiable claim, judgement/confidence, signed citations) |
+| `trax/experiment/SKILL.md` | Experiment (codechanges, outcome, config, proved_by) |
+| `trax/codechange/SKILL.md` | CodeChange (full SHA, produced-link) |
+| `trax/webresult/SKILL.md` | WebResult (url, companion-of-paper) |
+| `trax/websearch/SKILL.md` | WebSearch (query, provider, findings as edges) |
+| `trax/agentsession/SKILL.md` | AgentSession (envelope vs events asymmetry) |
 
-Read the matching child before authoring a substantial row of that kind (index:
-`skills/README.md`).
+`Read` the matching doc before authoring a substantial row of that kind.
 
 For live trackinizer DB schema/shape changes (migrations, constraints,
 new Inquiry kinds), read
