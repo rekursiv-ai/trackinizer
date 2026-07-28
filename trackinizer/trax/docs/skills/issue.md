@@ -1,6 +1,6 @@
 ---
 name: trax-issue
-description: Use when writing a trackinizer Issue or bug report -- context, success criteria, implementation notes, verification. The content standard for a well-formed issue body. Not trax grammar (trax).
+description: ALWAYS invoke this skill when writing a trackinizer Issue or bug report -- context, success criteria, implementation notes, verification; the standard for a well-formed issue body. Do not write the Issue body directly -- invoke this skill first.
 ---
 
 # Issue — authoring expectations

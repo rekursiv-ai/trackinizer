@@ -1,6 +1,6 @@
 ---
 name: trax-webresult
-description: Use when adding a trackinizer WebResult -- a web page or a paper's code/data companion, url + produces-link, dedup on url. Not trax grammar (trax); for bulk companion-harvesting a paper graph, survey-snowball.
+description: ALWAYS invoke this skill when adding a trackinizer WebResult -- a web page or a paper's code/data companion, url + produces-link, dedup on url. Do not write the WebResult directly -- invoke this skill first.
 ---
 
 # WebResult — authoring expectations
