@@ -1,6 +1,6 @@
 ---
 name: trax-belief
-description: Use when authoring a trackinizer Belief -- falsifiable proposition, judgement/confidence, signed-valence proves/favors citations (claims are cited, papers are not). Not trax grammar (trax).
+description: ALWAYS invoke this skill when authoring a trackinizer Belief -- falsifiable proposition, judgement/confidence, signed-valence proves/favors citations. Do not write the Belief directly -- invoke this skill first.
 ---
 
 # Belief — authoring expectations

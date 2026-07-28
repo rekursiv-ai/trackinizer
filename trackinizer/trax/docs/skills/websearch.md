@@ -1,6 +1,6 @@
 ---
 name: trax-websearch
-description: Use when recording a trackinizer WebSearch -- verbatim query, provider, findings as produced_by edges. Not trax grammar (trax).
+description: ALWAYS invoke this skill when recording a trackinizer WebSearch -- verbatim query, provider, findings as produced_by edges. Do not write the WebSearch directly -- invoke this skill first. Not trax grammar (trax).
 ---
 
 # WebSearch — authoring expectations

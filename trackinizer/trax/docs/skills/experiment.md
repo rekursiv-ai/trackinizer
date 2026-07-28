@@ -1,6 +1,6 @@
 ---
 name: trax-experiment
-description: Use when authoring a trackinizer Experiment -- codechange links, outcome with metric/denominator/split, config JSON, proved_by. Not trax grammar (trax).
+description: ALWAYS invoke this skill when authoring a trackinizer Experiment -- codechange links, outcome with metric/denominator/split, config JSON, proved_by. Do not write the Experiment directly -- invoke this skill first. Not trax grammar (trax).
 ---
 
 # Experiment — authoring expectations

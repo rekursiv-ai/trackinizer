@@ -1,6 +1,6 @@
 ---
 name: trax-paper
-description: Use when creating, uploading, or completing a trackinizer Paper (bibliographic node) -- full field cascade, DOI resolution, companion WebResults, cites vs proves. Not trax grammar (trax) or graph-scale snowball (survey-snowball).
+description: ALWAYS invoke this skill when creating, uploading, or completing a trackinizer Paper (bibliographic node) -- full field cascade, DOI resolution, companion WebResults, cites vs proves. Do not write the Paper directly -- invoke this skill first.
 ---
 
 # Paper — authoring expectations

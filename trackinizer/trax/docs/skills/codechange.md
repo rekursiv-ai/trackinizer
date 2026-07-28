@@ -1,6 +1,6 @@
 ---
 name: trax-codechange
-description: Use when attaching a git commit as a trackinizer CodeChange -- full 40-char SHA, produced-edge linking, purpose labels. Not trax grammar (trax).
+description: ALWAYS invoke this skill when attaching a git commit as a trackinizer CodeChange -- full 40-char SHA, produced-edge linking, purpose labels. Do not write the CodeChange directly -- invoke this skill first. Not trax grammar (trax).
 ---
 
 # CodeChange — authoring expectations

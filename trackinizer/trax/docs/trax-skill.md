@@ -1,9 +1,7 @@
 ---
 name: trax
 description: >
-  Use for Trackinizer/trax work tracking and inquiry records: issues, beliefs,
-  papers, experiments, codechanges, web results/searches, agent sessions,
-  costs, graph/search/board, or projects targeting a trackinizer server. Not git.
+  ALWAYS invoke this skill for Trackinizer/trax work tracking and inquiry records: issues, beliefs, papers, experiments, codechanges, web results/searches, sessions, costs, board. Do not hand-write trax records directly -- invoke this skill first.
 argument-hint: "[help|next|blocked|board|graph|search|recent|cost|profile|<kind>] ..."
 user-invocable: true
 tools: Bash, Read, Write, Edit, Glob, Grep

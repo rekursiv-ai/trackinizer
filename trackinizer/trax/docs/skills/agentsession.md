@@ -1,6 +1,6 @@
 ---
 name: trax-agentsession
-description: Use when authoring a trackinizer AgentSession -- the captured session envelope, cli/session-id, started/ended lifecycle, the events-table asymmetry. Not trax grammar (trax).
+description: ALWAYS invoke this skill when authoring a trackinizer AgentSession -- the captured session envelope, cli/session-id, started/ended lifecycle, events-table asymmetry. Do not write the AgentSession directly -- invoke this skill first.
 ---
 
 # AgentSession — authoring expectations
