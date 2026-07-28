@@ -413,12 +413,14 @@ class _CascadeAuditMixin(_StoreShared):
         alert that edge's ``cascade_dependent`` endpoint (from ``EdgeKindPolicy``)
         -- unless that endpoint IS the subject, which self-suppresses. There is no
         per-kind branch in the mechanism; kinds differ only in their policy value.
-        Most kinds (citations, provenance, supersession, ``requires``) name the
-        stored ``from`` child as dependent (its state derives from the parent), so
-        a change to the ``to`` parent alerts the ``from`` side. ``narrows`` names
-        the ``to`` side dependent instead -- the broader goal rolls up its narrower
-        issues' state, so a narrower change alerts the broader Issue -- but it runs
-        through the same single rule, not a special case.
+        Most kinds (provenance, supersession, ``requires``) name the stored
+        ``from`` child as dependent (its state derives from the parent), so a
+        change to the ``to`` parent alerts the ``from`` side. ``narrows`` and the
+        ``proves``/``favors`` citations name the ``to`` side dependent instead --
+        the broader goal rolls up its narrower issues' state, and a cited claim
+        leans on its evidence, so a change to the stored ``from`` child alerts the
+        ``to`` parent -- but both run through the same single rule, not a special
+        case.
 
         ``edge_rows`` lets ``purge()`` hand in a pre-captured edge list
         (its child's edges are about to be cascade-deleted, so the
@@ -484,8 +486,9 @@ class _CascadeAuditMixin(_StoreShared):
 
         Reads the :class:`EdgeKindPolicy` registry for the dependent
         endpoint of each edge kind: ``cascade_dependent="from"`` for
-        citations / provenance / supersession / ``requires``;
-        ``cascade_dependent="to"`` for ``narrows``. When
+        provenance / supersession / ``requires``;
+        ``cascade_dependent="to"`` for ``narrows`` and the ``proves`` /
+        ``favors`` citations (the cited claim is re-assessed). When
         ``edge_rows`` is None, queries live; otherwise iterates the
         caller-supplied list (used by ``purge`` to capture edges before
         FK cascade deletes them).

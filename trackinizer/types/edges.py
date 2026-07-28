@@ -310,15 +310,17 @@ class EdgeKindPolicy:
     direction flag.
 
     The default ``"from"`` holds for every kind whose dependent happens to be the
-    stored from-side child: ``proves``/``favors`` citations (the citing Artifact
-    derives its standing from the claim it cites), ``requires`` (the requirer
-    waits on its prerequisite), provenance, and supersession.
+    stored from-side child: ``requires`` (the requirer waits on its
+    prerequisite), provenance, and supersession.
 
-    The lone exception is ``narrows``, which is ``"to"``: ``narrows`` is STILL
-    stored narrower(child) -> broader(parent) -- same uniform rule -- but the
-    BROADER issue (the ``to`` side) is the dependent, because it rolls up its
-    narrower children's state, so a narrower change must re-assess the broader.
-    Read it as "the broader is dependent ON its narrowers"."""
+    ``narrows`` and the citations (``proves``/``favors``) are ``"to"``. All are
+    STILL stored child -> parent -- same uniform rule -- but the dependent is the
+    ``to`` side: for ``narrows`` the BROADER issue rolls up its narrower
+    children's state, so a narrower change re-assesses the broader; for
+    ``proves``/``favors`` the cited CLAIM leans on its evidence, so an evidence
+    change re-assesses the claim (see ``docs/design.md``: "when a cited artifact
+    moves, every belief leaning on it is alerted"). Read ``"to"`` as "the parent
+    is dependent ON its children"."""
 
     skips_scheduler_on: _EdgeEndpoint | None = None
     """When set, ``next_issue`` ignores the endpoint on this side. Used by
@@ -384,24 +386,29 @@ EDGE_POLICIES: Mapping[Edge.Kind, EdgeKindPolicy] = MappingProxyType(
             description=(
                 "proves/favors store Artifact -> {Belief, Experiment}: the citing "
                 "evidence (the younger child, gathered to bear on the claim) "
-                "points up to the older claim it supports. The dependent citer is "
-                "on the from-side (default). For-vs-against is the sign of "
-                "Edge.valence, not a separate edge kind. proves is load-bearing."
+                "points up to the older claim it supports. The dependent is the "
+                "cited claim on the to-side: a claim leaning on this evidence is "
+                "re-assessed when the evidence moves. For-vs-against is the sign "
+                "of Edge.valence, not a separate edge kind. proves is load-bearing."
             ),
             forward_label="proves",
             inverse_label="proved_by",
             from_kinds="artifact",
             to_kinds="claimable",
+            cascade_dependent="to",
         ),
         "favors": EdgeKindPolicy(
             description=(
                 "favors is the context sibling of proves (same Artifact -> claim "
-                "shape); it informs without voting in the proof predicate."
+                "shape); it informs without voting in the proof predicate. The "
+                "cited claim on the to-side is the dependent, re-assessed when the "
+                "favoring evidence moves."
             ),
             forward_label="favors",
             inverse_label="favored_by",
             from_kinds="artifact",
             to_kinds="claimable",
+            cascade_dependent="to",
         ),
         "supersedes": EdgeKindPolicy(
             description=(
