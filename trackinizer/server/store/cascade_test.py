@@ -55,11 +55,14 @@ class TestPurge:
         parent_id = new_uuid()
         conn = make_conn()
         queue_field_rows(conn, {"kind": "Experiment"})
+        # ``proves`` stores Artifact -> claim: the purged Experiment is the
+        # from-side citing evidence, the parent Belief the to-side cited claim.
+        # ``cascade_dependent="to"`` alerts the claim when its evidence moves.
         purge_row = {
-            "from_id": parent_id,
-            "from_kind": "Belief",
-            "to_id": target_id,
-            "to_kind": "Experiment",
+            "from_id": target_id,
+            "from_kind": "Experiment",
+            "to_id": parent_id,
+            "to_kind": "Belief",
             "edge_kind": "proves",
             "priority": None,
             "note": "load-bearing",
