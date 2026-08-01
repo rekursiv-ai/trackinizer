@@ -39,10 +39,6 @@ dependencies = [
     "wrapt",
 ]
 
-[project.scripts]
-trackinizer = "trackinizer.server.server:main"
-trax = "trackinizer.trax.cli:main"
-
 [dependency-groups]
 # uv sync --all-groups
 
