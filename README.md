@@ -18,9 +18,9 @@
 #   sudo apt-get install -y curl &&
 #       curl -LsSf https://astral.sh/uv/install.sh | sh
 
-uv tool install trackinizer
-
-# PGlite by default -- no Postgres to install, web UI on http://localhost:8000.
+# No Postgres to install: the default `pglite` engine is a Python
+# dependency and bundles its own `vector` extension. Web UI on
+# http://localhost:8000.
 uvx --from trackinizer python -m trackinizer.server
 ```
 
@@ -275,6 +275,12 @@ via `pytest-postgresql` and require pgvector. PGlite bundles its own
 `vector` extension, so the default `pglite` engine has no system deps.
 
 ```bash
-sudo apt-get install -y postgresql postgresql-18-pgvector   # Ubuntu/Debian
-brew install postgresql@17 pgvector                         # macOS
+# Ubuntu/Debian. The pgvector package is named for its server major, so it
+# tracks whichever Postgres your release ships.
+sudo apt-get install -y postgresql postgresql-18-pgvector   # > 24.04
+sudo apt-get install -y postgresql postgresql-16-pgvector   # 24.04
+
+# macOS. Homebrew's pgvector builds against postgresql@17 or @18; install
+# one first so the extension lands in that server's directory.
+brew install postgresql@18 && brew install pgvector
 ```
