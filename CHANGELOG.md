@@ -5,6 +5,20 @@ All notable trackinizer changes are documented here. This project follows
 
 ## Unreleased
 
+## 0.1.2 - 2026-08-01
+
+### Added
+
+- `trackinizer` and `trax` ship as console scripts, so `uv tool install`
+  puts both on PATH. `trax` talks to any reachable server and needs no
+  local one.
+
+### Changed
+
+- README documents the Inquiry model and the storage tables in place of a
+  module file tree, and states that Postgres is optional -- the default
+  PGlite engine bundles its own vector extension.
+
 ## 0.1.1 - 2026-07-31
 
 ### Fixed
