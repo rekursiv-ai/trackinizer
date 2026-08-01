@@ -33,7 +33,7 @@ trax
 ```
 
 Centralized agent database for inquiries (Issues + Artifacts), work, and
-knowledge. Three storage tables (`inquiries`, `edges`, `change_log`) backed
+knowledge. Three core tables (`inquiries`, `edges`, `change_log`) backed
 by Postgres (real or PGlite). FastAPI on top.
 
 `types/` is the design contract. Every other module is a realization of
@@ -65,36 +65,107 @@ The optional SPA (`server/web.py`) browses the same records the API serves.
 
 ## The model
 
-Two branches. `Issue` is work to pursue; `Artifact` is knowledge produced
-and cited.
+Everything in the system is an `Inquiry`, which has two variants: an
+`Issue` is a unit of "work" and an `Artifact` is the output of that work.
+Giving both a single type is what lets the same edges relate them -- work
+can produce knowledge, and knowledge can elicit more work, without crossing a
+type boundary.
+
+Each row below lists the fields that class adds; every kind also has
+everything above it.
 
 ```
-Inquiry
-├── Issue             work / desired outcome
-└── Artifact          evidence / output; generic, unspecialized
-    ├── Experiment    empirical measurement
-    ├── Paper         bibliographic source
-    ├── Belief        proposition
-    ├── CodeChange    one git commit; sha, labels
-    ├── WebResult     one URL
-    └── WebSearch     query; findings recorded as produced_by edges
+Inquiry                  # An effort, ongoing or completed.
+│   id
+│   seq
+│   owner
+│   account
+│   status
+│   title
+│   description
+│   labels
+│   marginal_cost
+│   subscribers
+│   superseded_by
+│   supersedes
+│   produces
+│   produced_by
+│   created
+│   modified
+│
+├── Issue                # Work to pursue.
+│       issue_kind
+│       validation
+│       priority
+│       narrows
+│       narrowed_by
+│       requires
+│       required_by
+│
+└── Artifact             # Knowledge produced and cited.
+    │   proves
+    │   favors
+    │
+    ├── Experiment       # Empirical measurement.
+    │       codechanges
+    │       outcome
+    │       config
+    │       proved_by
+    │       favored_by
+    │
+    ├── Belief           # Proposition.
+    │       judgement
+    │       confidence
+    │       proved_by
+    │       favored_by
+    │
+    ├── Paper            # Bibliographic source.
+    │       abstract
+    │       authors
+    │       publication_type
+    │       venue
+    │       subvenue
+    │       publish_date
+    │       source
+    │       google_scholar_cluster_id
+    │       google_scholar_cites_id
+    │       cites
+    │       cited_by
+    │
+    ├── CodeChange       # One git commit.
+    │       sha
+    │
+    ├── WebSearch        # One query.
+    │       query
+    │       provider
+    │
+    ├── WebResult        # One URL.
+    │       url
+    │
+    └── AgentSession     # A captured CLI run.
+            cli
+            cli_session_id
+            started
+            ended
+            rooms
+            opened_by_api_key_id
 ```
 
 Relationships are directed and every one has an inverse view, so a parent
 and a child describe the same edge from either end:
 
 ```
-                          OLDER  (parent)
+                              OLDER  (parent)
 
-  {narrow,require}s    {supersedes,produced_by}     {prove,favor}s
-          ▲                       ▲                       ▲
-          │                       │                       │
-        Issue ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄▷ Inquiry ◁┄┄┄┄┄┄┄┄ {Belief,Experiment}
-          │                       │                       │
-          ▼                       ▼                       ▼
-{narrow,require}'d_by  {superseded_by,produces}   {prove,favor}'d_by
+    {narrows,requires}     {produced_by,supersedes}     {proves,favors}
+            ▲                         ▲                        ▲
+            │                         │                        │
+          Issue ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄▷ Inquiry ◁┄┄┄┄┄┄┄┄┄ {Belief,Experiment}
+            │                         │                        │
+            ▼                         ▼                        ▼
+{narrowed_by,required_by}  {produces,superseded_by}  {proved_by,favored_by}
 
-                           NEWER  (child)
+                               NEWER  (child)
 ```
 
 - Parents are always older than children, on each edge's own clock:
@@ -117,13 +188,25 @@ is named what it is.
 
 ## Storage
 
-Three tables. Everything above is a projection of them.
+Three tables carry the model and other tables support them.
 
 | table | holds |
 |---|---|
 | `inquiries` | one row per Inquiry, all kinds. `kind` discriminates; `(kind, seq)` gives the short ref (`Issue#7`) from a per-kind sequence. Optional columns are nullable, so NULL is the single encoding of "unset". |
 | `edges` | every relationship, as `(from_id, to_id, edge_kind)`. Citation edges carry `valence`. A CHECK constrains which kind pairs each edge kind admits, and cycles are rejected on insert. |
 | `change_log` | append-only audit. Each row is one change with `(old_*, new_*)` snapshot pairs; milestone rows carry no delta, their signal is that they exist. Drives the `trax recent` feed and idempotency replay. |
+
+Per-kind detail that does not fit one row lives in its own table, keyed
+back to `inquiries(id)` and deleted with it:
+
+| table | holds |
+|---|---|
+| `experiment_metrics` | `(key, step, value)` time series for an Experiment. CHECKs mirror the wire's validators -- non-blank bounded key, non-negative step, finite value -- so a stored row can always be read back. |
+| `agent_session_events` | the ordered event log of an AgentSession, `(session_id, seq)`, each with a JSONB message. Backs the live console feed. |
+| `inquiry_embeddings` | one vector per `(inquiry_id, model)` for semantic search. |
+
+Auth is three more: `users`, `api_keys` (scrypt-hashed, prefix-indexed),
+and `allowlist`.
 
 The typed fields on `Inquiry` (`produces`, `supersedes`, citation lists)
 are projections the Store fills by reading `edges` -- the edge table is the
@@ -136,14 +219,14 @@ Four layers, two legs sharing one contract spine. An arrow means
 
 ```
 ┌──────────────┐                      ┌──────────────┐
-│     trax     │                      │    server    │   leaves: nothing
-│  (CLI)       │                      │ (__main__)   │   imports these
+│    trax      │                      │    server    │   leaves: nothing
+│    (CLI)     │                      │  (__main__)  │   imports these
 └──────┬───────┘                      └──────┬───────┘
        │                                     │
        ▼                                     ▼
 ┌──────────────┐                      ┌──────────────┐
-│    client    │                      │     api      │   server leg adds
-│  (httpx SDK) │                      │  (FastAPI    │   Store; client leg
+│   client     │                      │     api      │   server leg adds
+│ (httpx SDK)  │                      │  (FastAPI    │   Store; client leg
 │              │                      │   handlers)  │   adds httpx
 └──────┬───────┘                      └──────┬───────┘
        │                                     │
