@@ -12,15 +12,19 @@
 # Mac:
 #   # Required for quick install.
 #   brew install uv
+#   # Optional for a real Postgres backend; the default pglite engine
+#   # bundles its own vector extension and needs neither.
+#   brew install postgresql@18 && brew install pgvector
 
 # Ubuntu/Debian:
 #   # Required for quick install.
 #   sudo apt-get install -y curl &&
 #       curl -LsSf https://astral.sh/uv/install.sh | sh
+#   # Optional for a real Postgres backend. The pgvector package is named
+#   # for its server major: -18- above 24.04, -16- on 24.04.
+#   sudo apt-get install -y postgresql postgresql-18-pgvector
 
-# No Postgres to install: the default `pglite` engine is a Python
-# dependency and bundles its own `vector` extension. Web UI on
-# http://localhost:8000.
+# Web UI on http://localhost:8000.
 uvx --from trackinizer python -m trackinizer.server
 ```
 
