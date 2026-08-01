@@ -6,6 +6,24 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/discord/1530237005311639592?logo=discord&logoColor=white&label=Discord&color=5865F2)](https://discord.gg/2GZFPPvCqn)
 
+## Quick Start
+
+```bash
+# Mac:
+#   # Required for quick install.
+#   brew install uv
+
+# Ubuntu/Debian:
+#   # Required for quick install.
+#   sudo apt-get install -y curl &&
+#       curl -LsSf https://astral.sh/uv/install.sh | sh
+
+uv tool install trackinizer
+
+# PGlite by default -- no Postgres to install, web UI on http://localhost:8000.
+uvx --from trackinizer python -m trackinizer.server
+```
+
 Centralized agent database for inquiries (Issues + Artifacts), work, and
 knowledge. Three storage tables (`inquiries`, `edges`, `change_log`) backed
 by Postgres (real or PGlite). FastAPI on top.
