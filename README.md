@@ -14,7 +14,7 @@
 #   brew install uv
 #   # Optional for a real Postgres backend; the default pglite engine
 #   # bundles its own vector extension and needs neither.
-#   brew install postgresql@18 && brew install pgvector
+#   brew install postgresql@18 pgvector
 
 # Ubuntu/Debian:
 #   # Required for quick install.
@@ -284,7 +284,6 @@ via `pytest-postgresql` and require pgvector. PGlite bundles its own
 sudo apt-get install -y postgresql postgresql-18-pgvector   # > 24.04
 sudo apt-get install -y postgresql postgresql-16-pgvector   # 24.04
 
-# macOS. Homebrew's pgvector builds against postgresql@17 or @18; install
-# one first so the extension lands in that server's directory.
-brew install postgresql@18 && brew install pgvector
+# macOS. Homebrew's pgvector supports postgresql@17 and @18.
+brew install postgresql@18 pgvector
 ```
