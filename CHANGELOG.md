@@ -5,6 +5,13 @@ All notable trackinizer changes are documented here. This project follows
 
 ## Unreleased
 
+## 0.1.3 - 2026-08-01
+
+### Changed
+
+- README carries a one-line description below the badges; PyPI renders the
+  README, so the project page had been showing the previous text.
+
 ## 0.1.2 - 2026-08-01
 
 ### Added
