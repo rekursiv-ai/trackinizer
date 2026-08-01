@@ -1,26 +1,94 @@
 """The Inquiry hierarchy: the domain noun everything else is built around.
 
-There are two branches: :class:`Issue` is work to pursue, :class:`Artifact`
-is knowledge produced and cited. Each relationship lives on the class where
-it makes sense -- Issue decomposition on :class:`Issue`, both the producer
-view and the produced-by inverse of production provenance on the base
-:class:`Inquiry` (any inquiry can produce or be produced), citation lists on
-:class:`Belief`. Those
-fields are projections; the real storage is
-:class:`~trackinizer.types.edges.Edge`, which the Store
-reads from to fill them.
+Everything in the system is an :class:`Inquiry`, which has two variants: an
+:class:`Issue` is a unit of "work" and an :class:`Artifact` is the output of
+that work. Giving both a single type is what lets the same edges relate
+them -- work can produce knowledge, and knowledge can occasion work, without
+crossing a type boundary.
 
-The class tree::
+Each relationship lives on the class that owns its meaning: decomposition
+on :class:`Issue`, citations on :class:`Artifact`, supersession and
+provenance on the base since any inquiry can supersede, produce, or be
+produced. Those fields are projections; the real storage is
+:class:`~trackinizer.types.edges.Edge`, which the Store reads to fill them.
 
-    Inquiry
-    +- Issue            (work / desired outcome)
-    +- Artifact         (evidence / output; generic, unspecialized)
-        +- Experiment   (empirical measurement)
-        +- Paper        (bibliographic source)
-        +- Belief       (proposition)
-        +- CodeChange   (one git commit; sha, labels)
-        +- WebResult    (one URL)
-        +- WebSearch    (query; findings recorded as produced_by edges)
+Each row below lists the fields that class adds; every kind also has
+everything above it::
+
+    Inquiry                  # An effort, ongoing or completed.
+    │   id
+    │   seq
+    │   owner
+    │   account
+    │   status
+    │   title
+    │   description
+    │   labels
+    │   marginal_cost
+    │   subscribers
+    │   superseded_by
+    │   supersedes
+    │   produces
+    │   produced_by
+    │   created
+    │   modified
+    │
+    ├── Issue                # Work to pursue.
+    │       issue_kind
+    │       validation
+    │       priority
+    │       narrows
+    │       narrowed_by
+    │       requires
+    │       required_by
+    │
+    └── Artifact             # Knowledge produced and cited.
+        │   proves
+        │   favors
+        │
+        ├── Experiment       # Empirical measurement.
+        │       codechanges
+        │       outcome
+        │       config
+        │       proved_by
+        │       favored_by
+        │
+        ├── Belief           # Proposition.
+        │       judgement
+        │       confidence
+        │       proved_by
+        │       favored_by
+        │
+        ├── Paper            # Bibliographic source.
+        │       abstract
+        │       authors
+        │       publication_type
+        │       venue
+        │       subvenue
+        │       publish_date
+        │       source
+        │       google_scholar_cluster_id
+        │       google_scholar_cites_id
+        │       cites
+        │       cited_by
+        │
+        ├── CodeChange       # One git commit.
+        │       sha
+        │
+        ├── WebSearch        # One query.
+        │       query
+        │       provider
+        │
+        ├── WebResult        # One URL.
+        │       url
+        │
+        └── AgentSession     # A captured CLI run.
+                cli
+                cli_session_id
+                started
+                ended
+                rooms
+                opened_by_api_key_id
 """
 
 from __future__ import annotations
@@ -130,14 +198,8 @@ class Inquiry:
     Each sub-kind adds fields only where its branch owns the meaning. The
     base owns supersession and both directions of production provenance
     (:attr:`produces` and :attr:`produced_by`), since any inquiry can
-    supersede, produce, or be produced.
-    Issue adds decomposition, scheduling, and validation;
-    Experiment adds ``codechanges`` and ``outcome``; Paper
-    adds bibliography fields (``abstract``, ``authors``, ``publication_type``,
-    ``venue``, ``subvenue``, ``publish_date``, ``source``); CodeChange adds
-    ``sha``; WebResult
-    adds ``url``; WebSearch adds ``query`` and ``provider``;
-    Belief adds ``judgement`` and its citation lists.
+    supersede, produce, or be produced. The module docstring lists what
+    each sub-kind adds.
     """
 
     type InquiryKind = Literal[
@@ -613,6 +675,16 @@ class Artifact(Inquiry):
     :class:`Artifact`, since any artifact can cite; the passive inverse
     (``proved_by`` / ``favored_by``, the artifacts citing a claim) lives on
     :class:`Belief` and :class:`Experiment`, the only citation targets.
+
+    The asymmetry is deliberate, not an oversight. Every artifact can serve
+    as evidence -- a URL, a commit, a paper are all things one can point at
+    -- so the forward view belongs to all of them. But only some artifacts
+    are themselves epistemically grounded, i.e. assert something that
+    evidence can bear on: a Belief claims a proposition and an Experiment
+    claims a measurement, and both can be argued for or against. A Paper or
+    a WebResult asserts nothing of ours; it is a fact of the world we
+    recorded, so "what proves this Paper" is not a question the model has,
+    and giving it a ``proved_by`` would invite it.
 
     The sub-kinds are :class:`Experiment` (a measurement), :class:`Paper`
     (an external source), :class:`Belief` (a proposition),
