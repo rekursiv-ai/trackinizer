@@ -1,22 +1,23 @@
 **Decision (supersedes the rationale below).** The provenance edge is named
 `produced_by` (child's view) and `produces` (parent's view), NOT `descends` /
-`descended_by`. This breaks the active/passive naming rule, but provenance
+`descended_by`. This breaks the append-`s` / append-`'d_by` rule, but provenance
 is the one relation with no natural child-as-subject active verb in English (see
 the rationale below), so grammatical naturalness wins over mathematical elegance.
 Everywhere below that says `descend` should be read as `produced_by` / `produces`.
 
 ```
-                              OLDER  (parent)
+OLDER Creation xor Completion (parent)
 
-    {narrows,requires}     {produced_by,supersedes}     {proves,favors}
-            ▲                         ▲                        ▲
-            │                         │                        │
-          Issue ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄▷ Inquiry ◁┄┄┄┄┄┄┄┄┄ {Belief,Experiment}
-            │                         │                        │
-            ▼                         ▼                        ▼
-{narrowed_by,required_by}  {produces,superseded_by}  {proved_by,favored_by}
+{narrow,require}s    {supersedes,produced_by}     {prove,favor}s
+       ^                        ^                       ^
+       |                        |                       |
+    Issue                    Inquiry              {Experiment,Belief}
+       ^                        ^                       ^
+       |                        |                       |
+{narrow,require}'d_by  {superseded_by,produces}   {prove,favor}'d_by
 
-                               NEWER  (child)
+
+NEWER Creation xor Completion (child)
 ```
 
 * "Parents" are always "older" than "children" where "older" is on each edge's own clock: creation-time for all edges except `require`, which is completion-time (do-time).

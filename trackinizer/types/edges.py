@@ -30,17 +30,16 @@ class Edge:
       Invariant:  Parents are always OLDER.
       Convention: Top are _fundamental_ edge names.
 
-          {requires,narrows}     {produced_by,supersedes}     {proves,favors}
-                  ▲                         ▲                        ▲
-                  │                         │                        │
-                Issue ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄▷ Inquiry ◁┄┄┄┄┄┄┄┄┄ {Belief,Experiment}
-                  │                         │                        │
-                  ▼                         ▼                        ▼
-      {required_by,narrowed_by}  {produces,superseded_by}  {proved_by,favored_by}
+      {requires,narrows}         {produced_by,supersedes}           {proves,favors}
+             ^                               ^                            ^
+             |                               |                            |
+           Issue         ---type_of--->   Inquiry   <---type_of---  {Belief,Experiment}
+             ^                               ^                            ^
+             |                               |                            |
+      {required_by,narrowed_by}  {produces,superseded_by}           {proved_by,favored_by}
 
       Invariant:  Children are always NEWER
       Convention: Bottom are _projected_ edge names.
-      Dashed hollow arrows are IS-A; solid arrows are relationships.
 
       time := CreationTime xor CompletionTime (uniquely for `requires`)
 
