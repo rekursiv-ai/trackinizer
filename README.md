@@ -23,12 +23,17 @@
 #   # Optional for a real Postgres backend. Extension packages are named
 #   # for their server major, so read it off the metapackage rather than
 #   # picking one (18 above 24.04, 16 on 24.04).
-#   sudo apt-get install -y postgresql &&
-#       sudo apt-get install -y "postgresql-$(apt-cache depends postgresql |
+#   sudo apt-get install -y postgresql \
+#       "postgresql-$(apt-cache depends postgresql |
 #           grep -oP 'postgresql-\K\d+' | head -1)-pgvector"
 
-# Web UI on http://localhost:8000.
-uvx --from trackinizer python -m trackinizer.server
+uv tool install trackinizer
+
+# Serve. Web UI on http://localhost:8000.
+trackinizer
+
+# Or just talk to one: `trax` is the CLI client and needs no local server.
+trax help
 ```
 
 Centralized agent database for inquiries (Issues + Artifacts), work, and
@@ -268,10 +273,21 @@ Pick one of these orders depending on what you came in for.
 ## Running
 
 ```bash
-uv run python -m trackinizer.server                        # pglite (default), with web UI
-uv run python -m trackinizer.server --engine pg --dsn ...  # against real Postgres
-uv run python -m trackinizer.server --no-web               # API only
+trackinizer                        # pglite (default), with web UI
+trackinizer --engine pg --dsn ...  # against real Postgres
+trackinizer --no-web               # API only
 ```
+
+`trax` is the client half and talks to any reachable server, so it is
+useful on its own:
+
+```bash
+trax help                          # grammar and subjects
+trax issue                         # list issues
+```
+
+From a source checkout, both are `uv run python -m trackinizer.server` and
+`uv run python -m trackinizer.trax`.
 
 See `example.sh` for a worked end-to-end submit/edit/query session.
 
@@ -285,9 +301,9 @@ via `pytest-postgresql` and require pgvector. PGlite bundles its own
 # Ubuntu/Debian. Extension packages are always named `postgresql-NN-<ext>`
 # -- there is no unversioned alias -- so derive NN from the metapackage
 # instead of hardcoding it (18 above 24.04, 16 on 24.04).
-sudo apt-get install -y postgresql
-sudo apt-get install -y "postgresql-$(apt-cache depends postgresql |
-    grep -oP 'postgresql-\K\d+' | head -1)-pgvector"
+sudo apt-get install -y postgresql \
+    "postgresql-$(apt-cache depends postgresql |
+        grep -oP 'postgresql-\K\d+' | head -1)-pgvector"
 
 # macOS. Homebrew's pgvector supports postgresql@17 and @18.
 brew install postgresql@18 pgvector
