@@ -70,32 +70,31 @@ and cited.
 
 ```
 Inquiry
-+- Issue            (work / desired outcome)
-+- Artifact         (evidence / output; generic, unspecialized)
-    +- Experiment   (empirical measurement)
-    +- Paper        (bibliographic source)
-    +- Belief       (proposition)
-    +- CodeChange   (one git commit; sha, labels)
-    +- WebResult    (one URL)
-    +- WebSearch    (query; findings recorded as produced_by edges)
+├── Issue             work / desired outcome
+└── Artifact          evidence / output; generic, unspecialized
+    ├── Experiment    empirical measurement
+    ├── Paper         bibliographic source
+    ├── Belief        proposition
+    ├── CodeChange    one git commit; sha, labels
+    ├── WebResult     one URL
+    └── WebSearch     query; findings recorded as produced_by edges
 ```
 
 Relationships are directed and every one has an inverse view, so a parent
 and a child describe the same edge from either end:
 
 ```
-OLDER Creation xor Completion (parent)
+                                 OLDER  (parent)
 
-{narrow,require}s    {supersedes,produced_by}     {prove,favor}s
-       ^                        ^                       ^
-       |                        |                       |
-    Issue                    Inquiry              {Experiment,Belief}
-       ^                        ^                       ^
-       |                        |                       |
-{narrow,require}'d_by  {superseded_by,produces}   {prove,favor}'d_by
+  {narrow,require}s    {supersedes,produced_by}           {prove,favor}s
+          ▲                       ▲                             ▲
+          │                       │                             │
+        Issue ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄▷ Inquiry ◁┄┄┄┄┄┄┄┄ Artifact (Experiment,Belief,...)
+          │                       │                             │
+          ▼                       ▼                             ▼
+{narrow,require}'d_by  {superseded_by,produces}         {prove,favor}'d_by
 
-
-NEWER Creation xor Completion (child)
+                                  NEWER  (child)
 ```
 
 - Parents are always older than children, on each edge's own clock:
