@@ -84,17 +84,17 @@ Relationships are directed and every one has an inverse view, so a parent
 and a child describe the same edge from either end:
 
 ```
-                                 OLDER  (parent)
+                          OLDER  (parent)
 
-  {narrow,require}s    {supersedes,produced_by}           {prove,favor}s
-          ▲                       ▲                             ▲
-          │                       │                             │
-        Issue ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄▷ Inquiry ◁┄┄┄┄┄┄┄┄ Artifact (Experiment,Belief,...)
-          │                       │                             │
-          ▼                       ▼                             ▼
-{narrow,require}'d_by  {superseded_by,produces}         {prove,favor}'d_by
+  {narrow,require}s    {supersedes,produced_by}     {prove,favor}s
+          ▲                       ▲                       ▲
+          │                       │                       │
+        Issue ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄▷ Inquiry ◁┄┄┄┄┄┄┄┄ {Belief,Experiment}
+          │                       │                       │
+          ▼                       ▼                       ▼
+{narrow,require}'d_by  {superseded_by,produces}   {prove,favor}'d_by
 
-                                  NEWER  (child)
+                           NEWER  (child)
 ```
 
 - Parents are always older than children, on each edge's own clock:
@@ -103,9 +103,14 @@ and a child describe the same edge from either end:
   `superseded_by` others (M:N knowledge surgery).
 - An Issue can be `narrowed_by` (broader to narrower) or `required_by` (it
   is the prerequisite another waits on). Both are Issue to Issue.
-- `proves` / `favors` carry a valence in [-1, 1]: sign is polarity,
-  magnitude is weight. `proves` votes in the proof predicate; `favors` is
-  context that informs but does not vote.
+- `proves` / `favors` go from any Artifact to a `Belief` or `Experiment`
+  -- anything may cite, only a claim may be cited. They carry a valence in
+  [-1, 1]: sign is polarity, magnitude is weight. `proves` votes in the
+  proof predicate; `favors` is context that informs but does not vote.
+- `cites` / `cited_by` is Paper to Paper and stands apart from the six
+  above: a bibliographic fact we record rather than a claim we reason
+  over. No valence, no scheduling effect, and exempt from the acyclicity
+  rule, since mutual citation is real data and not a cycle we own.
 
 See [`docs/epistemy.md`](trackinizer/docs/epistemy.md) for why each verb
 is named what it is.
