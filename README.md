@@ -12,28 +12,24 @@
 # Mac:
 #   # Required for quick install.
 #   brew install uv
-#   # Optional for a real Postgres backend; the default pglite engine
-#   # bundles its own vector extension and needs neither.
+#   # Optional for a real Postgres backend; default uses pglite engine.
 #   brew install postgresql@18 pgvector
 
 # Ubuntu/Debian:
 #   # Required for quick install.
-#   sudo apt-get install -y curl &&
-#       curl -LsSf https://astral.sh/uv/install.sh | sh
-#   # Optional for a real Postgres backend. Extension packages are named
-#   # for their server major, so read it off the metapackage rather than
-#   # picking one (18 above 24.04, 16 on 24.04).
-#   sudo apt-get install -y postgresql \
-#       "postgresql-$(apt-cache depends postgresql |
-#           grep -oP 'postgresql-\K\d+' | head -1)-pgvector"
+#   sudo apt-get install -y curl
+#   curl -LsSf https://astral.sh/uv/install.sh | sh
+#   # Optional for a real Postgres backend; default uses pglite engine.
+#   PG_MAJOR="$(apt-cache depends postgresql | grep -m1 -oP 'postgresql-\K\d+')"
+#   sudo apt-get install -y postgresql "postgresql-$PG_MAJOR-pgvector"
 
 uv tool install trackinizer
 
-# Serve. Web UI on http://localhost:8000.
+# Local server; web UI at http://localhost:8000.
 trackinizer
 
-# Or just talk to one: `trax` is the CLI client and needs no local server.
-trax help
+# CLI to trackinizer server.
+trax
 ```
 
 Centralized agent database for inquiries (Issues + Artifacts), work, and
@@ -47,103 +43,87 @@ that contract over Postgres + HTTP.
 
 The optional SPA (`server/web.py`) browses the same records the API serves.
 
-**Graph** — the whole inquiry web (Issues, Beliefs, Papers, Experiments, …) as typed nodes and edges.
+**Graph** -- the whole inquiry web (Issues, Beliefs, Papers, Experiments, …) as typed nodes and edges.
 
 <img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/graph.png" width="640" alt="Force-directed graph of the inquiry web">
 
-**Console** — live multi-agent chat, filterable by room and date.
+**Console** -- live multi-agent chat, filterable by room and date.
 
 <img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/chat.png" width="640" alt="Live multi-agent console">
 
-**Belief** — a record with its `before`/`after` relationship panels.
+**Belief** -- a record with its `before`/`after` relationship panels.
 
 <img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/belief.png" width="640" alt="Belief record with parent/child edges">
 
-**Paper** — abstract, authors, and `cites` edges to other papers.
+**Paper** -- abstract, authors, and `cites` edges to other papers.
 
 <img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/paper.png" width="640" alt="Paper record with abstract and citations">
 
-**Experiment** — outcome, labels, and links to the beliefs it proves or disproves.
+**Experiment** -- outcome, labels, and links to the beliefs it proves or disproves.
 
 <img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/experiment.png" width="640" alt="Experiment record with outcome and relationships">
 
-## Module layout
+## The model
+
+Two branches. `Issue` is work to pursue; `Artifact` is knowledge produced
+and cited.
 
 ```
-trackinizer/
-├── README.md                       ← this file
-├── docs/                           api.md (HTTP surface); old/ (design notes)
-├── conftest.py                     integration fixtures (Postgres engine)
-├── *_test.py, integration_test.py
-│
-├── types/                          design contract: pure types, no I/O
-│   ├── __init__.py                 re-exports for ergonomic imports
-│   ├── errors.py                   ConflictError, NotFoundError
-│   ├── columns.py                  Row Protocol, ColumnSpec, FlatColumn,
-│   │                                 column_specs(), flat_column_specs()
-│   ├── cost.py                     Cost (signed; +/- for deltas)
-│   ├── embedder.py                 Embedder Protocol
-│   ├── inquiries.py                Inquiry, Issue, Artifact, Experiment,
-│   │                                 Paper, Belief, CodeChange, WebResult,
-│   │                                 WebSearch, results_or_empty
-│   ├── edges.py                    Edge, EdgeKindPolicy, edge_policies
-│   └── change_log.py               Change, Snapshot
-│
-├── wire/                           THE HTTP contract; imports only types/
-│   ├── routes.py                   route table (inquiry_field_routes,
-│   │                                 edge_field_routes), path templates,
-│   │                                 KIND_URL_TOKEN -- all derived from
-│   │                                 ColumnSpec metadata
-│   ├── bodies.py                   Submit{Issue,...}, SubmitBatch,
-│   │                                 FieldSet[T]/FieldOp[T]/FieldMutation
-│   ├── edge_bodies.py              CreateEdge, CreateEdgeBatch
-│   ├── filters.py                  Filter, FilterOp, FILTER_FIELD_ALIASES,
-│   │                                 canonical_filter_field
-│   ├── refs.py                     SeqRef, UuidRef, Ref
-│   └── row_filter.py               match_filter (server + CLI-fake shared)
-│
-├── client/                         standalone HTTP SDK (wire/ + httpx)
-│   ├── client.py                   Client: typed methods over /api/*
-│   └── errors.py                   ClientError
-│
-├── trax/                           the `trax` CLI (a thin layer over client/)
-│   ├── __main__.py, cli.py         entrypoint + dispatch
-│   ├── grammar.py                  CLI token vocabulary, field/alias tables
-│   ├── parser.py                   tokens → typed Actions / ListQuery
-│   ├── verbs.py                    per-verb command handlers
-│   ├── render.py, commands.py, profile.py
-│   └── run/                        `trax run` agent-CLI session runner
-│
-└── server/                         the FastAPI server + storage (imports
-    │                                wire/ + types/; never imported by them)
-    ├── __main__.py                 entrypoint: arg parsing, uvicorn, web mount
-    ├── api/
-    │   ├── app.py                  FastAPI() + lifespan + exception handlers
-    │   ├── submit.py               POST /api/inquiries/{kind} (+ /batch)
-    │   ├── edit.py                 PUT/PATCH/DELETE /api/inquiries/{id}/{field}
-    │   ├── edge.py                 /api/edges/{from}/{kind}/{to}[/{field}]
-    │   ├── query.py                GET /api/inquiries*, /api/change_log*
-    │   ├── auth_routes.py, oauth_routes.py, admin_routes.py
-    │   ├── idempotency.py          Idempotency-Key → change_log.id middleware
-    │   └── _deps.py, _routes_shared.py
-    ├── store.py                    Store (orchestrator) + StubEmbedder
-    ├── primitives.py               insert_inquiry/edge, upsert_embedding,
-    │                                 reject_edge_cycle, validate_list_references
-    ├── setter_dispatch.py          COLUMN_SPECS, RUNTIME_HOOKS; the table
-    │                                 Store._set_field dispatches against
-    ├── projection.py               row + edges → typed Inquiry
-    ├── schema_gen.py               generated DDL (kind columns, change_log
-    │                                 mirror, kind matrix, per-kind sequences)
-    ├── sql.py                      schema migration loader (assets/*.sql)
-    ├── sql_fragments.py            _NEXT_ISSUE_SQL, _COST_SUBTREE_SQL, ...
-    ├── migrations.py               numbered data migrations
-    ├── values.py                   canonical_strs, list_or_none, ...
-    ├── notify.py                   NOTIFY_CHANNEL, tx, post-commit fanout
-    ├── auth.py, session.py         bearer/session auth, principals
-    ├── config.py                   Config, build_engine, build_embedder
-    ├── web.py                      optional SPA mount + /api/web/* reads
-    └── assets/                     index.html SPA + schema.sql + *.html
+Inquiry
++- Issue            (work / desired outcome)
++- Artifact         (evidence / output; generic, unspecialized)
+    +- Experiment   (empirical measurement)
+    +- Paper        (bibliographic source)
+    +- Belief       (proposition)
+    +- CodeChange   (one git commit; sha, labels)
+    +- WebResult    (one URL)
+    +- WebSearch    (query; findings recorded as produced_by edges)
 ```
+
+Relationships are directed and every one has an inverse view, so a parent
+and a child describe the same edge from either end:
+
+```
+OLDER Creation xor Completion (parent)
+
+{narrow,require}s    {supersedes,produced_by}     {prove,favor}s
+       ^                        ^                       ^
+       |                        |                       |
+    Issue                    Inquiry              {Experiment,Belief}
+       ^                        ^                       ^
+       |                        |                       |
+{narrow,require}'d_by  {superseded_by,produces}   {prove,favor}'d_by
+
+
+NEWER Creation xor Completion (child)
+```
+
+- Parents are always older than children, on each edge's own clock:
+  creation-time for every edge except `requires`, which is completion-time.
+- Any Inquiry can be `produced_by` older ones (its origins) and
+  `superseded_by` others (M:N knowledge surgery).
+- An Issue can be `narrowed_by` (broader to narrower) or `required_by` (it
+  is the prerequisite another waits on). Both are Issue to Issue.
+- `proves` / `favors` carry a valence in [-1, 1]: sign is polarity,
+  magnitude is weight. `proves` votes in the proof predicate; `favors` is
+  context that informs but does not vote.
+
+See [`docs/epistemy.md`](trackinizer/docs/epistemy.md) for why each verb
+is named what it is.
+
+## Storage
+
+Three tables. Everything above is a projection of them.
+
+| table | holds |
+|---|---|
+| `inquiries` | one row per Inquiry, all kinds. `kind` discriminates; `(kind, seq)` gives the short ref (`Issue#7`) from a per-kind sequence. Optional columns are nullable, so NULL is the single encoding of "unset". |
+| `edges` | every relationship, as `(from_id, to_id, edge_kind)`. Citation edges carry `valence`. A CHECK constrains which kind pairs each edge kind admits, and cycles are rejected on insert. |
+| `change_log` | append-only audit. Each row is one change with `(old_*, new_*)` snapshot pairs; milestone rows carry no delta, their signal is that they exist. Drives the `trax recent` feed and idempotency replay. |
+
+The typed fields on `Inquiry` (`produces`, `supersedes`, citation lists)
+are projections the Store fills by reading `edges` -- the edge table is the
+real storage.
 
 ## Package dependency graph
 
@@ -301,9 +281,8 @@ via `pytest-postgresql` and require pgvector. PGlite bundles its own
 # Ubuntu/Debian. Extension packages are always named `postgresql-NN-<ext>`
 # -- there is no unversioned alias -- so derive NN from the metapackage
 # instead of hardcoding it (18 above 24.04, 16 on 24.04).
-sudo apt-get install -y postgresql \
-    "postgresql-$(apt-cache depends postgresql |
-        grep -oP 'postgresql-\K\d+' | head -1)-pgvector"
+PG_MAJOR="$(apt-cache depends postgresql | grep -m1 -oP 'postgresql-\K\d+')"
+sudo apt-get install -y postgresql "postgresql-$PG_MAJOR-pgvector"
 
 # macOS. Homebrew's pgvector supports postgresql@17 and @18.
 brew install postgresql@18 pgvector
