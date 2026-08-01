@@ -14,8 +14,16 @@ Replace `X.Y.Z` with the new version.
 
 1. Bump the version in `pyproject.toml` (source of truth). PyPI rejects
    re-uploads, so this must increase.
-2. Validate locally (same checks CI runs, CONTRIBUTING.md):
+2. Refresh the lockfile and validate locally (same checks CI runs,
+   CONTRIBUTING.md):
+
+   `uv lock` first: the lockfile pins this package's own version, so
+   building without it publishes an artifact whose lock still names the
+   previous one -- and `uv run` below resolves from the lock, so the smoke
+   test imports the OLD code and passes.
+
    ```bash
+   uv lock
    uv build
    uv run python -c "import trackinizer; print(trackinizer.__file__)"
    ```
