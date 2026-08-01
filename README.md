@@ -20,9 +20,12 @@
 #   # Required for quick install.
 #   sudo apt-get install -y curl &&
 #       curl -LsSf https://astral.sh/uv/install.sh | sh
-#   # Optional for a real Postgres backend. The pgvector package is named
-#   # for its server major: -18- above 24.04, -16- on 24.04.
-#   sudo apt-get install -y postgresql postgresql-18-pgvector
+#   # Optional for a real Postgres backend. Extension packages are named
+#   # for their server major, so read it off the metapackage rather than
+#   # picking one (18 above 24.04, 16 on 24.04).
+#   sudo apt-get install -y postgresql &&
+#       sudo apt-get install -y "postgresql-$(apt-cache depends postgresql |
+#           grep -oP 'postgresql-\K\d+' | head -1)-pgvector"
 
 # Web UI on http://localhost:8000.
 uvx --from trackinizer python -m trackinizer.server
@@ -279,10 +282,12 @@ via `pytest-postgresql` and require pgvector. PGlite bundles its own
 `vector` extension, so the default `pglite` engine has no system deps.
 
 ```bash
-# Ubuntu/Debian. The pgvector package is named for its server major, so it
-# tracks whichever Postgres your release ships.
-sudo apt-get install -y postgresql postgresql-18-pgvector   # > 24.04
-sudo apt-get install -y postgresql postgresql-16-pgvector   # 24.04
+# Ubuntu/Debian. Extension packages are always named `postgresql-NN-<ext>`
+# -- there is no unversioned alias -- so derive NN from the metapackage
+# instead of hardcoding it (18 above 24.04, 16 on 24.04).
+sudo apt-get install -y postgresql
+sudo apt-get install -y "postgresql-$(apt-cache depends postgresql |
+    grep -oP 'postgresql-\K\d+' | head -1)-pgvector"
 
 # macOS. Homebrew's pgvector supports postgresql@17 and @18.
 brew install postgresql@18 pgvector
