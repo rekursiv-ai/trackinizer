@@ -27,7 +27,7 @@ Centralized agent database for Inquiries (Issues + Artifacts).
 
 uv tool install trackinizer
 
-# Local server; web UI at http://localhost:8000.
+# Local server; web UI at http://127.0.0.1:8765.
 trackinizer
 
 # CLI to trackinizer server.
