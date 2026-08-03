@@ -178,6 +178,25 @@ repos:
           ' pytest
         args: [-q, --tb=short, --testmon-forceselect]
 
+      - id: pytest-slow
+        name: pytest (slow)
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]
+        # Tolerate pytest exit 5 (no tests collected): this package may ship no
+        # tests for this marker, which is not a failure. Regular pytest stays strict.
+        entry: >-
+          bash -c '
+            workers=$(nproc);
+            workers=$((workers / 2));
+            ((workers < 2)) && workers=2;
+            ((workers > 32)) && workers=32;
+            uv --quiet run --frozen --group test \
+            pytest -n="$workers" "$@" || test "$?" = 5
+          ' pytest
+        args: [-q, --tb=short, --no-cov, -m, "slow and not cluster and not cuda and not integration and not performance"]
+
       - id: pytest-integration
         name: pytest (integration)
         language: system
