@@ -44,6 +44,7 @@ from trackinizer.trax.grammar import (
     RemoveList,
     SetField,
     cost_key,
+    field_value,
     parse_kind,
     validate_writable_fields,
 )
@@ -1335,21 +1336,29 @@ def _resolve_inline_create_values(
 
 
 def _resolve_field_value(field: SetField, *, used_stdin: bool) -> tuple[SetField, bool]:
-    """Resolve one field value: ``-`` reads stdin, ``@path`` reads a file, else verbatim."""
+    """Resolve one field value: ``-`` reads stdin, ``@path`` reads a file, else verbatim.
+
+    The read text is re-coerced through :func:`field_value`: parse-time
+    coercion saw only the sentinel token, so a typed field (``config``)
+    coerces here instead. Identity-coerced fields are unaffected.
+    """
     if not isinstance(field.value, str):
         return field, False
     if field.value == "-":
         if used_stdin:
             raise ClientError("stdin value can only be used once per command")
-        return SetField(field=field.field, value=sys.stdin.read()), True
+        return SetField(
+            field=field.field, value=field_value(field.field, sys.stdin.read())
+        ), True
     if field.value.startswith("@"):
         path = field.value[1:]
         if not path:
             raise ClientError("@ value requires a path")
         try:
-            return SetField(field=field.field, value=Path(path).read_text()), False
+            text = Path(path).read_text()
         except OSError as err:
             raise ClientError(f"cannot read @{path}: {err}") from err
+        return SetField(field=field.field, value=field_value(field.field, text)), False
     return field, False
 
 

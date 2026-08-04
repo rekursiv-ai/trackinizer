@@ -47,9 +47,15 @@ def print_rows(
 
 
 def format_field_value(value: object) -> str:
-    """Format one projected field; a list prints one item per line."""
+    """Format one projected field; a list prints one item per line.
+
+    A dict (the Experiment ``config`` JSON object) prints as indented
+    JSON so the output round-trips through ``config to @file.json``.
+    """
     if isinstance(value, list):
         return "\n".join(str(item) for item in cast(list[object], value))
+    if isinstance(value, dict):
+        return format_json(cast("dict[str, object]", value)).rstrip("\n")
     return str(value)
 
 

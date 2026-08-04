@@ -290,6 +290,41 @@ def test_field_value_wraps_coerce_value_error_as_client_error() -> None:
         field_value("status", "flummoxed")
 
 
+def test_field_value_config_parses_json_object() -> None:
+    assert field_value("config", '{"lr": 0.1}') == {"lr": 0.1}
+
+
+def test_field_value_config_rejects_invalid_json() -> None:
+    with pytest.raises(ClientError, match="config must be valid JSON"):
+        field_value("config", "not json")
+
+
+def test_field_value_config_rejects_non_object_json() -> None:
+    """A JSON array/scalar is valid JSON but not a config object."""
+    with pytest.raises(ClientError, match="config must be a JSON object"):
+        field_value("config", "[1, 2]")
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_field_value_config_rejects_nonstandard_numeric_constant(
+    constant: str,
+) -> None:
+    """Config accepts portable JSON, not Python's non-standard constants."""
+    with pytest.raises(ClientError, match="config must be valid JSON"):
+        field_value("config", f'{{"value": {constant}}}')
+
+
+def test_field_value_config_rejects_overflowed_number() -> None:
+    with pytest.raises(ClientError, match="config numbers must be finite"):
+        field_value("config", '{"value": 1e999}')
+
+
+def test_config_is_writable_but_not_filterable() -> None:
+    """Structural JSON filtering is not part of the scalar filter grammar."""
+    assert "config" in WRITE_FIELDS_CLI["Experiment"]
+    assert "config" not in g.FILTER_FIELDS_CLI["Experiment"]
+
+
 def test_write_fields_cli_matches_server_kind_gate() -> None:
     """The CLI write whitelist must equal the server's per-kind column gate.
 

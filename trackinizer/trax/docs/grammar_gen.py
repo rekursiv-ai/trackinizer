@@ -279,13 +279,11 @@ def _terminal_block() -> str:
     plain_list_fields = [f for f in LIST_FIELDS if f not in ref_list_fields]
     valued_ops = [op for op in FILTER_OPS if op not in VALUELESS_FILTER_OPS]
     valueless_ops = [op for op in FILTER_OPS if op in VALUELESS_FILTER_OPS]
-    # FILTER_FIELD is the union of every CLI field spelling that can be filtered:
-    # scalar, list, cost, and the identity columns. The per-kind validity is a
-    # semantic check (FILTER_FIELDS_CLI), not a grammar one, so the terminal is
-    # the full spelling set; a bad field-on-kind is a parser-layer rejection.
+    # FILTER_FIELD is every public CLI field spelling with filtering semantics.
+    # Per-kind validity remains a semantic check in FILTER_FIELDS_CLI.
     filter_fields = sorted(
         {
-            *EDITABLE_FIELDS,
+            *(field for field in EDITABLE_FIELDS if FIELDS_BY_NAME[field].filterable),
             *LIST_FIELDS,
             *COST_FIELDS,
             "seq",
@@ -469,6 +467,7 @@ def _semantics_block() -> str:
         f"//   issue_kind/kind: {issue_kind}   publication_type: {pub_type}",
         f"//   priority: an int, or {priority}",
         "//   confidence/valence: a float (valence in [-1,1], sign = for/against)",
+        "//   config: one standard JSON object; readable/editable, not filterable",
         "// FIELD VALIDITY (a field is writable only on these kinds):",
         *_kind_field_lines(),
         "// EDGE DIRECTION (edges store child->parent; a reverse-voice alias writes the",

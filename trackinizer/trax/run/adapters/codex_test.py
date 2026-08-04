@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import json
+
+
+if TYPE_CHECKING:
+    import pytest
 
 from trackinizer.trax.run.adapters.base import Event
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.types.agent_session_events import (
+    AgentSendMessage,
     AssistantMessage,
     Compaction,
     SystemMessage,
@@ -323,6 +330,160 @@ class TestCodexParseLine:
 
     def test_malformed_json_returns_none(self) -> None:
         assert _parse_one(b"{not json}") is None
+
+
+class TestCodexCurrentTaxonomy:
+    """Real 2026-08 rollout shapes: custom tools, agent mail, encrypted CoT.
+
+    Fixtures are real lines captured from wrapped study sessions on
+    2026-08-01 (bulky string fields truncated, structure verbatim). Unmapped,
+    they posted to the console as raw ``UnknownMessage`` dict dumps
+    (``custom_tool_call`` / ``custom_tool_call_output`` / ``agent_message``)
+    or as empty assistant turns carrying only token counts (encrypted-only
+    ``reasoning``).
+    """
+
+    def test_custom_tool_call_is_assistant_tool_call(self) -> None:
+        event = _parse_one(
+            _encode(
+                {
+                    "timestamp": "2026-08-01T23:48:32.936Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "custom_tool_call",
+                        "id": "ctc_0da983a49f7bd871016a6e85cb258c819ba4",
+                        "status": "completed",
+                        "call_id": "call_AqT68hHuadOsypnsj8V8vaXE",
+                        "name": "exec",
+                        "input": "const p = await tools.update_plan({plan: []});",
+                    },
+                }
+            )
+        )
+        assert event is not None
+        assert isinstance(event.message, AssistantMessage)
+        (call,) = event.message.tool_calls
+        assert call.id == "call_AqT68hHuadOsypnsj8V8vaXE"
+        assert call.name == "exec"
+        # Custom tools take one free-form string, not JSON-encoded kwargs.
+        assert call.args == {"input": "const p = await tools.update_plan({plan: []});"}
+
+    def test_custom_tool_call_output_is_tool_result(self) -> None:
+        event = _parse_one(
+            _encode(
+                {
+                    "timestamp": "2026-08-01T23:48:32.973Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "custom_tool_call_output",
+                        "id": "ctco_019fbfba-b84d-7e43-994c-d8778216e946",
+                        "call_id": "call_AqT68hHuadOsypnsj8V8vaXE",
+                        "output": [
+                            {"type": "input_text", "text": "Script failed\n"},
+                            {"type": "input_text", "text": "Script error: exec"},
+                        ],
+                    },
+                }
+            )
+        )
+        assert event is not None
+        assert isinstance(event.message, ToolResult)
+        assert event.message.call_id == "call_AqT68hHuadOsypnsj8V8vaXE"
+        assert event.message.content == "Script failed\nScript error: exec"
+
+    def test_agent_message_is_agent_send_message(self) -> None:
+        # Inter-agent mail: readable ``input_text`` blocks plus an encrypted
+        # block (no ``text`` key, so it contributes nothing readable).
+        event = _parse_one(
+            _encode(
+                {
+                    "timestamp": "2026-08-01T23:27:32.411Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "agent_message",
+                        "id": "amsg_019fbfa7-7c3b-7a62-a183-e4e8d33d6b13",
+                        "author": "/root",
+                        "recipient": "/root/cold_review_2",
+                        "content": [
+                            {"type": "input_text", "text": "Message Type: NEW_TASK\n"},
+                            {"type": "encrypted_content", "encrypted_content": "gA=="},
+                        ],
+                    },
+                }
+            )
+        )
+        assert event is not None
+        assert isinstance(event.message, AgentSendMessage)
+        assert event.message.source == "/root"
+        assert event.message.text == "Message Type: NEW_TASK\n"
+
+    def test_encrypted_only_reasoning_retains_ciphertext(self) -> None:
+        """A ``summary: []`` reasoning item retains its encrypted content."""
+        line = _encode(
+            {
+                "timestamp": "2026-08-01T23:50:08.505Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "reasoning",
+                    "id": "rs_0da983a49f7bd871016a6e862feb7c819b85",
+                    "summary": [],
+                    "encrypted_content": "gAAAAABqboYw59SkHfV46O9iiWpCYKP7",
+                },
+            }
+        )
+        event = _parse_one(line)
+        assert event is not None
+        assert event.message == AssistantMessage(
+            thinking_encrypted="gAAAAABqboYw59SkHfV46O9iiWpCYKP7"
+        )
+
+    def test_unknown_payload_is_retained_verbatim(self) -> None:
+        """A still-unrecognized record remains lossless for later promotion."""
+        payload = {
+            "type": "shiny_new_record",
+            "name": "frobnicate",
+            "blob": "x" * 5000,
+        }
+        record = {
+            "timestamp": "2026-08-01T23:50:08.505Z",
+            "type": "response_item",
+            "payload": payload,
+        }
+        event = _parse_one(_encode(record))
+        assert event is not None
+        assert isinstance(event.message, UnknownMessage)
+        assert event.message.raw == record
+
+
+class TestCodexSessionsDir:
+    """The sessions root honors ``$CODEX_HOME`` (hermetic launchers set it)."""
+
+    def test_codex_home_env_locates_sessions(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A run under ``CODEX_HOME=<dir>`` must discover ``<dir>/sessions``.
+
+        Study launchers spawn codex with a throwaway ``$CODEX_HOME`` for
+        hermeticity; an adapter hard-coded to ``~/.codex`` polls the wrong tree
+        and captures nothing.
+        """
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        day = tmp_path / "sessions" / "2026" / "08" / "01"
+        day.mkdir(parents=True)
+        fixture = day / "rollout-2026-08-01T00-00-00-abc.jsonl"
+        fixture.write_text('{"timestamp": "2026-08-01T00:00:00Z"}\n')
+        adapter = CodexAdapter()
+        assert tuple(adapter.session_dirs()) == (tmp_path / "sessions",)
+        assert adapter.matches_session_file(fixture)
+
+    def test_falls_back_to_home_codex_without_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        sessions = tmp_path / ".codex" / "sessions"
+        sessions.mkdir(parents=True)
+        assert tuple(CodexAdapter().session_dirs()) == (sessions,)
 
 
 if __name__ == "__main__":
