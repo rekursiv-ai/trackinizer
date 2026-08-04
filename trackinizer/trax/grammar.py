@@ -22,6 +22,7 @@ from dataclasses import (
 )
 from typing import Final, Literal, TypeGuard, cast, get_args
 
+import json
 import re
 import uuid
 
@@ -451,6 +452,7 @@ class Field:
       shape: How the field accepts values.
       help: One-line description for the help renderer. Empty for aliases
         (e.g. ``labels`` mirrors ``label``).
+      filterable: Whether the scalar/list field has defined filter semantics.
       ref_kind: For a ref-list field, the default kind a bare ``seq`` resolves
         to; ``None`` for a plain list field whose values are free strings. A
         ref-list field is monomorphic -- the server stores a bare ``id`` (the
@@ -464,6 +466,7 @@ class Field:
     help: str = ""
     list_add: str = ""
     list_remove: str = ""
+    filterable: bool = True
     ref_kind: Inquiry.InquiryKind | None = None
 
     def coerce(self, value: str) -> object:
@@ -515,12 +518,46 @@ def _coerce_publication_type(value: str) -> str:
     return value
 
 
+def _coerce_config(value: str) -> object:
+    """Parse a ``config`` token to its JSON-object wire value.
+
+    The ``-`` (stdin) and ``@path`` (file) sentinels pass through untouched:
+    they are resolved at the verb layer, which re-coerces the read text
+    through :func:`field_value`.
+    """
+    if value == "-" or value.startswith("@"):
+        return value
+    try:
+        parsed: object = json.loads(
+            value,
+            parse_constant=_reject_nonstandard_json_constant,
+        )
+    except ValueError as err:
+        raise ValueError(f"config must be valid JSON: {err}") from err
+    match parsed:
+        case dict():
+            config = cast(dict[str, object], parsed)
+        case _:
+            raise ValueError("config must be a JSON object")
+    try:
+        json.dumps(config, allow_nan=False)
+    except ValueError as err:
+        raise ValueError("config numbers must be finite") from err
+    return config
+
+
+def _reject_nonstandard_json_constant(value: str) -> object:
+    """Reject Python JSON decoder extensions absent from the JSON standard."""
+    raise ValueError(f"non-standard numeric constant {value!r}")
+
+
 _COERCE: Mapping[str, Callable[[str], object]] = {
     "priority": _coerce_priority,
     "confidence": _coerce_confidence,
     "status": _coerce_status,
     "judgement": _coerce_judgement,
     "publication_type": _coerce_publication_type,
+    "config": _coerce_config,
 }
 
 
@@ -580,6 +617,13 @@ _FIELDS: tuple[Field, ...] = (
         payload_key="outcome",
         shape="scalar",
         help="result of the experiment",
+    ),
+    Field(
+        cli_name="config",
+        payload_key="config",
+        shape="scalar",
+        help="run settings as one JSON object (inline or @file.json)",
+        filterable=False,
     ),
     Field(
         cli_name="source",
@@ -815,11 +859,14 @@ def _filterable_columns(kind: Inquiry.InquiryKind) -> frozenset[str]:
 def _filter_fields_cli(kind: Inquiry.InquiryKind) -> tuple[str, ...]:
     """Every CLI filter name (canonical column plus aliases) for ``kind``."""
     canonical = _filterable_columns(kind)
+    non_filterable = {spec.payload_key for spec in _FIELDS if not spec.filterable}
     # The composite ``marginal_cost`` is never a filter target; only its
     # flattened axes appear in ``flat_column_specs``, reached via cost aliases.
-    names = {col for col in canonical if col != "marginal_cost"}
+    names = {
+        col for col in canonical if col != "marginal_cost" and col not in non_filterable
+    }
     for spec in _FIELDS:
-        if spec.payload_key in canonical:
+        if spec.filterable and spec.payload_key in canonical:
             names.add(spec.cli_name)
     return tuple(sorted(names))
 

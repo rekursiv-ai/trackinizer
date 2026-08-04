@@ -1,7 +1,8 @@
 """Claude Code adapter.
 
-Sessions live at ``~/.claude/projects/<path-hash>/<session-id>.jsonl``,
-append-only, one JSON object per line. A top-level ``type`` discriminates;
+Sessions live at ``$CLAUDE_CONFIG_DIR/projects/<path-hash>/<session-id>.jsonl``
+(``~/.claude`` when ``$CLAUDE_CONFIG_DIR`` is unset), append-only, one JSON
+object per line. A top-level ``type`` discriminates;
 for ``user`` / ``assistant`` lines the real category lives in
 ``message.content``: a bare string is a user prompt, a ``content[]`` block
 list carries ``thinking`` / ``text`` / ``tool_use`` (assistant) or
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import cast
 
 import json
+import os
 
 from trackinizer.lib.custom_json import JSON, json_freeze
 from trackinizer.trax.run.adapters.base import Event
@@ -63,10 +65,13 @@ class ClaudeAdapter:
 
     @property
     def _projects_dir(self) -> Path:
-        # Resolve ``$HOME`` per call, not at import: a test (or a run under a
-        # switched HOME) must see the current home, not the value frozen when
-        # the module first loaded.
-        return Path.home() / ".claude" / "projects"
+        # Resolve per call, not at import: a test (or a run under a switched
+        # env) must see the current value, not one frozen when the module first
+        # loaded. ``$CLAUDE_CONFIG_DIR`` is where claude itself keeps its
+        # config root -- hermetic launchers point it at a throwaway dir -- so
+        # honor it, else ``~/.claude``.
+        root = os.environ.get("CLAUDE_CONFIG_DIR")
+        return (Path(root) if root else Path.home() / ".claude") / "projects"
 
     def session_dirs(self) -> Iterable[Path]:
         projects = self._projects_dir

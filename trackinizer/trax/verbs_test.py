@@ -406,6 +406,75 @@ def test_kind_verb_priority_accepts_named_band(client: FakeClient) -> None:
     assert edit_calls[0][1][2] == 10
 
 
+def test_experiment_config_file_value_writes_parsed_json(
+    client: FakeClient,
+    tmp_path: Path,
+) -> None:
+    """``config to @file.json`` sends the parsed dict through ``edit``."""
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text('{"lr": 0.1, "epochs": 2}\n', encoding="utf-8")
+    run(["experiment", "2", "config", "to", f"@{cfg}"], client)
+    edit_calls = [c for c in client.calls if c[0] == "edit"]
+    assert edit_calls[0][1][1:] == ("config", {"lr": 0.1, "epochs": 2})
+
+
+def test_experiment_config_stdin_value_writes_parsed_json(
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"seed": 7}\n'))
+    run(["experiment", "2", "config", "to", "-"], client)
+    edit_calls = [c for c in client.calls if c[0] == "edit"]
+    assert edit_calls[0][1][1:] == ("config", {"seed": 7})
+
+
+def test_experiment_config_missing_file_raises_client_error(
+    client: FakeClient,
+) -> None:
+    with pytest.raises(ClientError, match=r"cannot read @missing\.json"):
+        run(["experiment", "2", "config", "to", "@missing.json"], client)
+
+
+def test_experiment_config_invalid_json_file_raises_client_error(
+    client: FakeClient,
+    tmp_path: Path,
+) -> None:
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text("not json\n", encoding="utf-8")
+    with pytest.raises(ClientError, match="config must be valid JSON"):
+        run(["experiment", "2", "config", "to", f"@{cfg}"], client)
+
+
+def test_experiment_config_read_prints_json(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A bare ``config`` read prints the stored object as indented JSON."""
+    for row in client.rows:
+        if row.get("kind") == "Experiment":
+            row["config"] = {"lr": 0.1}
+    run(["experiment", "2", "config"], client)
+    assert capsys.readouterr().out == '{\n  "lr": 0.1\n}\n'
+
+
+def test_config_rejected_on_non_experiment_kind(client: FakeClient) -> None:
+    """``config`` is Experiment-only; other kinds reject before any request."""
+    with pytest.raises(ClientError, match=r"'config'.*not valid on Issue"):
+        run(["issue", "1", "config", "to", "{}"], client)
+
+
+def test_create_experiment_with_config_file(
+    client: FakeClient,
+    tmp_path: Path,
+) -> None:
+    """The create path carries the parsed config dict in the submit body."""
+    cfg = tmp_path / "cfg.json"
+    cfg.write_text('{"lr": 0.1}\n', encoding="utf-8")
+    run(["experiment", "title", "to", "Run", "config", "to", f"@{cfg}"], client)
+    items = _batch_items(client)
+    assert items[0][1]["config"] == {"lr": 0.1}
+
+
 def test_bare_subkind_rejects(client: FakeClient) -> None:
     """Subkind names are nouns, not verbs; the parser must reject them."""
     with pytest.raises(ClientError, match="unexpected token"):

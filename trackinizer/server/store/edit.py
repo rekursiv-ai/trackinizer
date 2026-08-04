@@ -19,7 +19,6 @@ import asyncpg
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
-    lookup_kind,
     upsert_embedding,
     validate_list_references,
 )
@@ -29,6 +28,10 @@ from trackinizer.server.setter_dispatch import (
     RUNTIME_HOOKS,
 )
 from trackinizer.server.store.cascade import _CascadeAuditMixin
+from trackinizer.server.store.change_id_slot import (
+    _consume_client_change_id,
+    _peek_client_change_id,
+)
 from trackinizer.server.values import (
     empty_optional_to_none,
     vetted_sql,
@@ -78,7 +81,17 @@ class _EditMixin(_CascadeAuditMixin):
             self.engine.acquire() as conn,
             tx(conn),
         ):
+            replay = await self._replay_field_change(
+                conn, target_id, "title", actor=actor
+            )
+            if replay is not None:
+                return replay
             row = await self._read_field(conn, target_id, "title")
+            replay = await self._replay_field_change(
+                conn, target_id, "title", actor=actor
+            )
+            if replay is not None:
+                return replay
             if row["title"] == value:
                 return None
             await self._update_field(conn, target_id, "title", value)
@@ -142,6 +155,39 @@ class _EditMixin(_CascadeAuditMixin):
                 f"{column} is only valid on {sorted(expected_kinds)}"
             )
         return row
+
+    async def _replay_field_change(
+        self,
+        conn: Conn,
+        target_id: UUID,
+        change_kind: Change.Kind,
+        *,
+        actor: Inquiry.Actor,
+    ) -> UUID | None:
+        """Replay a committed field edit before validating its retry body."""
+        client_change_id = _peek_client_change_id()
+        if client_change_id is None:
+            return None
+        existing = await conn.fetchrow(
+            "SELECT actor, subject_id, kind FROM change_log WHERE id = $1",
+            client_change_id,
+        )
+        if existing is None:
+            return None
+        # ``ContextVar`` siblings share one mutable consume cursor. A sibling
+        # may have consumed the key after this task's probe; only the winner
+        # may replay it, while later siblings continue as fresh mutations.
+        if _consume_client_change_id() != client_change_id:
+            return None
+        if (
+            existing["actor"] == actor
+            and existing["subject_id"] == target_id
+            and existing["kind"] == change_kind
+        ):
+            return client_change_id
+        raise ConflictError(
+            f"idempotency_key {client_change_id} already used for a different operation"
+        )
 
     async def _update_field(
         self,
@@ -318,17 +364,24 @@ class _EditMixin(_CascadeAuditMixin):
             self.engine.acquire() as conn,
             tx(conn),
         ):
+            replay = await self._replay_field_change(
+                conn, target_id, cast(Change.Kind, column), actor=actor
+            )
+            if replay is not None:
+                return replay
             row = await self._read_field(
                 conn, target_id, column, expected_kinds=expected
             )
+            replay = await self._replay_field_change(
+                conn, target_id, cast(Change.Kind, column), actor=actor
+            )
+            if replay is not None:
+                return replay
             old_value = hooks.decode_old(row[column])
             if old_value == new_value:
                 return None
             if hooks.validate is not None:
                 await hooks.validate(conn, new_value)
-            # A DB CHECK violation (e.g. emptying a ``min_items`` column like
-            # ``issue_kind``) surfaces to callers as a clean ``ConflictError``,
-            # mirroring the atomic list-mutation path, not a raw 500.
             try:
                 await self._update_field(conn, target_id, column, storage_value)
             except asyncpg.CheckViolationError as exc:
@@ -451,7 +504,17 @@ class _EditMixin(_CascadeAuditMixin):
             self.engine.acquire() as conn,
             tx(conn),
         ):
+            replay = await self._replay_field_change(
+                conn, target_id, "status", actor=actor
+            )
+            if replay is not None:
+                return replay
             row = await self._read_field(conn, target_id, "status")
+            replay = await self._replay_field_change(
+                conn, target_id, "status", actor=actor
+            )
+            if replay is not None:
+                return replay
             current = cast(Inquiry.Status, row["status"])
             if current != expected_from:
                 raise ConflictError(
@@ -516,12 +579,22 @@ class _EditMixin(_CascadeAuditMixin):
             self.engine.acquire() as conn,
             tx(conn),
         ):
+            replay = await self._replay_field_change(
+                conn, target_id, "belief_judgement", actor=actor
+            )
+            if replay is not None:
+                return replay
             row = await self._read_field(
                 conn,
                 target_id,
                 "belief_judgement",
                 expected_kinds=frozenset({"Belief"}),
             )
+            replay = await self._replay_field_change(
+                conn, target_id, "belief_judgement", actor=actor
+            )
+            if replay is not None:
+                return replay
             current = cast("Belief.Judgement | None", row["belief_judgement"])
             if current != expected_from:
                 raise ConflictError(
@@ -772,7 +845,17 @@ class _EditMixin(_CascadeAuditMixin):
             if spec.applies_to_inquiry_kinds is not None
             else None
         )
+        replay = await self._replay_field_change(
+            conn, target_id, cast(Change.Kind, column), actor=actor
+        )
+        if replay is not None:
+            return replay
         row = await self._read_field(conn, target_id, column, expected_kinds=expected)
+        replay = await self._replay_field_change(
+            conn, target_id, cast(Change.Kind, column), actor=actor
+        )
+        if replay is not None:
+            return replay
         # ``old_snapshot`` preserves a stored NULL as None for the audit old side
         # (unset vs explicitly-cleared); ``working`` is the collapsed concrete
         # set the add/remove arithmetic operates on. Stay typed-loose for the
@@ -819,9 +902,6 @@ class _EditMixin(_CascadeAuditMixin):
                 if COLUMN_SPECS[column].min_items > 0
                 else empty_optional_to_none(remainder)
             )
-        # DB CHECK violations (e.g. ``array_length >= 1``) surface to direct
-        # callers as a clean ``ConflictError``; route callers see the same shape
-        # via the FastAPI handler.
         try:
             await self._update_field(
                 conn,
@@ -1391,10 +1471,25 @@ class _EditMixin(_CascadeAuditMixin):
             self.engine.acquire() as conn,
             tx(conn),
         ):
-            # Resolve the id first so an unknown target still raises
-            # NotFoundError (404), matching ``set_cost_axis`` -- the
-            # zero-guard must not short-circuit a missing-row error.
-            kind = await lookup_kind(conn, target_id)
+            replay = await self._replay_field_change(
+                conn, target_id, "marginal_cost", actor=actor
+            )
+            if replay is not None:
+                return replay
+            # Lock before the second replay probe. A same-key winner can
+            # commit while the first probe is waiting; the lock gives this
+            # statement a fresh READ COMMITTED snapshot before the no-op test.
+            kind = await conn.fetchval(
+                "SELECT kind FROM inquiries WHERE id = $1 FOR UPDATE",
+                target_id,
+            )
+            if kind is None:
+                raise NotFoundError(f"inquiry {target_id} not found")
+            replay = await self._replay_field_change(
+                conn, target_id, "marginal_cost", actor=actor
+            )
+            if replay is not None:
+                return replay
             # A zero delta is a no-op for a *known* row: it would write a
             # marginal_cost audit row and cascade ``dependency_changed`` for
             # no actual change. Mirror ``set_cost_axis``'s short-circuit so
@@ -1406,7 +1501,7 @@ class _EditMixin(_CascadeAuditMixin):
                 api_key_id=api_key_id,
                 actor=actor,
                 subject_id=target_id,
-                subject_kind=kind,
+                subject_kind=cast(Inquiry.InquiryKind, kind),
                 kind="marginal_cost",
                 cost_delta=delta,
                 reason=reason,
@@ -1431,14 +1526,17 @@ class _EditMixin(_CascadeAuditMixin):
         keeping a single write path for cost. ``emit_change``'s floor guard
         rejects a delta that would drive the total negative.
         """
-        if value < 0:
-            raise ConflictError(f"{axis} cannot be negative")
         column = f"marginal_cost_{axis}"
         async with (
             notify_after_commit(),
             self.engine.acquire() as conn,
             tx(conn),
         ):
+            replay = await self._replay_field_change(
+                conn, target_id, "marginal_cost", actor=actor
+            )
+            if replay is not None:
+                return replay
             row = await conn.fetchrow(
                 vetted_sql(
                     "SELECT kind, ",
@@ -1449,6 +1547,13 @@ class _EditMixin(_CascadeAuditMixin):
             )
             if row is None:
                 raise NotFoundError("inquiry not found")
+            replay = await self._replay_field_change(
+                conn, target_id, "marginal_cost", actor=actor
+            )
+            if replay is not None:
+                return replay
+            if value < 0:
+                raise ConflictError(f"{axis} cannot be negative")
             delta = Cost(**{axis: value - float(row["current"])})
             if not delta:
                 return None

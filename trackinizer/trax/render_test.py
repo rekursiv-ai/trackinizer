@@ -32,6 +32,11 @@ class TestBasicFormats:
         assert fmt.format_table([]) == "(no rows)\n"
         assert fmt.format_changes([]) == "(no changes)\n"
 
+    def test_field_value_dict_renders_indented_json(self) -> None:
+        """A dict field (Experiment ``config``) prints as JSON, not repr."""
+        assert fmt.format_field_value({"lr": 0.1}) == '{\n  "lr": 0.1\n}'
+        assert fmt.format_field_value({}) == "{}"
+
     def test_table_includes_ref_labels_and_cost_fields(self) -> None:
         text = fmt.format_table(
             [

@@ -1,8 +1,8 @@
 """Codex CLI adapter.
 
 Sessions live at
-``~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ISO>-<uuid-v7>.jsonl``,
-append-only JSONL. Each line is ``{"timestamp", "type", "payload"}``, where
+``$CODEX_HOME/sessions/<YYYY>/<MM>/<DD>/rollout-<ISO>-<uuid-v7>.jsonl``
+(``~/.codex`` when ``$CODEX_HOME`` is unset), append-only JSONL. Each line is ``{"timestamp", "type", "payload"}``, where
 ``type`` and the nested ``payload.type`` together name the record.
 
 Codex logs each turn twice: a streamed ``event_msg`` and a canonical
@@ -10,8 +10,12 @@ Codex logs each turn twice: a streamed ``event_msg`` and a canonical
 records (the streamed ``event_msg`` duplicates are skipped) plus
 ``compacted``, so each line yields exactly one typed message.
 Spawn codex with ``-c model_reasoning_summary=detailed`` so the ``reasoning``
-item's ``summary[].text`` is populated. See
-``docs/cli-scraping-investigation.md`` for the empirical layout.
+item's ``summary[].text`` is populated. Current (2026-08) rollouts add
+``custom_tool_call`` / ``custom_tool_call_output`` (mapped like function
+calls), ``agent_message`` (inter-agent mail, an :class:`AgentSendMessage`),
+and encrypted-only ``reasoning`` items (retained as encrypted thinking).
+A record still unrecognized is retained verbatim in :class:`UnknownMessage`.
+See ``docs/cli-scraping-investigation.md`` for the empirical layout.
 """
 
 from __future__ import annotations
@@ -22,10 +26,12 @@ from pathlib import Path
 from typing import Final, cast
 
 import json
+import os
 
 from trackinizer.lib.custom_json import JSON, json_freeze
 from trackinizer.trax.run.adapters.base import Event
 from trackinizer.types.agent_session_events import (
+    AgentSendMessage,
     AssistantMessage,
     Compaction,
     Message,
@@ -59,8 +65,11 @@ class CodexAdapter:
 
     @property
     def _sessions_dir(self) -> Path:
-        # Resolve ``$HOME`` per call, not at import (see ClaudeAdapter).
-        return Path.home() / ".codex" / "sessions"
+        # Resolve per call, not at import (see ClaudeAdapter). ``$CODEX_HOME``
+        # is where codex itself keeps its config root -- hermetic launchers
+        # point it at a throwaway dir -- so honor it, else ``~/.codex``.
+        home = os.environ.get("CODEX_HOME")
+        return (Path(home) if home else Path.home() / ".codex") / "sessions"
 
     def session_dirs(self) -> Iterable[Path]:
         sessions = self._sessions_dir
@@ -128,9 +137,13 @@ def _to_message(obj: JSON) -> Message | None:
     if inner == "message":
         return _role_message(payload)
     if inner == "reasoning":
+        thinking = _reasoning_summary(payload)
+        thinking_encrypted = _str(payload.get("encrypted_content"))
+        if not thinking and not thinking_encrypted:
+            return None
         return AssistantMessage(
-            thinking=_reasoning_summary(payload),
-            thinking_encrypted=_str(payload.get("encrypted_content")),
+            thinking=thinking,
+            thinking_encrypted=thinking_encrypted,
         )
     if inner == "function_call":
         return AssistantMessage(
@@ -142,10 +155,36 @@ def _to_message(obj: JSON) -> Message | None:
                 ),
             ),
         )
+    if inner == "custom_tool_call":
+        # Like ``function_call``, but a custom tool takes one free-form string
+        # (``input``), not JSON-encoded kwargs; preserve it under that name.
+        return AssistantMessage(
+            tool_calls=(
+                ToolCall(
+                    id=_str(payload.get("call_id")),
+                    name=_str(payload.get("name")),
+                    args={"input": _str(payload.get("input"))},
+                ),
+            ),
+        )
     if inner == "function_call_output":
         return ToolResult(
             call_id=_str(payload.get("call_id")),
             content=_str(payload.get("output")),
+        )
+    if inner == "custom_tool_call_output":
+        # Like ``function_call_output``, but ``output`` is a content-block
+        # list (``input_text`` blocks), not a bare string.
+        return ToolResult(
+            call_id=_str(payload.get("call_id")),
+            content=_content_text(payload.get("output")),
+        )
+    if inner == "agent_message":
+        # Inter-agent mail (codex multi-agent traffic): user-role input the
+        # model saw, authored by another agent -- exactly AgentSendMessage.
+        return AgentSendMessage(
+            text=_content_text(payload.get("content")),
+            source=_str(payload.get("author")),
         )
     return UnknownMessage(raw=obj)
 

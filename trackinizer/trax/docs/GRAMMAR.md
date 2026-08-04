@@ -504,7 +504,7 @@ the same commit.
 ### Editable scalar fields (`EDITABLE_FIELDS`)
 
 `owner`, `account`, `title`, `description`, `status`, `validation`,
-`priority`, `judgement`, `confidence`, `outcome`, `source`,
+`priority`, `judgement`, `confidence`, `outcome`, `config`, `source`,
 `google_scholar_cluster_id`, `google_scholar_cites_id`,
 `abstract`, `publication_type`, `venue`, `subvenue`, `publish_date`, `query`,
 `provider`, `sha`, `url`,
@@ -659,6 +659,10 @@ EOF
 trax issue title to "Retry bug" description to @body.md
 ```
 
+```bash
+trax experiment 12 config to @cfg.json
+```
+
 ### Edit / mutate
 
 ```trax
@@ -668,6 +672,13 @@ trax issue 7 priority to high
 ```trax
 trax issue 7 status to complete
 ```
+
+```trax
+trax experiment 12 config to '{"lr": 0.1, "epochs": 2}'
+```
+
+`config` accepts one standard JSON object. It is readable and editable, but it
+is not a filter field: structural JSON filter semantics are not defined.
 
 ```trax
 trax issue 7 label add backend

@@ -29,6 +29,7 @@ from trackinizer.trax.grammar import (
     InlineCreate,
     MetricAction,
     MetricMask,
+    ReadField,
     RelationAction,
     SetField,
 )
@@ -590,6 +591,24 @@ def test_token_after_del_still_rejected() -> None:
     """``del`` stays terminal: any action after it raises (invariant)."""
     with pytest.raises(ClientError, match="'del' must be the last token"):
         parse_actions(["title", "to", "x", "del", "status", "to", "y"])
+
+
+def test_config_set_parses_inline_json_object_to_dict() -> None:
+    """``config to JSON`` coerces the token to a dict at parse time."""
+    actions = parse_actions(["config", "to", '{"lr": 0.1, "epochs": 2}'])
+    assert actions == [SetField(field="config", value={"lr": 0.1, "epochs": 2})]
+
+
+def test_config_bare_token_reads_field() -> None:
+    assert parse_actions(["config"]) == [ReadField(field="config")]
+
+
+def test_config_sentinel_values_pass_through_uncoerced() -> None:
+    """``@path`` and ``-`` defer coercion until the verb layer reads them."""
+    assert parse_actions(["config", "to", "@cfg.json"]) == [
+        SetField(field="config", value="@cfg.json")
+    ]
+    assert parse_actions(["config", "to", "-"]) == [SetField(field="config", value="-")]
 
 
 def test_positive_citation_rejects_negative_valence() -> None:

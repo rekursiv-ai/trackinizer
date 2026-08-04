@@ -14,10 +14,14 @@ Load-bearing code:
 - [`server/api/idempotency.py`](../server/api/idempotency.py) --
   `Idempotency-Key` header middleware (parses + injects into the
   per-request contextvar).
-- [`server/store.py`](../server/store.py) -- `_submit_generic` (pre-probe +
-  collision-recovery), `_lookup_existing_by_change` (probes
-  `change_log` by client-supplied key), `emit_change`
-  (per-`change_log.id` dedup + SAVEPOINT replay).
+- [`server/store/submit.py`](../server/store/submit.py) --
+  `_submit_generic` (pre-probe + collision-recovery),
+  `_lookup_existing_by_change` (probes `change_log` by client-supplied
+  key).
+- [`server/store/cascade.py`](../server/store/cascade.py) --
+  `emit_change` (per-`change_log.id` dedup + SAVEPOINT replay).
+- [`server/store/edit.py`](../server/store/edit.py) -- field-edit
+  replay probes before validation and again after locking the subject.
 - [`client/client.py`](../client/client.py) -- `submit()` mints one UUID
   per call as `idempotency_key` (body field) for submits and one UUID
   per call as `Idempotency-Key` (header) for edits.
@@ -131,10 +135,16 @@ mutation type:
 | `Idempotency-Key`    | HTTP header        | Edits, edge mutations, purges, anything not a submit |
 
 Both land in the same per-request `ContextVar` slot
-(`store._CLIENT_CHANGE_ID`) and `emit_change` consumes them
-identically. The split is convenience: a header doesn't compose with
-batches (one header per HTTP request, N items per batch), so each
-batch item carries its own body-field key.
+(`store._CLIENT_CHANGE_ID`). The field-edit replay probe or
+`emit_change` consumes the key. The split is convenience: a header
+doesn't compose with batches (one header per HTTP request, N items per
+batch), so each batch item carries its own body-field key.
+
+Transport coverage is broader than exact replay coverage. Submits and
+field edits implement the response-replay contract described below.
+Edge mutations and purges accept the same header but retain the known
+deviations under Consequence 2; carrying a key does not by itself make
+their surrounding writes replay-safe.
 
 The trax client mints one UUID per logical operation:
 
@@ -158,10 +168,10 @@ next.
 
 `Idempotency-Key` / `idempotency_key` is delivered to the request as a
 single-cell mutable holder (`store._ChangeIdSlot`) in a per-request
-`ContextVar`. The first `emit_change` in the request claims it and
-clears the slot; subsequent emits inside the same request (cascade
-rows, `gather` siblings, batch items) fall back to server-minted
-change ids.
+`ContextVar`. The first field-edit replay probe or `emit_change` in the
+request claims it and clears the slot; subsequent emits inside the same
+request (cascade rows, `gather` siblings, batch items) fall back to
+server-minted change ids.
 
 Without consume-once, a single key would collide with itself on the
 second `change_log` INSERT in any request that issues more than one
@@ -197,16 +207,21 @@ across concurrent fan-out within one request.
 
 `store.set_description` and siblings:
 
-1. Read current value.
-2. If unchanged, return without writing -- the second retry is a
-   no-op.
-3. Otherwise UPDATE + `emit_change` in one transaction. The second
-   retry collides on `change_log.id` PK; the SAVEPOINT in
-   `emit_change` rolls back the cost UPDATE; `emit_change` then
-   checks whether the existing `change_log` row's `(actor,
-   subject_id, kind)` tuple matches the retry. Match -> treat as
-   replay, return the original change id. Mismatch -> raise
-   `ConflictError`, route layer maps to HTTP 409 (`api/app.py:114`,
+1. If a client key is present, probe `change_log` before the retry
+   body's compare-and-set or referential validation. A matching
+   `(actor, subject_id, kind)` returns the original change id; a
+   mismatch raises `ConflictError`.
+2. On a probe miss, read the current value while locking the subject
+   row with `FOR UPDATE`, then probe again. A concurrent edit of the
+   same subject must release that lock before this transaction
+   continues; under READ COMMITTED the second probe sees the winner's
+   newly committed audit row and returns its change id.
+3. If the second probe also misses, compare and validate the current
+   value, then perform the column UPDATE and `emit_change` in the same
+   outer transaction. An unchanged value is a fresh no-op. A key
+   collision for a different operation raises `ConflictError` and the
+   outer transaction rolls the preceding column write back. The route
+   layer maps that conflict to HTTP 409 (`api/app.py:114`,
    `unique_violation_handler`).
 
 Submit and edit paths share the SAVEPOINT collision detector but
@@ -255,7 +270,8 @@ discards the new body's drift, keeping the originally-committed
 values.
 
 The replay-equivalence check trackinizer *does* perform is on
-`(actor, subject_id, kind)` in `emit_change`. From the code:
+`(actor, subject_id, kind)` in the field replay probe and
+`emit_change`. From the code:
 
 > Replay is identified by `(actor, subject, kind)` matching the
 > original row -- a retry of *that* mutation. Field-level drift
@@ -264,6 +280,18 @@ The replay-equivalence check trackinizer *does* perform is on
 > the retry's are discarded. That's deliberate: the client promised
 > idempotency by reusing the UUID. A genuinely different operation
 > (different subject or kind) is a client bug and 409s.
+
+**Known deviations (2026-08-01, tracked):** the edge-family paths
+(`server/store/edge.py`) still perform their edge INSERT/UPDATE/DELETE
+before their emits, outside the savepoint, so this consequence does not
+yet hold there -- a drifted edge retry commits its drift while replaying
+the original change id, and the replay tuple lacks the peer identity
+needed to distinguish two edges sharing an endpoint. Field edits
+(`server/store/edit.py`) honor the contract via probes before validation
+and after locking the subject row. Purge also remains outside exact replay coverage: a
+sequential retry reaches the already-deleted inquiry before its audit
+emit and raises `NotFoundError` instead of returning the original purge
+change id.
 
 Why this is acceptable in practice:
 
