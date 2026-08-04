@@ -392,7 +392,7 @@ If you find our work useful, please consider citing:
 ```bibtex
 @misc{rekursivai2026trackinizer,
       title={Trackinizer - Epistemological database for agent and human efforts, beliefs, and findings.}
-      author={Joshua V. Dillon},
+      author={Joshua V. Dillon and Dan Kondratyuk},
       year={2026},
       howpublished={Github},
       url={https://github.com/rekursiv-ai/trackinizer},
