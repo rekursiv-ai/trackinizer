@@ -6,7 +6,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/discord/1530237005311639592?logo=discord&logoColor=white&label=Discord&color=5865F2)](https://discord.gg/2GZFPPvCqn)
 
-Centralized agent database for Inquiries (Issues + Artifacts).
+Epistemological database for agent and human efforts, beliefs, and findings.
 
 ## Quick Start
 
@@ -362,18 +362,26 @@ See `example.sh` for a worked end-to-end submit/edit/query session.
 
 ## System dependencies
 
-Integration tests (`@pytest.mark.integration`) provision a real Postgres
-via `pytest-postgresql` and require pgvector. PGlite bundles its own
-`vector` extension, so the default `pglite` engine has no system deps.
+Integration tests (`@pytest.mark.integration`) use a Postgres server backend
+via `pytest-postgresql` and also requires `pgvector`.
+
+PGlite bundles its own `vector` extension, so the default `pglite` engine has
+no system deps.
+
+### Ubuntu/Debian
 
 ```bash
-# Ubuntu/Debian. Extension packages are always named `postgresql-NN-<ext>`
-# -- there is no unversioned alias -- so derive NN from the metapackage
-# instead of hardcoding it (18 above 24.04, 16 on 24.04).
+# Extension packages are always named `postgresql-NN-<ext>` -- there is no
+# unversioned alias -- so derive NN from the metapackage instead of hardcoding
+# it (18 above 24.04, 16 on 24.04).
 PG_MAJOR="$(apt-cache depends postgresql | grep -m1 -oP 'postgresql-\K\d+')"
 sudo apt-get install -y postgresql "postgresql-$PG_MAJOR-pgvector"
+```
 
-# macOS. Homebrew's pgvector supports postgresql@17 and @18.
+### macOS
+
+```bash
+# Homebrew's pgvector supports postgresql@17 and @18.
 brew install postgresql@18 pgvector
 ```
 
@@ -382,8 +390,8 @@ brew install postgresql@18 pgvector
 If you find our work useful, please consider citing:
 
 ```bibtex
-@misc{rekursiv2026trackinizer,
-      title={Trackinizer - Centralized agent database for Inquiries (Issues + Artifacts).},
+@misc{rekursivai2026trackinizer,
+      title={Trackinizer - Epistemological database for agent and human efforts, beliefs, and findings.}
       author={Joshua V. Dillon},
       year={2026},
       howpublished={Github},
