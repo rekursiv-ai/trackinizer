@@ -376,3 +376,17 @@ sudo apt-get install -y postgresql "postgresql-$PG_MAJOR-pgvector"
 # macOS. Homebrew's pgvector supports postgresql@17 and @18.
 brew install postgresql@18 pgvector
 ```
+
+## Citing
+
+If you find our work useful, please consider citing:
+
+```bibtex
+@misc{rekursiv2026trackinizer,
+      title={Trackinizer - Centralized agent database for Inquiries (Issues + Artifacts).},
+      author={Joshua V. Dillon},
+      year={2026},
+      howpublished={Github},
+      url={https://github.com/rekursiv-ai/trackinizer},
+}
+```
