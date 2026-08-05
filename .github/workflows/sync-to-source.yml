@@ -215,7 +215,10 @@ jobs:
             --validation-command 'uv run pre-commit run --all-files --hook-stage pre-commit' \
             --validation-command 'uv run pre-commit run --all-files --hook-stage pre-push' \
             --validation-command 'uv run python -c "import trackinizer"' \
-            --validation-command 'uv build' \
+            --validation-command 'rm -rf dist' \
+            --validation-command 'uv build --out-dir dist' \
+            --validation-command 'wheel="$(ls dist/trackinizer-*.whl | head -n 1)"' \
+            --validation-command 'uv run --isolated --with "$wheel" python -P -c "import trackinizer; print(trackinizer.__file__)"' \
             --open-pr false
 
       - name: Open or update target import PR
