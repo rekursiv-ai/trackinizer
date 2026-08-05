@@ -46,4 +46,7 @@ jobs:
           uv run pre-commit run --all-files --hook-stage pre-commit
           uv run pre-commit run --all-files --hook-stage pre-push
           uv run python -c "import trackinizer"
-          uv build
+          rm -rf dist
+          uv build --out-dir dist
+          wheel="$(ls dist/trackinizer-*.whl | head -n 1)"
+          uv run --isolated --with "$wheel" python -P -c "import trackinizer; print(trackinizer.__file__)"
