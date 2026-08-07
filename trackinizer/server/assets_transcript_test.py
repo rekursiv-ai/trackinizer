@@ -81,6 +81,16 @@ def test_failures_are_not_collapsed(source: str) -> None:
     assert "if (err) box.open = true;" in source
 
 
+def test_the_heading_explains_where_the_missing_turns_went(source: str) -> None:
+    """The heading counts events; nesting means fewer top-level turns.
+
+    An unexplained gap between "Transcript (120)" and 80 visible turns reads as
+    events having gone missing -- the exact reading this view exists to make
+    impossible. The count is left alone and the difference is named instead.
+    """
+    assert "shown inside their calls" in source
+
+
 def test_the_flat_rendering_is_gone(source: str) -> None:
     """Guards against a revert that leaves the new code in place beside the old.
 

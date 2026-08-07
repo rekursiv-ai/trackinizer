@@ -271,6 +271,14 @@
                         border: 1px solid var(--warning, #b8860b); border-radius: 4px;
                         padding: 6px 8px; margin-bottom: 8px; }
   .turn-compaction { color: var(--muted); font-style: italic; }
+  .turn-difffile { font-size: 11px; color: var(--muted); }
+  .turn-attachments { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+  .attach { display: flex; gap: 6px; align-items: baseline; font-size: 12px; }
+  .attach-kind { color: var(--muted, #888); font-size: 11px; flex: 0 0 auto; }
+  .attach-preview > summary { cursor: pointer; list-style: none; }
+  .attach-preview > summary::-webkit-details-marker { display: none; }
+  .attach-img { max-width: 100%; max-height: 320px; border: 1px solid var(--border, #ddd);
+                border-radius: 4px; }
   details.turn-thinking > summary { cursor: pointer; color: var(--muted); font-size: 11px; }
 
   /* Modal + picker. */
@@ -1363,6 +1371,32 @@ function renderTranscript(container, events) {
   };
   const header = el("div", { class: "detail-header" },
     el("h3", {}, `Transcript (${events.length})`));
+  // The heading counts EVENTS; nesting means the reader now sees fewer
+  // top-level turns than that. Saying so keeps the number honest -- an
+  // unexplained gap between "Transcript (120)" and 80 visible turns reads as
+  // events having gone missing, which is the reading this whole view is
+  // trying to make impossible.
+  const nestedCount = events.filter(e => {
+    if (e.kind !== "ToolResult") return false;
+    const cid = (e.message || {}).call_id;
+    return Boolean(cid && results.has(cid));
+  }).length;
+  // Usage is a property of the SESSION, not of every turn. A CLI reports one
+  // total; putting a token chip on each assistant turn was chrome on every row
+  // for a number nobody compares turn-by-turn.
+  let totalTokens = 0;
+  for (const e of events) {
+    const tk = (e.message || {}).tokens;
+    if (tk) for (const v of Object.values(tk)) if (typeof v === "number") totalTokens += v;
+  }
+  if (totalTokens > 0) {
+    header.appendChild(el("span", { class: "hint", style: { fontSize: "11px" } },
+      `${totalTokens.toLocaleString()} tokens`));
+  }
+  if (nestedCount > 0) {
+    header.appendChild(el("span", { class: "hint", style: { fontSize: "11px" } },
+      `${nestedCount} tool result${nestedCount === 1 ? "" : "s"} shown inside their calls`));
+  }
   if (systemCount > 0) {
     const box = el("input", { type: "checkbox" });
     box.addEventListener("change", () => { showSystem = box.checked; paint(); });
@@ -1406,21 +1440,87 @@ function buildInboundBox(sessionId) {
   );
 }
 
+// Media a turn carried: inline bytes, a file path, or a link. Captured by the
+// adapters since the schema was written and drawn nowhere until now -- an image
+// the model was shown, or a PDF a tool produced, existed in the record and was
+// invisible in the only view of it.
+//
+// TERSE BY DEFAULT, REACHABLE ON DEMAND. Each attachment is one line saying
+// what it is and how big; an image opens on click. The goal is not to put
+// everything on screen -- this view exists to be scanned like a CLI -- it is
+// that nothing in the record is unreachable from it.
+//
+// Inline preview is limited to raster images on purpose. An SVG data URI is not
+// scriptable inside <img> in current browsers, but the guarantee is
+// browser-version-dependent and this content is captured third-party tool
+// output, so anything outside the allowlist stays a chip and is never turned
+// into markup.
+const INLINE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+function attachChip(kind, label) {
+  return el("div", { class: "attach" },
+    el("span", { class: "attach-kind" }, kind),
+    el("span", { class: "mono" }, label));
+}
+
+function renderAttachments(attachments) {
+  const list = attachments || [];
+  if (!list.length) return null;
+  const box = el("div", { class: "turn-attachments" });
+  for (const a of list) {
+    const t = a && a.__type__;
+    if (t === "WebUrl") {
+      const href = httpUrl(a.url);
+      box.appendChild(el("div", { class: "attach" },
+        el("span", { class: "attach-kind" }, "link"),
+        href
+          ? el("a", { href, target: "_blank", rel: "noopener noreferrer" }, a.url)
+          : el("span", { class: "mono" }, a.url || "(empty)")));
+    } else if (t === "FilePath") {
+      box.appendChild(attachChip("file", a.path || "(empty)"));
+    } else if (t === "BytesAttachment") {
+      const desc = a.descriptor || "application/octet-stream";
+      // base64 length -> byte count, so the size is shown without decoding a
+      // potentially large payload just to measure it.
+      const b64 = a.data || "";
+      const kb = Math.floor(b64.length * 3 / 4 / 1024);
+      const label = `${desc} · ${kb.toLocaleString()} KB`;
+      if (INLINE_IMAGE_TYPES.has(desc)) {
+        const d = el("details", { class: "attach-preview" },
+          el("summary", {}, attachChip("image", label)));
+        d.appendChild(el("img", { class: "attach-img",
+          src: `data:${desc};base64,${b64}`, alt: desc }));
+        box.appendChild(d);
+      } else {
+        box.appendChild(attachChip("attachment", label));
+      }
+    } else {
+      // An attachment kind this view does not know is still announced: the
+      // alternative is a turn that silently carried something.
+      box.appendChild(attachChip("attachment", String(t || "unknown")));
+    }
+  }
+  return box;
+}
+
 // A one-line precis of call arguments: enough to tell two calls of the same
 // tool apart without pasting a whole file into the transcript.
 function toolArgSummary(args) {
-  const parts = [];
-  for (const [k, v] of Object.entries(args || {})) {
-    let s = typeof v === "string" ? v : JSON.stringify(v);
-    if (s === undefined) s = String(v);
-    s = s.replace(/\s+/g, " ");
-    if (s.length > 60) s = s.slice(0, 59) + "\u2026";
-    parts.push(`${k}=${s}`);
-    if (parts.length >= 3) break;
+  // A CLI prints `Read(foo.py)`. It picks the one argument that identifies the
+  // call and drops the rest, because a reader scanning a hundred calls needs to
+  // tell them apart, not to audit their parameters -- the full arguments are
+  // one click away in the expanded body.
+  const a = args || {};
+  for (const k of ["file_path", "path", "notebook_path", "command", "pattern",
+                   "url", "query", "prompt", "description"]) {
+    if (typeof a[k] === "string" && a[k]) {
+      let v = a[k].replace(/\s+/g, " ");
+      if (v.length > 48) v = "\u2026" + v.slice(-47);
+      return v;
+    }
   }
-  const n = Object.keys(args || {}).length;
-  if (n > parts.length) parts.push(`+${n - parts.length} more`);
-  return parts.join(" ");
+  const n = Object.keys(a).length;
+  return n ? `${n} arg${n === 1 ? "" : "s"}` : "";
 }
 
 // One tool call with its result nested inside it, collapsed by default.
@@ -1444,6 +1544,9 @@ function renderToolCall(tc, result) {
   if (result) {
     if (result.summary) box.appendChild(el("div", { class: "tool-receipt" }, result.summary));
     if (result.diff) {
+      if (result.diff_file_path) {
+        box.appendChild(el("div", { class: "turn-difffile mono" }, result.diff_file_path));
+      }
       box.appendChild(el("pre", { class: "turn-diff" }, result.diff));
     } else if (result.content) {
       box.appendChild(el("pre", { class: err ? "turn-error" : "" }, result.content));
@@ -1454,6 +1557,10 @@ function renderToolCall(tc, result) {
     // tool returned nothing.
     box.appendChild(el("div", { class: "tool-missing" },
       "No ToolResult was captured for this call id."));
+  }
+  if (result) {
+    const att = renderAttachments(result.attachments);
+    if (att) box.appendChild(att);
   }
   return box;
 }
@@ -1469,6 +1576,8 @@ function renderTurn(ev, results, consumed) {
   if (ev.kind === "UserMessage" || ev.kind === "AgentSendMessage") {
     if (m.source) head.appendChild(el("span", { class: "turn-source" }, `from ${m.source}`));
     body.appendChild(renderMarkdown(m.text || ""));
+    const att = renderAttachments(m.attachments);
+    if (att) body.appendChild(att);
   } else if (ev.kind === "SystemMessage") {
     if (m.role) head.appendChild(el("span", { class: "turn-source" }, m.role));
     body.appendChild(renderMarkdown(m.text || ""));
@@ -1485,13 +1594,20 @@ function renderTurn(ev, results, consumed) {
     }
   } else if (ev.kind === "ToolResult") {
     if (m.diff) {
+      // A diff with no path is a diff you cannot act on.
+      if (m.diff_file_path) {
+        body.appendChild(el("div", { class: "turn-difffile mono" }, m.diff_file_path));
+      }
       body.appendChild(el("pre", { class: "turn-diff" }, m.diff));
     } else {
       body.appendChild(el("pre", { class: m.is_error ? "turn-error" : "" }, m.content || ""));
     }
+    const att = renderAttachments(m.attachments);
+    if (att) body.appendChild(att);
   } else if (ev.kind === "Compaction") {
     body.appendChild(el("div", { class: "turn-compaction" },
-      `compacted ${m.token_before || 0} → ${m.token_after || 0} tokens`));
+      `compacted ${m.token_before || 0} → ${m.token_after || 0} tokens`
+      + (m.fallback_reason ? ` (fallback: ${m.fallback_reason})` : "")));
     if (m.text) body.appendChild(renderMarkdown(m.text));
   } else if (ev.kind === "SlashCommand") {
     // A CLI command the human typed (e.g. /exit); the model never saw it.
