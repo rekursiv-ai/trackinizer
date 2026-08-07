@@ -156,9 +156,10 @@ class TestFlags:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ) -> None:
-        monkeypatch.setattr(profile, "_CONFIG_DIR", tmp_path)
-        monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path / "profiles")
-        monkeypatch.setattr(profile, "_CURRENT_FILE", tmp_path / "current")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        (tmp_path / "rekursiv-ai" / "trax" / "profiles").mkdir(
+            parents=True, exist_ok=True
+        )
         monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
         monkeypatch.delenv("TRACKINIZER_URL", raising=False)
 

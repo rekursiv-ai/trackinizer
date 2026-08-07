@@ -683,7 +683,7 @@ def _ensure_shared_node_modules() -> Path:
     can still resolve modules through an older tree, and this cache has no
     reader leases that would make automatic deletion safe.
     """
-    root = cache_dir("loop") / "pglite" / "node-modules" / _cache_key()
+    root = cache_dir("rekursiv-ai") / "pglite" / "node-modules" / _cache_key()
     node_modules = root / "node_modules"
     ready = root / ".ready"
     if ready.exists():
@@ -811,7 +811,7 @@ def _boot_slots_root() -> Path:
     contention this semaphore controls is host-local.
     """
     host_key = hashlib.sha256(socket.gethostname().encode()).hexdigest()[:16]
-    return cache_dir("loop") / "pglite" / "boot-slots" / host_key
+    return cache_dir("rekursiv-ai") / "pglite" / "boot-slots" / host_key
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

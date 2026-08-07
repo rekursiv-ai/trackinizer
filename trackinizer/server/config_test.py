@@ -77,7 +77,7 @@ class TestPureFunctions:
         assert isinstance(a, PGliteEngine)
         assert isinstance(b, PGliteEngine)
         assert a._workdir != b._workdir
-        assert a._workdir.parent == tmp_path / "pgdata-ephemeral"
+        assert a._workdir.parent == tmp_path / "trackinizer" / "pgdata-ephemeral"
         assert a._persist is False
 
     def test_ephemeral_explicit_datadir_wins(
@@ -97,7 +97,7 @@ class TestPureFunctions:
         _patch_data_dir(monkeypatch, tmp_path)
         engine = build_engine(Config(ephemeral=False))
         assert isinstance(engine, PGliteEngine)
-        assert engine._workdir == tmp_path / "pgdata"
+        assert engine._workdir == tmp_path / "trackinizer" / "pgdata"
         assert engine._persist is True
 
     def testbuild_engine_pg(self, monkeypatch: pytest.MonkeyPatch) -> None:

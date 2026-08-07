@@ -657,7 +657,11 @@ async def seed_no_auth_user(conn: Conn) -> None:
 def _bootstrap_token_path() -> Path:
     """Resolve the final bootstrap-token path from env override or default."""
     override = os.environ.get(BOOTSTRAP_TOKEN_FILE_ENV, "").strip()
-    return Path(override) if override else data_dir("trackinizer") / "bootstrap_token"
+    return (
+        Path(override)
+        if override
+        else data_dir("rekursiv-ai") / "trackinizer" / "bootstrap_token"
+    )
 
 
 def _stage_bootstrap_token(token_path: Path, secret: str) -> None:

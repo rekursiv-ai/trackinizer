@@ -1,7 +1,7 @@
 """Shared trax CLI test fixtures.
 
 ``tmp_config_dir`` is autouse: every test gets a fresh tmp directory
-in place of ``~/.config/trax`` so profile reads and writes
+in place of the real config dir so profile reads and writes
 cannot bleed into the developer's real config. This closes the latent
 class of "test mutated my real profile" failures and unblocks the
 profile-related GRAMMAR.md examples once their xfails are lifted.
@@ -19,7 +19,7 @@ import pytest
 
 from trackinizer.client.client import EdgeWrite
 from trackinizer.lib.custom_types import Absent
-from trackinizer.trax import cli, profile
+from trackinizer.trax import cli
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import (
     FILTER_FIELD_ALIASES,
@@ -87,19 +87,17 @@ def _storage_view(row: dict[str, object]) -> dict[str, object]:
 def tmp_config_dir(
     tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Isolate ``profile`` globals so tests cannot touch the real config.
+    """Isolate profile state so tests cannot touch the real config.
 
-    Repoints ``_CONFIG_DIR``, ``_PROFILES_DIR``, and ``_CURRENT_FILE``
-    at a per-test tmp directory. Also clears ``TRACKINIZER_PROFILE``
-    and ``TRACKINIZER_URL`` env vars so an exported shell variable
-    does not bleed into the test process.
+    Redirects ``XDG_CONFIG_HOME`` rather than patching module globals: the
+    module builds each path inline from ``config_dir``, so moving the env var
+    exercises the same resolution production uses. Also clears
+    ``TRACKINIZER_PROFILE`` and ``TRACKINIZER_URL`` so an exported shell
+    variable does not bleed into the test process.
     """
-    root = cast(Any, tmp_path) / "config"
-    profiles = root / "profiles"
-    profiles.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(profile, "_CONFIG_DIR", root)
-    monkeypatch.setattr(profile, "_PROFILES_DIR", profiles)
-    monkeypatch.setattr(profile, "_CURRENT_FILE", root / "current")
+    root = cast(Any, tmp_path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(root))
+    (root / "rekursiv-ai" / "trax" / "profiles").mkdir(parents=True, exist_ok=True)
     monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
     monkeypatch.delenv("TRACKINIZER_URL", raising=False)
 

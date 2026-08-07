@@ -17,6 +17,7 @@ import asyncpg
 import pytest
 
 from trackinizer.lib.postgres import PGliteEngine, PostgresEngine, substrate
+from trackinizer.lib.userdirs import cache_dir
 
 
 def _cache_dir_under(root: Path) -> Callable[[str], Path]:
@@ -36,7 +37,7 @@ def test_pglite_default_caches_use_xdg_cache(
 
     host_key = hashlib.sha256(b"test-host").hexdigest()[:16]
     assert substrate._boot_slots_root() == (
-        Path("/xdg-cache/loop/pglite/boot-slots") / host_key
+        cache_dir("rekursiv-ai") / "pglite" / "boot-slots" / host_key
     )
 
 
