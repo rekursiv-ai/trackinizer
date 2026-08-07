@@ -617,7 +617,7 @@ action          -> {"ok": true}
 ### 3.15 Filter query value
 
 ```
-{"field":"title","op":"re","value":"knowop"}
+{"field":"title","op":"re","value":"parser"}
 {"field":"status","op":"is","value":"active"}
 {"field":"priority","op":"le","value":"10"}
 {"field":"labels","op":"is","value":"sagent"}
