@@ -129,7 +129,7 @@ class GeminiAdapter:
                 continue
             # Even after ``isinstance(_, Mapping)``, ty won't narrow the indexed
             # element into ``JSON`` (generic invariance); cast as the project
-            # pattern does (see ``switchboard/hub.py:989``).
+            # pattern does elsewhere for the same narrowing gap.
             message = _to_message(cast(JSON, raw_msg))
             if message is not None:
                 events.append(Event(message=message))

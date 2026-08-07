@@ -190,9 +190,9 @@ async def test_pglite_reentrant_acquire_raises_not_deadlocks(tmp_path: Path) -> 
 
 def test_postgres_engine_listens_on_configured_channel() -> None:
     """PostgresEngine keeps the native LISTEN channel domain-configurable."""
-    engine = PostgresEngine("postgresql:///unused", listen_channel="knowop")
+    engine = PostgresEngine("postgresql:///unused", listen_channel="demo_channel")
 
-    assert engine.listen_channel == "knowop"
+    assert engine.listen_channel == "demo_channel"
 
 
 @pytest.mark.asyncio

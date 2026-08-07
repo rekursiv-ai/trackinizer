@@ -7,7 +7,7 @@ Let a human (via web UI) or another agent **send a message into a live
 terminal. Trackinizer already logs every session
 ([`design_agent_session_logging.md`](design_agent_session_logging.md));
 this makes it also the **router** for messages flowing the other way --
-into the agent. Switchboard-style chat, but the messages route through
+into the agent. Hub-style chat, but the messages route through
 trackinizer instead of a separate hub.
 
 Two CLIs are first-class and must have **equal support**: claude and
@@ -150,7 +150,7 @@ sends**, not every turn.
 Because the send is recognized at the edge, `trax run` owns both
 directions: the inject-in (PTY write) and the send-out (recognize +
 forward). The server is a pure router in the middle -- it resolves the
-target name to a live session and pushes. This mirrors switchboard's
+target name to a live session and pushes. This mirrors an internal hub's
 shape (agent emits a send, the wrapper catches it, the hub routes it),
 with trackinizer as the hub.
 
@@ -171,7 +171,7 @@ the wrapper greps for.
 a string the agent controls, so any agent can impersonate another by
 emitting `@target from:scientist …`. The command is stamped by the
 wrapper, which alone holds the session's `--as` identity, so the sender
-cannot be forged. Switchboard reached the same conclusion -- sender comes
+cannot be forged. An internal hub reached the same conclusion -- sender comes
 from `$AGENT_NAME` set by the trusted wrapper, not from message text. The
 **human uses the same `trax send`**, from a shell; one path, sender
 always attested by who ran it.
@@ -219,7 +219,7 @@ If the target's `trax run` is not connected when a message arrives:
 
 |                        | drop-if-absent | durable hold |
 |------------------------|:-:|:-:|
-| matches live-channel norm (IRC, switchboard, pipes) | ✅ | ❌ |
+| matches live-channel norm (IRC, chat hubs, pipes) | ✅ | ❌ |
 | avoids stale steering  | ✅ | ❌ (held msg injected into a moved-on session) |
 | sender learns outcome  | ✅ receipt | 🟡 eventually |
 | implementation         | ✅ none | ❌ queue + timer |
@@ -228,7 +228,7 @@ If the target's `trax run` is not connected when a message arrives:
 *live steering*; a message held and injected minutes later into a session
 that has moved on is worse than dropping it. The sender learns
 `delivered` / `undelivered` immediately (the `trax send` command's return
-value). This matches switchboard (`hub.py:586`, a write to a dead stdin
+value). This matches an internal hub (a write to a dead stdin
 is simply lost) and IRC. A durable **inbox** -- "queue work for an agent
 not yet running" -- is a different feature, deferred until it is a real
 want.

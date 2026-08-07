@@ -4272,7 +4272,7 @@ class TestIntegrationEndToEnd:
         needle_id = await integ_store.submit_issue(
             SubmitIssue(
                 account="tester@example.com",
-                title="needle:with:colons knowop",
+                title="needle:with:colons parser",
                 labels=["target"],
                 issue_kind=["bug"],
             ),
@@ -4318,7 +4318,7 @@ class TestIntegrationEndToEnd:
                     params=[
                         ("kind", "Issue"),
                         ("limit", "5"),
-                        ("filter", _filter_param("title", "re", "knowop")),
+                        ("filter", _filter_param("title", "re", "parser")),
                     ],
                 )
                 assert r.status_code == 200, r.text

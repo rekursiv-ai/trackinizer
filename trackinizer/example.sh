@@ -305,7 +305,7 @@ trax issue \
     issue_kind to question \
     title to "Can we autonomously create knowledge?" \
     description to "Root inquiry. Can an autonomous system generate genuinely novel, non-trivial research knowledge -- not retrieve or recombine the already-known? Each child Issue is a concrete stuck problem; beliefs under them are seed-bets, killed or survived by adversarial novelty/importance gates. The kill-graph accumulates across runs." \
-    label to knowop \
+    label to research \
     --as Scientist
 
 say "B1 -- the SURVIVOR (docs/trax_research_example_1.sh)"
