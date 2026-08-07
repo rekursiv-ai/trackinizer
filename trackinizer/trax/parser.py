@@ -983,7 +983,7 @@ def consume_edge_target(args: Sequence[str], pos: int = 0) -> tuple[EdgeTarget, 
         the edge AFTER the group rebinds to the PARENT (go wide / fan out).
 
     ``begin`` / ``end`` are bare words, not punctuation, so they stay inert in
-    bash, zsh and fish; their literal spelling is the whole vocabulary, so they
+    bash and fish; their literal spelling is the whole vocabulary, so they
     read better inline than behind a constant.
     """
     if pos >= len(args):
