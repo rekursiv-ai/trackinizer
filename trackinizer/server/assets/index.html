@@ -244,6 +244,32 @@
   .turn-tool code { font-size: 12px; }
   .turn-diff { background: var(--bg-row); }
   .turn-error { color: var(--danger, #c0392b); }
+  /* A tool call and its result, as one collapsible unit. Collapsed by default
+     so a long result cannot bury the conversation it belongs to; errors open
+     themselves, since a collapsed failure is a failure nobody reads. */
+  .tool-call { margin: 4px 0; border-left: 2px solid var(--border, #ddd); padding-left: 8px; }
+  .tool-call > summary { cursor: pointer; list-style: none; display: flex; gap: 8px;
+                         align-items: baseline; font-size: 12px; }
+  .tool-call > summary::-webkit-details-marker { display: none; }
+  .tool-call > summary::before { content: "\25B8"; color: var(--muted, #888); }
+  .tool-call[open] > summary::before { content: "\25BE"; }
+  .tool-call-error { border-left-color: var(--danger, #c0392b); }
+  .tool-name { font-weight: 600; }
+  .tool-args { color: var(--muted, #666); overflow: hidden; text-overflow: ellipsis;
+               white-space: nowrap; flex: 1 1 auto; min-width: 0; }
+  .tool-status { flex: 0 0 auto; font-size: 11px; }
+  .tool-status.ok { color: var(--muted, #888); }
+  .tool-status.bad { color: var(--danger, #c0392b); font-weight: 600; }
+  .tool-status.pending { color: var(--warning, #b8860b); }
+  .tool-receipt { font-size: 12px; color: var(--muted, #666); margin: 2px 0; }
+  .tool-missing { font-size: 12px; color: var(--warning, #b8860b); margin: 2px 0; }
+  /* Orphans are LOUD on purpose: they mean the capture is incomplete, and a
+     quieter treatment would let the transcript read as whole when it is not. */
+  .turn-orphan { border-left: 2px solid var(--warning, #b8860b); }
+  .tool-orphan-note { font-size: 12px; color: var(--warning, #b8860b); }
+  .tool-orphan-banner { font-size: 12px; color: var(--warning, #b8860b);
+                        border: 1px solid var(--warning, #b8860b); border-radius: 4px;
+                        padding: 6px 8px; margin-bottom: 8px; }
   .turn-compaction { color: var(--muted); font-style: italic; }
   details.turn-thinking > summary { cursor: pointer; color: var(--muted); font-size: 11px; }
 
@@ -1290,13 +1316,50 @@ function renderTranscript(container, events) {
   const systemCount = events.filter(e => e.kind === "SystemMessage").length;
   let showSystem = false;
   const turns = el("div");
+  // ToolResult events are joined to the ToolCall that requested them and
+  // rendered inside it. Built once per paint, keyed on the provider's own id.
+  const results = new Map();
+  for (const ev of events) {
+    if (ev.kind === "ToolResult") {
+      const cid = (ev.message || {}).call_id;
+      if (cid) results.set(cid, ev);
+    }
+  }
   const paint = () => {
     turns.replaceChildren();
     const shown = showSystem ? events : events.filter(e => e.kind !== "SystemMessage");
     if (shown.length === 0) {
       turns.appendChild(el("div", { class: "empty" }, "no turns captured yet"));
     }
-    for (const ev of shown) turns.appendChild(renderTurn(ev));
+    // NESTING MUST NOT BECOME A FILTER.
+    //
+    // A ToolResult is hidden from the top level only once it has actually been
+    // rendered inside its call. Anything left over -- a result whose call_id
+    // matches no captured call, because the assistant turn was truncated or
+    // never captured -- is rendered where it always was, and SAID to be
+    // orphaned. A view that quietly drops what it cannot place reports a
+    // tidier session than the one that happened, which is the same defect as
+    // a row that stops describing the world without being able to say so.
+    const consumed = new Set();
+    for (const ev of shown) {
+      if (ev.kind === "ToolResult") continue;   // drawn inside its call, below
+      turns.appendChild(renderTurn(ev, results, consumed));
+    }
+    let orphans = 0;
+    for (const ev of shown) {
+      if (ev.kind !== "ToolResult" || consumed.has(ev)) continue;
+      orphans += 1;
+      const node = renderTurn(ev, results, consumed);
+      node.classList.add("turn-orphan");
+      node.prepend(el("div", { class: "tool-orphan-note" },
+        `Orphaned result: no captured tool call has id ${(ev.message || {}).call_id || "(none)"}.`));
+      turns.appendChild(node);
+    }
+    if (orphans > 0) {
+      turns.prepend(el("div", { class: "tool-orphan-banner" },
+        `${orphans} tool result${orphans === 1 ? "" : "s"} could not be matched to a captured call `
+        + `and are shown separately below.`));
+    }
   };
   const header = el("div", { class: "detail-header" },
     el("h3", {}, `Transcript (${events.length})`));
@@ -1343,7 +1406,59 @@ function buildInboundBox(sessionId) {
   );
 }
 
-function renderTurn(ev) {
+// A one-line precis of call arguments: enough to tell two calls of the same
+// tool apart without pasting a whole file into the transcript.
+function toolArgSummary(args) {
+  const parts = [];
+  for (const [k, v] of Object.entries(args || {})) {
+    let s = typeof v === "string" ? v : JSON.stringify(v);
+    if (s === undefined) s = String(v);
+    s = s.replace(/\s+/g, " ");
+    if (s.length > 60) s = s.slice(0, 59) + "\u2026";
+    parts.push(`${k}=${s}`);
+    if (parts.length >= 3) break;
+  }
+  const n = Object.keys(args || {}).length;
+  if (n > parts.length) parts.push(`+${n - parts.length} more`);
+  return parts.join(" ");
+}
+
+// One tool call with its result nested inside it, collapsed by default.
+//
+// The call and its result are joined on ToolCall.id === ToolResult.call_id --
+// a real provider-assigned key, not an inference from adjacency. Rendering
+// them as separate top-level turns (the previous behaviour) left the reader to
+// re-pair them by eye, and a long result buried the conversation it belonged to.
+//
+// Failures open by default. A collapsed error is an error nobody reads.
+function renderToolCall(tc, result) {
+  const err = result && result.is_error;
+  const summary = el("summary", { class: "tool-summary" },
+    el("span", { class: "tool-name" }, tc.name || "(tool)"),
+    el("span", { class: "tool-args mono" }, toolArgSummary(tc.args)),
+    el("span", { class: "tool-status " + (result ? (err ? "bad" : "ok") : "pending") },
+       result ? (err ? "error" : "ok") : "no result captured"),
+  );
+  const box = el("details", { class: "tool-call" + (err ? " tool-call-error" : "") }, summary);
+  if (err) box.open = true;
+  if (result) {
+    if (result.summary) box.appendChild(el("div", { class: "tool-receipt" }, result.summary));
+    if (result.diff) {
+      box.appendChild(el("pre", { class: "turn-diff" }, result.diff));
+    } else if (result.content) {
+      box.appendChild(el("pre", { class: err ? "turn-error" : "" }, result.content));
+    }
+  } else {
+    // Not silently blank: a call whose result never arrived is a fact about the
+    // capture, and the reader should be told rather than left to assume the
+    // tool returned nothing.
+    box.appendChild(el("div", { class: "tool-missing" },
+      "No ToolResult was captured for this call id."));
+  }
+  return box;
+}
+
+function renderTurn(ev, results, consumed) {
   const m = ev.message || {};
   const head = el("div", { class: "turn-head" },
     el("span", { class: "turn-kind" }, ev.kind),
@@ -1364,8 +1479,9 @@ function renderTurn(ev) {
     }
     if (m.text) body.appendChild(renderMarkdown(m.text));
     for (const tc of (m.tool_calls || [])) {
-      body.appendChild(el("div", { class: "turn-tool" },
-        el("code", {}, `${tc.name}(${JSON.stringify(tc.args || {})})`)));
+      const res = results && tc.id ? results.get(tc.id) : null;
+      if (res && consumed) consumed.add(res);
+      body.appendChild(renderToolCall(tc, res ? (res.message || {}) : null));
     }
   } else if (ev.kind === "ToolResult") {
     if (m.diff) {
