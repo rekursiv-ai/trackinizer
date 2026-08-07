@@ -7,9 +7,22 @@ from unittest.mock import patch
 import pytest
 
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.userdirs import config_dir
 from trackinizer.trax import profile
 from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.profile import Profile
+
+
+def _redirect_config(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
+    """Point config_dir at ``root`` so profile writes stay in tmp.
+
+    The module builds every path inline from ``config_dir``, so redirecting
+    ``XDG_CONFIG_HOME`` isolates the test through the same resolution
+    production uses -- no module global to patch, and no way for the test to
+    pass while the real lookup is broken.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(root))
+    (root / "rekursiv-ai" / "trax" / "profiles").mkdir(parents=True, exist_ok=True)
 
 
 def test_profile_help_shows_local_forms(
@@ -69,9 +82,7 @@ def test_bare_profile_lists_all_with_active_marked(
     Consistent with bare ``trax issue`` listing all rows; there is no
     separate ``list`` action. Detail for one profile is ``trax profile NAME``.
     """
-    monkeypatch.setattr(profile, "_CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path / "profiles")
-    monkeypatch.setattr(profile, "_CURRENT_FILE", tmp_path / "current")
+    _redirect_config(monkeypatch, tmp_path)
     profile.save_profile(
         "default",
         Profile(url="http://trackinizer.local:8765", author="alice", api_key="secret"),
@@ -90,9 +101,7 @@ def test_profile_name_displays_named_connection_target(
     tmp_path: Any,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(profile, "_CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path / "profiles")
-    monkeypatch.setattr(profile, "_CURRENT_FILE", tmp_path / "current")
+    _redirect_config(monkeypatch, tmp_path)
     profile.save_profile("foo", Profile(url="http://foo:8765"))
     run(["profile", "foo"], FakeClient())
     out = capsys.readouterr().out
@@ -105,9 +114,7 @@ def test_profile_field_displays_active_profile_field(
     tmp_path: Any,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(profile, "_CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path / "profiles")
-    monkeypatch.setattr(profile, "_CURRENT_FILE", tmp_path / "current")
+    _redirect_config(monkeypatch, tmp_path)
     profile.save_profile("default", Profile(url="http://trackinizer.local:8765"))
     run(["profile", "url"], FakeClient())
     assert capsys.readouterr().out == "http://trackinizer.local:8765\n"
@@ -118,9 +125,7 @@ def test_profile_name_field_displays_named_profile_field(
     tmp_path: Any,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(profile, "_CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path / "profiles")
-    monkeypatch.setattr(profile, "_CURRENT_FILE", tmp_path / "current")
+    _redirect_config(monkeypatch, tmp_path)
     profile.save_profile("foo", Profile(url="http://foo:8765", api_key="secret"))
     run(["profile", "foo", "token"], FakeClient())
     assert capsys.readouterr().out == "set (prefix secret)\n"
@@ -131,9 +136,7 @@ def test_profile_token_sets_active_profile_token(
     tmp_path: Any,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(profile, "_CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path / "profiles")
-    monkeypatch.setattr(profile, "_CURRENT_FILE", tmp_path / "current")
+    _redirect_config(monkeypatch, tmp_path)
     profile.save_profile("default", Profile(url="http://trackinizer.local:8765"))
     run(["profile", "token", "to", "secret"], FakeClient())
     assert profile.read_profile("default").api_key == "secret"
@@ -144,9 +147,7 @@ def test_profile_name_token_sets_named_profile_token(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
 ) -> None:
-    monkeypatch.setattr(profile, "_CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path / "profiles")
-    monkeypatch.setattr(profile, "_CURRENT_FILE", tmp_path / "current")
+    _redirect_config(monkeypatch, tmp_path)
     profile.save_profile("foo", Profile(url="http://foo:8765"))
     run(["profile", "foo", "token", "to", "secret"], FakeClient())
     assert profile.read_profile("foo").api_key == "secret"
@@ -156,9 +157,7 @@ def test_profile_url_creates_default_profile(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
 ) -> None:
-    monkeypatch.setattr(profile, "_CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path / "profiles")
-    monkeypatch.setattr(profile, "_CURRENT_FILE", tmp_path / "current")
+    _redirect_config(monkeypatch, tmp_path)
     run(["profile", "url", "to", "http://trackinizer.local:8765"], FakeClient())
     assert profile.read_profile("default").url == "http://trackinizer.local:8765"
 
@@ -167,9 +166,7 @@ def test_profile_current_selects_existing_profile(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
 ) -> None:
-    monkeypatch.setattr(profile, "_CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path / "profiles")
-    monkeypatch.setattr(profile, "_CURRENT_FILE", tmp_path / "current")
+    _redirect_config(monkeypatch, tmp_path)
     profile.save_profile("foo", Profile(url="http://foo:8765"))
     run(["profile", "current", "foo"], FakeClient())
     assert profile.current_profile() == "foo"
@@ -180,12 +177,12 @@ def test_profile_token_bootstraps_missing_profile(
     tmp_path: Any,
 ) -> None:
     """A first-write on any missing profile bootstraps with the default URL."""
-    monkeypatch.setattr(profile, "_CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path / "profiles")
-    monkeypatch.setattr(profile, "_CURRENT_FILE", tmp_path / "current")
+    _redirect_config(monkeypatch, tmp_path)
     run(["profile", "token", "to", "secret"], FakeClient())
-    assert (tmp_path / "profiles" / "default").exists()
-    saved = (tmp_path / "profiles" / "default").read_text(encoding="utf-8")
+    assert (config_dir("rekursiv-ai") / "trax" / "profiles" / "default").exists()
+    saved = (config_dir("rekursiv-ai") / "trax" / "profiles" / "default").read_text(
+        encoding="utf-8"
+    )
     assert "api_key=secret" in saved
     assert "url=" in saved
 
@@ -194,9 +191,7 @@ def test_profile_rejects_old_subcommand_sugar(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
 ) -> None:
-    monkeypatch.setattr(profile, "_CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path / "profiles")
-    monkeypatch.setattr(profile, "_CURRENT_FILE", tmp_path / "current")
+    _redirect_config(monkeypatch, tmp_path)
     profile.save_profile("default", Profile(url="http://trackinizer.local:8765"))
     for argv in (
         ["profile", "show"],
@@ -210,55 +205,56 @@ def test_profile_rejects_old_subcommand_sugar(
 
 @pytest.fixture(autouse=True)
 def isolated_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(profile, "_CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path / "profiles")
-    monkeypatch.setattr(profile, "_CURRENT_FILE", tmp_path / "current")
+    _redirect_config(monkeypatch, tmp_path)
     monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
 
 
 def test_current_profile_resolution(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
     assert profile.current_profile() == "default"
-    (tmp_path / "current").write_text("from-file\n")
+    (config_dir("rekursiv-ai") / "trax" / "current").write_text("from-file\n")
     assert profile.current_profile() == "from-file"
     monkeypatch.setenv("TRACKINIZER_PROFILE", "from-env")
     assert profile.current_profile() == "from-env"
 
 
-def test_load_profile_reads_current(tmp_path: Path) -> None:
+def test_load_profile_reads_current() -> None:
     assert profile.load_profile() == Profile(url="http://127.0.0.1:8765")
     profile.save_profile("default", Profile(url="http://saved:9000/"))
     assert profile.load_profile() == Profile(url="http://saved:9000")
     profile.switch_profile("prod")
     profile.save_profile("prod", Profile(url="http://prod:7000", author="alice"))
     assert profile.load_profile() == Profile(url="http://prod:7000", author="alice")
-    assert (tmp_path / "current").read_text().strip() == "prod"
+    assert (
+        config_dir("rekursiv-ai") / "trax" / "current"
+    ).read_text().strip() == "prod"
 
 
-def test_profile_file_format_round_trip(tmp_path: Path) -> None:
+def test_profile_file_format_round_trip() -> None:
     profile.save_profile("prod", Profile(url="http://x:1", author="alice"))
-    text = (tmp_path / "profiles" / "prod").read_text()
+    text = (config_dir("rekursiv-ai") / "trax" / "profiles" / "prod").read_text()
     assert text == "url=http://x:1\nauthor=alice\n"
     profile.save_profile("dev", Profile(url="http://x:2"))
-    assert (tmp_path / "profiles" / "dev").read_text() == "url=http://x:2\n"
+    assert (
+        config_dir("rekursiv-ai") / "trax" / "profiles" / "dev"
+    ).read_text() == "url=http://x:2\n"
 
 
-def test_profile_rejects_url_without_scheme(tmp_path: Path) -> None:
-    path = tmp_path / "profiles" / "default"
-    path.parent.mkdir(parents=True)
+def test_profile_rejects_url_without_scheme() -> None:
+    path = config_dir("rekursiv-ai") / "trax" / "profiles" / "default"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("url=actor\n")
     with pytest.raises(ClientError, match="invalid URL"):
         profile.load_profile()
 
 
-def test_profile_api_key_round_trip(tmp_path: Path) -> None:
+def test_profile_api_key_round_trip() -> None:
     profile.save_profile(
         "prod",
         Profile(url="http://x:1", author="alice", api_key="trax_secret_xyz"),
     )
-    text = (tmp_path / "profiles" / "prod").read_text()
+    text = (config_dir("rekursiv-ai") / "trax" / "profiles" / "prod").read_text()
     assert text == "url=http://x:1\nauthor=alice\napi_key=trax_secret_xyz\n"
     loaded = profile.read_profile("prod")
     assert loaded == Profile(
@@ -266,9 +262,9 @@ def test_profile_api_key_round_trip(tmp_path: Path) -> None:
     )
 
 
-def test_profile_file_is_mode_0600(tmp_path: Path) -> None:
+def test_profile_file_is_mode_0600() -> None:
     profile.save_profile("prod", Profile(url="http://x:1"))
-    path = tmp_path / "profiles" / "prod"
+    path = config_dir("rekursiv-ai") / "trax" / "profiles" / "prod"
     assert path.stat().st_mode & 0o777 == 0o600
     path.chmod(0o644)
     profile.save_profile("prod", Profile(url="http://x:1", api_key="trax_topsecret"))
@@ -290,8 +286,8 @@ def test_list_and_del_profiles() -> None:
     assert profile.del_profile("dev") is False
 
 
-def test_load_profile_raises_when_current_points_to_missing(tmp_path: Path) -> None:
-    (tmp_path / "current").write_text("prod\n")
+def test_load_profile_raises_when_current_points_to_missing() -> None:
+    (config_dir("rekursiv-ai") / "trax" / "current").write_text("prod\n")
     with pytest.raises(ClientError, match="profile 'prod' not found"):
         profile.load_profile()
 
@@ -309,7 +305,7 @@ def test_del_active_profile_refused() -> None:
     profile.switch_profile("prod")
     with pytest.raises(ClientError, match="cannot delete active profile"):
         profile.del_profile("prod")
-    assert (profile._PROFILES_DIR / "prod").exists()
+    assert (config_dir("rekursiv-ai") / "trax" / "profiles" / "prod").exists()
 
 
 # Coverage for context-sensitive help, list/show branches, field reads, and
@@ -409,9 +405,8 @@ def test_profile_set_is_one_field_per_command(client: FakeClient) -> None:
 def test_read_profile_ignores_comments_and_blank_lines(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path / "profiles")
-    (tmp_path / "profiles").mkdir()
-    (tmp_path / "profiles" / "alpha").write_text(
+    _redirect_config(monkeypatch, tmp_path)
+    (config_dir("rekursiv-ai") / "trax" / "profiles" / "alpha").write_text(
         "# comment\n\nurl=http://x.example\n", encoding="utf-8"
     )
     p = profile.read_profile("alpha")
@@ -421,9 +416,10 @@ def test_read_profile_ignores_comments_and_blank_lines(
 def test_read_profile_missing_url_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path / "profiles")
-    (tmp_path / "profiles").mkdir()
-    (tmp_path / "profiles" / "alpha").write_text("author=bob\n", encoding="utf-8")
+    _redirect_config(monkeypatch, tmp_path)
+    (config_dir("rekursiv-ai") / "trax" / "profiles" / "alpha").write_text(
+        "author=bob\n", encoding="utf-8"
+    )
     with pytest.raises(ClientError, match="no url= line"):
         profile.read_profile("alpha")
 
@@ -431,9 +427,11 @@ def test_read_profile_missing_url_raises(
 def test_iter_profiles_skips_non_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path)
-    (tmp_path / "subdir").mkdir()
-    (tmp_path / "alpha").write_text("url=http://x.example\n")
+    _redirect_config(monkeypatch, tmp_path)
+    (config_dir("rekursiv-ai") / "trax" / "profiles" / "subdir").mkdir()
+    (config_dir("rekursiv-ai") / "trax" / "profiles" / "alpha").write_text(
+        "url=http://x.example\n"
+    )
     names = [n for n, _ in profile.list_profiles()]
     assert "subdir" not in names
     assert "alpha" in names
@@ -442,9 +440,13 @@ def test_iter_profiles_skips_non_files(
 def test_iter_profiles_silently_drops_unreadable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path)
-    (tmp_path / "alpha").write_text("url=http://x.example\n")
-    (tmp_path / "broken").write_text("not-a-profile\n")
+    _redirect_config(monkeypatch, tmp_path)
+    (config_dir("rekursiv-ai") / "trax" / "profiles" / "alpha").write_text(
+        "url=http://x.example\n"
+    )
+    (config_dir("rekursiv-ai") / "trax" / "profiles" / "broken").write_text(
+        "not-a-profile\n"
+    )
     names = [n for n, _ in profile.list_profiles()]
     assert "alpha" in names
     assert "broken" not in names
@@ -457,12 +459,11 @@ def test_profile_name_rejects_path_traversal(
     r"""A profile name with ``/``, ``\``, or ``..`` must be rejected.
 
     ``trax profile ../escape token to X`` would otherwise resolve through
-    ``_PROFILES_DIR / name`` and write outside the profiles directory
+    ``<profiles>/<name>`` and write outside the profiles directory
     (OWASP-class path traversal). Every store entry point that takes a name
     must reject it before any filesystem access.
     """
-    monkeypatch.setattr(profile, "_PROFILES_DIR", tmp_path)
-    monkeypatch.setattr(profile, "_CURRENT_FILE", tmp_path / "current")
+    _redirect_config(monkeypatch, tmp_path)
     with pytest.raises(ClientError, match="invalid profile name"):
         profile.save_profile(bad, Profile(url="http://x.example"))
     with pytest.raises(ClientError, match="invalid profile name"):
@@ -483,9 +484,9 @@ def test_write_atomic_cleans_tmp_on_failure(tmp_path: Path) -> None:
     ):
         profile._write_atomic(target, "x", mode=0o600)
     # No temp artifact survives the failure, whatever its (now unique) name.
-    # The autouse ``tmp_config_dir`` fixture seeds a sibling ``config/`` dir.
+    # The autouse config fixture seeds a sibling org namespace dir.
     leftovers = [
-        p.name for p in tmp_path.iterdir() if p.name not in ("target", "config")
+        p.name for p in tmp_path.iterdir() if p.name not in ("target", "rekursiv-ai")
     ]
     assert leftovers == [], f"temp file leaked on failure: {leftovers}"
 
@@ -515,8 +516,10 @@ def test_write_atomic_uses_unique_temp_per_write(
     assert target.read_text() == "second\n"
     # Each write used its own distinct temp name (not a shared fixed one).
     assert len(set(seen_temps)) == 2, f"temp names not unique: {seen_temps}"
-    # The autouse ``tmp_config_dir`` fixture seeds a sibling ``config/`` dir.
-    leftovers = [p.name for p in tmp_path.iterdir() if p.name not in ("p", "config")]
+    # The autouse ``tmp_config_dir`` fixture seeds a sibling org namespace dir.
+    leftovers = [
+        p.name for p in tmp_path.iterdir() if p.name not in ("p", "rekursiv-ai")
+    ]
     assert leftovers == [], f"temp file leaked: {leftovers}"
 
 

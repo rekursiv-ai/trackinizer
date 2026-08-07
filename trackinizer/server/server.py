@@ -22,12 +22,12 @@ import os
 
 import uvicorn
 
+from trackinizer.lib.userdirs import data_dir
 from trackinizer.server import web
 from trackinizer.server.api.app import app
 from trackinizer.server.config import (
     Config,
     ConfigError,
-    default_datadir,
 )
 
 
@@ -109,7 +109,10 @@ def _parse_args(
         "--datadir",
         type=Path,
         default=None,
-        help=f"PGlite working directory (default: {default_datadir()}).",
+        help=(
+            "PGlite working directory (default: "
+            f"{data_dir('rekursiv-ai') / 'trackinizer' / 'pgdata'})."
+        ),
     )
     parser.add_argument(
         "--ephemeral",

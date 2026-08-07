@@ -231,15 +231,10 @@ class Profile:
     """Sent as ``Authorization: Bearer <api_key>``."""
 
 
-_CONFIG_DIR = config_dir("trax")
-_PROFILES_DIR = _CONFIG_DIR / "profiles"
-_CURRENT_FILE = _CONFIG_DIR / "current"
-
-
 def load_profile() -> Profile:
     """The profile for the active name, or the localhost fallback if none is pinned."""
     name = current_profile()
-    if (_PROFILES_DIR / name).exists():
+    if (config_dir("rekursiv-ai") / "trax" / "profiles" / name).exists():
         return read_profile(name)
     if _explicit_profile() is not None:
         raise ClientError(f"profile {name!r} not found")
@@ -265,18 +260,24 @@ def save_profile(name: str, profile: Profile) -> None:
         lines.append(f"author={profile.author}")
     if profile.api_key:
         lines.append(f"api_key={profile.api_key}")
-    _write_atomic(_PROFILES_DIR / name, "\n".join(lines) + "\n", mode=0o600)
+    _write_atomic(
+        config_dir("rekursiv-ai") / "trax" / "profiles" / name,
+        "\n".join(lines) + "\n",
+        mode=0o600,
+    )
 
 
 def switch_profile(name: str) -> None:
     """Pin ``name`` as the active profile for future invocations."""
     _validate_profile_name(name)
-    _write_atomic(_CURRENT_FILE, name + "\n", mode=0o600)
+    _write_atomic(
+        config_dir("rekursiv-ai") / "trax" / "current", name + "\n", mode=0o600
+    )
 
 
 def list_profiles() -> list[tuple[str, Profile]]:
     """Every saved ``(name, profile)`` pair, sorted by name."""
-    if not _PROFILES_DIR.exists():
+    if not (config_dir("rekursiv-ai") / "trax" / "profiles").exists():
         return []
     return sorted(_iter_profiles())
 
@@ -286,7 +287,7 @@ def del_profile(name: str) -> bool:
     _validate_profile_name(name)
     if name == _explicit_profile():
         raise ClientError(f"cannot delete active profile {name!r}; switch first")
-    path = _PROFILES_DIR / name
+    path = config_dir("rekursiv-ai") / "trax" / "profiles" / name
     try:
         path.unlink()
     except FileNotFoundError:
@@ -305,7 +306,7 @@ def read_profile(name: str) -> Profile:
 
     """
     _validate_profile_name(name)
-    path = _PROFILES_DIR / name
+    path = config_dir("rekursiv-ai") / "trax" / "profiles" / name
     try:
         text = path.read_text()
     except FileNotFoundError as err:
@@ -334,7 +335,7 @@ def _iter_profiles() -> Iterator[tuple[str, Profile]]:
     listing), so callers see the survivors and find out about the bad one on
     its next read.
     """
-    for path in _PROFILES_DIR.iterdir():
+    for path in (config_dir("rekursiv-ai") / "trax" / "profiles").iterdir():
         if not path.is_file():
             continue
         try:
@@ -390,7 +391,7 @@ def _validate_profile_name(name: str) -> None:
 
     A name is a single path segment, so anything outside ``[A-Za-z0-9._-]``
     (path separators, ``..`` traversal) is refused before it reaches
-    ``_PROFILES_DIR / name``. ``.`` and ``..`` match the character class but
+    ``config_dir("rekursiv-ai") / "trax" / "profiles" / name``. ``.`` and ``..`` match the character class but
     are still directory references, so they are rejected explicitly.
     """
     if name in {".", ".."} or not _PROFILE_NAME_RE.match(name):
@@ -402,7 +403,7 @@ def _explicit_profile() -> str | None:
     if env := os.environ.get("TRACKINIZER_PROFILE"):
         return env
     try:
-        text = _CURRENT_FILE.read_text().strip()
+        text = (config_dir("rekursiv-ai") / "trax" / "current").read_text().strip()
     except FileNotFoundError:
         return None
     return text or None

@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal, Self
+from typing import Literal, Self
 
 import argparse
 import os
@@ -25,7 +25,6 @@ __all__ = [
     "ConfigError",
     "build_embedder",
     "build_engine",
-    "default_datadir",
     "parse_engine",
 ]
 
@@ -53,7 +52,7 @@ class Config:
     Attributes:
       engine: ``pglite`` for local dev, ``pg`` against a real cluster.
       datadir: pglite data directory; ignored under ``pg``. ``None``
-        resolves to :func:`default_datadir`.
+        resolves to ``data_dir("rekursiv-ai") / "trackinizer" / "pgdata"``.
       ephemeral: When true, pglite discards on shutdown.
       dsn: Postgres DSN when ``engine == 'pg'``.
       embedder: Embedder backend name.
@@ -170,19 +169,6 @@ def parse_engine(value: str) -> Literal["pglite", "pg"]:
     raise ConfigError(f"unknown engine {value!r}")
 
 
-def default_datadir() -> Path:
-    return data_dir("trackinizer") / "pgdata"
-
-
-_EPHEMERAL_DIRNAME: Final = "pgdata-ephemeral"
-"""Parent dir for per-process ephemeral PGlite workdirs (see :func:`_ephemeral_workdir`)."""
-
-
-def _ephemeral_root() -> Path:
-    """Parent directory holding every server's per-process ephemeral workdir."""
-    return data_dir("trackinizer") / _EPHEMERAL_DIRNAME
-
-
 def _prune_stale_ephemeral_dirs(root: Path, *, stale_seconds: int = 60 * 60) -> None:
     """Remove ephemeral workdirs left behind by hard-killed servers.
 
@@ -250,7 +236,7 @@ def _ephemeral_workdir() -> Path:
     coordination. The engine removes it on graceful shutdown (``own_workdir=True``
     in :func:`build_engine`); this prunes any sibling a hard ``kill -9`` leaked.
     """
-    root = _ephemeral_root()
+    root = data_dir("rekursiv-ai") / "trackinizer" / "pgdata-ephemeral"
     root.mkdir(parents=True, exist_ok=True)
     _prune_stale_ephemeral_dirs(root)
     return root / f"{os.getpid()}-{uuid.uuid4().hex}"
@@ -264,14 +250,14 @@ def build_engine(config: Config | None = None) -> DatabaseEngine:
         # an ephemeral server gets a unique, engine-owned scratch workdir so
         # concurrent ``--ephemeral`` boots never share one (which corrupts
         # startup); only a persistent server falls back to the single shared
-        # ``default_datadir``.
+        # the shared persistent datadir.
         ephemeral_workdir = config.ephemeral and config.datadir is None
         if config.datadir is not None:
             workdir = config.datadir
         elif config.ephemeral:
             workdir = _ephemeral_workdir()
         else:
-            workdir = default_datadir()
+            workdir = data_dir("rekursiv-ai") / "trackinizer" / "pgdata"
         return PGliteEngine(
             workdir=workdir,
             persist=not config.ephemeral,
