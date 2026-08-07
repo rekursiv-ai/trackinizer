@@ -1565,6 +1565,12 @@ function renderToolCall(tc, result) {
   return box;
 }
 
+// Lines in a result body, for the fold's summary line.
+function bodyLineCount(m) {
+  const t = m.diff || m.content || "";
+  return t ? t.split("\n").length : 0;
+}
+
 function renderTurn(ev, results, consumed) {
   const m = ev.message || {};
   const head = el("div", { class: "turn-head" },
@@ -1593,15 +1599,27 @@ function renderTurn(ev, results, consumed) {
       body.appendChild(renderToolCall(tc, res ? (res.message || {}) : null));
     }
   } else if (ev.kind === "ToolResult") {
+    // Reached only when the result could not be nested. It is folded like a
+    // nested one: the FACT that it is orphaned is the signal, and 574 lines of
+    // output are not -- an orphan that owns the viewport buries the very banner
+    // announcing it.
+    const d = el("details", { class: "tool-call" },
+      el("summary", { class: "tool-summary" },
+        el("span", { class: "tool-name" }, "result"),
+        el("span", { class: "tool-args mono" }, m.diff_file_path || `${bodyLineCount(m)} lines`),
+        el("span", { class: "tool-status " + (m.is_error ? "bad" : "ok") },
+           m.is_error ? "error" : "ok")));
+    if (m.is_error) d.open = true;
     if (m.diff) {
       // A diff with no path is a diff you cannot act on.
       if (m.diff_file_path) {
-        body.appendChild(el("div", { class: "turn-difffile mono" }, m.diff_file_path));
+        d.appendChild(el("div", { class: "turn-difffile mono" }, m.diff_file_path));
       }
-      body.appendChild(el("pre", { class: "turn-diff" }, m.diff));
+      d.appendChild(el("pre", { class: "turn-diff" }, m.diff));
     } else {
-      body.appendChild(el("pre", { class: m.is_error ? "turn-error" : "" }, m.content || ""));
+      d.appendChild(el("pre", { class: m.is_error ? "turn-error" : "" }, m.content || ""));
     }
+    body.appendChild(d);
     const att = renderAttachments(m.attachments);
     if (att) body.appendChild(att);
   } else if (ev.kind === "Compaction") {
@@ -1614,7 +1632,17 @@ function renderTurn(ev, results, consumed) {
     body.appendChild(el("div", { class: "turn-tool" },
       el("code", {}, `/${m.command || ""}${m.args ? " " + m.args : ""}`)));
   } else {
-    body.appendChild(el("pre", {}, JSON.stringify(m, null, 2)));
+    // A kind this view does not know is folded rather than dumped: the raw CLI
+    // record is arbitrary in size, and pasting it inline puts an unbounded blob
+    // in the scan path for an event nobody has taught the view to summarise.
+    // Still one click away -- unknown must not become unreachable, or the
+    // escape hatch that keeps unrecognised records stops being one.
+    const raw = JSON.stringify(m, null, 2);
+    body.appendChild(el("details", { class: "tool-call" },
+      el("summary", { class: "tool-summary" },
+        el("span", { class: "tool-name" }, "raw record"),
+        el("span", { class: "tool-args mono" }, `${raw.length.toLocaleString()} chars`)),
+      el("pre", {}, raw)));
   }
   return el("div", { class: "turn" }, head, body);
 }

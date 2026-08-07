@@ -91,6 +91,31 @@ def test_the_heading_explains_where_the_missing_turns_went(source: str) -> None:
     assert "shown inside their calls" in source
 
 
+def test_an_orphaned_result_is_folded_like_a_nested_one(source: str) -> None:
+    """Loud is not the same as unbounded.
+
+    An orphan is announced by its banner and its border. Its body is folded like
+    any other result, because a 574-line orphan owns the viewport and buries the
+    very banner announcing it -- the fact is the signal, the payload is not.
+    """
+    assert "function bodyLineCount" in source
+    assert "${bodyLineCount(m)} lines" in source
+
+
+def test_an_unknown_kind_is_folded_not_dumped(source: str) -> None:
+    """The escape hatch must not cost the whole screen.
+
+    UnknownMessage exists so an unrecognised CLI record is kept rather than
+    dropped, and its raw payload is arbitrary in size. Pasting it inline puts an
+    unbounded blob in the scan path for the one event kind nobody has taught the
+    view to summarise. Folded, with its size on the summary line -- reachable,
+    not resident.
+    """
+    assert '"raw record"' in source
+    assert "${raw.length.toLocaleString()} chars" in source
+    assert 'el("pre", {}, JSON.stringify(m, null, 2))' not in source
+
+
 def test_the_flat_rendering_is_gone(source: str) -> None:
     """Guards against a revert that leaves the new code in place beside the old.
 
