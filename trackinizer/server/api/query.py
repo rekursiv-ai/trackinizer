@@ -225,7 +225,8 @@ async def delete_inquiry_route(
     """Purge an inquiry row and its edges.
 
     Writer-gated like every other mutation; inquiries (including AgentSessions)
-    are a shared workspace, so any writer may purge any row.
+    are a shared workspace, so any writer may purge an unowned row. A claimed
+    row must first release its owner through the compare-and-set owner route.
     """
     store = get_store(request)
     change_id = await store.purge(

@@ -297,6 +297,22 @@ class FakeClient:
         self.calls.append(("resolve_ids", (tuple(refs),), {}))
         return [self.resolve_id(ref) for ref in refs]
 
+    def transition_owner(
+        self,
+        target_id: uuid.UUID,
+        *,
+        expected_from: Inquiry.Actor | None,
+        to: Inquiry.Actor | None,
+        actor: Inquiry.Actor,
+    ) -> None:
+        self.calls.append(
+            (
+                "transition_owner",
+                (target_id,),
+                {"expected_from": expected_from, "to": to, "actor": actor},
+            )
+        )
+
     def transition_status(
         self,
         target_id: uuid.UUID,

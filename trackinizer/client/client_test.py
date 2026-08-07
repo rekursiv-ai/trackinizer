@@ -957,6 +957,31 @@ class TestClientMethods:
             "reason": "ship",
         }
 
+    def test_transition_owner_dispatches_nullable_compare_and_set(self) -> None:
+        """Owner acquisition sends an explicit NULL expectation."""
+        target_id = uuid.uuid4()
+        client = _ClientSpy(post_result={"ok": True})
+
+        client.transition_owner(
+            target_id,
+            expected_from=None,
+            to="worker-1",
+            actor="worker-1",
+        )
+
+        assert client.request_calls == [
+            (
+                "PUT",
+                f"/api/inquiries/{target_id}/owner",
+                {
+                    "actor": "worker-1",
+                    "value": "worker-1",
+                    "mode": "cas",
+                    "expected": None,
+                },
+            )
+        ]
+
     def test_annotate_edge_is_best_effort_in_fixed_field_order(self) -> None:
         """``annotate_edge`` is documented best-effort: deterministic order, partial on failure.
 

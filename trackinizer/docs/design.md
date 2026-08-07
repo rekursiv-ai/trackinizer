@@ -369,7 +369,8 @@ PATCH      .../<list-or-cost field>         # add/sub
 Kind-specific field routes are scoped under their owning kind
 (`PUT /api/paper/<id>/source`), mirroring the Python `paper.source` and CLI
 `trax paper`. Base fields and cost axes stay under `/api/inquiries`. `status`
-and `judgement` accept an `expected` compare-and-set guard. Field edits are
+`owner`, `status`, and `judgement` accept an `expected` compare-and-set guard.
+Field edits are
 author-owned; the system never auto-mutates them.
 
 ### Edges, purge, reads

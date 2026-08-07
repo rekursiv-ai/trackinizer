@@ -248,7 +248,7 @@ class Inquiry:
 
     owner: Actor | None = field(
         default=None,
-        metadata=ColumnSpec(sql_type="TEXT"),
+        metadata=ColumnSpec(sql_type="TEXT", compare_and_set=True),
     )
     """The actor responsible for this row.
 

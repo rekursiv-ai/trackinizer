@@ -657,7 +657,7 @@ class FieldSet[T](FieldMutation):
 
     * ``"set"`` (default) -- blind overwrite; ``expected`` must be absent.
     * ``"cas"`` -- compare-and-set; ``expected`` is required and the route
-      409s if the live value differs. Valid only on ``status`` and
+      409s if the live value differs. Valid only on ``owner``, ``status``, and
       ``judgement`` (the route 400s elsewhere).
 
     The discriminator is what makes a typo'd guard a hard error instead of

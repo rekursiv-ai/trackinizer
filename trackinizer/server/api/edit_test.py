@@ -290,6 +290,45 @@ class TestRoutes:
         assert r.status_code == 409
         assert "expected 'active'" in r.json()["detail"]
 
+    def test_transition_owner_route_accepts_null_expectation(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        set_field_row(engine.conn, {"owner": None, "kind": "Issue"})
+
+        response = client.put(
+            f"/api/inquiries/{new_uuid()}/owner",
+            json={
+                "value": "worker-1",
+                "mode": "cas",
+                "expected": None,
+                "actor": "worker-1",
+            },
+        )
+
+        assert response.status_code == 200
+
+    def test_transition_owner_rejects_stale_expectation(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        set_field_row(engine.conn, {"owner": "worker-1", "kind": "Issue"})
+
+        response = client.put(
+            f"/api/inquiries/{new_uuid()}/owner",
+            json={
+                "value": "worker-2",
+                "mode": "cas",
+                "expected": None,
+                "actor": "worker-2",
+            },
+        )
+
+        assert response.status_code == 409
+        assert "expected None" in response.json()["detail"]
+
     def test_misspelled_guard_field_is_422_not_blind_write(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],

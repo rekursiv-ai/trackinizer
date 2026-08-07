@@ -425,6 +425,73 @@ class _EditMixin(_CascadeAuditMixin):
             actor=actor,
         )
 
+    async def transition_owner(
+        self,
+        target_id: UUID,
+        *,
+        expected_from: Inquiry.Actor | None,
+        to: Inquiry.Actor | None,
+        api_key_id: UUID | None = None,
+        actor: Inquiry.Actor,
+    ) -> UUID | None:
+        """Compare-and-set owner while holding the inquiry row lock.
+
+        Args:
+          target_id: Inquiry whose owner should transition.
+          expected_from: Owner required before the transition; ``None`` claims
+            an unowned inquiry.
+          to: New owner; ``None`` releases ownership.
+          api_key_id: Authenticated credential recorded in the audit entry.
+          actor: Identity recorded in the audit entry.
+
+        Returns:
+          change_id: Audit change identifier, or ``None`` for a no-op.
+
+        Raises:
+          ConflictError: The current owner differs from ``expected_from``.
+
+        """
+        expected_owner = cast(
+            "Inquiry.Actor | None", empty_optional_to_none(expected_from)
+        )
+        new_owner = cast("Inquiry.Actor | None", empty_optional_to_none(to))
+        async with (
+            notify_after_commit(),
+            self.engine.acquire() as conn,
+            tx(conn),
+        ):
+            replay = await self._replay_field_change(
+                conn, target_id, "owner", actor=actor
+            )
+            if replay is not None:
+                return replay
+            row = await self._read_field(conn, target_id, "owner")
+            replay = await self._replay_field_change(
+                conn, target_id, "owner", actor=actor
+            )
+            if replay is not None:
+                return replay
+            current = cast("Inquiry.Actor | None", row["owner"])
+            if current != expected_owner:
+                raise ConflictError(
+                    f"owner transition rejected: expected {expected_owner!r}, "
+                    f"found {current!r}"
+                )
+            if current == new_owner:
+                return None
+            await self._update_field(conn, target_id, "owner", new_owner)
+            change_id, _ = await self._emit_field_change(
+                conn,
+                target_id,
+                row["kind"],
+                "owner",
+                Snapshot(owner=current),
+                new=Snapshot(owner=new_owner),
+                api_key_id=api_key_id,
+                actor=actor,
+            )
+            return change_id
+
     async def set_account(
         self,
         target_id: UUID,

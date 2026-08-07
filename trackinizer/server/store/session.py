@@ -9,14 +9,14 @@ edit machinery is reused through the composed :class:`Store`.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import cast
 from uuid import UUID
 
 import asyncpg
 
-from trackinizer.lib.custom_json import JSON, json_unfreeze
+from trackinizer.lib.custom_json import JSON, JSONValue, json_unfreeze
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import (
@@ -39,6 +39,22 @@ from trackinizer.wire.wire_sessions import EventBody, FeedEvent
 __all__ = [
     "_SessionMixin",
 ]
+
+
+def _strip_postgres_nuls(value: JSONValue) -> JSONValue:
+    """Drop non-displayable NUL artifacts that PostgreSQL JSONB cannot store."""
+    if isinstance(value, str):
+        return value.replace("\0", "")
+    if isinstance(value, Mapping):
+        mapping = cast(Mapping[str, JSONValue], value)
+        return {
+            key.replace("\0", ""): _strip_postgres_nuls(item)
+            for key, item in mapping.items()
+        }
+    if isinstance(value, Sequence):
+        sequence = cast(Sequence[JSONValue], value)
+        return [_strip_postgres_nuls(item) for item in sequence]
+    return value
 
 
 class _SessionMixin(_SubmitMixin, _EditMixin):
@@ -394,7 +410,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 e.model,
                 e.kind,
                 e.timestamp,
-                json_unfreeze(e.message.to_json()),
+                json_unfreeze(_strip_postgres_nuls(e.message.to_json())),
             )
             for e in typed
         ]

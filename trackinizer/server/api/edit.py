@@ -206,13 +206,21 @@ async def _run_compare_and_set(
     store: Store,
     identity: AuthIdentity,
 ) -> uuid.UUID | None:
-    """Execute a compare-and-set ``PUT`` on ``status`` or ``judgement``."""
+    """Execute a compare-and-set ``PUT`` on its named Store transition."""
     if not route.compare_and_set:
         raise HTTPException(
             status_code=400,
             detail=f"expected is not valid for field {route.column!r}",
         )
     actor = _actor_of(body, identity)
+    if route.column == "owner":
+        return await store.transition_owner(
+            target_id,
+            expected_from=cast("Inquiry.Actor | None", body.expected),
+            to=cast("Inquiry.Actor | None", body.value),
+            api_key_id=identity.api_key_id,
+            actor=actor,
+        )
     if route.column == "status":
         return await store.transition_status(
             target_id,
