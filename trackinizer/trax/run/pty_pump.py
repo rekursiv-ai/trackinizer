@@ -64,6 +64,8 @@ _DEFAULT_WINSIZE: Final = (
     80,
 )
 
+_TERMINATE_GRACE_SEC: Final = 1.0
+
 
 def encode_injection(text: str) -> bytes:
     r"""Encode ``text`` as a bracketed-paste block (no trailing Enter).
@@ -123,6 +125,7 @@ class PtyPump:
         # blocking ``waitpid`` with no child and it would report 0, losing the
         # real exit code when stdin closes before the child (K1).
         self._exit_status: int | None = None
+        self._terminate_signal: int | None = None
         self._injected = 0
         # Serializes whole injections (paste + delay + Enter). Without it,
         # back-to-back injects from the poll loop would write paste1 paste2
@@ -183,10 +186,48 @@ class PtyPump:
             return self._injected
 
     def terminate(self) -> None:
-        """Signal the child to exit (SIGTERM); safe to call repeatedly."""
-        if self._pid > 0:
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(self._pid, signal.SIGTERM)
+        """Signal the child PTY process group to exit; safe to call repeatedly."""
+        pid = self._pid
+        if pid > 0:
+            # The group is created by our ``pty.fork`` child and cannot contain
+            # foreign-user processes. Darwin may report EPERM when ``bin/trax``
+            # and its Python runner receive TERM together while this owned
+            # group disappears; at that point there is nothing else to signal.
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(pid, signal.SIGTERM)
+
+    def _terminate_process_group(self) -> None:
+        """Bound teardown of the PTY group after the wrapper receives TERM."""
+        pgid = self._pid
+        if pgid <= 0:
+            return
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGTERM)
+        deadline = time.monotonic() + _TERMINATE_GRACE_SEC
+        while time.monotonic() < deadline:
+            try:
+                exited = os.waitid(
+                    os.P_PID,
+                    pgid,
+                    os.WEXITED | os.WNOHANG | os.WNOWAIT,
+                )
+            except ChildProcessError:
+                break
+            if exited is not None:
+                break
+            time.sleep(0.01)
+        # The whole group received TERM. Once its leader exits, any remaining
+        # members are stragglers. ``WNOWAIT`` keeps the exited leader as the
+        # group's PID anchor until this final signal, avoiding stale-PGID reuse
+        # without consulting a process table or extending the grace period.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, signal.SIGKILL)
+
+    def _handle_terminate(self, signum: int, frame: FrameType | None) -> None:
+        """Turn wrapper SIGTERM into bounded cleanup of the PTY it owns."""
+        del frame
+        self._terminate_signal = signum
+        self._terminate_process_group()
 
     def run(self) -> int:
         """Spawn the child and pump until it exits; return its exit status.
@@ -211,6 +252,7 @@ class PtyPump:
         # in terminal setup (winsize, raw mode, SIGWINCH) before or during the
         # pump must still reap it, or it leaks as a zombie (R-24). The outer
         # ``finally`` terminates and reaps the child on every exit path.
+        had_term, old_term = _install_term(self._handle_terminate)
         try:
             self._sync_winsize()
             stdin_fd = _real_fd(sys.stdin)
@@ -218,21 +260,28 @@ class PtyPump:
             old_attr = _enter_raw(stdin_fd)
             had_winch, old_winch = _install_winch(self._sync_winsize)
             try:
-                return self._pump(stdin_fd, out_fd)
+                returncode = self._pump(stdin_fd, out_fd)
             finally:
                 if had_winch:
                     signal.signal(signal.SIGWINCH, old_winch)
                 _restore(stdin_fd, old_attr)
         finally:
-            if self._master_fd >= 0:
-                os.close(self._master_fd)
-                self._master_fd = -1
-            if self._pid > 0:
-                # Setup failed before ``_pump`` reaped the child (the normal
-                # path reaps via ``_reap`` and clears ``_pid``); terminate and
-                # reap it now so the child is never leaked.
-                self.terminate()
-                self._reap()
+            try:
+                if self._master_fd >= 0:
+                    os.close(self._master_fd)
+                    self._master_fd = -1
+                if self._pid > 0:
+                    # Setup failed before ``_pump`` reaped the child (the normal
+                    # path reaps via ``_reap`` and clears ``_pid``); terminate and
+                    # reap it now so the child is never leaked.
+                    self._terminate_process_group()
+                    self._reap()
+            finally:
+                if had_term:
+                    signal.signal(signal.SIGTERM, old_term)
+        if self._terminate_signal is not None:
+            return 128 + self._terminate_signal
+        return returncode
 
     def _pump(self, stdin_fd: int, out_fd: int, *, poll_sec: float = 0.05) -> int:
         """Copy stdin<->master until the child exits.
@@ -442,3 +491,12 @@ def _install_winch(
     if threading.current_thread() is not threading.main_thread():
         return (False, None)
     return (True, signal.signal(signal.SIGWINCH, handler))
+
+
+def _install_term(
+    handler: Callable[[int, FrameType | None], object],
+) -> tuple[bool, _SignalHandler]:
+    """Install wrapper TERM forwarding when the pump runs on the main thread."""
+    if threading.current_thread() is not threading.main_thread():
+        return (False, None)
+    return (True, signal.signal(signal.SIGTERM, handler))

@@ -64,6 +64,26 @@ class TestRoutes:
         )
         assert r.status_code == 200
 
+    def test_purge_rejects_an_owned_inquiry(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        set_field_row(engine.conn, {"kind": "Issue", "owner": "worker-1"})
+
+        response = client.request(
+            "DELETE",
+            f"/api/inquiries/{new_uuid()}",
+            json={"actor": "other-worker", "reason": ""},
+        )
+
+        assert response.status_code == 409
+        assert "release its owner" in response.json()["detail"]
+        assert not any(
+            "DELETE FROM inquiries" in call.args[0]
+            for call in engine.conn.execute.call_args_list
+        )
+
     def test_purge_unknown_id_is_404(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],

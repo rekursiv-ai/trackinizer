@@ -551,11 +551,16 @@ class _CascadeAuditMixin(_StoreShared):
             tx(conn),
         ):
             row = await conn.fetchrow(
-                "SELECT kind FROM inquiries WHERE id = $1 FOR UPDATE",
+                "SELECT kind, owner FROM inquiries WHERE id = $1 FOR UPDATE",
                 target_id,
             )
             if row is None:
                 raise NotFoundError("inquiry not found")
+            owner = row.get("owner")
+            if owner is not None:
+                raise ConflictError(
+                    f"inquiry is owned by {owner!r}; release its owner before purge"
+                )
             kind = cast(Inquiry.InquiryKind, row["kind"])
             parent_edges = await conn.fetch(
                 "SELECT from_id, from_kind, to_id, to_kind, edge_kind, "

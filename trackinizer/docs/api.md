@@ -447,8 +447,7 @@ reason  optional; default is empty string
 ```
 
 ```
-expected only valid for PUT status.
-expected only valid for PUT judgement.
+expected only valid for PUT owner, status, and judgement.
 expected omitted means blind overwrite.
 expected mismatch returns 409.
 expected on any other field returns 400.

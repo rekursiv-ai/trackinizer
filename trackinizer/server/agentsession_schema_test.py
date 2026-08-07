@@ -26,7 +26,7 @@ import pytest_asyncio
 
 from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.server.store.core import Store, StubEmbedder
-from trackinizer.types.agent_session_events import UserMessage
+from trackinizer.types.agent_session_events import ToolResult, UserMessage
 from trackinizer.types.errors import NotFoundError
 from trackinizer.wire.bodies import SubmitAgentSession, SubmitIssue
 from trackinizer.wire.wire_sessions import EventBody
@@ -106,6 +106,38 @@ async def test_agentsession_lifecycle_writes_succeed(store: Store) -> None:
         actor="ci",
     )
     assert await store.get_inquiry(issue_id) is not None
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_session_events_strip_postgres_incompatible_nuls(store: Store) -> None:
+    """A NUL artifact cannot make an otherwise valid transcript batch fail."""
+    session_id = await store.submit_agentsession(
+        SubmitAgentSession(
+            title="codex session",
+            cli="codex",
+            account="tester@example.com",
+        ),
+        api_key_id=None,
+        actor="ci",
+    )
+    event = EventBody(
+        seq=0,
+        kind="ToolResult",
+        message=ToolResult(
+            call_id="call-1",
+            content="before\0after; literal \\u0000 remains",
+        ).to_json(),
+    )
+
+    appended, skipped = await store.append_events(session_id, [event])
+
+    assert (appended, skipped) == (1, 0)
+    stored = (await store.read_session_events(session_id))[0]
+    assert stored.to_event(session_id).message == ToolResult(
+        call_id="call-1",
+        content=r"beforeafter; literal \u0000 remains",
+    )
 
 
 @pytest.mark.integration

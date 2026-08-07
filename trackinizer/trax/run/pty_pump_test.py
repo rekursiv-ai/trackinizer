@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
+from types import FrameType
 from typing import TYPE_CHECKING
 
 import contextlib
 import fcntl
 import os
 import pty
+import signal
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -412,6 +416,159 @@ class TestCurrentWinsize:
 class TestPtyPumpLifecycle:
     """Child reaping and post-exit safety."""
 
+    def test_run_preserves_wrapper_sigterm_status(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A wrapper SIGTERM remains exit 143 when the child exits cleanly."""
+        ready = tmp_path / "ready"
+        child = (
+            "from pathlib import Path\n"
+            "import signal,time\n"
+            "signal.signal(signal.SIGTERM, lambda *_: raise_system_exit())\n"
+            "def raise_system_exit(): raise SystemExit(0)\n"
+            f"Path({str(ready)!r}).write_text('ready')\n"
+            "time.sleep(30)\n"
+        )
+        handler_installed = threading.Event()
+        real_install_term = pty_pump._install_term
+
+        def install_term(
+            handler: Callable[[int, FrameType | None], object],
+        ) -> tuple[bool, pty_pump._SignalHandler]:
+            installed, previous = real_install_term(handler)
+            handler_installed.set()
+            return installed, previous
+
+        def terminate_wrapper() -> None:
+            assert handler_installed.wait(2.0)
+            deadline = time.monotonic() + 2.0
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert ready.exists()
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        monkeypatch.setattr(pty_pump, "_install_term", install_term)
+        terminator = threading.Thread(target=terminate_wrapper)
+        terminator.start()
+        try:
+            assert PtyPump([sys.executable, "-c", child]).run() == 128 + signal.SIGTERM
+        finally:
+            terminator.join(timeout=2.0)
+
+    def test_trax_sigterm_closes_group_without_traceback(self, tmp_path: Path) -> None:
+        """The full runner kills a detached helper when its leader exits on TERM."""
+        ready = tmp_path / "ready"
+        helper = (
+            "import os\n"
+            "from pathlib import Path\n"
+            "import signal,time\n"
+            "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+            "time.sleep(30)\n"
+        )
+        fake_codex = tmp_path / "codex"
+        fake_codex.write_text(
+            f"#!{sys.executable}\n"
+            "import subprocess,sys,time\n"
+            "subprocess.Popen(\n"
+            f"    [sys.executable, '-c', {helper!r}],\n"
+            "    stdin=subprocess.DEVNULL,\n"
+            "    stdout=subprocess.DEVNULL,\n"
+            "    stderr=subprocess.DEVNULL,\n"
+            ")\n"
+            "time.sleep(30)\n"
+        )
+        fake_codex.chmod(0o755)
+        environment = os.environ.copy()
+        environment["PATH"] = f"{tmp_path}:{environment['PATH']}"
+        helper_pid: int | None = None
+        # Relative to this file, not to a tree root: `trax/__main__.py` is one
+        # directory up in every tree that ships this test, whereas the distance
+        # to the repo root differs between here and a published package.
+        trax_entrypoint = Path(__file__).resolve().parents[1] / "__main__.py"
+        process = subprocess.Popen(  # noqa: S603 -- fixed repo-local entrypoint.
+            [
+                sys.executable,
+                str(trax_entrypoint),
+                "run",
+                "--no-sync",
+                "--out",
+                str(tmp_path / "events.jsonl"),
+                "codex",
+            ],
+            env=environment,
+            start_new_session=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            deadline = time.monotonic() + 5.0
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert ready.exists(), "full trax runner did not start its PTY helper"
+            helper_pid = int(ready.read_text())
+
+            os.killpg(process.pid, signal.SIGTERM)
+            _, stderr = process.communicate(timeout=5.0)
+            assert process.returncode == 128 + signal.SIGTERM
+            assert "Traceback" not in stderr
+
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(helper_pid, 0)
+                except ProcessLookupError:
+                    helper_pid = None
+                    break
+                time.sleep(0.01)
+            else:
+                raise AssertionError("PTY helper survived full trax teardown")
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=1.0)
+            if helper_pid is not None:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(helper_pid, signal.SIGKILL)
+
+    def test_terminate_process_group_escalates_for_resistant_leader(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A PTY leader that ignores TERM is killed after the bounded grace."""
+        ready = tmp_path / "ready"
+        pump = PtyPump(["unused"])
+        monkeypatch.setattr(pty_pump, "_TERMINATE_GRACE_SEC", 0.05)
+        pump._pid, pump._master_fd = pty.fork()
+        if pump._pid == 0:  # pragma: no cover -- the spawned child.
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            ready.write_text("ready")
+            time.sleep(5)
+            os._exit(0)
+        try:
+            deadline = time.monotonic() + 2.0
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.005)
+            assert ready.exists(), "resistant PTY leader did not start"
+
+            started = time.monotonic()
+            pump._terminate_process_group()
+            elapsed = time.monotonic() - started
+
+            assert elapsed >= pty_pump._TERMINATE_GRACE_SEC
+            assert elapsed < 1.0
+            assert pump._reap() == 128 + signal.SIGKILL
+        finally:
+            if pump._pid > 0:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(pump._pid, signal.SIGKILL)
+                pump._reap()
+            if pump._master_fd >= 0:
+                os.close(pump._master_fd)
+                pump._master_fd = -1
+
     def test_run_returns_child_exit_code(self) -> None:
         assert PtyPump(["true"]).run() == 0
         assert PtyPump(["false"]).run() == 1
@@ -453,6 +610,28 @@ class TestPtyPumpLifecycle:
         # No ProcessLookupError, no signal to a stale/recycled PID.
         pump.terminate()
 
+    def test_terminate_uses_one_pid_snapshot(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A concurrent reap cannot change the group ID between check and signal."""
+        pump = PtyPump(["unused"])
+        pid_reads = iter((123, -1))
+        signaled: list[tuple[int, int]] = []
+
+        def racing_pid(pump_value: PtyPump) -> int:
+            del pump_value
+            return next(pid_reads)
+
+        def record_signal(pgid: int, signum: int) -> None:
+            signaled.append((pgid, signum))
+
+        monkeypatch.setattr(PtyPump, "_pid", property(racing_pid), raising=False)
+        monkeypatch.setattr(os, "killpg", record_signal)
+
+        pump.terminate()
+
+        assert signaled == [(123, signal.SIGTERM)]
+
     def test_setup_failure_after_fork_reaps_the_child(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -467,12 +646,20 @@ class TestPtyPumpLifecycle:
         # A child that sleeps long enough to still be alive when setup fails, so
         # the test proves the child is actively reaped, not merely already gone.
         pump = PtyPump([sys.executable, "-c", "import time; time.sleep(30)"])
+        prior_term = signal.getsignal(signal.SIGTERM)
+        cleanup_handlers: list[object] = []
+        terminate_process_group = pump._terminate_process_group
 
         def boom(_handler: object) -> object:
             raise RuntimeError("setup blew up after fork")
 
+        def terminate_and_record() -> None:
+            cleanup_handlers.append(signal.getsignal(signal.SIGTERM))
+            terminate_process_group()
+
         # ``_install_winch`` runs after ``pty.fork`` and before ``_pump``.
         monkeypatch.setattr(pty_pump, "_install_winch", boom)
+        monkeypatch.setattr(pump, "_terminate_process_group", terminate_and_record)
 
         with contextlib.suppress(RuntimeError):
             pump.run()
@@ -480,6 +667,8 @@ class TestPtyPumpLifecycle:
         # The child must have been reaped: its PID is cleared and a direct
         # waitpid finds no child (already reaped), rather than a leaked zombie.
         assert pump._pid == -1, "child PID not cleared; the child was leaked"
+        assert cleanup_handlers == [pump._handle_terminate]
+        assert signal.getsignal(signal.SIGTERM) == prior_term
 
     def test_env_overrides_reach_the_child(self, tmp_path: Path) -> None:
         """``env`` overrides are visible to the spawned child (routing identity).

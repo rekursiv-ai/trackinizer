@@ -840,6 +840,25 @@ class Client:
         """Atomically remove one author from a Paper's byline, race-free."""
         self._patch_field(target_id, "authors", "sub", author, actor=actor)
 
+    def transition_owner(
+        self,
+        target_id: uuid.UUID,
+        *,
+        expected_from: Inquiry.Actor | None,
+        to: Inquiry.Actor | None,
+        actor: Inquiry.Actor,
+    ) -> None:
+        """Compare-and-set the owner; 409s if it is not ``expected_from``."""
+        self.put(
+            _field_path(target_id, "owner"),
+            body={
+                "actor": actor,
+                "value": to,
+                "mode": "cas",
+                "expected": expected_from,
+            },
+        )
+
     def transition_status(
         self,
         target_id: uuid.UUID,

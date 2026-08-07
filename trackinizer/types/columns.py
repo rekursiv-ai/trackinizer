@@ -101,7 +101,7 @@ class ColumnSpec(UserDict[str, "ColumnSpec"]):
     ``flatten``."""
 
     compare_and_set: bool = False
-    """``PUT`` accepts a compare-and-set ``expected`` guard (status,
+    """``PUT`` accepts a compare-and-set ``expected`` guard (owner, status,
     judgement). The route rejects ``expected`` on any other column."""
 
     list_verb_stem: str = ""

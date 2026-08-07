@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Protocol
 
+import asyncio
 import uuid
 
 import pytest
@@ -72,87 +73,10 @@ class _MissFirstReplayProbe:
 
 
 async def _submit_task(store: Store) -> uuid.UUID:
-    """Create one open task Issue to race claims against."""
+    """Create one open task Issue for field-transition tests."""
     return await store.submit_issue(
         SubmitIssue(account="tester@example.com", title="Task: spec arm 42")
     )
-
-
-async def _owner_of(store: Store, target_id: uuid.UUID) -> str | None:
-    row = await store.get_inquiry(target_id)
-    assert row is not None
-    return row.owner
-
-
-async def claim_owner(
-    store: Store,
-    target_id: uuid.UUID,
-    *,
-    value: str,
-    actor: str,
-    key: uuid.UUID,
-) -> uuid.UUID | None:
-    """Set ``owner`` under a client-supplied change id."""
-    set_client_change_id(key)
-    try:
-        return await store.set_owner(target_id, value=value, actor=actor)
-    finally:
-        set_client_change_id(None)
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_claim_winner_commits_supplied_change_id(store: Store) -> None:
-    """The first claimant's edit commits under the client-supplied key."""
-    task = await _submit_task(store)
-    key = uuid.uuid4()
-    change_id = await claim_owner(
-        store, task, value="scientist1", actor="scientist1", key=key
-    )
-    assert change_id == key
-    assert await _owner_of(store, task) == "scientist1"
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_claim_retry_same_actor_same_value_replays(store: Store) -> None:
-    """A winner's identical retry returns its original change id."""
-    task = await _submit_task(store)
-    key = uuid.uuid4()
-    assert (
-        await claim_owner(store, task, value="scientist1", actor="scientist1", key=key)
-        == key
-    )
-    retry = await claim_owner(
-        store, task, value="scientist1", actor="scientist1", key=key
-    )
-    assert retry == key
-    assert await _owner_of(store, task) == "scientist1"
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_claim_drifted_retry_replays_and_drops_drift(store: Store) -> None:
-    """Same actor + key, different value: original wins, one audit row."""
-    task = await _submit_task(store)
-    key = uuid.uuid4()
-    assert (
-        await claim_owner(store, task, value="scientist1", actor="scientist1", key=key)
-        == key
-    )
-    replay = await claim_owner(
-        store, task, value="scientist1-drift", actor="scientist1", key=key
-    )
-    assert replay == key
-    assert await _owner_of(store, task) == "scientist1"
-    async with store.engine.acquire() as conn:
-        key_rows = await conn.fetchval(
-            "SELECT count(*) FROM change_log WHERE id = $1", key
-        )
-    assert key_rows == 1
 
 
 @pytest.mark.integration
@@ -222,6 +146,65 @@ async def test_transition_status_retry_replays_before_cas(store: Store) -> None:
             expected_from="active",
             to="complete",
             actor="scientist1",
+        )
+    finally:
+        set_client_change_id(None)
+    assert replay == key
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)
+async def test_transition_owner_allows_one_concurrent_acquirer(store: Store) -> None:
+    """Exactly one worker can transition an unowned task to itself."""
+    task = await _submit_task(store)
+
+    async def acquire(owner: str) -> str | None:
+        try:
+            await store.transition_owner(
+                task,
+                expected_from=None,
+                to=owner,
+                actor=owner,
+            )
+        except ConflictError:
+            return None
+        return owner
+
+    winners = await asyncio.gather(acquire("worker-1"), acquire("worker-2"))
+
+    assert len([winner for winner in winners if winner is not None]) == 1
+    task_row = await store.get_inquiry(task)
+    assert task_row is not None
+    assert task_row.owner in winners
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)
+async def test_transition_owner_retry_replays_before_cas(store: Store) -> None:
+    """An identical owner-transition retry returns its original change."""
+    task = await _submit_task(store)
+    key = uuid.uuid4()
+    set_client_change_id(key)
+    try:
+        first = await store.transition_owner(
+            task,
+            expected_from=None,
+            to="worker-1",
+            actor="worker-1",
+        )
+    finally:
+        set_client_change_id(None)
+    assert first == key
+
+    set_client_change_id(key)
+    try:
+        replay = await store.transition_owner(
+            task,
+            expected_from=None,
+            to="worker-1",
+            actor="worker-1",
         )
     finally:
         set_client_change_id(None)
@@ -544,22 +527,6 @@ async def test_list_mutation_drifted_retry_replays_before_reference_validation(
     finally:
         set_client_change_id(None)
     assert replay == key
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio
-@pytest.mark.timeout(120)
-async def test_claim_loser_conflicts_instead_of_crashing(store: Store) -> None:
-    """The losing claimant gets ConflictError, not a protocol crash."""
-    task = await _submit_task(store)
-    key = uuid.uuid4()
-    assert (
-        await claim_owner(store, task, value="scientist1", actor="scientist1", key=key)
-        == key
-    )
-    with pytest.raises(ConflictError):
-        await claim_owner(store, task, value="scientist2", actor="scientist2", key=key)
-    assert await _owner_of(store, task) == "scientist1"
 
 
 if __name__ == "__main__":
