@@ -32,8 +32,16 @@ if TYPE_CHECKING:
 
 from trackinizer.lib import postgres
 from trackinizer.lib.postgres import DatabaseEngine
+from trackinizer.lib.testing.userdirs_fixture import isolate_user_dirs
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.store.core import Store, StubEmbedder
+
+
+# Re-exported, not merely imported: an autouse fixture reaches only the
+# directory of the conftest that names it, so binding it here is what points
+# every trackinizer test's XDG lookups at a tmp dir instead of the developer's
+# own -- notably trax profiles, which live under ``config_dir``.
+__all__ = ["isolate_user_dirs"]
 
 
 def make_conn() -> AsyncMock:
