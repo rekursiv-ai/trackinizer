@@ -33,7 +33,6 @@ def test_pglite_default_caches_use_xdg_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("socket.gethostname", lambda: "test-host")
-    monkeypatch.setenv("XDG_CACHE_HOME", "/xdg-cache")
 
     host_key = hashlib.sha256(b"test-host").hexdigest()[:16]
     assert substrate._boot_slots_root() == (
