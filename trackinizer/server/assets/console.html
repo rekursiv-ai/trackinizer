@@ -57,7 +57,11 @@
   .row.k-SlashCommand .body { color: var(--warning); }
   .row.k-UserMessage .body, .row.k-AgentSendMessage .body { color: var(--info); }
   .body { display: inline; }
-  .body.cont { display: block; margin-left: 2ch; }
+  .body.cont { display: block; margin-left: 2ch; white-space: pre-wrap; }
+  .body.cont.hidden { display: none; }
+  .more { cursor: pointer; margin-left: 1ch; padding: 0 4px; border-radius: 3px;
+          font-size: 11px; color: var(--muted, #888); border: 1px solid var(--border, #333); }
+  .more:hover { color: var(--fg, #eee); }
 
   #filter-bar {
     flex: 0 0 auto; display: flex; gap: 14px; align-items: center;
@@ -264,6 +268,20 @@ function feedUrl() {
 // ---- Message body extraction ------------------------------------------------
 
 // Pull a one-line-ish display body out of a typed message, by kind.
+// The one argument that identifies a call, the way a CLI names it.
+function callTarget(args) {
+  const a = args || {};
+  for (const k of ["file_path", "path", "notebook_path", "command", "pattern",
+                   "url", "query", "prompt", "description"]) {
+    if (typeof a[k] === "string" && a[k]) {
+      const v = a[k].replace(/\s+/g, " ");
+      return v.length > 48 ? "\u2026" + v.slice(-47) : v;
+    }
+  }
+  const n = Object.keys(a).length;
+  return n ? `${n} arg${n === 1 ? "" : "s"}` : "";
+}
+
 function bodyText(ev) {
   const m = ev.message || {};
   switch (ev.kind) {
@@ -276,7 +294,9 @@ function bodyText(ev) {
       const parts = [];
       if (m.text) parts.push(m.text);
       for (const tc of (m.tool_calls || [])) {
-        parts.push(`→ ${tc.name}(${JSON.stringify(tc.args || {})})`);
+        // `Read(foo.py)`, not the whole argument object. Measured median on a
+        // real transcript: 851 characters of JSON per call, 11,768 at worst.
+        parts.push(`\u2192 ${tc.name}(${callTarget(tc.args)})`);
       }
       return parts.join("\n") || (m.thinking ? "(thinking)" : "");
     }
@@ -314,12 +334,31 @@ function renderRow(ev) {
     el("span", { class: "kind" }, ` ${ev.kind}`),
     el("span", { class: "arrow" }, "·"),
   );
+  // ONE ROW PER EVENT.
+  //
+  // This previously appended every line of the body as its own row. Measured on
+  // a real 7,138-record transcript: 1,581 tool results, median 7 lines each and
+  // one of 574 -- 22,235 rows for the tool output alone, in a live tail whose
+  // whole job is to be scannable. A console that emits a screenful per event is
+  // not a console.
+  //
+  // So: the first line, and a count of what is folded. Nothing is discarded --
+  // the rest expands in place, because "terse" must not mean "unreachable".
   const text = bodyText(ev);
   const lines = text.split("\n");
   const row = el("div", { class: `row k-${ev.kind}` }, head,
     el("span", { class: "body" }, lines[0] || ""));
-  for (const extra of lines.slice(1)) {
-    row.appendChild(el("span", { class: "body cont" }, extra));
+  const rest = lines.slice(1);
+  if (rest.length) {
+    const more = el("span", { class: "more" }, `+${rest.length}`);
+    const extra = el("span", { class: "body cont hidden" }, rest.join("\n"));
+    more.addEventListener("click", () => {
+      const shown = !extra.classList.contains("hidden");
+      extra.classList.toggle("hidden", shown);
+      more.textContent = shown ? `+${rest.length}` : "\u2212";
+    });
+    row.appendChild(more);
+    row.appendChild(extra);
   }
   return row;
 }
