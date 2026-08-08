@@ -38,7 +38,7 @@ explicit path rather than trusting isolation.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
@@ -111,7 +111,10 @@ def isolate_user_dirs(
         ``userdirs`` helper instead.
 
     """
-    if request.node.get_closest_marker("real_user_dirs") is not None:
+    # FixtureRequest.node is an un-annotated abstract property upstream
+    # (_pytest.fixtures); function scope makes it the test Item.
+    node = cast(pytest.Item, request.node)
+    if node.get_closest_marker("real_user_dirs") is not None:
         return None
     root = tmp_path_factory.mktemp("userdirs")
     for variable, leaf in (
