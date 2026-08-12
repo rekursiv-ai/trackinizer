@@ -252,8 +252,8 @@ def kind_group_members(group: KindGroup) -> tuple[Inquiry.InquiryKind, ...]:
     ``{artifact_kinds}``) and ``/api/meta/edges``, so the edge topology has one
     source of truth instead of a hand-typed copy in the SPA.
     """
-    inquiry = get_args(Inquiry.InquiryKind.__value__)
-    artifact = get_args(Artifact.Kind.__value__)
+    inquiry: tuple[Inquiry.InquiryKind, ...] = get_args(Inquiry.InquiryKind.__value__)
+    artifact: tuple[Inquiry.InquiryKind, ...] = get_args(Artifact.Kind.__value__)
     match group:
         case "issue":
             return ("Issue",)

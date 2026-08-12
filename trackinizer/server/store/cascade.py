@@ -238,7 +238,10 @@ class _CascadeAuditMixin(_StoreShared):
                     agent_usd=float(cost_row["new_agent"]),
                     resource_usd=float(cost_row["new_resource"]),
                 )
-                subs = tuple(cost_row["current_subscribers"] or ())
+                subs = cast(
+                    "tuple[Inquiry.Actor, ...]",
+                    tuple(cost_row["current_subscribers"] or ()),
+                )
             if extra_subscribers:
                 # Update ``seen`` in-loop so duplicates *within*
                 # ``extra_subscribers`` are also collapsed.
@@ -373,8 +376,9 @@ class _CascadeAuditMixin(_StoreShared):
                     and existing["subject_id"] == subject_id
                     and existing["kind"] == kind
                 ):
-                    return client_change_id, tuple(
-                        existing["subscribers_snapshot"] or ()
+                    return client_change_id, cast(
+                        "tuple[str, ...]",
+                        tuple(existing["subscribers_snapshot"] or ()),
                     )
                 raise ConflictError(
                     f"idempotency_key {client_change_id} already used "

@@ -306,7 +306,9 @@ def _idempotency_key(request: Request) -> UUID | None:
     middleware (a bare test app), leaving the send un-deduped -- the safe
     default.
     """
-    return getattr(request.state, "idempotency_key", None)
+    key = getattr(request.state, "idempotency_key", None)
+    assert key is None or isinstance(key, UUID)
+    return key
 
 
 @router.get(
