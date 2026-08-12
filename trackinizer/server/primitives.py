@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from datetime import datetime
 from typing import Any, cast, get_args
 from uuid import UUID
 
@@ -198,7 +197,7 @@ async def lookup_kinds(
         vetted_sql("SELECT id, kind FROM inquiries WHERE id = ANY($1::uuid[])", lock),
         list(ids),
     )
-    return {cast(UUID, r["id"]): cast(Inquiry.InquiryKind, r["kind"]) for r in rows}
+    return {r["id"]: r["kind"] for r in rows}
 
 
 async def validate_list_references(
@@ -359,7 +358,7 @@ async def infer_produced_endpoints(
 
     """
     kinds = {
-        cast(Edge.Kind, r["edge_kind"])
+        r["edge_kind"]
         for r in await conn.fetch(
             "SELECT DISTINCT edge_kind FROM edges "
             "WHERE (from_id = $1 AND to_id = $2) OR (from_id = $2 AND to_id = $1)",
@@ -376,7 +375,7 @@ async def infer_produced_endpoints(
         "SELECT id, created FROM inquiries WHERE id = ANY($1::uuid[])",
         [from_id, to_id],
     )
-    created = {cast(UUID, r["id"]): cast(datetime, r["created"]) for r in rows}
+    created = {r["id"]: r["created"] for r in rows}
     # Older first; a created-time tie breaks by id so the order is deterministic.
     older, younger = sorted((from_id, to_id), key=lambda i: (created[i], i.bytes))
     return older, younger, winner

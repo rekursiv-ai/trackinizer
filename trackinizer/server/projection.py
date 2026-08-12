@@ -155,7 +155,7 @@ def _issue_edges(
             kind=pkind,
             note=note,
             labels=labels,
-            priority=cast("Issue.Priority | None", r["priority"]),
+            priority=r["priority"],
         )
         for r in _matching(rows, edge_kind)
         for pid, pkind, note, labels in (_peer(r, id_col=id_col, kind_col=kind_col),)
@@ -182,9 +182,7 @@ def _artifact_edges(
             note=note,
             labels=labels,
             valence=(
-                CITATION_VALENCE_DEFAULT
-                if r["valence"] is None
-                else cast(float, r["valence"])
+                CITATION_VALENCE_DEFAULT if r["valence"] is None else r["valence"]
             ),
         )
         for r in _matching(rows, edge_kind)
@@ -203,9 +201,9 @@ def materialize(
     ``get_inquiry`` returns is the only view callers ever see -- no
     silently truncated fields on bulk responses.
     """
-    cls = KIND_TO_CLASS[cast(Inquiry.InquiryKind, row["kind"])]
+    cls = KIND_TO_CLASS[row["kind"]]
     base = cls.from_row(row)
-    rid = cast(UUID, row["id"])
+    rid = row["id"]
     return project_relationships(
         base, outbound_buckets.get(rid, []), inbound_buckets.get(rid, [])
     )

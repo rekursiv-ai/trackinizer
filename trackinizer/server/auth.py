@@ -532,10 +532,10 @@ async def lookup_user_by_id(
     if row["status"] != "active":
         return None
     return AuthIdentity(
-        user_id=cast(uuid.UUID, row["id"]),
+        user_id=row["id"],
         api_key_id=None,
-        email=cast(str, row["email"]),
-        role=cast(Role, row["role"]),
+        email=row["email"],
+        role=row["role"],
     )
 
 
@@ -773,13 +773,13 @@ async def _resolve_identity(store: Store, secret: str) -> AuthIdentity | None:
             verify_secret(secret, _dummy_verify_hash())
             return None
         for row in rows:
-            if not verify_secret(secret, cast(str, row["secret_hash"])):
+            if not verify_secret(secret, row["secret_hash"]):
                 continue
             if row["status"] != "active":
                 # Prefix is shared, so a disabled match mustn't exclude an
                 # active match later in the list.
                 continue
-            key_id = cast(uuid.UUID, row["key_id"])
+            key_id = row["key_id"]
             if store.should_bump_api_key_last_used(key_id):
                 await conn.execute(
                     "UPDATE api_keys SET last_used_at = clock_timestamp() "
@@ -787,12 +787,12 @@ async def _resolve_identity(store: Store, secret: str) -> AuthIdentity | None:
                     key_id,
                 )
             return AuthIdentity(
-                user_id=cast(uuid.UUID, row["user_id"]),
+                user_id=row["user_id"],
                 api_key_id=key_id,
-                email=cast(str, row["email"]),
+                email=row["email"],
                 role=effective_role(
-                    cast(Role, row["user_role"]),
-                    cast(Role, row["key_role"]),
+                    row["user_role"],
+                    row["key_role"],
                 ),
             )
     return None

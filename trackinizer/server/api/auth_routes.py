@@ -91,7 +91,7 @@ async def profile_route(
             "SELECT name, last_login FROM users WHERE id = $1",
             identity.user_id,
         )
-    name = identity.email if row is None else cast(str, row["name"])
+    name = identity.email if row is None else row["name"]
     last_login = None if row is None else row["last_login"]
     return {
         "user_id": str(identity.user_id),

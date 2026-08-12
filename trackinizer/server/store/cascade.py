@@ -34,9 +34,9 @@ from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import list_or_none, vetted_sql
 from trackinizer.types.change_log import Change, Snapshot
 from trackinizer.types.cost import Cost
-from trackinizer.types.edges import EDGE_POLICIES, Edge
+from trackinizer.types.edges import EDGE_POLICIES
 from trackinizer.types.errors import ConflictError, NotFoundError
-from trackinizer.types.inquiries import Inquiry, Issue
+from trackinizer.types.inquiries import Inquiry
 
 
 __all__ = [
@@ -467,9 +467,9 @@ class _CascadeAuditMixin(_StoreShared):
                         peer_id=cur_id,
                         peer_kind=cur_kind,
                         peer_edge_kind=edge["edge_kind"],
-                        edge_priority=cast(Issue.Priority | None, edge["priority"]),
+                        edge_priority=edge["priority"],
                         edge_note=edge["note"],
-                        edge_valence=cast(float | None, edge["valence"]),
+                        edge_valence=edge["valence"],
                         edge_labels=tuple(edge["labels"] or ()),
                     ),
                     cascade=False,
@@ -512,14 +512,14 @@ class _CascadeAuditMixin(_StoreShared):
             )
         out: list[tuple[UUID, Inquiry.InquiryKind, asyncpg.Record]] = []
         for row in edge_rows:
-            edge_kind = cast(Edge.Kind, row["edge_kind"])
+            edge_kind = row["edge_kind"]
             policy = EDGE_POLICIES[edge_kind]
             if policy.cascade_dependent == "to":
-                dependent_id = cast(UUID, row["to_id"])
-                dependent_kind = cast(Inquiry.InquiryKind, row["to_kind"])
+                dependent_id = row["to_id"]
+                dependent_kind = row["to_kind"]
             else:
-                dependent_id = cast(UUID, row["from_id"])
-                dependent_kind = cast(Inquiry.InquiryKind, row["from_kind"])
+                dependent_id = row["from_id"]
+                dependent_kind = row["from_kind"]
             # The dependent itself is the row being changed/purged; do
             # not self-alert.
             if dependent_id == child_id:
@@ -565,7 +565,7 @@ class _CascadeAuditMixin(_StoreShared):
                 raise ConflictError(
                     f"inquiry is owned by {owner!r}; release its owner before purge"
                 )
-            kind = cast(Inquiry.InquiryKind, row["kind"])
+            kind = row["kind"]
             parent_edges = await conn.fetch(
                 "SELECT from_id, from_kind, to_id, to_kind, edge_kind, "
                 "priority, note, valence, labels FROM edges "
@@ -617,11 +617,11 @@ class _CascadeAuditMixin(_StoreShared):
     ) -> None:
         """Emit the peer-side ``edge_removed`` audit row for a purged subject."""
         if edge["from_id"] == target_id:
-            subject_id = cast(UUID, edge["to_id"])
-            subject_kind = cast(Inquiry.InquiryKind, edge["to_kind"])
+            subject_id = edge["to_id"]
+            subject_kind = edge["to_kind"]
         else:
-            subject_id = cast(UUID, edge["from_id"])
-            subject_kind = cast(Inquiry.InquiryKind, edge["from_kind"])
+            subject_id = edge["from_id"]
+            subject_kind = edge["from_kind"]
         await self.emit_change(
             conn,
             api_key_id=api_key_id,
@@ -634,10 +634,10 @@ class _CascadeAuditMixin(_StoreShared):
             old=Snapshot(
                 peer_id=target_id,
                 peer_kind=target_kind,
-                peer_edge_kind=cast(Edge.Kind, edge["edge_kind"]),
-                edge_priority=cast(Issue.Priority | None, edge["priority"]),
+                peer_edge_kind=edge["edge_kind"],
+                edge_priority=edge["priority"],
                 edge_note=edge["note"],
-                edge_valence=cast(float | None, edge["valence"]),
+                edge_valence=edge["valence"],
                 edge_labels=tuple(edge["labels"] or ()),
             ),
         )

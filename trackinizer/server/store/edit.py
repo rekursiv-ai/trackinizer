@@ -471,7 +471,7 @@ class _EditMixin(_CascadeAuditMixin):
             )
             if replay is not None:
                 return replay
-            current = cast("Inquiry.Actor | None", row["owner"])
+            current = row["owner"]
             if current != expected_owner:
                 raise ConflictError(
                     f"owner transition rejected: expected {expected_owner!r}, "
@@ -582,7 +582,7 @@ class _EditMixin(_CascadeAuditMixin):
             )
             if replay is not None:
                 return replay
-            current = cast(Inquiry.Status, row["status"])
+            current = row["status"]
             if current != expected_from:
                 raise ConflictError(
                     f"status transition rejected: expected {expected_from!r}, "
@@ -662,7 +662,7 @@ class _EditMixin(_CascadeAuditMixin):
             )
             if replay is not None:
                 return replay
-            current = cast("Belief.Judgement | None", row["belief_judgement"])
+            current = row["belief_judgement"]
             if current != expected_from:
                 raise ConflictError(
                     f"judgement transition rejected: expected {expected_from!r}, "
@@ -1629,7 +1629,7 @@ class _EditMixin(_CascadeAuditMixin):
                 api_key_id=api_key_id,
                 actor=actor,
                 subject_id=target_id,
-                subject_kind=cast(Inquiry.InquiryKind, row["kind"]),
+                subject_kind=row["kind"],
                 kind="marginal_cost",
                 cost_delta=delta,
                 reason=reason,

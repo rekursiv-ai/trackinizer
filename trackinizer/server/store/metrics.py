@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from math import isfinite
-from typing import Final, Literal, cast
+from typing import Final, Literal
 from uuid import UUID
 
 import asyncpg
@@ -201,7 +201,7 @@ class _MetricsMixin(_StoreShared):
             fetched = await conn.fetch(sql, *params)
         return [
             MetricPoint(
-                key=cast(str, r["key"]),
+                key=r["key"],
                 step=r["step"],
                 value=r["value"],
                 kind=r["kind"],
@@ -312,9 +312,9 @@ class _MetricsMixin(_StoreShared):
             fetched = await conn.fetch(sql, *params)
         return [
             (
-                cast(UUID, r["experiment_id"]),
+                r["experiment_id"],
                 MetricPoint(
-                    key=cast(str, r["key"]),
+                    key=r["key"],
                     step=r["step"],
                     value=r["value"],
                     kind=r["kind"],

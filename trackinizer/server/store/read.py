@@ -174,7 +174,7 @@ class _ReadMixin(_StoreShared):
             row = await conn.fetchrow(_NEXT_ISSUE_SQL)
             if row is None:
                 return None
-            rid = cast(UUID, row["id"])
+            rid = row["id"]
             outbound, inbound = await fetch_edges(conn, rid)
         return cast(Issue, materialize(row, {rid: outbound}, {rid: inbound}))
 
