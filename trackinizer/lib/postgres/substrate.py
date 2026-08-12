@@ -555,7 +555,9 @@ _LOCK_OWNER_ATTR: Final = "_loop_conn_guard_owner"
 
 def _lock_owner(lock: asyncio.Lock) -> asyncio.Task[object] | None:
     """Return the task that currently holds ``lock`` via a guard, if any."""
-    return getattr(lock, _LOCK_OWNER_ATTR, None)
+    owner = getattr(lock, _LOCK_OWNER_ATTR, None)
+    assert owner is None or isinstance(owner, asyncio.Task)
+    return owner
 
 
 def _set_lock_owner(lock: asyncio.Lock, task: asyncio.Task[object] | None) -> None:
@@ -928,7 +930,9 @@ def _pick_free_port() -> int:
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        port = s.getsockname()[1]
+        assert isinstance(port, int)
+        return port
 
 
 def _persist_js_extension_parts(extensions: Sequence[str]) -> tuple[str, str]:

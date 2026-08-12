@@ -432,7 +432,9 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 f"idempotency_key {idempotency_key} already created a "
                 f"{row['subject_kind']}, not {kind}"
             )
-        return row["subject_id"]
+        subject_id = row["subject_id"]
+        assert subject_id is None or isinstance(subject_id, UUID)
+        return subject_id
 
     async def submit_artifact(
         self,
