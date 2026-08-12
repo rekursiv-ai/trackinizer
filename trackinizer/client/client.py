@@ -48,6 +48,7 @@ import httpx
 import pydantic
 
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.custom_json import JSONValue
 from trackinizer.lib.custom_types import ABSENT, Absent
 from trackinizer.types.inquiries import Inquiry, Issue
 from trackinizer.wire.filters import Filter
@@ -286,19 +287,21 @@ class Client:
     ) -> None:
         self.close()
 
-    def get(self, path: str, *, params: Mapping[str, object] | None = None) -> Any:
+    def get(
+        self, path: str, *, params: Mapping[str, object] | None = None
+    ) -> JSONValue:
         return self._request("GET", path, params=params)
 
-    def post(self, path: str, *, body: object = None) -> Any:
+    def post(self, path: str, *, body: object = None) -> JSONValue:
         return self._request("POST", path, body=body)
 
-    def put(self, path: str, *, body: object = None) -> Any:
+    def put(self, path: str, *, body: object = None) -> JSONValue:
         return self._request("PUT", path, body=body)
 
-    def patch(self, path: str, *, body: object = None) -> Any:
+    def patch(self, path: str, *, body: object = None) -> JSONValue:
         return self._request("PATCH", path, body=body)
 
-    def delete(self, path: str, *, body: object = None) -> Any:
+    def delete(self, path: str, *, body: object = None) -> JSONValue:
         return self._request("DELETE", path, body=body)
 
     # -- Reference resolution ------------------------------------------------
@@ -1125,7 +1128,7 @@ class Client:
         params: Mapping[str, object] | None = None,
         change_id: uuid.UUID | None = None,
         retry_attempts: int = 3,
-    ) -> Any:
+    ) -> JSONValue:
         # ``retry_attempts`` is how many tries a mutating request gets after a
         # 5xx or read timeout. Three bounds the worst-case wait (~1s) while
         # covering the common cases: one bad pool socket, one transient 502.
@@ -1202,7 +1205,7 @@ class Client:
         # ``json.JSONDecodeError`` (a ``ValueError``) past the ClientError
         # contract; wrap it so callers see one error type.
         try:
-            return response.json()
+            return cast(JSONValue, response.json())
         except ValueError as err:
             raise ClientError(
                 f"{method} {path}: malformed JSON in server response"

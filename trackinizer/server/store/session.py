@@ -16,7 +16,7 @@ from uuid import UUID
 
 import asyncpg
 
-from trackinizer.lib.custom_json import JSON, JSONValue, json_unfreeze
+from trackinizer.lib.custom_json import JSONValue, json_unfreeze
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import (
@@ -86,7 +86,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         """
         async with self.engine.acquire() as conn:
             taken = {
-                cast("str", row["owner"])
+                row["owner"]
                 for row in await conn.fetch(
                     "SELECT owner FROM inquiries "
                     "WHERE kind = 'AgentSession' AND owner IS NOT NULL",
@@ -292,9 +292,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                     session_id,
                     "AgentSession",
                     "agentsession_ended",
-                    Snapshot(
-                        agentsession_ended=cast(datetime, row["agentsession_ended"])
-                    ),
+                    Snapshot(agentsession_ended=row["agentsession_ended"]),
                     new=Snapshot(agentsession_ended=None),
                     api_key_id=api_key_id,
                     actor=actor,
@@ -305,7 +303,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                         session_id,
                         "AgentSession",
                         "status",
-                        Snapshot(status=cast("Inquiry.Status", row["status"])),
+                        Snapshot(status=row["status"]),
                         new=Snapshot(status="active"),
                         api_key_id=api_key_id,
                         actor=actor,
@@ -364,10 +362,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 ),
                 *params,
             )
-        return [
-            (cast(UUID, row["id"]), tuple(row["agentsession_rooms"] or ()))
-            for row in rows
-        ]
+        return [(row["id"], tuple(row["agentsession_rooms"] or ())) for row in rows]
 
     async def append_events(
         self,
@@ -531,7 +526,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 kind=row["kind"],
                 timestamp=row["timestamp"],
                 model=row["model"],
-                message=cast(JSON, row["message"] or {}),
+                message=row["message"] or {},
             )
             for row in rows
         ]
@@ -624,7 +619,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             rows = list(reversed(rows))
         return [
             FeedEvent(
-                session_id=cast(UUID, row["session_id"]),
+                session_id=row["session_id"],
                 actor=row["owner"] or "",
                 rooms=list(row["agentsession_rooms"] or []),
                 cli=row["agentsession_cli"],
@@ -633,7 +628,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 created=row["created"],
                 timestamp=row["timestamp"],
                 model=row["model"],
-                message=cast(JSON, row["message"] or {}),
+                message=row["message"] or {},
             )
             for row in rows
         ]
@@ -754,9 +749,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                     "AgentSession",
                     "agentsession_cli_session_id",
                     Snapshot(
-                        agentsession_cli_session_id=cast(
-                            "str | None", row["agentsession_cli_session_id"]
-                        )
+                        agentsession_cli_session_id=row["agentsession_cli_session_id"]
                     ),
                     new=Snapshot(agentsession_cli_session_id=cli_session_id),
                     api_key_id=api_key_id,
@@ -792,7 +785,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                     session_id,
                     "AgentSession",
                     "status",
-                    Snapshot(status=cast("Inquiry.Status", row["status"])),
+                    Snapshot(status=row["status"]),
                     new=Snapshot(status=status),
                     api_key_id=api_key_id,
                     actor=actor,

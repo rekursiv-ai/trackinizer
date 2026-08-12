@@ -518,15 +518,15 @@ class _EdgeMixin(_CascadeAuditMixin):
             if require_existing:
                 raise NotFoundError("edge not found")
             return None
-        old_priority = cast(Issue.Priority | None, row["priority"])
+        old_priority = row["priority"]
         new_priority: Issue.Priority | None
         if isinstance(priority, Absent):
             new_priority = old_priority
         else:
             new_priority = priority
         validate_edge_priority(edge_kind, new_priority)
-        old_note = cast(str | None, row["note"])
-        old_valence = cast(float | None, row["valence"])
+        old_note = row["note"]
+        old_valence = row["valence"]
         old_labels: tuple[str, ...] | None = (
             None if row["labels"] is None else tuple(row["labels"] or ())
         )
@@ -592,8 +592,8 @@ class _EdgeMixin(_CascadeAuditMixin):
             and old_labels == new_labels
         ):
             return None
-        from_kind = cast(Inquiry.InquiryKind, row["from_kind"])
-        to_kind = cast(Inquiry.InquiryKind, row["to_kind"])
+        from_kind = row["from_kind"]
+        to_kind = row["to_kind"]
         await conn.execute(
             "UPDATE edges SET priority = $1, note = $2, valence = $3, "
             "labels = $4 WHERE from_id = $5 AND to_id = $6 AND edge_kind = $7",
@@ -790,11 +790,11 @@ class _EdgeMixin(_CascadeAuditMixin):
             )
             if row is None:
                 return None
-            from_kind = cast(Inquiry.InquiryKind, row["from_kind"])
-            to_kind = cast(Inquiry.InquiryKind, row["to_kind"])
-            priority = cast(Issue.Priority | None, row["priority"])
-            note = cast(str | None, row["note"])
-            valence = cast(float | None, row["valence"])
+            from_kind = row["from_kind"]
+            to_kind = row["to_kind"]
+            priority = row["priority"]
+            note = row["note"]
+            valence = row["valence"]
             edge_labels = None if row["labels"] is None else tuple(row["labels"] or ())
             # Capture every edge touching ``from_id`` before the DELETE.
             # The cascade re-walks ``edges`` live, so deleting first would

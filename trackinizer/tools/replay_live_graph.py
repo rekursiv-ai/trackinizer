@@ -41,6 +41,7 @@ import uuid
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.custom_json import dict_val, str_val
 from trackinizer.trax.profile import load_profile
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import Inquiry
@@ -297,7 +298,7 @@ def _crawl_and_insert(
     for ref in seeds:
         seed_id = _resolve_seed(source, ref)
         if seed_id not in seen:
-            seen[seed_id] = source.get(f"/api/web/get/{seed_id}")
+            seen[seed_id] = dict_val(source.get(f"/api/web/get/{seed_id}"))
             frontier.append(seed_id)
 
     pending: list[dict[str, Any]] = []
@@ -318,7 +319,7 @@ def _crawl_and_insert(
         pending.append(detail)
         for peer_id in _detail_peers(detail):
             if peer_id not in seen:
-                seen[peer_id] = source.get(f"/api/web/get/{peer_id}")
+                seen[peer_id] = dict_val(source.get(f"/api/web/get/{peer_id}"))
                 frontier.append(peer_id)
         if len(pending) >= chunk:
             flush()
@@ -394,8 +395,8 @@ def _resolve_seed(source: Client, ref: str) -> str:
     text = ref.strip()
     if "#" in text:
         kind, _, seq = text.partition("#")
-        row = source.get(f"/api/inquiries/{kind}/{seq}")
-        return str(row["id"])
+        row = dict_val(source.get(f"/api/inquiries/{kind}/{seq}"))
+        return str_val(row.get("id"))
     return text
 
 

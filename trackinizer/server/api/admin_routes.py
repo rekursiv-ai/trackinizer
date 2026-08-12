@@ -347,7 +347,7 @@ async def _refuse_last_admin_loss(conn: Conn, target_id: uuid.UUID) -> None:
 def _serialize_user(row: dict[str, object]) -> MutableJSON:
     """Build the wire shape for one ``users`` row."""
     return {
-        "id": str(cast(uuid.UUID, row["id"])),
+        "id": str(row["id"]),
         "email": cast(str, row["email"]),
         "name": cast(str, row["name"]),
         "role": cast(Role, row["role"]),
