@@ -361,12 +361,13 @@ labels
 `valence` is a signed `[-1, 1]` weight on `proves` / `favors` citations: the
 sign is the polarity (positive supports the claim, negative argues against),
 the magnitude the evidential weight (`0` neutral, default `0.5`). For-vs-against
-is this sign, not a separate edge kind.
+is this sign, not a separate edge kind. `cites_paper` carries no `valence`: it
+records a historical, bibliographic fact, not our judgement.
 
 Endpoint pairs
 
 Every edge is stored child -> parent (`from` younger/dependent, `to` older
-parent). Exactly six kinds:
+parent). Exactly seven kinds:
 
 ```
 narrows         Issue      -> Issue          (narrower  -> broader)
@@ -375,6 +376,7 @@ produced_by     Inquiry    -> Inquiry        (produced  -> producer)
 supersedes      Inquiry    -> Inquiry        (successor -> predecessor)
 proves          Artifact   -> {Belief, Experiment}   (citing -> cited)
 favors          Artifact   -> {Belief, Experiment}   (citing -> cited)
+cites_paper     Paper      -> Paper          (citing    -> cited)
 ```
 
 Projected pairs
@@ -386,6 +388,7 @@ produced_by     -> Inquiry.produced_by / Inquiry.produces
 supersedes      -> Inquiry.supersedes / Inquiry.superseded_by
 proves          -> Artifact.proves / {Belief,Experiment}.proved_by
 favors          -> Artifact.favors / {Belief,Experiment}.favored_by
+cites_paper     -> Paper.cites / Paper.cited_by
 ```
 
 ### 2.5 Auth roles

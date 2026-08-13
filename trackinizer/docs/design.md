@@ -176,17 +176,17 @@ Every domain noun is an `Inquiry`. Two branches:
   `WebSearch`.
 
 Every edge is stored child -> parent: `from` is the younger/dependent
-vertex, `to` is its older parent. There are exactly six edge kinds.
+vertex, `to` is its older parent. There are exactly seven edge kinds.
 
 ```text
               OLDER (parent)
 
-  {narrow,require}s   {supersedes,produced_by}   {prove,favor}s
-         ▲                      ▲                       ▲
-         │                      │                       │
-       Issue                 Inquiry          {Belief,Experiment}
-         │                      │                       │
-         └─ from = child ───────┴───────────────────────┘
+  {narrow,require}s  {supersedes,produced_by}  {prove,favor}s   cites_paper
+         ▲                     ▲                      ▲              ▲
+         │                     │                      │              │
+       Issue                Inquiry         {Belief,Experiment}    Paper
+         │                     │                      │              │
+         └─ from = child ──────┴──────────────────────┴──────────────┘
 
               NEWER (child)
 ```
@@ -199,6 +199,7 @@ vertex, `to` is its older parent. There are exactly six edge kinds.
 | `supersedes` | successor Inquiry -> predecessor Inquiry |
 | `proves` | citing Artifact -> cited {Belief, Experiment} |
 | `favors` | citing Artifact -> cited {Belief, Experiment} |
+| `cites_paper` | citing Paper -> cited Paper |
 
 Issues decompose only into Issues. Produced Artifacts are provenance, not
 children in an ownership tree. Artifacts record outputs and evidence; they
@@ -260,7 +261,7 @@ Normalized Inquiry -> Inquiry graph; the SQL truth-source for all unordered
 relationships.
 
 Every edge is stored child -> parent (`from` younger/dependent, `to` older
-parent). Six kinds, each named from the child's view:
+parent). Seven kinds, each named from the child's view:
 
 | `edge_kind` | `from` -> `to` | projection |
 |---|---|---|
@@ -270,6 +271,7 @@ parent). Six kinds, each named from the child's view:
 | `supersedes` | successor Inquiry -> predecessor Inquiry | `Inquiry.supersedes` / `Inquiry.superseded_by` |
 | `proves` | citing Artifact -> cited {Belief, Experiment} | `Artifact.proves` / `{Belief,Experiment}.proved_by` |
 | `favors` | citing Artifact -> cited {Belief, Experiment} | `Artifact.favors` / `{Belief,Experiment}.favored_by` |
+| `cites_paper` | citing Paper -> cited Paper | `Paper.cites` / `Paper.cited_by` |
 
 `A requires B` means B must be done first, so B is do-time older; every other
 edge orders by creation-time. For-vs-against is not a separate edge: it is the
@@ -277,12 +279,21 @@ sign of the citation edge's signed `valence` (`[-1, 1]`; positive supports,
 negative argues against, magnitude is weight). `proves` is load-bearing (votes
 in the proof predicate); `favors` is context.
 
+`cites_paper` is the odd kind out, and deliberately so: it is a HISTORICAL,
+bibliographic citation between two external sources, not our epistemic
+judgement. It therefore carries no `valence`, infers no provenance (it is
+absent from both `PRODUCED_INFERENCE_PRECEDENCE` and
+`PRODUCED_INFERENCE_SUPPRESSED`, so it neither stamps a `produced_by` nor
+vetoes one a coexisting edge would stamp), and is exempt from the acyclicity
+bar -- two real papers can legitimately cite each other, so a cycle there is
+data, not an error.
+
 Issue->Issue edges may carry a contextual `priority`; root priority stays on
 `Issue.priority`. The four edge-metadata columns are `priority`, `note`,
 `valence`, `labels`. Citation kinds take active voice (the citing artifact is
 the unstated subject); the claim's fields take passive voice (`proved_by`).
-Edges are acyclic across the whole graph, which keeps the re-assessment
-cascade finite.
+Edges are acyclic across the whole graph except `cites_paper`, which keeps the
+re-assessment cascade finite (the exempt kind is inert: it drives no cascade).
 
 ### `change_log`
 
