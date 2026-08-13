@@ -189,9 +189,9 @@ trax issue title to "Clear title" description to @<(printf '%s\n' '# Body')
 ```
 
 Every edge is stored child -> parent (`from` = younger/dependent, `to` = older
-parent), and there are exactly six stored kinds: `narrows`, `requires`,
-`produced_by`, `supersedes`, `proves`, `favors`. The CLI offers reverse-voice
-aliases so either endpoint can anchor the same stored edge.
+parent), and there are exactly seven stored kinds: `narrows`, `requires`,
+`produced_by`, `supersedes`, `proves`, `favors`, `cites_paper`. The CLI offers
+reverse-voice aliases so either endpoint can anchor the same stored edge.
 
 Use `requires` / `required_by` for Issue prerequisites -- they are unambiguous:
 
