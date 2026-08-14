@@ -20,11 +20,11 @@ from trackinizer.lib.postgres import PGliteEngine, PostgresEngine, substrate
 from trackinizer.lib.userdirs import cache_dir
 
 
-def _cache_dir_under(root: Path) -> Callable[[str], Path]:
+def _cache_dir_under(root: Path) -> Callable[[], Path]:
     """Typed ``cache_dir`` stub rooting the substrate's XDG cache at ``root``."""
 
-    def _cache_dir(app: str) -> Path:
-        return root / "caches" / app
+    def _cache_dir() -> Path:
+        return root / "caches"
 
     return _cache_dir
 
@@ -36,7 +36,7 @@ def test_pglite_default_caches_use_xdg_cache(
 
     host_key = hashlib.sha256(b"test-host").hexdigest()[:16]
     assert substrate._boot_slots_root() == (
-        cache_dir("rekursiv-ai") / "pglite" / "boot-slots" / host_key
+        cache_dir() / "rekursiv-ai" / "pglite" / "boot-slots" / host_key
     )
 
 

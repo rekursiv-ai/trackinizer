@@ -52,7 +52,7 @@ class Config:
     Attributes:
       engine: ``pglite`` for local dev, ``pg`` against a real cluster.
       datadir: pglite data directory; ignored under ``pg``. ``None``
-        resolves to ``data_dir("rekursiv-ai") / "trackinizer" / "pgdata"``.
+        resolves to ``data_dir() / "rekursiv-ai" / "trackinizer" / "pgdata"``.
       ephemeral: When true, pglite discards on shutdown.
       dsn: Postgres DSN when ``engine == 'pg'``.
       embedder: Embedder backend name.
@@ -236,7 +236,7 @@ def _ephemeral_workdir() -> Path:
     coordination. The engine removes it on graceful shutdown (``own_workdir=True``
     in :func:`build_engine`); this prunes any sibling a hard ``kill -9`` leaked.
     """
-    root = data_dir("rekursiv-ai") / "trackinizer" / "pgdata-ephemeral"
+    root = data_dir() / "rekursiv-ai" / "trackinizer" / "pgdata-ephemeral"
     root.mkdir(parents=True, exist_ok=True)
     _prune_stale_ephemeral_dirs(root)
     return root / f"{os.getpid()}-{uuid.uuid4().hex}"
@@ -257,7 +257,7 @@ def build_engine(config: Config | None = None) -> DatabaseEngine:
         elif config.ephemeral:
             workdir = _ephemeral_workdir()
         else:
-            workdir = data_dir("rekursiv-ai") / "trackinizer" / "pgdata"
+            workdir = data_dir() / "rekursiv-ai" / "trackinizer" / "pgdata"
         return PGliteEngine(
             workdir=workdir,
             persist=not config.ephemeral,

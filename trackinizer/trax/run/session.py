@@ -196,14 +196,14 @@ def _open_trackinizer_sink(config: RunConfig, adapter: Adapter) -> Sink:
 
 
 def _default_out_path(adapter_name: str) -> Path:
-    """Default JSONL path under ``state_dir("rekursiv-ai") / "trax" / "run"``.
+    """Default JSONL path under ``state_dir() / "rekursiv-ai" / "trax" / "run"``.
 
     One file per invocation; the name carries the adapter and start
     timestamp so concurrent runs don't collide and recent captures are
     easy to find. The caller creates the parent and writes the file.
     """
     stamp = time.strftime("%Y%m%dT%H%M%S")
-    base = state_dir("rekursiv-ai") / "trax" / "run"
+    base = state_dir() / "rekursiv-ai" / "trax" / "run"
     return base / f"{stamp}-{adapter_name}.jsonl"
 
 

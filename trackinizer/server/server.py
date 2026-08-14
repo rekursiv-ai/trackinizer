@@ -111,7 +111,7 @@ def _parse_args(
         default=None,
         help=(
             "PGlite working directory (default: "
-            f"{data_dir('rekursiv-ai') / 'trackinizer' / 'pgdata'})."
+            f"{data_dir() / 'rekursiv-ai' / 'trackinizer' / 'pgdata'})."
         ),
     )
     parser.add_argument(

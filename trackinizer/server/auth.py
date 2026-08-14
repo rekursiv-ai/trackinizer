@@ -660,7 +660,7 @@ def _bootstrap_token_path() -> Path:
     return (
         Path(override)
         if override
-        else data_dir("rekursiv-ai") / "trackinizer" / "bootstrap_token"
+        else data_dir() / "rekursiv-ai" / "trackinizer" / "bootstrap_token"
     )
 
 
