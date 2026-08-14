@@ -179,8 +179,8 @@ def test_profile_token_bootstraps_missing_profile(
     """A first-write on any missing profile bootstraps with the default URL."""
     _redirect_config(monkeypatch, tmp_path)
     run(["profile", "token", "to", "secret"], FakeClient())
-    assert (config_dir("rekursiv-ai") / "trax" / "profiles" / "default").exists()
-    saved = (config_dir("rekursiv-ai") / "trax" / "profiles" / "default").read_text(
+    assert (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "default").exists()
+    saved = (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "default").read_text(
         encoding="utf-8"
     )
     assert "api_key=secret" in saved
@@ -213,7 +213,7 @@ def test_current_profile_resolution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert profile.current_profile() == "default"
-    (config_dir("rekursiv-ai") / "trax" / "current").write_text("from-file\n")
+    (config_dir() / "rekursiv-ai" / "trax" / "current").write_text("from-file\n")
     assert profile.current_profile() == "from-file"
     monkeypatch.setenv("TRACKINIZER_PROFILE", "from-env")
     assert profile.current_profile() == "from-env"
@@ -227,22 +227,22 @@ def test_load_profile_reads_current() -> None:
     profile.save_profile("prod", Profile(url="http://prod:7000", author="alice"))
     assert profile.load_profile() == Profile(url="http://prod:7000", author="alice")
     assert (
-        config_dir("rekursiv-ai") / "trax" / "current"
+        config_dir() / "rekursiv-ai" / "trax" / "current"
     ).read_text().strip() == "prod"
 
 
 def test_profile_file_format_round_trip() -> None:
     profile.save_profile("prod", Profile(url="http://x:1", author="alice"))
-    text = (config_dir("rekursiv-ai") / "trax" / "profiles" / "prod").read_text()
+    text = (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "prod").read_text()
     assert text == "url=http://x:1\nauthor=alice\n"
     profile.save_profile("dev", Profile(url="http://x:2"))
     assert (
-        config_dir("rekursiv-ai") / "trax" / "profiles" / "dev"
+        config_dir() / "rekursiv-ai" / "trax" / "profiles" / "dev"
     ).read_text() == "url=http://x:2\n"
 
 
 def test_profile_rejects_url_without_scheme() -> None:
-    path = config_dir("rekursiv-ai") / "trax" / "profiles" / "default"
+    path = config_dir() / "rekursiv-ai" / "trax" / "profiles" / "default"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("url=actor\n")
     with pytest.raises(ClientError, match="invalid URL"):
@@ -254,7 +254,7 @@ def test_profile_api_key_round_trip() -> None:
         "prod",
         Profile(url="http://x:1", author="alice", api_key="trax_secret_xyz"),
     )
-    text = (config_dir("rekursiv-ai") / "trax" / "profiles" / "prod").read_text()
+    text = (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "prod").read_text()
     assert text == "url=http://x:1\nauthor=alice\napi_key=trax_secret_xyz\n"
     loaded = profile.read_profile("prod")
     assert loaded == Profile(
@@ -264,7 +264,7 @@ def test_profile_api_key_round_trip() -> None:
 
 def test_profile_file_is_mode_0600() -> None:
     profile.save_profile("prod", Profile(url="http://x:1"))
-    path = config_dir("rekursiv-ai") / "trax" / "profiles" / "prod"
+    path = config_dir() / "rekursiv-ai" / "trax" / "profiles" / "prod"
     assert path.stat().st_mode & 0o777 == 0o600
     path.chmod(0o644)
     profile.save_profile("prod", Profile(url="http://x:1", api_key="trax_topsecret"))
@@ -287,7 +287,7 @@ def test_list_and_del_profiles() -> None:
 
 
 def test_load_profile_raises_when_current_points_to_missing() -> None:
-    (config_dir("rekursiv-ai") / "trax" / "current").write_text("prod\n")
+    (config_dir() / "rekursiv-ai" / "trax" / "current").write_text("prod\n")
     with pytest.raises(ClientError, match="profile 'prod' not found"):
         profile.load_profile()
 
@@ -305,7 +305,7 @@ def test_del_active_profile_refused() -> None:
     profile.switch_profile("prod")
     with pytest.raises(ClientError, match="cannot delete active profile"):
         profile.del_profile("prod")
-    assert (config_dir("rekursiv-ai") / "trax" / "profiles" / "prod").exists()
+    assert (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "prod").exists()
 
 
 # Coverage for context-sensitive help, list/show branches, field reads, and
@@ -406,7 +406,7 @@ def test_read_profile_ignores_comments_and_blank_lines(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
-    (config_dir("rekursiv-ai") / "trax" / "profiles" / "alpha").write_text(
+    (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "alpha").write_text(
         "# comment\n\nurl=http://x.example\n", encoding="utf-8"
     )
     p = profile.read_profile("alpha")
@@ -417,7 +417,7 @@ def test_read_profile_missing_url_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
-    (config_dir("rekursiv-ai") / "trax" / "profiles" / "alpha").write_text(
+    (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "alpha").write_text(
         "author=bob\n", encoding="utf-8"
     )
     with pytest.raises(ClientError, match="no url= line"):
@@ -428,8 +428,8 @@ def test_iter_profiles_skips_non_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
-    (config_dir("rekursiv-ai") / "trax" / "profiles" / "subdir").mkdir()
-    (config_dir("rekursiv-ai") / "trax" / "profiles" / "alpha").write_text(
+    (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "subdir").mkdir()
+    (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "alpha").write_text(
         "url=http://x.example\n"
     )
     names = [n for n, _ in profile.list_profiles()]
@@ -441,10 +441,10 @@ def test_iter_profiles_silently_drops_unreadable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
-    (config_dir("rekursiv-ai") / "trax" / "profiles" / "alpha").write_text(
+    (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "alpha").write_text(
         "url=http://x.example\n"
     )
-    (config_dir("rekursiv-ai") / "trax" / "profiles" / "broken").write_text(
+    (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "broken").write_text(
         "not-a-profile\n"
     )
     names = [n for n, _ in profile.list_profiles()]

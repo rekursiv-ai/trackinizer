@@ -77,7 +77,10 @@ class TestPureFunctions:
         assert isinstance(a, PGliteEngine)
         assert isinstance(b, PGliteEngine)
         assert a._workdir != b._workdir
-        assert a._workdir.parent == tmp_path / "trackinizer" / "pgdata-ephemeral"
+        assert (
+            a._workdir.parent
+            == tmp_path / "rekursiv-ai" / "trackinizer" / "pgdata-ephemeral"
+        )
         assert a._persist is False
 
     def test_ephemeral_explicit_datadir_wins(
@@ -97,7 +100,7 @@ class TestPureFunctions:
         _patch_data_dir(monkeypatch, tmp_path)
         engine = build_engine(Config(ephemeral=False))
         assert isinstance(engine, PGliteEngine)
-        assert engine._workdir == tmp_path / "trackinizer" / "pgdata"
+        assert engine._workdir == tmp_path / "rekursiv-ai" / "trackinizer" / "pgdata"
         assert engine._persist is True
 
     def testbuild_engine_pg(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -165,7 +168,7 @@ class TestSessionMaxAge:
 def _patch_data_dir(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
     """Redirect ``config.data_dir`` at ``root`` so workdir tests stay in tmp."""
 
-    def _fake_data_dir(_name: str) -> Path:
+    def _fake_data_dir() -> Path:
         return root
 
     monkeypatch.setattr("trackinizer.server.config.data_dir", _fake_data_dir)
