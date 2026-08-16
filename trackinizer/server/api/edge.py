@@ -85,7 +85,7 @@ async def create_edge_batch_route(
                 api_key_id=identity.api_key_id,
                 actor=_actor_of(item, identity),
             )
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001 -- batch response preserves partial success context.
             items.append(_EdgeBatchFailure(index=index, error=_safe_batch_error(err)))
             items.extend(
                 _EdgeBatchFailure(index=skipped, error="skipped after earlier failure")
