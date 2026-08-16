@@ -368,7 +368,7 @@ def _run_capture(cli_name: str, cli_args: tuple[str, ...], server_url: str) -> i
         # replayed from the wrong (main-test) stack.
         try:
             rc_box.append(run(config))
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- surfaced below with context
             err_box.append(exc)
 
     worker = threading.Thread(target=_drive, daemon=True)
