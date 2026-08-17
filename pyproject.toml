@@ -22,7 +22,6 @@ classifiers = [
 dependencies = [
     # database
     "asyncpg>=0.31.0",
-    "filelock>=3.12",
     "py-pglite[asyncpg,extensions]>=0.5.3",
     # web server / api
     "fastapi>=0.123.9",
@@ -112,14 +111,11 @@ exclude = [".github/**", ".codespell-ignore"]
 python_files = ["*_test.py", "test_*.py"]
 markers = [
     "ci_smoke: slower package/CLI smoke tests run explicitly in CI",
-    "cuda: tests that require a real CUDA device (skipped in hosted CI)",
     "integration: tests that require networking or external deps (deselected by default)",
-    "performance: timing-sensitive tests (deselected by default)",
     "slow: expensive local correctness test (JIT, training, full fixtures, git, bash, or a fresh interpreter); excluded from the fast unit tier and run by the pre-push slow gate",
     "real_llm: integration tests that spawn a live LLM CLI (claude/codex); skipped unless RUN_REAL_LLM=1 is set",
-    "cluster: requires live Together cluster access; deselected by default (bin/tests never selects it implicitly; run explicitly with -m cluster)",
 ]
-addopts = "-m 'not ci_smoke and not cuda and not integration and not performance and not cluster and not slow' --durations=20 --dist=worksteal"
+addopts = "-m 'not ci_smoke and not integration and not slow' --durations=20 --dist=worksteal"
 timeout = 60
 # "error" = treat all warnings as errors (same as -Werror).
 # Using filterwarnings instead of addopts so we can add exceptions.
@@ -138,27 +134,6 @@ norecursedirs = [
     "third_party",
     "typings",
 ]
-
-[tool.coverage.run]
-omit = [
-    "*_test.py",
-    "test_*.py",
-    "*/tests/*",
-    "*/.venv/*",
-    "*/typings/*",
-    "*/tools/*",
-]
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "if TYPE_CHECKING:",
-    "if __name__ == .__main__.:",
-    "raise NotImplementedError",
-]
-# fail_under = 85
-show_missing = true
-skip_covered = true
 
 [tool.ruff]
 show-fixes = true
