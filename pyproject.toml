@@ -22,6 +22,7 @@ classifiers = [
 dependencies = [
     # database
     "asyncpg>=0.31.0",
+    "filelock>=3.12",
     "py-pglite[asyncpg,extensions]>=0.5.3",
     # web server / api
     "fastapi>=0.123.9",
