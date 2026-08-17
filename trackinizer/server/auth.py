@@ -276,7 +276,11 @@ async def current_user(request: Request) -> AuthIdentity:
     store = cast("Store", request.app.state.store)
     bearer = _try_extract_bearer(request)
     if bearer is not None:
-        identity = await _resolve_identity(store, bearer)
+        identity = await _resolve_identity(
+            store,
+            bearer,
+            request_id=str(getattr(request.state, "request_id", "")),
+        )
         if identity is None:
             raise HTTPException(status_code=401, detail="invalid bearer token")
         return identity
@@ -750,15 +754,24 @@ async def _resolve_session_identity(
         return await lookup_user_by_id(conn, user_id=user_id)
 
 
-async def _resolve_identity(store: Store, secret: str) -> AuthIdentity | None:
+async def _resolve_identity(
+    store: Store,
+    secret: str,
+    *,
+    request_id: str,
+) -> AuthIdentity | None:
     """Resolve a bearer secret to an identity, bumping ``last_used_at``.
 
     Returns ``None`` (a 401 at the route) when no live key matches. Disabled
     users also return ``None``, so "unknown token" and "valid token, disabled
     user" are indistinguishable.
     """
+    started = time.perf_counter()
+    query_sec = 0.0
+    verify_sec = 0.0
     prefix = secret[:TOKEN_PREFIX_LEN]
     async with store.engine.acquire() as conn:
+        query_started = time.perf_counter()
         rows = await conn.fetch(
             "SELECT k.id AS key_id, k.secret_hash, k.role AS key_role, "
             "u.id AS user_id, u.email, u.role AS user_role, u.status "
@@ -766,14 +779,26 @@ async def _resolve_identity(store: Store, secret: str) -> AuthIdentity | None:
             "WHERE k.prefix = $1 AND k.revoked_at IS NULL",
             prefix,
         )
+        query_sec += time.perf_counter() - query_started
+        lookup_mode = "prefix" if rows else "miss"
         if not rows:
-            # Prefix miss: no row to verify against. Pay one dummy scrypt
-            # so the timing matches a prefix hit and can't reveal which
-            # prefixes exist. The result is discarded.
+            verify_started = time.perf_counter()
             verify_secret(secret, _dummy_verify_hash())
+            verify_sec += time.perf_counter() - verify_started
+            _log_auth_resolution(
+                request_id=request_id,
+                lookup_mode=lookup_mode,
+                outcome="rejected",
+                query_sec=query_sec,
+                verify_sec=verify_sec,
+                duration_sec=time.perf_counter() - started,
+            )
             return None
         for row in rows:
-            if not verify_secret(secret, row["secret_hash"]):
+            verify_started = time.perf_counter()
+            verified = verify_secret(secret, row["secret_hash"])
+            verify_sec += time.perf_counter() - verify_started
+            if not verified:
                 continue
             if row["status"] != "active":
                 # Prefix is shared, so a disabled match mustn't exclude an
@@ -786,7 +811,7 @@ async def _resolve_identity(store: Store, secret: str) -> AuthIdentity | None:
                     "WHERE id = $1",
                     key_id,
                 )
-            return AuthIdentity(
+            identity = AuthIdentity(
                 user_id=row["user_id"],
                 api_key_id=key_id,
                 email=row["email"],
@@ -795,7 +820,56 @@ async def _resolve_identity(store: Store, secret: str) -> AuthIdentity | None:
                     row["key_role"],
                 ),
             )
+            _log_auth_resolution(
+                request_id=request_id,
+                lookup_mode=lookup_mode,
+                outcome="success",
+                query_sec=query_sec,
+                verify_sec=verify_sec,
+                duration_sec=time.perf_counter() - started,
+            )
+            return identity
+    _log_auth_resolution(
+        request_id=request_id,
+        lookup_mode=lookup_mode,
+        outcome="rejected",
+        query_sec=query_sec,
+        verify_sec=verify_sec,
+        duration_sec=time.perf_counter() - started,
+    )
     return None
+
+
+def _log_auth_resolution(
+    *,
+    request_id: str,
+    lookup_mode: str,
+    outcome: str,
+    query_sec: float,
+    verify_sec: float,
+    duration_sec: float,
+) -> None:
+    logger.info(
+        "event=trackinizer_auth_completed stage=bearer_auth outcome=%s "
+        "lookup_mode=%s query_sec=%.6f verify_sec=%.6f duration_sec=%.6f "
+        "request_id=%s",
+        outcome,
+        lookup_mode,
+        query_sec,
+        verify_sec,
+        duration_sec,
+        request_id,
+        extra={
+            "event": "trackinizer_auth_completed",
+            "stage": "bearer_auth",
+            "outcome": outcome,
+            "lookup_mode": lookup_mode,
+            "query_sec": query_sec,
+            "verify_sec": verify_sec,
+            "duration_sec": duration_sec,
+            "request_id": request_id,
+        },
+    )
 
 
 @functools.cache

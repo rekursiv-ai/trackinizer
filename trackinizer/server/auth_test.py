@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import logging
 import os
 import uuid
 
@@ -175,6 +176,7 @@ def _request_with(
     request.app.state.store = (
         Store(cast(Any, engine), embed=StubEmbedder()) if store is None else store
     )
+    request.state.request_id = ""
     return request
 
 
@@ -206,6 +208,33 @@ class TestCurrentUser:
         # the UI can show "this key was used 5 minutes ago".
         sqls = [c.args[0] for c in engine.conn.execute.call_args_list]
         assert any("UPDATE api_keys SET last_used_at" in s for s in sqls)
+
+    @pytest.mark.asyncio
+    async def test_bearer_auth_logs_correlated_stage_timings(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        secret, _ = generate_token()
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
+        request = _request_with(engine, f"Bearer {secret}")
+        request.state.request_id = "request-123"
+
+        with caplog.at_level(logging.INFO):
+            await current_user(request)
+
+        record = next(
+            record
+            for record in caplog.records
+            if getattr(record, "event", "") == "trackinizer_auth_completed"
+        )
+        fields = record.__dict__
+        assert fields["request_id"] == "request-123"
+        assert fields["lookup_mode"] == "prefix"
+        assert fields["outcome"] == "success"
+        assert fields["query_sec"] >= 0
+        assert fields["verify_sec"] >= 0
+        assert fields["duration_sec"] >= fields["query_sec"] + fields["verify_sec"]
 
     @pytest.mark.asyncio
     async def test_effective_role_is_min_of_user_and_key(self) -> None:

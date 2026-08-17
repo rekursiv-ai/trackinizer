@@ -11,8 +11,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, cast
 
+import asyncio
 import json
+import logging
 import re
+import time
 import uuid
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -64,6 +67,7 @@ _IDENTITY_COLUMNS: frozenset[str] = frozenset(
 )
 
 router = APIRouter()
+_logger = logging.getLogger(__name__)
 
 
 # -- Inquiry read -----------------------------------------------------------
@@ -134,14 +138,53 @@ async def list_inquiries_route(
     store = get_store(request)
     for one_kind in kind:
         filters = tuple(_parse_filter_param(raw, one_kind) for raw in (filter_ or ()))
-        rows = await store.list_kind(
-            one_kind,
-            status=status,
-            limit=limit,
-            offset=offset,
-            seq_ranges=seq_ranges,
-            filters=filters,
-        )
+        started = time.perf_counter()
+        rows: list[Inquiry] = []
+        outcome = "success"
+        error_type = ""
+        try:
+            rows = await store.list_kind(
+                one_kind,
+                status=status,
+                limit=limit,
+                offset=offset,
+                seq_ranges=seq_ranges,
+                filters=filters,
+            )
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            error_type = "CancelledError"
+            raise
+        except BaseException as error:
+            outcome = "failure"
+            error_type = type(error).__name__
+            raise
+        finally:
+            duration_sec = time.perf_counter() - started
+            request_id = str(getattr(request.state, "request_id", ""))
+            _logger.info(
+                "event=trackinizer_query_completed stage=list_inquiries "
+                "outcome=%s kind=%s filter_count=%d returned_rows=%d "
+                "duration_sec=%.6f request_id=%s error_type=%s",
+                outcome,
+                one_kind,
+                len(filters),
+                len(rows),
+                duration_sec,
+                request_id,
+                error_type,
+                extra={
+                    "event": "trackinizer_query_completed",
+                    "stage": "list_inquiries",
+                    "outcome": outcome,
+                    "kind": one_kind,
+                    "filter_count": len(filters),
+                    "returned_rows": len(rows),
+                    "duration_sec": duration_sec,
+                    "request_id": request_id,
+                    "error_type": error_type,
+                },
+            )
         out.extend(tag for r in rows if (tag := tag_kind(r)) is not None)
     return out
 

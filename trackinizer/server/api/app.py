@@ -4,9 +4,14 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import cast
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
+from uuid import UUID, uuid4
 
+import asyncio
 import logging
+import os
+import time
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -41,10 +46,15 @@ from trackinizer.types.errors import (
 )
 
 
+if TYPE_CHECKING:
+    from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+
 _logger = logging.getLogger(__name__)
 
 
 __all__ = [
+    "RequestLoggingMiddleware",
     "app",
     "check_violation_handler",
     "conflict_handler",
@@ -53,6 +63,34 @@ __all__ = [
     "not_found_handler",
     "unique_violation_handler",
 ]
+
+
+class RequestLoggingMiddleware:
+    """Correlate and time every HTTP request without buffering responses."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        span = _RequestLogSpan.from_scope(scope, send=send)
+        try:
+            await self._app(scope, receive, span.send)
+        except asyncio.CancelledError:
+            span.log(outcome="cancelled", error_type="CancelledError")
+            raise
+        except BaseException as error:
+            span.log(outcome="failure", error_type=type(error).__name__)
+            raise
+        else:
+            span.log(outcome=_http_outcome(span.status_code))
 
 
 @asynccontextmanager
@@ -98,6 +136,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
 app = FastAPI(title="Trackinizer", lifespan=lifespan)
 app.add_middleware(ChangeIdMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
 for route_module in (
     admin_routes,
     auth_routes,
@@ -208,3 +247,100 @@ async def unique_violation_handler(
         status_code=409,
         content={"detail": "unique constraint violated"},
     )
+
+
+@dataclass(slots=True, kw_only=True)
+class _RequestLogSpan:
+    downstream: Send
+    request_id: str
+    method: str
+    path: str
+    started: float
+    status_code: int = 0
+    response_start_sec: float = 0.0
+    logged: bool = False
+
+    @classmethod
+    def from_scope(cls, scope: Scope, *, send: Send) -> _RequestLogSpan:
+        request_id = _request_id_from_scope(scope)
+        state = cast(dict[str, object], scope.setdefault("state", {}))
+        state["request_id"] = request_id
+        return cls(
+            downstream=send,
+            request_id=request_id,
+            method=cast(str, scope.get("method", "")),
+            path=cast(str, scope.get("path", "")),
+            started=time.perf_counter(),
+        )
+
+    async def send(self, message: Message) -> None:
+        if message["type"] == "http.response.start":
+            self.status_code = cast(int, message["status"])
+            self.response_start_sec = time.perf_counter() - self.started
+            headers = list(cast(list[tuple[bytes, bytes]], message.get("headers", [])))
+            headers = [
+                (name, value)
+                for name, value in headers
+                if name.lower() != b"x-request-id"
+            ]
+            headers.append((b"x-request-id", self.request_id.encode("ascii")))
+            message["headers"] = headers
+        await self.downstream(message)
+
+    def log(self, *, outcome: str, error_type: str = "") -> None:
+        if self.logged:
+            return
+        self.logged = True
+        duration_sec = time.perf_counter() - self.started
+        _logger.info(
+            "event=trackinizer_request_completed stage=http_request "
+            "outcome=%s method=%s path=%s status_code=%d "
+            "response_start_sec=%.6f duration_sec=%.6f request_id=%s "
+            "worker_pid=%d error_type=%s",
+            outcome,
+            self.method,
+            self.path,
+            self.status_code,
+            self.response_start_sec,
+            duration_sec,
+            self.request_id,
+            os.getpid(),
+            error_type,
+            extra={
+                "event": "trackinizer_request_completed",
+                "stage": "http_request",
+                "outcome": outcome,
+                "method": self.method,
+                "path": self.path,
+                "status_code": self.status_code,
+                "response_start_sec": self.response_start_sec,
+                "duration_sec": duration_sec,
+                "request_id": self.request_id,
+                "worker_pid": os.getpid(),
+                "error_type": error_type,
+            },
+        )
+
+
+def _request_id_from_scope(scope: Scope) -> str:
+    raw_headers = cast(list[tuple[bytes, bytes]], scope.get("headers", []))
+    raw = next(
+        (
+            value.decode("ascii", errors="ignore")
+            for name, value in raw_headers
+            if name.lower() == b"x-request-id"
+        ),
+        "",
+    )
+    try:
+        return str(UUID(raw))
+    except ValueError:
+        return str(uuid4())
+
+
+def _http_outcome(status_code: int) -> str:
+    if status_code < 400:
+        return "success"
+    if status_code < 500:
+        return "rejected"
+    return "failure"

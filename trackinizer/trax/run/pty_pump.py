@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from types import FrameType
-from typing import IO, Any, Final
+from typing import IO, Any, Final, cast
 
 import contextlib
 import errno
@@ -204,9 +204,13 @@ class PtyPump:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pgid, signal.SIGTERM)
         deadline = time.monotonic() + _TERMINATE_GRACE_SEC
+        waitid = cast(
+            Callable[[int, int, int], object | None],
+            vars(os)["waitid"],
+        )
         while time.monotonic() < deadline:
             try:
-                exited = os.waitid(
+                exited = waitid(
                     os.P_PID,
                     pgid,
                     os.WEXITED | os.WNOHANG | os.WNOWAIT,
