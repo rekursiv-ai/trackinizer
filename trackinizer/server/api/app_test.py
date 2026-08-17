@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock
+from uuid import UUID, uuid4
 
 import asyncio
 import json
@@ -12,6 +13,7 @@ import logging
 import asyncpg
 
 from trackinizer.conftest import make_store
+from trackinizer.lib.custom_json import dict_val, float_val, int_val, str_val
 from trackinizer.server.api import app as app_module
 from trackinizer.server.api.app import (
     check_violation_handler,
@@ -32,8 +34,12 @@ from trackinizer.types.errors import (
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+    from fastapi.testclient import TestClient
 
     import pytest
+
+    from trackinizer.conftest import FakeEngine
+    from trackinizer.server.store.core import Store
 
 
 class TestCLIHelpers:
@@ -114,6 +120,67 @@ class TestCLIHelpers:
         body = json.loads(bytes(response.body))
         assert response.status_code == 422
         assert body == {"detail": "bad input", "code": "validation"}
+
+
+class TestRequestLogging:
+    def test_request_completion_is_correlated_and_timed(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        client, _store, _engine = route_client
+        request_id = uuid4()
+
+        with caplog.at_level(logging.INFO):
+            response = client.get(
+                "/api/version",
+                headers={"X-Request-ID": str(request_id)},
+            )
+
+        assert response.status_code == 200
+        assert UUID(response.headers["X-Request-ID"]) == request_id
+        record = next(
+            record
+            for record in caplog.records
+            if getattr(record, "event", "") == "trackinizer_request_completed"
+        )
+        fields = dict_val(record.__dict__)
+        assert str_val(fields.get("request_id")) == str(request_id)
+        assert str_val(fields.get("method")) == "GET"
+        assert str_val(fields.get("path")) == "/api/version"
+        assert str_val(fields.get("outcome")) == "success"
+        assert int_val(fields.get("status_code"), 0) == 200
+        assert int_val(fields.get("worker_pid"), 0) > 0
+        assert float_val(fields.get("response_start_sec"), -1) >= 0
+        assert float_val(fields.get("duration_sec"), -1) >= float_val(
+            fields.get("response_start_sec"),
+            0,
+        )
+
+    def test_invalid_request_id_is_replaced_and_rejection_is_classified(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        client, _store, _engine = route_client
+
+        with caplog.at_level(logging.INFO):
+            response = client.get(
+                "/api/does-not-exist",
+                headers={"X-Request-ID": "not-a-uuid"},
+            )
+
+        assert response.status_code == 404
+        request_id = str(UUID(response.headers["X-Request-ID"]))
+        record = next(
+            record
+            for record in caplog.records
+            if getattr(record, "event", "") == "trackinizer_request_completed"
+        )
+        fields = dict_val(record.__dict__)
+        assert str_val(fields.get("request_id")) == request_id
+        assert str_val(fields.get("outcome")) == "rejected"
+        assert int_val(fields.get("status_code"), 0) == 404
 
 
 class TestAuthDisabledWarning:

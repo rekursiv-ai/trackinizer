@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
 import json
+import logging
 import uuid
 
 from fastapi import FastAPI
@@ -30,6 +31,7 @@ from trackinizer.conftest import (
     queue_field_rows,
     set_field_row,
 )
+from trackinizer.lib.custom_json import dict_val, float_val, int_val, str_val
 from trackinizer.server import web
 from trackinizer.server.api import query
 from trackinizer.server.api.app import app
@@ -45,6 +47,8 @@ from trackinizer.types.inquiries import Inquiry
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
+
+    import pytest
 
     from trackinizer.server.store.core import Store
 
@@ -185,6 +189,40 @@ class TestRoutes:
             ("owner", "nre", "Dan"),
             ("issue_priority", "gt", "5"),
         ]
+
+    def test_list_kind_route_logs_correlated_query_stage(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        client, store, _engine = route_client
+        with (
+            patch.object(store, "list_kind", new_callable=AsyncMock) as mock,
+            caplog.at_level(logging.INFO),
+        ):
+            mock.return_value = []
+            response = client.get(
+                "/api/inquiries",
+                params=[
+                    ("kind", "Experiment"),
+                    ("filter", '{"field":"labels","op":"is","value":"ready"}'),
+                    ("filter", '{"field":"owner","op":"isnull"}'),
+                ],
+            )
+
+        assert response.status_code == 200
+        request_id = response.headers["X-Request-ID"]
+        record = next(
+            record
+            for record in caplog.records
+            if getattr(record, "event", "") == "trackinizer_query_completed"
+        )
+        fields = dict_val(record.__dict__)
+        assert str_val(fields.get("request_id")) == request_id
+        assert str_val(fields.get("kind")) == "Experiment"
+        assert int_val(fields.get("filter_count"), 0) == 2
+        assert int_val(fields.get("returned_rows"), -1) == 0
+        assert float_val(fields.get("duration_sec"), -1) >= 0
 
     def test_list_kind_route_rejects_isnull_on_not_null_column(
         self,

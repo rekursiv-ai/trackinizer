@@ -43,7 +43,9 @@ def pglite_workdir(tmp_path_factory: pytest.TempPathFactory) -> Path:
       workdir: Directory the shared engine may own for the session.
 
     """
-    return tmp_path_factory.mktemp("pglite-shared")
+    workdir = tmp_path_factory.mktemp("pglite-shared")
+    assert isinstance(workdir, Path)
+    return workdir
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")

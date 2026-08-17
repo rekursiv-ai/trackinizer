@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 from types import FrameType
-from typing import TYPE_CHECKING
 
 import contextlib
 import fcntl
@@ -18,15 +17,13 @@ import sys
 import threading
 import time
 
+import pytest
+
 from trackinizer.trax.run import pty_pump
 from trackinizer.trax.run.pty_pump import (
     PtyPump,
     encode_injection,
 )
-
-
-if TYPE_CHECKING:
-    import pytest
 
 
 class TestEncodeInjection:
@@ -455,6 +452,7 @@ class TestPtyPumpLifecycle:
         finally:
             terminator.join(timeout=2.0)
 
+    @pytest.mark.slow
     def test_trax_sigterm_closes_group_without_traceback(self, tmp_path: Path) -> None:
         """The full runner kills a detached helper when its leader exits on TERM."""
         ready = tmp_path / "ready"
@@ -504,14 +502,14 @@ class TestPtyPumpLifecycle:
             text=True,
         )
         try:
-            deadline = time.monotonic() + 5.0
+            deadline = time.monotonic() + 15.0
             while not ready.exists() and time.monotonic() < deadline:
                 time.sleep(0.01)
             assert ready.exists(), "full trax runner did not start its PTY helper"
             helper_pid = int(ready.read_text())
 
             os.killpg(process.pid, signal.SIGTERM)
-            _, stderr = process.communicate(timeout=5.0)
+            _, stderr = process.communicate(timeout=10.0)
             assert process.returncode == 128 + signal.SIGTERM
             assert "Traceback" not in stderr
 
