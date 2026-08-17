@@ -921,7 +921,6 @@ source = { editable = "." }
 dependencies = [
     { name = "asyncpg", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "fastapi", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
-    { name = "filelock", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "httpx", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "itsdangerous", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
     { name = "lark", marker = "sys_platform == 'darwin' or sys_platform == 'linux'" },
@@ -990,7 +989,6 @@ typecheck = [
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "fastapi", specifier = ">=0.123.9" },
-    { name = "filelock", specifier = ">=3.12" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "itsdangerous", specifier = ">=2.2.0" },
     { name = "lark", specifier = ">=1.1" },
