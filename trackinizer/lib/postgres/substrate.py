@@ -16,9 +16,13 @@ NOTIFY; PostgresEngine bridges the dedicated listener into the same bus).
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
-from contextlib import AbstractAsyncContextManager, suppress
-from dataclasses import dataclass
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Sequence
+from contextlib import (
+    AbstractAsyncContextManager,
+    asynccontextmanager,
+    contextmanager,
+    suppress,
+)
 from pathlib import Path
 from typing import Final, Protocol, Self
 
@@ -26,15 +30,16 @@ import asyncio
 import hashlib
 import json
 import os
+import queue
 import shutil
 import socket
 import subprocess
 import threading
 import time
-import uuid
 
 from asyncpg import Connection, Record
 from asyncpg.pool import PoolConnectionProxy
+from filelock import FileLock, Timeout
 from py_pglite import PGliteConfig, PGliteManager
 from py_pglite.extensions import SUPPORTED_EXTENSIONS
 
@@ -48,6 +53,14 @@ type Conn = PoolConnectionProxy[Record] | Connection[Record]
 
 
 """An ``asyncpg`` connection -- pool-borrowed proxy or standalone."""
+
+
+class BootSlotUnavailableError(RuntimeError):
+    """No PGlite cold-start slot became free within the caller's deadline."""
+
+
+class InstallLockUnavailableError(RuntimeError):
+    """The shared PGlite npm-install lock stayed held past the deadline."""
 
 
 class DatabaseEngine(Protocol):
@@ -194,19 +207,18 @@ class PGliteEngine:
             # CPU-bound spawn+WASM-boot+first-connect is what starves siblings,
             # while the live engine afterwards is cheap. Re-claimed per attempt
             # and released in ``finally`` so a failed boot never leaks a slot.
-            slot = await asyncio.to_thread(_acquire_boot_slot)
             try:
-                await self._start_once(workdir)
+                async with acquire_boot_slot_async():
+                    await self._start_once(workdir)
                 return
             except (OSError, asyncpg.PostgresError, RuntimeError) as err:
                 # py-pglite signals a dead Node boot as a RuntimeError carrying
                 # the Node stderr; a connect failure is OSError/PostgresError.
                 # Both are transient under load -- retry. The final attempt's
-                # error surfaces via the raise below.
+                # error surfaces via the raise below. A slot timeout is NOT
+                # transient (the pool is saturated or leaked), so it propagates.
                 last_error = err
                 await self._teardown_failed_start()
-            finally:
-                await asyncio.to_thread(_release_boot_slot, slot)
         raise RuntimeError("PGlite failed to start after 5 attempts") from last_error
 
     async def _start_once(self, workdir: Path) -> None:
@@ -634,19 +646,17 @@ def _drain_node_stdout(manager: PGliteManager) -> None:
 _PGLITE_PACKAGE_JSON = Path(__file__).parent / "pglite-package.json"
 _PGLITE_PACKAGE_LOCK = Path(__file__).parent / "pglite-package-lock.json"
 
-# A crashed/killed installer cannot remove its ``.lock`` directory; treat one
-# older than this (comfortably past the install timeout) as abandoned and
-# reclaim it so a single ``kill -9`` never wedges every future engine start.
 _INSTALL_TIMEOUT_SECONDS: Final = 300.0
-_INSTALL_LOCK_STALE_SECONDS: Final = 900.0
-# The stale threshold must exceed the install timeout: a lock's mtime is set
-# once at acquisition and never heartbeated, so a live installer is only safe
-# from reclaim while its whole install fits inside the stale window. Raise (not
-# ``assert``, which ``-O`` strips) so a future edit that inverts them fails loud.
-if _INSTALL_LOCK_STALE_SECONDS <= _INSTALL_TIMEOUT_SECONDS:
-    raise RuntimeError(
-        "PGlite install lock stale window must exceed the install timeout"
-    )
+"""Wall-clock ceiling on a single ``npm ci``."""
+
+_INSTALL_LOCK_TIMEOUT_SECONDS: Final = 600.0
+"""How long to wait for another process's ``npm ci`` before failing.
+
+Exceeds ``_INSTALL_TIMEOUT_SECONDS`` so a waiter outlasts one full install by
+the holder rather than failing while legitimate work is in flight. No stale
+window is needed alongside it: the lock is released by the kernel when its
+holder exits, so a killed installer frees it immediately instead of blocking
+every other process for a fixed penalty."""
 
 
 def _cache_key() -> str:
@@ -691,39 +701,43 @@ def _ensure_shared_node_modules() -> Path:
     if ready.exists():
         return node_modules
     root.mkdir(parents=True, exist_ok=True)
-    lock = root / ".lock"
-    while not _try_acquire_install_lock(lock):
-        if ready.exists():
-            return node_modules
-        _real_sleep(0.2)
-    try:
+    with _install_lock(root / ".lock"):
+        # Re-check under the lock: the process we queued behind was very likely
+        # doing this exact install, and ``npm ci`` wipes node_modules on entry.
         if not ready.exists():
             _run_npm_ci(root)
             ready.touch()
-    finally:
-        with suppress(FileNotFoundError):
-            lock.rmdir()
     return node_modules
 
 
-def _try_acquire_install_lock(lock: Path) -> bool:
-    """Atomically claim the install lock, reclaiming a stale one if abandoned.
+@contextmanager
+def _install_lock(
+    lock_path: Path,
+    *,
+    timeout_sec: float = _INSTALL_LOCK_TIMEOUT_SECONDS,
+) -> Generator[None]:
+    """Hold the shared npm-install lock for the duration of the block.
 
-    ``mkdir`` is the atomic primitive. If it loses the race, a lock older than
-    ``_INSTALL_LOCK_STALE_SECONDS`` is assumed orphaned by a killed installer
-    and removed so the next attempt can claim it. The age check tolerates the
-    held-lock case: a live installer refreshes nothing, but its window is
-    bounded by the install timeout, far below the stale threshold.
+    Args:
+      lock_path: Lock file serialising ``npm ci`` across processes.
+      timeout_sec: Seconds to wait before giving up.
+
+    Raises:
+      InstallLockUnavailableError: If the lock is not obtained in time.
+
     """
+    lock = FileLock(lock_path)
     try:
-        lock.mkdir()
-        return True
-    except FileExistsError:
-        with suppress(FileNotFoundError):
-            age = time.time() - lock.stat().st_mtime
-            if age > _INSTALL_LOCK_STALE_SECONDS:
-                lock.rmdir()
-        return False
+        lock.acquire(timeout=timeout_sec)
+    except Timeout as err:
+        raise InstallLockUnavailableError(
+            f"PGlite npm install lock at {lock_path} was held for more than "
+            f"{timeout_sec}s",
+        ) from err
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _run_npm_ci(root: Path) -> None:
@@ -781,16 +795,30 @@ def _real_sleep(seconds: float) -> None:
 # only and is a no-op once the cache is warm, so it does NOT cover this.
 #
 # A cross-process counting semaphore caps simultaneous cold starts so each Node
-# gets enough CPU to finish booting before the next begins. It is built from the
-# same atomic-``mkdir`` slot + stale-reclaim primitive as the install lock (no
-# new dependency, survives ``kill -9``): a booter claims any free ``slot-<i>``
-# dir, holds it across the boot, and removes it on completion.
+# gets enough CPU to finish booting before the next begins. Each of the
+# ``slot-<i>`` files is an OS advisory lock (``filelock``): a booter holds one
+# across its boot and the kernel drops it when the process exits, however it
+# exits.
+#
+# Liveness is therefore observed, never inferred. An earlier version claimed
+# slots with ``mkdir`` and guessed whether a holder was alive from the
+# directory's mtime, which cannot be right in both directions: too short a
+# window steals slots from a slow-but-live boot (measured at 48 concurrent cold
+# starts on a 128-cpu host: holds reached ~126s against a 60s window and 16 of
+# 51 live slots were reclaimed, over-admitting the semaphore until boots failed
+# outright), while too long a window leaves a ``kill -9``'d holder squatting its
+# slot for the remainder of the window and wedging every waiter. A heartbeat
+# only moves the tradeoff. A kernel-released lock removes it: a killed holder's
+# slot is measurably free within a millisecond.
 
-_BOOT_SLOT_STALE_SECONDS: Final = 60.0
-"""A boot slot held longer than this is treated as orphaned by a killed booter
-and reclaimed. Must comfortably exceed a worst-case cold start (Node spawn +
-WASM boot + first connect, ~10s under load) so a live boot is never evicted,
-while still freeing a crashed booter's slot promptly."""
+_BOOT_SLOT_TIMEOUT_SECONDS: Final = 300.0
+"""How long a booter waits for a free cold-start slot before failing.
+
+Bounded on purpose. An unbounded wait converts one leaked slot into a permanent
+hang for every future caller, which surfaces far from its cause -- as unrelated
+tests timing out rather than as a lock error. Generous enough to cover a full
+pool of legitimately slow boots, short enough that a genuine deadlock is
+reported rather than waited on forever."""
 
 
 def _max_concurrent_boots() -> int:
@@ -816,74 +844,97 @@ def _boot_slots_root() -> Path:
     return cache_dir() / "rekursiv-ai" / "pglite" / "boot-slots" / host_key
 
 
-@dataclass(frozen=True, kw_only=True, slots=True)
-class _BootSlot:
-    """A claimed cold-start slot plus the unique token proving ownership.
-
-    The token disambiguates the reclaim race: a stale slot is reclaimed and
-    re-``mkdir``'d under the *same* name by another booter, so a path alone
-    cannot tell whether the slot we are releasing is still ours. The token
-    (written into ``<slot>/owner`` at claim) does -- release only removes the
-    slot when the on-disk token still matches.
-    """
-
-    path: Path
-    token: str
-
-    @property
-    def name(self) -> str:
-        """The slot directory name (``slot-<i>``)."""
-        return self.path.name
+def _boot_slot_lock_path(index: int) -> Path:
+    """Return the lock file backing cold-start slot ``index``."""
+    return _boot_slots_root() / f"slot-{index}.lock"
 
 
-_BOOT_OWNER_PREFIX: Final = "owner-"
+@contextmanager
+def acquire_boot_slot(
+    *,
+    timeout_sec: float = _BOOT_SLOT_TIMEOUT_SECONDS,
+) -> Generator[int]:
+    """Hold one cold-start slot for the duration of the block.
 
+    Sweeps the pool for a slot whose lock is free, then waits for whichever
+    frees first. Each attempt builds a FRESH ``FileLock``: an instance is
+    reentrant by design (``lock_counter``), so reusing one would let a single
+    caller re-enter a lock it already holds and silently exceed the cap.
 
-def _boot_owner_path(slot: _BootSlot) -> Path:
-    """Return this slot claim's token-scoped owner path."""
-    return slot.path / f"{_BOOT_OWNER_PREFIX}{slot.token}"
+    Args:
+      timeout_sec: Total seconds to wait for a slot before giving up.
 
+    Yields:
+      index: The claimed slot's index.
 
-def _acquire_boot_slot() -> _BootSlot:
-    """Block until a cold-start slot is free; return the claimed slot + token.
+    Raises:
+      BootSlotUnavailableError: If no slot frees within ``timeout_sec``.
 
-    Polls the fixed pool of ``slot-<i>`` dirs, claiming the first via atomic
-    ``mkdir`` (the same primitive as the install lock) and stamping a unique
-    owner token inside it. A slot whose mtime is older than
-    ``_BOOT_SLOT_STALE_SECONDS`` is reclaimed (whole dir removed) -- a booter
-    killed mid-start cannot remove its own dir, so without this a single
-    ``kill -9`` would permanently shrink the semaphore. Because reclaim mints a
-    fresh dir under the same name, ownership is tracked by the token, not the
-    path, so a slow original booter's later release cannot delete a sibling's
-    live slot.
     """
     root = _boot_slots_root()
     root.mkdir(parents=True, exist_ok=True)
     limit = _max_concurrent_boots()
+    deadline = time.monotonic() + timeout_sec
     while True:
-        for i in range(limit):
-            slot = root / f"slot-{i}"
+        for index in range(limit):
+            lock = FileLock(_boot_slot_lock_path(index))
             try:
-                slot.mkdir()
-            except FileExistsError:
-                with suppress(FileNotFoundError):
-                    age = time.time() - slot.stat().st_mtime
-                    if age > _BOOT_SLOT_STALE_SECONDS:
-                        shutil.rmtree(slot, ignore_errors=True)
+                lock.acquire(blocking=False)
+            except Timeout:
                 continue
-            token = uuid.uuid4().hex
-            claimed = _BootSlot(path=slot, token=token)
-            _boot_owner_path(claimed).touch()
-            return claimed
-        _real_sleep(0.1)
+            try:
+                yield index
+            finally:
+                lock.release()
+            return
+        if time.monotonic() >= deadline:
+            raise BootSlotUnavailableError(
+                f"no PGlite cold-start slot became free within {timeout_sec}s "
+                f"({limit} slots under {root})",
+            )
+        _real_sleep(0.05)
 
 
-def _release_boot_slot(slot: _BootSlot) -> None:
-    """Release a slot iff we still own it; tolerate a reclaimed/re-owned slot."""
-    with suppress(FileNotFoundError):
-        _boot_owner_path(slot).unlink()
-    with suppress(OSError):
-        slot.path.rmdir()
+@asynccontextmanager
+async def acquire_boot_slot_async(
+    *,
+    timeout_sec: float = _BOOT_SLOT_TIMEOUT_SECONDS,
+) -> AsyncGenerator[int]:
+    """Async wrapper over :func:`acquire_boot_slot` that never blocks the loop.
+
+    The claim and release are pushed to worker threads, and the whole wait runs
+    on ONE thread so acquire and release share it -- ``filelock`` is
+    thread-local by default, so a release from a different thread than the
+    acquire would not drop the lock.
+
+    Args:
+      timeout_sec: Total seconds to wait for a slot before giving up.
+
+    Yields:
+      index: The claimed slot's index.
+
+    """
+    released = threading.Event()
+    acquired: queue.Queue[int | BaseException] = queue.Queue(maxsize=1)
+
+    def hold() -> None:
+        try:
+            with acquire_boot_slot(timeout_sec=timeout_sec) as index:
+                acquired.put(index)
+                released.wait()
+        except BaseException as err:  # noqa: BLE001 -- relayed to the caller
+            acquired.put(err)
+
+    thread = threading.Thread(target=hold, daemon=True)
+    thread.start()
+    claimed = await asyncio.to_thread(acquired.get)
+    if isinstance(claimed, BaseException):
+        raise claimed
+    try:
+        yield claimed
+    finally:
+        released.set()
+        await asyncio.to_thread(thread.join)
 
 
 _EXTENSION_JS: Final = {
