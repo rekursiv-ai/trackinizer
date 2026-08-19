@@ -2233,38 +2233,73 @@ Options:
             for pid in _ref_ids(row.get("requires"))
             if pid in rows_by_id
         }
+        by_seq: Callable[[Mapping[str, object]], int] = lambda row: int(  # noqa: E731
+            cast(int, row.get("seq", 0))
+        )
         roots = sorted(
             (row for row in rows if str(row.get("id")) not in depended_on),
-            key=lambda row: int(cast(int, row.get("seq", 0))),
+            key=by_seq,
         )
-        # ``visited`` is per-root, so a node reachable from two roots
-        # renders under each; it only breaks cycles within one traversal.
+        # Every row is depended upon, so the forest has no root: the graph is
+        # one or more cycles. Rendering nothing would be indistinguishable
+        # from an empty fetch, so enter at the lowest seq and let the cycle
+        # guard mark where it closes.
+        if not roots and rows:
+            roots = [min(rows, key=by_seq)]
+            echo("(no root issue; every issue is required by another)")
+        # ``rendered`` spans the whole forest so a node reachable from many
+        # roots is expanded once. Without it a layered graph re-renders every
+        # shared subtree per path -- 2**depth for a chain that requires the
+        # next two, which never returns on a real table.
+        rendered: set[str] = set()
         for root in roots:
-            cls._render_tree(root, rows_by_id, set(), depth=0)
+            cls._render_tree(root, rows_by_id, set(), rendered, depth=0)
 
     @classmethod
     def _render_tree(
         cls,
         row: Mapping[str, object],
         rows_by_id: Mapping[str, Mapping[str, object]],
-        visited: set[str],
+        ancestors: set[str],
+        rendered: set[str],
         *,
         depth: int,
     ) -> None:
+        """Print one subtree.
+
+        Two guards, deliberately different in scope. ``ancestors`` is the path
+        from the root, so a node that requires one of its own ancestors is a
+        real cycle and says so. ``rendered`` spans the whole forest, so a node
+        reachable by several paths is expanded once and referenced thereafter
+        -- without that a diamond costs one traversal per path.
+        """
         row_id = str(row.get("id"))
-        if row_id in visited:
-            echo(f"{'  ' * depth}cycle issue {row.get('seq', '?')}")
+        seq = row.get("seq", "?")
+        if row_id in ancestors:
+            echo(f"{'  ' * depth}cycle issue {seq}")
             return
-        visited.add(row_id)
         echo(
-            f"{'  ' * depth}issue {row.get('seq', '?')} "
+            f"{'  ' * depth}issue {seq} "
             f"[{row.get('status') or '?'!s}] "
             f"{str(row.get('title', '') or '')[:50]}"
         )
-        for child_id in _ref_ids(row.get("requires")):
+        children = _ref_ids(row.get("requires"))
+        if row_id in rendered and children:
+            # Already expanded under an earlier root; point at that rendering
+            # rather than repeating a subtree that can be exponentially large.
+            echo(f"{'  ' * (depth + 1)}(prerequisites shown above)")
+            return
+        rendered.add(row_id)
+        for child_id in children:
             child = rows_by_id.get(child_id)
             if child is not None:
-                cls._render_tree(child, rows_by_id, set(visited), depth=depth + 1)
+                cls._render_tree(
+                    child,
+                    rows_by_id,
+                    ancestors | {row_id},
+                    rendered,
+                    depth=depth + 1,
+                )
             else:
                 # An off-window prerequisite is not in the fetched set; render it
                 # as a stub rather than silently dropping a real dependency (F31).
