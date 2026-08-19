@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import cast
+from typing import Literal, cast, get_args, get_origin
 from uuid import UUID
 
 from trackinizer.server.projection import (
@@ -26,9 +26,11 @@ from trackinizer.server.sql_fragments import (
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Change
+from trackinizer.types.columns import flat_column_specs, storage_name
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import NotFoundError
-from trackinizer.types.inquiries import Inquiry, Issue
+from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry, Issue
+from trackinizer.wire.filters import canonical_filter_field
 from trackinizer.wire.row_filter import RowFilter, match_filter
 from trackinizer.wire.seq_ranges import SeqRange
 
@@ -37,6 +39,76 @@ __all__ = [
     "_ReadMixin",
     "_seq_range_clause",
 ]
+
+
+def _lowerable_columns() -> frozenset[str]:
+    """Columns whose ``is`` filter means exactly SQL equality on TEXT.
+
+    :func:`~wire.row_filter.match_filter` implements ``is`` as
+    ``str(value) == operand``, which ``column = $n`` reproduces only for a
+    scalar text column: an array column means MEMBERSHIP, and a numeric one
+    would make Postgres coerce where Python compared strings. Restricting the
+    lowering to scalar ``TEXT`` keeps the two evaluators provably identical,
+    which is what lets the same query keep ``LIMIT`` in SQL.
+
+    Derived from the column specs, so a new text column is covered without an
+    edit here and a type change removes it automatically.
+    """
+    out: set[str] = {"kind"}
+    for source in (Inquiry, *KIND_TO_CLASS.values()):
+        for name, flat in flat_column_specs(source).items():
+            if flat.spec.flatten is not None or flat.spec.sql_type != "TEXT":
+                continue
+            if _is_text_valued(flat.value_type):
+                out.add(storage_name(name, flat.spec))
+    return frozenset(out)
+
+
+def _is_text_valued(annotation: object) -> bool:
+    """Whether a column's values are plain strings in Python.
+
+    Unwraps the two indirections the model uses: a ``type X = ...`` alias
+    (``Actor``, ``Status``) hides ``str`` or a ``Literal`` of strings behind
+    ``__value__``, and a nullable column is ``X | None``. Comparing the
+    annotation to ``str`` by identity misses both, which silently excludes
+    the columns most worth lowering.
+    """
+    if annotation is str:
+        return True
+    if (aliased := getattr(annotation, "__value__", None)) is not None:
+        return _is_text_valued(aliased)
+    args = [arg for arg in get_args(annotation) if arg is not type(None)]
+    if get_origin(annotation) is Literal:
+        return all(isinstance(arg, str) for arg in args)
+    if args:
+        return all(_is_text_valued(arg) for arg in args)
+    return False
+
+
+_LOWERABLE_EQUALITY_COLUMNS: frozenset[str] = _lowerable_columns()
+
+
+def _partition_filters(
+    filters: Sequence[RowFilter],
+) -> tuple[Sequence[RowFilter], Sequence[RowFilter]]:
+    """Split ``filters`` into SQL-lowerable and Python-only clauses.
+
+    Returns ``(lowerable, remaining)``. The caller may only push ``LIMIT``
+    into SQL when ``remaining`` is empty: a predicate still evaluated in
+    Python must run before the window, or matches past the limit are dropped
+    unseen (Issue#256).
+    """
+    lowerable: list[RowFilter] = []
+    remaining: list[RowFilter] = []
+    for filt in filters:
+        target = (
+            lowerable
+            if filt.op == "is"
+            and canonical_filter_field(filt.field) in _LOWERABLE_EQUALITY_COLUMNS
+            else remaining
+        )
+        target.append(filt)
+    return lowerable, remaining
 
 
 def _seq_range_clause(
@@ -120,6 +192,13 @@ class _ReadMixin(_StoreShared):
             clauses.append(f"status = ${len(params)}")
         if (seq_clause := _seq_range_clause(params, seq_ranges)) is not None:
             clauses.append(seq_clause)
+        # An ``is`` filter on a scalar text column is exactly SQL equality, so
+        # it joins the prefilter and the query keeps its LIMIT. Anything else
+        # stays in ``filters`` below and forces the post-filter path.
+        lowerable, filters = _partition_filters(filters)
+        for filt in lowerable:
+            params.append(filt.value)
+            clauses.append(f"{canonical_filter_field(filt.field)} = ${len(params)}")
         # ``id`` tie-breaks rows that share a ``created`` timestamp (always
         # true in a single transaction, sometimes true across them) so
         # offset pagination doesn't drop or duplicate rows under
