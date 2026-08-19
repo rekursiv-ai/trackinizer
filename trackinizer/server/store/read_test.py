@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import cast
 from unittest.mock import AsyncMock
 
 import asyncio
@@ -185,7 +186,7 @@ class TestCoverageStoreReads:
 
 
 class TestListKindFilterLowering:
-    """An equality filter on a text column belongs in the WHERE clause.
+    """Filters belong in the WHERE clause wherever SQL can express them.
 
     The post-filter path drops ``LIMIT`` from the SQL and materializes EVERY
     row of the kind before testing the predicate in Python -- correct, but the
@@ -193,7 +194,21 @@ class TestListKindFilterLowering:
     a live server, ``status`` as a filter took 75.9ms where the same predicate
     as a native param took 18.8ms for byte-identical output, and a filtered
     ``limit=1`` cost 56ms because the scan is paid before the window.
+
+    These pin the SQL SHAPE. That the shape selects the same rows as the
+    Python predicate is proven separately, against a real engine, in
+    ``read_lowering_pglite_test``.
     """
+
+    @staticmethod
+    async def sql_for(*filters: Filter, limit: int = 5) -> str:
+        """The SELECT ``list_kind`` issues for ``filters``."""
+        conn = make_conn()
+        conn.fetch.side_effect = [[], []]
+        store, _engine = make_store(conn)
+        await store.list_kind("Issue", limit=limit, filters=filters)
+        sql, *_params = conn.fetch.call_args_list[0].args
+        return cast(str, sql)
 
     @pytest.mark.asyncio
     async def test_lowers_an_equality_filter_into_sql(self) -> None:
@@ -233,75 +248,79 @@ class TestListKindFilterLowering:
         assert 5 in params
 
     @pytest.mark.asyncio
-    async def test_keeps_a_regex_filter_in_python(self) -> None:
-        """``re`` has no equivalent lowering; it must keep the honest path."""
+    async def test_lowers_a_regex_to_the_sql_operator(self) -> None:
+        """``re`` becomes Postgres' ``~``, so the scan never leaves the DB."""
+        sql = await self.sql_for(Filter(field="title", op="re", value="bug"))
+
+        assert "title ~ $2" in sql
+        assert "LIMIT" in sql
+
+    @pytest.mark.asyncio
+    async def test_lowers_list_membership_to_any(self) -> None:
+        """``label is x`` matches ANY element, which ``= ANY(col)`` expresses."""
+        sql = await self.sql_for(Filter(field="labels", op="is", value="bug"))
+
+        assert "$2 = ANY(labels)" in sql
+        assert "LIMIT" in sql
+
+    @pytest.mark.asyncio
+    async def test_lowers_presence_ops_without_binding_an_operand(self) -> None:
+        """``isnull`` carries no value, so it must not consume a placeholder."""
         conn = make_conn()
         conn.fetch.side_effect = [[], []]
         store, _engine = make_store(conn)
 
         await store.list_kind(
-            "Issue", limit=5, filters=(Filter(field="title", op="re", value="bug"),)
+            "Issue", limit=5, filters=(Filter(field="owner", op="isnull", value=""),)
         )
 
-        sql, *_params = conn.fetch.call_args_list[0].args
+        sql, *params = conn.fetch.call_args_list[0].args
+        assert "owner IS NULL" in sql
+        # kind, limit, offset -- no operand for the presence test.
+        assert params == ["Issue", 5, 0]
+
+    @pytest.mark.asyncio
+    async def test_lowers_an_order_op_on_a_numeric_column(self) -> None:
+        """Both evaluators compare a numeric column numerically."""
+        sql = await self.sql_for(Filter(field="issue_priority", op="lt", value="20"))
+
+        assert "issue_priority < $2::numeric" in sql
+        assert "LIMIT" in sql
+
+    @pytest.mark.asyncio
+    async def test_keeps_an_order_op_on_a_text_column_in_python(self) -> None:
+        """``match_filter`` compares numeric-looking TEXT as numbers.
+
+        Python reads ``"10" < "9"`` as ``10 < 9`` (False); SQL compares the
+        same values lexically (True). Measured against a live engine -- so an
+        order op on a text column must not lower.
+        """
+        sql = await self.sql_for(Filter(field="title", op="lt", value="9"))
+
         assert "LIMIT" not in sql, (
-            "a filter evaluated in Python must not window in SQL; rows past "
-            "the limit would be dropped before the predicate ran (Issue#256)"
+            "an order op lowered on a TEXT column; SQL sorts it lexically "
+            "where Python sorts numerically, silently changing the rows"
         )
 
     @pytest.mark.asyncio
-    async def test_a_mixed_filter_set_keeps_the_python_path(self) -> None:
-        """One un-lowerable clause forces the whole query back to post-filter."""
-        conn = make_conn()
-        conn.fetch.side_effect = [[], []]
-        store, _engine = make_store(conn)
+    async def test_an_unknown_field_stays_in_python(self) -> None:
+        """A field with no column shape has no SQL form to lower to."""
+        sql = await self.sql_for(Filter(field="nonesuch", op="is", value="x"))
 
-        await store.list_kind(
-            "Issue",
-            limit=5,
-            filters=(
-                Filter(field="account", op="is", value="josh"),
-                Filter(field="title", op="re", value="bug"),
-            ),
-        )
-
-        sql, *_params = conn.fetch.call_args_list[0].args
         assert "LIMIT" not in sql
 
     @pytest.mark.asyncio
-    async def test_keeps_a_list_column_filter_in_python(self) -> None:
-        """``label is x`` means MEMBERSHIP, which ``=`` does not express."""
-        conn = make_conn()
-        conn.fetch.side_effect = [[], []]
-        store, _engine = make_store(conn)
+    async def test_a_mixed_filter_set_keeps_the_python_path(self) -> None:
+        """One un-lowerable clause forces the whole query back to post-filter.
 
-        await store.list_kind(
-            "Issue", limit=5, filters=(Filter(field="labels", op="is", value="bug"),)
-        )
-
-        sql, *_params = conn.fetch.call_args_list[0].args
-        assert "LIMIT" not in sql, (
-            "a list column was lowered to scalar equality; 'label is x' must "
-            "match any element, not the whole array"
-        )
-
-    @pytest.mark.asyncio
-    async def test_keeps_a_numeric_column_filter_in_python(self) -> None:
-        """``priority is 10`` compares ``str(value)``, not a numeric cast.
-
-        Lowering it to ``priority = '10'`` would ask Postgres to coerce, and
-        the Python predicate's string semantics would no longer be what the
-        SQL evaluates.
+        The window must follow EVERY predicate, so a single Python-evaluated
+        clause costs the query its SQL ``LIMIT`` (Issue#256).
         """
-        conn = make_conn()
-        conn.fetch.side_effect = [[], []]
-        store, _engine = make_store(conn)
-
-        await store.list_kind(
-            "Issue", limit=5, filters=(Filter(field="priority", op="is", value="10"),)
+        sql = await self.sql_for(
+            Filter(field="account", op="is", value="josh"),
+            Filter(field="title", op="lt", value="9"),
         )
 
-        sql, *_params = conn.fetch.call_args_list[0].args
         assert "LIMIT" not in sql
 
 

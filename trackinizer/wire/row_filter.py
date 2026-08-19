@@ -112,9 +112,35 @@ def _matches_affirmative(row: _Row, op: FilterOp, filt: RowFilter) -> bool:
 
 
 def _matches_regex(value: object, pattern: str) -> bool:
+    """Search each candidate item, in the dialect the STORE evaluates.
+
+    The server lowers ``re`` / ``nre`` into Postgres' ``~`` operator, so this
+    predicate -- which the CLI's test fake runs to mirror route semantics --
+    must read the pattern the same way or the two disagree on real input.
+    Postgres uses POSIX ARE; the differences that bite are spelled out in
+    :func:`_posix_pattern`.
+    """
+    compiled = re.compile(_posix_pattern(pattern))
     return any(
-        re.search(pattern, str(item)) is not None for item in _candidate_items(value)
+        compiled.search(str(item)) is not None for item in _candidate_items(value)
     )
+
+
+# POSIX ARE spells a word boundary ``\y``; Python spells it ``\b`` and reads
+# ``\y`` as a literal ``y``. Every other construct these filters use --
+# ``\d`` / ``\w`` / ``\s``, ``(?i)``, lookahead, bounded repeats -- is
+# accepted identically by both, verified against a live engine.
+_POSIX_TRANSLATIONS: Final[tuple[tuple[str, str], ...]] = (
+    (r"\y", r"\b"),
+    (r"\Y", r"\B"),
+)
+
+
+def _posix_pattern(pattern: str) -> str:
+    """Rewrite POSIX-only constructs into their Python equivalents."""
+    for posix, python in _POSIX_TRANSLATIONS:
+        pattern = pattern.replace(posix, python)
+    return pattern
 
 
 def _matches_eq(value: object, expected: str) -> bool:
