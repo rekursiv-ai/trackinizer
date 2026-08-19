@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 import pytest
 
+from trackinizer.lib.custom_json import SchemaError
 from trackinizer.types.agent_session_events import (
     AgentSendMessage,
     AgentSessionEvent,
@@ -134,6 +135,19 @@ class TestEventBody:
             EventBody(kind="ToolResult", seq=0, message={"text": "x"}).to_event(
                 uuid.uuid4()
             )
+
+    def test_tagged_message_with_a_foreign_key_is_a_client_error(self) -> None:
+        # A correctly-tagged body carrying one stray key reaches the codec's
+        # unknown-field check. That check raises, and this route runs on
+        # client-supplied input (``store.append_events`` -> ``to_event``), so
+        # the exception must be one the API maps to 4xx: a bare ``ValueError``
+        # matched no registered handler and surfaced as a 500.
+        with pytest.raises(SchemaError, match="bogus"):
+            EventBody(
+                kind="ToolResult",
+                seq=0,
+                message={"__type__": "ToolResult", "bogus": 1},
+            ).to_event(uuid.uuid4())
 
     def test_round_trip_through_event(self) -> None:
         sid = uuid.uuid4()

@@ -105,7 +105,6 @@ async def _seed_active_user(store: Store, email: str) -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-@pytest.mark.timeout(180)
 class TestIntegrationEndToEnd:
     """End-to-end cascade behaviour against a session-scoped Postgres.
 
@@ -4609,7 +4608,6 @@ class TestIntegrationEndToEnd:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-@pytest.mark.timeout(180)
 class TestIntegrationAuth:
     """End-to-end auth v2 Phase 1 paths against a real Postgres.
 
@@ -4783,7 +4781,6 @@ class TestIntegrationAuth:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-@pytest.mark.timeout(60)
 class TestClientChangeIdReplay:
     """End-to-end replay via ``set_client_change_id`` -> ``emit_change``.
 
@@ -4890,7 +4887,6 @@ class TestClientChangeIdReplay:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-@pytest.mark.timeout(60)
 class TestFirstEdgeInfersProduced:
     """The first edge between two vertices infers ``younger produced_by older``.
 

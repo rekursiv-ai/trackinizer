@@ -13,7 +13,13 @@ import logging
 import asyncpg
 
 from trackinizer.conftest import make_store
-from trackinizer.lib.custom_json import dict_val, float_val, int_val, str_val
+from trackinizer.lib.custom_json import (
+    SchemaError,
+    dict_val,
+    float_val,
+    int_val,
+    str_val,
+)
 from trackinizer.server.api import app as app_module
 from trackinizer.server.api.app import (
     check_violation_handler,
@@ -21,6 +27,7 @@ from trackinizer.server.api.app import (
     fk_violation_handler,
     lifespan,
     not_found_handler,
+    schema_handler,
     unique_violation_handler,
     validation_handler,
 )
@@ -120,6 +127,20 @@ class TestCLIHelpers:
         body = json.loads(bytes(response.body))
         assert response.status_code == 422
         assert body == {"detail": "bad input", "code": "validation"}
+
+    def test_schema_handler_emits_422_and_code(self) -> None:
+        req = cast(Any, Mock())
+        response = asyncio.run(schema_handler(req, SchemaError("stray key")))
+        body = json.loads(bytes(response.body))
+        assert response.status_code == 422
+        assert body == {"detail": "stray key", "code": "schema"}
+
+    def test_schema_error_is_registered_not_merely_defined(self) -> None:
+        # The handler function existing is not what stops the 500 -- FastAPI
+        # only consults REGISTERED handlers, and a codec ``SchemaError``
+        # reaches the app as a plain ``ValueError`` on a client-supplied
+        # body. Assert the registration, which is the part that was missing.
+        assert app_module.app.exception_handlers.get(SchemaError) is schema_handler
 
 
 class TestRequestLogging:

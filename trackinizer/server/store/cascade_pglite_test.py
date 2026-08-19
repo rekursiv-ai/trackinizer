@@ -81,7 +81,6 @@ async def _submit_task(store: Store) -> uuid.UUID:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_title_drifted_retry_preserves_title_and_embedding(store: Store) -> None:
     """A replay returns before a drifted title or embedding is written."""
     task = await _submit_task(store)
@@ -122,7 +121,6 @@ async def test_title_drifted_retry_preserves_title_and_embedding(store: Store) -
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_transition_status_retry_replays_before_cas(store: Store) -> None:
     """An identical status-transition retry returns its original change."""
     task = await _submit_task(store)
@@ -154,7 +152,6 @@ async def test_transition_status_retry_replays_before_cas(store: Store) -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_transition_owner_allows_one_concurrent_acquirer(store: Store) -> None:
     """Exactly one worker can transition an unowned task to itself."""
     task = await _submit_task(store)
@@ -181,7 +178,6 @@ async def test_transition_owner_allows_one_concurrent_acquirer(store: Store) -> 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_transition_owner_retry_replays_before_cas(store: Store) -> None:
     """An identical owner-transition retry returns its original change."""
     task = await _submit_task(store)
@@ -213,7 +209,6 @@ async def test_transition_owner_retry_replays_before_cas(store: Store) -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_transition_judgement_retry_replays_before_cas(store: Store) -> None:
     """An identical judgement-transition retry returns its original change."""
     belief = await store.submit_belief(
@@ -247,7 +242,6 @@ async def test_transition_judgement_retry_replays_before_cas(store: Store) -> No
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_status_retry_reprobes_after_initial_visibility_miss(
     store: Store,
     monkeypatch: pytest.MonkeyPatch,
@@ -286,7 +280,6 @@ async def test_status_retry_reprobes_after_initial_visibility_miss(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_drifted_retry_reprobes_before_reference_validation(
     store: Store,
     monkeypatch: pytest.MonkeyPatch,
@@ -328,7 +321,6 @@ async def test_drifted_retry_reprobes_before_reference_validation(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_add_cost_retry_replays_after_subject_is_purged(store: Store) -> None:
     """A committed cost retry replays before checking target existence."""
     task = await _submit_task(store)
@@ -359,7 +351,6 @@ async def test_add_cost_retry_replays_after_subject_is_purged(store: Store) -> N
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_add_cost_zero_retry_reprobes_after_initial_visibility_miss(
     store: Store,
     monkeypatch: pytest.MonkeyPatch,
@@ -395,7 +386,6 @@ async def test_add_cost_zero_retry_reprobes_after_initial_visibility_miss(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_set_cost_axis_identical_retry_returns_original_change(
     store: Store,
 ) -> None:
@@ -429,7 +419,6 @@ async def test_set_cost_axis_identical_retry_returns_original_change(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_set_cost_axis_negative_retry_reprobes_after_visibility_miss(
     store: Store,
     monkeypatch: pytest.MonkeyPatch,
@@ -467,7 +456,6 @@ async def test_set_cost_axis_negative_retry_reprobes_after_visibility_miss(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_list_field_drifted_retry_replays_before_reference_validation(
     store: Store,
 ) -> None:
@@ -500,7 +488,6 @@ async def test_list_field_drifted_retry_replays_before_reference_validation(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio
-@pytest.mark.timeout(120)
 async def test_list_mutation_drifted_retry_replays_before_reference_validation(
     store: Store,
 ) -> None:

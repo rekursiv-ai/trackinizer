@@ -209,8 +209,9 @@ class EventBody(BaseModel):
         tag = self.message.get("__type__")
         # An empty ``{}`` is the explicit default-member sentinel (no fields
         # to carry, so no tag). Any other body must carry ``__type__``: a
-        # non-empty untagged body is wrong-shape, and ``from_json`` would
-        # silently drop its foreign keys and yield a default member.
+        # non-empty untagged body is wrong-shape, and the tag is what names
+        # WHICH member to check it against. (``from_json`` also rejects a
+        # foreign key outright now, but only once a member is chosen.)
         if self.message and tag is None:
             raise ValueError(
                 f"kind {self.kind!r} message omits the __type__ discriminator"
