@@ -9,7 +9,7 @@ AgentSession write 500s/409s while reads pass.
 
 This guards the *fresh* schema (the numbered migration that retrofitted
 existing databases has been squashed back into ``schema.sql``). It is
-``@pytest.mark.integration`` (real PGlite engine) and self-skips when the
+``@pytest.mark.db_pglite`` (real PGlite engine) and self-skips when the
 in-process Postgres substrate is unavailable.
 """
 
@@ -64,7 +64,7 @@ async def _sequence_exists(store: Store, name: str) -> bool:
         )
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 async def test_fresh_schema_has_agentsession_objects(store: Store) -> None:
     """A fresh DB carries the AgentSession table and ref sequence."""
@@ -72,7 +72,7 @@ async def test_fresh_schema_has_agentsession_objects(store: Store) -> None:
     assert await _sequence_exists(store, "seq_agentsession")
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 async def test_agentsession_lifecycle_writes_succeed(store: Store) -> None:
     """A session opens, takes events, and an unrelated Issue write still works.
@@ -108,7 +108,7 @@ async def test_agentsession_lifecycle_writes_succeed(store: Store) -> None:
     assert await store.get_inquiry(issue_id) is not None
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 async def test_session_events_strip_postgres_incompatible_nuls(store: Store) -> None:
     """A NUL artifact cannot make an otherwise valid transcript batch fail."""
@@ -140,7 +140,7 @@ async def test_session_events_strip_postgres_incompatible_nuls(store: Store) -> 
     )
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 async def test_submit_agentsession_stamps_opening_api_key(store: Store) -> None:
     """``submit_agentsession`` records the opening ``api_key_id`` on the row.
@@ -181,7 +181,7 @@ async def test_submit_agentsession_stamps_opening_api_key(store: Store) -> None:
     assert stored == opener
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 async def test_append_events_after_purge_is_not_found(store: Store) -> None:
     """Appending to a purged session is a clean 404, not a leaky FK 409.
@@ -210,7 +210,7 @@ async def test_append_events_after_purge_is_not_found(store: Store) -> None:
         )
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 async def test_create_time_status_is_persisted(store: Store) -> None:
     """An explicit create-time ``status`` is honored, not defaulted to active.
@@ -241,7 +241,7 @@ async def test_create_time_status_is_persisted(store: Store) -> None:
     assert fresh.status == "active", "an unset status is born active (the default)"
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 async def test_create_time_status_cannot_violate_agentsession_lifecycle(
     store: Store,

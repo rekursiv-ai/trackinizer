@@ -79,7 +79,7 @@ async def _submit_task(store: Store) -> uuid.UUID:
     )
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_title_drifted_retry_preserves_title_and_embedding(store: Store) -> None:
@@ -120,7 +120,7 @@ async def test_title_drifted_retry_preserves_title_and_embedding(store: Store) -
         )
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_transition_status_retry_replays_before_cas(store: Store) -> None:
@@ -152,7 +152,7 @@ async def test_transition_status_retry_replays_before_cas(store: Store) -> None:
     assert replay == key
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_transition_owner_allows_one_concurrent_acquirer(store: Store) -> None:
@@ -179,7 +179,7 @@ async def test_transition_owner_allows_one_concurrent_acquirer(store: Store) -> 
     assert task_row.owner in winners
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_transition_owner_retry_replays_before_cas(store: Store) -> None:
@@ -211,7 +211,7 @@ async def test_transition_owner_retry_replays_before_cas(store: Store) -> None:
     assert replay == key
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_transition_judgement_retry_replays_before_cas(store: Store) -> None:
@@ -245,7 +245,7 @@ async def test_transition_judgement_retry_replays_before_cas(store: Store) -> No
     assert replay == key
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_status_retry_reprobes_after_initial_visibility_miss(
@@ -284,7 +284,7 @@ async def test_status_retry_reprobes_after_initial_visibility_miss(
     assert probe.calls == 2
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_drifted_retry_reprobes_before_reference_validation(
@@ -326,7 +326,7 @@ async def test_drifted_retry_reprobes_before_reference_validation(
     assert probe.calls == 2
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_add_cost_retry_replays_after_subject_is_purged(store: Store) -> None:
@@ -357,7 +357,7 @@ async def test_add_cost_retry_replays_after_subject_is_purged(store: Store) -> N
     assert replay == key
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_add_cost_zero_retry_reprobes_after_initial_visibility_miss(
@@ -393,7 +393,7 @@ async def test_add_cost_zero_retry_reprobes_after_initial_visibility_miss(
     assert probe.calls == 2
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_set_cost_axis_identical_retry_returns_original_change(
@@ -427,7 +427,7 @@ async def test_set_cost_axis_identical_retry_returns_original_change(
     assert replay == key
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_set_cost_axis_negative_retry_reprobes_after_visibility_miss(
@@ -465,7 +465,7 @@ async def test_set_cost_axis_negative_retry_reprobes_after_visibility_miss(
     assert probe.calls == 2
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_list_field_drifted_retry_replays_before_reference_validation(
@@ -498,7 +498,7 @@ async def test_list_field_drifted_retry_replays_before_reference_validation(
     assert replay == key
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 @pytest.mark.timeout(120)
 async def test_list_mutation_drifted_retry_replays_before_reference_validation(

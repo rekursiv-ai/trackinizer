@@ -40,7 +40,7 @@ def test_pglite_default_caches_use_xdg_cache(
     )
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 async def test_pglite_persistent_restart_retains_rows(tmp_path: Path) -> None:
     """PGlite rows survive engine restart when persistence is enabled."""
@@ -59,7 +59,7 @@ async def test_pglite_persistent_restart_retains_rows(tmp_path: Path) -> None:
         assert await conn.fetchval("SELECT id FROM durable_items") == "kept"
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio
 async def test_pglite_listen_notify_round_trips_payload(tmp_path: Path) -> None:
     """PGlite exposes the same listen/notify surface as external Postgres."""

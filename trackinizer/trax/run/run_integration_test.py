@@ -7,7 +7,7 @@ the last gap: it spawns a **real** ``claude`` / ``codex`` binary through
 in-process PGlite database, and asserts the captured session reached the DB
 as typed messages.
 
-It is ``@pytest.mark.integration`` and self-skips when the CLI binary is
+It is ``@pytest.mark.cli_python_subprocess`` and self-skips when the CLI binary is
 absent, so a machine without the agent CLIs (or without network/credentials
 for them) skips cleanly rather than failing. The server uses PGlite (the
 project's default substrate, in-process WASM Postgres) so no system Postgres
@@ -403,8 +403,9 @@ def _assert_transcript_synced(base_url: str, *, cli: str) -> None:
     assert row.get("ended") is not None, "session close did not stamp ended"
 
 
-@pytest.mark.integration
-@pytest.mark.real_llm
+@pytest.mark.cli_python_subprocess
+@pytest.mark.cli_claude
+@pytest.mark.cli_codex
 def test_trax_run_claude_syncs_session(server: str) -> None:
     """A real ``claude -p`` run captures and syncs its session to the DB."""
     if shutil.which("claude") is None:
@@ -418,8 +419,9 @@ def test_trax_run_claude_syncs_session(server: str) -> None:
     _assert_transcript_synced(server, cli="claude")
 
 
-@pytest.mark.integration
-@pytest.mark.real_llm
+@pytest.mark.cli_python_subprocess
+@pytest.mark.cli_claude
+@pytest.mark.cli_codex
 def test_trax_run_codex_syncs_session(server: str) -> None:
     """A real ``codex exec`` run captures and syncs its session to the DB."""
     if shutil.which("codex") is None:
@@ -493,7 +495,7 @@ class _LineAdapter:
         yield Event(message=UserMessage(text=raw.decode()))
 
 
-@pytest.mark.integration
+@pytest.mark.cli_python_subprocess
 def test_capture_streams_incrementally_before_close(
     server: str, tmp_path: Path
 ) -> None:
@@ -560,7 +562,7 @@ def test_capture_streams_incrementally_before_close(
     assert row.get("ended") is not None
 
 
-@pytest.mark.integration
+@pytest.mark.cli_python_subprocess
 def test_inbound_injection_reaches_child_end_to_end(server: str) -> None:
     """Full loop: HTTP enqueue -> poller -> pump.inject -> child receives it.
 
@@ -759,8 +761,9 @@ def _assert_injection_or_skip(cli: str, result: _InjectionResult) -> None:
     )
 
 
-@pytest.mark.integration
-@pytest.mark.real_llm
+@pytest.mark.cli_python_subprocess
+@pytest.mark.cli_claude
+@pytest.mark.cli_codex
 def test_injection_reaches_real_claude_end_to_end(server: str) -> None:
     """The full messaging loop drives a live, interactive claude.
 
@@ -780,8 +783,9 @@ def test_injection_reaches_real_claude_end_to_end(server: str) -> None:
     _assert_injection_or_skip("claude", result)
 
 
-@pytest.mark.integration
-@pytest.mark.real_llm
+@pytest.mark.cli_python_subprocess
+@pytest.mark.cli_claude
+@pytest.mark.cli_codex
 def test_injection_reaches_real_codex_end_to_end(server: str) -> None:
     """The full messaging loop drives a live, interactive codex.
 
@@ -838,7 +842,7 @@ if __name__ == "__main__":
     test_main(__file__)
 
 
-@pytest.mark.integration
+@pytest.mark.cli_python_subprocess
 def test_server_fixture_boots(server: str) -> None:
     """Smoke: the PGlite-backed fixture server answers the AgentSession listing.
 
