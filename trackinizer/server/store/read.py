@@ -9,7 +9,9 @@ A pure leaf: :meth:`get_inquiry`, :meth:`list_kind`, :meth:`next_issue`,
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from typing import Literal, cast, get_args, get_origin
 from uuid import UUID
 
@@ -41,27 +43,59 @@ __all__ = [
 ]
 
 
-def _lowerable_columns() -> frozenset[str]:
-    """Columns whose ``is`` filter means exactly SQL equality on TEXT.
+@dataclass(frozen=True, kw_only=True, slots=True)
+class Lowering:
+    """Whether filters may be pushed into SQL.
 
-    :func:`~wire.row_filter.match_filter` implements ``is`` as
-    ``str(value) == operand``, which ``column = $n`` reproduces only for a
-    scalar text column: an array column means MEMBERSHIP, and a numeric one
-    would make Postgres coerce where Python compared strings. Restricting the
-    lowering to scalar ``TEXT`` keeps the two evaluators provably identical,
-    which is what lets the same query keep ``LIMIT`` in SQL.
-
-    Derived from the column specs, so a new text column is covered without an
-    edit here and a type change removes it automatically.
+    Disabled only by the equivalence tests, which run the same query through
+    both evaluators and compare the rows. A field rather than a bare module
+    flag so the test's override is obvious at the assignment site.
     """
-    out: set[str] = {"kind"}
+
+    enabled: bool = True
+
+
+LOWERING: Lowering = Lowering()
+
+
+class _ColumnShape(StrEnum):
+    """How a column's values compare, which decides its SQL form."""
+
+    TEXT = "text"
+    """A scalar string: ``=`` and the regex operators apply directly."""
+
+    ARRAY = "array"
+    """A list column, where ``is`` means MEMBERSHIP, not equality."""
+
+    NUMERIC = "numeric"
+    """A number: the order ops compare numerically in BOTH evaluators, which
+    a text column would not (Python parses ``"10" < "9"`` as numbers, SQL
+    compares them lexically)."""
+
+
+def _column_shapes() -> dict[str, _ColumnShape]:
+    """Classify every filterable column, derived from the specs.
+
+    Derived rather than hand-listed so a new column is classified without an
+    edit here, and a type change reclassifies it automatically.
+    """
+    out: dict[str, _ColumnShape] = {"kind": _ColumnShape.TEXT}
     for source in (Inquiry, *KIND_TO_CLASS.values()):
         for name, flat in flat_column_specs(source).items():
-            if flat.spec.flatten is not None or flat.spec.sql_type != "TEXT":
-                continue
-            if _is_text_valued(flat.value_type):
-                out.add(storage_name(name, flat.spec))
-    return frozenset(out)
+            column = storage_name(name, flat.spec)
+            if flat.spec.sql_type.endswith("[]"):
+                out[column] = _ColumnShape.ARRAY
+            elif _is_numeric_sql(flat.spec.sql_type):
+                out[column] = _ColumnShape.NUMERIC
+            elif flat.spec.sql_type == "TEXT" and _is_text_valued(flat.value_type):
+                out[column] = _ColumnShape.TEXT
+    return out
+
+
+def _is_numeric_sql(sql_type: str) -> bool:
+    """Whether a declared SQL type sorts numerically."""
+    head = sql_type.split("(", maxsplit=1)[0].strip().upper()
+    return head in {"INTEGER", "BIGINT", "SMALLINT", "NUMERIC", "REAL", "DOUBLE"}
 
 
 def _is_text_valued(annotation: object) -> bool:
@@ -85,30 +119,90 @@ def _is_text_valued(annotation: object) -> bool:
     return False
 
 
-_LOWERABLE_EQUALITY_COLUMNS: frozenset[str] = _lowerable_columns()
+_COLUMN_SHAPES: dict[str, _ColumnShape] = _column_shapes()
+
+# SQL for each op, per column shape. ``{col}`` is the column name (drawn from
+# the closed set above, never user input) and ``{p}`` the bound placeholder.
+#
+# The order ops appear ONLY under NUMERIC: ``match_filter`` compares
+# numerically whenever both sides parse as numbers, so on a text column
+# Python reads ``"10" < "9"`` as 10 < 9 while SQL compares them lexically --
+# measured, and the two disagree. Restricting them to numeric columns is what
+# keeps the evaluators identical.
+_SQL_BY_SHAPE: dict[_ColumnShape, dict[str, str]] = {
+    _ColumnShape.TEXT: {
+        "is": "{col} = {p}",
+        "ne": "{col} IS DISTINCT FROM {p}",
+        "re": "{col} ~ {p}",
+        "nre": "{col} !~ {p}",
+        "isnull": "{col} IS NULL",
+        "notnull": "{col} IS NOT NULL",
+    },
+    _ColumnShape.ARRAY: {
+        # ``label is x`` matches ANY element, mirroring ``_candidate_items``.
+        "is": "{p} = ANY({col})",
+        "ne": "NOT ({p} = ANY(COALESCE({col}, ARRAY[]::text[])))",
+        "re": "EXISTS (SELECT 1 FROM unnest({col}) AS e WHERE e ~ {p})",
+        "nre": "NOT EXISTS (SELECT 1 FROM unnest({col}) AS e WHERE e ~ {p})",
+        "isnull": "{col} IS NULL",
+        "notnull": "{col} IS NOT NULL",
+    },
+    _ColumnShape.NUMERIC: {
+        "is": "{col}::text = {p}",
+        "ne": "{col}::text IS DISTINCT FROM {p}",
+        "lt": "{col} < {p}::numeric",
+        "le": "{col} <= {p}::numeric",
+        "gt": "{col} > {p}::numeric",
+        "ge": "{col} >= {p}::numeric",
+        "isnull": "{col} IS NULL",
+        "notnull": "{col} IS NOT NULL",
+    },
+}
+
+# Ops that test presence and carry no operand, so they bind no parameter.
+_VALUELESS_OPS: frozenset[str] = frozenset({"isnull", "notnull"})
+
+
+def _lower_filter(filt: RowFilter, params: list[object]) -> str | None:
+    """Render one filter as a SQL clause, or ``None`` if it cannot lower.
+
+    Appends the operand to ``params`` (keeping positional placeholders in
+    lockstep with the caller's list) only when the clause actually takes one.
+    """
+    column = canonical_filter_field(filt.field)
+    shape = _COLUMN_SHAPES.get(column)
+    if shape is None:
+        return None
+    template = _SQL_BY_SHAPE[shape].get(filt.op)
+    if template is None:
+        return None
+    if filt.op in _VALUELESS_OPS:
+        return template.format(col=column, p="")
+    params.append(filt.value)
+    return template.format(col=column, p=f"${len(params)}")
 
 
 def _partition_filters(
-    filters: Sequence[RowFilter],
-) -> tuple[Sequence[RowFilter], Sequence[RowFilter]]:
-    """Split ``filters`` into SQL-lowerable and Python-only clauses.
+    filters: Sequence[RowFilter], params: list[object]
+) -> tuple[Sequence[str], Sequence[RowFilter]]:
+    """Split ``filters`` into SQL clauses and clauses Python must still run.
 
-    Returns ``(lowerable, remaining)``. The caller may only push ``LIMIT``
-    into SQL when ``remaining`` is empty: a predicate still evaluated in
-    Python must run before the window, or matches past the limit are dropped
-    unseen (Issue#256).
+    Returns ``(clauses, remaining)``. The caller may only push ``LIMIT`` into
+    SQL when ``remaining`` is empty: a predicate still evaluated in Python
+    must run before the window, or matches past the limit are dropped unseen
+    (Issue#256).
     """
-    lowerable: list[RowFilter] = []
+    if not LOWERING.enabled:
+        return (), list(filters)
+    clauses: list[str] = []
     remaining: list[RowFilter] = []
     for filt in filters:
-        target = (
-            lowerable
-            if filt.op == "is"
-            and canonical_filter_field(filt.field) in _LOWERABLE_EQUALITY_COLUMNS
-            else remaining
-        )
-        target.append(filt)
-    return lowerable, remaining
+        clause = _lower_filter(filt, params)
+        if clause is None:
+            remaining.append(filt)
+        else:
+            clauses.append(clause)
+    return clauses, remaining
 
 
 def _seq_range_clause(
@@ -192,13 +286,12 @@ class _ReadMixin(_StoreShared):
             clauses.append(f"status = ${len(params)}")
         if (seq_clause := _seq_range_clause(params, seq_ranges)) is not None:
             clauses.append(seq_clause)
-        # An ``is`` filter on a scalar text column is exactly SQL equality, so
-        # it joins the prefilter and the query keeps its LIMIT. Anything else
-        # stays in ``filters`` below and forces the post-filter path.
-        lowerable, filters = _partition_filters(filters)
-        for filt in lowerable:
-            params.append(filt.value)
-            clauses.append(f"{canonical_filter_field(filt.field)} = ${len(params)}")
+        # Every filter whose SQL form provably selects the same rows as the
+        # Python predicate joins the prefilter, so the query keeps its LIMIT.
+        # Whatever cannot lower stays in ``filters`` and forces the
+        # post-filter path below.
+        lowered, filters = _partition_filters(filters, params)
+        clauses.extend(lowered)
         # ``id`` tie-breaks rows that share a ``created`` timestamp (always
         # true in a single transaction, sometimes true across them) so
         # offset pagination doesn't drop or duplicate rows under
