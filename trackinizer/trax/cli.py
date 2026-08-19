@@ -8,12 +8,15 @@ stays pure HTTP transport with no dependency on the profile store.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, override
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Final, override
 from urllib.parse import urlparse
 
 import argparse
 import atexit
+import functools
 import sys
+import threading
 
 from trackinizer.client.client import Client, server_url
 from trackinizer.client.errors import ClientError
@@ -62,7 +65,7 @@ def connect_flags(parser: argparse.ArgumentParser) -> None:
 
 
 def connect(args: argparse.Namespace) -> Client:
-    """Build a Client from flags, environment, and the saved profile.
+    """Return a Client for the flags, environment, and saved profile.
 
     Resolution order, highest precedence first:
       1. ``--host`` / ``--port`` flags.
@@ -72,7 +75,27 @@ def connect(args: argparse.Namespace) -> Client:
       5. The ``current`` file written by ``trax profile current NAME``.
       6. The ``default`` profile.
       7. ``http://127.0.0.1:8765``, when nothing above is set.
+
+    Clients are shared per resolved identity. A one-shot CLI run builds
+    exactly one either way, but the daemon serves thousands of invocations
+    from one process: a fresh ``Client`` per request would open a new
+    connection pool each time -- discarding the keep-alive the transport
+    exists to provide -- and accumulate sockets for the daemon's whole life.
     """
+    return _shared_client(_resolve_target(args))
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class _Target:
+    """The resolved connection identity a ``Client`` is keyed on."""
+
+    url: str
+    author: str
+    api_key: str
+
+
+def _resolve_target(args: argparse.Namespace) -> _Target:
+    """Resolve flags, environment, and profile into one connection identity."""
     host = getattr(args, "host", None)
     port = getattr(args, "port", None)
     if name := getattr(args, "profile", None):
@@ -81,18 +104,49 @@ def connect(args: argparse.Namespace) -> Client:
         profile = Profile(url=server_url(env_url, "TRACKINIZER_URL"), author="")
     else:
         profile = load_profile()
-    if host is None and port is None:
-        return Client(profile.url, author=profile.author, api_key=profile.api_key)
-    parsed = urlparse(profile.url)
-    scheme = parsed.scheme or "http"
-    host = host or parsed.hostname or "127.0.0.1"
-    port = port or parsed.port
-    netloc = host if port is None else f"{host}:{port}"
-    return Client(
-        f"{scheme}://{netloc}",
-        author=profile.author,
-        api_key=profile.api_key,
-    )
+    url = profile.url
+    if host is not None or port is not None:
+        parsed = urlparse(profile.url)
+        scheme = parsed.scheme or "http"
+        host = host or parsed.hostname or "127.0.0.1"
+        port = port or parsed.port
+        url = f"{scheme}://{host if port is None else f'{host}:{port}'}"
+    return _Target(url=url, author=profile.author, api_key=profile.api_key)
+
+
+_CLIENTS: Final[dict[_Target, Client]] = {}
+"""Live clients by connection identity, shared across invocations.
+
+A module global because the sharing must outlive one ``parse_and_run`` call:
+under the daemon that function runs per request, so a call-local cache would
+build (and leak) a pool per request. Bounded by the number of distinct
+profiles a user actually addresses."""
+
+_CLIENTS_LOCK: Final = threading.Lock()
+"""The daemon serves requests on threads, so two may resolve the same target
+at once; without this each would build a pool and one would be orphaned."""
+
+
+def _shared_client(target: _Target) -> Client:
+    """The Client for ``target``, building it once per process."""
+    with _CLIENTS_LOCK:
+        if (client := _CLIENTS.get(target)) is not None:
+            return client
+        client = Client(target.url, author=target.author, api_key=target.api_key)
+        _CLIENTS[target] = client
+        return client
+
+
+def close_clients() -> None:
+    """Close every shared client and forget it.
+
+    Registered by the one-shot CLI path at exit; the daemon calls it when a
+    profile is rewritten, since the cached client still carries the old token.
+    """
+    with _CLIENTS_LOCK:
+        for client in _CLIENTS.values():
+            client.close()
+        _CLIENTS.clear()
 
 
 class Help(Command):
@@ -178,19 +232,10 @@ def parse_and_run(
     top, leftover = _peel_top_flags(list(argv))
     SHOW_IDS.set(bool(getattr(top, "show_ids", False)))
     if client_factory is None:
-        # Memoize so every verb shares one httpx pool, and close it at
-        # exit so it drains cleanly (httpx warns if a Client is GC'd
-        # with sockets still pooled).
-        _cached: list[Client] = []
-
-        def factory() -> Client:
-            if not _cached:
-                client = connect(top)
-                _cached.append(client)
-                atexit.register(client.close)
-            return _cached[0]
-
-        client_factory = factory
+        # ``connect`` shares one Client per resolved target for the life of
+        # the process, so every verb here -- and every later invocation, when
+        # a daemon runs this function repeatedly -- reuses one httpx pool.
+        client_factory = functools.partial(connect, top)
     if leftover and leftover[0] in {"--help", "-h"}:
         echo(Help.help_text(), nl=False)
         return None
@@ -268,6 +313,10 @@ def _prefix_end(argv: list[str]) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    # Drain pooled sockets at exit; httpx warns if a Client is garbage
+    # collected with any still open. The daemon never reaches this path -- it
+    # calls ``parse_and_run`` directly and keeps its clients for its lifetime.
+    atexit.register(close_clients)
     try:
         parse_and_run(sys.argv[1:] if argv is None else list(argv))
     except ClientError as err:

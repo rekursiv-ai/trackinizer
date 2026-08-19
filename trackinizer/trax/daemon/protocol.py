@@ -1,9 +1,12 @@
 """Length-prefixed JSON framing for the traxd Unix socket.
 
-STDLIB ONLY. The thin client imports this before it knows whether a daemon
-is running, so a package-internal import here would cost the ~190ms the
-daemon exists to remove -- on every invocation, daemon or not.
-``protocol_test`` asserts that behaviorally.
+The thin client imports this before it knows whether a daemon is running, so
+it must not reach the CLI's import graph: pulling in ``client.client`` here
+would cost the ~190ms the daemon exists to remove, on every invocation,
+daemon or not. ``protocol_test`` asserts that behaviorally. The shared
+``userdirs`` helper is the one internal import allowed -- it is stdlib-only
+and measured at 0.2ms, and hand-rolling the XDG layout instead resolves to
+the wrong directory on macOS.
 """
 
 from __future__ import annotations
@@ -14,8 +17,9 @@ from typing import Final, Self, cast
 
 import hashlib
 import json
-import os
 import socket
+
+from trackinizer.lib.userdirs import config_dir, state_dir
 
 
 PROTOCOL_VERSION: Final = 1
@@ -29,11 +33,18 @@ _MAX_FRAME_BYTES: Final = 64 * 1024 * 1024
 room while keeping a corrupt or hostile length prefix from sizing a buffer
 that exhausts memory before the read fails."""
 
-# The environment a verb reads. Shipped from the caller and applied around
-# the request, so the daemon resolves the INVOKING user's identity and
-# profile rather than whichever shell happened to spawn it:
-# ``USER``/``USERNAME`` back ``resolve_actor``; ``TRACKINIZER_PROFILE`` and
-# ``TRACKINIZER_URL`` back the connection chain in ``cli.connect``.
+# The environment a verb reads. Shipped from the caller and bound around the
+# request, so the daemon resolves the INVOKING user's identity and profile
+# rather than whichever shell happened to spawn it: ``USER``/``USERNAME``
+# back ``resolve_actor``; ``TRACKINIZER_PROFILE`` and ``TRACKINIZER_URL``
+# back the connection chain in ``cli.connect``.
+#
+# The XDG variables are deliberately ABSENT: they select which profile STORE
+# to read, and the store is resolved by ``userdirs`` from the daemon's own
+# environment. Forwarding them would make the daemon read a name from one
+# store and the file from another. The socket path is keyed on the config
+# directory instead (see :func:`socket_path`), so a caller with a different
+# store gets a different daemon rather than the wrong answer.
 FORWARDED_ENV: Final[tuple[str, ...]] = (
     "USER",
     "USERNAME",
@@ -54,7 +65,6 @@ class Request:
     """Whether the CALLER's stdout is a terminal. The daemon's is a socket, so
     it cannot answer this for itself and would size every table as if piped."""
     columns: int
-    stdin: str
     protocol_version: int
     source_version: str
 
@@ -66,7 +76,6 @@ class Request:
                 "env": self.env,
                 "isatty": self.isatty,
                 "columns": self.columns,
-                "stdin": self.stdin,
                 "protocol_version": self.protocol_version,
                 "source_version": self.source_version,
             },
@@ -75,21 +84,29 @@ class Request:
 
     @classmethod
     def from_json(cls, raw: bytes) -> Self:
+        """Parse one request frame.
+
+        Raises:
+          ProtocolVersionError: The peer speaks a different frame shape. A
+            distinct type so the daemon can answer it rather than dropping
+            the connection, which would look like "no daemon" to the client.
+          ValueError: The frame is not a well-formed request.
+
+        """
         payload = _decode_object(raw, "request")
         version = payload.get("protocol_version")
         if version != PROTOCOL_VERSION:
-            raise ValueError(
+            raise ProtocolVersionError(
                 f"unsupported protocol version {version!r}; expected {PROTOCOL_VERSION}"
             )
         return cls(
-            argv=tuple(_str_list(payload.get("argv"))),
-            cwd=_str(payload.get("cwd")),
-            env=_str_map(payload.get("env")),
+            argv=tuple(_str_list(_require(payload, "argv", "request"))),
+            cwd=_str(_require(payload, "cwd", "request")),
+            env=_str_map(_require(payload, "env", "request")),
             isatty=bool(payload.get("isatty")),
-            columns=_int(payload.get("columns")),
-            stdin=_str(payload.get("stdin")),
+            columns=_int(_require(payload, "columns", "request")),
             protocol_version=PROTOCOL_VERSION,
-            source_version=_str(payload.get("source_version")),
+            source_version=_str(_require(payload, "source_version", "request")),
         )
 
 
@@ -113,12 +130,27 @@ class Response:
 
     @classmethod
     def from_json(cls, raw: bytes) -> Self:
+        """Parse one response frame.
+
+        Every field is required. Defaulting a missing ``exit_code`` to 0 would
+        turn a truncated or corrupt frame into a reported SUCCESS, which is
+        the worst failure this protocol can produce: a script branching on the
+        exit status proceeds as though the command worked.
+
+        Raises:
+          ValueError: The frame is not a well-formed response.
+
+        """
         payload = _decode_object(raw, "response")
         return cls(
-            stdout=_str(payload.get("stdout")),
-            stderr=_str(payload.get("stderr")),
-            exit_code=_int(payload.get("exit_code")),
+            stdout=_str(_require(payload, "stdout", "response")),
+            stderr=_str(_require(payload, "stderr", "response")),
+            exit_code=_int(_require(payload, "exit_code", "response")),
         )
+
+
+class ProtocolVersionError(ValueError):
+    """A peer framed its request under a different protocol version."""
 
 
 def write_frame(conn: socket.socket, payload: bytes) -> None:
@@ -144,25 +176,38 @@ def socket_path() -> Path:
     """Path of this user's daemon socket.
 
     Session state, so it lives under the state dir rather than config (not
-    user-edited) or scratch (not bulk data). The XDG layout is spelled out
-    here rather than taken from the shared ``userdirs`` helper because this
-    module must stay import-free; it resolves to the same directory.
+    user-edited) or scratch (not bulk data).
+
+    The filename carries a digest of the CONFIG directory because the daemon
+    resolves the profile store from its own environment: a caller whose
+    ``XDG_CONFIG_HOME`` differs would otherwise be served profiles from a
+    store it never chose. Keying the socket on that directory means such a
+    caller connects to -- or spawns -- a daemon that reads the same store,
+    since the daemon inherits the environment of whoever spawned it.
     """
-    if env := os.environ.get("XDG_STATE_HOME"):
-        base = Path(env)
-    else:
-        base = Path.home() / ".local" / "state"
-    return base / "rekursiv-ai" / "traxd" / "traxd.sock"
+    digest = hashlib.blake2b(str(config_dir()).encode(), digest_size=8).hexdigest()
+    return state_dir() / "rekursiv-ai" / "traxd" / f"{digest}.sock"
+
+
+def package_root() -> Path:
+    """Root of the distribution whose behavior the daemon serves.
+
+    The whole package, not the ``trax`` subpackage inside it: a daemon holds
+    ``client`` and ``wire`` resident too, so a fingerprint scoped to the CLI
+    alone would keep serving stale behavior after an edit to the HTTP client
+    or a wire contract -- output that looks correct and is not.
+    """
+    return Path(__file__).resolve().parents[2]
 
 
 def source_version(root: Path) -> str:
-    """Fingerprint the CLI's source tree, for stale-daemon detection.
+    """Fingerprint a source tree, for stale-daemon detection.
 
-    A daemon outliving an edit to ``verbs.py`` would keep serving the old
-    behavior, which looks like correct output and is the sharpest failure
-    mode this design introduces. Hashing every ``.py`` path plus its size and
-    mtime catches an edit without reading file contents (a few hundred
-    ``stat`` calls, sub-millisecond) and without importing anything.
+    A daemon outliving an edit keeps serving the old behavior, which looks
+    like correct output and is the sharpest failure mode this design
+    introduces. Hashing every ``.py`` path plus its size and mtime catches an
+    edit without reading file contents (a few hundred ``stat`` calls,
+    sub-millisecond) and without importing anything.
     """
     digest = hashlib.blake2b(digest_size=16)
     for path in sorted(root.rglob("*.py")):
@@ -179,11 +224,11 @@ def source_version(root: Path) -> str:
 def _decode_object(raw: bytes, where: str) -> dict[str, object]:
     """Decode one frame into a JSON object, or raise ``ValueError``.
 
-    The shared typed-JSON extractor is the house tool for this, but it is a
-    package-internal import and this module must stay import-free, so the
-    narrowing is spelled out here instead. A non-object frame raises
-    ``ValueError`` rather than ``TypeError``: every malformed-frame failure
-    is one thing to the caller -- a peer that sent garbage.
+    The shared typed-JSON extractor is the house tool for this, but it pulls
+    in the import graph this module exists to avoid, so the narrowing is
+    spelled out here instead. A non-object frame raises ``ValueError`` rather
+    than ``TypeError``: every malformed-frame failure is one thing to the
+    caller -- a peer that sent garbage.
     """
     try:
         payload: object = json.loads(raw)
@@ -194,27 +239,42 @@ def _decode_object(raw: bytes, where: str) -> dict[str, object]:
     return cast("dict[str, object]", payload)
 
 
+def _require(payload: dict[str, object], key: str, where: str) -> object:
+    """Return ``payload[key]``, or raise if the peer omitted it."""
+    if key not in payload:
+        raise ValueError(f"malformed {where} frame: missing {key!r}")
+    return payload[key]
+
+
+# Every helper below narrows one JSON value decoded from a REMOTE peer, so a
+# wrong type is malformed input rather than a caller passing the wrong
+# argument. ``ValueError`` keeps every bad-frame failure one type the socket
+# layer can catch; a ``TypeError`` here would escape that handler and kill
+# the connection with a traceback instead of a diagnostic.
 def _str(value: object) -> str:
-    return value if isinstance(value, str) else ""
+    if not isinstance(value, str):
+        raise ValueError(f"expected a string, got {value!r}")  # noqa: TRY004 -- malformed wire input, not a caller type error.
+    return value
 
 
 def _int(value: object) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"expected an integer, got {value!r}")  # noqa: TRY004 -- malformed wire input, not a caller type error.
+    return value
 
 
 def _str_list(value: object) -> list[str]:
     if not isinstance(value, list):
-        return []
-    return [item for item in cast("list[object]", value) if isinstance(item, str)]
+        raise ValueError(f"expected a list, got {value!r}")  # noqa: TRY004 -- malformed wire input, not a caller type error.
+    return [_str(item) for item in cast("list[object]", value)]
 
 
 def _str_map(value: object) -> dict[str, str]:
     if not isinstance(value, dict):
-        return {}
+        raise ValueError(f"expected an object, got {value!r}")  # noqa: TRY004 -- malformed wire input, not a caller type error.
     return {
-        key: item
+        _str(key): _str(item)
         for key, item in cast("dict[object, object]", value).items()
-        if isinstance(key, str) and isinstance(item, str)
     }
 
 

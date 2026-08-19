@@ -28,7 +28,20 @@ ERR_STREAM: ContextVar[TextIO | None] = ContextVar("trax_err_stream", default=No
 """Where ``echo(err=True)`` writes, or ``None`` for the process ``sys.stderr``."""
 
 ENV: ContextVar[dict[str, str] | None] = ContextVar("trax_env", default=None)
-"""Caller-supplied environment overlay, or ``None`` for ``os.environ``."""
+"""Caller-supplied environment overlay, or ``None`` for ``os.environ``.
+
+When bound, the overlay is AUTHORITATIVE for the names the caller claims --
+see :func:`env`."""
+
+OVERLAID_NAMES: ContextVar[frozenset[str] | None] = ContextVar(
+    "trax_overlaid_names", default=None
+)
+"""Names the overlay speaks for, whether or not the caller had them set.
+
+An unset variable must read as unset, not fall through to the daemon's own
+environment: the daemon inherits the shell that happened to spawn it, so a
+caller with no ``TRACKINIZER_PROFILE`` would otherwise silently adopt that
+shell's profile -- writing to another server under another token."""
 
 CWD: ContextVar[str] = ContextVar("trax_cwd", default="")
 """Caller's working directory, or ``""`` for this process's own."""
@@ -53,12 +66,16 @@ def err_stream() -> TextIO:
 def env(name: str) -> str | None:
     """Read one environment variable for this invocation.
 
-    Falls back to ``os.environ`` when no overlay is bound, so a variable the
-    caller did not forward still resolves from the daemon's own environment
-    (``$HOME`` and friends are process-wide by nature).
+    A bound overlay is authoritative for the names in :data:`OVERLAID_NAMES`:
+    absent there means absent, never "ask the daemon's environment". Any
+    other name -- ``HOME``, ``PATH``, whatever a library reads -- still falls
+    through to ``os.environ``, which is process-wide by nature.
     """
-    if (overlay := ENV.get()) is not None and name in overlay:
-        return overlay[name]
+    if (overlay := ENV.get()) is not None:
+        if name in overlay:
+            return overlay[name]
+        if (claimed := OVERLAID_NAMES.get()) is not None and name in claimed:
+            return None
     return os.environ.get(name)
 
 
