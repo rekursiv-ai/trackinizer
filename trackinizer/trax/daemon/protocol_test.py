@@ -242,10 +242,15 @@ class TestImportPurity:
         ],
     )
     def test_import_pulls_in_nothing_expensive(self, module: str) -> None:
+        # ``dataclasses`` is here for cost, not layering: it pulls ``inspect``
+        # -> ``ast`` + ``dis`` for 8.4ms, which is 12% of a 70ms ``trax`` spent
+        # generating an ``__init__`` and ``__eq__`` this module writes by hand.
+        # Re-adding the decorator would be invisible without this name.
         probe = (
             "import sys;"
             f"import {module};"
-            "print(','.join(sorted(m for m in ('httpx', 'pydantic', 'wrapt')"
+            "print(','.join(sorted(m for m in "
+            "('httpx', 'pydantic', 'wrapt', 'dataclasses')"
             " if m in sys.modules)))"
         )
         result = subprocess.run(  # noqa: S603 -- fixed interpreter, literal probe.

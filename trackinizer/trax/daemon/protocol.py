@@ -11,9 +11,8 @@ the wrong directory on macOS.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Self, cast
+from typing import Final, Self, cast, override
 
 import hashlib
 import json
@@ -53,20 +52,72 @@ FORWARDED_ENV: Final[tuple[str, ...]] = (
 )
 
 
-@dataclass(frozen=True, kw_only=True, slots=True)
 class Request:
-    """One CLI invocation, with the ambient state the daemon cannot observe."""
+    """One CLI invocation, with the ambient state the daemon cannot observe.
 
-    argv: tuple[str, ...]
-    cwd: str
-    """The caller's directory; ``field to @relative/path`` resolves against it."""
-    env: dict[str, str]
-    isatty: bool
-    """Whether the CALLER's stdout is a terminal. The daemon's is a socket, so
-    it cannot answer this for itself and would size every table as if piped."""
-    columns: int
-    protocol_version: int
-    source_version: str
+    Hand-written rather than a ``@dataclass`` for the same reason
+    :func:`_decode_object` narrows by hand: ``dataclasses`` costs 8.4ms to
+    import (it pulls ``inspect`` -> ``ast`` + ``dis``), which every delegating
+    invocation would pay to generate an ``__init__`` and ``__eq__`` this
+    module could spell out in ten lines. That is 12% of a 70ms ``trax``.
+
+    Attributes:
+      argv: The CLI arguments, program name already stripped.
+      cwd: The caller's directory; ``field to @relative/path`` resolves
+        against it.
+      env: The forwarded subset of the caller's environment.
+      isatty: Whether the CALLER's stdout is a terminal. The daemon's is a
+        socket, so it cannot answer this for itself and would size every
+        table as if piped.
+      columns: Terminal width, or 0 when not a terminal.
+      protocol_version: Frame-shape version; a mismatch is answered, not
+        dropped.
+      source_version: Fingerprint of the caller's source tree.
+
+    """
+
+    __slots__ = (
+        "argv",
+        "columns",
+        "cwd",
+        "env",
+        "isatty",
+        "protocol_version",
+        "source_version",
+    )
+
+    def __init__(
+        self,
+        *,
+        argv: tuple[str, ...],
+        cwd: str,
+        env: dict[str, str],
+        isatty: bool,
+        columns: int,
+        protocol_version: int,
+        source_version: str,
+    ) -> None:
+        self.argv = argv
+        self.cwd = cwd
+        self.env = env
+        self.isatty = isatty
+        self.columns = columns
+        self.protocol_version = protocol_version
+        self.source_version = source_version
+
+    @override
+    def __eq__(self, other: object) -> bool:
+        """Field-wise equality; the framing round-trip tests assert on it."""
+        if not isinstance(other, Request):
+            return NotImplemented
+        return all(
+            getattr(self, name) == getattr(other, name) for name in Request.__slots__
+        )
+
+    @override
+    def __hash__(self) -> int:
+        """Hash the immutable fields, skipping the unhashable ``env`` dict."""
+        return hash((self.argv, self.cwd, self.source_version))
 
     def to_json(self) -> bytes:
         return json.dumps(
@@ -110,13 +161,33 @@ class Request:
         )
 
 
-@dataclass(frozen=True, kw_only=True, slots=True)
 class Response:
-    """What the CLI prints and exits with."""
+    """What the CLI prints and exits with.
 
-    stdout: str
-    stderr: str
-    exit_code: int
+    Hand-written for the reason given on :class:`Request`.
+    """
+
+    __slots__ = ("exit_code", "stderr", "stdout")
+
+    def __init__(self, *, stdout: str, stderr: str, exit_code: int) -> None:
+        self.stdout = stdout
+        self.stderr = stderr
+        self.exit_code = exit_code
+
+    @override
+    def __eq__(self, other: object) -> bool:
+        """Field-wise equality; the framing round-trip tests assert on it."""
+        if not isinstance(other, Response):
+            return NotImplemented
+        return (
+            self.stdout == other.stdout
+            and self.stderr == other.stderr
+            and self.exit_code == other.exit_code
+        )
+
+    @override
+    def __hash__(self) -> int:
+        return hash((self.stdout, self.stderr, self.exit_code))
 
     def to_json(self) -> bytes:
         return json.dumps(
