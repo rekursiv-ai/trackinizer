@@ -1996,37 +1996,73 @@ def test_render_tree_does_not_share_visited_across_roots(
     )
 
 
-def test_render_tree_reports_a_fully_cyclic_set(
+def _graph_row(rid: str, seq: int, requires: Sequence[str] = ()) -> dict[str, object]:
+    """One issue row for the dependency-graph tests."""
+    return {
+        "id": rid,
+        "seq": seq,
+        "status": "active",
+        "title": f"n{seq}",
+        "requires": [{"id": r} for r in requires],
+    }
+
+
+@pytest.mark.parametrize(
+    ("label", "rows"),
+    [
+        ("one cycle", [_graph_row("a", 1, ["b"]), _graph_row("b", 2, ["a"])]),
+        (
+            "two disjoint cycles",
+            [
+                _graph_row("a", 1, ["b"]),
+                _graph_row("b", 2, ["a"]),
+                _graph_row("c", 3, ["d"]),
+                _graph_row("d", 4, ["c"]),
+            ],
+        ),
+        (
+            "a root beside a disjoint cycle",
+            [
+                _graph_row("r", 1),
+                _graph_row("c", 3, ["d"]),
+                _graph_row("d", 4, ["c"]),
+            ],
+        ),
+        (
+            "a self-requiring row",
+            [_graph_row("r", 1), _graph_row("s", 2, ["s"])],
+        ),
+        (
+            "a cycle hanging off a root",
+            [
+                _graph_row("r", 1, ["c"]),
+                _graph_row("c", 2, ["d"]),
+                _graph_row("d", 3, ["c"]),
+            ],
+        ),
+    ],
+)
+def test_render_shows_every_issue(
+    label: str,
+    rows: Sequence[Mapping[str, object]],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Every issue depended upon means no root, which must not mean no output.
+    """Every fetched issue must appear somewhere in the output.
 
-    ``roots`` selects rows nothing else requires. In a complete cycle every
-    row is required by another, so the set is empty and the render loop runs
-    zero times -- printing nothing at all, with no indication the graph was
-    non-empty. Silence is the one answer that cannot be acted on.
+    The forest is built from rows nothing else requires, so any component
+    with no such row -- a cycle -- contributes no entry point and its members
+    are silently dropped. Dropping a row from a dependency view is the one
+    failure that cannot be noticed: the reader has no way to tell a graph
+    that omitted work from one that had none.
+
+    Asserted as total coverage rather than per-shape, because the shapes that
+    lose rows are exactly the ones nobody thinks to enumerate.
     """
-    first: dict[str, object] = {
-        "id": "id-a",
-        "seq": 1,
-        "status": "active",
-        "title": "a",
-        "requires": [{"id": "id-b"}],
-    }
-    second: dict[str, object] = {
-        "id": "id-b",
-        "seq": 2,
-        "status": "active",
-        "title": "b",
-        "requires": [{"id": "id-a"}],
-    }
-
-    Graph.render([first, second])
+    Graph.render(rows)
     output = capsys.readouterr().out
 
-    assert output.strip(), "a fully cyclic issue set rendered nothing at all"
-    assert "issue 1" in output
-    assert "issue 2" in output
+    missing = [row["seq"] for row in rows if f"issue {row['seq']} " not in output]
+    assert not missing, f"{label}: issues {missing} never appeared:\n{output}"
 
 
 def test_render_tree_does_not_blow_up_on_a_deep_diamond(
