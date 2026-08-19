@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal, cast, get_args, get_origin
+from typing import Final, Literal, cast, get_args, get_origin
 from uuid import UUID
 
 from trackinizer.server.projection import (
@@ -28,7 +28,11 @@ from trackinizer.server.sql_fragments import (
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Change
-from trackinizer.types.columns import flat_column_specs, storage_name
+from trackinizer.types.columns import (
+    FlatColumn,
+    flat_column_specs,
+    storage_name,
+)
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import NotFoundError
 from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry, Issue
@@ -67,10 +71,37 @@ class _ColumnShape(StrEnum):
     ARRAY = "array"
     """A list column, where ``is`` means MEMBERSHIP, not equality."""
 
-    NUMERIC = "numeric"
-    """A number: the order ops compare numerically in BOTH evaluators, which
-    a text column would not (Python parses ``"10" < "9"`` as numbers, SQL
-    compares them lexically)."""
+    INTEGER = "integer"
+    """A whole number. ``::text`` renders it exactly as Python's ``str``, and
+    the order ops compare numerically in both evaluators."""
+
+    REAL = "real"
+    """A fractional number, whose rendering the two disagree on by default.
+
+    ``match_filter`` compares ``str(value)``, so ``0.5`` must render ``0.5``
+    -- but a ``NUMERIC(14, 6)`` column's ``::text`` is ``0.500000`` and a
+    float's ``str(100.0)`` is ``100.0`` against SQL's ``100``. The template in
+    :data:`_SQL_BY_SHAPE` restores Python's shape: cast to ``float8`` (which
+    drops NUMERIC's trailing zeros) and re-append ``.0`` to a whole value."""
+
+    RENDERED = "rendered"
+    """A non-text scalar whose SQL ``::text`` rendering equals Python's
+    ``str()`` -- UUID today. ``match_filter`` stringifies the column value, so
+    only a type whose two renderings agree can lower, and it lowers through
+    the same ``::text`` cast the predicate implies."""
+
+    TIMESTAMP = "timestamp"
+    """An instant, rendered to match ``str(datetime)`` exactly.
+
+    A bare ``::text`` will NOT do: it renders in the session time zone with a
+    ``-08`` style offset, where Python prints ``+00:00``. The template in
+    :data:`_SQL_BY_SHAPE` forces UTC and reproduces Python's microsecond rule
+    (omitted when zero, else six digits).
+
+    This holds because asyncpg hands back UTC-aware datetimes whatever the
+    stored offset -- verified by round-tripping a ``-07:00`` value, which
+    reads back as ``+00:00`` -- so the predicate never sees a local offset
+    that SQL would normalize away."""
 
 
 def _column_shapes() -> dict[str, _ColumnShape]:
@@ -79,47 +110,137 @@ def _column_shapes() -> dict[str, _ColumnShape]:
     Derived rather than hand-listed so a new column is classified without an
     edit here, and a type change reclassifies it automatically.
     """
-    out: dict[str, _ColumnShape] = {"kind": _ColumnShape.TEXT}
+    # Identity/housekeeping columns the schema declares directly. They carry
+    # no ColumnSpec, so the spec walk below cannot see them -- and they are
+    # among the most filtered (``created``, ``seq``). Mirrors
+    # ``grammar._IDENTITY_FILTER_COLUMNS``.
+    out: dict[str, _ColumnShape] = {
+        "kind": _ColumnShape.TEXT,
+        "seq": _ColumnShape.INTEGER,
+        "id": _ColumnShape.RENDERED,
+        "created": _ColumnShape.TIMESTAMP,
+        "modified": _ColumnShape.TIMESTAMP,
+    }
     for source in (Inquiry, *KIND_TO_CLASS.values()):
         for name, flat in flat_column_specs(source).items():
             column = storage_name(name, flat.spec)
-            if flat.spec.sql_type.endswith("[]"):
-                out[column] = _ColumnShape.ARRAY
-            elif _is_numeric_sql(flat.spec.sql_type):
-                out[column] = _ColumnShape.NUMERIC
-            elif flat.spec.sql_type == "TEXT" and _is_text_valued(flat.value_type):
-                out[column] = _ColumnShape.TEXT
+            if (shape := _classify(column, flat)) is not None:
+                out[column] = shape
     return out
 
 
-def _is_numeric_sql(sql_type: str) -> bool:
-    """Whether a declared SQL type sorts numerically."""
-    head = sql_type.split("(", maxsplit=1)[0].strip().upper()
-    return head in {"INTEGER", "BIGINT", "SMALLINT", "NUMERIC", "REAL", "DOUBLE"}
+def _classify(column: str, flat: FlatColumn) -> _ColumnShape | None:
+    """Shape for one column, or ``None`` when it cannot lower.
+
+    A flattened axis (the ``marginal_cost_*`` pair) carries the COMPOSITE's
+    empty ``sql_type``, so the declared type says nothing; its Python
+    annotation does, and both axes are floats.
+    """
+    sql_type = flat.spec.sql_type
+    if sql_type.endswith("[]"):
+        return _ColumnShape.ARRAY
+    if _is_integer_sql(sql_type) or _is_valued(flat.value_type, int):
+        return _ColumnShape.INTEGER
+    if _is_real_sql(sql_type) or _is_valued(flat.value_type, float):
+        return _ColumnShape.REAL
+    if sql_type == "UUID":
+        return _ColumnShape.RENDERED
+    if sql_type == "TIMESTAMPTZ":
+        return _ColumnShape.TIMESTAMP
+    if sql_type == "TEXT" and _is_text_valued(flat.value_type):
+        return _ColumnShape.TEXT
+    # JSONB is the one shape left in Python: ``str(dict)`` is a Python repr
+    # with single quotes, which no SQL rendering reproduces.
+    del column
+    return None
+
+
+def _sql_head(sql_type: str) -> str:
+    """Leading word of a declared type, so ``NUMERIC(14, 6)`` reads as one."""
+    return sql_type.split("(", maxsplit=1)[0].strip().upper()
+
+
+def _is_integer_sql(sql_type: str) -> bool:
+    """Whether a declared type holds whole numbers."""
+    return _sql_head(sql_type) in {"INTEGER", "BIGINT", "SMALLINT"}
+
+
+def _is_real_sql(sql_type: str) -> bool:
+    """Whether a declared type holds fractional numbers."""
+    return _sql_head(sql_type) in {
+        "NUMERIC",
+        "DECIMAL",
+        "REAL",
+        "DOUBLE",
+        "DOUBLE PRECISION",
+    }
 
 
 def _is_text_valued(annotation: object) -> bool:
-    """Whether a column's values are plain strings in Python.
+    """Whether a column's values are plain strings in Python."""
+    if get_origin(annotation) is Literal:
+        return all(
+            isinstance(arg, str)
+            for arg in get_args(annotation)
+            if arg is not type(None)
+        )
+    return _is_valued(annotation, str)
+
+
+def _is_valued(annotation: object, target: type) -> bool:
+    """Whether every value a column can hold is a ``target``.
 
     Unwraps the two indirections the model uses: a ``type X = ...`` alias
-    (``Actor``, ``Status``) hides ``str`` or a ``Literal`` of strings behind
-    ``__value__``, and a nullable column is ``X | None``. Comparing the
-    annotation to ``str`` by identity misses both, which silently excludes
-    the columns most worth lowering.
+    (``Actor``, ``Status``) hides its real type behind ``__value__``, and a
+    nullable column is ``X | None``. Comparing the annotation to the type by
+    identity misses both, which silently excludes the columns most worth
+    lowering -- and a flattened axis has ONLY its annotation, since its spec
+    carries the composite's empty ``sql_type``.
+
+    ``bool`` never counts as ``int``: it is a subclass, but comparing a flag
+    as a number is not what any filter means.
     """
-    if annotation is str:
+    if annotation is bool:
+        return False
+    if annotation is target:
         return True
-    if (aliased := getattr(annotation, "__value__", None)) is not None:
-        return _is_text_valued(aliased)
-    args = [arg for arg in get_args(annotation) if arg is not type(None)]
     if get_origin(annotation) is Literal:
-        return all(isinstance(arg, str) for arg in args)
-    if args:
-        return all(_is_text_valued(arg) for arg in args)
-    return False
+        return all(
+            isinstance(arg, target)
+            for arg in get_args(annotation)
+            if arg is not type(None)
+        )
+    if (aliased := getattr(annotation, "__value__", None)) is not None:
+        return _is_valued(aliased, target)
+    args = [arg for arg in get_args(annotation) if arg is not type(None)]
+    return bool(args) and all(_is_valued(arg, target) for arg in args)
 
 
 _COLUMN_SHAPES: dict[str, _ColumnShape] = _column_shapes()
+
+# Render a ``timestamptz`` exactly as Python's ``str(datetime)`` does: UTC,
+# space separator, ``+00:00`` offset, and microseconds only when non-zero.
+# ``match_filter`` compares that string, so any other rendering would make the
+# two evaluators disagree on every timestamp filter.
+_TS_TEXT: Final = (
+    "(to_char({col} AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')"
+    " || CASE WHEN date_part('microsecond', {col})::int % 1000000 = 0 THEN ''"
+    " ELSE '.' || lpad((date_part('microsecond', {col})::int % 1000000)::text,"
+    " 6, '0') END || '+00:00')"
+)
+
+# Render a fractional number the way Python's ``str(float)`` does. The
+# ``float8`` cast drops the trailing zeros a ``NUMERIC(p, s)`` column prints
+# (``0.500000`` -> ``0.5``); re-appending ``.0`` to a whole value restores the
+# part Postgres omits (``100`` -> ``100.0``). The magnitude guard keeps the
+# ``bigint`` cast in range and leaves exponent-form values (``1e+20``) to
+# Postgres, which already spells them as Python does.
+_REAL_TEXT: Final = (
+    "(CASE WHEN {col}::float8 = trunc({col}::float8)"
+    " AND abs({col}::float8) < 1e16"
+    " THEN {col}::float8::bigint::text || '.0'"
+    " ELSE {col}::float8::text END)"
+)
 
 # SQL for each op, per column shape. ``{col}`` is the column name (drawn from
 # the closed set above, never user input) and ``{p}`` the bound placeholder.
@@ -147,13 +268,61 @@ _SQL_BY_SHAPE: dict[_ColumnShape, dict[str, str]] = {
         "isnull": "{col} IS NULL",
         "notnull": "{col} IS NOT NULL",
     },
-    _ColumnShape.NUMERIC: {
+    _ColumnShape.INTEGER: {
         "is": "{col}::text = {p}",
         "ne": "{col}::text IS DISTINCT FROM {p}",
+        "re": "{col}::text ~ {p}",
+        "nre": "{col}::text !~ {p}",
         "lt": "{col} < {p}::numeric",
         "le": "{col} <= {p}::numeric",
         "gt": "{col} > {p}::numeric",
         "ge": "{col} >= {p}::numeric",
+        "isnull": "{col} IS NULL",
+        "notnull": "{col} IS NOT NULL",
+    },
+    _ColumnShape.REAL: {
+        "is": f"{_REAL_TEXT} = {{p}}",
+        "ne": f"{_REAL_TEXT} IS DISTINCT FROM {{p}}",
+        "re": f"{_REAL_TEXT} ~ {{p}}",
+        "nre": f"{_REAL_TEXT} !~ {{p}}",
+        # Ordering compares NUMBERS in both evaluators, so it needs none of
+        # the rendering above.
+        "lt": "{col} < {p}::numeric",
+        "le": "{col} <= {p}::numeric",
+        "gt": "{col} > {p}::numeric",
+        "ge": "{col} >= {p}::numeric",
+        "isnull": "{col} IS NULL",
+        "notnull": "{col} IS NOT NULL",
+    },
+    # A UUID renders identically in both evaluators (verified), so it lowers
+    # through the ``::text`` cast ``match_filter``'s ``str(value)`` implies.
+    # The order ops are absent: Python would compare the rendered strings,
+    # and SQL would compare UUIDs, which order differently.
+    _ColumnShape.RENDERED: {
+        "is": "{col}::text = {p}",
+        "ne": "{col}::text IS DISTINCT FROM {p}",
+        "re": "{col}::text ~ {p}",
+        "nre": "{col}::text !~ {p}",
+        "isnull": "{col} IS NULL",
+        "notnull": "{col} IS NOT NULL",
+    },
+    _ColumnShape.TIMESTAMP: {
+        "is": f"{_TS_TEXT} = {{p}}",
+        "ne": f"{_TS_TEXT} IS DISTINCT FROM {{p}}",
+        "re": f"{_TS_TEXT} ~ {{p}}",
+        "nre": f"{_TS_TEXT} !~ {{p}}",
+        # Compared as TEXT, not as instants. ``match_filter`` finds neither
+        # side numeric and falls through to a string compare of the rendered
+        # value, so SQL must compare the same rendering. Casting the operand
+        # (``{p}::timestamptz``) would also make asyncpg infer a datetime
+        # parameter and reject the string the CLI actually sends.
+        #
+        # The two agree because this rendering is ISO-8601 in a fixed zone,
+        # where lexical order IS chronological order.
+        "lt": f"{_TS_TEXT} < {{p}}",
+        "le": f"{_TS_TEXT} <= {{p}}",
+        "gt": f"{_TS_TEXT} > {{p}}",
+        "ge": f"{_TS_TEXT} >= {{p}}",
         "isnull": "{col} IS NULL",
         "notnull": "{col} IS NOT NULL",
     },

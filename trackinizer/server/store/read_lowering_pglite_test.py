@@ -22,6 +22,7 @@ import pytest_asyncio
 from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.server.store import read
 from trackinizer.server.store.core import Store, StubEmbedder
+from trackinizer.types.cost import Cost
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.bodies import SubmitIssue
 from trackinizer.wire.filters import FILTER_OPS, Filter, FilterOp
@@ -61,6 +62,13 @@ async def seed(store: Store) -> None:
                 labels=list(labels),
             )
         )
+    # Give one row a FRACTIONAL cost. Python renders ``0.5``; a NUMERIC
+    # column's ``::text`` renders ``0.500000`` and a float's drops the
+    # trailing ``.0``, so an equality or regex filter on a number diverges
+    # unless the SQL reproduces Python's rendering. Every row keeps the
+    # default 0 without this, which no rendering difference can expose.
+    first = (await store.list_kind("Issue", limit=1))[0]
+    await store.add_cost(first.id, Cost(agent_usd=0.5), actor="tester")
 
 
 async def rows_via_python(
@@ -102,6 +110,36 @@ CASES: tuple[tuple[FilterOp, str, str], ...] = (
     # result set, which is why the order ops are numeric-only.
     ("lt", "title", "9"),
     ("gt", "title", "9"),
+    # A UUID renders identically in both evaluators, so it lowers via ::text.
+    ("notnull", "id", ""),
+    ("re", "id", "-"),
+    # A timestamp: SQL must reproduce ``str(datetime)`` EXACTLY -- UTC, a
+    # ``+00:00`` offset, microseconds only when non-zero. A bare ``::text``
+    # renders in the session zone as ``-08``, so every equality and regex
+    # filter on a time column would silently miss.
+    ("notnull", "created", ""),
+    ("re", "created", r"^20\d\d-"),
+    ("re", "created", r"\+00:00$"),
+    ("gt", "created", "2000-01-01 00:00:00+00:00"),
+    ("lt", "created", "2099-01-01 00:00:00+00:00"),
+    # A flattened cost axis, whose spec carries the COMPOSITE's empty
+    # sql_type -- the Python annotation is the only evidence it is numeric.
+    ("ge", "marginal_cost_agent_usd", "0"),
+    ("gt", "marginal_cost_agent_usd", "-1"),
+    ("isnull", "marginal_cost_agent_usd", ""),
+    # Equality and regex on a NUMBER compare RENDERINGS, and the two
+    # evaluators render differently unless the SQL is told not to: Python's
+    # ``str(0.5)`` is ``0.5`` where a NUMERIC column's ``::text`` is
+    # ``0.500000`` and a float's ``str(100.0)`` is ``100.0`` against SQL's
+    # ``100``.
+    ("is", "marginal_cost_agent_usd", "0.5"),
+    ("is", "marginal_cost_agent_usd", "0"),
+    ("ne", "marginal_cost_agent_usd", "0.5"),
+    ("re", "marginal_cost_agent_usd", r"^0\.5$"),
+    ("is", "issue_priority", "20"),
+    ("re", "issue_priority", "^2"),
+    # A float column, to catch a classifier that only knows integers.
+    ("notnull", "belief_confidence", ""),
 )
 
 
