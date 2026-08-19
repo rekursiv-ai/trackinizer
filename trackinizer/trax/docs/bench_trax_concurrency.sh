@@ -86,7 +86,7 @@ set -euo pipefail
 RUNS=500
 PARALLEL=500
 WITH_HTTP=1
-PROFILE=localhost
+PROFILE=default
 TRAX_ARGS=()
 
 while [[ $# -gt 0 ]]; do
