@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 
 import asyncpg
 
+from trackinizer.lib.custom_json import SchemaError
 from trackinizer.server.api import (
     admin_routes,
     auth_routes,
@@ -61,6 +62,7 @@ __all__ = [
     "fk_violation_handler",
     "lifespan",
     "not_found_handler",
+    "schema_handler",
     "unique_violation_handler",
 ]
 
@@ -173,6 +175,22 @@ async def validation_handler(request: Request, exc: ValidationError) -> JSONResp
     return JSONResponse(
         status_code=422,
         content={"detail": str(exc), "code": exc.code},
+    )
+
+
+@app.exception_handler(SchemaError)
+async def schema_handler(request: Request, exc: SchemaError) -> JSONResponse:
+    """Translate a codec ``SchemaError`` into HTTP 422.
+
+    A stray key in a client-supplied ``message`` body reaches the codec
+    through ``EventBody.to_event`` on the append-events path. It is a
+    malformed request, not a server fault, but the codec raises a
+    ``ValueError`` -- which matched no handler and so surfaced as a 500.
+    """
+    del request
+    return JSONResponse(
+        status_code=422,
+        content={"detail": str(exc), "code": "schema"},
     )
 
 
