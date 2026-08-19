@@ -452,7 +452,7 @@ class TestPtyPumpLifecycle:
         finally:
             terminator.join(timeout=2.0)
 
-    @pytest.mark.slow
+    @pytest.mark.cli_python_subprocess
     def test_trax_sigterm_closes_group_without_traceback(self, tmp_path: Path) -> None:
         """The full runner kills a detached helper when its leader exits on TERM."""
         ready = tmp_path / "ready"

@@ -53,7 +53,7 @@ async def scratch_engine(pg_dsn: str) -> AsyncIterator[postgres.PostgresEngine]:
         await admin.close()
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_non_nullable_columns_match_rendered_schema(
     scratch_engine: postgres.PostgresEngine,
@@ -80,7 +80,7 @@ async def test_non_nullable_columns_match_rendered_schema(
     assert set(NON_NULLABLE_COLUMNS) == schema_not_null
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_agent_session_events_kind_check_rejects_bogus_kind(
     scratch_engine: postgres.PostgresEngine,

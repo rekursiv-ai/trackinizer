@@ -5,7 +5,7 @@ Tests across ``trackinizer_test.py`` and friends share:
 * mock-based unit testing helpers (``make_conn`` / ``FakeEngine`` /
   ``make_store`` / ``executed_sql`` / ``new_uuid``), imported explicitly;
 * session-scoped Postgres DSN and engine plus a per-test ``integ_store``
-  fixture (``@pytest.mark.integration``). Tests using ``integ_store``
+  fixture (``@pytest.mark.cli_python_subprocess``). Tests using ``integ_store``
   must declare ``@pytest.mark.asyncio(loop_scope="session")``: the
   engine and its asyncpg pool live on the session loop, so per-test
   loops can't drive it.
@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
 from trackinizer.lib import postgres
 from trackinizer.lib.postgres import DatabaseEngine
+from trackinizer.lib.testing.resource_markers import pytest_collection_modifyitems
 from trackinizer.lib.testing.userdirs_fixture import (
     isolate_user_dirs,
     pytest_configure,
@@ -44,7 +45,7 @@ from trackinizer.server.store.core import Store, StubEmbedder
 # directory of the conftest that names it, so binding it here is what points
 # every trackinizer test's XDG lookups at a tmp dir instead of the developer's
 # own -- notably trax profiles, which live under ``config_dir``.
-__all__ = ["isolate_user_dirs", "pytest_configure"]
+__all__ = ["isolate_user_dirs", "pytest_collection_modifyitems", "pytest_configure"]
 
 
 def make_conn() -> AsyncMock:

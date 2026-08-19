@@ -877,7 +877,7 @@ class _SeedAfterUsersProbe:
         return getattr(self._conn, name)
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 class TestBootstrapAdminRace:
     """Concurrent ``bootstrap_admin`` on empty ``users`` must not crash a worker.

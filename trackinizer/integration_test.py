@@ -103,7 +103,7 @@ async def _seed_active_user(store: Store, email: str) -> None:
         )
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.timeout(180)
 class TestIntegrationEndToEnd:
@@ -4607,7 +4607,7 @@ class TestIntegrationEndToEnd:
         assert set(edge.labels or ()) == {"a", "b"}
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.timeout(180)
 class TestIntegrationAuth:
@@ -4781,7 +4781,7 @@ class TestIntegrationAuth:
         assert change_row["actor"] == "doomed@example.com"
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.timeout(60)
 class TestClientChangeIdReplay:
@@ -4888,7 +4888,7 @@ class TestClientChangeIdReplay:
         assert change_count == 1
 
 
-@pytest.mark.integration
+@pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.timeout(60)
 class TestFirstEdgeInfersProduced:
