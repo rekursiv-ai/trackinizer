@@ -17,6 +17,7 @@ from uuid import UUID
 import asyncio
 
 from trackinizer.lib.postgres import DatabaseEngine
+from trackinizer.server.auth import AuthIdentity
 from trackinizer.types.embedder import Embedder
 
 
@@ -84,6 +85,10 @@ class _StoreShared:
         # Stores keep independent bookkeeping and the memory releases when
         # the Store is collected.
         self._last_used_bumped_at: dict[UUID, float] = {}
+        # Verified-bearer cache; see :meth:`cached_bearer_identity`. Keyed by
+        # sha256 of the presented secret so no plaintext token is held in
+        # memory. Per-instance for the same reasons as the throttle above.
+        self._verified_bearers: dict[bytes, tuple[AuthIdentity, float]] = {}
 
     async def _embed_all(self, text: str) -> list[tuple[str, list[float]]]:
         """Embed ``text`` with every registered embedder in parallel.

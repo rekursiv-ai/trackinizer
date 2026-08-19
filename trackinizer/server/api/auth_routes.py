@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from trackinizer.lib.custom_json import MutableJSON
+from trackinizer.server.api._deps import get_store
 from trackinizer.server.api._routes_shared import (
     RoleLiteral,
     engine_of,
@@ -173,6 +174,11 @@ async def revoke_token_route(
         revoked = await revoke_api_key(conn, key_id=key_id, user_id=identity.user_id)
     if not revoked:
         raise HTTPException(status_code=404, detail="token not found")
+    # The verified-bearer cache would otherwise keep honoring this key for up
+    # to VERIFIED_BEARER_TTL_SEC, so a revoke would not take effect until the
+    # entry expired. Keyed on the revoked key, not the caller: the caller's
+    # other keys are still valid and must keep their entries.
+    get_store(request).forget_bearer_identity_for_key(key_id)
     return {"ok": True}
 
 
@@ -205,6 +211,9 @@ async def set_token_role_route(
             raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="token not found")
+    # The cached entry carries the OLD role; without this a demotion would
+    # not bind until the TTL expired.
+    get_store(request).forget_bearer_identity_for_key(key_id)
     return {"ok": True, "role": body.role}
 
 
