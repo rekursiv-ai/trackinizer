@@ -2233,27 +2233,25 @@ Options:
             for pid in _ref_ids(row.get("requires"))
             if pid in rows_by_id
         }
-        by_seq: Callable[[Mapping[str, object]], int] = lambda row: int(  # noqa: E731
-            cast(int, row.get("seq", 0))
-        )
-        roots = sorted(
-            (row for row in rows if str(row.get("id")) not in depended_on),
-            key=by_seq,
-        )
-        # Every row is depended upon, so the forest has no root: the graph is
-        # one or more cycles. Rendering nothing would be indistinguishable
-        # from an empty fetch, so enter at the lowest seq and let the cycle
-        # guard mark where it closes.
-        if not roots and rows:
-            roots = [min(rows, key=by_seq)]
-            echo("(no root issue; every issue is required by another)")
+        ordered = sorted(rows, key=lambda row: int(cast(int, row.get("seq", 0))))
+        roots = [row for row in ordered if str(row.get("id")) not in depended_on]
         # ``rendered`` spans the whole forest so a node reachable from many
         # roots is expanded once. Without it a layered graph re-renders every
         # shared subtree per path -- 2**depth for a chain that requires the
         # next two, which never returns on a real table.
         rendered: set[str] = set()
+        shown: set[str] = set()
         for root in roots:
-            cls._render_tree(root, rows_by_id, set(), rendered, depth=0)
+            cls._render_tree(root, rows_by_id, set(), rendered, shown, depth=0)
+        # A component whose every member is required by another contributes no
+        # root, so the walk above never enters it. Sweeping the rows it left
+        # untouched is what makes the output TOTAL: a dependency view that
+        # silently omits issues cannot be distinguished from one with none.
+        for row in ordered:
+            if str(row.get("id")) in shown:
+                continue
+            echo("(cycle: no issue below is free of prerequisites)")
+            cls._render_tree(row, rows_by_id, set(), rendered, shown, depth=0)
 
     @classmethod
     def _render_tree(
@@ -2262,22 +2260,28 @@ Options:
         rows_by_id: Mapping[str, Mapping[str, object]],
         ancestors: set[str],
         rendered: set[str],
+        shown: set[str],
         *,
         depth: int,
     ) -> None:
         """Print one subtree.
 
-        Two guards, deliberately different in scope. ``ancestors`` is the path
-        from the root, so a node that requires one of its own ancestors is a
-        real cycle and says so. ``rendered`` spans the whole forest, so a node
-        reachable by several paths is expanded once and referenced thereafter
-        -- without that a diamond costs one traversal per path.
+        Three sets, deliberately different in scope:
+
+        * ``ancestors`` -- the path from the entry point, so a node requiring
+          one of its own ancestors is a real cycle and says so.
+        * ``rendered`` -- forest-wide, so a node reachable by several paths is
+          expanded once and referenced thereafter; without it a diamond costs
+          one traversal per path.
+        * ``shown`` -- forest-wide, naming every row that reached the output,
+          so the caller can find components the root walk never entered.
         """
         row_id = str(row.get("id"))
         seq = row.get("seq", "?")
         if row_id in ancestors:
             echo(f"{'  ' * depth}cycle issue {seq}")
             return
+        shown.add(row_id)
         echo(
             f"{'  ' * depth}issue {seq} "
             f"[{row.get('status') or '?'!s}] "
@@ -2298,6 +2302,7 @@ Options:
                     rows_by_id,
                     ancestors | {row_id},
                     rendered,
+                    shown,
                     depth=depth + 1,
                 )
             else:
