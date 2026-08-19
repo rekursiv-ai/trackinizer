@@ -5,8 +5,7 @@ it must not reach the CLI's import graph: pulling in ``client.client`` here
 would cost the ~190ms the daemon exists to remove, on every invocation,
 daemon or not. ``protocol_test`` asserts that behaviorally. The shared
 ``userdirs`` helper is the one internal import allowed -- it is stdlib-only
-and measured at 0.2ms, and hand-rolling the XDG layout instead resolves to
-the wrong directory on macOS.
+and measured at 0.2ms.
 """
 
 from __future__ import annotations
@@ -38,12 +37,8 @@ that exhausts memory before the read fails."""
 # back ``resolve_actor``; ``TRACKINIZER_PROFILE`` and ``TRACKINIZER_URL``
 # back the connection chain in ``cli.connect``.
 #
-# The XDG variables are deliberately ABSENT: they select which profile STORE
-# to read, and the store is resolved by ``userdirs`` from the daemon's own
-# environment. Forwarding them would make the daemon read a name from one
-# store and the file from another. The socket path is keyed on the config
-# directory instead (see :func:`socket_path`), so a caller with a different
-# store gets a different daemon rather than the wrong answer.
+# The XDG variables are deliberately ABSENT; these should only be accessed
+# through userdirs.py.
 FORWARDED_ENV: Final[tuple[str, ...]] = (
     "USER",
     "USERNAME",
@@ -250,11 +245,10 @@ def socket_path() -> Path:
     user-edited) or scratch (not bulk data).
 
     The filename carries a digest of the CONFIG directory because the daemon
-    resolves the profile store from its own environment: a caller whose
-    ``XDG_CONFIG_HOME`` differs would otherwise be served profiles from a
-    store it never chose. Keying the socket on that directory means such a
-    caller connects to -- or spawns -- a daemon that reads the same store,
-    since the daemon inherits the environment of whoever spawned it.
+    resolves the profile store from its own environment. Keying the socket on
+    that directory means such a caller connects to -- or spawns -- a daemon
+    that reads the same store, since the daemon inherits the environment of
+    whoever spawned it.
     """
     digest = hashlib.blake2b(str(config_dir()).encode(), digest_size=8).hexdigest()
     return state_dir() / "rekursiv-ai" / "traxd" / f"{digest}.sock"

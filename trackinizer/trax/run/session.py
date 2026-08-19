@@ -113,7 +113,7 @@ class RunConfig:
     can be addressed within. See :attr:`AgentSession.rooms`."""
 
     out_path: Path | None = None
-    """JSONL output file; ``None`` defaults to the XDG state dir."""
+    """JSONL output file; ``None`` defaults to the `usersdirs.state_dir()`."""
 
     verbose: bool = False
     """Also print one line per parsed event to stderr."""
