@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast, get_args, override
 
@@ -1993,6 +1993,74 @@ def test_render_tree_does_not_share_visited_across_roots(
     )
     assert output.count("issue 3") == 2, (
         f"expected shared 'issue 3' to render under both roots; got:\n{output}"
+    )
+
+
+def test_render_tree_reports_a_fully_cyclic_set(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Every issue depended upon means no root, which must not mean no output.
+
+    ``roots`` selects rows nothing else requires. In a complete cycle every
+    row is required by another, so the set is empty and the render loop runs
+    zero times -- printing nothing at all, with no indication the graph was
+    non-empty. Silence is the one answer that cannot be acted on.
+    """
+    first: dict[str, object] = {
+        "id": "id-a",
+        "seq": 1,
+        "status": "active",
+        "title": "a",
+        "requires": [{"id": "id-b"}],
+    }
+    second: dict[str, object] = {
+        "id": "id-b",
+        "seq": 2,
+        "status": "active",
+        "title": "b",
+        "requires": [{"id": "id-a"}],
+    }
+
+    Graph.render([first, second])
+    output = capsys.readouterr().out
+
+    assert output.strip(), "a fully cyclic issue set rendered nothing at all"
+    assert "issue 1" in output
+    assert "issue 2" in output
+
+
+def test_render_tree_does_not_blow_up_on_a_deep_diamond(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A per-path visited set makes a layered graph exponential.
+
+    Copying ``visited`` for each child means a node reachable by many paths
+    is re-rendered once per path. With each row requiring the next two, a
+    30-deep graph is ~2**30 renders -- ``trax graph`` never returns, and
+    ``list_kind_all`` feeds it the whole table.
+    """
+    depth = 30
+    rows: list[Mapping[str, object]] = [
+        {
+            "id": f"id-{index}",
+            "seq": index,
+            "status": "active",
+            "title": f"n{index}",
+            "requires": [
+                {"id": f"id-{child}"}
+                for child in (index + 1, index + 2)
+                if child <= depth
+            ],
+        }
+        for index in range(depth + 1)
+    ]
+
+    Graph.render(rows)
+    output = capsys.readouterr().out
+
+    assert output.count("issue ") < 10 * depth, (
+        "the traversal re-rendered shared subtrees per path; a real graph of "
+        "this shape would not terminate"
     )
 
 
