@@ -2,6 +2,23 @@
 # ruff: noqa: EXE003, D300 -- Polyglot shell/Python script.
 # fmt: off
 '''' 2>/dev/null #
+# `uv run` re-resolves the project on every invocation: measured 23ms of an
+# 87ms `trax`, against the 1.4ms the server spends answering. uv's only job
+# here is to find the venv interpreter, and that venv sits at a fixed place
+# relative to THIS file -- so walk up and exec it directly.
+#
+# Keyed on the file's own location, never $VIRTUAL_ENV: an interactive shell
+# that has not activated the venv does not export it, which is the common
+# case and would silently skip this path. `readlink -f` resolves the bin/
+# symlink first, so the walk starts inside the checkout rather than in bin/.
+# Falling through to uv keeps a checkout with no built venv working.
+_trax_self=$(readlink -f "$0"); _trax_dir=$(dirname "$_trax_self")
+while [ "$_trax_dir" != "/" ]; do
+  if [ -x "$_trax_dir/.venv/bin/python3" ]; then
+    exec "$_trax_dir/.venv/bin/python3" "$_trax_self" "$@"
+  fi
+  _trax_dir=$(dirname "$_trax_dir")
+done
 exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
 Command-line client for the trackinizer server.
 
