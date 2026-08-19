@@ -32,23 +32,55 @@ from trackinizer.types.inquiries import (
 __all__ = [
     "FILTER_FIELD_ALIASES",
     "FILTER_OPS",
+    "IDENTITY_COLUMNS",
     "MAX_FILTER_VALUE_CHARS",
     "NON_NULLABLE_COLUMNS",
+    "POSIX_AMBIGUOUS_ESCAPES",
     "VALUELESS_FILTER_OPS",
     "Filter",
     "FilterOp",
     "canonical_filter_field",
     "validate_presence_op",
+    "validate_regex_dialect",
 ]
 
 
-# Upper bound on a filter operand. ``Filter.value`` reaches ``re.compile`` once
-# per request for a ``re`` / ``nre`` op (see ``server/api/query.py``); an
-# unbounded operand lets a long pathological pattern drive catastrophic
-# backtracking in the validation compile. 512 chars comfortably fits any real
-# column value or regex while capping that cost (mirrors the message-body caps
-# in ``wire_sessions.py``).
+# Upper bound on a filter operand. This bounds the operand's SIZE, not the
+# cost of running it: compiling the worst 512-char pattern measures 0.5ms,
+# while MATCHING ``(a+)+$`` against 24 characters takes 620ms. Backtracking is
+# a matching cost, and the match happens in Postgres, so the guard that
+# actually bounds it is the statement timeout on the query -- not this cap.
+# 512 chars comfortably fits any real column value or regex (mirrors the
+# message-body caps in ``wire_sessions.py``).
 MAX_FILTER_VALUE_CHARS: Final = 512
+
+# ``\b`` is the one escape both regex engines accept while meaning DIFFERENT
+# things: Postgres POSIX reads it as BACKSPACE, Python as a word boundary.
+# Verified on a live engine -- ``'foo bar' ~ '\bbar'`` is false in SQL and
+# true in Python, so a filter carrying it returns different rows depending on
+# whether the clause lowered. It cannot be translated (the meanings do not
+# correspond), so it is refused with the spelling that does work.
+POSIX_AMBIGUOUS_ESCAPES: Final[tuple[tuple[str, str], ...]] = (
+    (r"\b", r"\y"),
+    (r"\B", r"\Y"),
+)
+
+
+def validate_regex_dialect(pattern: str) -> str | None:
+    """Reject regex escapes the two evaluators disagree about, else ``None``.
+
+    Returns a message naming the working spelling. The check is on the SHARED
+    wire type rather than in the route so the CLI and the server refuse the
+    same patterns; a pattern that reaches the store must mean one thing.
+    """
+    for escape, replacement in POSIX_AMBIGUOUS_ESCAPES:
+        if escape in pattern.replace("\\\\", ""):
+            return (
+                f"regex escape {escape!r} means different things in Postgres "
+                f"(backspace) and Python (word boundary); use {replacement!r} "
+                "for a word boundary"
+            )
+    return None
 
 
 # Every inquiry class, so the derived NOT-NULL set below spans the whole
@@ -80,7 +112,7 @@ VALUELESS_FILTER_OPS: frozenset[FilterOp] = frozenset({"isnull", "notnull"})
 
 # Identity/housekeeping columns the schema declares NOT NULL directly; they
 # carry no ColumnSpec, so they can't be derived from the spec metadata below.
-_NOT_NULL_IDENTITY_COLUMNS: frozenset[str] = frozenset(
+IDENTITY_COLUMNS: frozenset[str] = frozenset(
     {"id", "kind", "seq", "created", "modified"}
 )
 
@@ -95,7 +127,7 @@ def _derive_non_nullable_columns() -> frozenset[str]:
     (the cost axes, ``NOT NULL DEFAULT 0`` in ``schema.sql``); everything else
     is a ``| None`` field on the Inquiry dataclass.
     """
-    columns = set(_NOT_NULL_IDENTITY_COLUMNS)
+    columns = set(IDENTITY_COLUMNS)
     for source in _INQUIRY_KIND_CLASSES:
         for name, flat in flat_column_specs(source).items():
             if flat.spec.required or flat.spec.flatten is not None:

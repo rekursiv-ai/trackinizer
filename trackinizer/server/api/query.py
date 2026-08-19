@@ -23,7 +23,8 @@ from fastapi.responses import StreamingResponse
 
 from trackinizer.lib.custom_json import MutableJSON
 from trackinizer.lib.postgres import DatabaseEngine
-from trackinizer.server.api._deps import get_store, tag_kind
+from trackinizer.server.api._deps import get_store, tag_kind, tag_row
+from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api._routes_shared import (
     parse_seq_ranges,
 )
@@ -43,28 +44,36 @@ from trackinizer.types.inquiries import (
 from trackinizer.wire.bodies import FieldMutation
 from trackinizer.wire.filters import (
     FILTER_OPS,
+    IDENTITY_COLUMNS,
     MAX_FILTER_VALUE_CHARS,
     VALUELESS_FILTER_OPS,
     Filter,
     FilterOp,
     canonical_filter_field,
     validate_presence_op,
+    validate_regex_dialect,
 )
 from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
 )
+from trackinizer.wire.row_filter import posix_pattern
 
 
 _FILTER_OPS: frozenset[str] = frozenset(FILTER_OPS)
 
-# Identity/housekeeping columns the schema declares directly: not
-# editable, carry no ColumnSpec, and so aren't surfaced by
-# flat_column_specs. The flattened marginal_cost_* axes are not listed
-# here; they come from flat_column_specs like every other spec'd column.
-_IDENTITY_COLUMNS: frozenset[str] = frozenset(
-    {"id", "kind", "seq", "created", "modified"}
-)
+# Identity/housekeeping columns the schema declares directly: not editable,
+# carry no ColumnSpec, and so aren't surfaced by flat_column_specs. The
+# flattened marginal_cost_* axes are not listed here; they come from
+# flat_column_specs like every other spec'd column.
+#
+# Imported rather than re-listed: ``filters`` needs the same five for its
+# NOT-NULL derivation, and two hand-written copies of one schema fact drift
+# the moment a sixth column is declared. ``read._column_shapes`` and
+# ``grammar._IDENTITY_FILTER_COLUMNS`` are deliberately NOT unified with
+# this: the first maps each column to a SQL shape, and the second omits
+# ``kind`` because the CLI names kinds positionally rather than filtering on
+# them. Same members today, different questions.
 
 router = APIRouter()
 _logger = logging.getLogger(__name__)
@@ -90,9 +99,12 @@ async def lookup_route(
 ) -> MutableJSON:
     """Resolve many ``UUID -> kind`` mappings in one round-trip.
 
-    The cap is a typed ``max_length`` on the body, so an oversize list is
-    rejected (422) before the route decodes it -- the DoS bound is
-    pre-decode, not a post-decode route check (REV-OPUS-30). The response
+    ``max_length`` is a typed cap on the decoded list's LENGTH: FastAPI
+    parses the whole body first, then rejects an oversize list with 422. It
+    bounds how many ids a handler will look up, NOT how many bytes the server
+    will read -- a 4GB body is fully buffered and decoded before the 422
+    (measured: 30.77s). A byte bound needs middleware, which does not exist
+    (REV-OPUS-30 recorded the cap; its pre-decode claim was wrong). The response
     is ``{"found": {id: kind}, "missing": [id]}`` so a caller learns which
     ids were unknown rather than having them silently dropped from a flat
     mapping (REV-OPUS-12).
@@ -110,7 +122,7 @@ async def list_inquiries_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
-    kind: Annotated[list[Inquiry.InquiryKind], Query()],
+    kind: Annotated[list[Inquiry.InquiryKind], Query(max_length=MAX_LIST_LIMIT)],
     status: Inquiry.Status | None = None,
     limit: int = DEFAULT_LIST_LIMIT,
     offset: int = 0,
@@ -136,21 +148,36 @@ async def list_inquiries_route(
     seq_ranges = parse_seq_ranges(seq_range, min_seq=1)
     out: list[MutableJSON] = []
     store = get_store(request)
-    for one_kind in kind:
+    # Dedup before iterating: only nine kinds exist, so a repeated param can
+    # only re-run a query whose answer is already in hand. Without this, 200
+    # copies of ``kind=Issue`` ran 200 queries and returned 9.3MB where one
+    # copy returns 46KB. ``dict.fromkeys`` keeps the caller's order.
+    for one_kind in dict.fromkeys(kind):
+        # Parsed per kind because the field whitelist is kind-specific, but a
+        # ``re`` operand still reaches ``re.compile`` once per (kind, filter)
+        # pair. The dedup above is what keeps that product bounded.
         filters = tuple(_parse_filter_param(raw, one_kind) for raw in (filter_ or ()))
         started = time.perf_counter()
         rows: list[Inquiry] = []
         outcome = "success"
         error_type = ""
         try:
-            rows = await store.list_kind(
-                one_kind,
-                status=status,
-                limit=limit,
-                offset=offset,
-                seq_ranges=seq_ranges,
-                filters=filters,
-            )
+            # A ``re`` filter lowers to a Postgres ``~``, so this query can
+            # fail two ways no Python check catches: a pattern POSIX rejects
+            # (``(?P<x>a)``), and a pattern that matches for an unbounded
+            # time. ``regex_failures_as_400`` reports both as the caller
+            # errors they are. The statement timeout that bounds the second
+            # is set inside ``list_kind``, which owns the connection -- taking
+            # one here as well would be a reentrant acquire.
+            with regex_failures_as_400():
+                rows = await store.list_kind(
+                    one_kind,
+                    status=status,
+                    limit=limit,
+                    offset=offset,
+                    seq_ranges=seq_ranges,
+                    filters=filters,
+                )
         except asyncio.CancelledError:
             outcome = "cancelled"
             error_type = "CancelledError"
@@ -185,7 +212,7 @@ async def list_inquiries_route(
                     "error_type": error_type,
                 },
             )
-        out.extend(tag for r in rows if (tag := tag_kind(r)) is not None)
+        out.extend(tag_row(r) for r in rows)
     return out
 
 
@@ -224,7 +251,7 @@ async def proves_belief_route(
 ) -> list[MutableJSON]:
     del identity
     rows = await get_store(request).proves_belief(target_id)
-    return [tag for r in rows if (tag := tag_kind(r)) is not None]
+    return [tag_row(r) for r in rows]
 
 
 @router.get("/api/inquiries/{kind}/{seq}")
@@ -233,7 +260,7 @@ async def by_seq_route(
     seq: int,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
-) -> MutableJSON | None:
+) -> MutableJSON:
     """Resolve a short-ref ``kind#seq`` to the full inquiry."""
     del identity
     async with get_store(request).engine.acquire() as conn:
@@ -363,7 +390,7 @@ def _filter_columns_for(kind: Inquiry.InquiryKind) -> frozenset[str]:
         for source in (Inquiry, cls)
         for name, flat in flat_column_specs(source).items()
     }
-    return _IDENTITY_COLUMNS | frozenset(declared)
+    return IDENTITY_COLUMNS | frozenset(declared)
 
 
 def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
@@ -414,16 +441,27 @@ def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
         presence_err := validate_presence_op(canonical, cast(FilterOp, op))
     ) is not None:
         raise HTTPException(status_code=400, detail=presence_err)
-    # Cap the operand BEFORE compiling it: an over-long ``re`` / ``nre`` pattern
-    # could drive catastrophic backtracking in ``re.compile`` itself.
+    # Cap the operand's SIZE before doing anything else with it. This does not
+    # bound match cost -- backtracking happens while MATCHING, in Postgres,
+    # which the statement timeout on the query bounds instead.
     if len(value) > MAX_FILTER_VALUE_CHARS:
         raise HTTPException(
             status_code=400,
             detail=f"filter value exceeds {MAX_FILTER_VALUE_CHARS} characters",
         )
     if op in ("re", "nre"):
+        if (dialect_err := validate_regex_dialect(value)) is not None:
+            raise HTTPException(status_code=400, detail=dialect_err)
         try:
-            re.compile(value)
+            # Validate the pattern the PYTHON evaluator will run, which is the
+            # translated form: ``match_filter`` rewrites POSIX word-boundary
+            # escapes before compiling, so validating the raw text would 400 a
+            # ``\y`` pattern that both evaluators handle correctly.
+            #
+            # A pattern valid here can still be invalid to Postgres (``(?P<x>
+            # ...)``, ``\z``), which no Python check can detect. The store's
+            # ``PostgresSyntaxError`` handler turns those into a 400.
+            re.compile(posix_pattern(value))
         except re.error as err:
             raise HTTPException(
                 status_code=400, detail=f"invalid regex {value!r}: {err}"
