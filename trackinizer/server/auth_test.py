@@ -596,8 +596,8 @@ class TestVerifiedBearerCache:
             record
             for record in caplog.records
             if getattr(record, "event", "") == "trackinizer_auth_completed"
+            and getattr(record, "lookup_mode", "") == "cache"
         )
-        assert record.__dict__["lookup_mode"] == "cache"
         assert record.__dict__["outcome"] == "success"
         # A hit pays no scrypt; that saving is the reason the cache exists.
         assert record.__dict__["verify_sec"] == 0.0
