@@ -24,7 +24,7 @@ from trackinizer.wire.filters import (
 )
 
 
-__all__ = ["RowFilter", "match_filter"]
+__all__ = ["RowFilter", "match_filter", "posix_pattern"]
 
 
 class RowFilter(Protocol):
@@ -118,25 +118,36 @@ def _matches_regex(value: object, pattern: str) -> bool:
     predicate -- which the CLI's test fake runs to mirror route semantics --
     must read the pattern the same way or the two disagree on real input.
     Postgres uses POSIX ARE; the differences that bite are spelled out in
-    :func:`_posix_pattern`.
+    :func:`posix_pattern`.
     """
-    compiled = re.compile(_posix_pattern(pattern))
+    compiled = re.compile(posix_pattern(pattern))
     return any(
         compiled.search(str(item)) is not None for item in _candidate_items(value)
     )
 
 
-# POSIX ARE spells a word boundary ``\y``; Python spells it ``\b`` and reads
-# ``\y`` as a literal ``y``. Every other construct these filters use --
-# ``\d`` / ``\w`` / ``\s``, ``(?i)``, lookahead, bounded repeats -- is
-# accepted identically by both, verified against a live engine.
+# POSIX ARE's word-boundary escapes, rewritten to their Python spellings.
+# Python does NOT read ``\y`` as a literal ``y``: it raises
+# ``re.error: bad escape \y``, so an untranslated pattern is a 500 here
+# rather than a silent mismatch.
+#
+# ``\m`` and ``\M`` (start-of-word, end-of-word) have no single Python
+# escape. ``\b`` is a boundary in either direction, which over-matches:
+# ``\mfoo`` should match "foo bar" but not "barfoo", while ``\bfoo`` matches
+# both. The lookarounds below are exact -- verified against a live engine.
+#
+# Every other construct these filters use -- ``\d`` / ``\w`` / ``\s`` and
+# their negations, ``\A`` / ``\Z``, ``(?i)``, lookahead, bounded repeats --
+# is accepted identically by both, also verified against a live engine.
 _POSIX_TRANSLATIONS: Final[tuple[tuple[str, str], ...]] = (
     (r"\y", r"\b"),
     (r"\Y", r"\B"),
+    (r"\m", r"(?<![0-9A-Za-z_])(?=[0-9A-Za-z_])"),
+    (r"\M", r"(?<=[0-9A-Za-z_])(?![0-9A-Za-z_])"),
 )
 
 
-def _posix_pattern(pattern: str) -> str:
+def posix_pattern(pattern: str) -> str:
     """Rewrite POSIX-only constructs into their Python equivalents."""
     for posix, python in _POSIX_TRANSLATIONS:
         pattern = pattern.replace(posix, python)

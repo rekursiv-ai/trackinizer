@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     import pytest
 
     from trackinizer.server.store.core import Store
+from trackinizer.wire.routes import MAX_LIST_LIMIT
 
 
 class TestRoutes:
@@ -425,13 +426,45 @@ class TestRoutes:
         )
         assert r.status_code == 400
 
+    def test_repeated_kind_runs_one_query_per_distinct_kind(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        # Only nine kinds exist, so a repeated ``kind`` param can only re-run
+        # a query whose answer is already in hand. Measured before the dedup:
+        # 200 copies of ``kind=Issue`` returned 9,348,201 bytes in 1.876s
+        # against 46,742 bytes in 0.050s for one copy -- a 200x amplification
+        # available to any viewer.
+        client, _store, engine = route_client
+        engine.conn.fetch.return_value = []
+        params = "&".join(["kind=Issue"] * 50)
+        r = client.get(f"/api/inquiries?{params}")
+        assert r.status_code == 200, r.text
+        # One row fetch for the single distinct kind. The edge bulk-fetch
+        # short-circuits on an empty row set, so 50 repeats that dedup to one
+        # kind issue exactly one query; without the dedup this was 50.
+        assert engine.conn.fetch.call_count == 1
+
+    def test_kind_list_is_length_capped(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        # Dedup bounds the work but not the parse: the cap is what keeps an
+        # arbitrarily long query string from being decoded at all.
+        client, _store, _engine = route_client
+        params = "&".join(["kind=Issue"] * (MAX_LIST_LIMIT + 1))
+        r = client.get(f"/api/inquiries?{params}")
+        assert r.status_code == 422
+
     def test_lookup_route_rejects_oversize_list(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         # The cap is a typed ``Field(max_length=...)`` on the body, so an
-        # oversize list is rejected at validation (422) before the route
-        # decodes 1000+ UUIDs -- the DoS bound is pre-decode (REV-OPUS-30).
+        # oversize list is rejected at validation (422) before the ROUTE BODY
+        # runs. It bounds the lookup, not the read: FastAPI buffers and decodes
+        # the whole request first, so this is not a byte bound (a 4GB body was
+        # measured decoding for 30.77s before its 422).
         client, _store, _engine = route_client
         big = [str(new_uuid()) for _ in range(1001)]
         r = client.post("/api/inquiries/lookup", json=big)

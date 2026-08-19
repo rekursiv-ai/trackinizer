@@ -11,13 +11,20 @@ oracle even though it no longer runs in production.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import UUID, uuid4
+
+import dataclasses
+import types
+import typing
 
 from fastapi.encoders import jsonable_encoder
 
 import pytest
 
 from trackinizer.server.api._deps import tag_kind
+from trackinizer.types import inquiries
+from trackinizer.types.cost import Cost
 from trackinizer.types.inquiries import (
     AgentSession,
     Artifact,
@@ -31,6 +38,91 @@ from trackinizer.types.inquiries import (
     WebResult,
     WebSearch,
 )
+
+
+_INQUIRIES_NS: dict[str, Any] = dict(vars(inquiries))
+
+
+def _sample(annotation: object) -> object:
+    """A non-``None`` value satisfying one field annotation.
+
+    Derived from the annotation rather than hand-written per kind, so a field
+    added to any Inquiry is populated -- and therefore serialized, and
+    therefore compared against the oracle -- with no edit here.
+    """
+    if isinstance(annotation, str):
+        # ``from __future__ import annotations`` leaves every ``field.type``
+        # as source text; evaluate it in the defining module's namespace,
+        # which is what ``get_type_hints`` does for the top-level classes.
+        annotation = eval(annotation, _INQUIRIES_NS)  # noqa: S307 -- module's own annotations.
+    if isinstance(annotation, typing.TypeAliasType):
+        # PEP 695 aliases (``type Actor = str``, ``type Status = Literal[...]``)
+        # are values rather than types; unwrap to whatever they name.
+        return _sample(annotation.__value__)
+    origin = typing.get_origin(annotation)
+    if origin is types.UnionType:
+        # Optional fields: take the first non-``None`` arm, which is the
+        # value the encoder would actually have to convert.
+        return _sample(
+            next(a for a in typing.get_args(annotation) if a is not type(None))
+        )
+    if origin is tuple:
+        return (_sample(typing.get_args(annotation)[0]),)
+    if origin is dict:
+        # ``Experiment.config`` -- the one JSONB field, whose leaves are
+        # caller-supplied and so the only place an unhandled type can enter.
+        #
+        # The nested value must REQUIRE conversion. A dict of JSON-native
+        # leaves is returned unchanged whether or not the serializer recurses
+        # into dicts at all, so it cannot tell a working dict arm from a
+        # missing one -- verified by deleting the arm and watching this test
+        # still pass. A datetime leaf makes the branch observable.
+        return {
+            "nested": {
+                "at": datetime(2026, 8, 19, 10, 12, 23, 55_030, tzinfo=UTC),
+                "n": 1,
+                "s": "x",
+                "none": None,
+            }
+        }
+    if origin is typing.Literal:
+        return typing.get_args(annotation)[0]
+    if annotation is datetime:
+        return datetime(2026, 8, 19, 10, 12, 23, 55_030, tzinfo=UTC)
+    if annotation is UUID:
+        return uuid4()
+    if annotation is Cost:
+        return Cost(agent_usd=0.5, resource_usd=0.25)
+    if annotation is bool:
+        return True
+    if annotation is int:
+        return 7
+    if annotation is float:
+        return 1.5
+    if annotation is str:
+        return "sample"
+    if dataclasses.is_dataclass(annotation) and isinstance(annotation, type):
+        return annotation(
+            **{
+                field.name: _sample(field.type)
+                for field in dataclasses.fields(annotation)
+            }
+        )
+    raise AssertionError(f"no sample value for annotation {annotation!r}")
+
+
+def _populated[T: Inquiry](subclass: type[T]) -> T:
+    """One instance of ``subclass`` with every field set to a real value.
+
+    The kwargs are built from the annotations, so their static type is
+    ``object`` and no checker can match them to each field. The construction
+    is verified at RUNTIME instead, by ``test_every_field_is_populated``.
+    """
+    hints = typing.get_type_hints(subclass, _INQUIRIES_NS)
+    fields = {
+        field.name: _sample(hints[field.name]) for field in dataclasses.fields(subclass)
+    }
+    return subclass(**cast("dict[str, Any]", fields))
 
 
 # Named explicitly rather than walked from ``__subclasses__``: the sub-kinds
@@ -118,19 +210,41 @@ class TestTagKind:
     def test_every_kind_matches_the_encoder(self, subclass: type[Inquiry]) -> None:
         # Each sub-kind adds its own fields; the fast path must not be
         # tuned to whichever kind the author happened to test.
-        instance = subclass(
-            id=uuid4(),
-            seq=1,
-            account="agent@example.com",
-            status="active",
-            title="t",
-            created=datetime(2026, 1, 1, tzinfo=UTC),
-            modified=datetime(2026, 1, 2, tzinfo=UTC),
-        )
+        instance = _populated(subclass)
         payload = tag_kind(instance)
         expected = jsonable_encoder(instance)
         expected["kind"] = subclass.__name__
         assert payload == expected
+
+    def test_unhandled_type_raises_here_not_downstream(self) -> None:
+        # ``_jsonable`` dispatches on a closed set of types and used to fall
+        # through to ``return value`` for anything else. A value it does not
+        # convert survives into the payload and raises inside ``json.dumps``
+        # while FastAPI is writing the response -- a 500 whose traceback names
+        # the encoder, not the field. Failing at the seam names the type.
+        experiment = _populated(Experiment)
+        with pytest.raises(TypeError, match="set"):
+            tag_kind(dataclasses.replace(experiment, config={"tags": {"a"}}))
+
+    def test_unhandled_type_names_the_offending_value(self) -> None:
+        experiment = _populated(Experiment)
+        with pytest.raises(TypeError, match="bytes"):
+            tag_kind(dataclasses.replace(experiment, config={"blob": b"\x00"}))
+
+    @pytest.mark.parametrize("subclass", _KINDS)
+    def test_every_field_is_populated(self, subclass: type[Inquiry]) -> None:
+        # The guard on the guard. An oracle that compares two all-``None``
+        # payloads passes no matter what the serializer does, which is
+        # exactly how the ``Decimal`` and ``dict`` arms of ``_jsonable``
+        # shipped untested. Deriving the fixture from ``dataclasses.fields``
+        # keeps a newly added field covered without an edit here.
+        instance = _populated(subclass)
+        unset = [
+            field.name
+            for field in dataclasses.fields(instance)
+            if getattr(instance, field.name) is None
+        ]
+        assert not unset, f"{subclass.__name__} left unpopulated: {unset}"
 
 
 if __name__ == "__main__":

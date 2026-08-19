@@ -15,11 +15,13 @@ from enum import StrEnum
 from typing import Final, Literal, cast, get_args, get_origin
 from uuid import UUID
 
+from trackinizer.server.notify import tx
 from trackinizer.server.projection import (
     fetch_edges,
     fetch_edges_bulk,
     materialize,
 )
+from trackinizer.server.regex_timeout import apply_regex_statement_timeout
 from trackinizer.server.sql_fragments import (
     _COST_SUBTREE_SQL,
     _NEXT_ISSUE_SQL,
@@ -485,7 +487,8 @@ class _ReadMixin(_StoreShared):
                 " ",
                 order_sql,
             )
-            async with self.engine.acquire() as conn:
+            async with self.engine.acquire() as conn, tx(conn):
+                await apply_regex_statement_timeout(conn)
                 rows = await conn.fetch(sql, *params)
                 kept = [r for r in rows if all(match_filter(r, f) for f in filters)]
                 window = kept[offset : offset + limit]
@@ -504,7 +507,11 @@ class _ReadMixin(_StoreShared):
             " OFFSET $",
             str(len(params)),
         )
-        async with self.engine.acquire() as conn:
+        # A lowered ``re`` filter runs POSIX-side, where a pathological pattern
+        # can match for an unbounded time. ``SET LOCAL`` needs a transaction,
+        # hence the ``tx``; the route maps the resulting cancel to a 400.
+        async with self.engine.acquire() as conn, tx(conn):
+            await apply_regex_statement_timeout(conn)
             rows = await conn.fetch(sql, *params)
             outbound, inbound = await fetch_edges_bulk(conn, [r["id"] for r in rows])
         return [materialize(row, outbound, inbound) for row in rows]

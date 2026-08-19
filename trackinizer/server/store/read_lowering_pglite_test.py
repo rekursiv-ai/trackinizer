@@ -25,7 +25,12 @@ from trackinizer.server.store.core import Store, StubEmbedder
 from trackinizer.types.cost import Cost
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.bodies import SubmitIssue
-from trackinizer.wire.filters import FILTER_OPS, Filter, FilterOp
+from trackinizer.wire.filters import (
+    FILTER_OPS,
+    Filter,
+    FilterOp,
+    validate_regex_dialect,
+)
 
 
 @pytest_asyncio.fixture
@@ -104,6 +109,22 @@ CASES: tuple[tuple[FilterOp, str, str], ...] = (
     ("re", "title", "[0-9]+"),
     ("nre", "title", "^a"),
     ("re", "account", "rekursiv"),
+    # The escape classes, not a sample of them. Postgres runs POSIX ARE and
+    # ``match_filter`` runs Python ``re``; the two disagree on exactly the
+    # escapes below, and every one of them reaches here as caller input:
+    #
+    #   \y \Y  word boundary in POSIX, a bad escape in Python -- translated
+    #          by ``row_filter._POSIX_TRANSLATIONS``.
+    #   \m \M  start/end of word in POSIX, likewise a bad escape in Python.
+    #   \b     BACKSPACE in POSIX, WORD BOUNDARY in Python. The only escape
+    #          both engines accept while MEANING different things, so it is
+    #          the one that returns different rows instead of raising.
+    #
+    # Verified against a live engine: ``'foo bar' ~ '\ybar'`` is true and
+    # ``'foo bar' ~ '\bbar'`` is FALSE, while Python answers true to both.
+    ("re", "title", r"\yalpha"),
+    ("re", "title", r"\malpha"),
+    ("re", "title", r"alpha\M"),
     # An order op on a TEXT column. Python compares "10" and "9" as NUMBERS
     # whenever both parse; SQL compares them lexically, so '10' < '9' is true
     # in SQL and false in Python. Lowering these would silently change the
@@ -158,6 +179,21 @@ async def test_sql_and_python_select_the_same_rows(
     assert [row.seq for row in lowered] == [row.seq for row in in_python], (
         f"{field} {op} {value!r} selected different rows in SQL than in Python"
     )
+
+
+def test_ambiguous_escape_is_refused_rather_than_translated() -> None:
+    r"""``\b`` must be rejected, because no translation of it is correct.
+
+    It is the one escape both engines accept while meaning different things --
+    BACKSPACE in POSIX, a word boundary in Python -- so a filter carrying it
+    selects different rows depending on whether the clause lowered. Every
+    other divergent escape is translated; this one cannot be, so the wire
+    layer refuses it and names the spelling that works.
+    """
+    message = validate_regex_dialect(r"\balpha")
+    assert message is not None
+    assert r"\y" in message
+    assert validate_regex_dialect(r"\yalpha") is None
 
 
 @pytest.mark.db_pglite
