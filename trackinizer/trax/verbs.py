@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import ClassVar, Final, cast, get_args, override
+from typing import TYPE_CHECKING, ClassVar, Final, cast, get_args, override
 
 import argparse
 import math
@@ -73,13 +73,28 @@ from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
 )
-from trackinizer.wire.wire_metrics import MetricPoint
-from trackinizer.wire.wire_metrics_query import (
-    MetricCompareOp,
-    MetricMaskClause,
-    MetricRankRow,
-    MetricReduce,
-)
+
+
+if TYPE_CHECKING:
+    from trackinizer.wire.wire_metrics import MetricPoint
+    from trackinizer.wire.wire_metrics_query import (
+        MetricCompareOp,
+        MetricMaskClause,
+        MetricRankRow,
+        MetricReduce,
+    )
+else:
+    # The metric wire modules build pydantic models at import (~44ms measured
+    # for the pair). Every name above bar ``MetricMaskClause`` is annotation-only
+    # under ``from __future__ import annotations``, and ``MetricMaskClause`` is
+    # constructed only in ``_mask_clauses``; an eager import would tax every
+    # ``trax`` cold start -- ``trax issue`` included -- for the metric verbs
+    # alone, and would defeat the matching ``lazy_import`` in ``client.client``.
+    from wrapt import lazy_import
+
+    MetricMaskClause = lazy_import(
+        "trackinizer.wire.wire_metrics_query", "MetricMaskClause"
+    )
 
 
 # The ``(from_label, to_label)`` endpoint roles per edge kind, keyed by the

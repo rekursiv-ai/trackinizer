@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal, cast, get_args
+from typing import TYPE_CHECKING, Literal, cast, get_args
 
 import uuid
 
@@ -56,11 +56,21 @@ from trackinizer.wire.seq_ranges import (
     format_interval,
     parse_interval,
 )
-from trackinizer.wire.wire_metrics_query import (
-    METRIC_AXES,
-    METRIC_COMPARE_OPS,
-    MetricReduce,
-)
+
+
+if TYPE_CHECKING:
+    from trackinizer.wire import wire_metrics_query
+else:
+    # ``wire_metrics_query`` builds pydantic models at import (~44ms measured,
+    # and it pulls ``wire_metrics`` with it). Only ``_parse_metric_mask`` reads
+    # its axis/op constants, so an eager import taxes every ``trax`` cold start
+    # -- including plain ``trax issue`` -- for a grammar branch most commands
+    # never reach. It also defeats the matching ``lazy_import`` in
+    # ``client.client``, which cannot help once this module has already loaded
+    # the real thing.
+    from wrapt import lazy_import
+
+    wire_metrics_query = lazy_import("trackinizer.wire.wire_metrics_query")
 
 
 # Every CLI filter field across all kinds. Used only to tell a mistyped
@@ -429,19 +439,6 @@ def parse_actions(tokens: Sequence[str]) -> list[Action]:
     return actions
 
 
-# The metric axes, comparators, and reductions are derived from the wire
-# constants (the ONE definition), so the CLI parser cannot drift from the wire
-# model or the store: adding a metric op in one place is a type error until the
-# wire ``Literal`` gains it too. This is the fix for the class of bug where the
-# parser gated on the broad inquiry ``FILTER_OPS`` and admitted ops (``re`` /
-# ``isnull``) the grid does not support.
-_METRIC_FIELDS: frozenset[str] = frozenset(METRIC_AXES)
-_METRIC_COMPARE_OPS: frozenset[str] = frozenset(METRIC_COMPARE_OPS)
-# Step-axis reductions: highest/lowest step per key ("final"/"first"). They take
-# no value and apply only to the ``step`` axis (metric-grammar.md Grammar summary).
-_METRIC_REDUCTIONS: frozenset[str] = frozenset(get_args(MetricReduce.__value__))
-
-
 def parse_metric_action(tokens: Sequence[str]) -> MetricAction:
     """Parse a ``metric`` tail into masks plus one grid operation.
 
@@ -506,15 +503,25 @@ def _parse_metric_mask(tokens: Sequence[str], index: int) -> tuple[MetricMask, i
 
     Returns the mask and the index just past it. A bareword (a token not in
     ``key``/``step``/``value``) is the ``at key is <bareword>`` shorthand.
+
+    The axis, comparator, and reduction sets are read from the wire constants
+    (the ONE definition), so the CLI parser cannot drift from the wire model or
+    the store: adding a metric op in one place is a type error until the wire
+    ``Literal`` gains it too. This is the fix for the class of bug where the
+    parser gated on the broad inquiry ``FILTER_OPS`` and admitted ops (``re`` /
+    ``isnull``) the grid does not support.
     """
     head = required_token(tokens, index, "'at' requires a field or key")
-    if head.lower() not in _METRIC_FIELDS:
+    if head.lower() not in frozenset(wire_metrics_query.METRIC_AXES):
         return MetricMask(field="key", op="is", value=head), index + 1
     field = cast("Literal['key', 'step', 'value']", head.lower())
     op = required_token(
         tokens, index + 1, f"expected an operator after {field!r}"
     ).lower()
-    if op in _METRIC_REDUCTIONS:
+    # Step-axis reductions: highest/lowest step per key ("final"/"first"). They
+    # take no value and apply only to the ``step`` axis (metric-grammar.md
+    # Grammar summary).
+    if op in frozenset(get_args(wire_metrics_query.MetricReduce.__value__)):
         if field != "step":
             raise ClientError(f"{op} applies to step only, not {field!r}")
         return MetricMask(field=field, op=op, value=""), index + 2
@@ -523,7 +530,7 @@ def _parse_metric_mask(tokens: Sequence[str], index: int) -> tuple[MetricMask, i
     # ``nre`` / ``isnull`` / ``notnull`` are unknown here. A presence op thus
     # falls into this branch instead of being treated as a valued comparator,
     # so it can never consume the following clause's token as a spurious value.
-    if op not in _METRIC_COMPARE_OPS:
+    if op not in frozenset(wire_metrics_query.METRIC_COMPARE_OPS):
         raise ClientError(f"unknown metric operator {op!r} after {field!r}")
     value = required_token(tokens, index + 2, f"expected a value after {field} {op}")
     return MetricMask(field=field, op=op, value=value), index + 3
