@@ -7,12 +7,10 @@ The 8 kind names share one ``Kind`` command; ``search``, ``recent``, ``next``,
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Final, cast, get_args, override
 
 import argparse
 import math
-import os
 import sys
 import uuid
 
@@ -20,6 +18,7 @@ from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import render as fmt
 from trackinizer.trax.commands import Command, HelpPage
+from trackinizer.trax.context import cwd, env
 from trackinizer.trax.grammar import (
     COST_FIELDS,
     EDGE_ALIASES,
@@ -1370,7 +1369,9 @@ def _resolve_field_value(field: SetField, *, used_stdin: bool) -> tuple[SetField
         if not path:
             raise ClientError("@ value requires a path")
         try:
-            text = Path(path).read_text()
+            # Resolved against the CALLER's directory: under the daemon the
+            # process cwd belongs to whichever shell spawned it.
+            text = (cwd() / path).read_text()
         except OSError as err:
             raise ClientError(f"cannot read @{path}: {err}") from err
         return SetField(field=field.field, value=field_value(field.field, text)), False
@@ -1425,14 +1426,13 @@ def _created_line(ref: Ref, new_id: uuid.UUID) -> str:
 
 
 def resolve_actor(actor: str, client: Client) -> Inquiry.Actor:
-    """Pick the audit actor: ``--as`` flag, profile, ``$USER``/``$USERNAME``, else ``user``."""
-    return (
-        actor
-        or client.author
-        or os.environ.get("USER")
-        or os.environ.get("USERNAME")
-        or "user"
-    )
+    """Pick the audit actor: ``--as`` flag, profile, ``$USER``/``$USERNAME``, else ``user``.
+
+    Read through :mod:`~trax.context`, which resolves the INVOKING user under
+    the daemon. Reading ``os.environ`` here would stamp whichever concurrent
+    request last touched the process environment onto this audit row.
+    """
+    return actor or client.author or env("USER") or env("USERNAME") or "user"
 
 
 def kind_help_for(kind: Inquiry.InquiryKind, tokens: Sequence[str]) -> str:

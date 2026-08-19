@@ -13,12 +13,12 @@ from urllib.parse import urlparse
 
 import argparse
 import atexit
-import os
 import sys
 
 from trackinizer.client.client import Client, server_url
 from trackinizer.client.errors import ClientError
 from trackinizer.trax.commands import Command, HelpPage
+from trackinizer.trax.context import env
 from trackinizer.trax.grammar import VALID_KINDS, ListQuery
 from trackinizer.trax.profile import (
     Profile,
@@ -77,7 +77,7 @@ def connect(args: argparse.Namespace) -> Client:
     port = getattr(args, "port", None)
     if name := getattr(args, "profile", None):
         profile = read_profile(name)
-    elif env_url := os.environ.get("TRACKINIZER_URL"):
+    elif env_url := env("TRACKINIZER_URL"):
         profile = Profile(url=server_url(env_url, "TRACKINIZER_URL"), author="")
     else:
         profile = load_profile()

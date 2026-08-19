@@ -12,10 +12,18 @@ import json
 import shutil
 import sys
 
+from trackinizer.trax.context import err_stream, out_stream
 from trackinizer.types.edges import EDGE_POLICIES, Edge
 
 
 SHOW_IDS: ContextVar[bool] = ContextVar("trax_show_ids", default=False)
+
+TERMINAL_WIDTH: ContextVar[int | None] = ContextVar("trax_terminal_width", default=None)
+"""Caller's terminal width, or ``None`` to detect it from ``sys.stdout``.
+
+Set by the daemon, whose stdout is a socket: ``isatty()`` there is always
+False, so autodetection would size every table as if piped and print
+unbounded-width rows. ``0`` means "not a terminal" (no cap)."""
 
 
 def show_ids() -> bool:
@@ -24,8 +32,14 @@ def show_ids() -> bool:
 
 
 def echo(message: object = "", *, err: bool = False, nl: bool = True) -> None:
-    """Write one message to stdout (or stderr when ``err``)."""
-    stream = sys.stderr if err else sys.stdout
+    """Write one message to stdout (or stderr when ``err``).
+
+    The stream comes from :mod:`~trax.context`, not ``sys`` directly: the
+    daemon serves concurrent invocations in one process, where rebinding
+    ``sys.stdout`` around a request would route one caller's output into
+    another caller's response.
+    """
+    stream = err_stream() if err else out_stream()
     stream.write(str(message))
     if nl:
         stream.write("\n")
@@ -296,6 +310,8 @@ def _visible_table_columns(
 def _resolved_table_width(width: int | None) -> int:
     if width is not None:
         return width
+    if (injected := TERMINAL_WIDTH.get()) is not None:
+        return injected
     if not sys.stdout.isatty():
         return 0
     return shutil.get_terminal_size(fallback=(120, 24)).columns
