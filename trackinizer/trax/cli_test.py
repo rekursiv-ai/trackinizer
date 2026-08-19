@@ -6,6 +6,7 @@ from typing import Any, cast
 
 import argparse
 import subprocess
+import sys
 
 import pytest
 
@@ -13,6 +14,37 @@ from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli, profile
 from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.profile import Profile
+
+
+def test_cli_import_does_not_load_metric_wire_modules() -> None:
+    """Importing the CLI must leave the metric wire modules unloaded.
+
+    They build pydantic models at import (~44ms for the pair), which every
+    ``trax`` invocation would pay -- ``trax issue`` included -- for a grammar
+    branch only the metric verbs reach. ``parser`` and ``verbs`` bind them
+    through ``lazy_import``; a plain module-level ``from ... import X`` in
+    either would silently restore the cost AND defeat the matching lazy bind
+    in ``client.client``, which cannot help once the real module is loaded.
+    Asserted in a subprocess because this test session has long since imported
+    the world.
+    """
+    probe = (
+        "import sys;"
+        "import trackinizer.trax.cli;"
+        "print(any(m.startswith('trackinizer.wire.wire_metrics')"
+        " for m in sys.modules))"
+    )
+    result = subprocess.run(  # noqa: S603 -- fixed interpreter, literal probe.
+        [sys.executable, "-c", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "False", (
+        "importing trax.cli pulled in a metric wire module; "
+        "check for an eager import in parser.py or verbs.py"
+    )
 
 
 def test_module_entrypoint_is_directly_executable() -> None:
