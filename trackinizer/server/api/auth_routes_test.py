@@ -11,7 +11,7 @@ import uuid
 import pytest
 
 from trackinizer.server.api.app import app
-from trackinizer.server.auth import AuthIdentity, current_user
+from trackinizer.server.auth import AuthIdentity, current_user, generate_token
 
 
 if TYPE_CHECKING:
@@ -210,6 +210,59 @@ class TestRevokeToken:
         engine.conn.execute = AsyncMock(return_value="UPDATE 0")
         r = client.post(f"/api/me/tokens/{uuid.uuid4()}/revoke")
         assert r.status_code == 404
+
+    def test_revoke_evicts_only_the_revoked_key(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        auth_identity: AuthIdentity,
+    ) -> None:
+        # Revoking one key must not flush the caller's OTHER keys: they are
+        # still valid credentials, and evicting them buys nothing while
+        # costing each a fresh 30ms scrypt on its next request. Eviction is
+        # scoped to the credential that actually changed.
+        client, store, engine = route_client
+        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        revoked_key = uuid.uuid4()
+        revoked_secret, _ = generate_token()
+        kept_secret, _ = generate_token()
+        store.remember_bearer_identity(
+            revoked_secret,
+            AuthIdentity(
+                user_id=auth_identity.user_id,
+                api_key_id=revoked_key,
+                email=auth_identity.email,
+                role=auth_identity.role,
+            ),
+        )
+        store.remember_bearer_identity(
+            kept_secret,
+            AuthIdentity(
+                user_id=auth_identity.user_id,
+                api_key_id=uuid.uuid4(),
+                email=auth_identity.email,
+                role=auth_identity.role,
+            ),
+        )
+        r = client.post(f"/api/me/tokens/{revoked_key}/revoke")
+        assert r.status_code == 200, r.text
+        assert store.cached_bearer_identity(revoked_secret) is None
+        assert store.cached_bearer_identity(kept_secret) is not None
+
+    def test_404_revoke_leaves_the_cache_intact(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        auth_identity: AuthIdentity,
+    ) -> None:
+        # A revoke that matched no row changed no credential; evicting on
+        # that path would let an unauthenticated UUID probe flush a live
+        # principal's cache and force a scrypt round per guess.
+        client, store, engine = route_client
+        engine.conn.execute = AsyncMock(return_value="UPDATE 0")
+        secret, _ = generate_token()
+        store.remember_bearer_identity(secret, auth_identity)
+        r = client.post(f"/api/me/tokens/{uuid.uuid4()}/revoke")
+        assert r.status_code == 404
+        assert store.cached_bearer_identity(secret) is not None
 
 
 class TestSetTokenRole:

@@ -112,6 +112,18 @@ _BEARER_PREFIX: Final[str] = "Bearer "
 # keys, evicting the oldest tracked entry when full.
 LAST_USED_BUMP_INTERVAL_SEC: float = 60.0  # config-globals: ignore -- shared default consumed by store/core.py; threading would cross the module boundary
 LAST_USED_BUMPED_AT_MAX_ENTRIES: int = 10_000  # config-globals: ignore -- shared default consumed by store/core.py; threading would cross the module boundary
+
+# Lifetime of a verified bearer result. scrypt is deliberately ~30ms
+# (:data:`_SCRYPT_N`), which is correct for a login form and ruinous for an
+# API key replayed on every request: it made auth 30ms of a 32ms request and
+# capped the server at ~110 req/s regardless of core count. Caching the
+# *verified* result collapses the repeat cost to a dict probe.
+#
+# The TTL is the revocation lag: a revoked key or disabled user keeps working
+# until its entry expires. 60s matches the ``last_used_at`` interval above, so
+# an expiry also re-runs the bump and neither clock needs the other.
+VERIFIED_BEARER_TTL_SEC: float = 60.0  # config-globals: ignore -- shared default consumed by store/core.py; threading would cross the module boundary
+VERIFIED_BEARER_MAX_ENTRIES: int = 10_000  # config-globals: ignore -- shared default consumed by store/core.py; threading would cross the module boundary
 # Module-level so tests can monkeypatch the throttle's clock.
 monotonic_clock = time.monotonic
 
@@ -765,8 +777,30 @@ async def _resolve_identity(
     Returns ``None`` (a 401 at the route) when no live key matches. Disabled
     users also return ``None``, so "unknown token" and "valid token, disabled
     user" are indistinguishable.
+
+    A previously verified secret short-circuits on the Store's cache: scrypt
+    costs ~30ms by design, so re-deriving it per request made auth the entire
+    server-side latency. Only successes are cached, so a wrong secret still
+    pays the full verify and the constant-time floor below is unaffected.
+
+    A cache hit still runs the ``last_used_at`` throttle. The two clocks are
+    independent: skipping the bump on a hit would freeze the column at first
+    contact for any key polled faster than the cache TTL -- the busiest keys,
+    which are exactly the ones the column is consulted for.
     """
     started = time.perf_counter()
+    cached = store.cached_bearer_identity(secret)
+    if cached is not None:
+        await _bump_last_used(store, cached.api_key_id)
+        _log_auth_resolution(
+            request_id=request_id,
+            lookup_mode="cache",
+            outcome="success",
+            query_sec=0.0,
+            verify_sec=0.0,
+            duration_sec=time.perf_counter() - started,
+        )
+        return cached
     query_sec = 0.0
     verify_sec = 0.0
     prefix = secret[:TOKEN_PREFIX_LEN]
@@ -820,6 +854,7 @@ async def _resolve_identity(
                     row["key_role"],
                 ),
             )
+            store.remember_bearer_identity(secret, identity)
             _log_auth_resolution(
                 request_id=request_id,
                 lookup_mode=lookup_mode,
@@ -838,6 +873,25 @@ async def _resolve_identity(
         duration_sec=time.perf_counter() - started,
     )
     return None
+
+
+async def _bump_last_used(store: Store, key_id: uuid.UUID | None) -> None:
+    """Refresh ``last_used_at`` for a cache-hit auth, subject to the throttle.
+
+    Takes its own connection because the cache path never opens one -- that
+    is the point of the cache. The throttle keeps this to one write per key
+    per :data:`LAST_USED_BUMP_INTERVAL_SEC`, so the common hit still touches
+    no connection at all.
+    """
+    # Every cached entry came from the bearer path, which always sets a key.
+    assert key_id is not None
+    if not store.should_bump_api_key_last_used(key_id):
+        return
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_keys SET last_used_at = clock_timestamp() WHERE id = $1",
+            key_id,
+        )
 
 
 def _log_auth_resolution(

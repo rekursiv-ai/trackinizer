@@ -204,8 +204,10 @@ class TestCurrentUser:
             email="alice@example.com",
             role="admin",
         )
-        # ``last_used_at`` must be bumped on every successful auth so
-        # the UI can show "this key was used 5 minutes ago".
+        # ``last_used_at`` must be bumped on a successful auth so the UI can
+        # show "this key was used 5 minutes ago". Coalescing across repeats
+        # is ``test_last_used_at_coalesces_repeat_hits``; the bump firing at
+        # all is this one.
         sqls = [c.args[0] for c in engine.conn.execute.call_args_list]
         assert any("UPDATE api_keys SET last_used_at" in s for s in sqls)
 
@@ -480,6 +482,260 @@ class TestCurrentUser:
             if "UPDATE api_keys SET last_used_at" in c.args[0]
         ]
         assert len(bump_sqls) == 2
+
+
+class TestVerifiedBearerCache:
+    """The verified-bearer cache: scrypt runs once per key per TTL."""
+
+    @pytest.mark.asyncio
+    async def test_repeat_hits_skip_scrypt(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # scrypt is ~30ms by design, so re-deriving it per request made auth
+        # the whole of a 32ms response and capped the server near 110 req/s.
+        # A verified secret must cost one dict probe on the second hit.
+        secret, _ = generate_token()
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
+        store = Store(cast(Any, engine), embed=StubEmbedder())
+        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: 1_000.0)
+
+        verifies: list[str] = []
+        real_verify = auth_mod.verify_secret
+
+        def _spy(candidate: str, encoded: str) -> bool:
+            verifies.append(encoded)
+            return real_verify(candidate, encoded)
+
+        monkeypatch.setattr(auth_mod, "verify_secret", _spy)
+        first = await current_user(
+            _request_with(engine, f"Bearer {secret}", store=store)
+        )
+        for _ in range(4):
+            repeat = await current_user(
+                _request_with(engine, f"Bearer {secret}", store=store)
+            )
+            assert repeat == first
+        # Only the first request paid a scrypt round.
+        assert len(verifies) == 1
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_still_bumps_last_used_past_the_interval(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The bump lives past the cache fast path, so a key polled faster
+        # than the TTL would never re-verify and never bump -- freezing
+        # ``last_used_at`` at first contact for precisely the BUSIEST keys,
+        # which is the opposite of what the column is for. The two clocks are
+        # independent: a cache hit must still consult the bump throttle.
+        secret, _ = generate_token()
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
+        store = Store(cast(Any, engine), embed=StubEmbedder())
+        clock = [1_000.0]
+        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: clock[0])
+        # TTL well past the bump interval so the entry is still cached when
+        # the bump comes due -- the case the fast path would swallow.
+        monkeypatch.setattr(auth_mod, "VERIFIED_BEARER_TTL_SEC", 600.0)
+
+        await current_user(_request_with(engine, f"Bearer {secret}", store=store))
+        clock[0] += 2 * auth_mod.LAST_USED_BUMP_INTERVAL_SEC
+        await current_user(_request_with(engine, f"Bearer {secret}", store=store))
+
+        bump_sqls = [
+            c
+            for c in engine.conn.execute.call_args_list
+            if "UPDATE api_keys SET last_used_at" in c.args[0]
+        ]
+        assert len(bump_sqls) == 2
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_inside_the_interval_skips_the_bump(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The complement: bumping on every cache hit would put the row-lock
+        # write back on the hot path the throttle exists to keep it off.
+        secret, _ = generate_token()
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
+        store = Store(cast(Any, engine), embed=StubEmbedder())
+        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: 1_000.0)
+
+        for _ in range(5):
+            await current_user(_request_with(engine, f"Bearer {secret}", store=store))
+        bump_sqls = [
+            c
+            for c in engine.conn.execute.call_args_list
+            if "UPDATE api_keys SET last_used_at" in c.args[0]
+        ]
+        assert len(bump_sqls) == 1
+
+    @pytest.mark.asyncio
+    async def test_cache_hit_is_logged(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Without a hit log, ``trackinizer_auth_completed`` drops to the miss
+        # rate and its ``outcome=success`` count silently stops meaning
+        # "successful auths".
+        secret, _ = generate_token()
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
+        store = Store(cast(Any, engine), embed=StubEmbedder())
+        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: 1_000.0)
+
+        await current_user(_request_with(engine, f"Bearer {secret}", store=store))
+        with caplog.at_level(logging.INFO):
+            await current_user(_request_with(engine, f"Bearer {secret}", store=store))
+
+        record = next(
+            record
+            for record in caplog.records
+            if getattr(record, "event", "") == "trackinizer_auth_completed"
+        )
+        assert record.__dict__["lookup_mode"] == "cache"
+        assert record.__dict__["outcome"] == "success"
+        # A hit pays no scrypt; that saving is the reason the cache exists.
+        assert record.__dict__["verify_sec"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_entry_expires_after_ttl(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        secret, _ = generate_token()
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
+        store = Store(cast(Any, engine), embed=StubEmbedder())
+        clock = [1_000.0]
+        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: clock[0])
+
+        verifies: list[str] = []
+        real_verify = auth_mod.verify_secret
+
+        def _spy(candidate: str, encoded: str) -> bool:
+            verifies.append(encoded)
+            return real_verify(candidate, encoded)
+
+        monkeypatch.setattr(auth_mod, "verify_secret", _spy)
+        await current_user(_request_with(engine, f"Bearer {secret}", store=store))
+        clock[0] += auth_mod.VERIFIED_BEARER_TTL_SEC + 1.0
+        await current_user(_request_with(engine, f"Bearer {secret}", store=store))
+        # The TTL is the revocation lag; if it did not expire, a revoked key
+        # would be honored forever.
+        assert len(verifies) == 2
+
+    @pytest.mark.asyncio
+    async def test_wrong_secret_is_never_cached(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Caching a rejection would let a prefix-miss skip the dummy scrypt
+        # on replay, reopening the timing oracle
+        # ``test_prefix_miss_runs_dummy_scrypt_for_constant_time`` closes.
+        secret, _ = generate_token()
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = []
+        store = Store(cast(Any, engine), embed=StubEmbedder())
+        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: 1_000.0)
+
+        verifies: list[str] = []
+        real_verify = auth_mod.verify_secret
+
+        def _spy(candidate: str, encoded: str) -> bool:
+            verifies.append(encoded)
+            return real_verify(candidate, encoded)
+
+        monkeypatch.setattr(auth_mod, "verify_secret", _spy)
+        for _ in range(3):
+            with pytest.raises(HTTPException):
+                await current_user(
+                    _request_with(engine, f"Bearer {secret}", store=store)
+                )
+        assert len(verifies) == 3
+
+    @pytest.mark.asyncio
+    async def test_forget_drops_the_users_entries(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Revoke / re-tier / disable / delete all route through this, so a
+        # cached entry must not outlive the credential change.
+        secret, _ = generate_token()
+        user_id = uuid.uuid4()
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = [
+            _row(secret_hash=hash_secret(secret), user_id=user_id),
+        ]
+        store = Store(cast(Any, engine), embed=StubEmbedder())
+        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: 1_000.0)
+
+        await current_user(_request_with(engine, f"Bearer {secret}", store=store))
+        assert store.cached_bearer_identity(secret) is not None
+        store.forget_bearer_identities(user_id)
+        assert store.cached_bearer_identity(secret) is None
+
+    @pytest.mark.asyncio
+    async def test_forget_spares_other_users(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        kept_secret, _ = generate_token()
+        kept_user = uuid.uuid4()
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = [
+            _row(secret_hash=hash_secret(kept_secret), user_id=kept_user),
+        ]
+        store = Store(cast(Any, engine), embed=StubEmbedder())
+        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: 1_000.0)
+
+        await current_user(_request_with(engine, f"Bearer {kept_secret}", store=store))
+        store.forget_bearer_identities(uuid.uuid4())
+        assert store.cached_bearer_identity(kept_secret) is not None
+
+    def test_cache_is_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A flood of distinct keys must not pin unbounded memory.
+        engine = FakeEngine()
+        store = Store(cast(Any, engine), embed=StubEmbedder())
+        monkeypatch.setattr(auth_mod, "VERIFIED_BEARER_MAX_ENTRIES", 4)
+        clock = [1_000.0]
+        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: clock[0])
+
+        identity = AuthIdentity(
+            user_id=uuid.uuid4(),
+            api_key_id=uuid.uuid4(),
+            email="u@example.com",
+            role="writer",
+        )
+        secrets_seen = [generate_token()[0] for _ in range(10)]
+        for secret in secrets_seen:
+            store.remember_bearer_identity(secret, identity)
+            clock[0] += 1.0
+        assert len(store._verified_bearers) == 4
+        # Eviction is soonest-expiring-first, so the newest survive.
+        assert store.cached_bearer_identity(secrets_seen[-1]) is not None
+        assert store.cached_bearer_identity(secrets_seen[0]) is None
+
+    def test_plaintext_secret_is_not_held_in_memory(self) -> None:
+        # The cache key is a digest: a heap dump of a live server must not
+        # yield replayable tokens.
+        engine = FakeEngine()
+        store = Store(cast(Any, engine), embed=StubEmbedder())
+        secret, _ = generate_token()
+        store.remember_bearer_identity(
+            secret,
+            AuthIdentity(
+                user_id=uuid.uuid4(),
+                api_key_id=uuid.uuid4(),
+                email="u@example.com",
+                role="writer",
+            ),
+        )
+        assert all(secret.encode("utf-8") not in key for key in store._verified_bearers)
 
 
 class TestCurrentUserNoAuth:

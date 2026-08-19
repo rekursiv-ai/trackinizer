@@ -8,7 +8,7 @@ embedding) and composes them into the public :class:`Store`.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import suppress
 from typing import Final
 from uuid import UUID
@@ -115,6 +115,83 @@ class _LifecycleMixin(_StoreShared):
             del self._last_used_bumped_at[oldest_id]
         self._last_used_bumped_at[key_id] = now
         return True
+
+    def cached_bearer_identity(self, secret: str) -> _auth.AuthIdentity | None:
+        """Return the cached identity for ``secret``, or ``None`` to verify it.
+
+        An expired entry is dropped on read rather than swept, so a key that
+        stops being presented costs nothing until its slot is reused.
+        """
+        digest = hashlib.sha256(secret.encode("utf-8")).digest()
+        entry = self._verified_bearers.get(digest)
+        if entry is None:
+            return None
+        identity, expires_at = entry
+        if _auth.monotonic_clock() >= expires_at:
+            del self._verified_bearers[digest]
+            return None
+        return identity
+
+    def remember_bearer_identity(
+        self, secret: str, identity: _auth.AuthIdentity
+    ) -> None:
+        """Cache one verified bearer result for :data:`auth.VERIFIED_BEARER_TTL_SEC`.
+
+        Only ever called with a result that already passed the full scrypt
+        verify; a rejection is never cached, so a wrong secret pays the real
+        cost every time and no negative entry can be poisoned into place.
+        Evicts the soonest-expiring entry when full, bounding memory under a
+        flood of distinct keys.
+        """
+        digest = hashlib.sha256(secret.encode("utf-8")).digest()
+        if (
+            digest not in self._verified_bearers
+            and len(self._verified_bearers) >= _auth.VERIFIED_BEARER_MAX_ENTRIES
+        ):
+            del self._verified_bearers[
+                min(
+                    self._verified_bearers,
+                    key=lambda k: self._verified_bearers[k][1],
+                )
+            ]
+        self._verified_bearers[digest] = (
+            identity,
+            _auth.monotonic_clock() + _auth.VERIFIED_BEARER_TTL_SEC,
+        )
+
+    def forget_bearer_identities(self, user_id: UUID) -> None:
+        """Drop every cached bearer entry belonging to one ``users.id``.
+
+        For changes that invalidate the whole principal: a user role change,
+        disable, or delete. Key-level changes use
+        :meth:`forget_bearer_identity_for_key` instead, which spares the
+        user's other (still valid) keys.
+
+        It only reaches THIS process's cache. Under ``--workers N`` the other
+        workers keep serving their own entries until expiry, which is what
+        bounds :data:`auth.VERIFIED_BEARER_TTL_SEC`.
+        """
+        self._forget_bearers_where(lambda identity: identity.user_id == user_id)
+
+    def forget_bearer_identity_for_key(self, key_id: UUID) -> None:
+        """Drop the cached entry for one ``api_keys.id``.
+
+        For a change scoped to a single credential -- revoke or re-tier. The
+        key, not the caller, identifies what changed: an admin revoking
+        someone else's key must evict the victim's entry, not their own.
+        """
+        self._forget_bearers_where(lambda identity: identity.api_key_id == key_id)
+
+    def _forget_bearers_where(
+        self, predicate: Callable[[_auth.AuthIdentity], bool]
+    ) -> None:
+        """Drop every cached bearer entry whose identity satisfies ``predicate``."""
+        for digest in [
+            digest
+            for digest, (identity, _) in self._verified_bearers.items()
+            if predicate(identity)
+        ]:
+            del self._verified_bearers[digest]
 
     async def _backfill_embeddings(self, conn: Conn) -> None:
         """Embed any inquiry missing a row for a registered embedder.

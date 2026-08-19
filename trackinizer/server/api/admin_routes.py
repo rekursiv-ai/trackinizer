@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from trackinizer.lib.custom_json import MutableJSON
 from trackinizer.lib.postgres import Conn
+from trackinizer.server.api._deps import get_store
 from trackinizer.server.api._routes_shared import (
     RoleLiteral,
     engine_of,
@@ -111,6 +112,9 @@ async def admin_set_user_role_route(
         )
         if not result.endswith(" 1"):
             raise HTTPException(status_code=404, detail="user not found")
+    # Cached bearer entries carry the old role; without this the demotion
+    # would not bind until VERIFIED_BEARER_TTL_SEC elapsed.
+    get_store(request).forget_bearer_identities(user_id)
     return {"ok": True, "role": body.role}
 
 
@@ -145,6 +149,9 @@ async def admin_disable_user_route(
             "WHERE user_id = $1 AND revoked_at IS NULL",
             user_id,
         )
+    # Revoking the rows is not enough: a cached entry bypasses the query
+    # entirely, so a disabled user would keep authenticating until the TTL.
+    get_store(request).forget_bearer_identities(user_id)
     return {"ok": True, "status": "disabled"}
 
 
@@ -200,6 +207,9 @@ async def admin_remove_user_route(
         result = await conn.execute("DELETE FROM users WHERE id = $1", user_id)
         if not result.endswith(" 1"):
             raise HTTPException(status_code=404, detail="user not found")
+    # The FK cascade drops the api_keys rows, but a cached entry never
+    # queries them; a deleted user would keep authenticating until the TTL.
+    get_store(request).forget_bearer_identities(user_id)
     return Response(status_code=204)
 
 
