@@ -16,6 +16,7 @@ from trackinizer.client.client import Client, server_url
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.userdirs import config_dir
 from trackinizer.trax.commands import Command, HelpPage
+from trackinizer.trax.context import env
 from trackinizer.trax.render import echo
 
 
@@ -400,8 +401,8 @@ def _validate_profile_name(name: str) -> None:
 
 def _explicit_profile() -> str | None:
     """Profile name pinned by ``$TRACKINIZER_PROFILE`` or the ``current`` file, if any."""
-    if env := os.environ.get("TRACKINIZER_PROFILE"):
-        return env
+    if pinned := env("TRACKINIZER_PROFILE"):
+        return pinned
     try:
         text = (config_dir() / "rekursiv-ai" / "trax" / "current").read_text().strip()
     except FileNotFoundError:

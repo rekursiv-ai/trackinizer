@@ -41,7 +41,7 @@ Refs accept ``kind seq`` or a canonical UUID.
 
 from __future__ import annotations
 
-from trackinizer.trax.cli import main
+from trackinizer.trax.daemon.entry import main
 
 
 if __name__ == "__main__":
