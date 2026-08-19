@@ -11,9 +11,7 @@ from pathlib import Path
 from typing import Final
 
 import os
-import shutil
 import socket
-import subprocess
 import sys
 import time
 
@@ -195,6 +193,15 @@ def _request(argv: Sequence[str], source_version: str) -> Request:
         isatty = sys.stdout.isatty()
     except (AttributeError, ValueError):
         isatty = False
+    if isatty:
+        # 2.2ms, and only a terminal ever needs the width -- the piped and
+        # daemon-spawned paths that dominate agent traffic would pay it for a
+        # value they discard.
+        import shutil  # noqa: PLC0415
+
+        columns = shutil.get_terminal_size(fallback=(120, 24)).columns
+    else:
+        columns = 0
     return Request(
         argv=tuple(argv),
         cwd=str(Path.cwd()),
@@ -204,7 +211,7 @@ def _request(argv: Sequence[str], source_version: str) -> Request:
             if (value := os.environ.get(name)) is not None
         },
         isatty=isatty,
-        columns=shutil.get_terminal_size(fallback=(120, 24)).columns if isatty else 0,
+        columns=columns,
         protocol_version=PROTOCOL_VERSION,
         source_version=source_version,
     )
@@ -227,6 +234,10 @@ def _spawn(path: Path) -> bool:
     would report ready before anything is listening.
     """
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # 3.2ms, paid only on the once-per-daemon-lifetime spawn. Every other
+    # invocation connects to a daemon that is already up.
+    import subprocess  # noqa: PLC0415
+
     try:
         subprocess.Popen(  # noqa: S603 -- fixed interpreter and module path.
             [sys.executable, "-m", _CLI_MODULE, SERVE_FLAG],
