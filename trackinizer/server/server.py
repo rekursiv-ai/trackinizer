@@ -14,7 +14,7 @@ Usage::
 from __future__ import annotations
 
 from pathlib import Path
-from typing import override
+from typing import TYPE_CHECKING, override
 
 import argparse
 import logging
@@ -29,6 +29,10 @@ from trackinizer.server.config import (
     Config,
     ConfigError,
 )
+
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 
 logger = logging.getLogger("trackinizer")
@@ -51,6 +55,33 @@ class _SuppressZeroTaskCancel(logging.Filter):
         )
 
 
+APP_FACTORY_TARGET: str = f"{__name__}:build_app"
+"""Import string uvicorn re-imports in each forked worker.
+
+Multi-worker uvicorn spawns children that import the app themselves, so it
+rejects a constructed app object -- it logs "You must pass the application as
+an import string" and exits 3. Naming this module's factory is what lets
+``--workers N`` fan out at all.
+"""
+
+
+def build_app() -> FastAPI:
+    """Build a fully configured app from ``sys.argv``.
+
+    The entry point for a forked uvicorn worker. A worker is a fresh
+    interpreter that re-imports this module, so nothing the parent attached
+    to ``app.state`` survives; the configuration is re-derived here from the
+    argv the child inherited, keeping one source of truth with :func:`main`.
+    """
+    parser = argparse.ArgumentParser(
+        description=(__doc__ or "").split("\n", 1)[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    args, _remaining = _parse_args(parser)
+    _configure_app(args)
+    return app
+
+
 def main() -> None:
     """Parse args, configure the app, and run uvicorn."""
     parser = argparse.ArgumentParser(
@@ -68,19 +99,21 @@ def main() -> None:
             "Use --workers 1 or run on --engine pg."
         )
     _configure_logging(args.log_level)
-    try:
-        app.state.config = Config.from_args(args)
-    except ConfigError as err:
-        # Library code raises ConfigError (a plain Exception); the CLI is
-        # the one place that turns a bad config into a clean process exit.
-        raise SystemExit(str(err)) from err
-    if args.web:
-        web.attach(app, static_dir=args.static_dir)
+    # One worker runs the app in THIS process, so hand uvicorn the object it
+    # is already holding. More than one forks children that re-import, which
+    # only an import string can name -- passing the object there makes
+    # uvicorn refuse the fan-out and exit 3.
+    single_worker = args.workers <= 1
+    target: FastAPI | str = APP_FACTORY_TARGET
+    if single_worker:
+        _configure_app(args)
+        target = app
     # Silence uvicorn's spurious zero-task cancel ERROR on every clean shutdown
     # (a consequence of timeout_graceful_shutdown=0); a real N>0 cancel still logs.
     logging.getLogger("uvicorn.error").addFilter(_SuppressZeroTaskCancel())
     uvicorn.run(
-        app,
+        target,
+        factory=not single_worker,
         host=args.host,
         port=args.port,
         workers=args.workers,
@@ -93,6 +126,18 @@ def main() -> None:
         # back), so there is nothing to drain for; 0 = don't wait, tear down now.
         timeout_graceful_shutdown=0,
     )
+
+
+def _configure_app(args: argparse.Namespace) -> None:
+    """Attach config (and the web UI) to the module-level app."""
+    try:
+        app.state.config = Config.from_args(args)
+    except ConfigError as err:
+        # Library code raises ConfigError (a plain Exception); the CLI is
+        # the one place that turns a bad config into a clean process exit.
+        raise SystemExit(str(err)) from err
+    if args.web:
+        web.attach(app, static_dir=args.static_dir)
 
 
 def _parse_args(
