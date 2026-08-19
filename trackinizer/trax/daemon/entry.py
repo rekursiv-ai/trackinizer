@@ -9,17 +9,24 @@ touch it.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from pathlib import Path
+from typing import Final
 
 import os
 import sys
 
 from trackinizer.trax.daemon.client import (
     SERVE_FLAG,
+    DaemonRequestLostError,
     delegate,
     should_delegate,
 )
-from trackinizer.trax.daemon.protocol import source_version
+from trackinizer.trax.daemon.protocol import package_root, source_version
+
+
+_LOST_EXIT_CODE: Final = 75
+"""EX_TEMPFAIL: the command reached the daemon but its result was lost. The
+caller must decide whether to repeat it -- this process cannot, because the
+command may already have applied."""
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -39,7 +46,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         serve()
         return 0
     if _daemon_enabled() and should_delegate(args):
-        response = delegate(args, source_version=_version())
+        try:
+            response = delegate(args, source_version=source_version(package_root()))
+        except DaemonRequestLostError as lost:
+            # Deliberately NOT retried in-process: the daemon may have
+            # applied the command already, and a second run would mint a new
+            # idempotency key and duplicate it.
+            sys.stderr.write(f"trax: {lost}\n")
+            return _LOST_EXIT_CODE
         if response is not None:
             sys.stdout.write(response.stdout)
             sys.stderr.write(response.stderr)
@@ -59,8 +73,3 @@ def _daemon_enabled() -> bool:
     running one.
     """
     return os.environ.get("TRAX_NO_DAEMON", "") not in ("1", "true", "yes")
-
-
-def _version() -> str:
-    """Fingerprint of the CLI source this process was launched from."""
-    return source_version(Path(__file__).resolve().parents[1])

@@ -9,7 +9,13 @@ import contextlib
 import socket
 import threading
 
-from trackinizer.trax.daemon.client import delegate, should_delegate
+import pytest
+
+from trackinizer.trax.daemon.client import (
+    DaemonRequestLostError,
+    delegate,
+    should_delegate,
+)
 from trackinizer.trax.daemon.protocol import (
     PROTOCOL_VERSION,
     Request,
@@ -73,12 +79,31 @@ class TestShouldDelegate:
     def test_refuses_the_serve_flag(self) -> None:
         assert not should_delegate(["--__serve"])
 
+    def test_delegates_a_row_whose_value_is_the_word_run(self) -> None:
+        """``run`` is the PTY verb only in verb position, never as a value.
+
+        Scanning every token instead of the verb makes any row mentioning
+        "run" -- an experiment title, a label -- silently forfeit the daemon.
+        """
+        assert should_delegate(["issue", "title", "to", "run"])
+
+    def test_delegates_a_row_whose_value_is_a_bare_dash(self) -> None:
+        """A ``-`` after ``to`` is the stdin sentinel; elsewhere it is a value."""
+        assert should_delegate(["issue", "label", "add", "-"])
+
+    def test_still_refuses_the_stdin_sentinel_after_to(self) -> None:
+        assert not should_delegate(["issue", "7", "title", "to", "-"])
+
+    def test_refuses_run_in_verb_position_after_global_flags(self) -> None:
+        """Global flags precede the verb, so the scan cannot just read argv[0]."""
+        assert not should_delegate(["--profile", "origin", "run", "claude"])
+
 
 class TestDelegate:
     def test_returns_the_daemon_response(self, tmp_path: Path) -> None:
         sock = tmp_path / "traxd.sock"
         with serving(sock) as seen:
-            response = delegate(["issue"], socket=sock, source_version="v1")
+            response = delegate(["issue"], socket_override=sock, source_version="v1")
 
         assert response is not None
         assert response.stdout == "served issue"
@@ -93,7 +118,7 @@ class TestDelegate:
         """
         sock = tmp_path / "traxd.sock"
         with serving(sock) as seen:
-            delegate(["issue"], socket=sock, source_version="v1")
+            delegate(["issue"], socket_override=sock, source_version="v1")
 
         assert seen[0].isatty in (True, False)
         assert seen[0].columns >= 0
@@ -102,7 +127,7 @@ class TestDelegate:
         """The daemon must not resolve identity from its OWN environment."""
         sock = tmp_path / "traxd.sock"
         with serving(sock) as seen:
-            delegate(["issue"], socket=sock, source_version="v1")
+            delegate(["issue"], socket_override=sock, source_version="v1")
 
         assert set(seen[0].env) <= {
             "USER",
@@ -115,7 +140,7 @@ class TestDelegate:
         """``field to @rel/path`` resolves against the CALLER's directory."""
         sock = tmp_path / "traxd.sock"
         with serving(sock) as seen:
-            delegate(["issue"], socket=sock, source_version="v1")
+            delegate(["issue"], socket_override=sock, source_version="v1")
 
         assert Path(seen[0].cwd).is_absolute()
 
@@ -124,7 +149,7 @@ class TestDelegate:
         assert (
             delegate(
                 ["issue"],
-                socket=tmp_path / "absent.sock",
+                socket_override=tmp_path / "absent.sock",
                 source_version="v1",
                 spawn=False,
             )
@@ -136,7 +161,60 @@ class TestDelegate:
         sock = tmp_path / "traxd.sock"
         sock.write_bytes(b"")
         assert (
-            delegate(["issue"], socket=sock, source_version="v1", spawn=False) is None
+            delegate(["issue"], socket_override=sock, source_version="v1", spawn=False)
+            is None
+        )
+
+    def test_raises_when_a_delivered_request_loses_its_response(
+        self, tmp_path: Path
+    ) -> None:
+        """A request that reached the daemon must never fall back in-process.
+
+        The daemon runs the verb BEFORE it replies, so a connection lost
+        after the request was written may have already applied a write. The
+        in-process fallback would then re-run it under a fresh idempotency
+        key and duplicate the effect -- a second edit, a second edge, a
+        second cost delta. Losing the response is a failure to report, not a
+        licence to retry.
+        """
+        sock = tmp_path / "traxd.sock"
+        received: list[Request] = []
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(sock))
+        listener.listen(1)
+
+        def serve_then_die() -> None:
+            conn, _ = listener.accept()
+            with conn:
+                received.append(Request.from_json(read_frame(conn)))
+                # Reply never sent: the daemon "crashed" after running the verb.
+
+        thread = threading.Thread(target=serve_then_die, daemon=True)
+        thread.start()
+        try:
+            with pytest.raises(DaemonRequestLostError):
+                delegate(
+                    ["issue", "7", "status", "to", "complete"],
+                    socket_override=sock,
+                    source_version="v1",
+                    spawn=False,
+                )
+        finally:
+            thread.join(timeout=5)
+            listener.close()
+
+        assert received, "the daemon received the request before the connection died"
+
+    def test_falls_back_when_the_connection_never_opened(self, tmp_path: Path) -> None:
+        """Nothing was delivered, so re-running locally cannot duplicate work."""
+        assert (
+            delegate(
+                ["issue", "7", "status", "to", "complete"],
+                socket_override=tmp_path / "absent.sock",
+                source_version="v1",
+                spawn=False,
+            )
+            is None
         )
 
     def test_returns_none_when_the_daemon_reports_stale_code(
@@ -150,14 +228,16 @@ class TestDelegate:
         sock = tmp_path / "traxd.sock"
         with serving(sock, version="v1"):
             assert (
-                delegate(["issue"], socket=sock, source_version="v2", spawn=False)
+                delegate(
+                    ["issue"], socket_override=sock, source_version="v2", spawn=False
+                )
                 is None
             )
 
     def test_carries_the_protocol_version(self, tmp_path: Path) -> None:
         sock = tmp_path / "traxd.sock"
         with serving(sock) as seen:
-            delegate(["issue"], socket=sock, source_version="v1")
+            delegate(["issue"], socket_override=sock, source_version="v1")
 
         assert seen[0].protocol_version == PROTOCOL_VERSION
 

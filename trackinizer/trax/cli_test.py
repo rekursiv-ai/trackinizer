@@ -72,7 +72,56 @@ def test_profile_flag_overrides_trackinizer_url(
         assert str(client.base_url) == "http://prod:9000"
         assert client.author == "alice"
     finally:
-        client.close()
+        cli.close_clients()
+
+
+class TestClientSharing:
+    """A long-lived process must not build a connection pool per invocation.
+
+    The daemon calls ``parse_and_run`` once per request. A client cached
+    inside that call would open a fresh ``httpx`` pool -- and a fresh TCP
+    handshake -- every time, discarding the keep-alive the transport exists
+    to provide, and would accumulate open sockets for the daemon's whole life.
+    """
+
+    def test_reuses_one_client_across_invocations(self) -> None:
+        profile.save_profile("prod", Profile(url="http://prod:9000"))
+        args = argparse.Namespace(profile="prod", host=None, port=None)
+        try:
+            clients = [cli.connect(args) for _ in range(5)]
+
+            assert len({id(client) for client in clients}) == 1, (
+                "each invocation built its own Client; under the daemon that "
+                "is a new connection pool and a leaked socket per request"
+            )
+        finally:
+            cli.close_clients()
+
+    def test_separates_clients_by_resolved_target(self) -> None:
+        """Two profiles are two servers; they must not share a connection."""
+        profile.save_profile("a", Profile(url="http://a:9000"))
+        profile.save_profile("b", Profile(url="http://b:9000"))
+        try:
+            first = cli.connect(argparse.Namespace(profile="a", host=None, port=None))
+            second = cli.connect(argparse.Namespace(profile="b", host=None, port=None))
+
+            assert first is not second
+        finally:
+            cli.close_clients()
+
+    def test_a_profile_rewrite_invalidates_the_cached_client(self) -> None:
+        """A cached client still carries the OLD token after a token change."""
+        profile.save_profile("prod", Profile(url="http://prod:9000", api_key="old"))
+        args = argparse.Namespace(profile="prod", host=None, port=None)
+        try:
+            before = cli.connect(args)
+            profile.save_profile("prod", Profile(url="http://prod:9000", api_key="new"))
+            after = cli.connect(args)
+
+            assert before is not after
+            assert after.api_key == "new"
+        finally:
+            cli.close_clients()
 
 
 def test_global_flag_not_peeled_from_field_value() -> None:

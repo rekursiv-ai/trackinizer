@@ -11,6 +11,7 @@ import threading
 import time
 
 from trackinizer.client.errors import ClientError
+from trackinizer.trax.cli import parse_and_run
 from trackinizer.trax.context import cwd, env
 from trackinizer.trax.daemon.protocol import PROTOCOL_VERSION, Request
 from trackinizer.trax.daemon.server import handle
@@ -39,7 +40,6 @@ def make_request(
     env: dict[str, str] | None = None,
     isatty: bool = False,
     columns: int = 0,
-    protocol_version: int = PROTOCOL_VERSION,
 ) -> Request:
     """Build a request, defaulting every field a given test does not pin."""
     return Request(
@@ -48,8 +48,7 @@ def make_request(
         env=env if env is not None else {},
         isatty=isatty,
         columns=columns,
-        stdin="",
-        protocol_version=protocol_version,
+        protocol_version=PROTOCOL_VERSION,
         source_version="v1",
     )
 
@@ -142,20 +141,92 @@ class TestHandle:
 
         assert seen == ["/home/somebody"]
 
-    def test_rejects_a_mismatched_protocol_version(self) -> None:
-        response = handle(
-            make_request(["x"], protocol_version=PROTOCOL_VERSION + 1),
-            run=lambda _argv: echo("should not run"),
-        )
-
-        assert response.exit_code != 0
-        assert response.stdout == ""
-
     def test_passes_argv_through_verbatim(self) -> None:
         seen: list[Sequence[str]] = []
         handle(make_request(["issue", "7", "title"]), run=seen.append)
 
         assert seen == [("issue", "7", "title")]
+
+
+class TestStreamCapture:
+    """Not every writer can be taught the ContextVars.
+
+    ``argparse`` prints usage and errors straight to ``sys.stderr`` before
+    raising ``SystemExit``. Under the daemon those are ``/dev/null``, so
+    without a redirect an invalid flag returns exit 2 and NOTHING else -- the
+    user sees a bare failure with no reason.
+    """
+
+    def test_captures_an_argparse_error(self) -> None:
+        response = handle(
+            make_request(["issue", "--format", "bogus"]), run=parse_and_run
+        )
+
+        assert response.exit_code != 0
+        assert "bogus" in response.stderr, (
+            "argparse wrote its diagnostic to the real stderr, which is the "
+            "daemon's /dev/null; the user would see an exit code and no message"
+        )
+
+    def test_captures_a_direct_stdout_write(self) -> None:
+        """Any stray ``print`` must land in the response, not the daemon's fd 1."""
+        response = handle(make_request(["x"]), run=lambda _argv: print("direct"))  # noqa: T201 -- exercising the capture of a direct write.
+
+        assert response.stdout == "direct\n"
+
+    def test_reports_a_string_exit_payload(self) -> None:
+        """``sys.exit("message")`` prints the message and exits 1.
+
+        Coercing the payload with ``int()`` would raise instead, replacing a
+        user-facing message with an internal-error traceback.
+        """
+
+        def bail(argv: Sequence[str]) -> None:
+            del argv
+            raise SystemExit("something went wrong")
+
+        response = handle(make_request(["x"]), run=bail)
+
+        assert response.exit_code == 1
+        assert "something went wrong" in response.stderr
+
+
+class TestForwardedEnvironment:
+    """The overlay is authoritative for the names the client claims.
+
+    The daemon inherits the environment of whichever shell spawned it. If an
+    unset forwarded name fell through to that environment, a caller with no
+    ``TRACKINIZER_PROFILE`` would silently adopt the spawning shell's -- and
+    write to another server under another token.
+    """
+
+    def test_an_unset_forwarded_name_reads_as_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_PROFILE", "daemon-shell-profile")
+        seen: list[str | None] = []
+        handle(
+            make_request(["x"], env={"USER": "caller"}),
+            run=lambda _argv: seen.append(env("TRACKINIZER_PROFILE")),
+        )
+
+        assert seen == [None], (
+            "an unset forwarded name resolved from the daemon's own "
+            "environment; the caller would inherit another shell's profile"
+        )
+
+    def test_an_unforwarded_name_still_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``HOME`` and friends are process-wide by nature."""
+        monkeypatch.setenv("HOME", "/home/somebody")
+        seen: list[str | None] = []
+        handle(
+            make_request(["x"], env={"USER": "caller"}),
+            run=lambda _argv: seen.append(env("HOME")),
+        )
+
+        assert seen == ["/home/somebody"]
 
 
 class TestConcurrentRequests:

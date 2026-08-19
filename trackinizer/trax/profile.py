@@ -266,6 +266,21 @@ def save_profile(name: str, profile: Profile) -> None:
         "\n".join(lines) + "\n",
         mode=0o600,
     )
+    # A long-lived process (the daemon) caches clients keyed on the resolved
+    # url/author/token. This profile just changed one of them, so a cached
+    # client would keep talking to the old server under the old credential.
+    _invalidate_clients()
+
+
+def _invalidate_clients() -> None:
+    """Drop cached clients after a profile write.
+
+    Imported at call time: ``cli`` imports this module, so a module-scope
+    import would be a cycle.
+    """
+    from trackinizer.trax.cli import close_clients  # noqa: PLC0415
+
+    close_clients()
 
 
 def switch_profile(name: str) -> None:
