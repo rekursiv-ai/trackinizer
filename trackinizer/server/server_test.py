@@ -24,6 +24,7 @@ from trackinizer.server.server import (
     _configure_logging,
     _parse_args,
     _SuppressZeroTaskCancel,
+    build_app,
     logger,
     main,
 )
@@ -77,21 +78,9 @@ class TestCLIHelpers:
     def test_main_invokes_uvicorn(self, monkeypatch: pytest.MonkeyPatch) -> None:
         called: dict[str, Any] = {}
 
-        def fake_run(
-            app: Any,
-            *,
-            host: str,
-            port: int,
-            workers: int,
-            timeout_keep_alive: int,
-            timeout_graceful_shutdown: int,
-        ) -> None:
+        def fake_run(app: Any, **kwargs: Any) -> None:
             called["app"] = app
-            called["host"] = host
-            called["port"] = port
-            called["workers"] = workers
-            called["timeout_keep_alive"] = timeout_keep_alive
-            called["timeout_graceful_shutdown"] = timeout_graceful_shutdown
+            called.update(kwargs)
 
         monkeypatch.setattr(uvicorn, "run", fake_run)
         monkeypatch.setattr("sys.argv", ["trackinizer", "--port", "1234"])
@@ -103,6 +92,79 @@ class TestCLIHelpers:
         # Force-close on shutdown (don't wait for connections to drain); the
         # zero-task cancel ERROR this causes is suppressed by the log filter.
         assert called["timeout_graceful_shutdown"] == 0
+
+
+class TestMultiWorkerLaunch:
+    """``--workers N`` must actually fan out, not die on startup.
+
+    uvicorn forks workers by re-importing the app in each child, so it accepts
+    ``workers>1`` ONLY when the first argument is an import string. Handed a
+    constructed app object it logs "You must pass the application as an import
+    string" and exits 3 -- which is what a hand-written ``--workers 4`` unit
+    drop-in produced: a crash loop whose message names nothing the operator
+    typed.
+    """
+
+    def test_multi_worker_passes_an_import_string(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        called: dict[str, Any] = {}
+
+        def fake_run(target: Any, **kwargs: Any) -> None:
+            called["target"] = target
+            called.update(kwargs)
+
+        monkeypatch.setattr(uvicorn, "run", fake_run)
+        monkeypatch.setattr(
+            "sys.argv",
+            ["trackinizer", "--engine", "pg", "--dsn", "x", "--workers", "4"],
+        )
+
+        main()
+
+        assert isinstance(called["target"], str), (
+            "uvicorn was handed an app object with workers>1; it cannot fork "
+            "workers from one and exits 3"
+        )
+        assert called["workers"] == 4
+        assert called.get("factory") is True
+
+    def test_single_worker_still_runs_the_configured_app(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One worker keeps the in-process app, so no re-import is needed."""
+        called: dict[str, Any] = {}
+
+        def fake_run(target: Any, **kwargs: Any) -> None:
+            called["target"] = target
+            called.update(kwargs)
+
+        monkeypatch.setattr(uvicorn, "run", fake_run)
+        monkeypatch.setattr("sys.argv", ["trackinizer"])
+
+        main()
+
+        assert not isinstance(called["target"], str)
+        assert called["workers"] == 1
+
+    def test_the_factory_builds_a_configured_app(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A forked worker re-imports and must rebuild its own config.
+
+        The parent's ``app.state.config`` does not survive the fork, so the
+        factory has to re-derive it from argv -- otherwise each worker serves
+        with no config at all.
+        """
+        monkeypatch.setattr(
+            "sys.argv",
+            ["trackinizer", "--engine", "pg", "--dsn", "postgres://probe/db"],
+        )
+
+        built = build_app()
+
+        assert built.state.config.engine == "pg"
+        assert built.state.config.dsn == "postgres://probe/db"
 
 
 class TestSuppressZeroTaskCancel:
@@ -199,20 +261,8 @@ class TestCoverageRoutesAndCli:
     ) -> None:
         called: dict[str, object] = {}
 
-        def fake_run(
-            passed_app: object,
-            *,
-            host: str,
-            port: int,
-            workers: int,
-            timeout_keep_alive: int,
-            timeout_graceful_shutdown: int,
-        ) -> None:
-            called["host"] = host
-            called["port"] = port
-            called["workers"] = workers
-            called["timeout_keep_alive"] = timeout_keep_alive
-            called["timeout_graceful_shutdown"] = timeout_graceful_shutdown
+        def fake_run(passed_app: object, **kwargs: object) -> None:
+            called.update(kwargs)
             called["web_attached"] = "/api/web/search" in registered_paths(app)
             del passed_app
 
@@ -220,6 +270,7 @@ class TestCoverageRoutesAndCli:
         monkeypatch.setattr(uvicorn, "run", fake_run)
         main()
         assert called == {
+            "factory": False,
             "host": "127.0.0.1",
             "port": 9999,
             "workers": 1,
