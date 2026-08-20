@@ -33,7 +33,7 @@ from trackinizer.types.errors import NotFoundError
 from trackinizer.types.inquiries import Inquiry, Issue
 from trackinizer.wire.column_shapes import sql_template
 from trackinizer.wire.filters import canonical_filter_field
-from trackinizer.wire.routes import DEFAULT_LIST_LIMIT
+from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
 from trackinizer.wire.row_filter import (
     RowFilter,
     match_filter,
@@ -328,15 +328,16 @@ class _ReadMixin(_StoreShared):
           after_id: Tie-breaker id for changes that share ``since``'s
             timestamp. Use the last id from the previous page; omit on
             the first page.
-          limit: Maximum rows to return (1-1000). Default 200.
+          limit: Maximum rows to return, capped at ``MAX_LIST_LIMIT``.
+            Default 200.
 
         Returns:
           changes: Up to ``limit`` matching :class:`Change` rows ordered
             by ``(created, id)`` ascending.
 
         """
-        if limit < 1 or limit > 1000:
-            raise ValueError("limit must be in [1, 1000]")
+        if limit < 1 or limit > MAX_LIST_LIMIT:
+            raise ValueError(f"limit must be in [1, {MAX_LIST_LIMIT}]")
         # Single (created, id) tuple cursor for both first and
         # subsequent pages. The first-page form previously used
         # ``c.created > $1`` which dropped rows tied at exactly
@@ -393,15 +394,15 @@ class _ReadMixin(_StoreShared):
           subject_id: Filter on the mutated row id.
           subject_kind: Filter on the mutated row kind.
           kind: Filter on the change discriminator.
-          limit: Maximum rows (1-1000). Default 200.
+          limit: Maximum rows, capped at ``MAX_LIST_LIMIT``. Default 200.
 
         Returns:
           changes: Up to ``limit`` matching :class:`Change` rows ordered
             by ``(created, id)`` descending.
 
         """
-        if limit < 1 or limit > 1000:
-            raise ValueError("limit must be in [1, 1000]")
+        if limit < 1 or limit > MAX_LIST_LIMIT:
+            raise ValueError(f"limit must be in [1, {MAX_LIST_LIMIT}]")
         async with self.engine.acquire() as conn:
             clauses: list[str] = []
             args: list[object] = []

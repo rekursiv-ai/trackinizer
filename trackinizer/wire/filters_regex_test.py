@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from trackinizer.wire.filters import Filter, validate_regex_dialect
+from trackinizer.wire.filters import Filter, folds_case, validate_regex_dialect
 
 
 class TestAmbiguousEscapes:
@@ -74,6 +74,25 @@ class TestFilterEnforcesTheDialect:
     def test_a_non_regex_op_is_not_dialect_checked(self) -> None:
         # ``\b`` is an ordinary two-character string to an equality filter.
         assert Filter(field="title", op="is", value=r"\balpha").value == r"\balpha"
+
+
+class TestFoldsCaseAnswersForThePatternAsAWhole:
+    r"""``folds_case`` reports the flag only where it actually applies.
+
+    A SCOPED group sets its flags for its own body, and Postgres rejects the
+    construct outright ("invalid embedded option"), so no pattern carrying one
+    ever folds anything. Answering yes for ``(?i:abc)`` is a claim about a
+    pattern neither engine runs -- harmless only while an earlier gate happens
+    to refuse it first, which is not a property this function states.
+    """
+
+    @pytest.mark.parametrize("pattern", ["(?i)abc", "(?im)abc", "(?mi)abc"])
+    def test_an_unscoped_flag_run_folds(self, pattern: str) -> None:
+        assert folds_case(pattern) is True
+
+    @pytest.mark.parametrize("pattern", ["(?i:abc)", "(?im:abc)", "abc", "(?m)abc"])
+    def test_nothing_else_does(self, pattern: str) -> None:
+        assert folds_case(pattern) is False
 
 
 if __name__ == "__main__":

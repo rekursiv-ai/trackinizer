@@ -26,7 +26,9 @@ from trackinizer.types.inquiries import INQUIRY_CLASSES
 
 __all__ = [
     "COLUMN_SHAPES",
+    "FILTERABLE_COLUMNS",
     "ColumnShape",
+    "compares_as_float",
     "lowers_into_sql",
     "requires_numeric_operand",
     "sql_template",
@@ -206,6 +208,17 @@ def sql_template(column: str, op: str) -> str | None:
     return None if shape is None else _SQL_BY_SHAPE[shape].get(op)
 
 
+def compares_as_float(column: str, op: str) -> bool:
+    """Whether ordering ``column`` compares it as ``double precision``.
+
+    Read off the TEMPLATE, like every other question about lowering: the REAL
+    shape casts ``{col}::float8`` to match the codec that decodes NUMERIC to a
+    Python float, and that cast is also a range ceiling the operand must clear.
+    """
+    template = sql_template(column, op)
+    return template is not None and "::float8" in template
+
+
 def requires_numeric_operand(column: str, op: str) -> bool:
     """Whether ordering ``column`` casts the operand to ``numeric`` in SQL.
 
@@ -247,6 +260,21 @@ def _column_shapes() -> dict[str, ColumnShape]:
             if (shape := _classify(flat)) is not None:
                 out[column] = shape
     return out
+
+
+def _filterable_columns() -> frozenset[str]:
+    """Every column a filter may name, whether or not it lowers.
+
+    A SUPERSET of :data:`COLUMN_SHAPES`, which holds only what has SQL: the
+    JSONB payload is filterable and has no shape, so classifying is the wrong
+    question to ask about a field's EXISTENCE. Deriving both from one walk is
+    what keeps them from disagreeing about which columns are real.
+    """
+    return frozenset(COLUMN_SHAPES) | {
+        storage_name(name, flat.spec)
+        for source in INQUIRY_CLASSES
+        for name, flat in flat_column_specs(source).items()
+    }
 
 
 def _classify(flat: FlatColumn) -> ColumnShape | None:
@@ -349,3 +377,6 @@ def _is_valued(annotation: object, target: type) -> bool:
 
 
 COLUMN_SHAPES: Final[dict[str, ColumnShape]] = _column_shapes()
+
+FILTERABLE_COLUMNS: Final[frozenset[str]] = _filterable_columns()
+"""Every column a filter may name; a superset of :data:`COLUMN_SHAPES`."""

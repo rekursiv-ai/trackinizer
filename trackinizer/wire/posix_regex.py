@@ -44,6 +44,7 @@ __all__ = [
     "escapes",
     "has_posix_bracket_construct",
     "has_python_named_group",
+    "is_flag_run",
     "live_indices",
     "matchable_indices",
     "paren_extensions",
@@ -227,6 +228,19 @@ def escapes(pattern: str) -> Iterator[Escape]:
     return (found for found in _scan(pattern) if isinstance(found, Escape))
 
 
+def is_flag_run(body: str, *, scoped: bool, flag: str) -> bool:
+    """Whether a ``(?...)`` body turns ``flag`` on for the whole pattern.
+
+    Three rules ask this -- ``(?m)`` for the ``$`` anchor, ``(?i)`` for case
+    folding, ``(?x)`` for comments -- and each got it wrong differently before:
+    one read every ``(?...)`` body, so a ``(?=m)`` lookahead disabled the
+    anchor fix; another ignored ``scoped``, so ``(?i:a)`` claimed to fold a
+    pattern Postgres refuses outright. The body must be flag letters ONLY, and
+    a colon-terminated group scopes its flags to its own body.
+    """
+    return flag in body and not scoped and set(body) <= FLAG_LETTERS
+
+
 def posix_pattern(pattern: str) -> str:
     r"""Rewrite POSIX-only constructs into their Python equivalents.
 
@@ -252,7 +266,7 @@ def posix_pattern(pattern: str) -> str:
     # Only a real unscoped FLAG group counts: ``(?=m)m$`` is a lookahead, not
     # multiline, and live PG16 answers false there.
     multiline = any(
-        "m" in found.body and not found.scoped and set(found.body) <= FLAG_LETTERS
+        is_flag_run(found.body, scoped=found.scoped, flag="m")
         for found in paren_extensions(pattern)
     )
     for index in live_indices(pattern):
@@ -289,6 +303,10 @@ def _scan(
     index = 0
     in_bracket = False
     bracket_start = -1
+    # ``(?x)`` gives ``#`` a second comment syntax, running to end of line.
+    # Turned on by an unscoped flag run only: Postgres rejects every scoped
+    # group, so ``(?x:...)`` never enables it for anyone.
+    expanded = False
     while index < len(pattern):
         char = pattern[index]
         if char == "\\" and index + 1 < len(pattern):
@@ -297,6 +315,13 @@ def _scan(
             index += 2
             continue
         if not in_bracket:
+            if expanded and char == "#":
+                newline = pattern.find("\n", index)
+                stop = len(pattern) if newline < 0 else newline
+                yield Comment(start=index, stop=stop)
+                yield Inert(start=index, stop=stop)
+                index = stop
+                continue
             if pattern.startswith("(?#", index):
                 closing = pattern.find(")", index + 3)
                 stop = len(pattern) if closing < 0 else closing + 1
@@ -317,11 +342,10 @@ def _scan(
                 # does not have. Both engines just fail to parse it, and the
                 # compile check says so.
                 if stop < len(pattern):
-                    yield ParenExtension(
-                        body=pattern[index + 2 : stop],
-                        scoped=pattern[stop] == ":",
-                        start=index,
-                    )
+                    body = pattern[index + 2 : stop]
+                    scoped = pattern[stop] == ":"
+                    yield ParenExtension(body=body, scoped=scoped, start=index)
+                    expanded = expanded or is_flag_run(body, scoped=scoped, flag="x")
                 index += 2
                 continue
             if char == "[":

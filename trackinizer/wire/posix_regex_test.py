@@ -151,6 +151,54 @@ class TestLiveIndices:
         assert live_indices("[[:alpha:]]") == frozenset({10})
 
 
+class TestExpandedModeComments:
+    r"""``(?x)`` turns ``#`` into a comment and makes whitespace insignificant.
+
+    A second comment syntax, and the scan has to know it for the same reason
+    it knows ``(?#...)``: the body is prose, so a rule reading it as syntax
+    refuses a pattern both engines run. Live PG16 answers true to all of
+    ``(?x)a b``, ``E'(?x)a # zzz\nb'`` and ``E'(?x)a # zzz'`` against ``ab``
+    / ``a``, and Python agrees on every one.
+
+    ``#`` is ordinary WITHOUT the flag (live: ``'a#b' ~ 'a#b'``), inside a
+    bracket expression (``'a#b' ~ '(?x)a[#]b'``), and when escaped
+    (``'a#b' ~ '(?x)a\#b'``) -- so the comment rule is as positional as every
+    other rule here.
+    """
+
+    def test_a_hash_comment_body_is_not_matchable(self) -> None:
+        # ``(?x)a # zz\nb`` matches "ab": the body is prose to both engines.
+        # The comment spans the ``#`` to the newline; the space before it is
+        # ordinary (insignificant) whitespace, not comment.
+        assert matchable_indices("(?x)a # zz\nb") == frozenset(
+            {0, 1, 2, 3, 4, 5, 10, 11}
+        )
+
+    def test_a_hash_comment_body_is_not_live_syntax(self) -> None:
+        assert live_indices("(?x)a # *+\nb").isdisjoint(range(6, 10))
+
+    def test_an_unterminated_hash_comment_runs_to_the_end(self) -> None:
+        # No newline closes it, so the rest of the pattern is comment.
+        assert matchable_indices("(?x)a # zz") == frozenset({0, 1, 2, 3, 4, 5})
+
+    def test_a_hash_without_the_flag_is_an_ordinary_character(self) -> None:
+        # Live: ``'a#b' ~ 'a#b'`` is true -- no flag, no comment.
+        assert matchable_indices("a#b") == frozenset(range(3))
+
+    def test_a_hash_inside_a_bracket_is_a_member(self) -> None:
+        # Live: ``'a#b' ~ '(?x)a[#]b'`` is true.
+        assert 6 in matchable_indices("(?x)a[#]b")
+
+    def test_an_escaped_hash_is_a_literal(self) -> None:
+        # Live: ``'a#b' ~ '(?x)a\#b'`` is true.
+        assert matchable_indices(r"(?x)a\#b") == frozenset(range(8))
+
+    def test_a_scoped_x_group_does_not_open_comments(self) -> None:
+        # Postgres rejects every scoped flag group ("invalid embedded
+        # option"), so ``(?x:...)`` never turns comments on for anyone.
+        assert matchable_indices("(?x:a # z)") == frozenset(range(10))
+
+
 class TestMatchableIndices:
     r"""Which positions the engine MATCHES, which is a different question.
 

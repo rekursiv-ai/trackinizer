@@ -26,6 +26,7 @@ import pytest_asyncio
 from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.store.core import Store, StubEmbedder
+from trackinizer.types.errors import ValidationError
 from trackinizer.wire.bodies import SubmitIssue
 from trackinizer.wire.filters import Filter
 
@@ -119,22 +120,28 @@ async def test_real_engine_rejection_is_a_400(store: Store, pattern: str) -> Non
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio
-async def test_an_out_of_range_order_operand_is_a_400(store: Store) -> None:
-    """An operand too large for the COLUMN's type is the caller's, not ours.
+async def test_an_out_of_range_order_operand_is_refused_before_the_engine(
+    store: Store,
+) -> None:
+    """An operand no ``float8`` can hold is refused where the column is known.
 
     ``belief_confidence`` is ``DOUBLE PRECISION``, so Postgres resolves
-    ``col < $1::numeric`` by casting the operand DOWN to float8 -- and
-    ``1e400`` does not fit, raising SQLSTATE 22003 rather than answering.
-    The operand parses as ``numeric`` perfectly well, so the wire guard has
-    nothing to refuse; only the engine knows the column cannot hold it.
-    Unmapped, it reached the caller as a 500.
+    ``col < $1::numeric`` by casting the operand DOWN to float8, and neither
+    ``1e400`` nor ``1e-400`` survives that -- live PG16 raises SQLSTATE 22003
+    for both. It answered them here as ``inf`` and ``0.0``, which is the
+    divergence; the refusal is now local, since only the COLUMN decides what
+    fits and ``reject_inadmissible`` is where the column is in hand.
+
+    ``regex_failures_as_400`` still maps 22003, for the same reason the POSIX
+    grammar is not enumerable: it is the backstop for what the guard cannot
+    decide. Nothing reaches it from this path any more, which is the point.
     """
-    with pytest.raises(HTTPException) as caught, regex_failures_as_400():
-        await store.list_kind(
-            "Belief",
-            filters=(Filter(field="belief_confidence", op="lt", value="1e400"),),
-        )
-    assert caught.value.status_code == 400
+    for operand in ("1e400", "1e-400"):
+        with pytest.raises(ValidationError, match="out of range"):
+            await store.list_kind(
+                "Belief",
+                filters=(Filter(field="belief_confidence", op="lt", value=operand),),
+            )
 
 
 if __name__ == "__main__":

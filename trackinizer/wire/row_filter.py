@@ -25,11 +25,14 @@ from decimal import Decimal
 from functools import lru_cache
 from typing import Final, Protocol
 
+import math
 import re
 import warnings
 
 from trackinizer.types.errors import ValidationError
 from trackinizer.wire.column_shapes import (
+    FILTERABLE_COLUMNS,
+    compares_as_float,
     lowers_into_sql,
     requires_numeric_operand,
 )
@@ -132,6 +135,16 @@ def reject_inadmissible(filt: RowFilter) -> None:
     if (err := validate_clause(filt.field, filt.op, filt.value)) is not None:
         raise ValidationError(err)
     column = canonical_filter_field(filt.field)
+    # A field NO column answers is a typo, and answering it is worse than
+    # refusing it: ``row.get`` returns ``None`` for a key the row never had,
+    # absent satisfies no affirmative predicate, so ``ne`` KEPT every row.
+    # SQL cannot make that mistake -- ``WHERE owenr ...`` is an error there --
+    # so the two evaluators disagreed on every row in the table.
+    if column not in FILTERABLE_COLUMNS:
+        raise ValidationError(
+            f"unknown filter field {filt.field!r}: no column answers it, so "
+            "SQL would error where this evaluator reads every row as NULL"
+        )
     if filt.op in REGEX_OPS | ORDER_OPS and not lowers_into_sql(column, filt.op):
         detail = (
             "the pattern would be matched in Python, where a pathological "
@@ -154,13 +167,41 @@ def reject_inadmissible(filt: RowFilter) -> None:
             "value in Postgres and compares false in Python, so the two "
             "evaluators would select different rows"
         )
-    if as_numeric(filt.value) is None:
+    if (parsed := as_numeric(filt.value)) is None:
         raise ValidationError(
             f"filter value {filt.value!r} is not a number Postgres can read, "
             f"but ordering {column!r} casts the operand to numeric: Postgres "
             "rejects it outright (SQLSTATE 22P02), which no handler maps, "
             "while Python compares it as text"
         )
+    # Parsing as ``numeric`` is not enough: the COLUMN's type decides what it
+    # can hold. A float8 column compares ``{col}::float8 < $1::numeric``, so
+    # the operand must survive the float8 range in BOTH directions -- live
+    # PG16 answers "out of range for type double precision" (22003) for
+    # ``1e400`` and for ``1e-400``, while Python reads them as ``inf`` and
+    # ``0.0`` and answers. An INTEGER column compares as ``numeric``, which
+    # has neither ceiling nor floor, so the same operands are legal there and
+    # refusing them everywhere would remove capability the engine has.
+    if compares_as_float(column, filt.op) and _overflows_float(parsed):
+        raise ValidationError(
+            f"filter value {filt.value!r} is out of range for {column!r}, "
+            "whose SQL compares it as double precision: Postgres rejects it "
+            "(SQLSTATE 22003) while Python silently rounds it"
+        )
+
+
+def _overflows_float(parsed: Decimal) -> bool:
+    """Whether ``parsed`` is a ``numeric`` no ``float8`` can represent.
+
+    Both ends: a magnitude past the ceiling becomes ``inf`` and one past the
+    floor becomes ``0.0``, and Postgres raises 22003 for either rather than
+    rounding. A non-finite operand is exempt -- ``'inf'::float8`` is
+    representable, so both engines answer it.
+    """
+    if not parsed.is_finite():
+        return False
+    rendered = float(parsed)
+    return not math.isfinite(rendered) or (rendered == 0.0 and parsed != 0)
 
 
 def match_filter(row: _Row, filt: RowFilter) -> bool:
