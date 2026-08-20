@@ -24,7 +24,7 @@ from trackinizer.server.store.change_id_slot import (
     set_client_change_id,
 )
 from trackinizer.server.store.edit import _EditMixin
-from trackinizer.server.store.read import _seq_range_clause
+from trackinizer.server.store.read import seq_range_clause
 from trackinizer.server.store.submit import _SubmitMixin
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Snapshot
@@ -499,7 +499,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         """
         clauses = ["session_id = $1"]
         params: list[object] = [session_id]
-        if (seq_clause := _seq_range_clause(params, seq_ranges)) is not None:
+        if (seq_clause := seq_range_clause(params, seq_ranges)) is not None:
             clauses.append(seq_clause)
         if kind is not None:
             params.append(kind)

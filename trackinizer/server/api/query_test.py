@@ -23,6 +23,7 @@ from hypothesis import (
 )
 
 import httpx
+import pytest
 
 from trackinizer.conftest import (
     FakeEngine,
@@ -47,8 +48,6 @@ from trackinizer.types.inquiries import Inquiry
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
-
-    import pytest
 
     from trackinizer.server.store.core import Store
 from trackinizer.wire.routes import MAX_LIST_LIMIT
@@ -411,6 +410,47 @@ class TestRoutes:
             ("issue_kind", "isnull", ""),
             ("owner", "notnull", ""),
         ]
+
+    def test_list_kind_route_rejects_a_value_on_a_presence_op(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        """A presence op with an operand is a question the route cannot answer.
+
+        ``{"op": "isnull", "value": "Dan"}`` reads as "owner is Dan" and was
+        silently answered as "owner is null" -- the operand dropped without a
+        word to the caller.
+        """
+        client, _store, _engine = route_client
+        r = client.get(
+            "/api/inquiries",
+            params=[
+                ("kind", "Issue"),
+                ("filter", '{"field":"owner","op":"isnull","value":"Dan"}'),
+            ],
+        )
+        assert r.status_code == 400, r.text
+        assert "takes no value" in r.text
+
+    @pytest.mark.parametrize("param", ["filter", "seq_range"])
+    def test_repeated_query_params_are_length_capped(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        param: str,
+    ) -> None:
+        # ``kind`` was capped and these two were not, so one request could
+        # still force an unbounded number of JSON parses, regex compiles, and
+        # ``OR`` disjuncts before any store-level limit applied. The operand
+        # is deliberately unparseable: the cap must reject on COUNT before
+        # anything decodes it, so a malformed value still yields 422 rather
+        # than a per-filter 400.
+        client, _store, _engine = route_client
+        params: tuple[tuple[str, str], ...] = (
+            ("kind", "Issue"),
+            *((param, "x") for _ in range(MAX_LIST_LIMIT + 1)),
+        )
+        r = client.get("/api/inquiries", params=params)
+        assert r.status_code == 422, r.text
 
     def test_change_log_route_rejects_bad_limit(
         self,

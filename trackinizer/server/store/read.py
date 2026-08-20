@@ -9,10 +9,8 @@ A pure leaf: :meth:`get_inquiry`, :meth:`list_kind`, :meth:`next_issue`,
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import datetime
-from enum import StrEnum
-from typing import Final, Literal, cast, get_args, get_origin
+from typing import cast
 from uuid import UUID
 
 from trackinizer.server.notify import tx
@@ -23,318 +21,31 @@ from trackinizer.server.projection import (
 )
 from trackinizer.server.regex_timeout import apply_regex_statement_timeout
 from trackinizer.server.sql_fragments import (
-    _COST_SUBTREE_SQL,
-    _NEXT_ISSUE_SQL,
-    _PROVES_BELIEF_SQL,
+    COST_SUBTREE_SQL,
+    NEXT_ISSUE_SQL,
+    PROVES_BELIEF_SQL,
 )
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Change
-from trackinizer.types.columns import (
-    FlatColumn,
-    flat_column_specs,
-    storage_name,
-)
 from trackinizer.types.cost import Cost
-from trackinizer.types.errors import NotFoundError, ValidationError
-from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry, Issue
+from trackinizer.types.errors import NotFoundError
+from trackinizer.types.inquiries import Inquiry, Issue
+from trackinizer.wire.column_shapes import sql_template
 from trackinizer.wire.filters import canonical_filter_field
-from trackinizer.wire.row_filter import RowFilter, match_filter
+from trackinizer.wire.routes import DEFAULT_LIST_LIMIT
+from trackinizer.wire.row_filter import (
+    RowFilter,
+    match_filter,
+    reject_inadmissible,
+)
 from trackinizer.wire.seq_ranges import SeqRange
 
 
 __all__ = [
     "_ReadMixin",
-    "_seq_range_clause",
+    "seq_range_clause",
 ]
-
-
-@dataclass(frozen=True, kw_only=True, slots=True)
-class Lowering:
-    """Whether filters may be pushed into SQL.
-
-    Disabled only by the equivalence tests, which run the same query through
-    both evaluators and compare the rows. A field rather than a bare module
-    flag so the test's override is obvious at the assignment site.
-    """
-
-    enabled: bool = True
-
-
-LOWERING: Lowering = Lowering()
-
-
-class _ColumnShape(StrEnum):
-    """How a column's values compare, which decides its SQL form."""
-
-    TEXT = "text"
-    """A scalar string: ``=`` and the regex operators apply directly."""
-
-    ARRAY = "array"
-    """A list column, where ``is`` means MEMBERSHIP, not equality."""
-
-    INTEGER = "integer"
-    """A whole number. ``::text`` renders it exactly as Python's ``str``, and
-    the order ops compare numerically in both evaluators."""
-
-    REAL = "real"
-    """A fractional number, whose rendering the two disagree on by default.
-
-    ``match_filter`` compares ``str(value)``, so ``0.5`` must render ``0.5``
-    -- but a ``NUMERIC(14, 6)`` column's ``::text`` is ``0.500000`` and a
-    float's ``str(100.0)`` is ``100.0`` against SQL's ``100``. The template in
-    :data:`_SQL_BY_SHAPE` restores Python's shape: cast to ``float8`` (which
-    drops NUMERIC's trailing zeros) and re-append ``.0`` to a whole value."""
-
-    RENDERED = "rendered"
-    """A non-text scalar whose SQL ``::text`` rendering equals Python's
-    ``str()`` -- UUID today. ``match_filter`` stringifies the column value, so
-    only a type whose two renderings agree can lower, and it lowers through
-    the same ``::text`` cast the predicate implies."""
-
-    TIMESTAMP = "timestamp"
-    """An instant, rendered to match ``str(datetime)`` exactly.
-
-    A bare ``::text`` will NOT do: it renders in the session time zone with a
-    ``-08`` style offset, where Python prints ``+00:00``. The template in
-    :data:`_SQL_BY_SHAPE` forces UTC and reproduces Python's microsecond rule
-    (omitted when zero, else six digits).
-
-    This holds because asyncpg hands back UTC-aware datetimes whatever the
-    stored offset -- verified by round-tripping a ``-07:00`` value, which
-    reads back as ``+00:00`` -- so the predicate never sees a local offset
-    that SQL would normalize away."""
-
-
-def _column_shapes() -> dict[str, _ColumnShape]:
-    """Classify every filterable column, derived from the specs.
-
-    Derived rather than hand-listed so a new column is classified without an
-    edit here, and a type change reclassifies it automatically.
-    """
-    # Identity/housekeeping columns the schema declares directly. They carry
-    # no ColumnSpec, so the spec walk below cannot see them -- and they are
-    # among the most filtered (``created``, ``seq``). Mirrors
-    # ``grammar._IDENTITY_FILTER_COLUMNS``.
-    out: dict[str, _ColumnShape] = {
-        "kind": _ColumnShape.TEXT,
-        "seq": _ColumnShape.INTEGER,
-        "id": _ColumnShape.RENDERED,
-        "created": _ColumnShape.TIMESTAMP,
-        "modified": _ColumnShape.TIMESTAMP,
-    }
-    for source in (Inquiry, *KIND_TO_CLASS.values()):
-        for name, flat in flat_column_specs(source).items():
-            column = storage_name(name, flat.spec)
-            if (shape := _classify(column, flat)) is not None:
-                out[column] = shape
-    return out
-
-
-def _classify(column: str, flat: FlatColumn) -> _ColumnShape | None:
-    """Shape for one column, or ``None`` when it cannot lower.
-
-    A flattened axis (the ``marginal_cost_*`` pair) carries the COMPOSITE's
-    empty ``sql_type``, so the declared type says nothing; its Python
-    annotation does, and both axes are floats.
-    """
-    sql_type = flat.spec.sql_type
-    if sql_type.endswith("[]"):
-        return _ColumnShape.ARRAY
-    if _is_integer_sql(sql_type) or _is_valued(flat.value_type, int):
-        return _ColumnShape.INTEGER
-    if _is_real_sql(sql_type) or _is_valued(flat.value_type, float):
-        return _ColumnShape.REAL
-    if sql_type == "UUID":
-        return _ColumnShape.RENDERED
-    if sql_type == "TIMESTAMPTZ":
-        return _ColumnShape.TIMESTAMP
-    if sql_type == "TEXT" and _is_text_valued(flat.value_type):
-        return _ColumnShape.TEXT
-    # JSONB is the one shape left in Python: ``str(dict)`` is a Python repr
-    # with single quotes, which no SQL rendering reproduces.
-    del column
-    return None
-
-
-def _sql_head(sql_type: str) -> str:
-    """Leading word of a declared type, so ``NUMERIC(14, 6)`` reads as one."""
-    return sql_type.split("(", maxsplit=1)[0].strip().upper()
-
-
-def _is_integer_sql(sql_type: str) -> bool:
-    """Whether a declared type holds whole numbers."""
-    return _sql_head(sql_type) in {"INTEGER", "BIGINT", "SMALLINT"}
-
-
-def _is_real_sql(sql_type: str) -> bool:
-    """Whether a declared type holds fractional numbers."""
-    return _sql_head(sql_type) in {
-        "NUMERIC",
-        "DECIMAL",
-        "REAL",
-        "DOUBLE",
-        "DOUBLE PRECISION",
-    }
-
-
-def _is_text_valued(annotation: object) -> bool:
-    """Whether a column's values are plain strings in Python."""
-    if get_origin(annotation) is Literal:
-        return all(
-            isinstance(arg, str)
-            for arg in get_args(annotation)
-            if arg is not type(None)
-        )
-    return _is_valued(annotation, str)
-
-
-def _is_valued(annotation: object, target: type) -> bool:
-    """Whether every value a column can hold is a ``target``.
-
-    Unwraps the two indirections the model uses: a ``type X = ...`` alias
-    (``Actor``, ``Status``) hides its real type behind ``__value__``, and a
-    nullable column is ``X | None``. Comparing the annotation to the type by
-    identity misses both, which silently excludes the columns most worth
-    lowering -- and a flattened axis has ONLY its annotation, since its spec
-    carries the composite's empty ``sql_type``.
-
-    ``bool`` never counts as ``int``: it is a subclass, but comparing a flag
-    as a number is not what any filter means.
-    """
-    if annotation is bool:
-        return False
-    if annotation is target:
-        return True
-    if get_origin(annotation) is Literal:
-        return all(
-            isinstance(arg, target)
-            for arg in get_args(annotation)
-            if arg is not type(None)
-        )
-    if (aliased := getattr(annotation, "__value__", None)) is not None:
-        return _is_valued(aliased, target)
-    args = [arg for arg in get_args(annotation) if arg is not type(None)]
-    return bool(args) and all(_is_valued(arg, target) for arg in args)
-
-
-_COLUMN_SHAPES: dict[str, _ColumnShape] = _column_shapes()
-
-# Render a ``timestamptz`` exactly as Python's ``str(datetime)`` does: UTC,
-# space separator, ``+00:00`` offset, and microseconds only when non-zero.
-# ``match_filter`` compares that string, so any other rendering would make the
-# two evaluators disagree on every timestamp filter.
-_TS_TEXT: Final = (
-    "(to_char({col} AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')"
-    " || CASE WHEN date_part('microsecond', {col})::int % 1000000 = 0 THEN ''"
-    " ELSE '.' || lpad((date_part('microsecond', {col})::int % 1000000)::text,"
-    " 6, '0') END || '+00:00')"
-)
-
-# Render a fractional number the way Python's ``str(float)`` does. The
-# ``float8`` cast drops the trailing zeros a ``NUMERIC(p, s)`` column prints
-# (``0.500000`` -> ``0.5``); re-appending ``.0`` to a whole value restores the
-# part Postgres omits (``100`` -> ``100.0``). The magnitude guard keeps the
-# ``bigint`` cast in range and leaves exponent-form values (``1e+20``) to
-# Postgres, which already spells them as Python does.
-_REAL_TEXT: Final = (
-    "(CASE WHEN {col}::float8 = trunc({col}::float8)"
-    " AND abs({col}::float8) < 1e16"
-    " THEN {col}::float8::bigint::text || '.0'"
-    " ELSE {col}::float8::text END)"
-)
-
-# SQL for each op, per column shape. ``{col}`` is the column name (drawn from
-# the closed set above, never user input) and ``{p}`` the bound placeholder.
-#
-# The order ops appear ONLY under NUMERIC: ``match_filter`` compares
-# numerically whenever both sides parse as numbers, so on a text column
-# Python reads ``"10" < "9"`` as 10 < 9 while SQL compares them lexically --
-# measured, and the two disagree. Restricting them to numeric columns is what
-# keeps the evaluators identical.
-_SQL_BY_SHAPE: dict[_ColumnShape, dict[str, str]] = {
-    _ColumnShape.TEXT: {
-        "is": "{col} = {p}",
-        "ne": "{col} IS DISTINCT FROM {p}",
-        "re": "{col} ~ {p}",
-        "nre": "{col} !~ {p}",
-        "isnull": "{col} IS NULL",
-        "notnull": "{col} IS NOT NULL",
-    },
-    _ColumnShape.ARRAY: {
-        # ``label is x`` matches ANY element, mirroring ``_candidate_items``.
-        "is": "{p} = ANY({col})",
-        "ne": "NOT ({p} = ANY(COALESCE({col}, ARRAY[]::text[])))",
-        "re": "EXISTS (SELECT 1 FROM unnest({col}) AS e WHERE e ~ {p})",
-        "nre": "NOT EXISTS (SELECT 1 FROM unnest({col}) AS e WHERE e ~ {p})",
-        "isnull": "{col} IS NULL",
-        "notnull": "{col} IS NOT NULL",
-    },
-    _ColumnShape.INTEGER: {
-        "is": "{col}::text = {p}",
-        "ne": "{col}::text IS DISTINCT FROM {p}",
-        "re": "{col}::text ~ {p}",
-        "nre": "{col}::text !~ {p}",
-        "lt": "{col} < {p}::numeric",
-        "le": "{col} <= {p}::numeric",
-        "gt": "{col} > {p}::numeric",
-        "ge": "{col} >= {p}::numeric",
-        "isnull": "{col} IS NULL",
-        "notnull": "{col} IS NOT NULL",
-    },
-    _ColumnShape.REAL: {
-        "is": f"{_REAL_TEXT} = {{p}}",
-        "ne": f"{_REAL_TEXT} IS DISTINCT FROM {{p}}",
-        "re": f"{_REAL_TEXT} ~ {{p}}",
-        "nre": f"{_REAL_TEXT} !~ {{p}}",
-        # Ordering compares NUMBERS in both evaluators, so it needs none of
-        # the rendering above.
-        "lt": "{col} < {p}::numeric",
-        "le": "{col} <= {p}::numeric",
-        "gt": "{col} > {p}::numeric",
-        "ge": "{col} >= {p}::numeric",
-        "isnull": "{col} IS NULL",
-        "notnull": "{col} IS NOT NULL",
-    },
-    # A UUID renders identically in both evaluators (verified), so it lowers
-    # through the ``::text`` cast ``match_filter``'s ``str(value)`` implies.
-    # The order ops are absent: Python would compare the rendered strings,
-    # and SQL would compare UUIDs, which order differently.
-    _ColumnShape.RENDERED: {
-        "is": "{col}::text = {p}",
-        "ne": "{col}::text IS DISTINCT FROM {p}",
-        "re": "{col}::text ~ {p}",
-        "nre": "{col}::text !~ {p}",
-        "isnull": "{col} IS NULL",
-        "notnull": "{col} IS NOT NULL",
-    },
-    _ColumnShape.TIMESTAMP: {
-        "is": f"{_TS_TEXT} = {{p}}",
-        "ne": f"{_TS_TEXT} IS DISTINCT FROM {{p}}",
-        "re": f"{_TS_TEXT} ~ {{p}}",
-        "nre": f"{_TS_TEXT} !~ {{p}}",
-        # Compared as TEXT, not as instants. ``match_filter`` finds neither
-        # side numeric and falls through to a string compare of the rendered
-        # value, so SQL must compare the same rendering. Casting the operand
-        # (``{p}::timestamptz``) would also make asyncpg infer a datetime
-        # parameter and reject the string the CLI actually sends.
-        #
-        # The two agree because this rendering is ISO-8601 in a fixed zone,
-        # where lexical order IS chronological order.
-        "lt": f"{_TS_TEXT} < {{p}}",
-        "le": f"{_TS_TEXT} <= {{p}}",
-        "gt": f"{_TS_TEXT} > {{p}}",
-        "ge": f"{_TS_TEXT} >= {{p}}",
-        "isnull": "{col} IS NULL",
-        "notnull": "{col} IS NOT NULL",
-    },
-}
-
-# Ops that test presence and carry no operand, so they bind no parameter.
-_VALUELESS_OPS: frozenset[str] = frozenset({"isnull", "notnull"})
-
-# Ops whose match cost is unbounded in Python; see _reject_unboundable_regex.
-_REGEX_OPS: frozenset[str] = frozenset({"re", "nre"})
 
 
 def _lower_filter(filt: RowFilter, params: list[object]) -> str | None:
@@ -344,20 +55,17 @@ def _lower_filter(filt: RowFilter, params: list[object]) -> str | None:
     lockstep with the caller's list) only when the clause actually takes one.
     """
     column = canonical_filter_field(filt.field)
-    shape = _COLUMN_SHAPES.get(column)
-    if shape is None:
-        return None
-    template = _SQL_BY_SHAPE[shape].get(filt.op)
+    template = sql_template(column, filt.op)
     if template is None:
         return None
-    if filt.op in _VALUELESS_OPS:
+    if filt.op in ("isnull", "notnull"):
         return template.format(col=column, p="")
     params.append(filt.value)
     return template.format(col=column, p=f"${len(params)}")
 
 
 def _partition_filters(
-    filters: Sequence[RowFilter], params: list[object]
+    filters: Sequence[RowFilter], params: list[object], *, lowering: bool = True
 ) -> tuple[Sequence[str], Sequence[RowFilter]]:
     """Split ``filters`` into SQL clauses and clauses Python must still run.
 
@@ -366,61 +74,42 @@ def _partition_filters(
     must run before the window, or matches past the limit are dropped unseen
     (Issue#256).
 
-    A ``re`` / ``nre`` that cannot lower is refused rather than returned.
-    Postgres matches with a hybrid NFA/DFA -- ``((((a+)+)+)+)+$`` over 2000
-    characters answers in 48ms, and the statement timeout bounds it anyway.
-    Python backtracks: the same pattern against 40 stored characters measured
-    20.11 seconds here, doubling per character, holding the event loop for
-    every concurrent request, and no deadline can interrupt it.
+    Args:
+      filters: Clauses to split.
+      params: Running positional-parameter list; lowered clauses append to it.
+      lowering: Whether a clause may be pushed into SQL. Only the equivalence
+        tests pass ``False``, to run every clause through the Python
+        evaluator and compare the rows against the lowered path.
+
+    Returns:
+      clauses: SQL fragments to AND into the WHERE.
+      remaining: Clauses the caller must still evaluate per row.
 
     Raises:
-      ValidationError: A regex filter targets a column that cannot lower.
+      ValidationError: A clause neither evaluator can answer faithfully; see
+        :func:`~wire.row_filter.reject_inadmissible`.
 
     """
-    if not LOWERING.enabled:
-        # Refuse the same filters this mode's counterpart refuses -- those whose
-        # column cannot lower AT ALL -- rather than every regex. The column, not
-        # the mode, is what makes a pattern unboundable: refusing on the mode
-        # too means the SQL/Python parity suite, which runs each filter both
-        # ways, cannot compare any regex and so stops guarding the translation.
-        for filt in filters:
-            if _lower_filter(filt, list(params)) is None:
-                _reject_unboundable_regex(filt)
+    # Screened BEFORE lowering, not only when lowering declines: a NaN operand
+    # is refused precisely because it LOWERS, where Postgres sorts it largest
+    # and answers ``true`` to ``seq < 'nan'``. Checking only the declined
+    # branch inspected every clause except the dangerous one.
+    for filt in filters:
+        reject_inadmissible(filt)
+    if not lowering:
         return (), list(filters)
     clauses: list[str] = []
     remaining: list[RowFilter] = []
     for filt in filters:
         clause = _lower_filter(filt, params)
         if clause is None:
-            _reject_unboundable_regex(filt)
             remaining.append(filt)
         else:
             clauses.append(clause)
     return clauses, remaining
 
 
-def _reject_unboundable_regex(filt: RowFilter) -> None:
-    """Refuse a regex whose match would run in Python, where nothing bounds it.
-
-    Checked here, at the point lowerability stops being a guess: this function
-    sees the store's own verdict. Predicting the same fact upstream -- from a
-    column's declared ``sql_type``, say -- was wrong three separate ways: the
-    alias ``config`` never equals ``experiment_config``, a bare ``RowFilter``
-    skips the wire type's ``__post_init__`` entirely, and an exact match on
-    ``"JSONB"`` misses ``"jsonb"`` while :func:`_classify` still declines it.
-    """
-    if filt.op not in _REGEX_OPS:
-        return
-    column = canonical_filter_field(filt.field)
-    raise ValidationError(
-        f"regex filters are not supported on {column!r}: the column does not "
-        "lower into SQL, so the pattern would be matched in Python, where a "
-        "pathological expression cannot be bounded. Filter it with 'is' / "
-        "'ne', or apply the regex to a column that lowers."
-    )
-
-
-def _seq_range_clause(
+def seq_range_clause(
     params: list[object], seq_ranges: Sequence[SeqRange]
 ) -> str | None:
     """Lower a seq-range union to one parenthesized ``OR`` group, or ``None``.
@@ -469,10 +158,11 @@ class _ReadMixin(_StoreShared):
         kind: Inquiry.InquiryKind,
         *,
         status: Inquiry.Status | None = None,
-        limit: int = 50,
+        limit: int = DEFAULT_LIST_LIMIT,
         offset: int = 0,
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[RowFilter] = (),
+        lowering: bool = True,
     ) -> list[Inquiry]:
         """Paginated list of one kind, optionally filtered.
 
@@ -493,19 +183,23 @@ class _ReadMixin(_StoreShared):
         parenthesized ``OR`` group over the ``(kind, seq)`` index, so a
         disjoint selection (``222..260,279..``) is one indexed query, not
         one round-trip per interval.
+
+        ``lowering=False`` forces every clause through the Python evaluator.
+        Only the equivalence tests pass it, to compare the two evaluators'
+        rows; a caller has no reason to ask for the slower path.
         """
         params: list[object] = [kind]
         clauses = ["kind = $1"]
         if status is not None:
             params.append(status)
             clauses.append(f"status = ${len(params)}")
-        if (seq_clause := _seq_range_clause(params, seq_ranges)) is not None:
+        if (seq_clause := seq_range_clause(params, seq_ranges)) is not None:
             clauses.append(seq_clause)
         # Every filter whose SQL form provably selects the same rows as the
         # Python predicate joins the prefilter, so the query keeps its LIMIT.
         # Whatever cannot lower stays in ``filters`` and forces the
         # post-filter path below.
-        lowered, filters = _partition_filters(filters, params)
+        lowered, filters = _partition_filters(filters, params, lowering=lowering)
         clauses.extend(lowered)
         # ``id`` tie-breaks rows that share a ``created`` timestamp (always
         # true in a single transaction, sometimes true across them) so
@@ -563,7 +257,7 @@ class _ReadMixin(_StoreShared):
     async def next_issue(self) -> Issue | None:
         """Return the next active Issue whose prerequisites are all terminal."""
         async with self.engine.acquire() as conn:
-            row = await conn.fetchrow(_NEXT_ISSUE_SQL)
+            row = await conn.fetchrow(NEXT_ISSUE_SQL)
             if row is None:
                 return None
             rid = row["id"]
@@ -585,7 +279,7 @@ class _ReadMixin(_StoreShared):
             if exists is None:
                 return None
             if deep:
-                row = await conn.fetchrow(_COST_SUBTREE_SQL, subject_id)
+                row = await conn.fetchrow(COST_SUBTREE_SQL, subject_id)
             else:
                 row = await conn.fetchrow(
                     "SELECT marginal_cost_agent_usd AS agent_usd, "
@@ -608,7 +302,7 @@ class _ReadMixin(_StoreShared):
         can drill into evidence chains without re-fetching.
         """
         async with self.engine.acquire() as conn:
-            rows = await conn.fetch(_PROVES_BELIEF_SQL, belief_id)
+            rows = await conn.fetch(PROVES_BELIEF_SQL, belief_id)
             outbound, inbound = await fetch_edges_bulk(conn, [r["id"] for r in rows])
         return [materialize(row, outbound, inbound) for row in rows]
 

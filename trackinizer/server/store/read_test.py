@@ -261,7 +261,7 @@ class TestListKindFilterLowering:
         """``label is x`` matches ANY element, which ``= ANY(col)`` expresses."""
         sql = await self.sql_for(Filter(field="labels", op="is", value="bug"))
 
-        assert "$2 = ANY(labels)" in sql
+        assert "$2 = ANY(labels::text[])" in sql
         assert "LIMIT" in sql
 
     @pytest.mark.asyncio
@@ -289,19 +289,16 @@ class TestListKindFilterLowering:
         assert "LIMIT" in sql
 
     @pytest.mark.asyncio
-    async def test_keeps_an_order_op_on_a_text_column_in_python(self) -> None:
+    async def test_refuses_an_order_op_on_a_text_column(self) -> None:
         """``match_filter`` compares numeric-looking TEXT as numbers.
 
         Python reads ``"10" < "9"`` as ``10 < 9`` (False); SQL compares the
-        same values lexically (True). Measured against a live engine -- so an
-        order op on a text column must not lower.
+        same values lexically (True). Measured against a live engine, so
+        neither evaluator may run it: lowering would change the rows, and
+        keeping it in Python returns rows no lowered query could.
         """
-        sql = await self.sql_for(Filter(field="title", op="lt", value="9"))
-
-        assert "LIMIT" not in sql, (
-            "an order op lowered on a TEXT column; SQL sorts it lexically "
-            "where Python sorts numerically, silently changing the rows"
-        )
+        with pytest.raises(ValidationError, match="title"):
+            await self.sql_for(Filter(field="title", op="lt", value="9"))
 
     @pytest.mark.asyncio
     async def test_an_unknown_field_stays_in_python(self) -> None:
@@ -315,11 +312,12 @@ class TestListKindFilterLowering:
         """One un-lowerable clause forces the whole query back to post-filter.
 
         The window must follow EVERY predicate, so a single Python-evaluated
-        clause costs the query its SQL ``LIMIT`` (Issue#256).
+        clause costs the query its SQL ``LIMIT`` (Issue#256). ``config`` is
+        JSONB, which has no SQL rendering of ``str(dict)`` to lower to.
         """
         sql = await self.sql_for(
             Filter(field="account", op="is", value="josh"),
-            Filter(field="title", op="lt", value="9"),
+            Filter(field="experiment_config", op="is", value="x"),
         )
 
         assert "LIMIT" not in sql
@@ -330,32 +328,26 @@ class TestUnboundableRegexRefusal:
 
     Python's backtracking engine has no deadline, so a regex that cannot lower
     into SQL is refused. What makes it unboundable is the column -- a JSONB
-    payload the SQL renderer declines -- and that fact does not change with
-    ``LOWERING.enabled``. Refusing on the mode instead disabled every regex in
-    the SQL/Python parity suite, which runs each filter both ways and so could
-    no longer compare the two engines' translation at all.
+    payload the SQL renderer declines -- and that does not change with the
+    mode. Refusing on the mode instead disabled every regex in the SQL/Python
+    parity suite, which runs each filter both ways and so could no longer
+    compare the two engines' translation at all.
     """
 
     @pytest.mark.parametrize("lowering", [True, False])
     def test_a_json_column_is_refused_in_either_mode(self, lowering: bool) -> None:
-        original = read.LOWERING
-        read.LOWERING = read.Lowering(enabled=lowering)
-        try:
-            with pytest.raises(ValidationError, match="experiment_config"):
-                read._partition_filters(
-                    (Filter(field="experiment_config", op="re", value="x"),), []
-                )
-        finally:
-            read.LOWERING = original
+        with pytest.raises(ValidationError, match="experiment_config"):
+            read._partition_filters(
+                (Filter(field="experiment_config", op="re", value="x"),),
+                [],
+                lowering=lowering,
+            )
 
     @pytest.mark.parametrize("lowering", [True, False])
     def test_a_lowerable_column_is_allowed_in_either_mode(self, lowering: bool) -> None:
-        original = read.LOWERING
-        read.LOWERING = read.Lowering(enabled=lowering)
-        try:
-            read._partition_filters((Filter(field="title", op="re", value="^a"),), [])
-        finally:
-            read.LOWERING = original
+        read._partition_filters(
+            (Filter(field="title", op="re", value="^a"),), [], lowering=lowering
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover -- entry point only.

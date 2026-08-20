@@ -219,7 +219,7 @@ class TestReadSessionEvents:
         """Event reads share the inquiry list's OR-of-intervals lowering.
 
         Same union, same single-query SQL shape -- the one
-        ``_seq_range_clause`` helper backs both readers, so disjoint event
+        ``seq_range_clause`` helper backs both readers, so disjoint event
         windows never fan out per interval either.
         """
         conn = make_conn()

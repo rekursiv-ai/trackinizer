@@ -34,7 +34,7 @@ class SeqRange:
 
     def __post_init__(self) -> None:
         # A fully-open range lowers to an empty bound list, and
-        # ``_seq_range_clause`` would emit ``()`` -- a SQL syntax error. The
+        # ``seq_range_clause`` would emit ``()`` -- a SQL syntax error. The
         # wire parser already rejects bare ``..``, but a direct Store caller
         # that constructs the range programmatically bypasses it; reject here
         # so the at-least-one-bound invariant holds wherever a SeqRange exists.

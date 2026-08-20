@@ -27,8 +27,7 @@ from trackinizer.types.columns import (
 )
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import (
-    KIND_TO_CLASS,
-    Inquiry,
+    INQUIRY_CLASSES,
 )
 
 
@@ -36,12 +35,6 @@ from trackinizer.types.inquiries import (
 # through the Store's ``add_cost`` and have no ``set_<column>`` setter, so
 # the route table marks them specially instead of deriving a method name.
 _COST_PREFIX: Final = "marginal_cost_"
-
-# Every inquiry class, so the table covers each kind's own columns plus the
-# shared base: ``Inquiry`` first (base columns), then each concrete kind from
-# the canonical ``KIND_TO_CLASS`` registry. The registry's stable declaration
-# order fixes route-registration order; no parallel hand-list to keep in sync.
-_INQUIRY_CLASSES: tuple[type[Inquiry], ...] = (Inquiry, *KIND_TO_CLASS.values())
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -176,7 +169,7 @@ def inquiry_field_routes() -> tuple[InquiryFieldRoute, ...]:
     are defined.
     """
     seen: dict[str, InquiryFieldRoute] = {}
-    for cls in _INQUIRY_CLASSES:
+    for cls in INQUIRY_CLASSES:
         for column, flat in flat_column_specs(cls).items():
             # A non-route-editable column (``agentsession_ended``) is written
             # only through its dedicated method, so it gets no field route.

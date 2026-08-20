@@ -12,6 +12,7 @@ from trackinizer.types.change_log import Change, Snapshot
 from trackinizer.types.cost import Cost
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import (
+    INQUIRY_CLASSES,
     KIND_TO_CLASS,
     AgentSession,
     Artifact,
@@ -25,8 +26,6 @@ from trackinizer.types.inquiries import (
     WebSearch,
     is_valid_source,
 )
-from trackinizer.wire.filters import _INQUIRY_KIND_CLASSES
-from trackinizer.wire.routes import _INQUIRY_CLASSES
 
 
 class TestRowConverters:
@@ -251,12 +250,11 @@ class TestKindToClass:
         assert KIND_TO_CLASS["AgentSession"] is AgentSession
 
     def test_wire_consumers_derive_from_registry(self) -> None:
-        # The wire route/filter tables must span ``Inquiry`` plus exactly the
-        # canonical registry's concrete classes -- the E2 dedup contract (no
-        # parallel hand-maintained kind list).
-        expected = (Inquiry, *KIND_TO_CLASS.values())
-        assert expected == _INQUIRY_KIND_CLASSES
-        assert expected == _INQUIRY_CLASSES
+        # The hierarchy walk must span ``Inquiry`` plus exactly the canonical
+        # registry's concrete classes -- the E2 dedup contract (no parallel
+        # hand-maintained kind list). One definition now, so this asserts the
+        # derivation rather than the agreement of copies.
+        assert (Inquiry, *KIND_TO_CLASS.values()) == INQUIRY_CLASSES
 
 
 if __name__ == "__main__":  # pragma: no cover -- entry point only.

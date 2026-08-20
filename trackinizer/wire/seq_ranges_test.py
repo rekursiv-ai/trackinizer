@@ -47,7 +47,7 @@ def test_parse_seq_range_enforces_min_seq() -> None:
 
 def test_seq_range_rejects_both_bounds_open() -> None:
     # A fully-open ``SeqRange(None, None)`` lowers to an empty bound list and
-    # ``_seq_range_clause`` would build ``()`` -- a SQL syntax error for a
+    # ``seq_range_clause`` would build ``()`` -- a SQL syntax error for a
     # direct Store caller that constructs the range itself (the wire parser
     # rejects bare ``..``, but a programmatic caller bypasses it). Reject at
     # construction so the invariant holds everywhere a SeqRange exists.
