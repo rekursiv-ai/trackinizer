@@ -2,10 +2,11 @@ r"""Map Postgres-side regex failures to the 400 they are.
 
 Two routes lower a caller-supplied pattern into a Postgres ``~`` operator:
 ``/api/web/search`` and ``/api/inquiries``. Postgres runs POSIX ARE, so a
-pattern that compiles in Python can still be a syntax error there
-(``(?P<x>a)``, ``\z``) -- and a pathological pattern can exhaust the
-statement timeout set by ``server.regex_timeout``. Both are caller mistakes
-and must not surface as 500s.
+pattern that compiles in Python can still be rejected there (``(?P<x>a)``,
+``\z``) -- as SQLSTATE 2201B, an ``InvalidRegularExpressionError``, NOT the
+42601 ``PostgresSyntaxError`` the phrase "syntax error" suggests. A
+pathological pattern can also exhaust the statement timeout set by
+``server.regex_timeout``. Both are caller mistakes and must not be 500s.
 
 The timeout itself lives in ``server.regex_timeout`` because it needs the
 connection, which the store owns; this half is the route's, because mapping a
@@ -34,7 +35,12 @@ def regex_failures_as_400() -> Generator[None]:
     """
     try:
         yield
-    except asyncpg.PostgresSyntaxError as exc:
+    except asyncpg.InvalidRegularExpressionError as exc:
+        # SQLSTATE 2201B, a ``DataError``. NOT ``PostgresSyntaxError`` (42601),
+        # which the phrase "syntax error" suggests and which the two classes
+        # do not share: catching that instead is a silent no-op, and was --
+        # ``(?P<x>a)`` kept reaching FastAPI as a 500 while a unit test built
+        # on the wrong class passed.
         raise HTTPException(
             status_code=400, detail=f"invalid regex for Postgres: {exc!s}"
         ) from exc

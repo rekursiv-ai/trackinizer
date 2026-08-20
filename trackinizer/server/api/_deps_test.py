@@ -15,6 +15,7 @@ from typing import Any, cast
 from uuid import UUID, uuid4
 
 import dataclasses
+import decimal
 import types
 import typing
 
@@ -43,13 +44,8 @@ from trackinizer.types.inquiries import (
 _INQUIRIES_NS: dict[str, Any] = dict(vars(inquiries))
 
 
-def _sample(annotation: object) -> object:
-    """A non-``None`` value satisfying one field annotation.
-
-    Derived from the annotation rather than hand-written per kind, so a field
-    added to any Inquiry is populated -- and therefore serialized, and
-    therefore compared against the oracle -- with no edit here.
-    """
+def _resolve(annotation: object) -> object:
+    """Turn a source-text or aliased annotation into the type it names."""
     if isinstance(annotation, str):
         # ``from __future__ import annotations`` leaves every ``field.type``
         # as source text; evaluate it in the defining module's namespace,
@@ -58,11 +54,25 @@ def _sample(annotation: object) -> object:
     if isinstance(annotation, typing.TypeAliasType):
         # PEP 695 aliases (``type Actor = str``, ``type Status = Literal[...]``)
         # are values rather than types; unwrap to whatever they name.
-        return _sample(annotation.__value__)
+        return _resolve(annotation.__value__)
+    return annotation
+
+
+def _sample(annotation: object) -> object:
+    """One non-``None`` value satisfying an annotation.
+
+    Derived from the annotation rather than hand-written per kind. A field
+    added to any Inquiry is populated -- and so serialized, and so compared
+    against the oracle -- with no edit here, PROVIDED its type already has an
+    arm below. A type with no arm raises rather than silently substituting
+    something else, so the failure names the missing case instead of hiding
+    it; extending this function is then the deliberate act it should be.
+    """
+    annotation = _resolve(annotation)
     origin = typing.get_origin(annotation)
     if origin is types.UnionType:
-        # Optional fields: take the first non-``None`` arm, which is the
-        # value the encoder would actually have to convert.
+        # Reached only via a nested annotation (a tuple of optionals, say);
+        # ``_samples`` is what expands a union at the field level.
         return _sample(
             next(a for a in typing.get_args(annotation) if a is not type(None))
         )
@@ -91,6 +101,11 @@ def _sample(annotation: object) -> object:
         return datetime(2026, 8, 19, 10, 12, 23, 55_030, tzinfo=UTC)
     if annotation is UUID:
         return uuid4()
+    if annotation is decimal.Decimal:
+        # No Inquiry field is Decimal-typed today; the arm exists so a union
+        # carrying one is sampled rather than raising, which is how the
+        # oracle would first see it.
+        return decimal.Decimal("12.50")
     if annotation is Cost:
         return Cost(agent_usd=0.5, resource_usd=0.25)
     if annotation is bool:
@@ -119,10 +134,15 @@ def _populated[T: Inquiry](subclass: type[T]) -> T:
     is verified at RUNTIME instead, by ``test_every_field_is_populated``.
     """
     hints = typing.get_type_hints(subclass, _INQUIRIES_NS)
-    fields = {
-        field.name: _sample(hints[field.name]) for field in dataclasses.fields(subclass)
-    }
-    return subclass(**cast("dict[str, Any]", fields))
+    return subclass(
+        **cast(
+            "dict[str, Any]",
+            {
+                field.name: _sample(hints[field.name])
+                for field in dataclasses.fields(subclass)
+            },
+        )
+    )
 
 
 # Named explicitly rather than walked from ``__subclasses__``: the sub-kinds
@@ -231,13 +251,22 @@ class TestTagKind:
         with pytest.raises(TypeError, match="bytes"):
             tag_kind(dataclasses.replace(experiment, config={"blob": b"\x00"}))
 
+    def test_container_fields_are_non_empty(self) -> None:
+        # An empty tuple serializes to ``[]`` whether or not the serializer
+        # converts elements, so a fixture that leaves one empty passes the
+        # oracle while exercising nothing.
+        instance = _populated(Issue)
+        assert instance.produces, "edge tuples must carry an element"
+        assert instance.labels, "list-valued columns must carry an element"
+
     @pytest.mark.parametrize("subclass", _KINDS)
     def test_every_field_is_populated(self, subclass: type[Inquiry]) -> None:
         # The guard on the guard. An oracle that compares two all-``None``
         # payloads passes no matter what the serializer does, which is
         # exactly how the ``Decimal`` and ``dict`` arms of ``_jsonable``
         # shipped untested. Deriving the fixture from ``dataclasses.fields``
-        # keeps a newly added field covered without an edit here.
+        # covers a newly added field of an already-sampled type with no edit
+        # here; a NEW type raises in ``_sample`` instead, naming itself.
         instance = _populated(subclass)
         unset = [
             field.name

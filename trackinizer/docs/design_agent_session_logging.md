@@ -437,3 +437,99 @@ adapters normalize each CLI's native record into a `Message` member.
 
 None of these require rewriting the data model or the wire contract. They
 layer on the existing seam.
+
+## Addendum: the three polls, and what should replace them
+
+`trax run` currently runs on timers in three places. None was chosen over
+an alternative -- the CLI-agnostic file tailer was the Phase-0 decision,
+and timers are what a tailer needs when nothing wakes it. All three have a
+cheaper wake signal available now. Each is independent; none touches the
+wire contract or the `Message` model.
+
+### a. Log reading: wake-on-write, not a 0.2s tick
+
+`_drain_filesystem_loop` polls every 0.2s (`trax/run/session.py`). A
+regular file cannot be waited on -- POSIX reports it always ready, so
+`select` returns instantly at EOF and a naive wait spins:
+
+    select on regular file at EOF: returned in 0.03ms, readable=True, read()=''
+
+The kernel does have the signal: **inotify** (`IN_MODIFY`) on Linux,
+**kqueue** (`EVFILT_VNODE`) on macOS. Both reach from the stdlib -- macOS
+needs a compiled extension only for FSEvents, which is a different,
+directory-level API we do not need for growth. This is also what `tail -F`
+does internally (GNU `tail` links inotify and falls back to a 1s sleep
+loop without it), so adopting it is not novel, just direct.
+
+Whatever replaces the tick keeps the existing per-shape drain: the
+rotation guard (offset reset **and** partial-line buffer discard) is
+required either way, since compaction rewrites the transcript rather than
+appending.
+
+### b. Discovery: search one directory, not every project
+
+Discovery and tailing are separate problems that the current code answers
+in one loop: `_scan_and_read` re-runs the whole search on every 0.2s tick,
+though "which file is mine" is a once-per-run question. Measured through
+the real adapters on a developer machine (warm cache; a cold first scan
+measured ~570ms for claude):
+
+| adapter | session_dirs | files matched | scan (median) | cost at 0.2s tick |
+|---|--:|--:|--:|--:|
+| claude | 999 | 1988 | 119.6ms | ~60% of one core |
+| codex | 1 | 1344 | 20.4ms | ~10% of one core |
+
+Claude's cost is fan-out: `session_dirs()` returns every project directory
+the CLI has ever used. The session directory is derivable from cwd (path
+separators to `-`), and the filename is a UUID minted after `pty.fork`, so
+it is genuinely unknowable in advance -- but the search space is ONE
+directory, not 999. Under an event-driven reader the question disappears
+entirely: `IN_CREATE` on that one directory names the file.
+
+Two capture gaps belong here rather than in the poll discussion, because
+both are discovery defects:
+
+- **Subagent transcripts are never captured.** `ClaudeAdapter.
+  matches_session_file` requires `path.parent.parent == projects_dir`;
+  subagent logs live deeper (`<session>/subagents/agent-<id>.jsonl`). A
+  directory walk of one developer's tree found 1121 `.jsonl` files at that
+  depth and 26 deeper still, all structurally invisible to the check.
+- **Hooks name these files directly.** All three CLIs now ship a hook
+  system (claude; codex `hooks.json` / `notify`; gemini hooks, added after
+  this document was written -- so the portability argument for the tailer
+  no longer holds as stated). Claude's payload carries `transcript_path`
+  and, for subagents, `agent_transcript_path`. A probe of a real
+  non-interactive run confirmed every file that grew was named by one of
+  those two fields. Hooks are worth layering on for discovery; they do not
+  replace the tailer, and a Stop hook alone is NOT a sufficient drain
+  trigger (measured 125ms BEFORE the turn's final append; `SessionEnd`
+  covers the remainder).
+
+### c. Inbound messages: server-driven wake
+
+`_inbound_poll_loop` polls `drain_inbound` every 0.5s. This is the pull
+half of session messaging and is already scoped for replacement in
+`design_session_messaging.md` ("Transport: HTTP polling now; NOTIFY/SSE is
+the upgrade") -- the server has the push fanout the SPA uses; a subscribed
+`trax run` would wake without polling. `httpx` streams responses, so the
+client half needs no new dependency; the missing piece is a server route
+that holds the request open.
+
+This loop is cheap (one request per 0.5s per running agent, and it
+early-returns before the session opens), so it is the lowest-priority of
+the three. Its interval is a `RunConfig` field, which makes it tunable but
+does not make it event-driven.
+
+### What was ruled out
+
+**PTY output as the drain trigger.** The pump already sits in `select` on
+the master fd and already tees stdin to the slash-command detector, so
+teeing the other direction looks free. It does not work: the CLI paints
+the terminal BEFORE writing the log. Measured across one claude session,
+every append landed 21-195ms after the last PTY read, and one append's
+next PTY read came 27.8s later (when the human typed `/exit`); two appends
+had no following read at all. A drain woken by PTY output runs before the
+bytes exist and then never runs again -- strictly worse than the timer it
+would replace. The PTY carries ANSI-rendered output anyway (thinking
+collapsed, tool args truncated), so it is a timing signal at best, never a
+content source.

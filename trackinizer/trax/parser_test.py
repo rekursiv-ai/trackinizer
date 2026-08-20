@@ -82,6 +82,18 @@ def test_consume_ref_seq_only_with_kind_hint() -> None:
     assert consumed == 1
 
 
+def test_list_query_regex_rejection_is_a_client_error() -> None:
+    """A refused filter must read as user error, not an internal crash.
+
+    ``Filter.__post_init__`` raises ``ValueError`` for a pattern the two
+    evaluators disagree about. Every other parse failure here surfaces as
+    ``ClientError``, which the CLI prints as a message; a raw ``ValueError``
+    escapes as a traceback instead.
+    """
+    with pytest.raises(ClientError):
+        parse_list_query("Issue", ["title", "re", r"\balpha"])
+
+
 def test_consume_ref_seq_only_without_kind_hint_fails() -> None:
     with pytest.raises(ClientError, match="cannot parse"):
         consume_ref(["7"], 0)

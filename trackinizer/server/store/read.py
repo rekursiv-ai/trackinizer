@@ -36,7 +36,7 @@ from trackinizer.types.columns import (
     storage_name,
 )
 from trackinizer.types.cost import Cost
-from trackinizer.types.errors import NotFoundError
+from trackinizer.types.errors import NotFoundError, ValidationError
 from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry, Issue
 from trackinizer.wire.filters import canonical_filter_field
 from trackinizer.wire.row_filter import RowFilter, match_filter
@@ -333,6 +333,9 @@ _SQL_BY_SHAPE: dict[_ColumnShape, dict[str, str]] = {
 # Ops that test presence and carry no operand, so they bind no parameter.
 _VALUELESS_OPS: frozenset[str] = frozenset({"isnull", "notnull"})
 
+# Ops whose match cost is unbounded in Python; see _reject_unboundable_regex.
+_REGEX_OPS: frozenset[str] = frozenset({"re", "nre"})
+
 
 def _lower_filter(filt: RowFilter, params: list[object]) -> str | None:
     """Render one filter as a SQL clause, or ``None`` if it cannot lower.
@@ -362,18 +365,59 @@ def _partition_filters(
     SQL when ``remaining`` is empty: a predicate still evaluated in Python
     must run before the window, or matches past the limit are dropped unseen
     (Issue#256).
+
+    A ``re`` / ``nre`` that cannot lower is refused rather than returned.
+    Postgres matches with a hybrid NFA/DFA -- ``((((a+)+)+)+)+$`` over 2000
+    characters answers in 48ms, and the statement timeout bounds it anyway.
+    Python backtracks: the same pattern against 40 stored characters measured
+    20.11 seconds here, doubling per character, holding the event loop for
+    every concurrent request, and no deadline can interrupt it.
+
+    Raises:
+      ValidationError: A regex filter targets a column that cannot lower.
+
     """
     if not LOWERING.enabled:
+        # Refuse the same filters this mode's counterpart refuses -- those whose
+        # column cannot lower AT ALL -- rather than every regex. The column, not
+        # the mode, is what makes a pattern unboundable: refusing on the mode
+        # too means the SQL/Python parity suite, which runs each filter both
+        # ways, cannot compare any regex and so stops guarding the translation.
+        for filt in filters:
+            if _lower_filter(filt, list(params)) is None:
+                _reject_unboundable_regex(filt)
         return (), list(filters)
     clauses: list[str] = []
     remaining: list[RowFilter] = []
     for filt in filters:
         clause = _lower_filter(filt, params)
         if clause is None:
+            _reject_unboundable_regex(filt)
             remaining.append(filt)
         else:
             clauses.append(clause)
     return clauses, remaining
+
+
+def _reject_unboundable_regex(filt: RowFilter) -> None:
+    """Refuse a regex whose match would run in Python, where nothing bounds it.
+
+    Checked here, at the point lowerability stops being a guess: this function
+    sees the store's own verdict. Predicting the same fact upstream -- from a
+    column's declared ``sql_type``, say -- was wrong three separate ways: the
+    alias ``config`` never equals ``experiment_config``, a bare ``RowFilter``
+    skips the wire type's ``__post_init__`` entirely, and an exact match on
+    ``"JSONB"`` misses ``"jsonb"`` while :func:`_classify` still declines it.
+    """
+    if filt.op not in _REGEX_OPS:
+        return
+    column = canonical_filter_field(filt.field)
+    raise ValidationError(
+        f"regex filters are not supported on {column!r}: the column does not "
+        "lower into SQL, so the pattern would be matched in Python, where a "
+        "pathological expression cannot be bounded. Filter it with 'is' / "
+        "'ne', or apply the regex to a column that lowers."
+    )
 
 
 def _seq_range_clause(

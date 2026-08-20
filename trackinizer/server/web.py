@@ -29,7 +29,6 @@ from typing import Annotated, Final, Literal, cast, get_args
 from urllib.parse import quote
 from uuid import UUID
 
-import os
 import re
 import shlex
 import uuid
@@ -43,15 +42,22 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
-import asyncpg
+
+# Only ``asyncpg.Record`` annotations remain; the regex error classes moved to
+# ``api._regex_guard``. Kept a runtime import rather than TYPE_CHECKING-only
+# because the module is imported unconditionally by every path that reaches
+# here, so deferring it buys nothing and splits one import across two forms.
+import asyncpg  # noqa: TC002 -- see above.
 
 from trackinizer.lib.postgres import Conn, DatabaseEngine
+from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.auth import (
     AuthIdentity,
     current_user,
     require_role,
 )
 from trackinizer.server.notify import iter_sse_events, tx
+from trackinizer.server.regex_timeout import apply_regex_statement_timeout
 from trackinizer.server.store.core import Store
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Snapshot
@@ -64,30 +70,6 @@ type WebView = dict[str, object]
 
 
 router = APIRouter()
-
-
-def _search_statement_timeout_ms() -> int:
-    """Per-query search timeout in milliseconds (default 5s, env-overridable).
-
-    Bounds the DB cost of one ``/api/web/search`` so a pathological POSIX
-    regex cannot pin a backend. ``TRACKINIZER_SEARCH_TIMEOUT_MS`` overrides the
-    5000ms default; a non-positive or non-integer value is an operator typo and
-    raises rather than silently disabling the guard (``0`` means "no timeout"
-    in Postgres, which is exactly the DoS this closes).
-    """
-    raw = os.environ.get("TRACKINIZER_SEARCH_TIMEOUT_MS", "").strip()
-    if not raw:
-        return 5_000
-    timeout_ms = int(raw)
-    if timeout_ms < 1:
-        raise ValueError(
-            f"TRACKINIZER_SEARCH_TIMEOUT_MS must be a positive integer, got {raw!r}"
-        )
-    return timeout_ms
-
-
-_SEARCH_STATEMENT_TIMEOUT_MS = _search_statement_timeout_ms()
-"""Resolved once at import; ``SET LOCAL statement_timeout`` bound for search."""
 
 
 def get_store(request: Request) -> Store:
@@ -142,31 +124,19 @@ async def web_search(
         # ``tx``) caps each search; a regex that exceeds it is aborted as a 400
         # rather than holding the connection. The bound is a server constant,
         # never client input, so it interpolates safely.
-        await conn.execute(
-            f"SET LOCAL statement_timeout = {_SEARCH_STATEMENT_TIMEOUT_MS}"
-        )
-        try:
+        await apply_regex_statement_timeout(conn)
+        # ``_build_term_clause`` validates the regex with Python's ``re``, but
+        # Postgres ``~*`` runs POSIX: patterns valid in Python and not POSIX
+        # (``(?P<name>...)``, ``\z``, ...) trip the engine at query time, and
+        # a pattern too expensive to finish trips the timeout above. Both are
+        # the caller's mistake, so both are 400s.
+        #
+        # Shared with ``/api/inquiries`` rather than repeated here: the local
+        # copy this replaced caught ``PostgresSyntaxError``, which an invalid
+        # regex never raises (it is SQLSTATE 2201B), so it silently did
+        # nothing while reading as though it worked.
+        with regex_failures_as_400():
             rows = await conn.fetch(sql, *params)
-        except asyncpg.PostgresSyntaxError as exc:
-            # ``_build_term_clause`` validates regex with Python's ``re``,
-            # but Postgres ``~*`` runs POSIX -- patterns valid in Python
-            # but not POSIX (``(?P<name>...)``, ``\d``, possessive
-            # quantifiers, ...) trip Postgres at query time. Surface a
-            # 400 rather than letting it leak as a 500.
-            raise HTTPException(
-                status_code=400, detail=f"invalid search pattern: {exc!s}"
-            ) from exc
-        except asyncpg.QueryCanceledError as exc:
-            # The statement timeout fired: the regex was too expensive to run
-            # within the per-query budget. A 400 (not 500) tells the caller the
-            # pattern is the problem, mirroring the invalid-pattern path.
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "search pattern exceeded the time budget; "
-                    "narrow the regex or add more specific terms"
-                ),
-            ) from exc
     return [_row_to_dict(r) for r in rows]
 
 
