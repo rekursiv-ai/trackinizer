@@ -42,7 +42,6 @@ from trackinizer.types.inquiries import (
 )
 from trackinizer.wire.bodies import FieldMutation
 from trackinizer.wire.filters import (
-    FILTER_OPS,
     IDENTITY_COLUMNS,
     VALUELESS_FILTER_OPS,
     Filter,
@@ -54,8 +53,6 @@ from trackinizer.wire.routes import (
     MAX_LIST_LIMIT,
 )
 
-
-_FILTER_OPS: frozenset[str] = frozenset(FILTER_OPS)
 
 # Identity/housekeeping columns the schema declares directly: not editable,
 # carry no ColumnSpec, and so aren't surfaced by flat_column_specs. The
@@ -420,11 +417,10 @@ def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
     # The presence ops carry no operand; default a missing value to "". Gate on
     # ``isinstance`` first so an unhashable ``op`` (a JSON list/dict) fails the
     # 400 below instead of raising in the set membership test.
+    # A presence op carries no operand, so a MISSING value is the well-formed
+    # spelling and defaults to "". Supplying one anyway is refused by
+    # ``validate_clause`` below, like every other rule about the clause.
     valueless = isinstance(op, str) and op in VALUELESS_FILTER_OPS
-    if valueless and obj.get("value", "") != "":
-        # Accepting and ignoring it would answer a question the caller did not
-        # ask: ``{"op": "isnull", "value": "Dan"}`` reads as "owner is Dan".
-        raise HTTPException(status_code=400, detail=f"filter op {op!r} takes no value")
     value = obj.get("value", "") if valueless else obj.get("value")
     if (
         not isinstance(field, str)
@@ -434,11 +430,6 @@ def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
         raise HTTPException(
             status_code=400,
             detail="filter requires string field/op/value entries",
-        )
-    if op not in _FILTER_OPS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"unknown filter op {op!r}; expected one of {sorted(_FILTER_OPS)}",
         )
     canonical = canonical_filter_field(field)
     if canonical not in _filter_columns_for(kind):

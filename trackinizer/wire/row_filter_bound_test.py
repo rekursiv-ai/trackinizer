@@ -556,6 +556,45 @@ class TestARegexOnlyOneEngineCanRun:
         assert Filter(field="title", op="re", value=pattern).value == pattern
 
 
+class TestExpandedModeCommentsAreNotSyntax:
+    r"""``(?x)`` comment prose must not trip a syntax rule.
+
+    Live PG16 runs all three below and Python agrees, so each refusal removed
+    a working pattern. ``#`` opens a comment only under the flag, which is why
+    the scan has to answer it rather than each rule searching the text.
+    """
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            # Read as a possessive quantifier; it is comment text.
+            "(?x)a # *+\nb",
+            # Read as a Python-only ``(?a)`` group; comment text.
+            "(?x)a#(?a)\nb",
+            # Read as a non-ASCII case fold; comment text, which never matches.
+            "(?xi)a # \u00e9\nb",
+        ],
+    )
+    def test_a_pattern_both_engines_run_still_constructs(self, pattern: str) -> None:
+        assert Filter(field="title", op="re", value=pattern).value == pattern
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            # Outside a comment the same text IS syntax, flag or no flag: live
+            # PG16 errors on every one ("quantifier operand invalid").
+            "(?x)a*+b",
+            "a*+",
+            r"(?x)a\#*+",
+        ],
+    )
+    def test_the_same_text_outside_a_comment_is_still_refused(
+        self, pattern: str
+    ) -> None:
+        with pytest.raises(ValueError, match="possessive"):
+            Filter(field="title", op="re", value=pattern)
+
+
 class TestCaseFoldingAgainstANonAsciiRow:
     r"""``(?i)`` over a non-ASCII VALUE is refused where the value is seen.
 
@@ -604,6 +643,55 @@ class TestAnInBracketNegatedShorthand:
         assert Filter(field="title", op="re", value=pattern).value == pattern
 
 
+class TestAnUnknownFilterFieldIsRefused:
+    r"""A field no column answers is a typo, not a filter over NULLs.
+
+    ``canonical_filter_field`` passes an unknown name through, no shape
+    classifies it, and the clause lands in Python -- where ``row.get`` returns
+    ``None`` for a key the row never had. Absent means "no affirmative
+    predicate holds", so ``ne`` KEEPS the row: ``owenr ne nobody`` answered
+    true for every row in the table.
+
+    SQL cannot make that mistake; ``WHERE owenr ...`` is an error there. The
+    route already whitelists, but the store, the CLI, and a direct ``Filter``
+    do not go through the route.
+    """
+
+    @pytest.mark.parametrize("op", ["is", "ne", "re", "nre", "lt"])
+    def test_an_unknown_field_is_refused(self, op: str) -> None:
+        with pytest.raises(ValidationError, match="unknown filter field"):
+            match_filter(
+                {"title": "x"},
+                _BareFilter(field="owenr", op=cast("FilterOp", op), value="nobody"),
+            )
+
+    @pytest.mark.parametrize("op", ["isnull", "notnull"])
+    def test_a_presence_op_on_an_unknown_field_is_refused(self, op: str) -> None:
+        # The presence ops carry no operand, so they reach the field check
+        # rather than the operand one.
+        with pytest.raises(ValidationError, match="unknown filter field"):
+            match_filter(
+                {"title": "x"},
+                _BareFilter(field="owenr", op=cast("FilterOp", op), value=""),
+            )
+
+    def test_a_known_field_absent_from_this_row_still_evaluates(self) -> None:
+        # A NULLABLE column the row simply does not carry is not a typo: the
+        # column exists, so absent means NULL and ``ne`` keeps the row, exactly
+        # as SQL's ``IS DISTINCT FROM`` does.
+        assert match_filter({"title": "x"}, Filter(field="owner", op="ne", value="Dan"))
+
+    def test_a_cli_alias_is_not_an_unknown_field(self) -> None:
+        # ``priority`` canonicalizes to ``issue_priority``; refusing it would
+        # break every CLI filter.
+        assert isinstance(
+            match_filter(
+                {"issue_priority": 5}, Filter(field="priority", op="is", value="5")
+            ),
+            bool,
+        )
+
+
 class TestAnOperandTheTemplateCannotTake:
     r"""An order op is legal only for an operand its SQL could accept.
 
@@ -632,6 +720,68 @@ class TestAnOperandTheTemplateCannotTake:
 
     def test_a_numeric_operand_still_orders(self) -> None:
         assert match_filter({"seq": 5}, Filter(field="seq", op="lt", value="9")) is True
+
+    @pytest.mark.parametrize("value", ["1e-400", "-1e-400"])
+    def test_an_operand_too_small_for_a_float_column_is_refused(
+        self, value: str
+    ) -> None:
+        # The mirror of the overflow case, and the one a ceiling check alone
+        # misses: live PG16 answers 22003 for ``1e-400`` too, while Python
+        # rounds it to ``0.0`` and answers.
+        with pytest.raises(ValidationError, match="out of range"):
+            match_filter(
+                {"belief_confidence": 0.5},
+                _BareFilter(field="belief_confidence", op="lt", value=value),
+            )
+
+    @pytest.mark.parametrize("value", ["5e-324", "1e-320", "1e308", "-1e308", "0"])
+    def test_a_representable_float_operand_is_allowed(self, value: str) -> None:
+        # Each round-trips through float8, so live PG16 answers rather than
+        # erroring; refusing them would remove capability the engine has.
+        assert isinstance(
+            match_filter(
+                {"belief_confidence": 0.5},
+                _BareFilter(field="belief_confidence", op="lt", value=value),
+            ),
+            bool,
+        )
+
+    @pytest.mark.parametrize("value", ["1e400", "-1e400", "1e309"])
+    def test_an_operand_too_large_for_a_float_column_is_refused(
+        self, value: str
+    ) -> None:
+        # ``belief_confidence`` is DOUBLE PRECISION, so its template compares
+        # ``{col}::float8``: live PG16 answers "out of range for type double
+        # precision" (SQLSTATE 22003) rather than a row. Python read the same
+        # operand as ``inf`` and answered true, so the two select different
+        # rows -- and the operand parses as ``numeric`` perfectly well, which
+        # is why the earlier guard let it through.
+        with pytest.raises(ValidationError, match="out of range"):
+            match_filter(
+                {"belief_confidence": 0.5},
+                _BareFilter(field="belief_confidence", op="lt", value=value),
+            )
+
+    @pytest.mark.parametrize("value", ["1e400", "-1e400"])
+    def test_the_same_operand_is_legal_on_an_integer_column(self, value: str) -> None:
+        # ``seq`` is INTEGER, whose template compares as ``numeric`` -- which
+        # has no such ceiling. Live PG16 answers ``5 < '1e400'::numeric`` true,
+        # so refusing it here would remove capability the engine has.
+        assert isinstance(
+            match_filter({"seq": 5}, _BareFilter(field="seq", op="lt", value=value)),
+            bool,
+        )
+
+    @pytest.mark.parametrize("value", ["inf", "-inf"])
+    def test_infinity_is_still_legal_on_a_float_column(self, value: str) -> None:
+        # ``'inf'::float8`` is representable, so both engines answer.
+        assert isinstance(
+            match_filter(
+                {"belief_confidence": 0.5},
+                _BareFilter(field="belief_confidence", op="lt", value=value),
+            ),
+            bool,
+        )
 
     @pytest.mark.parametrize(
         ("row_value", "op", "operand", "postgres_says"),

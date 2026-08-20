@@ -301,11 +301,15 @@ class TestListKindFilterLowering:
             await self.sql_for(Filter(field="title", op="lt", value="9"))
 
     @pytest.mark.asyncio
-    async def test_an_unknown_field_stays_in_python(self) -> None:
-        """A field with no column shape has no SQL form to lower to."""
-        sql = await self.sql_for(Filter(field="nonesuch", op="is", value="x"))
+    async def test_an_unknown_field_is_refused(self) -> None:
+        """A field no column answers is a typo, not a Python-side filter.
 
-        assert "LIMIT" not in sql
+        It used to fall through to the post-filter path, where ``row.get``
+        reads the missing key as NULL -- so ``ne`` kept every row while SQL
+        would have errored on the column name.
+        """
+        with pytest.raises(ValidationError, match="unknown filter field"):
+            await self.sql_for(Filter(field="nonesuch", op="is", value="x"))
 
     @pytest.mark.asyncio
     async def test_a_mixed_filter_set_keeps_the_python_path(self) -> None:

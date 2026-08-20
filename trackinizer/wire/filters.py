@@ -34,11 +34,11 @@ from trackinizer.types.inquiries import (
     KIND_TO_CLASS,
 )
 from trackinizer.wire.posix_regex import (
-    FLAG_LETTERS,
     UNTRANSLATABLE_IN_BRACKET,
     escapes,
     has_posix_bracket_construct,
     has_python_named_group,
+    is_flag_run,
     live_indices,
     matchable_indices,
     paren_extensions,
@@ -266,12 +266,12 @@ FILTER_OPS: Final[tuple[FilterOp, ...]] = (
 # Ops that test column presence rather than compare a value. They carry no
 # operand: the CLI parser consumes no value token and the server accepts a
 # filter object with the ``value`` key absent, materializing ``value=""``.
-VALUELESS_FILTER_OPS: frozenset[FilterOp] = frozenset({"isnull", "notnull"})
+VALUELESS_FILTER_OPS: Final[frozenset[FilterOp]] = frozenset({"isnull", "notnull"})
 
 
 # Identity/housekeeping columns the schema declares NOT NULL directly; they
 # carry no ColumnSpec, so they can't be derived from the spec metadata below.
-IDENTITY_COLUMNS: frozenset[str] = frozenset(
+IDENTITY_COLUMNS: Final[frozenset[str]] = frozenset(
     {"id", "kind", "seq", "created", "modified"}
 )
 
@@ -298,7 +298,7 @@ def _derive_non_nullable_columns() -> frozenset[str]:
 # / always-all -- a silent wrong answer. Refused by :func:`validate_clause`,
 # so every path gets it; naming the CLI and the route individually is what let
 # the store and a direct ``Filter`` run what those two refused.
-NON_NULLABLE_COLUMNS: frozenset[str] = _derive_non_nullable_columns()
+NON_NULLABLE_COLUMNS: Final[frozenset[str]] = _derive_non_nullable_columns()
 
 
 def validate_presence_op(field: str, op: FilterOp) -> str | None:
@@ -346,7 +346,7 @@ def _kind_specific_aliases() -> dict[str, str]:
 # kind-specific bare->storage aliases (``source`` -> ``paper_source``, ...) are
 # DERIVED (:func:`_kind_specific_aliases`); only the non-derivable ergonomic
 # spellings (alternate names, cost axes) are hand-declared here.
-FILTER_FIELD_ALIASES: Mapping[str, str] = {
+FILTER_FIELD_ALIASES: Final[Mapping[str, str]] = {
     "kind": "issue_kind",
     "issuekind": "issue_kind",
     "label": "labels",
@@ -608,6 +608,6 @@ def _folds_non_ascii(pattern: str) -> bool:
 def folds_case(pattern: str) -> bool:
     """Whether ``pattern`` turns on case-insensitive matching."""
     return any(
-        "i" in found.body and set(found.body) <= FLAG_LETTERS
+        is_flag_run(found.body, scoped=found.scoped, flag="i")
         for found in paren_extensions(pattern)
     )

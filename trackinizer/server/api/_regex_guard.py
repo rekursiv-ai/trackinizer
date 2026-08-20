@@ -50,11 +50,15 @@ def regex_failures_as_400() -> Generator[None]:
             status_code=400, detail=f"invalid regex for Postgres: {exc!s}"
         ) from exc
     except asyncpg.QueryCanceledError as exc:
+        # The timeout wraps the whole statement, not the regex alone -- a slow
+        # scan hits it with no pattern in the query at all -- so the message
+        # names the query. Blaming the regex sent a caller to edit something
+        # their request may not contain.
         raise HTTPException(
             status_code=400,
             detail=(
-                "regex exceeded the time budget; "
-                "narrow the pattern or add more specific terms"
+                "query exceeded the time budget; narrow the filters "
+                "or add more specific terms"
             ),
         ) from exc
     except (
