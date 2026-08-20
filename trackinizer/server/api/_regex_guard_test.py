@@ -51,6 +51,23 @@ class TestRegexFailuresAs400:
             raise _postgres_error(asyncpg.QueryCanceledError, "canceling statement")
         assert caught.value.status_code == 400
 
+    @pytest.mark.parametrize(
+        "cls",
+        [
+            asyncpg.InvalidTextRepresentationError,
+            asyncpg.NumericValueOutOfRangeError,
+        ],
+    )
+    def test_a_bad_order_operand_becomes_400(
+        self, cls: type[asyncpg.PostgresError]
+    ) -> None:
+        # SQLSTATE 22P02 / 22003. The order templates cast the operand
+        # (``col < $1::numeric``), so caller text is parsed at query time and
+        # can fail for a reason only the column's type decides.
+        with pytest.raises(HTTPException) as caught, regex_failures_as_400():
+            raise _postgres_error(cls, "invalid input syntax for type numeric")
+        assert caught.value.status_code == 400
+
     def test_unrelated_server_fault_propagates(self) -> None:
         # A generated-SQL defect is OUR bug, not the caller's; relabelling it
         # 400 would hide a server fault behind a client error.
@@ -77,18 +94,45 @@ async def store(tmp_path: Path) -> AsyncIterator[Store]:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pattern", ["(?P<n>a)", r"ab\z"])
+@pytest.mark.parametrize("pattern", ["[a-b-c]", "(?=a)*", r"[\1]"])
 async def test_real_engine_rejection_is_a_400(store: Store, pattern: str) -> None:
-    """A pattern Python accepts and Postgres does not must reach the caller as 400.
+    r"""A pattern Python accepts and Postgres does not must reach the caller as 400.
 
     Driving the real engine is the point: the guard was previously written
     against ``PostgresSyntaxError``, which reads plausibly and never fires,
     so every unit test built on that belief passed while the live route 500'd.
+
+    The patterns are ones the wire validator still ADMITS -- ``(?P<n>a)`` and
+    ``\\z`` used to serve here and no longer reach an engine, since the
+    dialect gate refuses them by name. POSIX's grammar is not enumerable, so
+    this residual class is what the guard is for: live PG16 answers "invalid
+    character range" / "quantifier operand invalid" / "invalid escape \\
+    sequence" for these three.
     """
     await store.submit_issue(SubmitIssue(account="a@b.c", title="alpha"))
     with pytest.raises(HTTPException) as caught, regex_failures_as_400():
         await store.list_kind(
             "Issue", filters=(Filter(field="title", op="re", value=pattern),)
+        )
+    assert caught.value.status_code == 400
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio
+async def test_an_out_of_range_order_operand_is_a_400(store: Store) -> None:
+    """An operand too large for the COLUMN's type is the caller's, not ours.
+
+    ``belief_confidence`` is ``DOUBLE PRECISION``, so Postgres resolves
+    ``col < $1::numeric`` by casting the operand DOWN to float8 -- and
+    ``1e400`` does not fit, raising SQLSTATE 22003 rather than answering.
+    The operand parses as ``numeric`` perfectly well, so the wire guard has
+    nothing to refuse; only the engine knows the column cannot hold it.
+    Unmapped, it reached the caller as a 500.
+    """
+    with pytest.raises(HTTPException) as caught, regex_failures_as_400():
+        await store.list_kind(
+            "Belief",
+            filters=(Filter(field="belief_confidence", op="lt", value="1e400"),),
         )
     assert caught.value.status_code == 400
 

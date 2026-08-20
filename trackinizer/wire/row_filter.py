@@ -1,8 +1,15 @@
-"""Row-vs-filter predicate shared by the server and the CLI test fake.
+"""Row-vs-filter predicate for callers holding rows rather than a query.
 
-The server route applies this against each asyncpg row before the LIMIT
-clause; the CLI test fake runs the same predicate over its in-memory rows
-so unit-test semantics match the route's.
+Postgres evaluates almost everything: of the clauses the list route accepts,
+242 lower into SQL and 164 are refused, leaving 4 (``experiment_config``
+equality and presence, whose ``str(dict)`` no SQL reproduces) for the store to
+answer here after the fetch.
+
+This predicate exists for the callers with no database to lean on -- the trax
+CLI test fake filtering in-memory dicts, and knowop2 filtering a single row
+delivered by a change event. Each would otherwise grow its own filter
+semantics, so all of them share this one, and :func:`reject_inadmissible`
+refuses whatever this predicate would answer differently from SQL.
 
 :func:`match_filter` resolves the filter field through
 :func:`canonical_filter_field`, so a ``Filter`` carrying either an alias
@@ -14,17 +21,37 @@ both sides parse cleanly as numbers.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Final, Protocol, cast
+from decimal import Decimal
+from functools import lru_cache
+from typing import Final, Protocol
 
 import re
+import warnings
 
-from trackinizer.wire.filters import (
-    FilterOp,
-    canonical_filter_field,
+from trackinizer.types.errors import ValidationError
+from trackinizer.wire.column_shapes import (
+    lowers_into_sql,
+    requires_numeric_operand,
 )
+from trackinizer.wire.filters import (
+    ORDER_OPS,
+    REGEX_OPS,
+    FilterOp,
+    as_numeric,
+    canonical_filter_field,
+    folds_case,
+    is_nan,
+    validate_clause,
+)
+from trackinizer.wire.posix_regex import posix_pattern
+from trackinizer.wire.routes import MAX_LIST_LIMIT
 
 
-__all__ = ["RowFilter", "match_filter", "posix_pattern"]
+__all__ = [
+    "RowFilter",
+    "match_filter",
+    "reject_inadmissible",
+]
 
 
 class RowFilter(Protocol):
@@ -53,18 +80,87 @@ class _Row(Protocol):
     to the right column.
     """
 
-    def __getitem__(self, key: str, /) -> object: ...
     def get(self, key: str, /) -> object | None: ...
 
 
-# Each negated op is exactly its affirmative twin's complement. Defining
-# the pair in one place is what makes ``ne``/``nre`` single-sourced: the
-# affirmative predicate carries the semantics, and NULL handling, and the
+# Each negated op is exactly its affirmative twin's complement, so the
+# affirmative predicate carries the semantics and the NULL handling while the
 # negation is a mechanical ``not``.
 _NEGATED_OPS: Final[dict[FilterOp, FilterOp]] = {
     "ne": "is",
     "nre": "re",
 }
+
+
+def reject_inadmissible(filt: RowFilter) -> None:
+    """Refuse a filter whose two evaluators would not agree.
+
+    This predicate must select the rows the store's SQL would have. A filter
+    it answers DIFFERENTLY is not a slower path to the same result -- it is a
+    wrong one, and the caller cannot tell which evaluator ran. Two classes are
+    refused, being the two that break here:
+
+    * A REGEX or ORDER op with no SQL for the column's shape. A regex is
+      unbounded in Python (``(a+)+$`` over 30 characters measures 79.89
+      seconds), and an order comparison is meaningless -- ``labels gt x``
+      compares ``str(['a', 'b']) > 'x'``, the repr of a list, and
+      ``title gt 10`` reads both sides as numbers where Postgres compares
+      lexically. Equality and presence stay legal wherever they land:
+      ``experiment_config is x`` has no SQL at all and is what this predicate
+      is FOR.
+    * An op outside ``FILTER_OPS``, so it never reaches ``_ordered``'s
+      assert. An unrecognized op is caller input, not a broken invariant.
+
+    A NaN operand is refused ONLY here, and only when the column's template
+    casts the operand: ordering a timestamp compares TEXT, where ``nan`` is a
+    well-defined string in both engines. Deciding that needs the column, which
+    ``validate_clause`` does not see.
+
+    Asked at the evaluator rather than upstream, because ``list_kind`` takes
+    ``Sequence[RowFilter]`` -- a Protocol -- so a bare structural filter that
+    never ran ``Filter.__post_init__`` still arrives here. It asks the shared
+    ``column_shapes`` table rather than re-deriving lowerability from a
+    declared ``sql_type``, which the alias ``config`` and the spelling
+    ``"jsonb"`` both defeat.
+
+    Raises:
+      ValidationError: The filter cannot be evaluated here faithfully.
+
+    """
+    # The column-free half of the contract, shared with ``Filter`` so a bare
+    # structural filter cannot ask what the wire type refuses.
+    if (err := validate_clause(filt.field, filt.op, filt.value)) is not None:
+        raise ValidationError(err)
+    column = canonical_filter_field(filt.field)
+    if filt.op in REGEX_OPS | ORDER_OPS and not lowers_into_sql(column, filt.op):
+        detail = (
+            "the pattern would be matched in Python, where a pathological "
+            "expression cannot be bounded"
+            if filt.op in REGEX_OPS
+            else "the two evaluators order those values differently"
+        )
+        raise ValidationError(
+            f"filter op {filt.op!r} is not supported on {column!r}: {detail}. "
+            "Use 'is' / 'ne', or apply it to a column whose SQL declares the op."
+        )
+    # Only a template that CASTS the operand constrains it. Ordering a
+    # timestamp compares text, where every operand is well defined in both
+    # engines (live: ``'2026-01-01...' < 'nan'`` is true, as in Python).
+    if not requires_numeric_operand(column, filt.op):
+        return
+    if is_nan(filt.value):
+        raise ValidationError(
+            f"filter value {filt.value!r} is NaN, which orders as the largest "
+            "value in Postgres and compares false in Python, so the two "
+            "evaluators would select different rows"
+        )
+    if as_numeric(filt.value) is None:
+        raise ValidationError(
+            f"filter value {filt.value!r} is not a number Postgres can read, "
+            f"but ordering {column!r} casts the operand to numeric: Postgres "
+            "rejects it outright (SQLSTATE 22P02), which no handler maps, "
+            "while Python compares it as text"
+        )
 
 
 def match_filter(row: _Row, filt: RowFilter) -> bool:
@@ -85,6 +181,7 @@ def match_filter(row: _Row, filt: RowFilter) -> bool:
     ``"None" > "5"`` true (``'N' > '5'`` in ASCII). ``isnull`` / ``notnull``
     test presence directly and ignore ``filt.value``.
     """
+    reject_inadmissible(filt)
     if filt.op in ("isnull", "notnull"):
         absent = row.get(canonical_filter_field(filt.field)) is None
         return absent if filt.op == "isnull" else not absent
@@ -111,51 +208,68 @@ def _matches_affirmative(row: _Row, op: FilterOp, filt: RowFilter) -> bool:
     return _matches_order(value, op, filt.value)
 
 
+def _reject_non_ascii_fold(value: object, pattern: str) -> None:
+    """Refuse a case-insensitive match against a non-ASCII value.
+
+    The wire type gates on the pattern, which is all it can see; the other
+    half of the divergence needs the ROW. Live PG16 says
+    ``'\u0130' ~ '(?i)i'`` is FALSE where Python says true, with an ASCII
+    pattern -- the two fold Unicode differently and both ANSWER, so nothing
+    downstream catches it.
+
+    Raises:
+      ValidationError: The value carries non-ASCII text and the pattern folds
+        case.
+
+    """
+    if not folds_case(pattern):
+        return
+    for item in _candidate_items(value):
+        if not str(item).isascii():
+            raise ValidationError(
+                "regex flag 'i' case-folds non-ASCII text differently in the "
+                "two engines, which both answer rather than error, and this "
+                "row carries non-ASCII text. Drop '(?i)', or compare with "
+                "'is' / 'ne'"
+            )
+
+
 def _matches_regex(value: object, pattern: str) -> bool:
     """Search each candidate item, in the dialect the STORE evaluates.
 
     The server lowers ``re`` / ``nre`` into Postgres' ``~`` operator, so this
     predicate -- which the CLI's test fake runs to mirror route semantics --
     must read the pattern the same way or the two disagree on real input.
-    Postgres uses POSIX ARE; the differences that bite are spelled out in
-    :func:`posix_pattern`.
+    Postgres uses POSIX ARE; the differences are translated by
+    :func:`posix_pattern` and refused by :func:`filters.validate_clause`.
     """
-    compiled = re.compile(posix_pattern(pattern))
+    _reject_non_ascii_fold(value, pattern)
+    compiled = _compiled(pattern)
     return any(
         compiled.search(str(item)) is not None for item in _candidate_items(value)
     )
 
 
-# POSIX ARE's word-boundary escapes, rewritten to their Python spellings.
-# Python does NOT read ``\y`` as a literal ``y``: it raises
-# ``re.error: bad escape \y``, so an untranslated pattern is a 500 here
-# rather than a silent mismatch.
-#
-# ``\m`` and ``\M`` (start-of-word, end-of-word) have no single Python
-# escape. ``\b`` is a boundary in either direction, which over-matches:
-# ``\mfoo`` should match "foo bar" but not "barfoo", while ``\bfoo`` matches
-# both. The lookarounds below agree with Postgres on ASCII input, verified
-# against a live engine. They are NOT equivalent on non-ASCII: the class is
-# hardcoded ASCII, so ``\mfoo`` matches "\u00e9foo" in Python where Postgres
-# says false. Filters here are ASCII in practice; the gap is real and
-# untranslated rather than claimed to be absent.
-#
-# Every other construct these filters use -- ``\d`` / ``\w`` / ``\s`` and
-# their negations, ``\A`` / ``\Z``, ``(?i)``, lookahead, bounded repeats --
-# is accepted identically by both, also verified against a live engine.
-_POSIX_TRANSLATIONS: Final[tuple[tuple[str, str], ...]] = (
-    (r"\y", r"\b"),
-    (r"\Y", r"\B"),
-    (r"\m", r"(?<![0-9A-Za-z_])(?=[0-9A-Za-z_])"),
-    (r"\M", r"(?<=[0-9A-Za-z_])(?![0-9A-Za-z_])"),
-)
+# BOUNDED because the key is a caller's operand, and sized above the route's
+# per-request filter cap so one request cannot evict its own entries -- which
+# is how ``re``'s own 512-entry cache fails here.
+@lru_cache(maxsize=2 * MAX_LIST_LIMIT)
+def _compiled(pattern: str) -> re.Pattern[str]:
+    """Translate and compile ``pattern`` once per distinct operand.
 
+    ``match_filter`` runs per ROW, so the same operand is otherwise recompiled
+    for every row of a page: measured with 600 distinct operands over 200
+    rows, every ``re``-cache lookup missed and evaluation cost 9.34us against
+    1.00us here.
 
-def posix_pattern(pattern: str) -> str:
-    """Rewrite POSIX-only constructs into their Python equivalents."""
-    for posix, python in _POSIX_TRANSLATIONS:
-        pattern = pattern.replace(posix, python)
-    return pattern
+    The warning suppression is not redundant with the validator's: ``[[]`` is
+    a valid pattern Python only warns about, and under this repo's
+    ``filterwarnings = ["error"]`` that warning is an exception. Relying on
+    the validator having warmed ``re``'s cache first would only hide it.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        return re.compile(posix_pattern(pattern))
 
 
 def _matches_eq(value: object, expected: str) -> bool:
@@ -177,30 +291,43 @@ def _candidate_items(value: object) -> tuple[object, ...]:
 
 
 def _matches_order(value: object, op: str, expected: str) -> bool:
-    if _is_numeric(value) and _is_numeric(expected):
-        left = float(cast(float | int | str, value))
-        right = float(cast(float | int | str, expected))
-        if op == "lt":
-            return left < right
-        if op == "le":
-            return left <= right
-        if op == "gt":
-            return left > right
-        return left >= right
-    s_left = str(value)
-    s_right = str(expected)
+    """Compare in the arithmetic the row's own SQL type selects.
+
+    Which arithmetic is not a detail. Postgres resolves ``col < $1::numeric``
+    by the COLUMN's type: an ``integer`` or ``numeric`` column compares as
+    ``numeric`` and keeps every digit, while a ``double precision`` column
+    casts the operand DOWN to float8 and loses them -- live PG16 says
+    ``1::int < '1.00000000000000001'::numeric`` is TRUE and
+    ``1::float8 < '1.00000000000000001'::numeric`` is FALSE. Comparing
+    everything as ``float`` reproduces only the second.
+
+    The row value arrives typed (asyncpg hands back ``int`` for INTEGER,
+    ``Decimal`` for NUMERIC, ``float`` for DOUBLE PRECISION), so its type
+    picks the arithmetic without anything here having to know the schema.
+    """
+    parsed = as_numeric(expected)
+    if parsed is None:
+        return _ordered(str(value), op, str(expected))
+    if isinstance(value, float):
+        return _ordered(value, op, float(parsed))
+    if isinstance(value, int | Decimal):
+        return _ordered(Decimal(value), op, parsed)
+    return _ordered(str(value), op, str(expected))
+
+
+def _ordered[T: (float, Decimal, str)](left: T, op: str, right: T) -> bool:
+    """Apply one order op, asserting the op is one.
+
+    An assert rather than a trailing ``return left >= right``: that
+    fallthrough would make an unrecognized op MEAN ``ge`` and return a boolean
+    the caller cannot tell from a real answer. ``reject_inadmissible`` refuses
+    an unknown op upstream, so reaching here with one is a broken invariant.
+    """
     if op == "lt":
-        return s_left < s_right
+        return left < right
     if op == "le":
-        return s_left <= s_right
+        return left <= right
     if op == "gt":
-        return s_left > s_right
-    return s_left >= s_right
-
-
-def _is_numeric(value: object) -> bool:
-    try:
-        float(cast(float | int | str, value))
-    except (TypeError, ValueError):
-        return False
-    return True
+        return left > right
+    assert op == "ge", f"unreachable order op {op!r}"
+    return left >= right

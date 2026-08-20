@@ -14,7 +14,6 @@ from typing import Annotated, cast
 import asyncio
 import json
 import logging
-import re
 import time
 import uuid
 
@@ -49,13 +48,11 @@ from trackinizer.wire.filters import (
     Filter,
     FilterOp,
     canonical_filter_field,
-    validate_presence_op,
 )
 from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
 )
-from trackinizer.wire.row_filter import posix_pattern
 
 
 _FILTER_OPS: frozenset[str] = frozenset(FILTER_OPS)
@@ -67,7 +64,7 @@ _FILTER_OPS: frozenset[str] = frozenset(FILTER_OPS)
 #
 # Imported rather than re-listed: ``filters`` needs the same five for its
 # NOT-NULL derivation, and two hand-written copies of one schema fact drift
-# the moment a sixth column is declared. ``read._column_shapes`` and
+# the moment a sixth column is declared. ``column_shapes.COLUMN_SHAPES`` and
 # ``grammar._IDENTITY_FILTER_COLUMNS`` are deliberately NOT unified with
 # this: the first maps each column to a SQL shape, and the second omits
 # ``kind`` because the CLI names kinds positionally rather than filtering on
@@ -128,8 +125,10 @@ async def list_inquiries_route(
     status: Inquiry.Status | None = None,
     limit: int = DEFAULT_LIST_LIMIT,
     offset: int = 0,
-    seq_range: Annotated[list[str] | None, Query()] = None,
-    filter_: Annotated[list[str] | None, Query(alias="filter")] = None,
+    seq_range: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
+    filter_: Annotated[
+        list[str] | None, Query(alias="filter", max_length=MAX_LIST_LIMIT)
+    ] = None,
 ) -> list[MutableJSON]:
     """List inquiries across one or more ``kind`` query params.
 
@@ -159,7 +158,8 @@ async def list_inquiries_route(
     for one_kind in dict.fromkeys(kind):
         # Parsed per kind because the field whitelist is kind-specific, but a
         # ``re`` operand still reaches ``re.compile`` once per (kind, filter)
-        # pair. The dedup above is what keeps that product bounded.
+        # pair. The dedup above bounds one factor; ``max_length`` on the param
+        # bounds the other.
         filters = tuple(_parse_filter_param(raw, one_kind) for raw in (filter_ or ()))
         started = time.perf_counter()
         rows: list[Inquiry] = []
@@ -167,12 +167,13 @@ async def list_inquiries_route(
         error_type = ""
         try:
             # A ``re`` filter lowers to a Postgres ``~``, so this query can
-            # fail two ways no Python check catches: a pattern POSIX rejects
-            # (``(?P<x>a)``), and a pattern that matches for an unbounded
-            # time. ``regex_failures_as_400`` reports both as the caller
-            # errors they are. The statement timeout that bounds the second
-            # is set inside ``list_kind``, which owns the connection -- taking
-            # one here as well would be a reentrant acquire.
+            # still fail two ways: a pattern POSIX rejects for a reason the
+            # wire type's dialect gate does not enumerate, and a pattern that
+            # matches for an unbounded time. ``regex_failures_as_400`` reports
+            # both as the caller errors they are. The statement timeout that
+            # bounds the second is set inside ``list_kind``, which owns the
+            # connection -- taking one here as well would be a reentrant
+            # acquire.
             with regex_failures_as_400():
                 rows = await store.list_kind(
                     one_kind,
@@ -420,6 +421,10 @@ def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
     # ``isinstance`` first so an unhashable ``op`` (a JSON list/dict) fails the
     # 400 below instead of raising in the set membership test.
     valueless = isinstance(op, str) and op in VALUELESS_FILTER_OPS
+    if valueless and obj.get("value", "") != "":
+        # Accepting and ignoring it would answer a question the caller did not
+        # ask: ``{"op": "isnull", "value": "Dan"}`` reads as "owner is Dan".
+        raise HTTPException(status_code=400, detail=f"filter op {op!r} takes no value")
     value = obj.get("value", "") if valueless else obj.get("value")
     if (
         not isinstance(field, str)
@@ -441,30 +446,18 @@ def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
             status_code=400,
             detail=f"unknown filter field {field!r} for {kind}",
         )
-    if (
-        presence_err := validate_presence_op(canonical, cast(FilterOp, op))
-    ) is not None:
-        raise HTTPException(status_code=400, detail=presence_err)
-    if op in ("re", "nre"):
-        try:
-            # Validate the pattern the PYTHON evaluator will run -- the
-            # TRANSLATED form. ``match_filter`` rewrites POSIX word-boundary
-            # escapes before compiling, so checking the raw text would 400 a
-            # ``\y`` pattern both evaluators handle correctly.
-            #
-            # A pattern valid here can still be invalid to Postgres
-            # (``(?P<x>...)``, ``\z``), which no Python check can detect; the
-            # route's ``regex_failures_as_400`` reports those.
-            re.compile(posix_pattern(value))
-        except re.error as err:
-            raise HTTPException(
-                status_code=400, detail=f"invalid regex {value!r}: {err}"
-            ) from err
     try:
-        # Every remaining rule -- the length cap, the ambiguous-escape gate,
-        # and the refusal of regex on a column nothing can bound -- lives on
-        # the wire type, so the CLI cannot construct a filter this route would
-        # have refused. Re-checking them here would be a second copy to drift.
+        # Every rule decidable from the clause alone -- the length cap, the
+        # ambiguous-escape gate, whether Python can compile it, the dialect
+        # gate, and the presence-op check -- lives on the wire type, so the CLI
+        # cannot construct a filter this route would have refused, and a copy
+        # here could only drift. That drift was real: the presence check ran
+        # HERE only, so a direct ``Filter`` and the store both accepted
+        # ``isnull`` on a NOT-NULL column, which matches nothing.
+        #
+        # Whether the op is admissible for the COLUMN's SQL is still not
+        # decidable here: that needs the store's own table, and
+        # ``_partition_filters`` asks it.
         return Filter(field=canonical, op=cast(FilterOp, op), value=value)
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err

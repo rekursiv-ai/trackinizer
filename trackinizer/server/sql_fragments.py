@@ -17,6 +17,13 @@ from trackinizer.server.values import vetted_sql
 from trackinizer.types.edges import EDGE_POLICIES
 
 
+__all__ = [
+    "COST_SUBTREE_SQL",
+    "NEXT_ISSUE_SQL",
+    "PROVES_BELIEF_SQL",
+]
+
+
 def _quote_kinds(kinds: Iterable[str]) -> str:
     """Render an iterable of edge-kind names as a SQL IN-list body.
 
@@ -66,7 +73,7 @@ def _policy_exclude_clauses(
     return " ".join(clauses)
 
 
-_NEXT_ISSUE_SQL: str = vetted_sql(
+NEXT_ISSUE_SQL: Final[str] = vetted_sql(
     "SELECT issue.* FROM inquiries issue "
     "WHERE issue.kind = 'Issue' AND issue.status = 'active' "
     "  AND NOT EXISTS ("
@@ -89,7 +96,7 @@ Built from the policy registry: any edge kind with
 """
 
 
-_PROVES_BELIEF_SQL: str = vetted_sql(
+PROVES_BELIEF_SQL: Final[str] = vetted_sql(
     # proves is stored Artifact(from) -> Belief(to), so the artifacts proving
     # belief $1 are the from-side of edges pointing at it.
     "SELECT t.* FROM inquiries t "
@@ -113,7 +120,7 @@ declaration site.
 """
 
 
-_COST_SUBTREE_SQL: Final[str] = (
+COST_SUBTREE_SQL: Final[str] = (
     "WITH RECURSIVE subtree(id) AS ("
     "    SELECT $1::uuid "
     "    UNION "

@@ -14,17 +14,27 @@ returning different rows in production than in the CLI's test fake.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
+from datetime import datetime
 from pathlib import Path
+from typing import cast
+
+import uuid
 
 import pytest
 import pytest_asyncio
 
 from trackinizer.lib.postgres import PGliteEngine
-from trackinizer.server.store import read
 from trackinizer.server.store.core import Store, StubEmbedder
 from trackinizer.types.cost import Cost
+from trackinizer.types.errors import ValidationError
 from trackinizer.types.inquiries import Inquiry
-from trackinizer.wire.bodies import SubmitIssue
+from trackinizer.wire.bodies import (
+    SubmitBelief,
+    SubmitCodeChange,
+    SubmitExperiment,
+    SubmitIssue,
+    SubmitPaper,
+)
 from trackinizer.wire.filters import (
     FILTER_OPS,
     Filter,
@@ -80,12 +90,7 @@ async def rows_via_python(
     store: Store, filters: Sequence[Filter], *, limit: int = 50
 ) -> list[Inquiry]:
     """Run the query with lowering disabled, forcing the Python predicate."""
-    original = read.LOWERING
-    read.LOWERING = read.Lowering(enabled=False)
-    try:
-        return await store.list_kind("Issue", filters=filters, limit=limit)
-    finally:
-        read.LOWERING = original
+    return await store.list_kind("Issue", filters=filters, limit=limit, lowering=False)
 
 
 # One filter per op, aimed at the value that most often diverges.
@@ -101,6 +106,8 @@ CASES: tuple[tuple[FilterOp, str, str], ...] = (
     ("ne", "labels", "bug"),
     ("isnull", "owner", ""),
     ("notnull", "owner", ""),
+    ("isnull", "issue_priority", ""),
+    ("notnull", "issue_priority", ""),
     ("lt", "issue_priority", "20"),
     ("le", "issue_priority", "20"),
     ("gt", "issue_priority", "5"),
@@ -108,6 +115,18 @@ CASES: tuple[tuple[FilterOp, str, str], ...] = (
     ("re", "title", "^a"),
     ("re", "title", "[0-9]+"),
     ("nre", "title", "^a"),
+    # A negated regex against a NULLABLE column. ``match_filter`` treats NULL
+    # as absent and KEEPS the row (``nre`` is the complement of ``re``), while
+    # SQL ``NULL !~ 'Dan'`` is NULL, which the WHERE drops. Every other case
+    # here filters a NOT-NULL column, so the disagreement had no witness.
+    ("nre", "owner", "Dan"),
+    ("nre", "owner", "Josh"),
+    # A negated regex against a NULL ARRAY. The array templates take a
+    # different NULL route than the scalars -- ``NOT EXISTS (unnest(NULL))``
+    # rather than an ``IS NULL`` disjunct -- so the agreement is a separate
+    # fact, and was untested.
+    ("nre", "labels", "absent"),
+    ("nre", "labels", "bug"),
     ("re", "account", "rekursiv"),
     # The escape classes, not a sample of them. Postgres runs POSIX ARE and
     # ``match_filter`` runs Python ``re``; the two disagree on exactly the
@@ -125,20 +144,20 @@ CASES: tuple[tuple[FilterOp, str, str], ...] = (
     ("re", "title", r"\yalpha"),
     ("re", "title", r"\malpha"),
     ("re", "title", r"alpha\M"),
-    # An order op on a TEXT column. Python compares "10" and "9" as NUMBERS
-    # whenever both parse; SQL compares them lexically, so '10' < '9' is true
-    # in SQL and false in Python. Lowering these would silently change the
-    # result set, which is why the order ops are numeric-only.
-    ("lt", "title", "9"),
-    ("gt", "title", "9"),
+    # An order op on a TEXT column is absent by construction: the two
+    # evaluators disagree, so it is refused rather than run. See
+    # ``test_an_order_op_on_text_is_refused_by_both_paths``.
+    #
     # A UUID renders identically in both evaluators, so it lowers via ::text.
-    ("notnull", "id", ""),
+    # A presence op on ``id`` is absent by construction: the column is NOT
+    # NULL, so ``notnull`` matches every row and ``isnull`` none, whatever the
+    # data -- refused now rather than answered. See
+    # ``test_a_presence_op_on_a_not_null_column_is_refused``.
     ("re", "id", "-"),
     # A timestamp: SQL must reproduce ``str(datetime)`` EXACTLY -- UTC, a
     # ``+00:00`` offset, microseconds only when non-zero. A bare ``::text``
     # renders in the session zone as ``-08``, so every equality and regex
     # filter on a time column would silently miss.
-    ("notnull", "created", ""),
     ("re", "created", r"^20\d\d-"),
     ("re", "created", r"\+00:00$"),
     ("gt", "created", "2000-01-01 00:00:00+00:00"),
@@ -147,7 +166,6 @@ CASES: tuple[tuple[FilterOp, str, str], ...] = (
     # sql_type -- the Python annotation is the only evidence it is numeric.
     ("ge", "marginal_cost_agent_usd", "0"),
     ("gt", "marginal_cost_agent_usd", "-1"),
-    ("isnull", "marginal_cost_agent_usd", ""),
     # Equality and regex on a NUMBER compare RENDERINGS, and the two
     # evaluators render differently unless the SQL is told not to: Python's
     # ``str(0.5)`` is ``0.5`` where a NUMERIC column's ``::text`` is
@@ -156,11 +174,27 @@ CASES: tuple[tuple[FilterOp, str, str], ...] = (
     ("is", "marginal_cost_agent_usd", "0.5"),
     ("is", "marginal_cost_agent_usd", "0"),
     ("ne", "marginal_cost_agent_usd", "0.5"),
+    # A WHOLE number through the REAL renderer: the ``bigint::text || '.0'``
+    # branch must produce ``0.0`` for ``ne`` exactly as it does for ``is``,
+    # or the two ops disagree about the same stored value.
+    ("ne", "marginal_cost_agent_usd", "0"),
+    ("ne", "marginal_cost_agent_usd", "0.0"),
     ("re", "marginal_cost_agent_usd", r"^0\.5$"),
     ("is", "issue_priority", "20"),
     ("re", "issue_priority", "^2"),
     # A float column, to catch a classifier that only knows integers.
     ("notnull", "belief_confidence", ""),
+    # An operand with more digits than a float can hold. ``numeric`` keeps
+    # them and ``float`` does not, so a guard that parsed the operand with
+    # ``float()`` answered the OPPOSITE of its own SQL: live PG16 says
+    # ``1 < '1.00000000000000001'::numeric`` is true, and the rounded operand
+    # said false. Both engines answer, so nothing else catches it.
+    ("lt", "seq", "1.00000000000000001"),
+    ("gt", "seq", "0.99999999999999999"),
+    ("le", "seq", "2.00000000000000001"),
+    ("ge", "seq", "1.00000000000000001"),
+    ("lt", "marginal_cost_agent_usd", "0.50000000000000001"),
+    ("ge", "marginal_cost_agent_usd", "0.50000000000000001"),
 )
 
 
@@ -179,6 +213,168 @@ async def test_sql_and_python_select_the_same_rows(
     assert [row.seq for row in lowered] == [row.seq for row in in_python], (
         f"{field} {op} {value!r} selected different rows in SQL than in Python"
     )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio
+async def test_a_uuid_array_column_filters_against_a_real_engine(
+    store: Store,
+) -> None:
+    """``experiment_codechanges`` is ``UUID[]``, not ``TEXT[]``.
+
+    The array templates were written for the five ``TEXT[]`` columns and only
+    ever exercised against those, so nothing caught that the same SQL is
+    invalid for a uuid element: a live engine answers ``operator does not
+    exist: uuid ~ unknown`` for the regex form and ``could not convert type
+    text[] to uuid[]`` for the negated one. A mock store cannot see either.
+    """
+    change_id = await store.submit_codechange(
+        SubmitCodeChange(title="commit", account="josh@rekursiv.ai", sha="a" * 40)
+    )
+    await store.submit_experiment(
+        SubmitExperiment(
+            title="exp", account="josh@rekursiv.ai", codechanges=[change_id]
+        )
+    )
+
+    cases: tuple[tuple[FilterOp, str, int], ...] = (
+        ("is", str(change_id), 1),
+        ("re", str(change_id)[:8], 1),
+        ("nre", "no-such-prefix", 1),
+        ("ne", str(uuid.uuid4()), 1),
+    )
+    for op, value, expected in cases:
+        rows = await store.list_kind(
+            "Experiment",
+            filters=(Filter(field="experiment_codechanges", op=op, value=value),),
+        )
+        assert len(rows) == expected, f"{op} {value}"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("op", "value"), [("is", "-0.0"), ("is", "0.0"), ("ne", "-0.0"), ("re", r"^-0\.0$")]
+)
+async def test_negative_zero_renders_alike_in_both_evaluators(
+    store: Store, op: FilterOp, value: str
+) -> None:
+    r"""``-0.0`` is a value the column accepts and the renderings disagreed on.
+
+    The REAL renderer's whole-number branch goes through ``::bigint``, which
+    has no negative zero, so SQL rendered ``0.0`` where ``str(-0.0)`` is
+    ``-0.0``. ``belief_confidence`` is DOUBLE PRECISION under a ``CHECK (0..1)``
+    that ``-0.0`` passes (live PG16: ``-0.0 >= 0 AND -0.0 <= 1`` is true), so a
+    caller can store one.
+
+    The harm is not on the odd operand. Filtering for a plain ``0.0`` MATCHED
+    the ``-0.0`` row in SQL and missed it in Python -- a caller who never types
+    a minus sign gets a different row set depending on which evaluator ran.
+    """
+    await store.submit_belief(
+        SubmitBelief(account="a@b.c", title="negzero", confidence=-0.0)
+    )
+    await store.submit_belief(
+        SubmitBelief(account="a@b.c", title="poszero", confidence=0.0)
+    )
+    filters = (Filter(field="belief_confidence", op=op, value=value),)
+
+    lowered = await store.list_kind("Belief", filters=filters, limit=50)
+    in_python = await store.list_kind(
+        "Belief", filters=filters, limit=50, lowering=False
+    )
+
+    assert [row.seq for row in lowered] == [row.seq for row in in_python]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("op", "value"),
+    [
+        ("is", "0001-01-01 00:00:00+00:00"),
+        ("ne", "0001-01-01 00:00:00+00:00"),
+        ("re", "^0001"),
+        ("nre", "no-such-text"),
+        ("lt", "2026-01-01 00:00:00+00:00"),
+        ("gt", "2026-01-01 00:00:00+00:00"),
+    ],
+)
+async def test_an_extreme_date_renders_alike_in_both_evaluators(
+    store: Store, op: FilterOp, value: str
+) -> None:
+    """``datetime.min`` stores as Postgres ``-infinity``, which renders NULL.
+
+    asyncpg encodes ``datetime(1, 1, 1)`` as ``-infinity``, and ``to_char`` and
+    ``date_part('microsecond', ...)`` both answer NULL on it -- so the whole
+    ``_TS_TEXT`` concatenation is NULL, every comparison against it is NULL,
+    and the WHERE drops the row. Python holds the datetime and stringifies it
+    normally, so it keeps the row.
+
+    ``nre`` is the sharpest case: a row invisible to every affirmative
+    timestamp filter is dropped by the NEGATED one too, making it unreachable
+    through SQL while Python returns it.
+    """
+    await store.submit_paper(
+        SubmitPaper(
+            account="a@b.c",
+            title="ancient",
+            publish_date=datetime.fromisoformat("0001-01-01T00:00:00+00:00"),
+        )
+    )
+    await store.submit_paper(
+        SubmitPaper(
+            account="a@b.c",
+            title="modern",
+            publish_date=datetime.fromisoformat("2026-01-01T00:00:00+00:00"),
+        )
+    )
+    filters = (Filter(field="paper_publish_date", op=op, value=value),)
+
+    lowered = await store.list_kind("Paper", filters=filters, limit=50)
+    in_python = await store.list_kind(
+        "Paper", filters=filters, limit=50, lowering=False
+    )
+
+    assert [row.seq for row in lowered] == [row.seq for row in in_python]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio
+async def test_an_order_op_on_text_is_refused_by_both_paths(store: Store) -> None:
+    """Neither evaluator may order text, because they order it differently.
+
+    Python compares ``"10"`` and ``"9"`` as NUMBERS whenever both parse; SQL
+    compares them lexically, so ``'10' < '9'`` is true in SQL and false in
+    Python. The pair therefore cannot appear in ``CASES`` -- there is no
+    agreed answer to compare against -- and the refusal is what this asserts.
+    """
+    await seed(store)
+    filters = (Filter(field="title", op="lt", value="9"),)
+
+    with pytest.raises(ValidationError, match="title"):
+        await store.list_kind("Issue", filters=filters, limit=50)
+    with pytest.raises(ValidationError, match="title"):
+        await rows_via_python(store, filters)
+
+
+@pytest.mark.parametrize(
+    "column", ["id", "created", "marginal_cost_agent_usd", "seq", "account"]
+)
+def test_a_presence_op_on_a_not_null_column_is_refused(column: str) -> None:
+    """``isnull`` on a NOT-NULL column has one answer before any row is read.
+
+    It selects nothing and ``notnull`` selects everything, so neither is a
+    filter -- and the two evaluators agreeing on a meaningless answer is not a
+    reason to run it. These pairs therefore cannot appear in ``CASES``.
+
+    No engine is needed: the refusal is on the wire type, so the clause never
+    reaches a query. That is the point -- it used to be refused only by the
+    HTTP route, leaving the store and the CLI to run it.
+    """
+    for op in ("isnull", "notnull"):
+        with pytest.raises(ValueError, match="NOT NULL"):
+            Filter(field=column, op=cast("FilterOp", op), value="")
 
 
 def test_ambiguous_escape_is_refused_rather_than_translated() -> None:
@@ -231,14 +427,9 @@ async def test_paging_agrees_between_the_two_paths(store: Store, offset: int) ->
     filters = (Filter(field="account", op="is", value="josh@rekursiv.ai"),)
 
     lowered = await store.list_kind("Issue", filters=filters, limit=2, offset=offset)
-    read_original = read.LOWERING
-    read.LOWERING = read.Lowering(enabled=False)
-    try:
-        in_python = await store.list_kind(
-            "Issue", filters=filters, limit=2, offset=offset
-        )
-    finally:
-        read.LOWERING = read_original
+    in_python = await store.list_kind(
+        "Issue", filters=filters, limit=2, offset=offset, lowering=False
+    )
 
     assert [row.seq for row in lowered] == [row.seq for row in in_python]
 

@@ -48,7 +48,6 @@ from trackinizer.wire.filters import (
     Filter,
     FilterOp,
     canonical_filter_field,
-    validate_presence_op,
 )
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
 from trackinizer.wire.seq_ranges import (
@@ -131,16 +130,16 @@ def parse_list_query(
     # The server rejects any alias that slips through a non-CLI HTTP caller.
     filters: list[Filter] = []
     for field, op, value in cli_filters:
-        canonical = canonical_filter_field(field)
-        if (err := validate_presence_op(canonical, op)) is not None:
-            raise ClientError(err)
         try:
-            filters.append(Filter(field=canonical, op=op, value=value))
+            filters.append(
+                Filter(field=canonical_filter_field(field), op=op, value=value)
+            )
         except ValueError as err_obj:
-            # ``Filter`` validates its own operand (length, regex dialect).
-            # Those refusals describe the user's input, so they must reach the
-            # CLI as the message every other parse failure here produces --
-            # a raw ``ValueError`` would surface as a traceback instead.
+            # ``Filter`` validates the whole clause -- length, regex dialect,
+            # presence ops on a NOT-NULL column. Those refusals describe the
+            # user's input, so they must reach the CLI as the message every
+            # other parse failure here produces; a raw ``ValueError`` would
+            # surface as a traceback instead.
             raise ClientError(str(err_obj)) from err_obj
     return ListQuery(kinds=kinds_tuple, ranges=ranges, filters=tuple(filters))
 

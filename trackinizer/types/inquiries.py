@@ -1251,3 +1251,12 @@ _MISSING_KINDS = set(get_args(Inquiry.InquiryKind.__value__)) - set(KIND_TO_CLAS
 assert not _MISSING_KINDS, (
     f"KIND_TO_CLASS missing concrete subclasses for {sorted(_MISSING_KINDS)}"
 )
+
+
+INQUIRY_CLASSES: tuple[type[Inquiry], ...] = (Inquiry, *KIND_TO_CLASS.values())
+"""``Inquiry`` plus every concrete kind, for a walk over the whole hierarchy.
+
+Derived beside the registry rather than rebuilt per consumer: two wire modules
+each carried their own identical tuple, and a test existed only to assert the
+copies had not drifted. One definition removes both.
+"""

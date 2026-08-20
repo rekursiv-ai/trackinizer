@@ -8,18 +8,19 @@ The same pattern against 40 stored characters measured **20.11 seconds**
 through ``Store.list_kind``, doubling per character, blocking the event loop
 for every concurrent request, with no deadline able to reach it.
 
-The refusal lives in ``_partition_filters`` because that is where lowerability
-stops being a prediction and becomes a fact. An earlier attempt guessed the
-same fact in the wire layer from ``sql_type == "JSONB"``, and every bypass
-below is a way that guess was wrong:
+``_partition_filters`` refuses such a filter before a row is fetched. It does
+so by asking the shared classification (``wire.column_shapes``) rather than
+predicting it: an earlier attempt guessed from ``sql_type == "JSONB"``, and
+every bypass below is a way that guess was wrong:
 
 * the alias ``config`` never equals ``experiment_config``;
 * a bare ``RowFilter`` skips ``Filter.__post_init__`` entirely;
-* ``"jsonb"`` or ``"JSONB NOT NULL"`` fails an exact-string match while
-  ``read._classify`` still refuses to lower it.
+* ``"jsonb"`` or ``"JSONB NOT NULL"`` fails an exact-string match while the
+  classifier still refuses to lower it.
 
-Asking the store removes all three at once: it canonicalizes the field itself
-and answers from its own shape table.
+The same question is asked again inside ``match_filter`` itself, which is the
+backstop for callers that never reach the store; this file covers the store's
+half. See ``wire/row_filter_bound_test.py`` for the evaluator's.
 """
 
 from __future__ import annotations
@@ -84,45 +85,80 @@ class TestUnboundableRegexIsRefused:
         assert clauses
         assert not remaining
 
-    @pytest.mark.parametrize(
-        "op", ["is", "ne", "lt", "le", "gt", "ge", "isnull", "notnull"]
-    )
-    def test_non_regex_ops_on_jsonb_still_work(self, op: str) -> None:
-        # These also evaluate in Python on this column, but they are string
+    @pytest.mark.parametrize(("op", "value"), [("is", "x"), ("ne", "x")])
+    def test_equality_on_jsonb_still_works(self, op: str, value: str) -> None:
+        # These evaluate in Python on this column too, but they are string
         # comparisons: measured 0.8-3.1ms end-to-end where ``re`` took 20.11s.
         # Refusing them would remove capability for no safety gain.
         _, remaining = read._partition_filters(
             (
                 _BareFilter(
-                    field="experiment_config", op=cast("FilterOp", op), value="x"
+                    field="experiment_config", op=cast("FilterOp", op), value=value
                 ),
             ),
             [],
         )
         assert remaining
 
-    def test_lowering_disabled_refuses_by_column_not_by_mode(self) -> None:
-        # ``LOWERING.enabled=False`` sends every filter to Python, but it is
-        # reachable ONLY from the equivalence tests (see ``Lowering``), never
-        # from a request -- so it is not the DoS surface the refusal guards.
-        # What makes a pattern unboundable is the COLUMN, and that verdict is
-        # the same in both modes. Refusing on the mode instead made the
-        # SQL/Python parity suite -- which runs each filter both ways -- unable
-        # to compare any regex at all, so the translation it exists to guard
-        # went unchecked.
-        original = read.LOWERING
-        read.LOWERING = read.Lowering(enabled=False)
-        try:
-            with pytest.raises(ValidationError, match="experiment_config"):
-                read._partition_filters(
-                    (_BareFilter(field="experiment_config", op="re", value=EVIL),), []
-                )
-            _, remaining = read._partition_filters(
-                (_BareFilter(field="title", op="re", value=EVIL),), []
+    @pytest.mark.parametrize("op", ["isnull", "notnull"])
+    def test_presence_on_jsonb_still_works(self, op: str) -> None:
+        # A presence op carries no operand, so it is spelled with ``""``.
+        _, remaining = read._partition_filters(
+            (
+                _BareFilter(
+                    field="experiment_config", op=cast("FilterOp", op), value=""
+                ),
+            ),
+            [],
+        )
+        assert remaining
+
+    @pytest.mark.parametrize("op", ["lt", "le", "gt", "ge"])
+    def test_order_ops_on_jsonb_are_refused(self, op: str) -> None:
+        # ``str(dict)`` has no order any SQL reproduces, so Python's answer
+        # would be one no lowered query could return.
+        with pytest.raises(ValidationError, match="experiment_config"):
+            read._partition_filters(
+                (
+                    _BareFilter(
+                        field="experiment_config", op=cast("FilterOp", op), value="x"
+                    ),
+                ),
+                [],
             )
-            assert remaining
-        finally:
-            read.LOWERING = original
+
+    @pytest.mark.parametrize("op", ["lt", "le", "gt", "ge"])
+    def test_a_nan_operand_is_refused_before_it_lowers(self, op: str) -> None:
+        # ``seq`` is INTEGER, so this DOES lower -- and that is the danger:
+        # live PG16 sorts NaN largest, answering ``5 < 'nan'`` true where
+        # Python answers false. A guard on the declined branch never saw it.
+        with pytest.raises(ValidationError, match="NaN"):
+            read._partition_filters(
+                (_BareFilter(field="seq", op=cast("FilterOp", op), value="nan"),), []
+            )
+
+    def test_lowering_disabled_still_refuses_an_unboundable_column(self) -> None:
+        # ``lowering=False`` sends EVERY filter to Python -- the
+        # equivalence-test mode. A regex is at its most dangerous there, so
+        # the early return must not skip the check.
+        with pytest.raises(ValidationError):
+            read._partition_filters(
+                (_BareFilter(field="experiment_config", op="re", value=EVIL),),
+                [],
+                lowering=False,
+            )
+
+    def test_lowering_disabled_does_not_refuse_a_lowering_column(self) -> None:
+        # The refusal is about the COLUMN, never about the mode: a filter on
+        # ``title`` is admissible because the column has a SQL form, and the
+        # test-only kwarg does not change that. Refusing it here made the
+        # equivalence suite's own regex cases unrunnable -- it never showed
+        # because ``db_pglite`` is deselected by default.
+        clauses, remaining = read._partition_filters(
+            (_BareFilter(field="title", op="re", value=EVIL),), [], lowering=False
+        )
+        assert not clauses
+        assert remaining
 
 
 if __name__ == "__main__":

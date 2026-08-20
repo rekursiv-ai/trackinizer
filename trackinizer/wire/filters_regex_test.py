@@ -2,7 +2,7 @@ r"""``Filter`` refuses regex escapes the two evaluators read differently.
 
 Whether a regex can be BOUNDED is not decided here -- that depends on whether
 the column lowers into SQL, which only the store knows, so
-``read._reject_unboundable_regex`` owns it. This file covers the other half:
+``row_filter.reject_inadmissible`` owns it. This file covers the other half:
 a pattern that means one thing to Postgres and another to Python selects
 different rows depending on which evaluator ran it, and no bound makes that
 correct.
@@ -28,11 +28,38 @@ class TestAmbiguousEscapes:
     def test_negated_form_is_refused(self) -> None:
         assert validate_regex_dialect(r"\Balpha") is not None
 
+    def test_each_escape_reports_its_own_postgres_meaning(self) -> None:
+        # Live PG16: ``chr(8) ~ '\b'`` is true (backspace) but
+        # ``'a\b' ~ '\B'`` is true (a LITERAL BACKSLASH). One shared
+        # "backspace" message named the wrong construct for half the cases.
+        backslash_b = validate_regex_dialect(r"\balpha")
+        backslash_upper_b = validate_regex_dialect(r"\Balpha")
+        assert backslash_b is not None
+        assert backslash_upper_b is not None
+        assert "backspace" in backslash_b
+        assert "literal backslash" in backslash_upper_b
+
     def test_the_posix_spelling_is_allowed(self) -> None:
         assert validate_regex_dialect(r"\yalpha") is None
 
     def test_an_ordinary_pattern_is_allowed(self) -> None:
         assert validate_regex_dialect("^alpha[0-9]+$") is None
+
+    def test_backspace_inside_a_class_is_allowed(self) -> None:
+        # Inside a bracket expression there is no boundary to mean, so both
+        # engines read BACKSPACE and the pattern is unambiguous. Live PG16:
+        # ``chr(8) ~ '[\b]'`` is true and ``'b' ~ '[\b]'`` is false, which is
+        # exactly Python. Refusing it denied a pattern that always agreed.
+        assert validate_regex_dialect(r"[\b]") is None
+
+    def test_an_escaped_backslash_before_b_is_allowed(self) -> None:
+        # ``\\b`` is a literal backslash then ``b``: no escape at all.
+        assert validate_regex_dialect(r"a\\b") is None
+
+    def test_a_literal_backslash_before_a_real_escape_still_refuses(self) -> None:
+        # ``\\\b``: the first pair is literal, the third backslash escapes
+        # ``b``. The ambiguity is present and must still be caught.
+        assert validate_regex_dialect(r"\\\balpha") is not None
 
 
 class TestFilterEnforcesTheDialect:

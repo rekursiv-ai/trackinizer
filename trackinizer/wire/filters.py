@@ -8,15 +8,21 @@ value.
 
 The CLI accepts ergonomic aliases (``kind`` for ``issue_kind``,
 ``agent-cost`` for ``marginal_cost_agent_usd``, and so on) and translates
-them to canonical names before sending, so the server never sees an
-alias.
+them before sending; the route canonicalizes again through the same
+:func:`canonical_filter_field`, so a direct HTTP caller may send either
+spelling and both resolve to one column.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
+from functools import lru_cache
 from typing import Final, Literal
+
+import re
+import warnings
 
 from trackinizer.types.columns import (
     column_specs,
@@ -24,9 +30,21 @@ from trackinizer.types.columns import (
     storage_name,
 )
 from trackinizer.types.inquiries import (
+    INQUIRY_CLASSES,
     KIND_TO_CLASS,
-    Inquiry,
 )
+from trackinizer.wire.posix_regex import (
+    FLAG_LETTERS,
+    UNTRANSLATABLE_IN_BRACKET,
+    escapes,
+    has_posix_bracket_construct,
+    has_python_named_group,
+    live_indices,
+    matchable_indices,
+    paren_extensions,
+    posix_pattern,
+)
+from trackinizer.wire.routes import MAX_LIST_LIMIT
 
 
 __all__ = [
@@ -35,63 +53,200 @@ __all__ = [
     "IDENTITY_COLUMNS",
     "MAX_FILTER_VALUE_CHARS",
     "NON_NULLABLE_COLUMNS",
-    "POSIX_AMBIGUOUS_ESCAPES",
+    "ORDER_OPS",
+    "REGEX_OPS",
     "VALUELESS_FILTER_OPS",
     "Filter",
     "FilterOp",
+    "as_numeric",
     "canonical_filter_field",
+    "folds_case",
+    "is_nan",
+    "validate_clause",
     "validate_presence_op",
     "validate_regex_dialect",
 ]
 
 
-# Upper bound on a filter operand. This bounds the operand's SIZE, not the
-# cost of running it: compiling the worst 512-char pattern measures 0.5ms,
-# while MATCHING ``(a+)+$`` against 24 characters takes 620ms. Backtracking is
-# a matching cost. Where that match runs decides what can bound it: a
-# lowered filter matches in Postgres under the statement timeout, and one
-# that cannot lower is refused outright by the store, because Python's
-# backtracking has no deadline. Neither bound is this cap.
-# 512 chars comfortably fits any real column value or regex (mirrors the
-# message-body caps in ``wire_sessions.py``).
+# Bounds the operand's SIZE, not the cost of running it: compiling the worst
+# 512-char pattern measures 0.5ms, while MATCHING ``(a+)+$`` against 24
+# characters takes 620ms. Backtracking is a matching cost, bounded by where
+# the match runs -- Postgres' statement timeout for a lowered filter, and a
+# refusal by ``row_filter.reject_inadmissible`` for one that cannot lower.
+# 512 chars fits any real column value or regex (mirrors the message-body caps
+# in ``wire_sessions.py``).
 MAX_FILTER_VALUE_CHARS: Final = 512
 
-# ``\b`` is the one escape both regex engines accept while meaning DIFFERENT
-# things: Postgres POSIX reads it as BACKSPACE, Python as a word boundary.
-# Verified on a live engine -- ``'foo bar' ~ '\bbar'`` is false in SQL and
-# true in Python, so a filter carrying it returns different rows depending on
-# whether the clause lowered. It cannot be translated (the meanings do not
-# correspond), so it is refused with the spelling that does work.
-POSIX_AMBIGUOUS_ESCAPES: Final[tuple[tuple[str, str], ...]] = (
-    (r"\b", r"\y"),
-    (r"\B", r"\Y"),
+# Escapes Python parses and Postgres refuses outright, mapped to the POSIX
+# spelling that means the same thing in both.
+_PYTHON_ONLY_ESCAPES: Final[Mapping[str, str]] = {"z": r"\Z"}
+
+# The flag letters Postgres implements, measured on live PG16. Python's
+# ``a`` / ``u`` / ``L`` are absent, and ``(?a)`` matters most: it would narrow
+# ``\w`` to ASCII, and ``\w`` is the one class the two engines agree on
+# Unicode-wide.
+_POSTGRES_FLAGS: Final[frozenset[str]] = frozenset("ismnxwbeq")
+
+# The flag letters Python implements. The gap against ``_POSTGRES_FLAGS`` --
+# ``n w b e q`` -- is why a valid Postgres pattern can still be refused: this
+# evaluator cannot reproduce it (live PG16 runs ``(?n)a``, Python says
+# "unknown extension ?n").
+_PYTHON_FLAGS: Final[frozenset[str]] = frozenset("ismx")
+
+# Repetition bounds are ASCII digits, not anything ``str.isdigit()`` accepts.
+_ASCII_DIGITS: Final[frozenset[str]] = frozenset("0123456789")
+
+# What Postgres' ``numeric`` input parser accepts, transcribed from a scan of
+# 14,424 candidate operands against live PG16. It is NOT ``float()``, which
+# reads ``\uff11`` and ``\u0661`` as 1 (Postgres: SQLSTATE 22P02) and takes
+# ``1_``, ``_1`` and ``1__0`` as underscore-separated where Postgres rejects
+# all three -- a separator there is single and interior, which the inner
+# ``_?`` spells.
+_NUMERIC_DIGITS: Final = r"[0-9](?:_?[0-9])*"
+_NUMERIC_OPERAND: Final[re.Pattern[str]] = re.compile(
+    rf"\A[-+]?(?:(?:{_NUMERIC_DIGITS})(?:\.(?:{_NUMERIC_DIGITS})?)?"
+    rf"|\.(?:{_NUMERIC_DIGITS}))(?:[eE][-+]?{_NUMERIC_DIGITS})?\Z"
 )
 
-_REGEX_OPS: Final[frozenset[str]] = frozenset({"re", "nre"})
+# ``numeric`` also takes these by name, case-insensitively -- live PG16 parses
+# ``inf``, ``INFINITY`` and ``NaN``. ``nan`` is refused separately for
+# ORDERING, because the two engines sort it differently.
+_NUMERIC_NAMES: Final[frozenset[str]] = frozenset(
+    {"nan", "inf", "-inf", "+inf", "infinity", "-infinity", "+infinity"}
+)
+
+# The two escapes both engines accept while MEANING different things, each
+# mapped to what Postgres reads, what Python reads, and the POSIX spelling
+# that works in both. Live PG16: ``chr(8) ~ '\b'`` is true (backspace) and
+# ``'a\b' ~ '\B'`` is true (a literal backslash). Neither can be translated,
+# so a filter carrying one is refused.
+#
+# The ambiguity is a property of the escape's POSITION: inside a bracket
+# expression neither engine has a boundary to mean and both read BACKSPACE
+# (live: ``chr(8) ~ '[\b]'`` true, ``'b' ~ '[\b]'`` false -- identical to
+# Python), so :func:`validate_regex_dialect` asks the scanner where it sits.
+_AMBIGUOUS_ESCAPES: Final[Mapping[str, tuple[str, str, str]]] = {
+    "b": ("a backspace", "a word boundary", r"\y"),
+    "B": ("a literal backslash", "a non-word-boundary", r"\Y"),
+}
+
+REGEX_OPS: Final[frozenset[FilterOp]] = frozenset({"re", "nre"})
+"""Ops whose operand is a pattern, matched rather than compared."""
+
+ORDER_OPS: Final[frozenset[FilterOp]] = frozenset({"lt", "le", "gt", "ge"})
+"""Ops that compare magnitude."""
+
+
+@lru_cache(maxsize=2 * MAX_LIST_LIMIT)
+def validate_clause(field: str, op: str, value: str) -> str | None:
+    r"""Reject a filter clause no row could make meaningful, else ``None``.
+
+    Every rule decidable from the clause ALONE lives here, so the wire type
+    and the row evaluator enforce one contract rather than a subset each: a
+    structural ``RowFilter`` reaches ``match_filter`` without ever running
+    ``Filter.__post_init__``.
+
+    What needs the column's SQL -- whether the clause lowers, and whether the
+    operand suits the template it lowers to -- is NOT decidable here; that is
+    :func:`row_filter.reject_inadmissible`'s half.
+
+    CACHED, because ``match_filter`` re-asks per ROW while the clause is
+    loop-invariant: a regex clause costs 33us to validate and 4us to answer,
+    so an uncached call makes validation 90% of a filtered page. Bounded
+    (rather than unbounded) because the key is a caller's operand, and sized
+    above the route's per-request filter cap so one request cannot evict its
+    own entries.
+
+    Args:
+      field: The filter field, canonical or a CLI alias.
+      op: A ``FilterOp`` spelling, or anything a structural filter carried.
+      value: The operand.
+
+    Returns:
+      message: Why the clause is refused, or ``None`` when it is admissible.
+
+    """
+    if op not in FILTER_OPS:
+        return f"unknown filter op {op!r}; expected one of {sorted(FILTER_OPS)}"
+    if op in VALUELESS_FILTER_OPS and value:
+        return f"filter op {op!r} takes no value"
+    # Bounds the operand's SIZE, not its cost: compiling the worst 512-char
+    # pattern measures 0.5ms, while MATCHING can be unbounded.
+    if len(value) > MAX_FILTER_VALUE_CHARS:
+        return f"filter value exceeds {MAX_FILTER_VALUE_CHARS} characters"
+    if op in REGEX_OPS:
+        return (
+            # Dialect BEFORE compatibility: a construct one engine implements
+            # and the other does not deserves that diagnosis, not "invalid
+            # regex". ``(?n)a`` is a working Postgres pattern.
+            validate_regex_dialect(value)
+            or _runs_in_postgres(value)
+            or _compilable(value)
+        )
+    return validate_presence_op(canonical_filter_field(field), op)
+
+
+def is_nan(value: str) -> bool:
+    """Whether ``value`` parses as a NaN, whatever its spelling."""
+    parsed = as_numeric(value)
+    return parsed is not None and parsed.is_nan()
+
+
+def as_numeric(value: str) -> Decimal | None:
+    r"""Parse ``value`` as Postgres' ``numeric`` does, or ``None``.
+
+    ``Decimal``, not ``float``, because the SQL casts the operand to
+    ``numeric`` and ``numeric`` keeps every digit: live PG16 says
+    ``1 < '1.00000000000000001'::numeric`` is TRUE where ``float`` rounds the
+    operand to exactly ``1.0`` and answers false. Both engines answer, so
+    nothing downstream catches the disagreement.
+
+    The ACCEPTED set is Postgres', not ``Decimal``'s either. ``float`` and
+    ``Decimal`` both read ``\uff11`` and ``\u0661`` as 1 -- live PG16 raises
+    SQLSTATE 22P02, which no handler maps, so the caller got a 500 -- and both
+    take ``1_``, ``_1`` and ``1__0``, which Postgres rejects. Transcribed from
+    a 14,424-operand scan against a live engine, on which this agrees with
+    ``::numeric`` exactly.
+
+    Args:
+      value: The raw operand.
+
+    Returns:
+      parsed: The value as ``numeric`` reads it, or ``None`` when Postgres
+        would reject it outright.
+
+    """
+    stripped = value.strip()
+    if stripped.lower() in _NUMERIC_NAMES:
+        return Decimal(stripped)
+    if not stripped.isascii() or _NUMERIC_OPERAND.match(stripped) is None:
+        return None
+    return Decimal(stripped.replace("_", ""))
 
 
 def validate_regex_dialect(pattern: str) -> str | None:
-    """Reject regex escapes the two evaluators disagree about, else ``None``.
+    r"""Reject regex escapes the two evaluators disagree about, else ``None``.
 
     Returns a message naming the working spelling. Enforced by
     :meth:`Filter.__post_init__`, so the CLI and the server refuse the same
     patterns: a pattern that reaches an evaluator must mean one thing.
+
+    Scans for escapes rather than substring-searching: ``\\b`` is a literal
+    backslash then ``b`` (no escape at all), and ``[\b]`` is an unambiguous
+    backspace in both engines. Refusing either is refusing a pattern that
+    always agreed.
     """
-    for escape, replacement in POSIX_AMBIGUOUS_ESCAPES:
-        if escape in pattern.replace("\\\\", ""):
+    for escape in escapes(pattern):
+        if escape.in_bracket:
+            continue
+        if (found := _AMBIGUOUS_ESCAPES.get(escape.char)) is not None:
+            postgres_meaning, python_meaning, replacement = found
             return (
-                f"regex escape {escape!r} means different things in Postgres "
-                f"(backspace) and Python (word boundary); use {replacement!r} "
-                "for a word boundary"
+                f"regex escape '\\{escape.char}' is {postgres_meaning} to "
+                f"Postgres and {python_meaning} to Python; use "
+                f"{replacement!r}, which is {python_meaning} in both"
             )
     return None
-
-
-# Every inquiry class, so the derived NOT-NULL set below spans the whole
-# hierarchy: base columns once via ``Inquiry``, per-kind columns via each
-# concrete subclass from the canonical ``KIND_TO_CLASS`` registry (no parallel
-# hand-list -- a new kind registers itself there).
-_INQUIRY_KIND_CLASSES: tuple[type[Inquiry], ...] = (Inquiry, *KIND_TO_CLASS.values())
 
 
 FilterOp = Literal["is", "ne", "re", "nre", "lt", "le", "gt", "ge", "isnull", "notnull"]
@@ -132,7 +287,7 @@ def _derive_non_nullable_columns() -> frozenset[str]:
     is a ``| None`` field on the Inquiry dataclass.
     """
     columns = set(IDENTITY_COLUMNS)
-    for source in _INQUIRY_KIND_CLASSES:
+    for source in INQUIRY_CLASSES:
         for name, flat in flat_column_specs(source).items():
             if flat.spec.required or flat.spec.flatten is not None:
                 columns.add(storage_name(name, flat.spec))
@@ -140,8 +295,9 @@ def _derive_non_nullable_columns() -> frozenset[str]:
 
 
 # Presence ops (``isnull`` / ``notnull``) on a NOT-NULL column are always-empty
-# / always-all -- a silent wrong answer rejected up front by both the CLI and
-# the route via :func:`validate_presence_op`.
+# / always-all -- a silent wrong answer. Refused by :func:`validate_clause`,
+# so every path gets it; naming the CLI and the route individually is what let
+# the store and a direct ``Filter`` run what those two refused.
 NON_NULLABLE_COLUMNS: frozenset[str] = _derive_non_nullable_columns()
 
 
@@ -225,22 +381,233 @@ class Filter:
     value: str
 
     def __post_init__(self) -> None:
-        # Every rule travels with the wire type, so each construction site --
-        # the server decode, the CLI -- enforces the same contract. A check
-        # that lived only in the route would leave the CLI free to build a
-        # filter the server would have refused.
-        #
-        # The cap bounds the operand's SIZE, not its cost: compiling the worst
-        # 512-char pattern measures 0.5ms. Match cost is bounded elsewhere --
-        # by the statement timeout on a regex that lowers into SQL, and by
-        # ``read._reject_unboundable_regex`` for one that would not. Neither
-        # is knowable from the operand, so neither is checked here.
-        if len(self.value) > MAX_FILTER_VALUE_CHARS:
-            raise ValueError(
-                f"filter value exceeds {MAX_FILTER_VALUE_CHARS} characters"
+        if (err := validate_clause(self.field, self.op, self.value)) is not None:
+            raise ValueError(err)
+
+
+def _compilable(pattern: str) -> str | None:
+    r"""Reject a pattern Python cannot compile, in its TRANSLATED form.
+
+    The evaluator compiles ``posix_pattern(value)``, so the TRANSLATED form is
+    what must compile: checking the raw text would refuse a ``\\y`` both
+    engines accept.
+
+    A POSIX bracket construct is refused before that: Postgres implements
+    ``[:class:]`` / ``[.x.]`` / ``[=x=]`` and Python does not, so the two
+    select different rows (live PG16: ``'x9' ~ '[[:digit:]]'`` is true, Python
+    false). It is refused structurally rather than by the ``FutureWarning``
+    Python emits, since CPython serves a cached pattern before parsing and one
+    earlier compile silences that warning for the process.
+    """
+    if has_posix_bracket_construct(pattern):
+        return (
+            f"regex {pattern!r} uses a POSIX bracket construct "
+            "([:class:], [.x.], or [=x=]) that Postgres implements and Python "
+            "does not, so the two evaluators would select different rows"
+        )
+    try:
+        with warnings.catch_warnings():
+            # ``[[]`` is a literal ``[`` class both engines agree on (live
+            # PG16 matches ``'a[b'``, as Python does) and Python only warns
+            # about. The construct that does NOT agree is refused above, so
+            # the warning carries no verdict -- and under this repo's
+            # ``filterwarnings = ["error"]`` it would raise on a valid pattern.
+            warnings.simplefilter("ignore", FutureWarning)
+            re.compile(posix_pattern(pattern))
+    except (re.error, OverflowError) as err:
+        # A huge repetition bound (``a{999999999999,}``) raises OverflowError,
+        # not re.error, so catching only the latter lets a caller typo escape
+        # as a 500 where every other malformed pattern earns a 400.
+        return f"invalid regex {pattern!r}: {err}"
+    return None
+
+
+def _runs_in_postgres(pattern: str) -> str | None:
+    r"""Reject a pattern only one of the two engines can run, else ``None``.
+
+    Postgres runs POSIX ARE and Python does not, and neither dialect contains
+    the other. Whichever way the gap falls the result is the same: one
+    evaluator answers where the other 400s, and the caller cannot tell which
+    ran. Five classes, each measured on live PG16:
+
+    * escapes Python alone has (``\z``);
+    * named groups and backreferences (``(?P<x>...)``, ``(?P=x)``);
+    * ``(?...)`` groups outside the closed set Postgres implements, which
+      covers atomic groups, conditionals, and every scoped ``(?i:...)`` form;
+    * possessive quantifiers (``a*+``), added in Python 3.11;
+    * flags POSTGRES alone has (``(?n)``) -- the one class that runs on the
+      lowered path and cannot be reproduced here, so it is refused for the
+      opposite reason to the rest.
+
+    A sixth lives in :func:`_untranslatable_bracket_member`: ``[\D]`` parses
+    in both and ANSWERS differently, which needs no dialect gap at all.
+
+    The ``(?...)`` rule is a WHITELIST of what Postgres implements, so a
+    construct nobody has met yet is refused rather than admitted. The rest of
+    POSIX's grammar is not enumerable, so the route still maps a Postgres-side
+    failure through ``regex_failures_as_400``.
+    """
+    for found in escapes(pattern):
+        if not found.in_bracket and found.char in _PYTHON_ONLY_ESCAPES:
+            return (
+                f"regex escape '\\{found.char}' is Python-only; Postgres "
+                "rejects it, so the two evaluators would disagree. Use "
+                f"{_PYTHON_ONLY_ESCAPES[found.char]!r} instead"
             )
-        if (
-            self.op in _REGEX_OPS
-            and (dialect_err := validate_regex_dialect(self.value)) is not None
-        ):
-            raise ValueError(dialect_err)
+    if (paren_err := _unsupported_paren_extension(pattern)) is not None:
+        return paren_err
+    if (quantifier := _possessive_quantifier(pattern)) is not None:
+        return (
+            f"regex possessive quantifier {quantifier!r} is Python-only; "
+            "Postgres rejects it as an invalid quantifier operand, so the two "
+            "evaluators would disagree"
+        )
+    if _folds_non_ascii(pattern):
+        return (
+            "regex flag 'i' case-folds non-ASCII text differently in the two "
+            "engines, which both answer rather than error: Python matches "
+            "'i' against U+0130 and Postgres does not (6 of 10 measured pairs "
+            "disagree). Drop '(?i)', or keep the pattern ASCII"
+        )
+    if (member := _untranslatable_bracket_member(pattern)) is not None:
+        return (
+            f"regex shorthand '\\{member}' inside a bracket expression has no "
+            "Python spelling as a class member, and the two engines answer it "
+            f"oppositely (Postgres matches non-ASCII, Python does not). Use "
+            f"'\\{member}' outside the brackets, or spell the members out"
+        )
+    if has_python_named_group(pattern):
+        return (
+            "named groups are Python-only; Postgres rejects '(?P<...>' as an "
+            "invalid embedded option, so the two evaluators would disagree"
+        )
+    return None
+
+
+def _unsupported_paren_extension(pattern: str) -> str | None:
+    r"""Refuse a ``(?...)`` group the two engines do not share, else ``None``.
+
+    Postgres implements a CLOSED set of these, measured on live PG16:
+    ``(?=`` ``(?!`` ``(?:`` ``(?<=`` ``(?<!`` ``(?#`` and an UNSCOPED run of
+    the flag letters ``i s m n x w b e q``. Everything else is an error --
+    ``(?>`` atomic groups, ``(?(`` conditionals, ``(?a)`` / ``(?u)`` / ``(?L)``,
+    and every scoped ``(?i:...)`` form, all of which Python parses happily.
+
+    Checked as that closed set rather than as a blacklist, so an extension
+    nobody has enumerated is refused rather than admitted.
+    """
+    for found in paren_extensions(pattern):
+        if found.body.startswith(("=", "!", "<=", "<!")):
+            continue
+        if found.body == "":
+            # ``(?)`` and ``(?:)``; both engines settle these themselves.
+            continue
+        if not set(found.body) <= _POSTGRES_FLAGS:
+            return (
+                f"regex group '(?{found.body}{':...' if found.scoped else ''})' "
+                "is not a construct Postgres implements, so the two "
+                "evaluators would disagree. Postgres accepts '(?=' '(?!' "
+                "'(?:' '(?<=' '(?<!' '(?#' and the unscoped flags "
+                "'i s m n x w b e q'"
+            )
+        # Checked BEFORE the scoped branch, which would otherwise name a
+        # replacement this same function refuses: ``(?n:a)`` cannot be fixed
+        # by writing ``(?n)``.
+        if unmatched := set(found.body) - _PYTHON_FLAGS:
+            return (
+                f"regex inline flag '{min(unmatched)}' is a valid Postgres "
+                "flag that Python does not implement, so this evaluator "
+                "cannot reproduce what the query would return. Use 'i', 's', "
+                "'m', or 'x', which both engines share"
+            )
+        if found.scoped:
+            return (
+                f"regex group '(?{found.body}:...)' scopes its flags, which "
+                "Postgres rejects as an invalid embedded option whatever the "
+                f"letters. Set them for the whole pattern with '(?{found.body})'"
+            )
+    return None
+
+
+def _untranslatable_bracket_member(pattern: str) -> str | None:
+    """Name an in-bracket shorthand with no Python member spelling, else ``None``."""
+    for escape in escapes(pattern):
+        if escape.in_bracket and escape.char in UNTRANSLATABLE_IN_BRACKET:
+            return escape.char
+    return None
+
+
+def _possessive_quantifier(pattern: str) -> str | None:
+    r"""Name a ``*+`` / ``++`` / ``?+`` / ``{m,n}+`` quantifier, else ``None``.
+
+    Python 3.11 added them; Postgres has never had them and answers "invalid
+    regular expression: quantifier operand invalid" for all four (measured).
+
+    Both characters must be LIVE syntax: an escaped quantifier (``a\*+``),
+    two adjacent class members (``[*+]``), and comment prose (``(?#*+)a``) all
+    run in PG16 and are not possessive anything.
+    """
+    live = live_indices(pattern)
+    for index in range(len(pattern) - 1):
+        if index not in live or index + 1 not in live:
+            continue
+        if pattern[index + 1] != "+":
+            continue
+        if pattern[index] in "*+?" or _closes_repetition(pattern, index, live):
+            return pattern[index : index + 2]
+    return None
+
+
+def _closes_repetition(pattern: str, index: int, live: frozenset[int]) -> bool:
+    """Whether ``pattern[index]`` is the ``}`` ending a ``{m,n}`` repetition.
+
+    A bare ``}`` is an ordinary character in both engines -- live PG16 matches
+    ``'a}}'`` with ``a}+`` and ``'{key}'`` with ``{key}+`` -- so only a real
+    repetition close counts. The body must START with an ASCII digit:
+    Postgres reads ``{,3}`` as literal text and runs ``a{,3}+``, where
+    ``a{2,}+`` is the error. ASCII specifically, since ``str.isdigit()``
+    accepts ``\u0662`` where a repetition bound does not -- live PG16 runs
+    ``a{\u0662,\u0663}+`` as a quantified brace.
+    """
+    if pattern[index] != "}":
+        return False
+    opening = pattern.rfind("{", 0, index)
+    if opening < 0 or opening not in live:
+        return False
+    body = pattern[opening + 1 : index]
+    return (
+        bool(body)
+        and body[0] in _ASCII_DIGITS
+        and all(char in _ASCII_DIGITS or char == "," for char in body)
+    )
+
+
+def _folds_non_ascii(pattern: str) -> bool:
+    """Whether ``pattern`` asks for a case-insensitive non-ASCII match.
+
+    Python's ``(?i)`` folds by Unicode simple case mapping and Postgres folds
+    narrowly, so the two disagree on 6 of 10 measured pairs -- and both ANSWER,
+    which is the class nothing downstream catches. Neither ``re.ASCII`` nor the
+    default reproduces Postgres's fold, so this cannot be translated.
+
+    Gated on the pattern's MATCHABLE characters, not its live ones: a class
+    member is inert to every SYNTAX rule but folds exactly like the bare atom
+    -- live PG16 says ``'s' ~ '(?i)[\u017f]'`` is FALSE where Python matches,
+    identical to ``(?i)\u017f``. Only a comment body is excluded, being prose
+    that never matches: ``(?i)(?#\u00e9)a`` runs in both.
+
+    The other half of the divergence -- an ASCII pattern against a non-ASCII
+    VALUE -- needs the row, and is checked by
+    :func:`row_filter.reject_inadmissible`, which has one.
+    """
+    if not folds_case(pattern):
+        return False
+    return any(not pattern[index].isascii() for index in matchable_indices(pattern))
+
+
+def folds_case(pattern: str) -> bool:
+    """Whether ``pattern`` turns on case-insensitive matching."""
+    return any(
+        "i" in found.body and set(found.body) <= FLAG_LETTERS
+        for found in paren_extensions(pattern)
+    )
