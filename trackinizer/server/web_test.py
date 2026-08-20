@@ -15,6 +15,7 @@ import uuid
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
+import asyncpg
 import pytest
 
 from trackinizer.conftest import FakeEngine, make_conn, new_uuid
@@ -452,6 +453,51 @@ class TestRoutes:
         # SET LOCAL only takes effect inside a transaction, so the search must
         # open one (BEGIN ... COMMIT) around the bounded query.
         assert "BEGIN" in executed, "SET LOCAL requires the query to run in a tx"
+
+    @pytest.mark.asyncio
+    async def test_web_search_reports_an_invalid_pattern_as_400(self) -> None:
+        # Postgres answers an invalid regex with SQLSTATE 2201B
+        # (``InvalidRegularExpressionError``, a ``DataError``) -- NOT the
+        # 42601 ``PostgresSyntaxError`` the phrase "syntax error" suggests.
+        # The two classes are unrelated, so a guard written against the
+        # plausible one never fires and the caller gets a 500.
+        engine = FakeEngine()
+        store = _Store(engine=engine)
+        request = _request(store, engine)
+        # Only the SEARCH query fails. ``tx`` rolls back through ``fetch`` as
+        # well, so a blanket ``side_effect`` would break the cleanup too and
+        # bury the 400 under the rollback's own error.
+        engine.conn.fetch = AsyncMock(
+            side_effect=[
+                asyncpg.InvalidRegularExpressionError(
+                    "invalid regular expression: invalid embedded option"
+                ),
+                [],
+            ]
+        )
+        with pytest.raises(HTTPException) as caught:
+            await web.web_search(
+                cast(Any, request), q="title:(?P<n>a)", identity=_TEST_IDENTITY
+            )
+        assert caught.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_web_search_lets_a_server_fault_through(self) -> None:
+        # A generated-SQL defect is our bug. Relabelling it 400 would hide a
+        # server fault behind a client error.
+        engine = FakeEngine()
+        store = _Store(engine=engine)
+        request = _request(store, engine)
+        engine.conn.fetch = AsyncMock(
+            side_effect=[
+                asyncpg.PostgresSyntaxError('syntax error at or near "FROM"'),
+                [],
+            ]
+        )
+        with pytest.raises(asyncpg.PostgresSyntaxError):
+            await web.web_search(
+                cast(Any, request), q="title:^a", identity=_TEST_IDENTITY
+            )
 
     @pytest.mark.asyncio
     async def test_recent_lookup_and_get_routes(self) -> None:

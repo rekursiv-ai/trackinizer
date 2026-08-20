@@ -462,9 +462,9 @@ class TestRoutes:
     ) -> None:
         # The cap is a typed ``Field(max_length=...)`` on the body, so an
         # oversize list is rejected at validation (422) before the ROUTE BODY
-        # runs. It bounds the lookup, not the read: FastAPI buffers and decodes
-        # the whole request first, so this is not a byte bound (a 4GB body was
-        # measured decoding for 30.77s before its 422).
+        # runs. It bounds the lookup, not the read -- the byte bound is
+        # ``BodyLimitMiddleware`` (see ``body_limit_test``), because FastAPI
+        # buffers and decodes the whole request before this cap is consulted.
         client, _store, _engine = route_client
         big = [str(new_uuid()) for _ in range(1001)]
         r = client.post("/api/inquiries/lookup", json=big)

@@ -17,8 +17,9 @@ from trackinizer.conftest import (
     new_uuid,
     queue_field_rows,
 )
+from trackinizer.server.store import read
 from trackinizer.types.cost import Cost
-from trackinizer.types.errors import NotFoundError
+from trackinizer.types.errors import NotFoundError, ValidationError
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.seq_ranges import SeqRange
@@ -322,6 +323,39 @@ class TestListKindFilterLowering:
         )
 
         assert "LIMIT" not in sql
+
+
+class TestUnboundableRegexRefusal:
+    """A regex is refused by COLUMN, never by evaluation mode.
+
+    Python's backtracking engine has no deadline, so a regex that cannot lower
+    into SQL is refused. What makes it unboundable is the column -- a JSONB
+    payload the SQL renderer declines -- and that fact does not change with
+    ``LOWERING.enabled``. Refusing on the mode instead disabled every regex in
+    the SQL/Python parity suite, which runs each filter both ways and so could
+    no longer compare the two engines' translation at all.
+    """
+
+    @pytest.mark.parametrize("lowering", [True, False])
+    def test_a_json_column_is_refused_in_either_mode(self, lowering: bool) -> None:
+        original = read.LOWERING
+        read.LOWERING = read.Lowering(enabled=lowering)
+        try:
+            with pytest.raises(ValidationError, match="experiment_config"):
+                read._partition_filters(
+                    (Filter(field="experiment_config", op="re", value="x"),), []
+                )
+        finally:
+            read.LOWERING = original
+
+    @pytest.mark.parametrize("lowering", [True, False])
+    def test_a_lowerable_column_is_allowed_in_either_mode(self, lowering: bool) -> None:
+        original = read.LOWERING
+        read.LOWERING = read.Lowering(enabled=lowering)
+        try:
+            read._partition_filters((Filter(field="title", op="re", value="^a"),), [])
+        finally:
+            read.LOWERING = original
 
 
 if __name__ == "__main__":  # pragma: no cover -- entry point only.

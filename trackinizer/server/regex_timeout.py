@@ -1,9 +1,14 @@
 """Statement-timeout bound for queries carrying a caller-supplied regex.
 
 ``MAX_FILTER_VALUE_CHARS`` bounds a pattern's LENGTH, not its run time:
-compiling the worst 512-char pattern measures 0.5ms, while matching
-``(a+)+$`` against 24 characters takes 620ms. Backtracking is a matching
-cost, the match runs inside Postgres, and only a statement timeout bounds it.
+compiling the worst 512-char pattern measures 0.5ms.
+
+This bounds a query carrying caller input generally. It does NOT bound a
+backtracking match: Postgres uses a hybrid NFA/DFA that answers
+``((((a+)+)+)+)+$`` over 2000 characters in 48ms, so the catastrophic case
+this was first written for cannot arise there. The engine that DOES backtrack
+is Python's, on filters that never lower -- and no statement timeout reaches
+it, which is why ``wire.filters`` refuses regex on those columns outright.
 
 This lives beside the store rather than under ``api/`` because the store owns
 the connection the bound must be set on; the matching HTTP status mapping is

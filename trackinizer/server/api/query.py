@@ -45,13 +45,11 @@ from trackinizer.wire.bodies import FieldMutation
 from trackinizer.wire.filters import (
     FILTER_OPS,
     IDENTITY_COLUMNS,
-    MAX_FILTER_VALUE_CHARS,
     VALUELESS_FILTER_OPS,
     Filter,
     FilterOp,
     canonical_filter_field,
     validate_presence_op,
-    validate_regex_dialect,
 )
 from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
@@ -102,9 +100,13 @@ async def lookup_route(
     ``max_length`` is a typed cap on the decoded list's LENGTH: FastAPI
     parses the whole body first, then rejects an oversize list with 422. It
     bounds how many ids a handler will look up, NOT how many bytes the server
-    will read -- a 4GB body is fully buffered and decoded before the 422
-    (measured: 30.77s). A byte bound needs middleware, which does not exist
-    (REV-OPUS-30 recorded the cap; its pre-decode claim was wrong). The response
+    will read -- a 4GB body measured 30.77s of buffering before its 422.
+    There is NO byte bound in this application: counting bytes in an ASGI
+    ``receive`` does not stop a chunked sender (measured against both a
+    hand-rolled middleware and Starlette's own ``max_body_size``: 50MB
+    consumed against a 1MB limit). A real bound belongs to whatever owns the
+    socket -- uvicorn or the reverse proxy. (REV-OPUS-30 recorded this cap;
+    its "pre-decode" claim was wrong.) The response
     is ``{"found": {id: kind}, "missing": [id]}`` so a caller learns which
     ids were unknown rather than having them silently dropped from a flat
     mapping (REV-OPUS-12).
@@ -131,7 +133,9 @@ async def list_inquiries_route(
 ) -> list[MutableJSON]:
     """List inquiries across one or more ``kind`` query params.
 
-    Results from every requested kind are concatenated. ``limit`` and
+    Results from every requested kind are concatenated, one block per
+    DISTINCT kind: a repeated ``kind`` param yields one block, not several.
+    ``limit`` and
     ``offset`` apply per kind, since each kind runs its own query. At
     least one ``kind`` is required. Each ``seq_range`` param is one
     inclusive ``a..b`` interval; their union selects rows across disjoint
@@ -441,29 +445,26 @@ def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
         presence_err := validate_presence_op(canonical, cast(FilterOp, op))
     ) is not None:
         raise HTTPException(status_code=400, detail=presence_err)
-    # Cap the operand's SIZE before doing anything else with it. This does not
-    # bound match cost -- backtracking happens while MATCHING, in Postgres,
-    # which the statement timeout on the query bounds instead.
-    if len(value) > MAX_FILTER_VALUE_CHARS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"filter value exceeds {MAX_FILTER_VALUE_CHARS} characters",
-        )
     if op in ("re", "nre"):
-        if (dialect_err := validate_regex_dialect(value)) is not None:
-            raise HTTPException(status_code=400, detail=dialect_err)
         try:
-            # Validate the pattern the PYTHON evaluator will run, which is the
-            # translated form: ``match_filter`` rewrites POSIX word-boundary
-            # escapes before compiling, so validating the raw text would 400 a
-            # ``\y`` pattern that both evaluators handle correctly.
+            # Validate the pattern the PYTHON evaluator will run -- the
+            # TRANSLATED form. ``match_filter`` rewrites POSIX word-boundary
+            # escapes before compiling, so checking the raw text would 400 a
+            # ``\y`` pattern both evaluators handle correctly.
             #
-            # A pattern valid here can still be invalid to Postgres (``(?P<x>
-            # ...)``, ``\z``), which no Python check can detect. The store's
-            # ``PostgresSyntaxError`` handler turns those into a 400.
+            # A pattern valid here can still be invalid to Postgres
+            # (``(?P<x>...)``, ``\z``), which no Python check can detect; the
+            # route's ``regex_failures_as_400`` reports those.
             re.compile(posix_pattern(value))
         except re.error as err:
             raise HTTPException(
                 status_code=400, detail=f"invalid regex {value!r}: {err}"
             ) from err
-    return Filter(field=canonical, op=cast(FilterOp, op), value=value)
+    try:
+        # Every remaining rule -- the length cap, the ambiguous-escape gate,
+        # and the refusal of regex on a column nothing can bound -- lives on
+        # the wire type, so the CLI cannot construct a filter this route would
+        # have refused. Re-checking them here would be a second copy to drift.
+        return Filter(field=canonical, op=cast(FilterOp, op), value=value)
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from err

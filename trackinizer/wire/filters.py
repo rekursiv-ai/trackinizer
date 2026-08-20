@@ -48,8 +48,10 @@ __all__ = [
 # Upper bound on a filter operand. This bounds the operand's SIZE, not the
 # cost of running it: compiling the worst 512-char pattern measures 0.5ms,
 # while MATCHING ``(a+)+$`` against 24 characters takes 620ms. Backtracking is
-# a matching cost, and the match happens in Postgres, so the guard that
-# actually bounds it is the statement timeout on the query -- not this cap.
+# a matching cost. Where that match runs decides what can bound it: a
+# lowered filter matches in Postgres under the statement timeout, and one
+# that cannot lower is refused outright by the store, because Python's
+# backtracking has no deadline. Neither bound is this cap.
 # 512 chars comfortably fits any real column value or regex (mirrors the
 # message-body caps in ``wire_sessions.py``).
 MAX_FILTER_VALUE_CHARS: Final = 512
@@ -65,13 +67,15 @@ POSIX_AMBIGUOUS_ESCAPES: Final[tuple[tuple[str, str], ...]] = (
     (r"\B", r"\Y"),
 )
 
+_REGEX_OPS: Final[frozenset[str]] = frozenset({"re", "nre"})
+
 
 def validate_regex_dialect(pattern: str) -> str | None:
     """Reject regex escapes the two evaluators disagree about, else ``None``.
 
-    Returns a message naming the working spelling. The check is on the SHARED
-    wire type rather than in the route so the CLI and the server refuse the
-    same patterns; a pattern that reaches the store must mean one thing.
+    Returns a message naming the working spelling. Enforced by
+    :meth:`Filter.__post_init__`, so the CLI and the server refuse the same
+    patterns: a pattern that reaches an evaluator must mean one thing.
     """
     for escape, replacement in POSIX_AMBIGUOUS_ESCAPES:
         if escape in pattern.replace("\\\\", ""):
@@ -221,11 +225,22 @@ class Filter:
     value: str
 
     def __post_init__(self) -> None:
-        # Cap the operand so a pathological ``re`` / ``nre`` pattern cannot
-        # drive catastrophic backtracking in the per-request ``re.compile``.
-        # The cap travels with the wire type, so every construction site (the
-        # server decode, the CLI) enforces it identically.
+        # Every rule travels with the wire type, so each construction site --
+        # the server decode, the CLI -- enforces the same contract. A check
+        # that lived only in the route would leave the CLI free to build a
+        # filter the server would have refused.
+        #
+        # The cap bounds the operand's SIZE, not its cost: compiling the worst
+        # 512-char pattern measures 0.5ms. Match cost is bounded elsewhere --
+        # by the statement timeout on a regex that lowers into SQL, and by
+        # ``read._reject_unboundable_regex`` for one that would not. Neither
+        # is knowable from the operand, so neither is checked here.
         if len(self.value) > MAX_FILTER_VALUE_CHARS:
             raise ValueError(
                 f"filter value exceeds {MAX_FILTER_VALUE_CHARS} characters"
             )
+        if (
+            self.op in _REGEX_OPS
+            and (dialect_err := validate_regex_dialect(self.value)) is not None
+        ):
+            raise ValueError(dialect_err)

@@ -134,7 +134,14 @@ def parse_list_query(
         canonical = canonical_filter_field(field)
         if (err := validate_presence_op(canonical, op)) is not None:
             raise ClientError(err)
-        filters.append(Filter(field=canonical, op=op, value=value))
+        try:
+            filters.append(Filter(field=canonical, op=op, value=value))
+        except ValueError as err_obj:
+            # ``Filter`` validates its own operand (length, regex dialect).
+            # Those refusals describe the user's input, so they must reach the
+            # CLI as the message every other parse failure here produces --
+            # a raw ``ValueError`` would surface as a traceback instead.
+            raise ClientError(str(err_obj)) from err_obj
     return ListQuery(kinds=kinds_tuple, ranges=ranges, filters=tuple(filters))
 
 

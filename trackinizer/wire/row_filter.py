@@ -134,7 +134,11 @@ def _matches_regex(value: object, pattern: str) -> bool:
 # ``\m`` and ``\M`` (start-of-word, end-of-word) have no single Python
 # escape. ``\b`` is a boundary in either direction, which over-matches:
 # ``\mfoo`` should match "foo bar" but not "barfoo", while ``\bfoo`` matches
-# both. The lookarounds below are exact -- verified against a live engine.
+# both. The lookarounds below agree with Postgres on ASCII input, verified
+# against a live engine. They are NOT equivalent on non-ASCII: the class is
+# hardcoded ASCII, so ``\mfoo`` matches "\u00e9foo" in Python where Postgres
+# says false. Filters here are ASCII in practice; the gap is real and
+# untranslated rather than claimed to be absent.
 #
 # Every other construct these filters use -- ``\d`` / ``\w`` / ``\s`` and
 # their negations, ``\A`` / ``\Z``, ``(?i)``, lookahead, bounded repeats --

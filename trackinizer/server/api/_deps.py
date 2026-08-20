@@ -57,10 +57,11 @@ def tag_kind(inquiry: Inquiry | None) -> MutableJSON | None:
     flattens and converts is the whole win.
 
     ``_deps_test`` pins this output against ``jsonable_encoder`` for every
-    kind, building each fixture from ``dataclasses.fields`` so a newly added
-    field is compared without an edit there. An earlier version of that test
-    passed only the base kwargs, which compared nine all-``None`` payloads and
-    proved nothing about the per-kind fields it named.
+    kind, building each fixture from ``dataclasses.fields``. A newly added
+    field of an already-sampled type is compared with no edit there; one of a
+    NEW type fails the fixture loudly, naming the type, rather than being
+    skipped. An earlier version passed only the base kwargs, comparing nine
+    all-``None`` payloads and proving nothing about the fields it named.
     """
     if inquiry is None:
         return None
