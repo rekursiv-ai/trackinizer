@@ -78,8 +78,15 @@ __all__ = [
 MAX_FILTER_VALUE_CHARS: Final = 512
 
 # Escapes Python parses and Postgres refuses outright, mapped to the POSIX
-# spelling that means the same thing in both.
-_PYTHON_ONLY_ESCAPES: Final[Mapping[str, str]] = {"z": r"\Z"}
+# spelling that means the same thing in both. ``\N{NAME}`` names a codepoint
+# in Python and is an "invalid escape \ sequence" to live PG16, which Python
+# then MATCHES -- so the literal character is the spelling that works in
+# both. Every other multi-character escape form agrees (measured: ``\x41``,
+# ``\u0041``, ``\U00000041``, ``\101``, ``\0``).
+_PYTHON_ONLY_ESCAPES: Final[Mapping[str, str]] = {
+    "z": "use '\\Z' instead",
+    "N": "write the character itself instead",
+}
 
 # The flag letters Postgres implements, measured on live PG16. Python's
 # ``a`` / ``u`` / ``L`` are absent, and ``(?a)`` matters most: it would narrow
@@ -92,6 +99,10 @@ _POSTGRES_FLAGS: Final[frozenset[str]] = frozenset("ismnxwbeq")
 # evaluator cannot reproduce it (live PG16 runs ``(?n)a``, Python says
 # "unknown extension ?n").
 _PYTHON_FLAGS: Final[frozenset[str]] = frozenset("ismx")
+
+# The whitespace Postgres' ``numeric`` parser accepts as padding, measured
+# against live PG16: the six ASCII characters and nothing wider.
+_ASCII_WHITESPACE: Final = " \t\n\r\v\f"
 
 # Repetition bounds are ASCII digits, not anything ``str.isdigit()`` accepts.
 _ASCII_DIGITS: Final[frozenset[str]] = frozenset("0123456789")
@@ -216,7 +227,12 @@ def as_numeric(value: str) -> Decimal | None:
         would reject it outright.
 
     """
-    stripped = value.strip()
+    # ``str.strip()`` would also remove U+00A0, U+2003, U+2007 and U+3000,
+    # which Postgres does NOT take as padding: live PG16 answers "invalid
+    # input syntax for type numeric" for each, where the stripped operand
+    # parsed here and compared. Postgres takes exactly the six ASCII
+    # whitespace characters, so the set is spelled rather than inherited.
+    stripped = value.strip(_ASCII_WHITESPACE)
     if stripped.lower() in _NUMERIC_NAMES:
         return Decimal(stripped)
     if not stripped.isascii() or _NUMERIC_OPERAND.match(stripped) is None:
@@ -451,8 +467,8 @@ def _runs_in_postgres(pattern: str) -> str | None:
         if not found.in_bracket and found.char in _PYTHON_ONLY_ESCAPES:
             return (
                 f"regex escape '\\{found.char}' is Python-only; Postgres "
-                "rejects it, so the two evaluators would disagree. Use "
-                f"{_PYTHON_ONLY_ESCAPES[found.char]!r} instead"
+                "rejects it, so the two evaluators would disagree -- "
+                f"{_PYTHON_ONLY_ESCAPES[found.char]}"
             )
     if (paren_err := _unsupported_paren_extension(pattern)) is not None:
         return paren_err
@@ -461,6 +477,13 @@ def _runs_in_postgres(pattern: str) -> str | None:
             f"regex possessive quantifier {quantifier!r} is Python-only; "
             "Postgres rejects it as an invalid quantifier operand, so the two "
             "evaluators would disagree"
+        )
+    if (unterminated := _unterminated_repetition(pattern)) is not None:
+        return (
+            f"regex repetition {unterminated!r} is never closed; Postgres "
+            "rejects it as an invalid regular expression while Python reads "
+            "the brace as a literal and matches, so the two evaluators would "
+            "disagree. Close it with '}' or escape the brace"
         )
     if _folds_non_ascii(pattern):
         return (
@@ -580,6 +603,36 @@ def _closes_repetition(pattern: str, index: int, live: frozenset[int]) -> bool:
         and body[0] in _ASCII_DIGITS
         and all(char in _ASCII_DIGITS or char == "," for char in body)
     )
+
+
+def _unterminated_repetition(pattern: str) -> str | None:
+    r"""Name a ``{`` that opens a repetition and never closes, else ``None``.
+
+    A ``{`` followed by an ASCII digit is a repetition opener to BOTH engines,
+    and live PG16 answers "invalid regular expression" when no ``}`` closes
+    it -- while Python reads the brace as a literal and MATCHES, so the
+    lowered path 400s where this evaluator returns rows.
+
+    The digit is what makes it an opener, exactly as in
+    :func:`_closes_repetition`: live PG16 runs ``a{``, ``a{,`` and ``a{x``,
+    where the brace is ordinary text to both.
+    """
+    live = live_indices(pattern)
+    for index, char in enumerate(pattern):
+        if char != "{" or index not in live:
+            continue
+        body = pattern[index + 1 :]
+        if not body or body[0] not in _ASCII_DIGITS:
+            continue
+        closing = body.find("}")
+        # A closing brace is not enough: the BODY between them must be a bound
+        # Postgres can read. ``.{1{}`` closes and still errors there, while
+        # Python reads the whole thing as literal text and matches.
+        if closing < 0 or not all(
+            char in _ASCII_DIGITS or char == "," for char in body[:closing]
+        ):
+            return pattern[index:]
+    return None
 
 
 def _folds_non_ascii(pattern: str) -> bool:

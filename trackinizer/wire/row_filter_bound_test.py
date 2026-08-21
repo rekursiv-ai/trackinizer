@@ -475,6 +475,44 @@ class TestARegexOnlyOneEngineCanRun:
         with pytest.raises(ValueError, match="not a construct Postgres"):
             Filter(field="title", op="re", value=r"(?L)\w")
 
+    @pytest.mark.parametrize(
+        "pattern", [r"\N{LATIN SMALL LETTER E WITH ACUTE}", r"a\Nb", r"x\N{BULLET}y"]
+    )
+    def test_a_named_character_escape_is_refused(self, pattern: str) -> None:
+        # ``\N{NAME}`` names a codepoint in Python and is an "invalid escape \
+        # sequence" to live PG16 -- so the lowered path 400s while this
+        # evaluator matched the character. Every other multi-character escape
+        # form agrees and stays legal: ``\x41``, ``\u0041``, ``\U00000041``,
+        # ``\101``, ``\0``.
+        with pytest.raises(ValueError, match=r"'\\N' is Python-only"):
+            Filter(field="title", op="re", value=pattern)
+
+    @pytest.mark.parametrize("pattern", ["a{1", ".{1", "a{1,", "a{23", "{1"])
+    def test_an_unterminated_repetition_is_refused(self, pattern: str) -> None:
+        # A ``{`` followed by a DIGIT opens a repetition to both engines, and
+        # live PG16 answers "invalid regular expression" when it never closes.
+        # Python instead reads the brace as a literal and matches, so the
+        # lowered path 400s where this evaluator returns rows.
+        with pytest.raises(ValueError, match="repetition"):
+            Filter(field="title", op="re", value=pattern)
+
+    @pytest.mark.parametrize("pattern", ["a{", "a{,", "a{x", "a{1}", "a{1,2}", "{key}"])
+    def test_a_brace_that_opens_no_repetition_still_constructs(
+        self, pattern: str
+    ) -> None:
+        # Without a digit after it the brace is literal text to BOTH engines --
+        # live PG16 runs every one of these -- so refusing them would remove
+        # capability. ``{1}`` and ``{1,2}`` close properly and are repetitions.
+        assert Filter(field="title", op="re", value=pattern).value == pattern
+
+    @pytest.mark.parametrize(
+        "pattern", [r"\x41", r"\u0041", r"\U00000041", r"\101", r"\0"]
+    )
+    def test_the_other_codepoint_escapes_still_construct(self, pattern: str) -> None:
+        # Live PG16 runs each of these, so refusing them alongside ``\N``
+        # would remove capability for nothing.
+        assert Filter(field="title", op="re", value=pattern).value == pattern
+
     def test_a_named_backreference_is_refused_as_a_dialect_gap(self) -> None:
         # Both engines reject ``(?P=x)`` -- Python "unknown group name",
         # Postgres "invalid embedded option". Named groups are the more
@@ -817,7 +855,22 @@ class TestAnOperandTheTemplateCannotTake:
             match_filter({"seq": 5}, _BareFilter(field="seq", op="lt", value=value))
 
     @pytest.mark.parametrize(
-        "value", ["  5  ", "+5", ".5", "5.", "1e5", "1E+5", "1_000", "12_345.6_7"]
+        "value",
+        [
+            "  5  ",
+            "+5",
+            ".5",
+            "5.",
+            "1e5",
+            "1E+5",
+            "1_000",
+            "12_345.6_7",
+            # Live PG16 takes every ASCII whitespace character as padding:
+            # tab, newline, carriage return, vertical tab, form feed, space.
+            "\t5\n",
+            "\x0b5\x0c",
+            "\r5",
+        ],
     )
     def test_an_operand_postgres_does_parse_is_allowed(self, value: str) -> None:
         # Each is valid ``numeric`` to live PG16 -- including the interior
@@ -827,6 +880,18 @@ class TestAnOperandTheTemplateCannotTake:
             match_filter({"seq": 5}, _BareFilter(field="seq", op="lt", value=value)),
             bool,
         )
+
+    @pytest.mark.parametrize(
+        "value", ["\u00a05", "5\u00a0", "\u20075", "\u20035", "\u30005"]
+    )
+    def test_unicode_padding_is_refused(self, value: str) -> None:
+        # ``str.strip()`` removes these four alongside the six ASCII ones, so
+        # the operand reached ``Decimal`` looking clean. Live PG16 takes only
+        # the ASCII set and answers "invalid input syntax for type numeric"
+        # (SQLSTATE 22P02) for every one below, where Python read a number and
+        # compared it.
+        with pytest.raises(ValidationError, match="not a number"):
+            match_filter({"seq": 5}, _BareFilter(field="seq", op="lt", value=value))
 
     @pytest.mark.parametrize("value", ["nan", "abc"])
     def test_a_timestamp_column_takes_any_text(self, value: str) -> None:
