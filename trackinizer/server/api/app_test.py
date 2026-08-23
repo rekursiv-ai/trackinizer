@@ -10,6 +10,8 @@ import asyncio
 import json
 import logging
 
+from fastapi import FastAPI
+
 import asyncpg
 
 from trackinizer.conftest import make_store
@@ -40,7 +42,6 @@ from trackinizer.types.errors import (
 
 
 if TYPE_CHECKING:
-    from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
     import pytest
@@ -219,7 +220,7 @@ class TestAuthDisabledWarning:
         monkeypatch.setattr(app_module, "build_embedder", Mock(return_value=object()))
         monkeypatch.setattr(app_module, "Store", Mock(return_value=store))
         monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
-        app = cast("FastAPI", Mock())
+        app = cast(FastAPI, Mock())
         app.state = Mock()
         app.state.config = Config(auth_disabled=auth_disabled)
 
@@ -258,7 +259,7 @@ class TestAuthDisabledWarning:
         monkeypatch.setattr(app_module, "build_embedder", Mock(return_value=object()))
         monkeypatch.setattr(app_module, "Store", Mock(return_value=store))
         monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
-        app = cast("FastAPI", Mock())
+        app = cast(FastAPI, Mock())
         app.state = Mock()
         app.state.config = Config(auth_disabled=auth_disabled)
 

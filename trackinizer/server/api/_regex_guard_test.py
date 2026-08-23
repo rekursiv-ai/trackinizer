@@ -15,7 +15,6 @@ real engine.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from pathlib import Path
 
 from fastapi import HTTPException
 
@@ -24,6 +23,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.postgres import PGliteEngine
+from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.store.core import Store, StubEmbedder
 from trackinizer.types.errors import ValidationError
@@ -82,19 +82,17 @@ class TestRegexFailuresAs400:
             raise ValueError("unrelated")
 
 
-@pytest_asyncio.fixture
-async def store(tmp_path: Path) -> AsyncIterator[Store]:
-    """A bootstrapped Store over an ephemeral in-process PGlite engine."""
-    async with PGliteEngine(
-        workdir=tmp_path / "pglite", persist=False, extensions=("pgvector",)
-    ) as engine:
-        store = Store(engine, embed=StubEmbedder())
-        await store.bootstrap()
-        yield store
+@pytest_asyncio.fixture(loop_scope="session")
+async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
+    """A bootstrapped Store over the session's shared PGlite engine."""
+    await reset_schema(pglite_engine)
+    store = Store(pglite_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    yield store
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize("pattern", ["[a-b-c]", "(?=a)*", r"[\1]"])
 async def test_real_engine_rejection_is_a_400(store: Store, pattern: str) -> None:
     r"""A pattern Python accepts and Postgres does not must reach the caller as 400.
@@ -119,7 +117,7 @@ async def test_real_engine_rejection_is_a_400(store: Store, pattern: str) -> Non
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_an_out_of_range_order_operand_is_refused_before_the_engine(
     store: Store,
 ) -> None:
@@ -145,6 +143,6 @@ async def test_an_out_of_range_order_operand_is_refused_before_the_engine(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing import test_main
+    from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

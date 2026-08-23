@@ -84,7 +84,9 @@ __all__ = [
 ]
 
 
-VALID_KINDS: tuple[Inquiry.InquiryKind, ...] = get_args(Inquiry.InquiryKind.__value__)
+VALID_KINDS: tuple[Inquiry.InquiryKind, ...] = cast(
+    tuple[Inquiry.InquiryKind, ...], get_args(Inquiry.InquiryKind.__value__)
+)
 KIND_LOWER: Mapping[str, Inquiry.InquiryKind] = {k.lower(): k for k in VALID_KINDS}
 
 
@@ -377,7 +379,9 @@ EDGE_ALIASES: Mapping[str, Edge] = {
     "cites": Edge(name="cites_paper"),
     "cited_by": Edge(name="cites_paper", reverse=True),
 }
-ISSUE_KINDS: tuple[Issue.Kind, ...] = get_args(Issue.Kind.__value__)
+ISSUE_KINDS: tuple[Issue.Kind, ...] = cast(
+    tuple[Issue.Kind, ...], get_args(Issue.Kind.__value__)
+)
 PRIORITY_ALIASES: Final[Mapping[str, int]] = {
     "critical": 0,
     "high": 10,

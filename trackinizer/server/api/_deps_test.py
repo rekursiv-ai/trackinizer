@@ -136,7 +136,7 @@ def _populated[T: Inquiry](subclass: type[T]) -> T:
     hints = typing.get_type_hints(subclass, _INQUIRIES_NS)
     return subclass(
         **cast(
-            "dict[str, Any]",
+            dict[str, Any],
             {
                 field.name: _sample(hints[field.name])
                 for field in dataclasses.fields(subclass)
@@ -277,6 +277,6 @@ class TestTagKind:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing import test_main
+    from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

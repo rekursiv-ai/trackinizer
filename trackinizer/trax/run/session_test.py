@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, cast, override
 
 import json
-import logging
 import os
 import threading
 import time
@@ -128,7 +127,7 @@ class _WholeFileAdapter:
 
     def parse(self, raw: bytes, *, whole_file: bool) -> Iterable[Event]:
         assert whole_file
-        obj = cast("dict[str, list[str]]", json.loads(raw))
+        obj = cast(dict[str, list[str]], json.loads(raw))
         messages = obj.get("messages") or []
         if not messages:
             return ()
@@ -225,7 +224,9 @@ class TestSessionScoping:
         past = time.time() - 60
         os.utime(others, (past, past))
         spawn_time = time.time()
-        baseline: frozenset[Path] = frozenset()  # B's snapshot missed run A's file
+        baseline: frozenset[Path] = frozenset[
+            Path
+        ]()  # B's snapshot missed run A's file
 
         sink = _RecordingSink()
         stats = _Stats()
@@ -267,6 +268,47 @@ class TestSessionScoping:
         assert stats.counts == {"UserMessage": 3}
 
 
+class TestAppendedLineDrain:
+    def test_rotation_discards_the_previous_files_partial_line(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A truncated file starts a new byte stream with an empty buffer."""
+        log = tmp_path / "session.jsonl"
+        log.write_bytes(b"stale-partial")
+        adapter = _PoisonAdapter(tmp_path)
+        sink = _RecordingSink()
+        stats = _Stats()
+        config = RunConfig(cli_name="fake")
+        offsets: dict[Path, int] = {}
+        buffers: dict[Path, bytearray] = {}
+
+        _scan_and_read(
+            adapter,
+            sink,
+            stats,
+            config,
+            offsets,
+            buffers=buffers,
+            baseline=frozenset(),
+        )
+        assert sink.events == []
+
+        log.write_bytes(b"fresh\n")
+        _scan_and_read(
+            adapter,
+            sink,
+            stats,
+            config,
+            offsets,
+            buffers=buffers,
+            baseline=frozenset(),
+        )
+
+        texts = [cast(UserMessage, event.message).text for _, _, event in sink.events]
+        assert texts == ["fresh"]
+
+
 class TestWholeFileDrain:
     """A whole-file adapter (gemini) must receive the entire file, re-read."""
 
@@ -281,7 +323,7 @@ class TestWholeFileDrain:
         # The byte-offset drain would feed a partial slice and emit nothing;
         # a whole-file drain hands the full body over and emits one event.
         assert stats.counts == {"UserMessage": 1}
-        texts = [cast("UserMessage", e.message).text for _, _, e in sink.events]
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
         assert texts == ["hello"]
 
     def test_same_size_rewrite_emits_event(self, tmp_path: Path) -> None:
@@ -313,7 +355,7 @@ class TestWholeFileDrain:
             baseline=frozenset(),
             stamps=stamps,
         )
-        assert [cast("UserMessage", e.message).text for _, _, e in sink.events] == ["a"]
+        assert [cast(UserMessage, e.message).text for _, _, e in sink.events] == ["a"]
 
         # Same byte length, different content; bump mtime so a time-based
         # detector sees the change even on a coarse-grained filesystem clock.
@@ -332,7 +374,7 @@ class TestWholeFileDrain:
             baseline=frozenset(),
             stamps=stamps,
         )
-        assert [cast("UserMessage", e.message).text for _, _, e in sink.events] == [
+        assert [cast(UserMessage, e.message).text for _, _, e in sink.events] == [
             "a",
             "b",
         ]
@@ -386,7 +428,7 @@ class TestGeminiMultiFileDrain:
             stamps=stamps,
         )
 
-        texts = sorted(cast("UserMessage", e.message).text for _, _, e in sink.events)
+        texts = sorted(cast(UserMessage, e.message).text for _, _, e in sink.events)
         # All four turns from both files, none dropped by a shared cursor.
         assert texts == ["a-q", "a-r", "b-q", "b-r"]
 
@@ -403,12 +445,12 @@ class TestDrainSurvivesParseError:
         stats, sink = _scan_once(adapter, frozenset())
 
         # The poison line raised but was swallowed; the good lines emitted.
-        texts = [cast("UserMessage", e.message).text for _, _, e in sink.events]
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
         assert texts == ["alpha", "omega"]
         assert stats.counts == {"UserMessage": 2}
 
     def test_parse_failure_logs_with_traceback(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The swallowed parse error must log a traceback, not an opaque line.
 
@@ -418,19 +460,25 @@ class TestDrainSurvivesParseError:
         """
         adapter = _PoisonAdapter(tmp_path)
         sink = _RecordingSink()
-        with caplog.at_level(logging.WARNING):
-            _process_chunk(
-                b"boom",
-                cast(Adapter, adapter),
-                sink,
-                _Stats(),
-                RunConfig(cli_name="poison"),
-                whole_file=False,
-            )
-        records = [r for r in caplog.records if "failed to parse" in r.getMessage()]
-        assert len(records) == 1
-        # The record carries the traceback (exc_info), not just a flat message.
-        assert records[0].exc_info is not None
+        calls: list[tuple[str, tuple[object, ...], bool]] = []
+
+        def record_warning(message: str, *args: object, exc_info: bool = False) -> None:
+            calls.append((message, args, exc_info))
+
+        monkeypatch.setattr(session_mod._logger, "warning", record_warning)
+
+        _process_chunk(
+            b"boom",
+            cast(Adapter, adapter),
+            sink,
+            _Stats(),
+            RunConfig(cli_name="poison"),
+            whole_file=False,
+        )
+
+        assert calls == [
+            ("trax run: %s adapter failed to parse a chunk", ("poison",), True)
+        ]
 
 
 class _FlakyFlushSink(_RecordingSink):
@@ -465,7 +513,17 @@ class TestDrainLoopSurvivesTransientError:
         sink = _FlakyFlushSink(fail_times=1)
         stats = _Stats()
         config = RunConfig(cli_name="fake")
-        stop = threading.Event()
+
+        class _FastPollingStop(threading.Event):
+            """Preserve poll boundaries without paying the production interval."""
+
+            @override
+            def wait(self, timeout: float | None = None) -> bool:
+                return super().wait(
+                    None if timeout is None else min(timeout, 0.001),
+                )
+
+        stop = _FastPollingStop()
         slash_queue: deque[tuple[SlashCommand, datetime]] = deque()
 
         log = tmp_path / "session.jsonl"
@@ -499,7 +557,7 @@ class TestDrainLoopSurvivesTransientError:
         worker.join(timeout=5.0)
 
         assert not worker.is_alive(), "drain thread died on the transient flush error"
-        texts = [cast("UserMessage", e.message).text for _, _, e in sink.events]
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
         assert texts == ["alpha", "omega"], (
             "a transient flush error stopped capture instead of continuing"
         )
@@ -630,28 +688,16 @@ class TestDryRunDrain:
         sink = _RecordingSink()
         stats = _Stats()
         stop = threading.Event()
-        rc: list[int] = []
-
-        def _run() -> None:
-            rc.append(
-                session_mod._dry_run_drain(
-                    RunConfig(cli_name="wholefile"),
-                    cast(Adapter, adapter),
-                    sink,
-                    stats,
-                    stop=stop,
-                )
-            )
-
-        worker = threading.Thread(target=_run, daemon=True)
-        worker.start()
-        # Let at least one poll happen, then stop; a final sweep still runs.
-        time.sleep(0.3)
         stop.set()
-        worker.join(timeout=5.0)
-        assert not worker.is_alive(), "dry-run loop did not stop"
-        assert rc == [0]
-        texts = [cast("UserMessage", e.message).text for _, _, e in sink.events]
+        rc = session_mod._dry_run_drain(
+            RunConfig(cli_name="wholefile"),
+            cast(Adapter, adapter),
+            sink,
+            stats,
+            stop=stop,
+        )
+        assert rc == 0
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
         assert texts == ["replayed"]
 
     def test_returns_when_stopped(self, tmp_path: Path) -> None:
@@ -669,12 +715,8 @@ class TestDryRunDrain:
         assert rc == 0
 
 
-class _ClosingClient:
-    """A stand-in client that records whether ``close`` was called.
-
-    Only the surface ``run`` touches on the no-network dry-run path: ``close``.
-    The run owns this client, so it must be closed when the run finishes.
-    """
+class _BorrowedClient:
+    """A shared client whose lifetime is owned outside one ``trax run``."""
 
     def __init__(self) -> None:
         self.close_calls = 0
@@ -683,33 +725,31 @@ class _ClosingClient:
         self.close_calls += 1
 
 
-class TestRunClosesClient:
-    """A sync ``trax run`` must close the client it owns (TRAX-REV-002)."""
+class TestRunPreservesClient:
+    """A ``trax run`` must not close the daemon's shared client."""
 
-    def test_run_closes_config_client(self) -> None:
-        """The ``httpx.Client`` opened for a run is closed when the run ends.
+    def test_run_leaves_config_client_open(self) -> None:
+        """The CLI cache, not one run, owns the supplied transport.
 
-        The sink flushes and ends the session but never owns the transport, so
-        without an explicit close in ``run``'s finally the client (and its
-        pooled sockets) leaked. Driven on the dry-run path so no CLI spawns and
-        no network is touched -- the close is the only thing under test.
+        The daemon reuses this client across requests. Closing it here leaves
+        the closed instance cached, so the next invocation cannot send.
         """
-        client = _ClosingClient()
-        config = RunConfig(cli_name="codex", dry_run=True, client=cast("Any", client))
+        client = _BorrowedClient()
+        config = RunConfig(cli_name="codex", dry_run=True, client=cast(Any, client))
 
         # Stub the drain so no session files are scanned and the run returns at
-        # once; the close in ``run``'s finally is the only thing under test.
+        # once; the client ownership boundary is the only thing under test.
         def _fake_dry_run(*_a: object, **_k: object) -> int:
             return 0
 
         original = session_mod._dry_run_drain
-        session_mod._dry_run_drain = cast("Any", _fake_dry_run)
+        session_mod._dry_run_drain = cast(Any, _fake_dry_run)
         try:
             rc = run(config)
         finally:
             session_mod._dry_run_drain = original
         assert rc == 0
-        assert client.close_calls == 1, "run() must close the client it owns"
+        assert client.close_calls == 0
 
 
 class TestRenderInbound:

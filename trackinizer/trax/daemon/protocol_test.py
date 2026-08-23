@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import json
+import os
 import socket
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -19,10 +22,27 @@ from trackinizer.trax.daemon.protocol import (
     Response,
     package_root,
     read_frame,
+    socket_address,
     socket_path,
     source_version,
     write_frame,
 )
+
+
+class _FragmentedSocket:
+    """Socket-shaped reader that deterministically limits every ``recv``."""
+
+    def __init__(self, framed: bytes, *, chunk_size: int) -> None:
+        self._framed = framed
+        self._chunk_size = chunk_size
+        self.read_calls = 0
+
+    def recv(self, size: int) -> bytes:
+        self.read_calls += 1
+        take = min(size, self._chunk_size, len(self._framed))
+        chunk = self._framed[:take]
+        self._framed = self._framed[take:]
+        return chunk
 
 
 class TestFraming:
@@ -64,14 +84,13 @@ class TestFraming:
         table with no error.
         """
         payload = Response(stdout="x" * 200_000, stderr="", exit_code=0).to_json()
-        left, right = socket.socketpair()
-        try:
-            write_frame(left, payload)
-            left.shutdown(socket.SHUT_WR)
-            assert Response.from_json(read_frame(right)).stdout == "x" * 200_000
-        finally:
-            left.close()
-            right.close()
+        framed = len(payload).to_bytes(4, "big") + payload
+        fragmented = _FragmentedSocket(framed, chunk_size=31)
+
+        result = read_frame(cast(socket.socket, fragmented))
+
+        assert Response.from_json(result).stdout == "x" * 200_000
+        assert fragmented.read_calls > 2
 
     def test_raises_on_truncated_frame(self) -> None:
         """A peer that dies mid-frame must raise, not yield a short read."""
@@ -141,8 +160,11 @@ class TestResponsePayload:
 
 
 class TestSocketPath:
-    def test_lives_under_the_user_state_dir(self) -> None:
+    def test_lives_under_the_user_state_dir(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The socket is per-user session state, not scratch or config."""
+        monkeypatch.setenv("XDG_STATE_HOME", "/s")
         path = socket_path()
         assert "rekursiv-ai" in path.parts
         assert "traxd" in path.parts
@@ -150,13 +172,16 @@ class TestSocketPath:
     def test_is_stable_across_calls(self) -> None:
         assert socket_path() == socket_path()
 
-    def test_resolves_through_the_shared_userdirs_helper(self) -> None:
+    def test_resolves_through_the_shared_userdirs_helper(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Re-deriving the XDG layout gets the wrong answer off Linux.
 
         ``state_dir`` resolves under ``Library/Application Support`` on macOS
         and ``LOCALAPPDATA`` on Windows; a hand-rolled ``~/.local/state``
         silently puts the socket somewhere else on those platforms.
         """
+        monkeypatch.setenv("XDG_STATE_HOME", "/s")
         assert socket_path().parent == state_dir() / "rekursiv-ai" / "traxd"
 
     def test_differs_when_the_config_directory_differs(
@@ -174,6 +199,56 @@ class TestSocketPath:
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "two"))
 
         assert socket_path() != first
+
+    def test_a_long_state_directory_still_produces_a_bindable_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """AF_UNIX limits the encoded address even when the filesystem does not."""
+        state_root = tmp_path / ("long-state-segment-" * 12)
+        logical_parent = state_root / "rekursiv-ai" / "traxd"
+        logical_parent.mkdir(parents=True)
+        monkeypatch.setenv("XDG_STATE_HOME", str(state_root))
+        path = socket_path()
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+        try:
+            listener.bind(str(path))
+        finally:
+            listener.close()
+            path.unlink(missing_ok=True)
+
+        assert path.resolve().parent == logical_parent.resolve()
+
+    def test_a_long_relative_override_targets_the_callers_directory(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A relative override must not become relative to the alias directory."""
+        monkeypatch.chdir(tmp_path)
+        logical_path = Path("long-relative-segment-" * 8) / "traxd.sock"
+        logical_path.parent.mkdir()
+        path = socket_address(logical_path)
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+        try:
+            listener.bind(str(path))
+        finally:
+            listener.close()
+            path.unlink(missing_ok=True)
+
+        assert path.resolve().parent == logical_path.parent.resolve()
+
+    def test_rejects_a_runtime_root_with_group_access(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A shared alias root would let another local user replace the socket."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(tempfile, "tempdir", "runtime")
+        alias_root = Path(tempfile.gettempdir()) / f"t-{os.getuid():x}"
+        alias_root.mkdir(parents=True)
+        alias_root.chmod(0o750)
+
+        with pytest.raises(PermissionError, match="unsafe traxd socket alias root"):
+            socket_address(Path("long-logical-segment-" * 8) / "traxd.sock")
 
 
 class TestSourceVersionCoverage:

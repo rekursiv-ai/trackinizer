@@ -109,7 +109,7 @@ class Config:
             or None,
             oauth_redirect_uri=os.environ.get("TRACKINIZER_OAUTH_REDIRECT_URI") or None,
             session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET") or None,
-            session_max_age_seconds=_session_max_age_from_env(),
+            session_max_age_seconds=session_max_age_from_env(),
             auth_disabled=os.environ.get("TRACKINIZER_NO_AUTH") == "1",
         )
 
@@ -137,13 +137,18 @@ class Config:
         )
 
 
-def _session_max_age_from_env() -> int:
+def session_max_age_from_env() -> int:
     """Read ``TRACKINIZER_SESSION_MAX_AGE_SECONDS``; reject a non-positive int.
 
     A missing or blank value falls back to the 30-day default. A value that
     isn't a positive integer is an operator typo, not a silent degrade, so
-    it raises ``SystemExit`` rather than fall back -- a zero/negative TTL
-    would expire every session instantly.
+    it raises rather than fall back -- a zero/negative TTL would expire every
+    session instantly.
+
+    Raises:
+        ConfigError: The value is set but is not a positive integer. Callers
+            in a CLI translate this to a clean process exit.
+
     """
     raw = os.environ.get("TRACKINIZER_SESSION_MAX_AGE_SECONDS", "").strip()
     if not raw:
@@ -250,7 +255,7 @@ def build_engine(config: Config | None = None) -> DatabaseEngine:
         # an ephemeral server gets a unique, engine-owned scratch workdir so
         # concurrent ``--ephemeral`` boots never share one (which corrupts
         # startup); only a persistent server falls back to the single shared
-        # the shared persistent datadir.
+        # persistent datadir.
         ephemeral_workdir = config.ephemeral and config.datadir is None
         if config.datadir is not None:
             workdir = config.datadir

@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlparse
 import json
 import uuid
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 import asyncpg
@@ -407,13 +407,15 @@ class TestRoutes:
         store = _Store(engine=engine)
         request = _request(store, engine)
         assert (
-            await web.web_search(cast(Any, request), q="   ", identity=_TEST_IDENTITY)
+            await web.web_search(
+                cast(Request, request), q="   ", identity=_TEST_IDENTITY
+            )
             == []
         )
 
         engine.conn.fetch = AsyncMock(return_value=[_inquiry_row()])
         rows = await web.web_search(
-            cast(Any, request),
+            cast(Request, request),
             q="hello",
             identity=_TEST_IDENTITY,
             kind="Issue",
@@ -438,7 +440,7 @@ class TestRoutes:
         request = _request(store, engine)
         engine.conn.fetch = AsyncMock(return_value=[_inquiry_row()])
         await web.web_search(
-            cast(Any, request),
+            cast(Request, request),
             q="title:^(a+)+$",
             identity=_TEST_IDENTITY,
         )
@@ -477,7 +479,7 @@ class TestRoutes:
         )
         with pytest.raises(HTTPException) as caught:
             await web.web_search(
-                cast(Any, request), q="title:(?P<n>a)", identity=_TEST_IDENTITY
+                cast(Request, request), q="title:(?P<n>a)", identity=_TEST_IDENTITY
             )
         assert caught.value.status_code == 400
 
@@ -496,7 +498,7 @@ class TestRoutes:
         )
         with pytest.raises(asyncpg.PostgresSyntaxError):
             await web.web_search(
-                cast(Any, request), q="title:^a", identity=_TEST_IDENTITY
+                cast(Request, request), q="title:^a", identity=_TEST_IDENTITY
             )
 
     @pytest.mark.asyncio
@@ -509,7 +511,7 @@ class TestRoutes:
             return_value=[_change_row(principal="api@example.com")]
         )
         recent = await web.web_recent_changes(
-            cast(Any, request), identity=_TEST_IDENTITY, limit=1
+            cast(Request, request), identity=_TEST_IDENTITY, limit=1
         )
         assert recent[0]["actor"] == "alice"
         assert recent[0]["principal"] == "api@example.com"
@@ -517,19 +519,21 @@ class TestRoutes:
 
         engine.conn.fetchval = AsyncMock(return_value="Issue")
         assert await web.web_lookup(
-            target_id, cast(Any, request), identity=_TEST_IDENTITY
+            target_id, cast(Request, request), identity=_TEST_IDENTITY
         ) == {
             "kind": "Issue",
             "id": str(target_id),
         }
         engine.conn.fetchval = AsyncMock(return_value=None)
         with pytest.raises(HTTPException):
-            await web.web_lookup(target_id, cast(Any, request), identity=_TEST_IDENTITY)
+            await web.web_lookup(
+                target_id, cast(Request, request), identity=_TEST_IDENTITY
+            )
 
         engine.conn.fetchrow = AsyncMock(return_value=_inquiry_row(id=target_id))
         engine.conn.fetch = AsyncMock(side_effect=[[], [], [_change_row()]])
         detail = await web.web_get(
-            target_id, cast(Any, request), identity=_TEST_IDENTITY
+            target_id, cast(Request, request), identity=_TEST_IDENTITY
         )
         assert cast(dict[str, object], detail["self"])["id"] == str(target_id)
         assert detail["edges"] == {}
@@ -537,7 +541,9 @@ class TestRoutes:
         assert len(cast(list[object], detail["changes"])) == 1
         engine.conn.fetchrow = AsyncMock(return_value=None)
         with pytest.raises(HTTPException):
-            await web.web_get(target_id, cast(Any, request), identity=_TEST_IDENTITY)
+            await web.web_get(
+                target_id, cast(Request, request), identity=_TEST_IDENTITY
+            )
 
     @pytest.mark.asyncio
     async def test_web_graph_returns_nodes_and_edges(self) -> None:
@@ -588,7 +594,7 @@ class TestRoutes:
         )
         # limit=0 is the unbounded whole-graph path (two fetches: nodes, edges).
         graph = await web.web_graph(
-            cast(Any, request), identity=_TEST_IDENTITY, limit=0
+            cast(Request, request), identity=_TEST_IDENTITY, limit=0
         )
         nodes = cast(list[dict[str, object]], graph["nodes"])
         edges = cast(list[dict[str, object]], graph["edges"])
@@ -642,7 +648,7 @@ class TestRoutes:
             ]
         )
         graph = await web.web_graph(
-            cast(Any, request), identity=_TEST_IDENTITY, limit=0
+            cast(Request, request), identity=_TEST_IDENTITY, limit=0
         )
         assert cast(list[dict[str, object]], graph["edges"]) == [
             {"from_id": str(a), "to_id": str(b), "edge_kind": "narrows"}
@@ -698,7 +704,7 @@ class TestRoutes:
             ]
         )
         graph = await web.web_graph(
-            cast(Any, request), identity=_TEST_IDENTITY, limit=1
+            cast(Request, request), identity=_TEST_IDENTITY, limit=1
         )
         nodes = cast(list[dict[str, object]], graph["nodes"])
         # The older referenced Paper is pulled in alongside the recent Belief.
@@ -719,7 +725,7 @@ class TestRoutes:
         for bad in (-1, 99_999):
             with pytest.raises(HTTPException):
                 await web.web_graph(
-                    cast(Any, request), identity=_TEST_IDENTITY, limit=bad
+                    cast(Request, request), identity=_TEST_IDENTITY, limit=bad
                 )
 
     @pytest.mark.asyncio
@@ -728,7 +734,9 @@ class TestRoutes:
         subject_id = new_uuid()
         engine.listen_messages = [json.dumps({"id": str(subject_id)})]
         request = _request(object(), engine)
-        response = await web.web_subscribe(cast(Any, request), identity=_TEST_IDENTITY)
+        response = await web.web_subscribe(
+            cast(Request, request), identity=_TEST_IDENTITY
+        )
         chunks: list[bytes] = []
         async for chunk in response.body_iterator:
             assert isinstance(chunk, bytes)
@@ -802,7 +810,9 @@ class TestRoutes:
             json.dumps({"id": str(good_id)}),
         ]
         request = _request(object(), engine)
-        response = await web.web_subscribe(cast(Any, request), identity=_TEST_IDENTITY)
+        response = await web.web_subscribe(
+            cast(Request, request), identity=_TEST_IDENTITY
+        )
         chunks = [chunk async for chunk in response.body_iterator]
         # Only the well-formed payload survives.
         assert chunks == [f'data: {{"id": "{good_id}"}}\n\n'.encode()]
@@ -835,7 +845,7 @@ class TestFeedRoute:
         store = AsyncMock()
         store.read_feed = AsyncMock(return_value=events)
         request = _request(store, FakeEngine())
-        resp = await web.web_feed(cast(Any, request), identity=_TEST_IDENTITY)
+        resp = await web.web_feed(cast(Request, request), identity=_TEST_IDENTITY)
         # next_after is the full composite key of the newest event, so a same-
         # ``created`` tie split across the page boundary is not skipped.
         assert resp.next_after is not None
@@ -852,7 +862,7 @@ class TestFeedRoute:
         store.read_feed = AsyncMock(return_value=[])
         request = _request(store, FakeEngine())
         resp = await web.web_feed(
-            cast(Any, request),
+            cast(Request, request),
             identity=_TEST_IDENTITY,
             after_created=created,
             after_session=session_id,
@@ -870,7 +880,7 @@ class TestFeedRoute:
         store = AsyncMock()
         store.read_feed = AsyncMock(return_value=[])
         request = _request(store, FakeEngine())
-        resp = await web.web_feed(cast(Any, request), identity=_TEST_IDENTITY)
+        resp = await web.web_feed(cast(Request, request), identity=_TEST_IDENTITY)
         assert resp.next_after is None
         assert resp.events == []
 
@@ -881,7 +891,7 @@ class TestFeedRoute:
         # All three cursor parts must be given together.
         with pytest.raises(HTTPException):
             await web.web_feed(
-                cast(Any, request),
+                cast(Request, request),
                 identity=_TEST_IDENTITY,
                 after_created=datetime(2026, 6, 1, tzinfo=UTC),
             )
@@ -893,7 +903,7 @@ class TestFeedRoute:
         for bad in (0, 5000):
             with pytest.raises(HTTPException):
                 await web.web_feed(
-                    cast(Any, request), identity=_TEST_IDENTITY, limit=bad
+                    cast(Request, request), identity=_TEST_IDENTITY, limit=bad
                 )
 
 

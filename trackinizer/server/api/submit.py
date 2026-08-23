@@ -43,7 +43,7 @@ router = APIRouter()
 
 # Each body class keyed by its PascalCase kind discriminator.
 _BODY_BY_KIND: dict[str, type[SubmitBase]] = {
-    cast(str, body.model_fields["kind"].default): body
+    str(body.model_fields["kind"].default): body
     for body in (
         SubmitIssue,
         SubmitArtifact,
@@ -89,7 +89,7 @@ async def submit_batch_route(
         item.model_copy(update={"account": _resolve_account(item, identity)})
         for item in req.items
     ]
-    for account in {cast(str, item.account) for item in items}:
+    for account in {str(item.account) for item in items}:
         await assert_account_active(store.engine, account)
     # Gate every edge endpoint that names an EXISTING row by UUID on
     ids = await store.submit_batch(
@@ -158,7 +158,7 @@ async def submit_route(
     body_cls = SUBMIT_BODY.get(kind)
     if body_cls is None:
         raise HTTPException(status_code=404, detail=f"unknown inquiry kind {kind!r}")
-    discriminator = cast(str, body_cls.model_fields["kind"].default)
+    discriminator = str(body_cls.model_fields["kind"].default)
     try:
         req = body_cls.model_validate({**payload, "kind": discriminator})
     except ValidationError as err:

@@ -164,13 +164,6 @@ def run(config: RunConfig) -> int:
             rc = _spawn_and_drain(config, adapter, sink, stats)
     finally:
         sink.close()
-        # Close the sync client this run owns: the sink flushes and ends the
-        # session but never owns the transport, so without this the run's
-        # ``httpx.Client`` (and its pooled sockets) would leak. ``close`` is
-        # idempotent, so a client shared in by a test or reused elsewhere is
-        # not harmed beyond this run, which is the client's last user.
-        if config.client is not None:
-            config.client.close()
 
     sys.stderr.write(f"\n[trax run] {stats.render()}\n")
     return rc
@@ -735,6 +728,7 @@ def _drain_appended_lines(
     if size < last:
         # Shrunk means rotated or truncated; restart from the new end.
         last = 0
+        buffers.pop(path, None)
     if size == last:
         return
     try:

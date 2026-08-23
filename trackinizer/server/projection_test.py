@@ -273,7 +273,7 @@ class TestProjection:
         conn = make_conn()
         subject_id = new_uuid()
         await fetch_edges(cast(Conn, conn), subject_id)
-        inbound_sql = cast("tuple[str, ...]", conn.fetch.call_args_list[1].args)[0]
+        inbound_sql = cast(tuple[str, ...], conn.fetch.call_args_list[1].args)[0]
         assert "priority" in inbound_sql
         assert "valence" in inbound_sql
 

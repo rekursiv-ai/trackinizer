@@ -37,6 +37,7 @@ from trackinizer.trax.daemon.protocol import (
     Response,
     package_root,
     read_frame,
+    socket_address,
     socket_path,
     source_version,
     write_frame,
@@ -111,7 +112,7 @@ def serve(path: Path | None = None) -> None:
     daemon at once all try to start one, and every loser gets ``EADDRINUSE``
     and simply connects to the winner instead.
     """
-    sock = path if path is not None else socket_path()
+    sock = socket_address(path) if path is not None else socket_path()
     sock.parent.mkdir(parents=True, exist_ok=True, mode=_SOCKET_DIR_MODE)
     version = source_version(package_root())
     server = _bind(sock, version)

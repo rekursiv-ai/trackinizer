@@ -16,7 +16,6 @@ in-process Postgres substrate is unavailable.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from pathlib import Path
 
 import uuid
 
@@ -25,6 +24,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.postgres import PGliteEngine
+from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.store.core import Store, StubEmbedder
 from trackinizer.types.agent_session_events import ToolResult, UserMessage
 from trackinizer.types.errors import NotFoundError
@@ -32,15 +32,13 @@ from trackinizer.wire.bodies import SubmitAgentSession, SubmitIssue
 from trackinizer.wire.wire_sessions import EventBody
 
 
-@pytest_asyncio.fixture
-async def store(tmp_path: Path) -> AsyncIterator[Store]:
-    """A bootstrapped Store over an ephemeral in-process PGlite engine."""
-    async with PGliteEngine(
-        workdir=tmp_path / "pglite", persist=False, extensions=("pgvector",)
-    ) as engine:
-        store = Store(engine, embed=StubEmbedder())
-        await store.bootstrap()
-        yield store
+@pytest_asyncio.fixture(loop_scope="session")
+async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
+    """A bootstrapped Store over the session's shared PGlite engine."""
+    await reset_schema(pglite_engine)
+    store = Store(pglite_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    yield store
 
 
 async def _table_exists(store: Store, table: str) -> bool:
@@ -65,7 +63,7 @@ async def _sequence_exists(store: Store, name: str) -> bool:
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_fresh_schema_has_agentsession_objects(store: Store) -> None:
     """A fresh DB carries the AgentSession table and ref sequence."""
     assert await _table_exists(store, "agent_session_events")
@@ -73,7 +71,7 @@ async def test_fresh_schema_has_agentsession_objects(store: Store) -> None:
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_agentsession_lifecycle_writes_succeed(store: Store) -> None:
     """A session opens, takes events, and an unrelated Issue write still works.
 
@@ -109,7 +107,7 @@ async def test_agentsession_lifecycle_writes_succeed(store: Store) -> None:
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_session_events_strip_postgres_incompatible_nuls(store: Store) -> None:
     """A NUL artifact cannot make an otherwise valid transcript batch fail."""
     session_id = await store.submit_agentsession(
@@ -141,7 +139,7 @@ async def test_session_events_strip_postgres_incompatible_nuls(store: Store) -> 
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_submit_agentsession_stamps_opening_api_key(store: Store) -> None:
     """``submit_agentsession`` records the opening ``api_key_id`` on the row.
 
@@ -182,7 +180,7 @@ async def test_submit_agentsession_stamps_opening_api_key(store: Store) -> None:
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_append_events_after_purge_is_not_found(store: Store) -> None:
     """Appending to a purged session is a clean 404, not a leaky FK 409.
 
@@ -211,7 +209,7 @@ async def test_append_events_after_purge_is_not_found(store: Store) -> None:
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_create_time_status_is_persisted(store: Store) -> None:
     """An explicit create-time ``status`` is honored, not defaulted to active.
 
@@ -242,7 +240,7 @@ async def test_create_time_status_is_persisted(store: Store) -> None:
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_create_time_status_cannot_violate_agentsession_lifecycle(
     store: Store,
 ) -> None:

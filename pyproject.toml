@@ -64,7 +64,9 @@ test = [
 ]
 typecheck = [
     "basedpyright>=1.10",
-    "ty>=0.0.60",
+    # 0.0.72 and basedpyright 1.39.10 work correctly.
+    # https://github.com/astral-sh/ty/issues/4352
+    "ty>=0.0.60,!=0.0.73",
     "asyncpg-stubs>=0.31.2",
 ]
 "pre-commit" = [
@@ -111,9 +113,12 @@ exclude = [".github/**", ".codespell-ignore"]
 python_files = ["*_test.py", "test_*.py"]
 markers = [
     "ci_smoke: slower package/CLI smoke tests run explicitly in CI",
+    "cuda: tests that require a real CUDA device (skipped in hosted CI)",
     "integration: tests that require networking or external deps (deselected by default)",
+    "performance: timing-sensitive tests (deselected by default)",
     "slow: expensive local correctness test (JIT, training, full fixtures, git, bash, or a fresh interpreter); excluded from the fast unit tier and run by the pre-push slow gate",
     "real_llm: integration tests that spawn a live LLM CLI (claude/codex); skipped unless RUN_REAL_LLM=1 is set",
+    "cluster: requires live cluster access; deselected by default (run explicitly with -m cluster)",
     "bench_compile_time: asserts a compile-time budget or comparison",
     "bench_memory: asserts a memory-use budget or comparison",
     "bench_statistical: asserts a statistical performance contract",
@@ -147,7 +152,9 @@ markers = [
     "gpu_torch_cuda: requires torch CUDA execution",
     "gpu_triton: requires Triton kernels",
     "network_anthropic: reaches Anthropic over the network",
+    "network_duckduckgo: reaches DuckDuckGo over the network",
     "network_gemini: reaches Gemini over the network",
+    "network_google_search: reaches Google Search over the network",
     "network_github: reaches GitHub over the network",
     "network_huggingface: reaches Hugging Face over the network",
     "network_kaggle: reaches Kaggle over the network",
@@ -161,7 +168,7 @@ markers = [
     "network_together: reaches Together over the network",
     "network_wandb: reaches Weights & Biases over the network",
 ]
-addopts = "-m 'not ci_smoke and not integration and not slow' --durations=20 --dist=worksteal"
+addopts = "-m 'not ci_smoke and not cuda and not integration and not performance and not cluster and not slow' --durations=20 --dist=worksteal"
 timeout = 60
 # "error" = treat all warnings as errors (same as -Werror).
 # Using filterwarnings instead of addopts so we can add exceptions.
@@ -180,6 +187,27 @@ norecursedirs = [
     "third_party",
     "typings",
 ]
+
+[tool.coverage.run]
+omit = [
+    "*_test.py",
+    "test_*.py",
+    "*/tests/*",
+    "*/.venv/*",
+    "*/typings/*",
+    "*/tools/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+# fail_under = 85
+show_missing = true
+skip_covered = true
 
 [tool.ruff]
 show-fixes = true
@@ -281,9 +309,6 @@ ignore = [
 
     # Exclusions due to public export.
     # "TC002",   # Typing-only third-party import. (Export strips runtime uses, leaving type-only imports.)
-]
-exclude = [
-    "**/typings/**",
 ]
 
 [tool.ruff.lint.per-file-ignores]

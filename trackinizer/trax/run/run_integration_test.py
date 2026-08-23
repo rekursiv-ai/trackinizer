@@ -97,7 +97,7 @@ def _free_port() -> int:
     """Pick an ephemeral localhost port for the test server."""
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
         sock.bind(("127.0.0.1", 0))
-        return cast(int, sock.getsockname()[1])
+        return int(sock.getsockname()[1])
 
 
 def _build_app(workdir: Path) -> FastAPI:
@@ -259,9 +259,9 @@ def test_server_thread_stops_thread_on_startup_timeout(
         while not fake.should_exit:
             time.sleep(0.01)
 
-    thread_ref._server = cast("Any", fake)
+    thread_ref._server = cast(Any, fake)
     thread_ref._thread = threading.Thread(target=_loop, daemon=True)
-    thread_ref._app = cast("Any", _StateApp())
+    thread_ref._app = cast(Any, _StateApp())
     thread_ref.base_url = "http://127.0.0.1:0"
 
     with pytest.raises(RuntimeError, match="did not start"):
@@ -315,7 +315,7 @@ def _latest_session_row(
             "/api/inquiries", params={"kind": "AgentSession", "limit": 50}
         )
         listing.raise_for_status()
-        rows = cast("list[dict[str, object]]", listing.json())
+        rows = cast(list[dict[str, object]], listing.json())
         if cli is not None:
             rows = [r for r in rows if r.get("cli") == cli]
         return rows[0] if rows else None
@@ -334,12 +334,12 @@ def _latest_session_events(
     row = _latest_session_row(base_url, cli=cli)
     if row is None:
         return []
-    session_id = cast(str, row["id"])
+    session_id = str(row["id"])
     with httpx.Client(base_url=base_url, timeout=30.0) as http:
         events = http.get(f"/api/sessions/{session_id}/events", params={"limit": 1000})
         events.raise_for_status()
-        body = cast("dict[str, object]", events.json())
-        return cast("list[dict[str, object]]", body["events"])
+        body = cast(dict[str, object], events.json())
+        return cast(list[dict[str, object]], body["events"])
 
 
 def _run_capture(cli_name: str, cli_args: tuple[str, ...], server_url: str) -> int:
@@ -388,7 +388,7 @@ def _assert_transcript_synced(base_url: str, *, cli: str) -> None:
     """The run produced a non-empty, typed transcript with a model turn."""
     events = _latest_session_events(base_url, cli=cli)
     assert events, "no events synced to the server"
-    kinds = {cast(str, e["kind"]) for e in events}
+    kinds = {str(e["kind"]) for e in events}
     # ``kind`` is the Message member class name; the allowed set is exactly the
     # wire ``KINDS`` union, so a new member never silently fails this here.
     assert kinds <= set(KINDS), f"unexpected kinds: {kinds}"
@@ -457,7 +457,7 @@ def _skip_if_cli_unauthenticated(cli: str, rc: int, base_url: str) -> None:
     """
     if rc == 0:
         return
-    kinds = {cast(str, e["kind"]) for e in _latest_session_events(base_url, cli=cli)}
+    kinds = {str(e["kind"]) for e in _latest_session_events(base_url, cli=cli)}
     if "AssistantMessage" not in kinds:
         pytest.skip(
             f"{cli} exited {rc} with no model turn (commonly unauthenticated: "
@@ -519,7 +519,7 @@ def test_capture_streams_incrementally_before_close(
 
     worker = threading.Thread(
         target=lambda: _drain_filesystem_loop(
-            cast("Any", adapter),
+            cast(Any, adapter),
             sink,
             stats,
             config,

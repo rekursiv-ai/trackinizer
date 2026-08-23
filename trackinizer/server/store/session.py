@@ -218,7 +218,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             "SELECT max(seq) FROM agent_session_events WHERE session_id = $1",
             session_id,
         )
-        return 0 if last is None else cast(int, last) + 1
+        return 0 if last is None else int(last) + 1
 
     async def _resume_session(
         self, req: SubmitAgentSession, *, api_key_id: UUID | None, actor: Inquiry.Actor
@@ -277,7 +277,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             if row is None:
                 return None
             session_id = cast(UUID, row["id"])
-            owner = cast(str, row["owner"])
+            owner = str(row["owner"])
             if row["agentsession_ended"] is not None:
                 # Re-open: move ended -> live in one statement so the lifecycle
                 # CHECK never observes (ended set, status active). Attribute the

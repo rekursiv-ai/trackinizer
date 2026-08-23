@@ -776,6 +776,7 @@ _QUERY_VALUES = st.sampled_from(
     limit=st.one_of(st.integers(min_value=-10, max_value=2000), st.just("x")),
     offset=st.one_of(st.integers(min_value=-10, max_value=10), st.just("y")),
 )
+@pytest.mark.compute_large_fixture
 def test_list_endpoint_never_500s_on_bad_params(
     seq_ranges: list[str],
     filters: list[str],

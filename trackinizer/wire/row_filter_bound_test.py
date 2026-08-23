@@ -302,7 +302,7 @@ class TestTheWireTypeRefusesTheSameThings:
 
     def test_an_unknown_op_is_refused(self) -> None:
         with pytest.raises(ValueError, match="unknown filter op"):
-            Filter(field="seq", op=cast("FilterOp", "bogus"), value="3")
+            Filter(field="seq", op=cast(FilterOp, "bogus"), value="3")
 
 
 class TestTheEvaluatorEnforcesTheWholeContract:
@@ -345,7 +345,7 @@ class TestTheEvaluatorEnforcesTheWholeContract:
         with pytest.raises(ValidationError, match="unknown filter op"):
             match_filter(
                 {"seq": 5},
-                _BareFilter(field="seq", op=cast("FilterOp", "bogus"), value="3"),
+                _BareFilter(field="seq", op=cast(FilterOp, "bogus"), value="3"),
             )
 
 
@@ -700,7 +700,7 @@ class TestAnUnknownFilterFieldIsRefused:
         with pytest.raises(ValidationError, match="unknown filter field"):
             match_filter(
                 {"title": "x"},
-                _BareFilter(field="owenr", op=cast("FilterOp", op), value="nobody"),
+                _BareFilter(field="owenr", op=cast(FilterOp, op), value="nobody"),
             )
 
     @pytest.mark.parametrize("op", ["isnull", "notnull"])
@@ -710,7 +710,7 @@ class TestAnUnknownFilterFieldIsRefused:
         with pytest.raises(ValidationError, match="unknown filter field"):
             match_filter(
                 {"title": "x"},
-                _BareFilter(field="owenr", op=cast("FilterOp", op), value=""),
+                _BareFilter(field="owenr", op=cast(FilterOp, op), value=""),
             )
 
     def test_a_known_field_absent_from_this_row_still_evaluates(self) -> None:
@@ -947,6 +947,6 @@ class TestOpsThatStillEvaluate:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing import test_main
+    from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

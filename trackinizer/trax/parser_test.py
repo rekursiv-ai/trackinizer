@@ -1362,6 +1362,7 @@ _ALPHABET: list[str] = sorted(
 
 @settings(max_examples=400, deadline=None)
 @given(st.lists(st.sampled_from(_ALPHABET), min_size=1, max_size=10))
+@pytest.mark.compute_large_fixture
 def test_parser_never_leaks_non_client_error(tokens: list[str]) -> None:
     """``parse_actions`` raises only ClientError (or succeeds) -- never a leak.
 
@@ -1384,6 +1385,7 @@ _A_KIND: Inquiry.InquiryKind = (
 
 @settings(max_examples=300, deadline=None)
 @given(st.lists(st.sampled_from(_ALPHABET), max_size=8))
+@pytest.mark.compute_large_fixture
 def test_parse_list_query_never_leaks(tokens: list[str]) -> None:
     with contextlib.suppress(ClientError):
         parse_list_query(_A_KIND, tokens)
@@ -1391,6 +1393,7 @@ def test_parse_list_query_never_leaks(tokens: list[str]) -> None:
 
 @settings(max_examples=300, deadline=None)
 @given(st.lists(st.sampled_from(_ALPHABET), max_size=8))
+@pytest.mark.compute_large_fixture
 def test_parse_bulk_apply_never_leaks(tokens: list[str]) -> None:
     with contextlib.suppress(ClientError):
         parse_bulk_apply(_A_KIND, tokens)
@@ -1398,6 +1401,7 @@ def test_parse_bulk_apply_never_leaks(tokens: list[str]) -> None:
 
 @settings(max_examples=300, deadline=None)
 @given(st.lists(st.sampled_from(_ALPHABET), max_size=8))
+@pytest.mark.compute_large_fixture
 def test_parse_subject_list_never_leaks(tokens: list[str]) -> None:
     with contextlib.suppress(ClientError):
         parse_subject_list(tokens, default_kind=_A_KIND)
@@ -1405,6 +1409,7 @@ def test_parse_subject_list_never_leaks(tokens: list[str]) -> None:
 
 @settings(max_examples=300, deadline=None)
 @given(st.lists(st.sampled_from(_ALPHABET), min_size=1, max_size=8))
+@pytest.mark.compute_large_fixture
 def test_consume_ref_never_leaks(tokens: list[str]) -> None:
     with contextlib.suppress(ClientError):
         consume_ref(tokens, 0)

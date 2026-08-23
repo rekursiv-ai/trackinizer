@@ -93,7 +93,7 @@ class TestUnboundableRegexIsRefused:
         _, remaining = read._partition_filters(
             (
                 _BareFilter(
-                    field="experiment_config", op=cast("FilterOp", op), value=value
+                    field="experiment_config", op=cast(FilterOp, op), value=value
                 ),
             ),
             [],
@@ -104,11 +104,7 @@ class TestUnboundableRegexIsRefused:
     def test_presence_on_jsonb_still_works(self, op: str) -> None:
         # A presence op carries no operand, so it is spelled with ``""``.
         _, remaining = read._partition_filters(
-            (
-                _BareFilter(
-                    field="experiment_config", op=cast("FilterOp", op), value=""
-                ),
-            ),
+            (_BareFilter(field="experiment_config", op=cast(FilterOp, op), value=""),),
             [],
         )
         assert remaining
@@ -121,7 +117,7 @@ class TestUnboundableRegexIsRefused:
             read._partition_filters(
                 (
                     _BareFilter(
-                        field="experiment_config", op=cast("FilterOp", op), value="x"
+                        field="experiment_config", op=cast(FilterOp, op), value="x"
                     ),
                 ),
                 [],
@@ -134,7 +130,7 @@ class TestUnboundableRegexIsRefused:
         # Python answers false. A guard on the declined branch never saw it.
         with pytest.raises(ValidationError, match="NaN"):
             read._partition_filters(
-                (_BareFilter(field="seq", op=cast("FilterOp", op), value="nan"),), []
+                (_BareFilter(field="seq", op=cast(FilterOp, op), value="nan"),), []
             )
 
     def test_lowering_disabled_still_refuses_an_unboundable_column(self) -> None:
@@ -162,6 +158,6 @@ class TestUnboundableRegexIsRefused:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing import test_main
+    from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

@@ -55,7 +55,7 @@ def _schema_edge_arms() -> dict[str, tuple[frozenset[str], frozenset[str]]]:
         if one is not None:
             return frozenset({one})
         assert many is not None
-        found: list[str] = re.findall(r"'(\w+)'", many)
+        found = [str(v) for v in re.findall(r"'(\w+)'", many)]
         return frozenset(found)
 
     out: dict[str, tuple[frozenset[str], frozenset[str]]] = {}

@@ -250,7 +250,7 @@ def _reasoning_summary(payload: JSON) -> str:
         return ""
     return "".join(
         _str(cast(JSON, part).get("text"))
-        for part in cast("Sequence[object]", summary)
+        for part in cast(Sequence[object], summary)
         if isinstance(part, Mapping)
     )
 
@@ -269,14 +269,14 @@ def _content_text(value: object) -> str:
 def _json_args(value: object) -> dict[str, object]:
     """Codex tool args arrive as a JSON-encoded string; decode to a dict."""
     if isinstance(value, Mapping):
-        return dict(cast("Mapping[str, object]", value))
+        return dict(cast(Mapping[str, object], value))
     if isinstance(value, str):
         try:
             decoded = json.loads(value)
         except json.JSONDecodeError:
             return {}
         if isinstance(decoded, Mapping):
-            return dict(cast("Mapping[str, object]", decoded))
+            return dict(cast(Mapping[str, object], decoded))
     return {}
 
 

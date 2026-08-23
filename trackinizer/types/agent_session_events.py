@@ -464,6 +464,6 @@ class AgentSessionEvent:
                 continue
             if f.name in row:
                 kwargs[f.name] = row[f.name]
-        raw = cast("Mapping[str, object]", row.get("message") or {})
-        kwargs["message"] = message_for_kind(cast(str, kwargs["kind"])).from_json(raw)
+        raw = cast(Mapping[str, object], row.get("message") or {})
+        kwargs["message"] = message_for_kind(str(kwargs["kind"])).from_json(raw)
         return cls(**kwargs)

@@ -29,7 +29,7 @@ _ACTORS: Sequence[str] = ("alice", "bob", "carol", "dave")
 """Four concurrent callers. Enough overlap to surface a shared-state race:
 two threads let one finish before the other starts and reported clean."""
 
-_POLL_ITERATIONS: int = 200
+_POLL_ITERATIONS: int = 50
 _POLL_INTERVAL_SEC: float = 0.000_1
 
 

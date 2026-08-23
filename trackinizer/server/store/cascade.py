@@ -239,7 +239,7 @@ class _CascadeAuditMixin(_StoreShared):
                     resource_usd=float(cost_row["new_resource"]),
                 )
                 subs = cast(
-                    "tuple[Inquiry.Actor, ...]",
+                    tuple[Inquiry.Actor, ...],
                     tuple(cost_row["current_subscribers"] or ()),
                 )
             if extra_subscribers:
@@ -377,7 +377,7 @@ class _CascadeAuditMixin(_StoreShared):
                     and existing["kind"] == kind
                 ):
                     return client_change_id, cast(
-                        "tuple[str, ...]",
+                        tuple[str, ...],
                         tuple(existing["subscribers_snapshot"] or ()),
                     )
                 raise ConflictError(

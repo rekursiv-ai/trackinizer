@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Final, Literal, Self, get_args
+from typing import Final, Literal, Self, cast, get_args
 from uuid import UUID
 
 from trackinizer.types.columns import ColumnSpec, Row
@@ -252,8 +252,12 @@ def kind_group_members(group: KindGroup) -> tuple[Inquiry.InquiryKind, ...]:
     ``{artifact_kinds}``) and ``/api/meta/edges``, so the edge topology has one
     source of truth instead of a hand-typed copy in the SPA.
     """
-    inquiry: tuple[Inquiry.InquiryKind, ...] = get_args(Inquiry.InquiryKind.__value__)
-    artifact: tuple[Inquiry.InquiryKind, ...] = get_args(Artifact.Kind.__value__)
+    inquiry: tuple[Inquiry.InquiryKind, ...] = cast(
+        tuple[Inquiry.InquiryKind, ...], get_args(Inquiry.InquiryKind.__value__)
+    )
+    artifact: tuple[Inquiry.InquiryKind, ...] = cast(
+        tuple[Inquiry.InquiryKind, ...], get_args(Artifact.Kind.__value__)
+    )
     match group:
         case "issue":
             return ("Issue",)

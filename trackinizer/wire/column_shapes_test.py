@@ -18,9 +18,11 @@ import re
 import pytest
 
 from trackinizer.server.schema_gen import generate_inquiry_kind_columns
+from trackinizer.types.columns import ColumnSpec, FlatColumn
 from trackinizer.wire.column_shapes import (
     COLUMN_SHAPES,
     ColumnShape,
+    _classify,
     _is_integer_sql,
     _is_real_sql,
     lowers_into_sql,
@@ -29,10 +31,13 @@ from trackinizer.wire.column_shapes import (
 
 
 class TestTheOracleIsPerColumnAndOp:
+    def test_text_array_membership_uses_gin_containment(self) -> None:
+        assert sql_template("labels", "is") == "{col} @> ARRAY[{p}]::text[]"
+
     def test_an_op_absent_from_the_shape_does_not_lower(self) -> None:
-        # ``labels`` is an ARRAY: ordering a list is meaningless, so the shape
-        # declares no ``gt``. Asking only about the column answered yes and
-        # sent ``str(['a','b']) > 'x'`` to Python.
+        # Ordering a list is meaningless, so the shape declares no ``gt``.
+        # Asking only about the column answered yes and sent
+        # ``str(['a','b']) > 'x'`` to Python.
         assert lowers_into_sql("labels", "is") is True
         assert lowers_into_sql("labels", "gt") is False
 
@@ -102,6 +107,8 @@ class TestEveryShapeMatchesTheDeclaredType:
     #: The declared-type heads each shape may legitimately classify.
     HEADS: Final[Mapping[ColumnShape, frozenset[str]]] = {
         ColumnShape.TEXT: frozenset({"TEXT"}),
+        ColumnShape.TEXT_ARRAY: frozenset({"TEXT[]"}),
+        ColumnShape.UUID_ARRAY: frozenset({"UUID[]"}),
         ColumnShape.INTEGER: frozenset(
             {"INTEGER", "INT", "INT2", "INT4", "INT8", "BIGINT", "SMALLINT"}
         ),
@@ -126,15 +133,20 @@ class TestEveryShapeMatchesTheDeclaredType:
         # below vacuous.
         assert self.declared()["belief_confidence"] == "DOUBLE"
 
+    def test_an_unknown_array_type_has_no_shape(self) -> None:
+        flat = FlatColumn(
+            spec=ColumnSpec(sql_type="INTEGER[]"),
+            value_type=list[int],
+        )
+
+        assert _classify(flat) is None
+
     @pytest.mark.parametrize("column", sorted(COLUMN_SHAPES))
     def test_the_shape_matches_the_declared_type(self, column: str) -> None:
         declared = self.declared().get(column)
         if declared is None:
             return  # An identity column, declared in ``schema.sql`` by hand.
         shape = COLUMN_SHAPES[column]
-        if shape is ColumnShape.ARRAY:
-            assert declared.endswith("[]"), f"{column} is {declared}, not an array"
-            return
         head = declared.split("(", maxsplit=1)[0].upper()
         assert head in self.HEADS[shape], f"{column} is {declared}, shaped {shape}"
 
@@ -214,6 +226,6 @@ class TestEveryShapeIsUsable:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing import test_main
+    from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

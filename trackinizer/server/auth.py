@@ -47,7 +47,8 @@ from trackinizer.server.session import read_session_cookie
 
 
 if TYPE_CHECKING:
-    # Runtime import would cycle: Store imports bootstrap_admin from here.
+    # ``store.core`` imports this module, so a runtime import here is a cycle.
+    # Every use of ``Store`` below is an annotation or a cast.
     from trackinizer.server.store.core import Store
 
 
@@ -102,8 +103,6 @@ TOKEN_PREFIX_LEN: Final[int] = 12
 
 BOOTSTRAP_ADMIN_ENV: Final[str] = "TRACKINIZER_BOOTSTRAP_ADMIN"
 BOOTSTRAP_TOKEN_FILE_ENV: Final[str] = "TRACKINIZER_BOOTSTRAP_TOKEN_FILE"  # noqa: S105 -- env-var name, not a credential.
-
-_BEARER_PREFIX: Final[str] = "Bearer "
 
 # Throttle for ``last_used_at`` writes. Without it, a hot key (e.g. a CI
 # bot) serializes every request on one row lock just to refresh a timestamp
@@ -237,14 +236,17 @@ def verify_secret(secret: str, encoded: str) -> bool:
         or p > _SCRYPT_MAX_P
     ):
         return False
-    candidate = hashlib.scrypt(
-        secret.encode("utf-8"),
-        salt=salt,
-        n=n,
-        r=r,
-        p=p,
-        dklen=len(expected),
-    )
+    try:
+        candidate = hashlib.scrypt(
+            secret.encode("utf-8"),
+            salt=salt,
+            n=n,
+            r=r,
+            p=p,
+            dklen=len(expected),
+        )
+    except ValueError:
+        return False
     return secrets.compare_digest(candidate, expected)
 
 
@@ -721,17 +723,18 @@ def _publish_bootstrap_token(token_path: Path) -> None:
 def _try_extract_bearer(request: Request) -> str | None:
     """Return the bearer secret from the Authorization header, or ``None``.
 
-    A non-Bearer scheme or a blank payload yields ``None`` so
-    :func:`current_user` falls through to the session path. Only "no bearer
-    offered" is silent; an offered-but-unresolvable secret 401s downstream.
+    A non-Bearer scheme yields ``None`` so :func:`current_user` can try the
+    session path. An offered blank Bearer credential returns ``""`` and 401s
+    downstream; only "no bearer offered" is silent. Authentication schemes are
+    case-insensitive under HTTP semantics.
     """
     header = request.headers.get("Authorization", "")
-    if not header.startswith(_BEARER_PREFIX):
+    scheme, separator, credentials = header.partition(" ")
+    if scheme.casefold() != "bearer":
         return None
-    secret = header[len(_BEARER_PREFIX) :].strip()
-    if not secret:
-        return None
-    return secret
+    if not separator:
+        return ""
+    return credentials.strip()
 
 
 def _try_read_session_user_id(request: Request) -> uuid.UUID | None:

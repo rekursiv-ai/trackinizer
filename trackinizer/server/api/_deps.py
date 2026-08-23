@@ -80,11 +80,10 @@ def _jsonable(value: object) -> object:
         # ``issue_kind``) are tuples on the model, and a caller comparing
         # structures in-process would see the type differ even though both
         # dump to the same JSON array.
-        return [_jsonable(item) for item in cast("tuple[object, ...]", value)]
+        return [_jsonable(item) for item in cast(tuple[object, ...], value)]
     if isinstance(value, dict):
         return {
-            key: _jsonable(item)
-            for key, item in cast("dict[str, object]", value).items()
+            key: _jsonable(item) for key, item in cast(dict[str, object], value).items()
         }
     if isinstance(value, datetime.datetime | datetime.date):
         # ISO-8601, never ``str(datetime)``: that yields a space separator

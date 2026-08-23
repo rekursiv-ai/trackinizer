@@ -518,17 +518,18 @@ class _EdgeMixin(_CascadeAuditMixin):
             if require_existing:
                 raise NotFoundError("edge not found")
             return None
-        old_priority = row["priority"]
+        old_priority = cast("Issue.Priority | None", row["priority"])
         new_priority: Issue.Priority | None
         if isinstance(priority, Absent):
             new_priority = old_priority
         else:
             new_priority = priority
         validate_edge_priority(edge_kind, new_priority)
-        old_note = row["note"]
-        old_valence = row["valence"]
-        old_labels: tuple[str, ...] | None = (
-            None if row["labels"] is None else tuple(row["labels"] or ())
+        old_note = cast("str | None", row["note"])
+        old_valence = cast("float | None", row["valence"])
+        old_labels = cast(
+            "tuple[str, ...] | None",
+            (None if row["labels"] is None else tuple(row["labels"] or ())),
         )
         new_note: str | None
         if isinstance(note, Absent):

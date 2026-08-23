@@ -9,6 +9,7 @@ from typing import Any, cast, override
 import argparse
 import inspect
 import json
+import logging
 import uuid
 
 import httpx
@@ -20,6 +21,7 @@ from trackinizer.client.client import (
     server_url,
 )
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.custom_json import dict_val, float_val, int_val, str_val
 from trackinizer.trax import cli, profile
 from trackinizer.trax.conftest import FakeClient
 from trackinizer.trax.grammar import parse_kind, parse_ref
@@ -264,6 +266,47 @@ class TestFlags:
 
 
 class TestRequests:
+    def test_client_bounds_the_transport_connection_pool(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        real_limits = httpx.Limits
+        real_transport = httpx.HTTPTransport
+        observed: list[tuple[int, int, float]] = []
+        transport_limits: list[httpx.Limits] = []
+
+        def make_limits(
+            *,
+            max_connections: int,
+            max_keepalive_connections: int,
+            keepalive_expiry: float,
+        ) -> httpx.Limits:
+            observed.append(
+                (max_connections, max_keepalive_connections, keepalive_expiry)
+            )
+            return real_limits(
+                max_connections=max_connections,
+                max_keepalive_connections=max_keepalive_connections,
+                keepalive_expiry=keepalive_expiry,
+            )
+
+        def make_transport(
+            *,
+            retries: int,
+            limits: httpx.Limits,
+        ) -> httpx.HTTPTransport:
+            transport_limits.append(limits)
+            return real_transport(retries=retries, limits=limits)
+
+        monkeypatch.setattr(httpx, "Limits", make_limits)
+        monkeypatch.setattr(httpx, "HTTPTransport", make_transport)
+
+        with Client("https://server"):
+            pass
+
+        assert observed == [(8, 8, 90.0)]
+        assert len(transport_limits) == 1
+
     def test_request_builds_url_headers_and_body(self) -> None:
         seen: dict[str, httpx.Request] = {}
 
@@ -361,6 +404,36 @@ class TestRequests:
             _install_mock_transport(client, connect_error)
             with pytest.raises(ClientError, match="GET /x failed: offline"):
                 client.get("/x")
+
+    def test_transport_failure_logs_client_pool_context(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        def handshake_timeout(request: httpx.Request) -> httpx.Response:
+            del request
+            raise httpx.ConnectTimeout("_ssl.c:1063: The handshake operation timed out")
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handshake_timeout)
+            with caplog.at_level(logging.WARNING), pytest.raises(ClientError):
+                client.get("/api/version")
+
+        record = next(
+            record
+            for record in caplog.records
+            if getattr(record, "event", "") == "trackinizer_transport_failure"
+        )
+        fields = dict_val(record.__dict__)
+        assert str_val(fields.get("method")) == "GET"
+        assert str_val(fields.get("path")) == "/api/version"
+        assert str_val(fields.get("server")) == "https://server"
+        assert int_val(fields.get("client_request_index"), 0) == 1
+        assert int_val(fields.get("attempt"), 0) == 1
+        assert str_val(fields.get("failure_class")) == "connect_timeout"
+        assert str_val(fields.get("failure_detail")) == "tls_handshake_timeout"
+        assert str_val(fields.get("error_type")) == "ConnectTimeout"
+        assert float_val(fields.get("client_age_sec"), -1) >= 0
+        assert len(str_val(fields.get("client_id"))) == 12
 
     def test_retries_5xx_with_same_change_id(
         self, monkeypatch: pytest.MonkeyPatch
@@ -478,10 +551,10 @@ def test_request_truncates_oversized_error_text() -> None:
     can echo a secret verbatim; the message keeps a bounded prefix plus an
     ellipsis marker so the truncation is visible.
     """
-    big = "x" * 100_000
+    big = "x" * 4_096
 
     def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, content=big.encode())
+        return httpx.Response(400, content=big.encode())
 
     with Client("http://server") as client:
         _install_mock_transport(client, handler)
@@ -1385,7 +1458,7 @@ class TestSessionMethods:
         _install_mock_transport(client, handler)
         resp = client.session_start(SessionStart(cli="codex"))
         assert seen["path"] == "/api/sessions/start"
-        body = cast("dict[str, object]", seen["body"])
+        body = cast(dict[str, object], seen["body"])
         assert body["cli"] == "codex"
         # A missing idempotency key is minted client-side.
         assert body["idempotency_key"] is not None
@@ -1411,8 +1484,8 @@ class TestSessionMethods:
             ],
         )
         assert seen["path"] == f"/api/sessions/{sid}/events"
-        body = cast("dict[str, object]", seen["body"])
-        events = cast("list[dict[str, object]]", body["events"])
+        body = cast(dict[str, object], seen["body"])
+        events = cast(list[dict[str, object]], body["events"])
         assert [e["seq"] for e in events] == [0, 1]
         assert resp.appended == 2
 
@@ -1441,7 +1514,7 @@ class TestSessionMethods:
             kind="AssistantMessage",
         )
         assert seen["path"] == f"/api/sessions/{sid}/events"
-        params = cast("httpx.QueryParams", seen["params"])
+        params = cast(httpx.QueryParams, seen["params"])
         assert params["limit"] == "10"
         assert params.get_list("seq_range") == ["5..9", "20.."]
         assert params["kind"] == "AssistantMessage"

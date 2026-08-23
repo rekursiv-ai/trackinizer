@@ -198,8 +198,8 @@ class TestClaudeParseLine:
         )
         results = [e.message for e in events]
         assert all(isinstance(m, ToolResult) for m in results)
-        assert [cast("ToolResult", m).call_id for m in results] == ["a", "b"]
-        assert [cast("ToolResult", m).content for m in results] == ["ra", "rb"]
+        assert [cast(ToolResult, m).call_id for m in results] == ["a", "b"]
+        assert [cast(ToolResult, m).content for m in results] == ["ra", "rb"]
 
 
 class TestClaudeSessionId:

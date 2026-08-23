@@ -25,7 +25,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import math
 
@@ -33,16 +32,15 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.postgres import PGliteEngine
+from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.wire.column_shapes import _REAL_TEXT, _TS_TEXT
 
 
-@pytest_asyncio.fixture
-async def engine(tmp_path: Path) -> AsyncIterator[PGliteEngine]:
-    """A bare PGlite engine; no schema needed to exercise a rendering."""
-    async with PGliteEngine(
-        workdir=tmp_path / "pglite", persist=False, extensions=("pgvector",)
-    ) as running:
-        yield running
+@pytest_asyncio.fixture(loop_scope="session")
+async def engine(pglite_engine: PGliteEngine) -> AsyncIterator[PGliteEngine]:
+    """The session's shared PGlite engine; a rendering needs no schema."""
+    await reset_schema(pglite_engine)
+    yield pglite_engine
 
 
 def _spread(count: int) -> Iterator[float]:
@@ -150,7 +148,7 @@ async def _rendered(
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_the_real_template_renders_what_python_str_renders(
     engine: PGliteEngine,
 ) -> None:
@@ -175,7 +173,7 @@ async def test_the_real_template_renders_what_python_str_renders(
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_the_timestamp_template_renders_what_python_str_renders(
     engine: PGliteEngine,
 ) -> None:

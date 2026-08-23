@@ -15,7 +15,9 @@ from typing import Final, Self, cast, override
 
 import hashlib
 import json
+import os
 import socket
+import stat
 
 from trackinizer.lib.userdirs import config_dir, state_dir
 
@@ -30,6 +32,14 @@ _MAX_FRAME_BYTES: Final = 64 * 1024 * 1024
 """Cap on one frame. A listing of every issue runs to a few MB; 64MB leaves
 room while keeping a corrupt or hostile length prefix from sizing a buffer
 that exhausts memory before the read fails."""
+
+_UNIX_SOCKET_PATH_MAX_BYTES: Final = 103
+"""Portable pathname payload for ``sockaddr_un.sun_path``.
+
+Darwin and the BSDs provide 104 bytes including the trailing NUL. Linux is
+slightly larger, but using its limit would leave the same path broken on a
+developer's Mac.
+"""
 
 # The environment a verb reads. Shipped from the caller and bound around the
 # request, so the daemon resolves the INVOKING user's identity and profile
@@ -241,8 +251,9 @@ def read_frame(conn: socket.socket) -> bytes:
 def socket_path() -> Path:
     """Path of this user's daemon socket.
 
-    Session state, so it lives under the state dir rather than config (not
-    user-edited) or scratch (not bulk data).
+    The logical location is under the state dir rather than config (not
+    user-edited) or scratch (not bulk data). If that path exceeds AF_UNIX's
+    kernel limit, :func:`socket_address` maps it into a short runtime location.
 
     The filename carries a digest of the CONFIG directory because the daemon
     resolves the profile store from its own environment. Keying the socket on
@@ -251,7 +262,32 @@ def socket_path() -> Path:
     whoever spawned it.
     """
     digest = hashlib.blake2b(str(config_dir()).encode(), digest_size=8).hexdigest()
-    return state_dir() / "rekursiv-ai" / "traxd" / f"{digest}.sock"
+    logical_path = state_dir() / "rekursiv-ai" / "traxd" / f"{digest}.sock"
+    return socket_address(logical_path)
+
+
+def socket_address(logical_path: Path) -> Path:
+    """Return a bindable AF_UNIX address for a logical state path.
+
+    Long user state roots exceed ``sockaddr_un.sun_path`` on macOS even though
+    the filesystem accepts them. A stable alias in an owner-only runtime
+    directory points to the logical parent, shortening the kernel address while
+    keeping the socket inode in the state directory selected through
+    :mod:`userdirs`.
+
+    Args:
+      logical_path: Desired socket location in per-user state.
+
+    Returns:
+      path: Direct path when it fits, otherwise a stable short alias.
+
+    Raises:
+      OSError: The temporary root cannot safely hold a short alias.
+
+    """
+    if len(os.fsencode(logical_path)) <= _UNIX_SOCKET_PATH_MAX_BYTES:
+        return logical_path
+    return _aliased_socket_path(logical_path)
 
 
 def package_root() -> Path:
@@ -286,6 +322,43 @@ def source_version(root: Path) -> str:
     return digest.hexdigest()
 
 
+def _aliased_socket_path(logical_path: Path) -> Path:
+    """Create a short, secure alias to a long socket parent directory."""
+    logical_parent = logical_path.parent.absolute()
+    logical_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    # Imported only for the exceptional long-path case. Importing tempfile on
+    # every thin-client invocation would consume part of the latency the daemon
+    # exists to remove.
+    import tempfile  # noqa: PLC0415
+
+    alias_root = Path(tempfile.gettempdir()) / f"t-{os.getuid():x}"
+    alias_root.mkdir(mode=0o700, exist_ok=True)
+    root_info = alias_root.lstat()
+    if (
+        not stat.S_ISDIR(root_info.st_mode)
+        or root_info.st_uid != os.getuid()
+        or root_info.st_mode & 0o077
+    ):
+        raise PermissionError(f"unsafe traxd socket alias root: {alias_root}")
+
+    alias_name = hashlib.blake2b(os.fsencode(logical_parent), digest_size=8).hexdigest()
+    alias_parent = alias_root / alias_name
+    try:
+        alias_parent.symlink_to(logical_parent, target_is_directory=True)
+    except FileExistsError:
+        if (
+            not alias_parent.is_symlink()
+            or alias_parent.resolve() != logical_parent.resolve()
+        ):
+            raise OSError(f"unsafe traxd socket alias: {alias_parent}") from None
+
+    address = alias_parent / logical_path.name
+    if len(os.fsencode(address)) > _UNIX_SOCKET_PATH_MAX_BYTES:
+        raise OSError(f"temporary directory is too long for AF_UNIX: {address}")
+    return address
+
+
 def _decode_object(raw: bytes, where: str) -> dict[str, object]:
     """Decode one frame into a JSON object, or raise ``ValueError``.
 
@@ -301,7 +374,7 @@ def _decode_object(raw: bytes, where: str) -> dict[str, object]:
         raise ValueError(f"malformed {where} frame: {err}") from err
     if not isinstance(payload, dict):
         raise ValueError(f"malformed {where} frame: {payload!r}")  # noqa: TRY004 -- a non-object frame is malformed input, not a caller type error.
-    return cast("dict[str, object]", payload)
+    return cast(dict[str, object], payload)
 
 
 def _require(payload: dict[str, object], key: str, where: str) -> object:
@@ -331,15 +404,14 @@ def _int(value: object) -> int:
 def _str_list(value: object) -> list[str]:
     if not isinstance(value, list):
         raise ValueError(f"expected a list, got {value!r}")  # noqa: TRY004 -- malformed wire input, not a caller type error.
-    return [_str(item) for item in cast("list[object]", value)]
+    return [_str(item) for item in cast(list[object], value)]
 
 
 def _str_map(value: object) -> dict[str, str]:
     if not isinstance(value, dict):
         raise ValueError(f"expected an object, got {value!r}")  # noqa: TRY004 -- malformed wire input, not a caller type error.
     return {
-        _str(key): _str(item)
-        for key, item in cast("dict[object, object]", value).items()
+        _str(key): _str(item) for key, item in cast(dict[object, object], value).items()
     }
 
 

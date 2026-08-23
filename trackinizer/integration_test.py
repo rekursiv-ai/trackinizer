@@ -4035,7 +4035,7 @@ class TestIntegrationEndToEnd:
             # Deliberately blank-only input: it canonicalizes to (), exercising
             # the normalize-to-empty path against the min_items CHECK.
             await integ_store.set_issue_kind(
-                rid, cast("list[Issue.Kind]", ["", "  "]), actor="u"
+                rid, cast(list[Issue.Kind], ["", "  "]), actor="u"
             )
 
     async def test_set_source_blank_is_consistent_no_op(
