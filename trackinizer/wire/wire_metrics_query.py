@@ -16,7 +16,7 @@ Kept import-pure (no ``server`` / ``trax`` / fastapi), like every wire module.
 
 from __future__ import annotations
 
-from typing import Final, Literal, get_args
+from typing import Final, Literal, cast, get_args
 
 import uuid
 
@@ -69,7 +69,9 @@ is the ONE definition of the metric comparator set: the CLI parser gates on it,
 this wire model types ``op`` with it, and the store's operator map covers
 exactly it -- so the three cannot drift into disagreement."""
 
-METRIC_COMPARE_OPS: tuple[MetricCompareOp, ...] = get_args(MetricCompareOp.__value__)
+METRIC_COMPARE_OPS: tuple[MetricCompareOp, ...] = cast(
+    tuple[MetricCompareOp, ...], get_args(MetricCompareOp.__value__)
+)
 """Runtime tuple of every metric comparator, derived from the type so the tuple
 and the ``Literal`` never diverge."""
 

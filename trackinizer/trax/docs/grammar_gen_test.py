@@ -44,6 +44,7 @@ def test_grammar_path_resolves_alongside_generator() -> None:
     assert grammar_path() == Path(grammar_check.__file__).with_name("grammar.lark")
 
 
+@pytest.mark.compute_large_fixture
 def test_grammar_check_passes() -> None:
     """The Earley build + corpus acceptance + ambiguity drift gate all pass."""
     assert grammar_check.main() == 0

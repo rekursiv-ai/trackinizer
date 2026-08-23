@@ -11,6 +11,7 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.custom_json import int_val
 from trackinizer.trax import verbs
 from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.grammar import (
@@ -43,7 +44,7 @@ def _batch_items(client: FakeClient) -> list[tuple[str, dict[str, object]]]:
     """The (kind, body) items from the single ``submit_batch`` call."""
     calls = [c for c in client.calls if c[0] == "submit_batch"]
     assert len(calls) == 1, f"expected one submit_batch, got {len(calls)}"
-    items = cast("list[tuple[str, dict[str, object]]]", calls[0][1][0])
+    items = cast(list[tuple[str, dict[str, object]]], calls[0][1][0])
     return [(str(kind), dict(body)) for kind, body in items]
 
 
@@ -51,7 +52,7 @@ def _batch_edges(client: FakeClient) -> list[dict[str, object]]:
     """The edge payloads from the single ``submit_batch`` call."""
     calls = [c for c in client.calls if c[0] == "submit_batch"]
     assert len(calls) == 1, f"expected one submit_batch, got {len(calls)}"
-    edges = cast("list[dict[str, object]]", calls[0][2]["edges"])
+    edges = cast(list[dict[str, object]], calls[0][2]["edges"])
     return [dict(e) for e in edges]
 
 
@@ -83,7 +84,7 @@ def test_id_verb_shows_row_kind_agnostically(client: FakeClient) -> None:
     run(["id", target], client)
     show_calls = [c for c in client.calls if c[0] == "get_inquiry"]
     assert show_calls, "trax id <uuid> must fetch the row"
-    ref = cast("UuidRef", show_calls[0][1][0])
+    ref = cast(UuidRef, show_calls[0][1][0])
     assert str(ref.uuid) == target
     assert ref.expected_kind is None  # kind-agnostic, no guard
 
@@ -654,7 +655,7 @@ def test_edge_payload_favors_labels_match_stored_direction() -> None:
     }
     payload = Kind._edge_payload(belief_payload, paper_payload, {}, ("favors", True))
     source, target = cast(
-        "tuple[dict[str, object], dict[str, object]]", payload["endpoints"]
+        tuple[dict[str, object], dict[str, object]], payload["endpoints"]
     )
     assert source["kind"] == "Paper"
     assert source["label"] == "citing artifact"
@@ -682,7 +683,7 @@ def test_edge_payload_negative_valence_renders_disproves_polarity() -> None:
     )
     assert payload["title"] == "disproves"
     _source, target = cast(
-        "tuple[dict[str, object], dict[str, object]]", payload["endpoints"]
+        tuple[dict[str, object], dict[str, object]], payload["endpoints"]
     )
     assert target["label"] == "disproven claim"
 
@@ -724,7 +725,7 @@ def test_edge_payload_positive_valence_keeps_proves_polarity() -> None:
     )
     assert payload["title"] == "proves"
     _source, target = cast(
-        "tuple[dict[str, object], dict[str, object]]", payload["endpoints"]
+        tuple[dict[str, object], dict[str, object]], payload["endpoints"]
     )
     assert target["label"] == "proven claim"
 
@@ -1229,7 +1230,7 @@ def test_create_inline_cost_lands_on_the_inline_node_not_root(
     ) -> list[uuid.UUID]:
         del edges
         # Deterministic ids: item 0 = root belief, item 1 = inline websearch.
-        return [root_id, websearch_id][: len(cast("list[object]", items))]
+        return [root_id, websearch_id][: len(cast(list[object], items))]
 
     monkeypatch.setattr(FakeClient, "submit_batch", _batch)
     run(
@@ -1939,7 +1940,7 @@ def test_whole_collection_views_never_exceed_server_cap(client: FakeClient) -> N
         for call in (c for c in client.calls if c[0] == "list_kind"):
             kwargs = call[-1]
             assert isinstance(kwargs, dict)
-            assert cast("int", kwargs["limit"]) <= MAX_LIST_LIMIT, verb
+            assert int_val(kwargs["limit"], 0) <= MAX_LIST_LIMIT, verb
 
 
 # Folded in from former crasher_test.py.
@@ -2640,7 +2641,7 @@ def test_create_flatten_batches_existing_ref_resolution(
     # batches the UUID lookups into one round-trip -- the point of F14.)
     batched = [c for c in client.calls if c[0] == "resolve_ids"]
     assert len(batched) == 1, f"expected one resolve_ids batch, got {len(batched)}"
-    refs_arg = cast("tuple[Ref, ...]", batched[0][1][0])
+    refs_arg = cast(tuple[Ref, ...], batched[0][1][0])
     assert len(refs_arg) == 3, "all three edge targets in one batch"
 
 
@@ -2691,7 +2692,7 @@ def _exp_id(client: FakeClient) -> uuid.UUID:
     row = next(
         r for r in client.rows if r.get("kind") == "Experiment" and r.get("seq") == 2
     )
-    return uuid.UUID(cast(str, row["id"]))
+    return uuid.UUID(str(row["id"]))
 
 
 # -- single-experiment write forms -------------------------------------------
@@ -2717,7 +2718,7 @@ def test_metric_single_cell_write(client: FakeClient) -> None:
         client,
     )
     kw = _metric_call(client, "write_metrics_masked")
-    masks = cast("tuple[MetricMaskClause, ...]", kw["masks"])
+    masks = cast(tuple[MetricMaskClause, ...], kw["masks"])
     assert kw["value"] == 0.5
     assert {(m.axis, m.op, m.value) for m in masks} == {
         ("key", "is", "loss"),
@@ -2774,7 +2775,7 @@ def test_metric_bareword_key_write(client: FakeClient) -> None:
         client,
     )
     kw = _metric_call(client, "write_metrics_masked")
-    masks = cast("tuple[MetricMaskClause, ...]", kw["masks"])
+    masks = cast(tuple[MetricMaskClause, ...], kw["masks"])
     # ``at loss`` is the ``at key is loss`` shorthand.
     assert ("key", "is", "loss") in {(m.axis, m.op, m.value) for m in masks}
 
@@ -2904,7 +2905,7 @@ def test_metric_read_masked(client: FakeClient) -> None:
         client,
     )
     kw = _metric_call(client, "query_metrics")
-    masks = cast("tuple[MetricMaskClause, ...]", kw["masks"])
+    masks = cast(tuple[MetricMaskClause, ...], kw["masks"])
     assert {(m.axis, m.op, m.value) for m in masks} == {
         ("key", "is", "loss"),
         ("step", "gt", "3"),
@@ -2915,21 +2916,21 @@ def test_metric_read_masked(client: FakeClient) -> None:
 def test_metric_read_bareword(client: FakeClient) -> None:
     run(["experiment", "2", "metric", "at", "loss"], client)
     kw = _metric_call(client, "query_metrics")
-    masks = cast("tuple[MetricMaskClause, ...]", kw["masks"])
+    masks = cast(tuple[MetricMaskClause, ...], kw["masks"])
     assert [(m.axis, m.op, m.value) for m in masks] == [("key", "is", "loss")]
 
 
 def test_metric_read_step_is(client: FakeClient) -> None:
     run(["experiment", "2", "metric", "at", "step", "is", "3"], client)
     kw = _metric_call(client, "query_metrics")
-    masks = cast("tuple[MetricMaskClause, ...]", kw["masks"])
+    masks = cast(tuple[MetricMaskClause, ...], kw["masks"])
     assert [(m.axis, m.op, m.value) for m in masks] == [("step", "is", "3")]
 
 
 def test_metric_read_value_gt(client: FakeClient) -> None:
     run(["experiment", "2", "metric", "at", "value", "gt", "0.9"], client)
     kw = _metric_call(client, "query_metrics")
-    masks = cast("tuple[MetricMaskClause, ...]", kw["masks"])
+    masks = cast(tuple[MetricMaskClause, ...], kw["masks"])
     assert [(m.axis, m.op, m.value) for m in masks] == [("value", "gt", "0.9")]
 
 
@@ -2942,7 +2943,7 @@ def test_metric_read_whole_grid(client: FakeClient) -> None:
 def test_metric_read_step_max_reduction(client: FakeClient) -> None:
     run(["experiment", "2", "metric", "at", "loss", "at", "step", "max"], client)
     kw = _metric_call(client, "query_metrics")
-    masks = cast("tuple[MetricMaskClause, ...]", kw["masks"])
+    masks = cast(tuple[MetricMaskClause, ...], kw["masks"])
     assert ("step", "max", "") in {(m.axis, m.op, m.value) for m in masks}
 
 
@@ -3028,7 +3029,7 @@ def test_metric_read_json(
 def test_metric_cross_experiment_bare(client: FakeClient) -> None:
     run(["experiment", "metric", "at", "loss", "at", "step", "is", "100"], client)
     kw = _metric_call(client, "rank_metrics")
-    masks = cast("tuple[MetricMaskClause, ...]", kw["masks"])
+    masks = cast(tuple[MetricMaskClause, ...], kw["masks"])
     assert {(m.axis, m.op, m.value) for m in masks} == {
         ("key", "is", "loss"),
         ("step", "is", "100"),
@@ -3042,13 +3043,11 @@ def test_metric_cross_experiment_ids_are_listed_experiments(
 ) -> None:
     run(["experiment", "metric", "at", "loss", "at", "step", "is", "100"], client)
     exp_ids = cast(
-        "tuple[uuid.UUID, ...]",
+        tuple[uuid.UUID, ...],
         next(c for c in client.calls if c[0] == "rank_metrics")[1][0],
     )
     listed = {
-        uuid.UUID(cast(str, r["id"]))
-        for r in client.rows
-        if r.get("kind") == "Experiment"
+        uuid.UUID(str(r["id"])) for r in client.rows if r.get("kind") == "Experiment"
     }
     assert set(exp_ids) == listed
 
@@ -3101,7 +3100,7 @@ def test_metric_cross_experiment_filtered(client: FakeClient) -> None:
     list_calls = [c for c in client.calls if c[0] == "list_kind"]
     assert list_calls
     assert any(
-        any(f.value == "ml" for f in cast("tuple[Filter, ...]", c[2]["filters"]))
+        any(f.value == "ml" for f in cast(tuple[Filter, ...], c[2]["filters"]))
         for c in list_calls
     )
     assert not [c for c in client.calls if c[0] == "submit_batch"]
@@ -3110,7 +3109,7 @@ def test_metric_cross_experiment_filtered(client: FakeClient) -> None:
 def test_metric_cross_experiment_step_max(client: FakeClient) -> None:
     run(["experiment", "metric", "at", "loss", "at", "step", "max"], client)
     kw = _metric_call(client, "rank_metrics")
-    masks = cast("tuple[MetricMaskClause, ...]", kw["masks"])
+    masks = cast(tuple[MetricMaskClause, ...], kw["masks"])
     assert ("step", "max", "") in {(m.axis, m.op, m.value) for m in masks}
 
 

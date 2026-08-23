@@ -60,6 +60,12 @@ _COUNTEREXAMPLE_PATTERN = re.compile(
 )
 
 
+def test_run_inbound_poll_interval_is_internal() -> None:
+    grammar = " ".join(_GRAMMAR_PATH.read_text().split())
+
+    assert "--inbound-poll-interval" not in grammar
+
+
 def _split_command(body: str, *, line_no: int) -> list[str]:
     """Split a fenced example body into argv, dropping the leading ``trax``."""
     tokens = shlex.split(body)

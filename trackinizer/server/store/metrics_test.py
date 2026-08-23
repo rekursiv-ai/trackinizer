@@ -8,7 +8,6 @@ the error-mapping and count logic the integration tier cannot exercise cheaply.
 
 from __future__ import annotations
 
-from typing import cast
 from unittest.mock import AsyncMock
 
 import uuid
@@ -131,7 +130,7 @@ class TestReadMetrics:
         conn.fetch = AsyncMock(return_value=[])
         await store.read_metrics(uuid.uuid4(), key="loss")
         args = conn.fetch.call_args[0]
-        assert "key = $2" in cast(str, args[0])
+        assert "key = $2" in str(args[0])
         assert "loss" in args
 
 
@@ -156,7 +155,7 @@ class TestQueryMetrics:
         conn.fetch = AsyncMock(return_value=[])
         eids = [uuid.uuid4(), uuid.uuid4()]
         await store.query_metrics(eids, masks=[])
-        sql = cast(str, conn.fetch.call_args[0][0])
+        sql = str(conn.fetch.call_args[0][0])
         assert "experiment_id = ANY($1::uuid[])" in sql
         assert conn.fetch.call_args[0][1] == eids
 
@@ -179,7 +178,7 @@ class TestQueryMetrics:
                 [uuid.uuid4()],
                 masks=[MetricMaskClause(axis="step", op=op, value="3")],
             )
-            sql = cast(str, conn.fetch.call_args[0][0])
+            sql = str(conn.fetch.call_args[0][0])
             assert f"step {sql_op} $2::bigint" in sql, op
 
     @pytest.mark.asyncio
@@ -198,7 +197,7 @@ class TestQueryMetrics:
                 [uuid.uuid4()],
                 masks=[MetricMaskClause(axis=axis, op="is", value=val)],
             )
-            sql = cast(str, conn.fetch.call_args[0][0])
+            sql = str(conn.fetch.call_args[0][0])
             assert f"{axis} = {cast_sql}" in sql, axis
 
     @pytest.mark.asyncio
@@ -244,7 +243,7 @@ class TestQueryMetrics:
             [uuid.uuid4()],
             masks=[MetricMaskClause(axis="step", op="max")],
         )
-        sql = cast(str, conn.fetch.call_args[0][0])
+        sql = str(conn.fetch.call_args[0][0])
         assert "DISTINCT ON (experiment_id, key)" in sql
         assert "ORDER BY experiment_id, key, step DESC" in sql
 
@@ -257,7 +256,7 @@ class TestQueryMetrics:
             [uuid.uuid4()],
             masks=[MetricMaskClause(axis="step", op="min")],
         )
-        sql = cast(str, conn.fetch.call_args[0][0])
+        sql = str(conn.fetch.call_args[0][0])
         assert "ORDER BY experiment_id, key, step ASC" in sql
 
     @pytest.mark.asyncio
@@ -266,7 +265,7 @@ class TestQueryMetrics:
         store, _engine = make_store(conn)
         conn.fetch = AsyncMock(return_value=[])
         await store.query_metrics([uuid.uuid4()], masks=[])
-        sql = cast(str, conn.fetch.call_args[0][0])
+        sql = str(conn.fetch.call_args[0][0])
         assert "DISTINCT ON" not in sql
         assert "ORDER BY experiment_id, key, step" in sql
 
@@ -316,7 +315,7 @@ class TestQueryMetrics:
         store, _engine = make_store(conn)
         conn.fetch = AsyncMock(return_value=[])
         await store.query_metrics([uuid.uuid4()], masks=[], sort="desc", limit=5)
-        sql = cast(str, conn.fetch.call_args[0][0])
+        sql = str(conn.fetch.call_args[0][0])
         assert "ORDER BY value DESC" in sql
         assert "LIMIT $" in sql
         assert 5 in conn.fetch.call_args[0]

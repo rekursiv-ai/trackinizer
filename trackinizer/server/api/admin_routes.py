@@ -358,10 +358,10 @@ def _serialize_user(row: dict[str, object]) -> MutableJSON:
     """Build the wire shape for one ``users`` row."""
     return {
         "id": str(row["id"]),
-        "email": cast(str, row["email"]),
-        "name": cast(str, row["name"]),
+        "email": str(row["email"]),
+        "name": str(row["name"]),
         "role": cast(Role, row["role"]),
-        "status": cast(str, row["status"]),
+        "status": str(row["status"]),
         "created_at": iso_format(row["created_at"]),
         "last_login": iso_format(row["last_login"]),
     }
@@ -371,8 +371,8 @@ def _serialize_allowlist(row: dict[str, object]) -> MutableJSON:
     """Build the wire shape for one ``allowlist`` row."""
     added_by = row.get("added_by")
     return {
-        "email_or_pattern": cast(str, row["email_or_pattern"]),
-        "role": cast(str, row["role"]),
+        "email_or_pattern": str(row["email_or_pattern"]),
+        "role": str(row["role"]),
         "added_by": (None if added_by is None else str(cast(uuid.UUID, added_by))),
         "added_at": iso_format(row["added_at"]),
     }

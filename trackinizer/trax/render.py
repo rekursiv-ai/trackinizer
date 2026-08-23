@@ -69,7 +69,7 @@ def format_field_value(value: object) -> str:
     if isinstance(value, list):
         return "\n".join(str(item) for item in cast(list[object], value))
     if isinstance(value, dict):
-        return format_json(cast("dict[str, object]", value)).rstrip("\n")
+        return format_json(cast(dict[str, object], value)).rstrip("\n")
     return str(value)
 
 
@@ -172,7 +172,7 @@ def format_edge(view: Mapping[str, object], *, changes: bool = False) -> str:
     mutation echoes compact (the CLI opts in with ``--changes``).
     """
     edge = cast(Mapping[str, object], view["edge"])
-    lines = [f"edge: {cast(str, view['title'])}"]
+    lines = [f"edge: {view['title']!s}"]
     for endpoint in cast(Sequence[Mapping[str, object]], view["endpoints"]):
         lines.append("")
         lines.append(f"{endpoint['label']}:")
@@ -565,7 +565,7 @@ def _relation_title(edge_kind: str, *, inbound: bool) -> str:
     # ``inbound=True`` reads the edge from the opposite vertex. Every edge is
     # stored child -> parent. Labels come from the single EDGE_POLICIES source
     # (forward/inverse_label), never a parallel table here.
-    policy = EDGE_POLICIES.get(cast("Edge.Kind", edge_kind))
+    policy = EDGE_POLICIES.get(cast(Edge.Kind, edge_kind))
     if policy is None:
         return edge_kind.replace("_", " ").title()
     return policy.inverse_label if inbound else policy.forward_label
@@ -581,5 +581,5 @@ def _edge_annotation(peer: dict[str, Any]) -> str:
     if labels := peer.get("labels"):
         parts.append("labels=" + ",".join(cast(list[str], labels)))
     if note := peer.get("note"):
-        parts.append(cast(str, note))
+        parts.append(str(note))
     return f"  [{'; '.join(parts)}]" if parts else ""

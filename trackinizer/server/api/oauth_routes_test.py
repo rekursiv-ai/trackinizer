@@ -14,7 +14,7 @@ being silently dragged onto the next page.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Literal, cast
+from typing import Literal
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
@@ -722,7 +722,7 @@ class TestAuthLogout:
         set_session_cookie(
             carrier,
             user_id=str(uuid.uuid4()),
-            secret=cast(str, _OAUTH_CONFIG.session_secret),
+            secret=str(_OAUTH_CONFIG.session_secret),
             max_age_seconds=600,
         )
         client.cookies.set(SESSION_COOKIE_NAME, carrier.cookies[SESSION_COOKIE_NAME])

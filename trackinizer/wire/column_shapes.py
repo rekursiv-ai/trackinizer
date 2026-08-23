@@ -41,8 +41,11 @@ class ColumnShape(StrEnum):
     TEXT = "text"
     """A scalar string: ``=`` and the regex operators apply directly."""
 
-    ARRAY = "array"
-    """A list column, where ``is`` means MEMBERSHIP, not equality."""
+    TEXT_ARRAY = "text_array"
+    """A text list, where ``is`` is GIN-indexed membership."""
+
+    UUID_ARRAY = "uuid_array"
+    """A UUID list, whose string operand needs PostgreSQL type inference."""
 
     INTEGER = "integer"
     """A whole number. ``::text`` renders it exactly as Python's ``str``, and
@@ -117,12 +120,21 @@ _SQL_BY_SHAPE: Final[dict[ColumnShape, dict[str, str]]] = {
         "isnull": "{col} IS NULL",
         "notnull": "{col} IS NOT NULL",
     },
-    # ``::text[]`` is load-bearing: ``experiment_codechanges`` is ``UUID[]``,
-    # where the uncast forms fail on a live engine ("operator does not exist:
-    # uuid ~ unknown"; "could not convert type text[] to uuid[]").
-    ColumnShape.ARRAY: {
+    ColumnShape.TEXT_ARRAY: {
         # ``label is x`` matches ANY element, mirroring ``_candidate_items``.
-        "is": "{p} = ANY({col}::text[])",
+        # Containment preserves that behavior while selecting the GIN indexes
+        # on labels, subscribers, and issue_kind.
+        "is": "{col} @> ARRAY[{p}]::text[]",
+        "ne": "NOT ({p} = ANY(COALESCE({col}::text[], ARRAY[]::text[])))",
+        "re": "EXISTS (SELECT 1 FROM unnest({col}::text[]) AS e WHERE e ~ {p})",
+        "nre": "NOT EXISTS (SELECT 1 FROM unnest({col}::text[]) AS e WHERE e ~ {p})",
+        "isnull": "{col} IS NULL",
+        "notnull": "{col} IS NOT NULL",
+    },
+    ColumnShape.UUID_ARRAY: {
+        # ANY lets PostgreSQL infer UUID from the column for membership. The
+        # text casts on the other ops preserve their string-filter semantics.
+        "is": "{p} = ANY({col})",
         "ne": "NOT ({p} = ANY(COALESCE({col}::text[], ARRAY[]::text[])))",
         "re": "EXISTS (SELECT 1 FROM unnest({col}::text[]) AS e WHERE e ~ {p})",
         "nre": "NOT EXISTS (SELECT 1 FROM unnest({col}::text[]) AS e WHERE e ~ {p})",
@@ -285,8 +297,12 @@ def _classify(flat: FlatColumn) -> ColumnShape | None:
     annotation does, and both axes are floats.
     """
     sql_type = flat.spec.sql_type
+    if sql_type == "TEXT[]":
+        return ColumnShape.TEXT_ARRAY
+    if sql_type == "UUID[]":
+        return ColumnShape.UUID_ARRAY
     if sql_type.endswith("[]"):
-        return ColumnShape.ARRAY
+        return None
     if _is_integer_sql(sql_type) or _is_valued(flat.value_type, int):
         return ColumnShape.INTEGER
     if _is_real_sql(sql_type) or _is_valued(flat.value_type, float):

@@ -219,11 +219,11 @@ class TestCLIHelpers:
         # A bogus edge_kind must be rejected by the guard, not silently accepted
         # because it is neither a citation nor a structural kind.
         with pytest.raises(ValidationError, match="edge kind"):
-            validate_edge_valence(cast("Edge.Kind", "bogus"), 0.5)
+            validate_edge_valence(cast(Edge.Kind, "bogus"), 0.5)
 
     def test_edge_priority_rejects_unknown_edge_kind(self) -> None:
         with pytest.raises(ValidationError, match="edge kind"):
-            validate_edge_priority(cast("Edge.Kind", "bogus"), 5)
+            validate_edge_priority(cast(Edge.Kind, "bogus"), 5)
 
     def test_reject_edge_cycle_self_loop(self) -> None:
         """Self-loop is rejected outright before any DB walk."""

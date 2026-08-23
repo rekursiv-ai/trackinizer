@@ -22,7 +22,7 @@ The turn-kind enum lives in ``types`` and is re-exported here as
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Final, get_args
+from typing import Final, cast, get_args
 
 import uuid
 
@@ -36,7 +36,7 @@ from trackinizer.types.agent_session_events import (
 )
 
 
-KINDS: tuple[Kind, ...] = get_args(Kind.__value__)
+KINDS: tuple[Kind, ...] = cast(tuple[Kind, ...], get_args(Kind.__value__))
 """Runtime tuple of every :data:`Kind`, for validation and iteration."""
 
 

@@ -286,10 +286,10 @@ def _resolve_oauth_settings(request: Request) -> _OAuthSettings:
     return _OAuthSettings(
         # The missing-list check above guarantees these are set; the cast
         # narrows away the str | None the type checker still sees.
-        client_id=cast(str, config.oauth_google_client_id),
-        client_secret=cast(str, config.oauth_google_client_secret),
-        redirect_uri=cast(str, config.oauth_redirect_uri),
-        session_secret=cast(str, config.session_secret),
+        client_id=str(config.oauth_google_client_id),
+        client_secret=str(config.oauth_google_client_secret),
+        redirect_uri=str(config.oauth_redirect_uri),
+        session_secret=str(config.session_secret),
         session_max_age_seconds=config.session_max_age_seconds,
     )
 
@@ -446,7 +446,7 @@ async def _upsert_user_on_login(
     )
     if row is None:
         raise RuntimeError("user upsert returned no row")
-    return cast(uuid.UUID, row["id"]), cast(str, row["status"])
+    return cast(uuid.UUID, row["id"]), str(row["status"])
 
 
 def _optional_name(payload: dict[str, object]) -> str:

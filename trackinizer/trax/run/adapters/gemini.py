@@ -170,7 +170,7 @@ def _tool_calls(msg: JSON) -> tuple[JSON, ...]:
     if not isinstance(calls, Sequence) or isinstance(calls, str):
         return ()
     return tuple(
-        cast(JSON, c) for c in cast("Sequence[object]", calls) if isinstance(c, Mapping)
+        cast(JSON, c) for c in cast(Sequence[object], calls) if isinstance(c, Mapping)
     )
 
 
@@ -179,6 +179,4 @@ def _str(value: object) -> str:
 
 
 def _mapping(value: object) -> dict[str, object]:
-    return (
-        dict(cast("Mapping[str, object]", value)) if isinstance(value, Mapping) else {}
-    )
+    return dict(cast(Mapping[str, object], value)) if isinstance(value, Mapping) else {}

@@ -29,6 +29,11 @@ def _cache_dir_under(root: Path) -> Callable[[], Path]:
     return _cache_dir
 
 
+def _no_sleep(seconds: float) -> None:
+    """Skip a production poll delay while preserving the retry boundary."""
+    del seconds
+
+
 def test_pglite_default_caches_use_xdg_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -340,6 +345,7 @@ def test_boot_slot_reclaimed_when_stale(
     """
     monkeypatch.setattr(substrate, "cache_dir", _cache_dir_under(tmp_path))
     monkeypatch.setattr(substrate, "_max_concurrent_boots", lambda: 1)
+    monkeypatch.setattr(substrate, "_real_sleep", _no_sleep)
 
     first = substrate._acquire_boot_slot()
     stale = time.time() - substrate._BOOT_SLOT_STALE_SECONDS - 60
@@ -362,6 +368,7 @@ def test_release_does_not_delete_a_reclaimed_slots_new_owner(
     """
     monkeypatch.setattr(substrate, "cache_dir", _cache_dir_under(tmp_path))
     monkeypatch.setattr(substrate, "_max_concurrent_boots", lambda: 1)
+    monkeypatch.setattr(substrate, "_real_sleep", _no_sleep)
 
     first = substrate._acquire_boot_slot()
     stale = time.time() - substrate._BOOT_SLOT_STALE_SECONDS - 60

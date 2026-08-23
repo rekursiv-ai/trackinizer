@@ -41,7 +41,7 @@ import uuid
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import dict_val, str_val
+from trackinizer.lib.custom_json import dict_val, float_val, str_val
 from trackinizer.trax.profile import load_profile
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import Inquiry
@@ -50,19 +50,18 @@ from trackinizer.types.inquiries import Inquiry
 _log = logging.getLogger(__name__)
 
 # One ``web_get`` detail's ``edges``/``backlinks`` projection: edge-kind -> the
-# peer rows on that edge. The ``Client.get`` JSON is typed ``Any``, so narrowing
 # to this shape at the read boundary restores the peer-row types downstream.
 type _PeerMap = Mapping[str, Sequence[Mapping[str, object]]]
 
 
 def _peer_map(detail: Mapping[str, object], key: str) -> _PeerMap:
     """Return one detail's ``edges``/``backlinks`` peer map (empty when absent)."""
-    return cast("_PeerMap", detail.get(key) or {})
+    return cast(_PeerMap, detail.get(key) or {})
 
 
 def _opt_float(value: object) -> float | None:
     """Coerce a JSON edge ``valence`` to ``float`` (``None`` stays ``None``)."""
-    return None if value is None else float(cast("float", value))
+    return None if value is None else float_val(value)
 
 
 # The subset of fields the graph view (and a faithful-enough replay) needs,
@@ -246,7 +245,7 @@ def _pull_edges(
     known = set(node_ids)
     out: list[tuple[str, str, str, float | None]] = []
     for index, node_id in enumerate(node_ids):
-        detail = cast("Mapping[str, object]", source.get(f"/api/web/get/{node_id}"))
+        detail = cast(Mapping[str, object], source.get(f"/api/web/get/{node_id}"))
         for edge_kind, peers in _peer_map(detail, "edges").items():
             if edge_kind not in valid_kinds:
                 continue

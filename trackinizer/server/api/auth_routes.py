@@ -221,8 +221,8 @@ def _serialize(row: dict[str, object]) -> MutableJSON:
     """Build the wire shape for one ``api_keys`` row, without hash or secret."""
     return {
         "id": str(row["id"]),
-        "name": cast(str, row["name"]),
-        "prefix": cast(str, row["prefix"]),
+        "name": str(row["name"]),
+        "prefix": str(row["prefix"]),
         "role": cast(Role, row["role"]),
         "created_at": iso_format(row["created_at"]),
         "last_used_at": iso_format(row["last_used_at"]),

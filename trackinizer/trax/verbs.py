@@ -16,6 +16,7 @@ import uuid
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.custom_json import int_val
 from trackinizer.trax import render as fmt
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import cwd, env
@@ -358,7 +359,7 @@ class Kind(Command):
         )
         client = client_factory()
         rows = _query_rows(query, client, limit=MAX_LIST_LIMIT)
-        exp_ids = [uuid.UUID(cast(str, row["id"])) for row in rows]
+        exp_ids = [uuid.UUID(str(row["id"])) for row in rows]
         if not exp_ids:
             echo("(no experiments)")
             return
@@ -512,7 +513,7 @@ class Kind(Command):
     ) -> None:
         _subject_kind, _subject_id, subject_payload = client.get_inquiry(subject)
         _peer_kind, _peer_id, peer_payload = client.get_inquiry(
-            UuidRef(uuid=uuid.UUID(cast(str, peer_row["id"])))
+            UuidRef(uuid=uuid.UUID(str(peer_row["id"])))
         )
         edge_payload = cls._edge_payload(
             subject_payload, peer_payload, peer_row, relation
@@ -638,7 +639,7 @@ class Kind(Command):
         hydrated: list[dict[str, object]] = []
         for row in rows:
             _kind, _target_id, payload = client.get_inquiry(
-                UuidRef(uuid=uuid.UUID(cast(str, row["id"])))
+                UuidRef(uuid=uuid.UUID(str(row["id"])))
             )
             self_row = cast(dict[str, object], payload["self"])
             hydrated.append(dict(self_row, **cls._relation_edge_metadata(row)))
@@ -1396,7 +1397,7 @@ def _priority_or_default(priority: object, *, default: int = 20) -> int:
     mis-map it to the medium default and sort/show a critical row as ordinary
     (F33).
     """
-    return default if priority is None else int(cast(int, priority))
+    return default if priority is None else int_val(priority, 0)
 
 
 def _apply_create_defaults(kind: Inquiry.InquiryKind, body: dict[str, object]) -> None:
@@ -1417,7 +1418,7 @@ def _submitted_ref(target_id: uuid.UUID, client: Client) -> Ref:
     """Look up a just-created UUID's user-facing ``Kind#seq`` ref."""
     kind, _target_id, view = client.get_inquiry(UuidRef(uuid=target_id))
     self_view = cast(Mapping[str, object], view["self"])
-    return SeqRef(kind=kind, seq=int(cast(int, self_view["seq"])))
+    return SeqRef(kind=kind, seq=int_val(self_view["seq"], 0))
 
 
 def _created_line(ref: Ref, new_id: uuid.UUID) -> str:
@@ -1661,7 +1662,7 @@ def run_bulk_apply(
     actions = _resolve_stdin_actions(bulk.actions)
     for row in rows:
         row_kind = cast(Inquiry.InquiryKind, row["kind"])
-        ref = SeqRef(kind=row_kind, seq=int(cast(int, row["seq"])))
+        ref = SeqRef(kind=row_kind, seq=int_val(row["seq"], 0))
         run_actions(ref, actions, args, client_factory, kind=row_kind)
 
 
@@ -1872,7 +1873,7 @@ def run_set_field(
 def _set_field_echo(action: SetField) -> object:
     """User-facing spelling of a set value: ref CLI form for ref-lists."""
     if action.field in REF_FIELD_BY_PAYLOAD and isinstance(action.value, tuple):
-        return ", ".join(str(ref) for ref in cast("tuple[Ref, ...]", action.value))
+        return ", ".join(str(ref) for ref in cast(tuple[Ref, ...], action.value))
     return action.value
 
 
@@ -1888,7 +1889,7 @@ def _resolve_set_value(action: SetField, client: Client) -> object:
     if action.field not in REF_FIELD_BY_PAYLOAD or not isinstance(action.value, tuple):
         return action.value
     return [
-        str(client.resolve_id(ref)[1]) for ref in cast("tuple[Ref, ...]", action.value)
+        str(client.resolve_id(ref)[1]) for ref in cast(tuple[Ref, ...], action.value)
     ]
 
 
@@ -2145,7 +2146,7 @@ Examples:
             prerequisites = [
                 pid
                 for ref in cast(
-                    "Sequence[Mapping[str, object]]", row.get("requires") or ()
+                    Sequence[Mapping[str, object]], row.get("requires") or ()
                 )
                 if (pid := str(ref.get("id")))
                 and status_by_id.get(pid, "active") == "active"
@@ -2175,7 +2176,7 @@ def _ref_ids(refs: object) -> list[str]:
     """Peer ids from a relationship projection (a list of IssueEdge ref dicts)."""
     return [
         pid
-        for ref in cast("Sequence[Mapping[str, object]]", refs or ())
+        for ref in cast(Sequence[Mapping[str, object]], refs or ())
         if (pid := str(ref.get("id")))
     ]
 

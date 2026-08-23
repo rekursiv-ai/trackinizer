@@ -10,7 +10,6 @@ import contextlib
 import io
 import json
 import threading
-import time
 
 from trackinizer.client.client import Client
 from trackinizer.trax.run.adapters.base import Event
@@ -82,7 +81,7 @@ class _FakeClient:
         )
 
     def append_events(self, session_id: UUID, events: object) -> AppendEventsResponse:
-        evs = list(cast("list[EventBody]", events))
+        evs = list(cast(list[EventBody], events))
         self.appended.append((session_id, evs))
         return AppendEventsResponse(appended=len(evs), skipped=0)
 
@@ -433,7 +432,7 @@ class TestResilientSink:
         lines = fallback_path.read_text(encoding="utf-8").splitlines()
         assert [json.loads(line)["seq"] for line in lines] == [0, 1]
         # The user is warned once, on stderr, not flooded per-event.
-        err = cast("Any", capsys).readouterr().err
+        err = cast(Any, capsys).readouterr().err
         assert err.count("[trax run]") == 1
         assert "falling back to local capture" in err
         assert str(fallback_path) in err
@@ -519,6 +518,7 @@ class _BlockingSink:
 
     def __init__(self, release: threading.Event) -> None:
         self._release = release
+        self.entered = threading.Event()
         self.log: list[tuple[str, str]] = []
         self._lock = threading.Lock()
 
@@ -537,6 +537,7 @@ class _BlockingSink:
 
     def flush(self) -> None:
         self._record("flush", "enter")
+        self.entered.set()
         self._release.wait(5.0)
         self._record("flush", "exit")
 
@@ -562,17 +563,14 @@ class TestLockedSink:
         # A drain thread enters flush and blocks inside it (holding the lock).
         flusher = threading.Thread(target=sink.flush, daemon=True)
         flusher.start()
-        # Wait until the flush is genuinely in flight.
-        deadline = time.monotonic() + 2.0
-        while inner.log[:1] != [("flush", "enter")] and time.monotonic() < deadline:
-            time.sleep(0.005)
+        assert inner.entered.wait(2.0), "flush never entered the wrapped sink"
         assert inner.log[:1] == [("flush", "enter")]
 
         # Main thread calls close; without the lock it would run concurrently.
         closer = threading.Thread(target=sink.close, daemon=True)
         closer.start()
-        # Give close a chance to (wrongly) start before the flush completes.
-        time.sleep(0.1)
+        closer.join(timeout=0.01)
+        assert closer.is_alive(), "close returned while flush held the lock"
         assert ("close", "enter") not in inner.log, (
             "close must block until the in-flight flush releases the lock"
         )
@@ -611,15 +609,13 @@ class TestLockedSink:
         inner = _BlockingSink(release)
         sink = LockedSink(cast(Sink, inner))
         # Bound the wait short so the test is fast; the wedge outlives it.
-        sink._CLOSE_LOCK_TIMEOUT_SEC = 0.2
+        sink._CLOSE_LOCK_TIMEOUT_SEC = 0.02
 
         # A drain thread enters flush and stays wedged inside it (holding the
         # lock) -- the never-releasing server POST the watchdog could not bound.
         flusher = threading.Thread(target=sink.flush, daemon=True)
         flusher.start()
-        deadline = time.monotonic() + 2.0
-        while inner.log[:1] != [("flush", "enter")] and time.monotonic() < deadline:
-            time.sleep(0.005)
+        assert inner.entered.wait(2.0), "flush never entered the wrapped sink"
         assert inner.log[:1] == [("flush", "enter")]
 
         # close() on the main path must RETURN despite the held lock, not hang.

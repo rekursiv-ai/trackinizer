@@ -411,7 +411,7 @@ class ResilientSink:
         if drain is None:
             return
         fallback = self._ensure_fallback()
-        for body in cast("list[EventBody]", drain()):
+        for body in cast(list[EventBody], drain()):
             fallback.write_body(self._adapter_for_fallback, body)
 
     def _ensure_fallback(self) -> FileSink:

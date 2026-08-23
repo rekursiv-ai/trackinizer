@@ -49,6 +49,7 @@ from fastapi.staticfiles import StaticFiles
 # here, so deferring it buys nothing and splits one import across two forms.
 import asyncpg  # noqa: TC002 -- see above.
 
+from trackinizer.lib.custom_json import int_val
 from trackinizer.lib.postgres import Conn, DatabaseEngine
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.auth import (
@@ -377,7 +378,7 @@ def _feed_cursor(
             status_code=400,
             detail="after_created, after_session, after_seq must be given together",
         )
-    return (cast(datetime, created), cast(UUID, session_id), cast(int, seq))
+    return (cast(datetime, created), cast(UUID, session_id), int_val(seq, 0))
 
 
 def graph_legend() -> dict[str, list[str]]:

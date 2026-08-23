@@ -15,20 +15,17 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Final, Self, cast
+from typing import Any, Final, Self, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import uuid
 
 from pytest_postgresql.exceptions import ExecutableMissingException
+from pytest_postgresql.executor import PostgreSQLExecutor
 from pytest_postgresql.janitor import DatabaseJanitor
 
 import pytest
 import pytest_asyncio
-
-
-if TYPE_CHECKING:
-    from pytest_postgresql.executor import PostgreSQLExecutor
 
 from trackinizer.lib import postgres
 from trackinizer.lib.postgres import DatabaseEngine
@@ -45,7 +42,11 @@ from trackinizer.server.store.core import Store, StubEmbedder
 # directory of the conftest that names it, so binding it here is what points
 # every trackinizer test's XDG lookups at a tmp dir instead of the developer's
 # own -- notably trax profiles, which live under ``config_dir``.
-__all__ = ["isolate_user_dirs", "pytest_collection_modifyitems", "pytest_configure"]
+__all__ = [
+    "isolate_user_dirs",
+    "pytest_collection_modifyitems",
+    "pytest_configure",
+]
 
 
 def make_conn() -> AsyncMock:
@@ -176,7 +177,7 @@ def executed_sql(conn: AsyncMock) -> list[str]:
     sql: list[str] = []
     for name, args, _kwargs in conn.mock_calls:
         if name in {"execute", "fetch"} and args:
-            sql.append(cast(str, args[0]))
+            sql.append(str(args[0]))
     return sql
 
 
@@ -229,7 +230,7 @@ def pg_dsn(request: pytest.FixtureRequest) -> Iterator[str]:
     """
     try:
         postgresql_proc = cast(
-            "PostgreSQLExecutor", request.getfixturevalue("postgresql_proc")
+            PostgreSQLExecutor, request.getfixturevalue("postgresql_proc")
         )
     except ExecutableMissingException as exc:
         pytest.skip(f"PostgreSQL toolchain unavailable: {exc}")
@@ -285,3 +286,13 @@ async def integ_store(
     """Per-test ``Store`` on the shared engine; tables truncated each call."""
     await truncate_all(integ_engine)
     yield Store(integ_engine, embed=StubEmbedder())
+
+
+@pytest.fixture(scope="session")
+def pglite_extensions() -> tuple[str, ...]:
+    """Trackinizer's schema declares a ``vector`` column, so pgvector loads.
+
+    Overrides the default in ``trackinizer.lib.postgres.testing``: without it
+    ``Store.bootstrap`` fails with ``extension "vector" is not available``.
+    """
+    return ("pgvector",)

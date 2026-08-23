@@ -390,7 +390,7 @@ _EDGE_ANNOTATION_KINDS: dict[str, frozenset[str]] = {
     if spec.applies_to_edge_kinds is not None
 }
 
-_VALID_EDGE_KINDS: frozenset[str] = frozenset(get_args(Edge.Kind.__value__))
+_VALID_EDGE_KINDS = cast(frozenset[str], frozenset(get_args(Edge.Kind.__value__)))
 
 
 def _reject_unknown_edge_kind(edge_kind: Edge.Kind) -> None:

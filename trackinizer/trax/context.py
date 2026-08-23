@@ -51,16 +51,15 @@ def out_stream() -> TextIO:
     """The stream ``echo`` should write to."""
     if (stream := OUT_STREAM.get()) is not None:
         return stream
-    # typeshed declares ``sys.stdout`` as ``TextIO | Any``; narrow it so the
     # fallback does not widen this function's return type.
-    return cast("TextIO", sys.stdout)
+    return cast(TextIO, sys.stdout)
 
 
 def err_stream() -> TextIO:
     """The stream ``echo(err=True)`` should write to."""
     if (stream := ERR_STREAM.get()) is not None:
         return stream
-    return cast("TextIO", sys.stderr)
+    return cast(TextIO, sys.stderr)
 
 
 def env(name: str) -> str | None:

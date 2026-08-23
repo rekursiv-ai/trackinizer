@@ -16,6 +16,7 @@ import uuid
 
 import asyncpg
 
+from trackinizer.lib.custom_json import int_val
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
@@ -691,10 +692,10 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     conn,
                     from_id=edge.from_id
                     if edge.from_id is not None
-                    else ids[cast(int, edge.from_index)],
+                    else ids[int_val(edge.from_index, 0)],
                     to_id=edge.to_id
                     if edge.to_id is not None
-                    else ids[cast(int, edge.to_index)],
+                    else ids[int_val(edge.to_index, 0)],
                     edge_kind=edge.edge_kind,
                     priority=edge.priority,
                     note=edge.note,

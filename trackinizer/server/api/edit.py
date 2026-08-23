@@ -21,7 +21,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from trackinizer.lib.custom_json import MutableJSON
+from trackinizer.lib.custom_json import MutableJSON, float_val
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.auth import (
     AuthIdentity,
@@ -162,17 +162,17 @@ async def _set_value(
     # the submit path. The Store guarantees only that the column stays
     # non-NULL (no DELETE route, since ``account`` is required).
     if route.column == "account":
-        await assert_account_active(store.engine, cast(str, value))
+        await assert_account_active(store.engine, str(value))
     if route.cost_axis is not None:
         return await store.set_cost_axis(
             target_id,
             cast(_CostAxis, route.cost_axis),
-            cast(float, value),
+            float_val(value),
             api_key_id=identity.api_key_id,
             actor=actor,
             reason=reason,
         )
-    method = cast(_SetterMethod, getattr(store, cast(str, route.set_method)))
+    method = cast(_SetterMethod, getattr(store, str(route.set_method)))
     extra = {"reason": reason} if route.supports_reason else {}
     return await method(
         target_id, value, api_key_id=identity.api_key_id, actor=actor, **extra
@@ -261,7 +261,7 @@ async def _run_patch(
     # add_<stem> setter, so they carry no add_method/sub_method; handle
     # them before the list-method dispatch.
     if route.cost_axis is not None:
-        amount = cast(float, body.value) * (1 if body.op == "add" else -1)
+        amount = float_val(body.value) * (1 if body.op == "add" else -1)
         return await store.add_cost(
             target_id,
             Cost(**{route.cost_axis: amount}),

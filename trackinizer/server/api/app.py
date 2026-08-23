@@ -293,7 +293,7 @@ class _RequestLogSpan:
 
     async def send(self, message: Message) -> None:
         if message["type"] == "http.response.start":
-            self.status_code = cast(int, message["status"])
+            self.status_code = int(message["status"])
             self.response_start_sec = time.perf_counter() - self.started
             headers = list(cast(list[tuple[bytes, bytes]], message.get("headers", [])))
             headers = [

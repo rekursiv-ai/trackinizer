@@ -6,7 +6,9 @@ from collections.abc import Generator
 from pathlib import Path
 
 import contextlib
+import os
 import socket
+import tempfile
 import threading
 
 import pytest
@@ -21,6 +23,7 @@ from trackinizer.trax.daemon.protocol import (
     Request,
     Response,
     read_frame,
+    socket_address,
     write_frame,
 )
 
@@ -30,7 +33,8 @@ def serving(path: Path, *, version: str = "v1") -> Generator[list[Request]]:
     """Run a one-shot echo daemon on ``path``, recording requests it sees."""
     seen: list[Request] = []
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    listener.bind(str(path))
+    address = socket_address(path)
+    listener.bind(str(address))
     listener.listen(8)
 
     def serve() -> None:
@@ -60,6 +64,7 @@ def serving(path: Path, *, version: str = "v1") -> Generator[list[Request]]:
         yield seen
     finally:
         listener.close()
+        address.unlink(missing_ok=True)
 
 
 class TestShouldDelegate:
@@ -156,6 +161,26 @@ class TestDelegate:
             is None
         )
 
+    def test_falls_back_when_a_long_socket_alias_cannot_be_secured(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Optional delegation must not replace a working in-process CLI."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(tempfile, "tempdir", "runtime")
+        alias_root = Path(tempfile.gettempdir()) / f"t-{os.getuid():x}"
+        alias_root.mkdir(parents=True)
+        alias_root.chmod(0o750)
+
+        assert (
+            delegate(
+                ["issue"],
+                socket_override=Path("long-logical-segment-" * 8) / "traxd.sock",
+                source_version="v1",
+                spawn=False,
+            )
+            is None
+        )
+
     def test_returns_none_on_a_stale_socket_file(self, tmp_path: Path) -> None:
         """A socket file left by a killed daemon must not hang the CLI."""
         sock = tmp_path / "traxd.sock"
@@ -180,7 +205,8 @@ class TestDelegate:
         sock = tmp_path / "traxd.sock"
         received: list[Request] = []
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        listener.bind(str(sock))
+        address = socket_address(sock)
+        listener.bind(str(address))
         listener.listen(1)
 
         def serve_then_die() -> None:
@@ -202,6 +228,7 @@ class TestDelegate:
         finally:
             thread.join(timeout=5)
             listener.close()
+            address.unlink(missing_ok=True)
 
         assert received, "the daemon received the request before the connection died"
 

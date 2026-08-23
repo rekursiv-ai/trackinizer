@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import cast
 from unittest.mock import AsyncMock
 
 import asyncio
@@ -209,7 +208,7 @@ class TestListKindFilterLowering:
         store, _engine = make_store(conn)
         await store.list_kind("Issue", limit=limit, filters=filters)
         sql, *_params = conn.fetch.call_args_list[0].args
-        return cast(str, sql)
+        return str(sql)
 
     @pytest.mark.asyncio
     async def test_lowers_an_equality_filter_into_sql(self) -> None:
@@ -257,11 +256,11 @@ class TestListKindFilterLowering:
         assert "LIMIT" in sql
 
     @pytest.mark.asyncio
-    async def test_lowers_list_membership_to_any(self) -> None:
-        """``label is x`` matches ANY element, which ``= ANY(col)`` expresses."""
+    async def test_lowers_text_array_membership_to_gin_containment(self) -> None:
+        """``label is x`` uses containment so the GIN index can serve it."""
         sql = await self.sql_for(Filter(field="labels", op="is", value="bug"))
 
-        assert "$2 = ANY(labels::text[])" in sql
+        assert "labels @> ARRAY[$2]::text[]" in sql
         assert "LIMIT" in sql
 
     @pytest.mark.asyncio

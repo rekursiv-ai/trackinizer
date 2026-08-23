@@ -48,6 +48,6 @@ def test_no_filterable_column_routes_a_regex_to_python() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing import test_main
+    from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

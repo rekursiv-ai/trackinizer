@@ -161,9 +161,7 @@ def _str(value: object) -> str:
 
 
 def _mapping(value: object) -> dict[str, object]:
-    return (
-        dict(cast("Mapping[str, object]", value)) if isinstance(value, Mapping) else {}
-    )
+    return dict(cast(Mapping[str, object], value)) if isinstance(value, Mapping) else {}
 
 
 def _list(value: object) -> list[object]:

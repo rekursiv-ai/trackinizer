@@ -317,7 +317,9 @@ class TestStoreBootstrap:
             await store.bootstrap()
 
     @pytest.mark.asyncio
-    async def test_bootstrap_retries_transient_connection_death(self) -> None:
+    async def test_bootstrap_retries_transient_connection_death(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A connection dropped mid-bootstrap retries on a fresh acquire.
 
         Under whole-suite load the PGlite Node child can be starved off its
@@ -326,6 +328,7 @@ class TestStoreBootstrap:
         reconnects, and the idempotent pass replays. Without the retry the first
         ``ConnectionDoesNotExistError`` propagates and bootstrap fails.
         """
+        monkeypatch.setattr("trackinizer.server.store.core.asyncio.sleep", AsyncMock())
         conn = make_conn()
         calls = {"n": 0}
         first_real_execute = conn.execute.side_effect
@@ -415,13 +418,16 @@ class TestStoreBootstrap:
         assert conn.execute.await_count == 1
 
     @pytest.mark.asyncio
-    async def test_bootstrap_retries_connection_closed_interface_error(self) -> None:
+    async def test_bootstrap_retries_connection_closed_interface_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A connection-closed ``InterfaceError`` is transient and retried.
 
         This is the real PGlite Node-death signal (asyncpg raises a plain
         ``InterfaceError('connection is closed')``), so it must still retry --
         narrowing by message must not lose the case the retry exists for.
         """
+        monkeypatch.setattr("trackinizer.server.store.core.asyncio.sleep", AsyncMock())
         conn = make_conn()
         calls = {"n": 0}
         first_real = conn.execute.side_effect

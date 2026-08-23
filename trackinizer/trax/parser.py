@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Literal, cast, get_args
 import uuid
 
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.custom_json import float_val
 from trackinizer.trax.grammar import (
     AGAINST_RELATION_SPELLINGS,
     COST_FIELDS,
@@ -967,7 +968,7 @@ def _apply_valence_alias(edge: Edge, metadata: dict[str, object]) -> dict[str, o
     if given is None:
         metadata["valence"] = edge.valence_default
         return metadata
-    value = float(cast(float, given))
+    value = float_val(given)
     if value < 0:
         # The magnitude is non-negative; the for/against polarity is carried by
         # the spelling (plain vs ``dis*``), not by a negative value. A positive
@@ -1196,7 +1197,7 @@ def _append_inline_list_value(
     if existing is None:
         fields.append(SetField(field=parsed_field, value=(value,)))
         return fields
-    extended = (*cast("tuple[object, ...]", existing.value), value)
+    extended = (*cast(tuple[object, ...], existing.value), value)
     return [
         SetField(field=parsed_field, value=extended) if f is existing else f
         for f in fields

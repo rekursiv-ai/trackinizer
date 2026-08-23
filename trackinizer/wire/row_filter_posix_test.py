@@ -96,6 +96,7 @@ class TestDigitAndSpaceAreAsciiInBothEngines:
         assert found is postgres_says
 
 
+@pytest.mark.compute_large_fixture
 class TestTheWhitespaceClassIsExact:
     r"""``\s`` is neither ASCII-only nor Python's set; it is its own set.
 
@@ -140,7 +141,7 @@ class TestTheWhitespaceClassIsExact:
         # so it is a second table -- and the first version of it was ASCII-only
         # while the outside-bracket one was already exact. One table being
         # right does not make the other right.
-        extra: frozenset[int] = frozenset({ord("x")} if "x" in pattern else set())
+        extra = frozenset({ord("x")} if "x" in pattern else set[int]())
         assert self.matching(pattern) == self.POSTGRES_SPACE | extra
 
     def test_the_digit_class_matches_no_non_ascii_digit(self) -> None:
@@ -251,6 +252,6 @@ class TestNonAsciiAgreesWithPostgres:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing import test_main
+    from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

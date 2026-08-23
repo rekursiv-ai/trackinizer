@@ -286,7 +286,7 @@ class FakeClient:
             )
             if row is None:
                 return ref.kind, self.target_id
-            return ref.kind, uuid.UUID(cast(str, row["id"]))
+            return ref.kind, uuid.UUID(str(row["id"]))
         return "Issue", ref.uuid
 
     def resolve_ids(
@@ -465,7 +465,7 @@ class FakeClient:
                 None,
             )
             target_id = (
-                uuid.UUID(cast(str, match_row["id"]))
+                uuid.UUID(str(match_row["id"]))
                 if match_row is not None
                 else self.target_id
             )

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from datetime import datetime
-from pathlib import Path
 from typing import cast
 
 import uuid
@@ -24,7 +23,10 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.postgres import PGliteEngine
+from trackinizer.lib.postgres.testing import reset_schema
+from trackinizer.server.store import read
 from trackinizer.server.store.core import Store, StubEmbedder
+from trackinizer.server.values import vetted_sql
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import ValidationError
 from trackinizer.types.inquiries import Inquiry
@@ -43,15 +45,13 @@ from trackinizer.wire.filters import (
 )
 
 
-@pytest_asyncio.fixture
-async def store(tmp_path: Path) -> AsyncIterator[Store]:
-    """A bootstrapped Store over an ephemeral in-process PGlite engine."""
-    async with PGliteEngine(
-        workdir=tmp_path / "pglite", persist=False, extensions=("pgvector",)
-    ) as engine:
-        store = Store(engine, embed=StubEmbedder())
-        await store.bootstrap()
-        yield store
+@pytest_asyncio.fixture(loop_scope="session")
+async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
+    """A bootstrapped Store over the session's shared PGlite engine."""
+    await reset_schema(pglite_engine)
+    store = Store(pglite_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    yield store
 
 
 async def seed(store: Store) -> None:
@@ -199,7 +199,7 @@ CASES: tuple[tuple[FilterOp, str, str], ...] = (
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize(("op", "field", "value"), CASES)
 async def test_sql_and_python_select_the_same_rows(
     store: Store, op: FilterOp, field: str, value: str
@@ -216,7 +216,7 @@ async def test_sql_and_python_select_the_same_rows(
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_a_uuid_array_column_filters_against_a_real_engine(
     store: Store,
 ) -> None:
@@ -252,7 +252,7 @@ async def test_a_uuid_array_column_filters_against_a_real_engine(
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize(
     ("op", "value"), [("is", "-0.0"), ("is", "0.0"), ("ne", "-0.0"), ("re", r"^-0\.0$")]
 )
@@ -288,7 +288,7 @@ async def test_negative_zero_renders_alike_in_both_evaluators(
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize(
     ("op", "value"),
     [
@@ -340,7 +340,7 @@ async def test_an_extreme_date_renders_alike_in_both_evaluators(
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_an_order_op_on_text_is_refused_by_both_paths(store: Store) -> None:
     """Neither evaluator may order text, because they order it differently.
 
@@ -374,7 +374,7 @@ def test_a_presence_op_on_a_not_null_column_is_refused(column: str) -> None:
     """
     for op in ("isnull", "notnull"):
         with pytest.raises(ValueError, match="NOT NULL"):
-            Filter(field=column, op=cast("FilterOp", op), value="")
+            Filter(field=column, op=cast(FilterOp, op), value="")
 
 
 def test_ambiguous_escape_is_refused_rather_than_translated() -> None:
@@ -393,7 +393,7 @@ def test_ambiguous_escape_is_refused_rather_than_translated() -> None:
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_every_op_is_covered_by_a_case() -> None:
     """A new ``FilterOp`` must arrive with an equivalence case.
 
@@ -404,7 +404,7 @@ async def test_every_op_is_covered_by_a_case() -> None:
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
 async def test_a_fully_lowered_query_keeps_limit_in_sql(store: Store) -> None:
     """The point of lowering: window in the query, not after the fetch."""
     await seed(store)
@@ -419,7 +419,62 @@ async def test_a_fully_lowered_query_keeps_limit_in_sql(store: Store) -> None:
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="session")
+async def test_text_array_membership_can_use_the_gin_index(store: Store) -> None:
+    """The lowered labels predicate must remain eligible for its GIN index."""
+    params: list[object] = []
+    clause = read._lower_filter(Filter(field="labels", op="is", value="needle"), params)
+    assert clause is not None
+
+    async with store.engine.acquire() as conn:
+        await conn.execute("CREATE TEMP TABLE filter_probe (labels TEXT[])")
+        await conn.execute(
+            "CREATE INDEX filter_probe_labels_gin ON filter_probe USING gin(labels)"
+        )
+        await conn.execute("INSERT INTO filter_probe VALUES (ARRAY['needle']::text[])")
+        await conn.execute("SET enable_seqscan = off")
+        rows = await conn.fetch(
+            vetted_sql(
+                "EXPLAIN (COSTS OFF) SELECT * FROM filter_probe WHERE ",
+                clause,
+            ),
+            *params,
+        )
+
+    plan = "\n".join(str(row[0]) for row in rows)
+    assert "filter_probe_labels_gin" in plan
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_uuid_array_membership_preserves_parameter_typing(store: Store) -> None:
+    """Optimizing text arrays must not cast UUID-array operands to text."""
+    target = uuid.uuid4()
+    params: list[object] = []
+    clause = read._lower_filter(
+        Filter(field="experiment_codechanges", op="is", value=str(target)),
+        params,
+    )
+    assert clause is not None
+
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "CREATE TEMP TABLE filter_probe (experiment_codechanges UUID[])"
+        )
+        await conn.execute(
+            "INSERT INTO filter_probe VALUES (ARRAY[$1]::uuid[])",
+            target,
+        )
+        count = await conn.fetchval(
+            vetted_sql("SELECT count(*) FROM filter_probe WHERE ", clause),
+            *params,
+        )
+
+    assert count == 1
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize("offset", [0, 1, 2])
 async def test_paging_agrees_between_the_two_paths(store: Store, offset: int) -> None:
     """Python slices the kept rows; SQL uses OFFSET. They must land alike."""

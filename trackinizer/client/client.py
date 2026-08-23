@@ -41,6 +41,8 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Self, cast
 from urllib.parse import urlparse
 
 import json
+import logging
+import threading
 import time
 import uuid
 
@@ -59,6 +61,9 @@ from trackinizer.wire.routes import (
     inquiry_field_path,
 )
 from trackinizer.wire.seq_ranges import SeqRange, format_interval
+
+
+logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
@@ -146,7 +151,7 @@ def _require_field(payload: object, field: str, where: str) -> object:
 def _require_uuid(value: object, where: str) -> uuid.UUID:
     """Parse ``value`` into a ``UUID``, wrapping a bad value as ``ClientError``."""
     try:
-        return uuid.UUID(cast(str, value))
+        return uuid.UUID(str(value))
     except (ValueError, TypeError, AttributeError) as err:
         raise ClientError(f"{where} returned a malformed id {value!r}: {err}") from err
 
@@ -221,6 +226,37 @@ def _clean_params(
     return tuple(out) or None
 
 
+def _transport_failure(error: httpx.TransportError) -> tuple[str, str]:
+    """Return stable coarse and detailed transport classifications."""
+    message = str(error).casefold()
+    if isinstance(error, httpx.ConnectTimeout):
+        detail = (
+            "tls_handshake_timeout"
+            if "handshake operation timed out" in message
+            else "connect_timeout"
+        )
+        return "connect_timeout", detail
+    if isinstance(error, httpx.ConnectError):
+        if "connection refused" in message:
+            return "connect_error", "connection_refused"
+        if "connection reset" in message:
+            return "connect_error", "connection_reset"
+        return "connect_error", "connect_error"
+    if isinstance(error, httpx.ReadTimeout):
+        return "read_timeout", "read_timeout"
+    if isinstance(error, httpx.ReadError):
+        return "read_error", "read_error"
+    if isinstance(error, httpx.WriteTimeout):
+        return "write_timeout", "write_timeout"
+    if isinstance(error, httpx.WriteError):
+        return "write_error", "write_error"
+    if isinstance(error, httpx.PoolTimeout):
+        return "pool_timeout", "pool_timeout"
+    if isinstance(error, httpx.RemoteProtocolError):
+        return "remote_protocol_error", "remote_protocol_error"
+    return "transport_error", "transport_error"
+
+
 class EdgeWrite(NamedTuple):
     """Outcome of an edge upsert.
 
@@ -249,9 +285,18 @@ class Client:
         self.author = author
         self.api_key = api_key
         self.timeout_sec = timeout_sec
+        self._client_id = uuid.uuid4().hex[:12]
+        self._created_at = time.monotonic()
+        self._request_count = 0
+        self._request_count_lock = threading.Lock()
         headers: dict[str, str] = {"Accept": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+        limits = httpx.Limits(
+            max_connections=8,
+            max_keepalive_connections=8,
+            keepalive_expiry=90.0,
+        )
         # ``timeout_sec`` is the per-read budget, not total wall-clock;
         # with retries a single call can wait up to ~3x that. The other
         # phases are split out: a short connect window covers DNS+TLS+TCP,
@@ -268,8 +313,8 @@ class Client:
             # Idle-socket lifetime in the pool. Kept below the smallest upstream
             # idle timeout in the path (Cloudflare's ~100s, Caddy's 2m) so the
             # client is the one that decides when to evict.
-            limits=httpx.Limits(keepalive_expiry=90.0),
-            transport=httpx.HTTPTransport(retries=1),
+            limits=limits,
+            transport=httpx.HTTPTransport(retries=1, limits=limits),
             headers=headers,
         )
 
@@ -1136,6 +1181,9 @@ class Client:
         # Mint one if the caller didn't, so every retry in this loop
         # reuses the *same* UUID and the server sees a replay rather than
         # a duplicate operation.
+        with self._request_count_lock:
+            self._request_count += 1
+            request_index = self._request_count
         headers: dict[str, str] = {}
         if method != "GET":
             if change_id is None:
@@ -1162,6 +1210,13 @@ class Client:
                 httpx.WriteError,
                 httpx.WriteTimeout,
             ) as err:
+                self._log_transport_failure(
+                    method,
+                    path,
+                    err,
+                    request_index=request_index,
+                    attempt=attempt + 1,
+                )
                 raise ClientError(f"{method} {path} failed: {err}") from err
             except (
                 httpx.RemoteProtocolError,
@@ -1169,6 +1224,13 @@ class Client:
                 httpx.ReadTimeout,
                 httpx.PoolTimeout,
             ) as err:
+                self._log_transport_failure(
+                    method,
+                    path,
+                    err,
+                    request_index=request_index,
+                    attempt=attempt + 1,
+                )
                 if attempt == retry_attempts - 1:
                     raise ClientError(f"{method} {path} failed: {err}") from err
                 time.sleep(0.1 * (3**attempt))
@@ -1210,3 +1272,46 @@ class Client:
             raise ClientError(
                 f"{method} {path}: malformed JSON in server response"
             ) from err
+
+    def _log_transport_failure(
+        self,
+        method: str,
+        path: str,
+        error: httpx.TransportError,
+        *,
+        request_index: int,
+        attempt: int,
+    ) -> None:
+        """Log transport context without request bodies, queries, or tokens."""
+        failure_class, failure_detail = _transport_failure(error)
+        client_age_sec = time.monotonic() - self._created_at
+        logger.warning(
+            "event=trackinizer_transport_failure method=%s path=%s server=%s "
+            "client_id=%s client_request_index=%d attempt=%d "
+            "client_age_sec=%.6f failure_class=%s failure_detail=%s "
+            "error_type=%s error=%s",
+            method,
+            path,
+            self.base_url,
+            self._client_id,
+            request_index,
+            attempt,
+            client_age_sec,
+            failure_class,
+            failure_detail,
+            type(error).__name__,
+            error,
+            extra={
+                "event": "trackinizer_transport_failure",
+                "method": method,
+                "path": path,
+                "server": self.base_url,
+                "client_id": self._client_id,
+                "client_request_index": request_index,
+                "attempt": attempt,
+                "client_age_sec": client_age_sec,
+                "failure_class": failure_class,
+                "failure_detail": failure_detail,
+                "error_type": type(error).__name__,
+            },
+        )

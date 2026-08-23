@@ -28,6 +28,7 @@ from trackinizer.server.api.app import app
 from trackinizer.server.config import (
     Config,
     ConfigError,
+    session_max_age_from_env,
 )
 
 
@@ -69,21 +70,67 @@ def build_app() -> FastAPI:
     """Build a fully configured app from ``sys.argv``.
 
     The entry point for a forked uvicorn worker. A worker is a fresh
-    interpreter that re-imports this module, so nothing the parent attached
-    to ``app.state`` survives; the configuration is re-derived here from the
-    argv the child inherited, keeping one source of truth with :func:`main`.
+    interpreter that re-imports this module, so nothing the parent set up
+    survives -- not ``app.state``, not the logging configuration, not the
+    filters on the process-wide loggers. Every startup step is therefore
+    re-derived here from the argv the child inherited, which is what keeps
+    one source of truth with :func:`main`.
     """
-    parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 1)[0],
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    args, _remaining = _parse_args(parser)
+    args, _log_level = _start_process()
     _configure_app(args)
     return app
 
 
 def main() -> None:
     """Parse args, configure the app, and run uvicorn."""
+    args, log_level = _start_process()
+    # One worker runs the app in THIS process, so hand uvicorn the object it
+    # is already holding. More than one forks children that re-import, which
+    # only an import string can name -- passing the object there makes
+    # uvicorn refuse the fan-out and exit 3.
+    single_worker = args.workers <= 1
+    target: FastAPI | str = APP_FACTORY_TARGET
+    if single_worker:
+        _configure_app(args)
+        target = app
+    uvicorn.run(
+        target,
+        factory=not single_worker,
+        host=args.host,
+        port=args.port,
+        workers=args.workers,
+        # Also sets the level of ``uvicorn.access``, which logs one INFO line
+        # per request. Without this the flag configures only this package's
+        # logger and uvicorn keeps its own INFO default, so an operator who
+        # asked for WARNING still gets an access line per request -- behind a
+        # proxy that is a duplicate of the proxy's log, with the proxy's IP
+        # instead of the caller's, and it fills the log partition.
+        log_level=log_level,
+        timeout_keep_alive=args.timeout_keep_alive,
+        # Force-close connections immediately on shutdown instead of waiting for
+        # them to drain. Without this, uvicorn's default (wait indefinitely) made
+        # SIGTERM hang on a held connection (e.g. an open Web UI tab) until the
+        # 240s keep-alive window -- the "Waiting for connections to close" stall.
+        # In-flight DB writes are atomic (a force-closed asyncpg/PGlite tx rolls
+        # back), so there is nothing to drain for; 0 = don't wait, tear down now.
+        timeout_graceful_shutdown=0,
+    )
+
+
+def _start_process() -> tuple[argparse.Namespace, int | None]:
+    """Parse argv and apply every invariant a fresh server process needs.
+
+    Called by BOTH entry points. ``main`` runs in the supervisor; ``build_app``
+    runs in each forked worker, which is a fresh interpreter that inherited
+    only argv. Anything written into just one of them applies to only half the
+    deployment -- and the half that serves requests is the worker.
+
+    Returns:
+        args: The parsed arguments.
+        log_level: Resolved numeric level to hand uvicorn, or None when
+            neither the flag nor the environment named one.
+
+    """
     parser = argparse.ArgumentParser(
         description=(__doc__ or "").split("\n", 1)[0],
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -98,34 +145,15 @@ def main() -> None:
             "PGlite is single-process; --workers > 1 corrupts the workdir. "
             "Use --workers 1 or run on --engine pg."
         )
-    _configure_logging(args.log_level)
-    # One worker runs the app in THIS process, so hand uvicorn the object it
-    # is already holding. More than one forks children that re-import, which
-    # only an import string can name -- passing the object there makes
-    # uvicorn refuse the fan-out and exit 3.
-    single_worker = args.workers <= 1
-    target: FastAPI | str = APP_FACTORY_TARGET
-    if single_worker:
-        _configure_app(args)
-        target = app
+    log_level = _configure_logging(args.log_level)
     # Silence uvicorn's spurious zero-task cancel ERROR on every clean shutdown
     # (a consequence of timeout_graceful_shutdown=0); a real N>0 cancel still logs.
-    logging.getLogger("uvicorn.error").addFilter(_SuppressZeroTaskCancel())
-    uvicorn.run(
-        target,
-        factory=not single_worker,
-        host=args.host,
-        port=args.port,
-        workers=args.workers,
-        timeout_keep_alive=args.timeout_keep_alive,
-        # Force-close connections immediately on shutdown instead of waiting for
-        # them to drain. Without this, uvicorn's default (wait indefinitely) made
-        # SIGTERM hang on a held connection (e.g. an open Web UI tab) until the
-        # 240s keep-alive window -- the "Waiting for connections to close" stall.
-        # In-flight DB writes are atomic (a force-closed asyncpg/PGlite tx rolls
-        # back), so there is nothing to drain for; 0 = don't wait, tear down now.
-        timeout_graceful_shutdown=0,
-    )
+    # Guarded because the logger is process-wide: uvicorn's reloader and any
+    # re-entry would otherwise stack a second identical filter.
+    error_logger = logging.getLogger("uvicorn.error")
+    if not any(isinstance(f, _SuppressZeroTaskCancel) for f in error_logger.filters):
+        error_logger.addFilter(_SuppressZeroTaskCancel())
+    return args, log_level
 
 
 def _configure_app(args: argparse.Namespace) -> None:
@@ -190,7 +218,7 @@ def _parse_args(
     )
     parser.add_argument(
         "--workers",
-        type=int,
+        type=_positive_worker_count,
         default=1,
         help=(
             "Number of uvicorn workers. Must stay at 1 for --engine pglite "
@@ -234,12 +262,12 @@ def _parse_args(
     )
     parser.add_argument(
         "--session-max-age-seconds",
-        type=int,
-        default=int(
-            os.environ.get(
-                "TRACKINIZER_SESSION_MAX_AGE_SECONDS", str(30 * 24 * 60 * 60)
-            )
-        ),
+        # Reuse config's reader rather than a second `int(os.environ...)`: it
+        # owns the default and rejects a non-integer or non-positive TTL with a
+        # clean error. A bare int() here duplicated the default and turned an
+        # operator typo into a raw ValueError traceback before --help rendered.
+        default=_session_ttl_default(),
+        type=_positive_session_ttl,
         help=(
             "Session-cookie TTL in seconds (default: 30 days, or "
             "$TRACKINIZER_SESSION_MAX_AGE_SECONDS)."
@@ -263,11 +291,53 @@ def _parse_args(
     return parser.parse_known_args(argv)
 
 
-def _configure_logging(level: str | None) -> None:
-    """Set the package log level from the flag or ``TRACKINIZER_LOG_LEVEL``."""
+def _session_ttl_default() -> int:
+    """Read the env TTL, turning a bad value into a clean process exit."""
+    try:
+        return session_max_age_from_env()
+    except ConfigError as err:
+        # Same translation _configure_app performs: library code raises
+        # ConfigError, and the CLI is the one place that turns it into an exit.
+        raise SystemExit(str(err)) from err
+
+
+def _positive_session_ttl(value: str) -> int:
+    """Parse a ``--session-max-age-seconds`` value; reject non-positive."""
+    seconds = int(value)
+    if seconds < 1:
+        raise argparse.ArgumentTypeError(
+            f"session TTL must be >= 1 second, got {seconds}"
+        )
+    return seconds
+
+
+def _positive_worker_count(value: str) -> int:
+    """Parse a ``--workers`` value; reject zero and negatives.
+
+    Every ``<=1`` count is treated as single-worker downstream, so without this
+    a typo'd ``-1`` would quietly start a server instead of naming the typo.
+    """
+    workers = int(value)
+    if workers < 1:
+        raise argparse.ArgumentTypeError(f"--workers must be >= 1, got {workers}")
+    return workers
+
+
+def _configure_logging(level: str | None) -> int | None:
+    """Set the package log level from the flag or ``TRACKINIZER_LOG_LEVEL``.
+
+    Args:
+        level: Level name from ``--log-level``, or None to consult the
+            environment.
+
+    Returns:
+        resolved: The numeric level the caller should also hand uvicorn, or
+            None when neither the flag nor the environment named one.
+
+    """
     raw = level or os.environ.get("TRACKINIZER_LOG_LEVEL")
     if not raw:
-        return
+        return None
     value = getattr(logging, raw.upper(), None)
     if not isinstance(value, int):
         raise SystemExit(f"invalid log level {raw!r}")
@@ -276,3 +346,4 @@ def _configure_logging(level: str | None) -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     logger.setLevel(value)
+    return value

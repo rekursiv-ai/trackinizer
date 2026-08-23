@@ -1229,7 +1229,7 @@ def _kind_to_class() -> dict[Inquiry.InquiryKind, type[Inquiry]]:
         cls = queue.pop(0)
         queue.extend(cls.__subclasses__())
         canonical = getattr(module, cls.__name__, cls)
-        mapping[cast("Inquiry.InquiryKind", cls.__name__)] = canonical
+        mapping[cast(Inquiry.InquiryKind, cls.__name__)] = canonical
     return mapping
 
 

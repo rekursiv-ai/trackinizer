@@ -21,6 +21,7 @@ from trackinizer.trax.daemon.protocol import (
     Request,
     Response,
     read_frame,
+    socket_address,
     socket_path,
     write_frame,
 )
@@ -116,7 +117,16 @@ def delegate(
         retried here.
 
     """
-    path = socket_override if socket_override is not None else socket_path()
+    try:
+        path = (
+            socket_address(socket_override)
+            if socket_override is not None
+            else socket_path()
+        )
+    except OSError:
+        # Delegation is optional and nothing has been delivered. An unusable
+        # local socket address must leave the original in-process CLI working.
+        return None
     response = _try_once(argv, path, source_version)
     if response is not None and response.exit_code != STALE_EXIT_CODE:
         return response

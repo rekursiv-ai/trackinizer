@@ -185,9 +185,7 @@ def _content_blocks(obj: JSON) -> tuple[JSON, ...]:
     if not isinstance(content, Sequence) or isinstance(content, str):
         return ()
     return tuple(
-        cast(JSON, b)
-        for b in cast("Sequence[object]", content)
-        if isinstance(b, Mapping)
+        cast(JSON, b) for b in cast(Sequence[object], content) if isinstance(b, Mapping)
     )
 
 
@@ -219,6 +217,4 @@ def _str(value: object) -> str:
 
 
 def _mapping(value: object) -> dict[str, object]:
-    return (
-        dict(cast("Mapping[str, object]", value)) if isinstance(value, Mapping) else {}
-    )
+    return dict(cast(Mapping[str, object], value)) if isinstance(value, Mapping) else {}

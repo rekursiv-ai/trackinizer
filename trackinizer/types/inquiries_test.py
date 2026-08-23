@@ -235,7 +235,7 @@ class TestKindToClass:
         # stale duplicate in ``__subclasses__``) does not spuriously fail the
         # set comparison -- the registry pins to the canonical export.
         assert set(KIND_TO_CLASS.values()) == {
-            KIND_TO_CLASS[cast("Inquiry.InquiryKind", c.__name__)] for c in subclasses
+            KIND_TO_CLASS[cast(Inquiry.InquiryKind, c.__name__)] for c in subclasses
         }
 
     def test_each_kind_maps_to_its_named_class(self) -> None:

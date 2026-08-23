@@ -16,6 +16,7 @@ from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.profile import Profile
 
 
+@pytest.mark.cli_python_subprocess
 def test_cli_import_does_not_load_metric_wire_modules() -> None:
     """Importing the CLI must leave the metric wire modules unloaded.
 
@@ -47,6 +48,7 @@ def test_cli_import_does_not_load_metric_wire_modules() -> None:
     )
 
 
+@pytest.mark.cli_python_subprocess
 def test_module_entrypoint_is_directly_executable() -> None:
     result = subprocess.run(  # noqa: S603 -- test executes a fixed local entrypoint.
         [str(Path(__file__).with_name("__main__.py")), "help"],

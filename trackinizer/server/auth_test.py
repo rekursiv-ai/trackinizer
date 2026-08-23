@@ -71,6 +71,7 @@ class TestHashSecret:
         encoded = hash_secret("hunter2")
         assert not verify_secret("hunter3", encoded)
 
+    @pytest.mark.compute_large_fixture
     def test_distinct_hashes_for_same_secret(self) -> None:
         # Salts must randomize per call; two hashes of the same input
         # must differ -- otherwise the hash leaks a fingerprint.
@@ -96,6 +97,7 @@ class TestHashSecret:
         # exception that would 500 the auth middleware.
         assert not verify_secret("x", "not-an-encoded-hash")
         assert not verify_secret("x", "scrypt$bad$8$1$AAAA$BBBB")
+        assert not verify_secret("x", "scrypt$16384$8$1$AAAA$")
         assert not verify_secret("x", "")
 
     def test_verify_rejects_oversized_scrypt_params(self) -> None:
@@ -374,6 +376,7 @@ class TestCurrentUser:
         assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
+    @pytest.mark.compute_large_fixture
     async def test_prefix_collision_disabled_then_active_resolves_active(self) -> None:
         # Two ``api_keys`` rows share the full secret (same prefix AND
         # same plaintext) -- can arise when an operator disables a user
@@ -589,6 +592,7 @@ class TestVerifiedBearerCache:
         monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {secret}", store=store))
+        caplog.clear()
         with caplog.at_level(logging.INFO):
             await current_user(_request_with(engine, f"Bearer {secret}", store=store))
 
@@ -1450,6 +1454,53 @@ class TestCurrentUserSession:
         assert identity.user_id == bearer_user_id
         assert identity.api_key_id == bearer_key_id
         assert identity.email == "bearer@example.com"
+
+    @pytest.mark.asyncio
+    async def test_bearer_scheme_is_case_insensitive(self) -> None:
+        secret_token, _ = generate_token()
+        bearer_key_id = uuid.uuid4()
+        bearer_row = _row(
+            secret_hash=hash_secret(secret_token),
+            user_id=uuid.uuid4(),
+            key_id=bearer_key_id,
+        )
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = [bearer_row]
+        request = _request_with(
+            engine,
+            authorization=f"bEaReR {secret_token}",
+            cookies={
+                SESSION_COOKIE_NAME: _session_cookie_value(
+                    uuid.uuid4(), "session-secret"
+                ),
+            },
+            config=_config_with_session_secret("session-secret"),
+        )
+
+        identity = await current_user(request)
+
+        assert identity.api_key_id == bearer_key_id
+        engine.conn.fetchrow.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_blank_bearer_does_not_fall_back_to_session(self) -> None:
+        engine = FakeEngine()
+        request = _request_with(
+            engine,
+            authorization="Bearer    ",
+            cookies={
+                SESSION_COOKIE_NAME: _session_cookie_value(
+                    uuid.uuid4(), "session-secret"
+                ),
+            },
+            config=_config_with_session_secret("session-secret"),
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await current_user(request)
+
+        assert exc_info.value.status_code == 401
+        engine.conn.fetchrow.assert_not_awaited()
 
 
 # ---- allowlist_match tests ------------------------------------------------
