@@ -438,98 +438,162 @@ adapters normalize each CLI's native record into a `Message` member.
 None of these require rewriting the data model or the wire contract. They
 layer on the existing seam.
 
-## Addendum: the three polls, and what should replace them
+## Addendum: the drain timer, its discovery scan, and the inbound poll
 
-`trax run` currently runs on timers in three places. None was chosen over
-an alternative -- the CLI-agnostic file tailer was the Phase-0 decision,
-and timers are what a tailer needs when nothing wakes it. All three have a
-cheaper wake signal available now. Each is independent; none touches the
-wire contract or the `Message` model.
+`trax run` waits on timers in **two** loops: the filesystem drain
+(`_drain_filesystem_loop`, `run/session.py`) and the inbound message poll
+(`_inbound_poll_loop`, same file). Neither was chosen over an alternative
+-- the CLI-agnostic file tailer was the Phase-0 decision, and a timer is
+what a tailer needs when nothing wakes it.
 
-### a. Log reading: wake-on-write, not a 0.2s tick
+The drain loop does two jobs per tick: it re-runs session-file DISCOVERY
+and then reads new bytes. Those are separable, and the cost is entirely in
+the first, so they are treated separately below.
 
-`_drain_filesystem_loop` polls every 0.2s (`trax/run/session.py`). A
-regular file cannot be waited on -- POSIX reports it always ready, so
-`select` returns instantly at EOF and a naive wait spins:
+Nothing here touches the wire contract or the `Message` model.
+
+Measurement provenance, since it varies by claim:
+
+- The scan costs in (a) re-run from `docs/probes/scan_cost.py`. They are
+  host- and history-dependent -- claude's figure scales with how many
+  project directories that CLI has accumulated -- so re-run before relying
+  on them.
+- The PTY and hook TIMINGS below came from one-off harnesses that spawn a
+  real CLI (API credits, a live binary, a live session). Those are NOT
+  committed. Each is reported with its sample size inline; treat them as
+  single observations that ruled an option in or out, not as
+  characterizations.
+
+### a. The discovery scan is the cost, not the tick
+
+`_scan_and_read` re-runs the whole session-file search on every 0.2s tick,
+though "which file is mine" is a once-per-run question. Via
+`docs/probes/scan_cost.py`:
+
+| adapter | dirs walked | files matched | scan (median) | tick occupancy |
+|---|--:|--:|--:|--:|
+| claude | 999 | 1989 | 86.0ms | 43% |
+| codex | 1 | 1345 | 14.2ms | 7% |
+| gemini | 5 | 19 | 0.2ms | 0% |
+
+"Tick occupancy" is the share of each 0.2s tick the drain thread spends
+walking directories -- wall-clock time in that thread, largely `stat()`
+syscalls. It is NOT a CPU-utilization figure. A separate cold-cache run
+measured ~570ms for claude; the 86ms above is warm.
+
+Claude's cost is fan-out: `session_dirs()` returns every project directory
+the CLI has ever used (`adapters/claude.py`, an unfiltered `iterdir()`).
+Codex and gemini are already narrow, which is why their rows are cheap.
+
+**Scoping claude's `session_dirs()` to the run's own project directory is
+the single highest-value change here, and it is independent of the timer.**
+The directory name appears to be the cwd with path separators replaced
+(observed: cwd `/opt/scratch/artifacts/trax-hook` ->
+`~/.claude/projects/-opt-scratch-artifacts-trax-hook`), but the full
+encoding is NOT specified anywhere in this repo and one observation is not
+a spec. Deriving it wrong drops capture to zero, which is worse than the
+scan. Establish the encoding against adversarial paths (dots, symlinks,
+resolved vs unresolved cwd, `--resume` from a different cwd) before
+relying on it.
+
+The filename within that directory is a session UUID the CLI mints at
+startup, so it cannot be predicted -- but the search space is one
+directory, not 999.
+
+### b. Wake-on-write instead of a tick
+
+A regular file cannot be waited on: POSIX reports it always ready, so
+`select` returns immediately at EOF and a naive wait spins. Verified:
 
     select on regular file at EOF: returned in 0.03ms, readable=True, read()=''
 
-The kernel does have the signal: **inotify** (`IN_MODIFY`) on Linux,
-**kqueue** (`EVFILT_VNODE`) on macOS. Both reach from the stdlib -- macOS
-needs a compiled extension only for FSEvents, which is a different,
-directory-level API we do not need for growth. This is also what `tail -F`
-does internally (GNU `tail` links inotify and falls back to a 1s sleep
-loop without it), so adopting it is not novel, just direct.
+The kernel does have the signal, but reaching it costs something:
 
-Whatever replaces the tick keeps the existing per-shape drain: the
-rotation guard (offset reset **and** partial-line buffer discard) is
-required either way, since compaction rewrites the transcript rather than
-appending.
+| platform | mechanism | availability |
+|---|---|---|
+| Linux | inotify (`IN_CREATE`/`IN_MODIFY`) | **no stdlib module**; `ctypes` against `libc` `inotify_init1`, or a dependency (`watchdog` / `inotify_simple`), neither currently in `pyproject.toml` |
+| macOS | kqueue (`EVFILT_VNODE`) | `select.kqueue`, stdlib -- **unverified**, no macOS host was available |
+| macOS | FSEvents (directory-level, adds creation) | requires the `_watchdog_fsevents` compiled extension |
 
-### b. Discovery: search one directory, not every project
+GNU `tail -F` resolves this the same way (its binary links inotify
+symbols) and falls back to a sleep loop where that is unavailable.
 
-Discovery and tailing are separate problems that the current code answers
-in one loop: `_scan_and_read` re-runs the whole search on every 0.2s tick,
-though "which file is mine" is a once-per-run question. Measured through
-the real adapters on a developer machine (warm cache; a cold first scan
-measured ~570ms for claude):
+Two consequences for any implementation:
 
-| adapter | session_dirs | files matched | scan (median) | cost at 0.2s tick |
-|---|--:|--:|--:|--:|
-| claude | 999 | 1988 | 119.6ms | ~60% of one core |
-| codex | 1 | 1344 | 20.4ms | ~10% of one core |
+- The macOS path is unproven here. Shipping Linux-native with a timer
+  fallback elsewhere is the honest first step.
+- The cross-run guards that exist to prevent Bug B (the `baseline`
+  snapshot and the `spawn_time` mtime floor) are discovery logic, not
+  timer logic. An event-driven reader must state explicitly what replaces
+  them; `IN_CREATE` on a single scoped directory plausibly does, but that
+  is untested.
 
-Claude's cost is fan-out: `session_dirs()` returns every project directory
-the CLI has ever used. The session directory is derivable from cwd (path
-separators to `-`), and the filename is a UUID minted after `pty.fork`, so
-it is genuinely unknowable in advance -- but the search space is ONE
-directory, not 999. Under an event-driven reader the question disappears
-entirely: `IN_CREATE` on that one directory names the file.
+### c. Compaction rewrites the transcript
 
-Two capture gaps belong here rather than in the poll discussion, because
-both are discovery defects:
+Claude compaction does not append -- it writes the pre-compaction
+transcript aside (`pre_compact_N.jsonl`) and leaves a `session.jsonl` that
+can be SMALLER than before. `_drain_appended_lines` handles the shrink by
+resetting the byte offset to 0, but **the partial-line buffer for that
+path is not discarded**, so stale bytes from the old file prepend to the
+first line of the new one. This is a live bug in the current tree, not a
+property of polling: any reader needs the same guard. A fix is proposed in
+PR #122.
 
-- **Subagent transcripts are never captured.** `ClaudeAdapter.
-  matches_session_file` requires `path.parent.parent == projects_dir`;
-  subagent logs live deeper (`<session>/subagents/agent-<id>.jsonl`). A
-  directory walk of one developer's tree found 1121 `.jsonl` files at that
-  depth and 26 deeper still, all structurally invisible to the check.
-- **Hooks name these files directly.** All three CLIs now ship a hook
-  system (claude; codex `hooks.json` / `notify`; gemini hooks, added after
-  this document was written -- so the portability argument for the tailer
-  no longer holds as stated). Claude's payload carries `transcript_path`
-  and, for subagents, `agent_transcript_path`. A probe of a real
-  non-interactive run confirmed every file that grew was named by one of
-  those two fields. Hooks are worth layering on for discovery; they do not
-  replace the tailer, and a Stop hook alone is NOT a sufficient drain
-  trigger (measured 125ms BEFORE the turn's final append; `SessionEnd`
-  covers the remainder).
+The `PreCompact` / `PostCompact` hook events are documented but were NOT
+fired during this investigation (`/compact` is not reachable from a
+non-interactive `-p` run), so hook coverage of compaction is unverified.
 
-### c. Inbound messages: server-driven wake
+### d. Inbound messages: lowest priority
 
-`_inbound_poll_loop` polls `drain_inbound` every 0.5s. This is the pull
-half of session messaging and is already scoped for replacement in
-`design_session_messaging.md` ("Transport: HTTP polling now; NOTIFY/SSE is
-the upgrade") -- the server has the push fanout the SPA uses; a subscribed
-`trax run` would wake without polling. `httpx` streams responses, so the
-client half needs no new dependency; the missing piece is a server route
-that holds the request open.
+`_inbound_poll_loop` polls `drain_inbound` every 0.5s -- one request per
+running agent, and the loop skips the call until the sink has a session
+id. This is the pull half of session messaging and is already scoped for
+replacement in `design_session_messaging.md` ("Transport: HTTP polling
+now; NOTIFY/SSE is the upgrade"): the server has the push fanout the SPA
+uses, and `httpx` streams responses, so the client needs no new
+dependency. The missing piece is a server route that holds the request
+open.
 
-This loop is cheap (one request per 0.5s per running agent, and it
-early-returns before the session opens), so it is the lowest-priority of
-the three. Its interval is a `RunConfig` field, which makes it tunable but
-does not make it event-driven.
+The interval is a keyword default on the loop function, reachable from
+tests but not from `RunConfig`. PR #122 proposes promoting it to a config
+field. Either way that makes it tunable, not event-driven.
+
+### e. Two capture gaps found along the way
+
+Both are discovery defects rather than polling ones, and both are
+independent of everything above:
+
+- **Subagent transcripts are never captured.**
+  `ClaudeAdapter.matches_session_file` requires
+  `path.parent.parent == projects_dir`; subagent logs live deeper
+  (`<session>/subagents/agent-<id>.jsonl`). The runner's `rglob` visits
+  them and the depth check then rejects them. A walk of one developer's
+  tree found 1121 `.jsonl` files at that depth and 26 deeper still.
+- **All three CLIs now ship hooks**, including gemini, whose hook system
+  postdates this document -- so the portability argument that motivated
+  the tailer no longer holds as stated. Claude's payload carries
+  `transcript_path` and, for subagents, `agent_transcript_path`; one
+  non-interactive probe (n=1, harness not committed) found every file that
+  grew was named by one of those two fields. Codex
+  (`hooks.json` / `notify`) and gemini hook payloads were read from vendor
+  documentation, NOT exercised. Hooks would make discovery exact, at the
+  cost of one integration per CLI.
+
+A `Stop` hook alone is not a sufficient drain trigger: in that probe it
+arrived 125ms BEFORE the turn's final append. `SessionEnd` followed the
+last append, so a hook-driven drain needs the session-end sweep the timer
+loop already performs.
 
 ### What was ruled out
 
 **PTY output as the drain trigger.** The pump already sits in `select` on
 the master fd and already tees stdin to the slash-command detector, so
 teeing the other direction looks free. It does not work: the CLI paints
-the terminal BEFORE writing the log. Measured across one claude session,
-every append landed 21-195ms after the last PTY read, and one append's
-next PTY read came 27.8s later (when the human typed `/exit`); two appends
-had no following read at all. A drain woken by PTY output runs before the
-bytes exist and then never runs again -- strictly worse than the timer it
-would replace. The PTY carries ANSI-rendered output anyway (thinking
-collapsed, tool args truncated), so it is a timing signal at best, never a
-content source.
+the terminal BEFORE writing the log. Across one claude session (n=1,
+harness not committed), every append landed 21-195ms after the last PTY
+read; one append's next PTY read came 27.8s later, when the human
+typed `/exit`, and two appends had no following read at all. A drain woken
+by PTY output runs before the bytes exist and then never runs again --
+strictly worse than the timer it would replace. The PTY carries
+ANSI-rendered output anyway (thinking collapsed, tool args truncated), so
+it is a timing signal at best, never a content source.
