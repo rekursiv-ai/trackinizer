@@ -46,6 +46,7 @@ import pytest
 import uvicorn
 
 from trackinizer.client.client import Client
+from trackinizer.client.errors import ClientError
 from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.server.api import query, sessions_routes
 from trackinizer.server.auth import AuthIdentity, current_user
@@ -187,22 +188,26 @@ class _ServerThread:
 
     def __enter__(self) -> Self:
         self._thread.start()
-        # Generous: a cold PGlite boot is ~2.5s, but under whole-suite load the
-        # WASM Postgres can trap mid-bootstrap and the store retries on a fresh
-        # Node. Size the window off the store's own retry budget so the two
-        # constants cannot silently drift apart -- a boot that is still inside
-        # its sanctioned retries must not be declared dead.
-        deadline = time.monotonic() + _STARTUP_DEADLINE_SEC
-        while time.monotonic() < deadline:
-            if self._server.started:
-                return self
-            if not self._thread.is_alive():
-                raise self._startup_error("uvicorn server thread died during startup")
-            time.sleep(0.05)
-        # Timeout: the thread may still be grinding through bootstrap retries.
-        # Stop it (``__exit__`` never runs when ``__enter__`` raises) and surface
-        # any cause the lifespan stashed rather than a bare "did not start".
-        raise self._startup_error("uvicorn server did not start in time")
+        # Generous timeout: a cold PGlite boot is ~2.5s, but under whole-suite
+        # load the WASM Postgres can trap mid-bootstrap and the store retries
+        # on a fresh Node -- a boot still inside its sanctioned retries must
+        # not be declared dead. uvicorn accepts no connection until the
+        # lifespan (bootstrap) finishes, so an answered probe proves readiness;
+        # ``alive`` fails fast when the server thread dies during startup.
+        try:
+            with Client(self.base_url) as probe:
+                probe.wait_until_ready(
+                    timeout_sec=_STARTUP_DEADLINE_SEC,
+                    probe_interval_sec=0.05,
+                    alive=self._thread.is_alive,
+                )
+        except ClientError:
+            # Timeout or thread death: the thread may still be grinding through
+            # bootstrap retries. Stop it (``__exit__`` never runs when
+            # ``__enter__`` raises) and surface any cause the lifespan stashed
+            # rather than a bare "did not start".
+            raise self._startup_error("uvicorn server did not start in time") from None
+        return self
 
     def _startup_error(self, message: str) -> RuntimeError:
         """Stop the server thread; return a ``RuntimeError`` chained to the cause.
