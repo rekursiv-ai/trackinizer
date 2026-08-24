@@ -35,7 +35,7 @@ escapes the ``ClientError`` contract.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Self, cast
 from urllib.parse import urlparse
@@ -529,6 +529,55 @@ class Client:
         if not isinstance(payload, dict) or "sha" not in payload:
             raise ClientError(f"/api/version returned a malformed payload: {payload!r}")
         return str(cast(dict[str, Any], payload)["sha"])
+
+    def wait_until_ready(
+        self,
+        *,
+        timeout_sec: float = 30.0,
+        probe_interval_sec: float = 0.25,
+        alive: Callable[[], bool] | None = None,
+    ) -> None:
+        """Block until the server answers HTTP; raise on timeout or death.
+
+        Boot-time readiness probing for callers that just started a server
+        (tests, demos, ephemeral harnesses): retries the unauthenticated,
+        store-free ``/api/version`` route until the server answers. Readiness
+        is any NON-5xx response, not a well-formed version payload: a stripped
+        test app without the route answers 404 and is up, while a 502/503 is
+        what a proxy answers for a dead backend, so 5xx keeps probing.
+        uvicorn accepts no connection until its lifespan (bootstrap) finishes,
+        so a response also proves the store is up.
+
+        Args:
+          timeout_sec: Give up and re-raise the last failure after this long.
+          probe_interval_sec: Pause between probes.
+          alive: Optional liveness oracle for the just-spawned server (e.g.
+            ``lambda: proc.poll() is None`` or ``thread.is_alive``). When it
+            turns false the wait raises immediately instead of grinding out
+            the full timeout against a server that can never come up.
+
+        Raises:
+          ClientError: The server did not answer within ``timeout_sec``, or
+            ``alive`` reported the server dead; chained to the final probe's
+            failure.
+
+        """
+        deadline = time.monotonic() + timeout_sec
+        while True:
+            try:
+                self.version()
+            except ClientError as err:
+                if err.status_code is not None and err.status_code < 500:
+                    return
+                if alive is not None and not alive():
+                    raise ClientError(
+                        "server process died before becoming ready"
+                    ) from err
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(probe_interval_sec)
+            else:
+                return
 
     def search(
         self,

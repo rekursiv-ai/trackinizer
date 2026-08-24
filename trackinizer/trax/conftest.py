@@ -9,7 +9,7 @@ profile-related GRAMMAR.md examples once their xfails are lifted.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from types import TracebackType
 from typing import Any, Self, cast
 
@@ -492,6 +492,33 @@ class FakeClient:
     def version(self) -> str:
         self.calls.append(("version", (), {}))
         return "testsha"
+
+    def wait_until_ready(
+        self,
+        *,
+        timeout_sec: float = 30.0,
+        probe_interval_sec: float = 0.25,
+        alive: Callable[[], bool] | None = None,
+    ) -> None:
+        """Record a readiness wait; the in-memory fake is always ready.
+
+        Args:
+          timeout_sec: Maximum readiness wait requested by the caller.
+          probe_interval_sec: Requested delay between readiness probes.
+          alive: Optional server-liveness oracle.
+
+        """
+        self.calls.append(
+            (
+                "wait_until_ready",
+                (),
+                {
+                    "timeout_sec": timeout_sec,
+                    "probe_interval_sec": probe_interval_sec,
+                    "alive": alive,
+                },
+            )
+        )
 
     def search(
         self,
