@@ -304,7 +304,7 @@ sink (--no-sync) FileSink -> local JSONL (also --out PATH, --dry-run)
 
 ```
 phase 0   plain Postgres agent_session_events table
-phase 1   Timescale hypertable (deploy-time ALTER; not bootstrap DDL)
+phase 1   Timescale hypertable (blocked: dedup PK excludes partition col)
 phase 2   ClickHouse for agent_session_events (> ~1e9 rows)
 phase 3   Parquet on object storage (cold tier)
 ```

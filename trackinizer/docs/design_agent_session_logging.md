@@ -52,7 +52,7 @@ The spike also found two load-bearing bugs in the harness, fixed first
    wraps the CLI,        ┌───────────────────────────────────────┐
    spawns it in its      │ Postgres (+ Timescale extension, opt)  │
    verbose/streaming     │  - inquiries (AgentSession row)        │
-   mode, forwards the    │  - agent_session_events (hypertable)   │
+   mode, forwards the    │  - agent_session_events (append-only)  │
    structured stream     │  - message JSONB (typed Message union) │
                          └───────────────────────────────────────┘
 ```
@@ -216,11 +216,12 @@ counter and dir-wide scanning is unsafe (Bug B).
 | Reversible without re-ingest | ✅ | ✅ | ✅ | n/a | ❌ |
 
 **Phase 0 = Postgres.** `agent_session_events` ships as a **plain Postgres
-table** first (`PRIMARY KEY (session_id, seq)` dedup). The Timescale
-hypertable + hypercore compression is a deploy-time `ALTER`
-(`create_hypertable`), not bootstrap DDL: PGlite (the default prototype
-substrate) cannot run it, and it is classified incidental below. Plain
-Postgres is bit-identical for correctness; the hypertable is pure scale.
+table** first (`PRIMARY KEY (session_id, seq)` dedup). A Timescale
+hypertable stays out of bootstrap DDL regardless (PGlite cannot run
+`create_hypertable`) -- but adopting it is a redesign, not a deploy-time
+`ALTER`: Timescale requires the partitioning column in every unique index,
+and the dedup PK excludes any time column
+(see `docs/db_schema_migration.md`, "Timescale hypertable").
 
 **Phase 1 (when events cross ~10⁹) = ClickHouse for `agent_session_events`
 only.** `inquiries` stays in Postgres forever. Migration is mechanical
@@ -407,8 +408,8 @@ version-pinned schema from `codex app-server generate-json-schema --out`.
 Touches `trax/run/adapters/codex.py`, `trax/run/session.py`. Pure
 fidelity upgrade; raw (non-summary) CoT stays unrecoverable (encrypted).
 
-**8. (Optional) Timescale deploy.** `create_hypertable` + compression note
-in `docs/db_schema_migration.md`; a deploy-time `ALTER`, not bootstrap DDL.
+**8. (Optional) Timescale deploy.** Blocked on an idempotency redesign --
+the dedup PK excludes the partition column; see `docs/db_schema_migration.md`.
 (The original plan also included a `payload_ref` blob offload for >16 KB
 payloads; that was dropped -- the typed `message` JSONB stays whole and
 Postgres TOAST absorbs large values, so no app-level blob store exists.)
@@ -439,8 +440,9 @@ adapters normalize each CLI's native record into a `Message` member.
 **Incidental** (could change without redesign):
 - The exact `Message` member set (new members promote from `UnknownMessage`).
 - REST+JSON vs gRPC for the same wire shape.
-- **Timescale hypertable**: a deploy-time `ALTER`, not part of the data
-  model; plain Postgres is the Phase-0 substrate.
+- **Timescale hypertable**: not part of the data model; plain Postgres is
+  the Phase-0 substrate. Adopting it requires reworking the dedup key
+  first (`docs/db_schema_migration.md`, "Timescale hypertable").
 
 ## When to revisit
 
@@ -506,8 +508,8 @@ Codex and gemini are already narrow, which is why their rows are cheap.
 **Scoping claude's `session_dirs()` to the run's own project directory is
 the single highest-value change here, and it is independent of the timer.**
 The directory name appears to be the cwd with path separators replaced
-(observed: cwd `/tmp/work/trax-hook` ->
-`~/.claude/projects/-tmp-work-trax-hook`), but the full
+(observed: cwd `/opt/scratch/artifacts/trax-hook` ->
+`~/.claude/projects/-opt-scratch-artifacts-trax-hook`), but the full
 encoding is NOT specified anywhere in this repo and one observation is not
 a spec. Deriving it wrong drops capture to zero, which is worse than the
 scan. Establish the encoding against adversarial paths (dots, symlinks,
@@ -551,11 +553,10 @@ Two consequences for any implementation:
 Claude compaction does not append -- it writes the pre-compaction
 transcript aside (`pre_compact_N.jsonl`) and leaves a `session.jsonl` that
 can be SMALLER than before. `_drain_appended_lines` handles the shrink by
-resetting the byte offset to 0, but **the partial-line buffer for that
-path is not discarded**, so stale bytes from the old file prepend to the
-first line of the new one. This is a live bug in the current tree, not a
-property of polling: any reader needs the same guard. A fix is proposed in
-PR #122.
+resetting the byte offset to 0 AND discarding the partial-line buffer for
+that path (`trax/run/session.py`, the `size < last` branch) -- without the
+buffer drop, stale bytes from the old file would prepend to the first line
+of the new one. Any alternative reader needs the same guard.
 
 The `PreCompact` / `PostCompact` hook events are documented but were NOT
 fired during this investigation (`/compact` is not reachable from a

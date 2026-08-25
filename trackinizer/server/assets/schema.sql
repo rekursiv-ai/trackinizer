@@ -560,9 +560,10 @@ END$$;
 -- ``Message`` member selected by ``kind``), stored as JSON; Postgres TOAST
 -- absorbs the large ones, so there is no app-level blob offload.
 --
--- Phase 0 is a plain Postgres table. The Timescale hypertable
--- (``create_hypertable``) is a deploy-time ALTER, not bootstrap DDL (PGlite
--- cannot run it); plain Postgres is bit-identical for correctness.
+-- Phase 0 is a plain Postgres table; it stays that way until the dedup key
+-- is redesigned. A Timescale hypertable needs the partitioning column in
+-- every unique index, which this PK excludes, so ``create_hypertable``
+-- aborts (and PGlite cannot run it anyway). See docs/db_schema_migration.md.
 CREATE TABLE IF NOT EXISTS agent_session_events (
     session_id   UUID NOT NULL REFERENCES inquiries(id) ON DELETE CASCADE,
     seq          INTEGER NOT NULL CHECK (seq >= 0),
