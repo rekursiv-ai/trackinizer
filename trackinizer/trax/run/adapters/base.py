@@ -11,7 +11,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol, cast, runtime_checkable
 
 from trackinizer.types.agent_session_events import (
     Kind,
@@ -19,7 +19,7 @@ from trackinizer.types.agent_session_events import (
 )
 
 
-__all__ = ["Adapter", "Event"]
+__all__ = ["Adapter", "Event", "StreamAdapter"]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -114,3 +114,25 @@ class Adapter(Protocol):
 
         """
         ...
+
+
+@runtime_checkable
+class StreamAdapter(Adapter, Protocol):
+    """An adapter whose session source is the child's own PTY stream.
+
+    The wrapped command writes no session log, so the runner takes the
+    binary from the ``--`` args, tails nothing, and instead frames the
+    pump's output bytes into lines (``LineCapture``), feeding each
+    completed line to :meth:`Adapter.parse` -- here ``raw`` is one output
+    line, never a log line, and ``whole_file`` is always ``False``.
+
+    Structurally an :class:`Adapter` whose :attr:`cli_binary` is empty;
+    the marker :attr:`stream_source` is what the runner dispatches on
+    (``runtime_checkable`` isinstance only sees attribute presence, so a
+    plain file adapter never matches). A new stream dialect (say
+    JSON-lines to richer typed events) is one subclass overriding
+    ``parse`` plus a registry entry.
+    """
+
+    stream_source: bool
+    """Marker: True on every stream adapter; absent on file adapters."""

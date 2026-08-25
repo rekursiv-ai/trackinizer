@@ -27,6 +27,7 @@ from typing import IO, Any, Final, cast
 import contextlib
 import errno
 import fcntl
+import logging
 import os
 import pty
 import select
@@ -48,6 +49,8 @@ type _SignalHandler = (
 # exposes it as ``list[Any]``, so mirror that for the round-trip to tcsetattr.
 type _TermAttr = list[Any]
 
+
+_logger = logging.getLogger(__name__)
 
 # Bracketed-paste bookends: the TUI buffers everything between them as one
 # atomic paste (``EnableBracketedPaste`` is on in both target CLIs).
@@ -108,6 +111,8 @@ class PtyPump:
         enter_delay_sec: float = 0.15,
         env: Mapping[str, str] | None = None,
         on_input: Callable[[bytes], None] | None = None,
+        on_output: Callable[[bytes], None] | None = None,
+        bracketed_paste: bool = True,
     ) -> None:
         self._argv = list(argv)
         self._enter_delay_sec = enter_delay_sec
@@ -118,6 +123,22 @@ class PtyPump:
         # injected bytes), so the runner can detect typed slash-commands the
         # CLI handles internally and never logs. Must not raise or block.
         self._on_input = on_input
+        # Observer of the child's raw output (master -> stdout), so an
+        # IO-stream run can capture lines the child prints. Sees every byte
+        # the child emits, including echoes. Must not raise or block.
+        self._on_output = on_output
+        # Injection protocol. True (TUI children): bracketed paste + delayed
+        # Enter, so the paste is atomic and submits. False (plain line-reading
+        # children, ``trax run sh``): the paste sentinels would arrive as
+        # literal bytes in the child's ``read``, so inject one plain
+        # newline-terminated line instead. Plain-line mode also puts the
+        # child's PTY slave in a non-echoing, non-canonical mode -- measured
+        # (probe_pty_noecho): the default slave echoes injected bytes back
+        # into the captured output stream AND silently discards input lines
+        # past MAX_CANON (~1024B), corrupting the following line too.
+        # ~(ECHO|ICANON) removes both at the source; a TUI child keeps the
+        # default slave (TUIs manage their own termios).
+        self._bracketed_paste = bracketed_paste
         self._master_fd = -1
         self._pid = -1
         # The child's exit status once ``_child_alive`` reaps it via WNOHANG,
@@ -155,14 +176,69 @@ class PtyPump:
         (R2R-025). A keystroke landing between the (closed) paste and the Enter
         is harmless: the paste bracket is already terminated.
         """
+        # Every early return below is a LOST message the sender believes was
+        # delivered (enqueue succeeded server-side), so each one logs: "my
+        # message never arrived" is otherwise untraceable at this layer.
         if self._master_fd < 0:
+            _logger.warning(
+                "inject dropped: child already exited (%d bytes)", len(text)
+            )
             return
         with self._inject_lock:
+            if not self._bracketed_paste:
+                # Plain-line child: one atomic newline-terminated write; no
+                # paste bracket (its sentinels would be literal bytes to a
+                # line ``read``), no Enter delay to outwait. Interior
+                # newlines are neutralized to spaces so ONE routed message is
+                # ONE child read -- a literal ``\n`` would split it into
+                # several input records (one ``trax send`` becoming multiple
+                # commands to a line-driven child).
+                #
+                # Re-assert the quiet line discipline before EVERY inject:
+                # the spawn-time ~(ECHO|ICANON) is not durable -- the child
+                # shares the slave termios and can restore echo (`stty echo`,
+                # any curses init), after which injected bytes would echo
+                # back through the master and be captured as the child's own
+                # output (verified live by review tooling).
+                self._silence_line_discipline()
+                body = text.replace("\r", "\n").replace("\n", " ").encode()
+                if self._write_locked(body + b"\n"):
+                    self._injected += 1
+                else:
+                    _logger.warning(
+                        "inject dropped: master died mid-write (%d bytes)",
+                        len(body),
+                    )
+                return
             if not self._write_locked(encode_injection(text)):
+                _logger.warning(
+                    "inject dropped: master died mid-paste (%d bytes)", len(text)
+                )
                 return
             time.sleep(self._enter_delay_sec)
-            self._write_locked(_SUBMIT)
+            if not self._write_locked(_SUBMIT):
+                _logger.warning(
+                    "inject pasted but not submitted: master died before Enter"
+                )
+                return
             self._injected += 1
+
+    def _silence_line_discipline(self) -> None:
+        """Clear ECHO|ICANON on the PTY, tolerating a dead master.
+
+        Idempotent and cheap (two ioctls); called at spawn and re-asserted
+        before each plain-line inject because the child can restore echo at
+        any time (the termios state is shared, not owned by the pump).
+        """
+        if self._master_fd < 0:
+            return
+        try:
+            attr: _TermAttr = termios.tcgetattr(self._master_fd)
+            attr[3] &= ~(termios.ECHO | termios.ICANON)
+            termios.tcsetattr(self._master_fd, termios.TCSANOW, attr)
+        except termios.error:
+            # Master closed mid-race; the write below reports the drop.
+            pass
 
     def _write_locked(self, data: bytes) -> bool:
         """Write all of ``data`` to the master under ``_write_lock`` (REV-30)."""
@@ -204,6 +280,12 @@ class PtyPump:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(pgid, signal.SIGTERM)
         deadline = time.monotonic() + _TERMINATE_GRACE_SEC
+        # ``vars(os)`` instead of ``os.waitid``: ty's typeshed platform-guards
+        # ``waitid`` off darwin, so the direct attribute is an
+        # unresolved-attribute error on macOS while a ``ty: ignore`` on it is
+        # an unused-ignore warning on linux -- no single direct spelling
+        # passes both platforms. The function exists at runtime on both
+        # (verified); the dict lookup sidesteps the stub's platform gate.
         waitid = cast(
             Callable[[int, int, int], object | None],
             vars(os)["waitid"],
@@ -239,8 +321,8 @@ class PtyPump:
         Sets the real terminal raw for the child's lifetime, forwards window
         size and ``SIGWINCH``, and restores the terminal on exit.
         """
-        self._pid, self._master_fd = pty.fork()
-        if self._pid == 0:
+        pid, master_fd = pty.fork()
+        if pid == 0:
             # Child: exec the CLI. If exec fails (permissions, ENOEXEC, ...),
             # ``_exit`` immediately -- never fall through into the parent's
             # pump code, which would leave two processes sharing the master fd.
@@ -252,6 +334,18 @@ class PtyPump:
                 os.execvp(self._argv[0], self._argv)  # noqa: S606 -- the point of `trax run`.
             except OSError:
                 os._exit(127)
+        self._pid = pid
+        self._master_fd = master_fd
+        if not self._bracketed_paste:
+            # Plain-line child: silence echo and lift the canonical line editor
+            # on the PTY. Measured (probe_pty_noecho): with the default line
+            # discipline, injected bytes echo back into the captured output
+            # stream (inbound recorded as the child's own output) and any input
+            # line past MAX_CANON (~1024B) is silently discarded, corrupting
+            # the following line too. Set from the PARENT via the master fd
+            # (one terminal, shared state) as soon as it exists; injects
+            # re-assert it because the child can restore echo at any time.
+            self._silence_line_discipline()
         # From here the child is forked and exec'd onto the PTY slave; any raise
         # in terminal setup (winsize, raw mode, SIGWINCH) before or during the
         # pump must still reap it, or it leaks as a zombie (R-24). The outer
@@ -332,6 +426,11 @@ class PtyPump:
             return False
         if not data:
             return False
+        # Tee the child's output to the observer before the destination
+        # checks, so a discarded mirror (dst_fd < 0 under a captured test
+        # stdout) still feeds capture.
+        if src_fd == self._master_fd and self._on_output is not None:
+            self._on_output(data)
         if dst_fd < 0:
             return True
         if dst_fd == self._master_fd:

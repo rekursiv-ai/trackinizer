@@ -222,7 +222,7 @@ VERB_ARG: /\S+/
 //   next [--format text|json|ids]
 //   profile [NAME] [ url|actor|token [to V] | current NAME | del ]
 //   recent [--limit V] [--format text|json]
-//   run claude|gemini|codex [--out V] [--verbose] [--dry-run] [--no-sync] [--as V] [--room V]
+//   run claude|gemini|codex|sh [--out V] [--verbose] [--dry-run] [--no-sync] [--as V] [--room V]
 //   search QUERY... [--kind V] [--limit V] [--format table|json|ids]
 //   send TARGET TEXT...
 //   version

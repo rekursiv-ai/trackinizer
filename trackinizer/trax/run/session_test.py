@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast, override
 
+import inspect
 import json
 import os
 import threading
@@ -39,6 +40,7 @@ from trackinizer.types.agent_session_events import (
     SlashCommand,
     UserMessage,
 )
+from trackinizer.wire.wire_sessions import EventBody
 
 
 class _RecordingSink:
@@ -71,6 +73,9 @@ class _RecordingSink:
 
     def flush(self) -> None:
         self.flushes += 1
+
+    def drain_pending(self) -> list[EventBody]:
+        return []
 
     def close(self) -> None:
         self.closed = True
@@ -499,6 +504,56 @@ class _FlakyFlushSink(_RecordingSink):
         super().flush()
 
 
+class TestStreamQueueIsBounded:
+    """The pump->drain handoff must not grow without limit (runner OOM).
+
+    A chatty child produces thousands of line events per second while a
+    slow-but-alive sink can hold the drain thread for ~90s (POST timeout x
+    retries) before ResilientSink degrades. The queue drops oldest past its
+    cap -- capture prefers a visible gap over unbounded memory.
+    """
+
+    def test_overflow_drops_oldest_not_memory(self) -> None:
+        queue: deque[Event] = deque(maxlen=session_mod._STREAM_QUEUE_MAX)
+        overfill = session_mod._STREAM_QUEUE_MAX + 1_000
+        for i in range(overfill):
+            queue.append(Event(message=UserMessage(text=str(i))))
+        assert len(queue) == session_mod._STREAM_QUEUE_MAX
+        # Oldest dropped, newest kept.
+        newest = queue[-1].message
+        assert isinstance(newest, UserMessage)
+        assert newest.text == str(overfill - 1)
+
+    def test_spawn_constructs_a_bounded_queue(self) -> None:
+        """The runner's queue literal must carry the cap, not a bare deque.
+
+        Guards the construction site: a bare ``deque()`` reintroduces the
+        unbounded handoff even with the constant still defined.
+        """
+        source = inspect.getsource(session_mod._spawn_and_drain)
+        assert "deque(maxlen=_STREAM_QUEUE_MAX)" in source
+
+    def test_overflow_is_counted_and_warned(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An eviction must be visible: stats counter + one WARN per run.
+
+        A silent drop is a quiet gap in the transcript; the counter surfaces
+        in the end-of-run stats line and the WARN names the stall.
+        """
+        queue: deque[Event] = deque(maxlen=2)
+        stats = _Stats()
+        with caplog.at_level("WARNING"):
+            for i in range(5):
+                session_mod._enqueue_stream_event(
+                    queue, stats, Event(message=UserMessage(text=str(i)))
+                )
+        assert stats.counts["StreamEventDropped"] == 3
+        warns = [r for r in caplog.records if "queue full" in r.message]
+        assert len(warns) == 1, "one WARN per run, not one per dropped event"
+        assert "StreamEventDropped=3" in stats.render()
+
+
 class TestDrainLoopSurvivesTransientError:
     """A transient error in the drain loop body must not kill capture (R-57).
 
@@ -765,6 +820,51 @@ class TestRenderInbound:
     def test_bare_text_when_no_context(self) -> None:
         # Neither room nor attested sender: inject the message verbatim.
         assert _render_inbound("go", None, None) == "go"
+
+
+_ENVELOPE = json.dumps(
+    {
+        "agent_message": "FYI: trax issue 42 status changed (by bob)",
+        "id": "29b5982f-2e1f-4749-9bb6-fe601444282c",
+        "kind": "status",
+        "subject_ref": "issue 42",
+        "row": "trax issue 42",
+    }
+)
+
+
+class TestRenderInboundEnvelopes:
+    """Change envelopes are shaped per consumer at the CLIENT, not the server.
+
+    The server pushes one uniform JSON envelope to every session. The poller
+    decides what reaches the child's stdin: a model CLI gets only the
+    ``agent_message`` line (the rest of the fields would pollute its
+    context), while an IO-stream child gets the raw JSON to parse itself.
+    """
+
+    def test_model_session_receives_only_the_agent_message(self) -> None:
+        rendered = _render_inbound(_ENVELOPE, "trackinizer", None, stream=False)
+        assert rendered == "FYI: trax issue 42 status changed (by bob)"
+
+    def test_stream_session_receives_the_raw_envelope(self) -> None:
+        rendered = _render_inbound(_ENVELOPE, "trackinizer", None, stream=True)
+        assert rendered == f"trackinizer: {_ENVELOPE}"
+
+    def test_spoofed_source_is_not_treated_as_an_envelope(self) -> None:
+        """Only the route-attested ``trackinizer`` sender unwraps.
+
+        ``source`` is stamped server-side from the principal, so a human
+        cannot claim it -- but a JSON-looking message from any OTHER sender
+        must render as a plain message, not unwrap.
+        """
+        rendered = _render_inbound(_ENVELOPE, "mallory@x", None, stream=False)
+        assert rendered.startswith("mallory@x: ")
+
+    def test_malformed_envelope_falls_back_to_plain_rendering(self) -> None:
+        # A trackinizer-attested message that is not a JSON envelope (or
+        # lacks agent_message) must still be delivered, not dropped.
+        rendered = _render_inbound("not json", "trackinizer", None, stream=False)
+        assert rendered == "trackinizer: not json"
 
 
 if __name__ == "__main__":

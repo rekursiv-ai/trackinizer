@@ -686,6 +686,121 @@ class TestPtyPumpLifecycle:
         assert out.read_text() == "scientist"
 
 
+class TestPlainLineMode:
+    """The ``bracketed_paste=False`` path: stream children, canonical reads."""
+
+    def test_injected_text_is_not_echoed_into_capture(self, tmp_path: Path) -> None:
+        """Injected input must not come back as captured output.
+
+        The PTY slave defaults to ECHO on, so bytes ``inject`` writes to the
+        master are echoed back and would be captured as if the child printed
+        them -- inbound routing recorded as authored output. The plain-line
+        pump must disable slave echo.
+        """
+        out = tmp_path / "captured"
+        child = (
+            "import sys\n"
+            "line = sys.stdin.readline()\n"
+            "sys.stdout.write('OUT:' + line)\n"
+            "sys.stdout.flush()\n"
+        )
+        captured = bytearray()
+        pump = PtyPump(
+            [sys.executable, "-u", "-c", child],
+            bracketed_paste=False,
+            on_output=captured.extend,
+        )
+        runner = threading.Thread(target=pump.run, daemon=True)
+        runner.start()
+        deadline = time.monotonic() + 5.0
+        while pump.injected_count() == 0 and time.monotonic() < deadline:
+            pump.inject("hello")
+            time.sleep(0.01)
+        deadline = time.monotonic() + 10.0
+        while b"OUT:hello" not in captured and time.monotonic() < deadline:
+            time.sleep(0.05)
+        runner.join(timeout=5.0)
+        del out
+        text = bytes(captured)
+        assert b"OUT:hello" in text, "child's real output must be captured"
+        before_child = text.split(b"OUT:", 1)[0]
+        assert b"hello" not in before_child, (
+            "the injected line was echoed back and captured as output"
+        )
+
+    def test_long_injected_line_survives(self, tmp_path: Path) -> None:
+        """A >1024-byte injection must reach the child intact.
+
+        A canonical-mode slave silently discards input lines past MAX_CANON
+        (~1024 bytes) -- measured: the discard also corrupts the NEXT line.
+        The plain-line pump must put the slave in a mode where long lines
+        are delivered.
+        """
+        del tmp_path
+        child = (
+            "import sys\n"
+            "line = sys.stdin.readline()\n"
+            "sys.stdout.write('LEN:%d\\n' % (len(line) - 1))\n"
+            "sys.stdout.flush()\n"
+        )
+        captured = bytearray()
+        pump = PtyPump(
+            [sys.executable, "-u", "-c", child],
+            bracketed_paste=False,
+            on_output=captured.extend,
+        )
+        runner = threading.Thread(target=pump.run, daemon=True)
+        runner.start()
+        big = "x" * 2000
+        deadline = time.monotonic() + 5.0
+        while pump.injected_count() == 0 and time.monotonic() < deadline:
+            pump.inject(big)
+            time.sleep(0.01)
+        deadline = time.monotonic() + 10.0
+        while b"LEN:" not in captured and time.monotonic() < deadline:
+            time.sleep(0.05)
+        runner.join(timeout=5.0)
+        assert b"LEN:2000" in bytes(captured), (
+            f"long line mangled: {bytes(captured)[-100:]!r}"
+        )
+
+    def test_multiline_message_is_one_child_read(self) -> None:
+        """One routed message must arrive as one logical line.
+
+        A message containing literal newlines would otherwise split into
+        several child reads -- one ``trax send`` becoming multiple commands
+        to a line-driven child.
+        """
+        child = (
+            "import sys\n"
+            "line = sys.stdin.readline()\n"
+            "sys.stdout.write('FIRST:' + line)\n"
+            "sys.stdout.flush()\n"
+        )
+        captured = bytearray()
+        pump = PtyPump(
+            [sys.executable, "-u", "-c", child],
+            bracketed_paste=False,
+            on_output=captured.extend,
+        )
+        runner = threading.Thread(target=pump.run, daemon=True)
+        runner.start()
+        deadline = time.monotonic() + 5.0
+        while pump.injected_count() == 0 and time.monotonic() < deadline:
+            pump.inject("one\ntwo")
+            time.sleep(0.01)
+        deadline = time.monotonic() + 10.0
+        while b"FIRST:" not in captured and time.monotonic() < deadline:
+            time.sleep(0.05)
+        runner.join(timeout=5.0)
+        text = bytes(captured)
+        # The whole message arrives in the FIRST read -- newlines neutralized,
+        # both halves present, not split across reads.
+        first_read = text.split(b"FIRST:", 1)[1] if b"FIRST:" in text else b""
+        assert b"one" in first_read, f"message split across reads: {text[-120:]!r}"
+        assert b"two" in first_read, f"message split across reads: {text[-120:]!r}"
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 

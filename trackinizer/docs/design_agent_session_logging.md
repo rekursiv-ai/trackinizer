@@ -47,7 +47,7 @@ The spike also found two load-bearing bugs in the harness, fixed first
 │ trax-claude│                    │   Trackinizer    │
 │ trax-gemini│ ─POST events─────▶ │  /api/sessions/* │
 │ trax-codex │   HTTP+JSON        └────────┬─────────┘
-│ trax-cursor│                             │
+│ trax-sh    │                             │
 └────────────┘                             ▼
    wraps the CLI,        ┌───────────────────────────────────────┐
    spawns it in its      │ Postgres (+ Timescale extension, opt)  │
@@ -56,6 +56,24 @@ The spike also found two load-bearing bugs in the harness, fixed first
    structured stream     │  - message JSONB (typed Message union) │
                          └───────────────────────────────────────┘
 ```
+
+**`trax run sh` -- the IO-stream adapter.** Besides the model CLIs, `sh`
+wraps ANY binary in a live, addressable session (`trax run --as alice sh
+-- CMD [ARGS...]`): the child's own stdin/stdout are the whole interface.
+
+- **Capture**: no session log exists to tail, so the PTY stream is the
+  source -- each newline-terminated output line becomes one
+  `AssistantMessage` (framed and byte-clamped by `LineCapture`, escape
+  sequences stripped).
+- **Injection**: inbound messages arrive as plain newline-terminated
+  stdin lines -- no bracketed paste. The pump silences slave echo so
+  injections are not re-captured as output.
+- **Parsing**: semantic parsing belongs to the wrapped program, not trax
+  (`trax/run/adapters/iostream.py`; reference client in
+  `examples/trax_run_sh_demo.sh`).
+- **Extending**: a new stream dialect (say JSON-lines to richer events)
+  is one `StreamAdapter` subclass overriding `parse` plus a registry
+  entry.
 
 Two layers, one DB today:
 

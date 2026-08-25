@@ -32,37 +32,22 @@ if TYPE_CHECKING:
     from trackinizer.server.store.core import Store
 
 
-class _FakeAgentSession:
-    """Stand-in whose ``type().__name__`` is ``AgentSession``.
-
-    ``_require_session`` discriminates by ``type(row).__name__`` (the module
-    is loaded twice under some test import paths), so a plain mock won't pass
-    the live-session gate; this class is renamed to satisfy it.
-    """
-
-    def __init__(self, opened_by_api_key_id: uuid.UUID | None = None) -> None:
-        self.ended = None
-        self.owner = "scientist"
-        self.cli_session_id = None
-        self.opened_by_api_key_id = opened_by_api_key_id
-
-
-# Rename so ``type(instance).__name__ == "AgentSession"``. Set ``__qualname__``
-# alongside ``__name__`` so both spellings of the class name agree.
-_FakeAgentSession.__name__ = "AgentSession"
-_FakeAgentSession.__qualname__ = "AgentSession"
-
-
 def _live_session(
     opened_by_api_key_id: uuid.UUID | None = TEST_API_KEY_ID,
 ) -> AgentSession:
-    """A minimal live ``AgentSession`` stand-in (``ended`` is ``None``).
+    """A minimal live ``AgentSession`` (``ended`` is ``None``).
 
-    Defaults its opening credential to ``TEST_API_KEY_ID`` -- the key the
-    default test identity presents -- so a route's owner-scope check passes for
-    a same-credential caller; foreign-credential tests pass an explicit other id.
+    A real instance, not a renamed stand-in: ``_require_session`` gates with
+    ``isinstance``, so the row must be the canonical class. Defaults its
+    opening credential to ``TEST_API_KEY_ID`` -- the key the default test
+    identity presents -- so a route's owner-scope check passes for a
+    same-credential caller; foreign-credential tests pass an explicit other id.
     """
-    return cast(AgentSession, _FakeAgentSession(opened_by_api_key_id))
+    return AgentSession(
+        owner="scientist",
+        cli="claude",
+        opened_by_api_key_id=opened_by_api_key_id,
+    )
 
 
 class TestSendMessageIdempotency:

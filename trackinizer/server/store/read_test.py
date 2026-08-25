@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import asyncio
@@ -82,6 +83,52 @@ class TestStoreReads:
         store, _engine = make_store()
         with pytest.raises(ValueError, match="limit must be in"):
             asyncio.run(store.what_changed_for_me("alice", datetime.now(UTC), limit=0))
+
+    @pytest.mark.asyncio
+    async def test_what_changed_for_anyone_filters_and_pages_ascending(self) -> None:
+        """The push-task query: any-subscriber rows past a (created, id) cursor.
+
+        Same tuple-cursor shape as ``what_changed_for_me`` (ascending, ties
+        included via the min-UUID sentinel) with the single-agent filter
+        replaced by "has any subscriber at all" -- the push task routes each
+        row to every actor in its snapshot, so the SQL must not name one.
+        """
+        conn = make_conn()
+        store, _engine = make_store(conn)
+        since = datetime(2026, 1, 1, tzinfo=UTC)
+        after = new_uuid()
+        conn.fetch = AsyncMock(return_value=[])
+        await store.what_changed_for_anyone(since, after_id=after)
+        sql = conn.fetch.call_args.args[0]
+        assert "(c.created, c.id) > ($1, $2)" in sql
+        assert "subscribers_snapshot != '{}'" in sql
+        assert "ORDER BY c.created, c.id" in sql
+        assert conn.fetch.call_args.args[1] == since
+        assert conn.fetch.call_args.args[2] == after
+
+    def test_what_changed_for_anyone_rejects_invalid_limit(self) -> None:
+        store, _engine = make_store()
+        with pytest.raises(ValueError, match="limit must be in"):
+            asyncio.run(store.what_changed_for_anyone(datetime.now(UTC), limit=0))
+
+    def test_what_changed_for_anyone_predicate_has_a_serving_index(self) -> None:
+        """The push query's filter must be backed by a matching partial index.
+
+        Measured (EXPLAIN on PGlite): the GIN over ``subscribers_snapshot``
+        serves ``@>``/``&&``, not ``!= '{}'`` -- and ``cardinality(...) > 0``
+        is no better (both plan as Seq Scan). This query runs on every push
+        doorbell against append-only ``change_log``, so it needs a partial
+        btree whose WHERE clause matches the query's predicate verbatim and
+        whose key matches the ORDER BY (Bitmap Index Scan, cost 130 -> 8.5
+        at 5k rows).
+        """
+        schema = (
+            Path(__file__).resolve().parents[1] / "assets" / "schema.sql"
+        ).read_text()
+        assert "ON change_log (created, id)" in schema, (
+            "no partial index serves what_changed_for_anyone's per-doorbell scan"
+        )
+        assert "WHERE subscribers_snapshot != '{}'" in schema
 
 
 class TestCoverageStoreReads:

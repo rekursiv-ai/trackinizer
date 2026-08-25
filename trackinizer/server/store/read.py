@@ -360,6 +360,54 @@ class _ReadMixin(_StoreShared):
             )
         return [Change.from_row(r) for r in rows]
 
+    async def what_changed_for_anyone(
+        self,
+        since: datetime,
+        *,
+        after_id: UUID | None = None,
+        limit: int = 200,
+    ) -> list[tuple[Change, int | None]]:
+        """Changes past the ``(since, after_id)`` cursor naming any subscriber.
+
+        :meth:`what_changed_for_me` minus the single-agent filter: rows whose
+        ``subscribers_snapshot`` is non-empty, ordered by ``(created, id)``
+        ascending. Backs the subscriber push task, which routes each row to
+        every actor in its snapshot -- so the SQL must not name one agent.
+
+        Each change is paired with the subject's short per-kind ``seq``
+        (``Issue#42``'s 42) so the pushed notification can address the row
+        the way every trax verb does. LEFT JOIN: a purged subject has no
+        inquiries row, so its seq is ``None``.
+
+        Args:
+          since: Lower bound on ``created``; combined with ``after_id``
+            forms a (timestamp, id) cursor.
+          after_id: Tie-breaker id for changes sharing ``since``'s
+            timestamp; omit on the first read.
+          limit: Maximum rows to return, capped at ``MAX_LIST_LIMIT``.
+            Default 200.
+
+        Returns:
+          changes: Up to ``limit`` matching ``(change, subject_seq)`` pairs
+            ordered by ``(created, id)`` ascending.
+
+        """
+        if limit < 1 or limit > MAX_LIST_LIMIT:
+            raise ValueError(f"limit must be in [1, {MAX_LIST_LIMIT}]")
+        cursor_id = after_id if after_id is not None else UUID(int=0)
+        async with self.engine.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT c.*, i.seq AS subject_seq FROM change_log c "
+                "LEFT JOIN inquiries i ON i.id = c.subject_id "
+                "WHERE (c.created, c.id) > ($1, $2) "
+                "AND c.subscribers_snapshot != '{}' "
+                "ORDER BY c.created, c.id LIMIT $3",
+                since,
+                cursor_id,
+                limit,
+            )
+        return [(Change.from_row(r), r["subject_seq"]) for r in rows]
+
     async def get_change(self, change_id: UUID) -> Change | None:
         """Fetch one ``change_log`` row by id; ``None`` when absent."""
         async with self.engine.acquire() as conn:

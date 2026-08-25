@@ -14,7 +14,7 @@ from fastapi import FastAPI
 
 import asyncpg
 
-from trackinizer.conftest import make_store
+from trackinizer.conftest import FakeEngine, make_store
 from trackinizer.lib.custom_json import (
     SchemaError,
     dict_val,
@@ -46,7 +46,6 @@ if TYPE_CHECKING:
 
     import pytest
 
-    from trackinizer.conftest import FakeEngine
     from trackinizer.server.store.core import Store
 
 

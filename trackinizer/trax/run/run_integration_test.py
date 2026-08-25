@@ -63,7 +63,7 @@ from trackinizer.trax.run.session import (
 )
 from trackinizer.trax.run.sink import TrackinizerSink
 from trackinizer.types.agent_session_events import UserMessage
-from trackinizer.wire.wire_sessions import KINDS, SessionStart
+from trackinizer.wire.wire_sessions import KINDS, EventBody, SessionStart
 
 
 # A trivial prompt that forces exactly one model turn and exits fast. The
@@ -836,6 +836,9 @@ class _StubSessionSink:
 
     def flush(self) -> None:
         pass
+
+    def drain_pending(self) -> list[EventBody]:
+        return []
 
     def close(self) -> None:
         pass

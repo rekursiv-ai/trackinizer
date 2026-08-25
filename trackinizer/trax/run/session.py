@@ -25,13 +25,15 @@ or replaying a finished session.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import partial
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Final, cast
 
 import argparse
+import json
 import logging
 import os
 import shutil
@@ -42,10 +44,11 @@ import time
 from trackinizer.client.client import Client
 from trackinizer.lib.userdirs import state_dir
 from trackinizer.trax.profile import LOCALHOST_FALLBACK_URL
-from trackinizer.trax.run.adapters.base import Adapter, Event
+from trackinizer.trax.run.adapters.base import Adapter, Event, StreamAdapter
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
+from trackinizer.trax.run.adapters.iostream import IOStreamAdapter, LineCapture
 from trackinizer.trax.run.pty_pump import PtyPump
 from trackinizer.trax.run.sink import (
     FileSink,
@@ -68,6 +71,7 @@ _ADAPTERS: dict[str, Callable[[], Adapter]] = {
     ClaudeAdapter.name: ClaudeAdapter,
     GeminiAdapter.name: GeminiAdapter,
     CodexAdapter.name: CodexAdapter,
+    IOStreamAdapter.name: IOStreamAdapter,
 }
 
 
@@ -142,6 +146,16 @@ class RunConfig:
 
     SUPPORTED_CLIS: ClassVar[tuple[str, ...]] = tuple(_ADAPTERS)
 
+    @property
+    def syncing(self) -> bool:
+        """Whether this run opens a server session (vs local-file capture).
+
+        The single spelling of the three-term predicate: ``_open_sink``'s
+        server-vs-local choice and ``main``'s client construction both read
+        it, so the two call sites cannot drift.
+        """
+        return self.sync and self.out_path is None and not self.dry_run
+
 
 def run(config: RunConfig) -> int:
     """Run end-to-end and return the wrapped CLI's exit code.
@@ -211,7 +225,7 @@ def _open_sink(config: RunConfig, adapter: Adapter) -> Sink:
     # so wrap it in a LockedSink to serialize their access (R2R-024). The
     # dry-run / local-file paths run single-threaded today, but the lock keeps
     # the sink boundary uniformly thread-safe and is effectively free there.
-    if config.sync and config.out_path is None and not config.dry_run:
+    if config.syncing:
         return LockedSink(_open_trackinizer_sink(config, adapter))
     out_path = config.out_path or _default_out_path(adapter.name)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -258,8 +272,19 @@ def _spawn_and_drain(
         lambda command, at: slash_queue.append((command, at))
     )
 
-    def _drain_loop() -> None:
-        _drain_filesystem_loop(
+    # Events parsed off the PTY stream (IO-stream runs) land here from the
+    # pump's IO thread; the drain thread -- the single sink writer -- empties
+    # it each tick, exactly like ``slash_queue``. Always constructed (cheap)
+    # so the drain signature stays uniform across adapter shapes. BOUNDED:
+    # a chatty child (thousands of lines/sec) with a stalled sink (a
+    # slow-but-alive server can hold the drain thread ~90s before
+    # ResilientSink degrades) would otherwise grow this without limit.
+    # ``maxlen`` drops OLDEST on overflow -- capture prefers a visible gap
+    # over runner OOM, matching the inbound queue's stance.
+    stream_queue: deque[Event] = deque(maxlen=_STREAM_QUEUE_MAX)
+    drain_thread = threading.Thread(
+        target=partial(
+            _drain_filesystem_loop,
             adapter,
             sink,
             stats,
@@ -267,21 +292,44 @@ def _spawn_and_drain(
             stop,
             baseline=baseline,
             slash_queue=slash_queue,
+            stream_queue=stream_queue,
             spawn_time=spawn_time,
-        )
-
-    drain_thread = threading.Thread(target=_drain_loop, daemon=True)
+        ),
+        daemon=True,
+    )
     drain_thread.start()
+
+    # A stream adapter names no binary of its own: the command is the ``--``
+    # args verbatim (``trax run sh -- bash -c '...'``). Its capture source is
+    # the PTY stream, not a session log, so a line-framing observer feeds each
+    # completed line through the adapter's own ``parse``. Parsed events go
+    # into ``stream_queue`` -- NOT straight into the sink: ``feed`` runs on
+    # the pump's IO thread, where a blocking ``sink.emit`` (a slow server
+    # POST) would stall terminal mirroring and input delivery.
+    stream_capture: LineCapture | None = None
+    if isinstance(adapter, StreamAdapter):
+        if not config.cli_args:
+            stop.set()
+            drain_thread.join(timeout=1.0)
+            raise SystemExit(
+                f"trax run {adapter.name}: no command given; "
+                f"usage: trax run {adapter.name} -- CMD [ARGS...]"
+            )
+        argv: list[str] = list(config.cli_args)
+        stream_capture = LineCapture(
+            partial(_parse_stream_line, adapter),
+            partial(_enqueue_stream_event, stream_queue, stats),
+        )
+    else:
+        argv = [adapter.cli_binary, *config.cli_args]
 
     # Resolve the binary before forking: after ``pty.fork`` a missing binary
     # would fail in the child's ``execvp``, not here, so the parent could not
     # turn it into a clean ``SystemExit``.
-    if shutil.which(adapter.cli_binary) is None:
+    if shutil.which(argv[0]) is None:
         stop.set()
         drain_thread.join(timeout=1.0)
-        raise SystemExit(f"trax run: {adapter.cli_binary} not found in PATH")
-
-    argv: list[str] = [adapter.cli_binary, *config.cli_args]
+        raise SystemExit(f"trax run: {argv[0]} not found in PATH")
     # Open the session eagerly (before fork) so the server-granted routing
     # handle is in the child env from the start: an agent inside must know its
     # real address (``scientist#2`` on a collision), not the requested name
@@ -294,10 +342,15 @@ def _spawn_and_drain(
     # so display fidelity matches running the CLI directly. Export the
     # session's routing identity so an agent inside can address peers
     # (``trax send @other``) and know which rooms it is reachable in.
+    # A plain line-reading child (IO-stream run) gets newline-terminated
+    # injection: the TUI bracketed-paste protocol would deliver its escape
+    # sentinels as literal bytes to a canonical-mode ``read``.
     pump = PtyPump(
         argv,
         env=_routing_env(config, granted_actor=granted_actor),
         on_input=detector.feed,
+        on_output=None if stream_capture is None else stream_capture.feed,
+        bracketed_paste=stream_capture is None,
     )
 
     # Poll the server for inbound messages and inject them into the live CLI.
@@ -305,13 +358,24 @@ def _spawn_and_drain(
     poll_thread: threading.Thread | None = None
     if config.sync and config.client is not None:
         poll_thread = threading.Thread(
-            target=_inbound_poll_loop,
-            args=(config.client, sink, pump, stop),
+            target=partial(
+                _inbound_poll_loop,
+                config.client,
+                sink,
+                pump,
+                stop,
+                stream=stream_capture is not None,
+            ),
             daemon=True,
         )
         poll_thread.start()
 
     rc = pump.run()
+    if stream_capture is not None:
+        # Flush a trailing unterminated line so a child that exited mid-line
+        # still gets its last words captured. The sink is a LockedSink, so
+        # this emit serializes with the drain thread's.
+        stream_capture.close()
 
     # Let the drain thread finish pending reads before stopping it.
     time.sleep(config.quiesce_seconds)
@@ -351,6 +415,37 @@ def _join_with_watchdog(
         )
 
 
+# Cap on stream events buffered between the pump's IO thread and the drain
+# thread. At the 16KB/line clamp this bounds worst-case retention to ~128MB;
+# in practice lines are small and 8k events is minutes of typical output.
+_STREAM_QUEUE_MAX: Final = 8_192
+
+
+def _parse_stream_line(adapter: Adapter, raw: bytes) -> Iterable[Event]:
+    """Parse one framed output line through the stream adapter."""
+    return adapter.parse(raw, whole_file=False)
+
+
+def _enqueue_stream_event(queue: deque[Event], stats: _Stats, event: Event) -> None:
+    """Queue one stream event for the drain thread, making overflow VISIBLE.
+
+    ``deque(maxlen=...)`` evicts the oldest silently; a full queue here means
+    the sink has stalled while the child keeps printing, and each eviction is
+    a captured-event loss. Count it (surfaces in the end-of-run stats line as
+    ``StreamEventDropped=N``) and WARN once per run on the first drop so the
+    loss is diagnosable rather than a quiet gap in the transcript.
+    """
+    if len(queue) == queue.maxlen:
+        if not stats.counts.get("StreamEventDropped"):
+            _logger.warning(
+                "stream capture queue full (%d); dropping oldest events until "
+                "the sink drains",
+                queue.maxlen,
+            )
+        stats.record("StreamEventDropped")
+    queue.append(event)
+
+
 def _inbound_poll_loop(
     client: Client,
     sink: Sink,
@@ -358,14 +453,16 @@ def _inbound_poll_loop(
     stop: threading.Event,
     *,
     poll_interval: float = 0.5,
+    stream: bool = False,
 ) -> None:
     """Drain server-queued inbound messages and inject them into the CLI.
 
     Waits for the sink to open the session (its id is minted lazily on the
     first captured event), then polls ``drain_inbound`` and feeds each message
-    to the pump. Server errors are swallowed -- a flaky back-channel must not
-    crash the run or corrupt the terminal, exactly like the capture sink's
-    resilience.
+    to the pump. ``stream`` says what kind of child consumes the injections
+    (see :func:`_render_inbound`'s envelope shaping). Server errors are
+    swallowed -- a flaky back-channel must not crash the run or corrupt the
+    terminal, exactly like the capture sink's resilience.
     """
     warned = False
     while not stop.is_set():
@@ -373,7 +470,7 @@ def _inbound_poll_loop(
             session_id = sink.session_id
             if session_id is not None:
                 for text, source, room in client.drain_inbound(session_id):
-                    pump.inject(_render_inbound(text, source, room))
+                    pump.inject(_render_inbound(text, source, room, stream=stream))
                 warned = False  # recovered; allow a fresh warning next outage
         except Exception:
             # Warn once per outage on stderr (mirrors the capture sink's
@@ -390,20 +487,52 @@ def _inbound_poll_loop(
             break
 
 
-def _render_inbound(text: str, source: str | None, room: str | None) -> str:
+def _render_inbound(
+    text: str,
+    source: str | None,
+    room: str | None,
+    *,
+    stream: bool = False,
+) -> str:
     """Decorate an inbound message with its routing context for injection.
 
     A single PTY interleaves every room's messages into one input stream, so
     the agent needs the room and sender to know who is steering it. Renders
     ``[room] sender: text`` (dropping whichever of room/sender is absent), so a
     direct session-id enqueue with no attested sender injects the bare text.
+
+    Change envelopes are shaped per consumer HERE, at the client -- the
+    server pushes one uniform JSON envelope to every session. A model-CLI
+    session (``stream=False``) receives only the envelope's
+    ``agent_message`` line: the remaining fields would spend the model's
+    context on metadata it can fetch on demand (the line itself names the
+    ``trax`` command). An IO-stream session (``stream=True``) receives the
+    raw JSON and parses it itself. Only the route-attested ``trackinizer``
+    sender unwraps -- ``source`` is stamped server-side from the principal,
+    so another sender's JSON-looking text renders as a plain message.
     """
+    if source == "trackinizer" and not stream:
+        agent_message = _envelope_agent_message(text)
+        if agent_message is not None:
+            return agent_message
     prefix = ""
     if room:
         prefix += f"[{room}] "
     if source:
         prefix += f"{source}: "
     return f"{prefix}{text}"
+
+
+def _envelope_agent_message(text: str) -> str | None:
+    """The ``agent_message`` line of a change envelope, or None if not one."""
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    message = cast(dict[str, object], payload).get("agent_message")
+    return message if isinstance(message, str) else None
 
 
 def _routing_env(
@@ -456,6 +585,7 @@ def _drain_filesystem_loop(
     *,
     baseline: frozenset[Path],
     slash_queue: deque[tuple[SlashCommand, datetime]],
+    stream_queue: deque[Event] | None = None,
     spawn_time: float,
 ) -> None:
     """Poll the adapter's session dirs and emit events for newly-appended lines.
@@ -469,12 +599,13 @@ def _drain_filesystem_loop(
     last poll and exit.
 
     ``slash_queue`` carries slash-commands the pump's keystroke detector
-    produced on the main thread; this loop owns the sink, so it drains and
-    emits them here rather than have the pump thread touch the sink. Queued
-    commands are drained *before* the file scan each tick: the human typed them
-    before the CLI wrote whatever the scan now sees, so emitting them first
-    keeps the captured order matching the real order (a ``/model`` precedes the
-    turns it reconfigures).
+    produced on the main thread; ``stream_queue`` carries events a stream
+    adapter's LineCapture parsed on the pump's IO thread. This loop owns the
+    sink, so both queues drain and emit here rather than have another thread
+    touch the sink (or block the pump on a slow server POST). Queued items
+    drain *before* the file scan each tick: they happened before whatever the
+    scan now sees, so emitting them first keeps the captured order matching
+    the real order.
     """
     offsets: dict[Path, int] = {}
     buffers: dict[Path, bytearray] = {}
@@ -488,6 +619,7 @@ def _drain_filesystem_loop(
             stats,
             config,
             slash_queue,
+            stream_queue=stream_queue,
             offsets=offsets,
             buffers=buffers,
             baseline=baseline,
@@ -502,6 +634,7 @@ def _drain_filesystem_loop(
         stats,
         config,
         slash_queue,
+        stream_queue=stream_queue,
         offsets=offsets,
         buffers=buffers,
         baseline=baseline,
@@ -517,6 +650,7 @@ def _drain_tick(
     config: RunConfig,
     slash_queue: deque[tuple[SlashCommand, datetime]],
     *,
+    stream_queue: deque[Event] | None = None,
     offsets: dict[Path, int],
     buffers: dict[Path, bytearray],
     baseline: frozenset[Path],
@@ -535,6 +669,7 @@ def _drain_tick(
     """
     try:
         _emit_slash_commands(adapter, sink, stats, config, slash_queue)
+        _emit_stream_events(adapter, sink, stats, stream_queue)
         _scan_and_read(
             adapter,
             sink,
@@ -576,6 +711,28 @@ def _emit_slash_commands(
         sink.emit(adapter.name, event)
         if config.verbose:
             sys.stderr.write(f"[trax run] {adapter.name}: {event.kind}\n")
+
+
+def _emit_stream_events(
+    adapter: Adapter,
+    sink: Sink,
+    stats: _Stats,
+    stream_queue: deque[Event] | None,
+) -> None:
+    """Drain stream-captured events into the sink (single sink writer).
+
+    Runs on the drain thread. The pump's IO thread only appends to the
+    deque (atomic), so parsing never blocks on a slow ``sink.emit``.
+    """
+    if stream_queue is None:
+        return
+    while True:
+        try:
+            event = stream_queue.popleft()
+        except IndexError:
+            break
+        stats.record(event.kind)
+        sink.emit(adapter.name, event)
 
 
 def _scan_and_read(
@@ -864,7 +1021,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         type=Path,
         default=None,
-        help="JSONL output file. Default: parsed events go to stderr.",
+        help=(
+            "Capture to this local JSONL file instead of syncing to the "
+            "server (the default)."
+        ),
     )
     parser.add_argument(
         "--verbose",
@@ -930,7 +1090,6 @@ def main(
         cli_argv = ()
     parser = build_parser()
     args = parser.parse_args(trax_argv)
-    syncing = args.sync and args.out is None and not args.dry_run
     config = RunConfig(
         cli_name=args.cli,
         cli_args=tuple(cli_argv),
@@ -940,6 +1099,7 @@ def main(
         verbose=args.verbose,
         dry_run=args.dry_run,
         sync=args.sync,
-        client=client_factory() if syncing and client_factory else None,
     )
+    if config.syncing and client_factory:
+        config.client = client_factory()
     return run(config)
