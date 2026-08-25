@@ -1,4 +1,4 @@
-"""Lightweight types shared across the library.
+"""The omitted-keyword sentinel.
 
 Importable from any CLI / tool / non-tensor library without dragging in heavy
 tensor dependencies.

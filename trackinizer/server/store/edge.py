@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from typing import Final, cast
 from uuid import UUID
 
-from trackinizer.lib.custom_types import ABSENT, Absent
+from trackinizer.lib.absent import ABSENT, Absent
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
