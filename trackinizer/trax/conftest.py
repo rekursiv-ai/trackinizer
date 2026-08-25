@@ -18,7 +18,7 @@ import uuid
 import pytest
 
 from trackinizer.client.client import EdgeWrite
-from trackinizer.lib.custom_types import Absent
+from trackinizer.lib.absent import Absent
 from trackinizer.trax import cli
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import (

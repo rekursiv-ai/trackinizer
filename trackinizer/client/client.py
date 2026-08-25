@@ -50,8 +50,8 @@ import httpx
 import pydantic
 
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.absent import ABSENT, Absent
 from trackinizer.lib.custom_json import JSONValue
-from trackinizer.lib.custom_types import ABSENT, Absent
 from trackinizer.types.inquiries import Inquiry, Issue
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
