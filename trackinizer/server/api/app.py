@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
@@ -40,6 +40,7 @@ from trackinizer.server.config import (
 )
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store
+from trackinizer.server.subscriber import push_changes_to_live_subscribers
 from trackinizer.types.errors import (
     ConflictError,
     NotFoundError,
@@ -126,7 +127,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             # the schema is in place.
             async with engine.acquire() as conn:
                 await seed_no_auth_user(conn)
-        yield
+        # Subscriber push: copies committed change rows into subscribers'
+        # live-session inbound queues (doorbell-driven; see subscriber_push).
+        push_task = asyncio.create_task(
+            push_changes_to_live_subscribers(app.state.store, app.state.inbound)
+        )
+        try:
+            yield
+        finally:
+            push_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await push_task
         # Bracket the engine teardown so an operator (and the shutdown-latency
         # investigation) can see where time goes: a gap BEFORE this line is
         # uvicorn draining in-flight connections; a gap until "engine closed"

@@ -348,7 +348,53 @@ class TestTrackinizerSinkCloseFlushOrdering:
         sink.close()
         assert client.append_attempts == 2
         assert [e.seq for ev in client.appended for e in ev[1]] == [0]
-        assert client.ended == [client._id]
+        # Both closes end the session: ``session_end`` runs in the finally so
+        # a flush failure can never leave the session live (phantom-session
+        # guard); the duplicate end is idempotent server-side.
+        assert client.ended == [client._id, client._id]
+
+    def test_close_ends_session_even_when_flush_fails(self, tmp_path: Path) -> None:
+        """A flush failure at close must not leave the session live forever.
+
+        ``ResilientSink.close`` catches the primary's failure and degrades --
+        there is no retried close in production. If ``session_end`` only runs
+        after a successful flush, ``agentsession_ended`` stays NULL, so
+        ``resolve_live_sessions`` returns the row forever and the subscriber
+        push keeps feeding a queue nobody drains (a phantom live session).
+        """
+        client = _FlakyFlushClient()
+        primary = TrackinizerSink(cast(Client, client), "claude")
+        sink = ResilientSink(primary, fallback_path=tmp_path / "fb.jsonl")
+        sink.emit("claude", _event(UserMessage(text="one")))
+
+        sink.close()
+
+        assert client.ended == [client._id], (
+            "session_end never ran; the server session stays live (phantom)"
+        )
+        # The buffered event still reached the fallback (REV-02 preserved).
+        fallback = (tmp_path / "fb.jsonl").read_text()
+        assert "one" in fallback
+
+
+class TestDrainPendingIsOnTheProtocol:
+    """``drain_pending`` must be part of the ``Sink`` contract, not a getattr.
+
+    ``ResilientSink._degrade`` previously reached it dynamically
+    (``getattr(primary, "drain_pending", None)`` + an unchecked cast): a
+    rename would type-check clean and silently re-open REV-02 (buffered
+    events lost on degrade). On the Protocol, a rename is a type error.
+    """
+
+    def test_file_sink_has_empty_drain(self) -> None:
+        sink = FileSink(io.StringIO())
+        assert sink.drain_pending() == []
+
+    def test_protocol_declares_drain_pending(self) -> None:
+        assert hasattr(Sink, "drain_pending"), (
+            "drain_pending is not on the Sink Protocol; _degrade must be "
+            "reaching it via getattr, which a rename silently breaks"
+        )
 
 
 class _ExplodingSink:
@@ -369,6 +415,9 @@ class _ExplodingSink:
 
     def flush(self) -> None:
         pass
+
+    def drain_pending(self) -> list[EventBody]:
+        return []
 
     def close(self) -> None:
         self.closed = True
@@ -404,6 +453,9 @@ class _FailingOpenPrimary:
 
     def flush(self) -> None:
         pass
+
+    def drain_pending(self) -> list[EventBody]:
+        return []
 
     def close(self) -> None:
         self.closed = True

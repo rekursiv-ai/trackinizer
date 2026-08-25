@@ -61,16 +61,11 @@ def _actor(identity: AuthIdentity, supplied: str | None) -> str:
 
 
 async def _require_session(store: Store, session_id: UUID) -> AgentSession:
-    """Fetch an AgentSession row or raise 404; reject non-session ids.
-
-    Discriminate by ``type(row).__name__`` rather than ``isinstance``: under
-    some test import paths the dataclass module is loaded twice, so the
-    class object differs by identity while the kind is the same.
-    """
+    """Fetch an AgentSession row or raise 404; reject non-session ids."""
     row = await store.get_inquiry(session_id)
-    if row is None or type(row).__name__ != "AgentSession":
+    if not isinstance(row, AgentSession):
         raise HTTPException(status_code=404, detail=f"unknown session {session_id}")
-    return cast(AgentSession, row)
+    return row
 
 
 @router.post("/api/sessions/start", status_code=201)

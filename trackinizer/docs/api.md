@@ -258,6 +258,11 @@ GET    /api/sessions/<uuid>/inbound
 POST   /api/messages
 ```
 
+Inbound messages whose attested `source` is `trackinizer` are subscriber
+push envelopes -- JSON metadata for a committed change, generated
+server-side (no HTTP surface produces them). Shape and client-side
+handling: `design_subscriber.md`.
+
 ### 1.22 Service meta
 
 ```

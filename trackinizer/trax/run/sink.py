@@ -91,6 +91,17 @@ class Sink(Protocol):
         """
         ...
 
+    def drain_pending(self) -> list[EventBody]:
+        """Remove and return events buffered but not yet delivered.
+
+        The degrade seam: when a primary sink fails, ``ResilientSink``
+        replays these seq-stamped bodies into the local fallback so a flush
+        failure loses nothing (REV-02). On the Protocol -- not reached via
+        ``getattr`` -- so a rename is a type error instead of a silent
+        buffer loss. A sink that delivers synchronously returns ``[]``.
+        """
+        ...
+
     def close(self) -> None:
         """Flush and release resources; idempotent."""
         ...
@@ -132,6 +143,10 @@ class FileSink:
         seq = self._next_seq
         self._next_seq += 1
         self._write_record(adapter_name, _event_body(seq, event))
+
+    def drain_pending(self) -> list[EventBody]:
+        # Every emit writes through immediately; nothing is ever buffered.
+        return []
 
     def write_body(self, adapter_name: str, body: EventBody) -> None:
         """Write a pre-built :class:`EventBody`, preserving its own ``seq``.
@@ -310,18 +325,24 @@ class TrackinizerSink:
             return
         # Flush and end *before* marking closed: a failure here must leave the
         # buffer intact so a retried ``close`` re-sends it, rather than a bare
-        # ``_closed=True`` swallowing the events. ``end`` stamps ``ended`` so
-        # the server records when the session closed (not a NULL the status
-        # flip silently outruns).
-        self._flush()
-        if self._session_id is not None:
-            self._client.session_end(
-                self._session_id,
-                SessionEnd(
-                    ended=datetime.now(UTC),
-                    cli_session_id=self._cli_session_id,
-                ),
-            )
+        # ``_closed=True`` swallowing the events. ``session_end`` runs in the
+        # ``finally``: a flush failure must NOT skip it, or ``ended`` stays
+        # NULL forever -- ``resolve_live_sessions`` then returns the session
+        # as live and the subscriber push keeps feeding a queue nobody drains
+        # (a phantom session). In production ``ResilientSink.close`` catches
+        # the flush failure and drains the buffer to the local fallback, so
+        # ending the session here loses nothing.
+        try:
+            self._flush()
+        finally:
+            if self._session_id is not None:
+                self._client.session_end(
+                    self._session_id,
+                    SessionEnd(
+                        ended=datetime.now(UTC),
+                        cli_session_id=self._cli_session_id,
+                    ),
+                )
         self._closed = True
 
 
@@ -387,6 +408,11 @@ class ResilientSink:
         if self._fallback is not None:
             self._fallback.flush()
 
+    def drain_pending(self) -> list[EventBody]:
+        # The primary's buffer is replayed into the fallback on degrade, and
+        # the fallback writes through; nothing is ever pending at this layer.
+        return []
+
     def close(self) -> None:
         if self._primary is not None:
             try:
@@ -403,15 +429,13 @@ class ResilientSink:
         the fallback first, in order, so a flush failure loses nothing (REV-02).
         """
         primary, self._primary = self._primary, None
+        assert primary is not None, "degrade is only reachable with a live primary"
         sys.stderr.write(
             f"[trax run] sync failed ({err}); "
             f"falling back to local capture at {self._fallback_path}\n"
         )
-        drain = getattr(primary, "drain_pending", None)
-        if drain is None:
-            return
         fallback = self._ensure_fallback()
-        for body in cast(list[EventBody], drain()):
+        for body in primary.drain_pending():
             fallback.write_body(self._adapter_for_fallback, body)
 
     def _ensure_fallback(self) -> FileSink:
@@ -471,6 +495,10 @@ class LockedSink:
     def flush(self) -> None:
         with self._lock:
             self._inner.flush()
+
+    def drain_pending(self) -> list[EventBody]:
+        with self._lock:
+            return self._inner.drain_pending()
 
     def close(self) -> None:
         # Non-blocking teardown: a worker wedged inside a locked ``emit`` /

@@ -233,9 +233,9 @@ is simply lost) and IRC. A durable **inbox** -- "queue work for an agent
 not yet running" -- is a different feature, deferred until it is a real
 want.
 
-### Transport: HTTP polling now; NOTIFY/SSE is the upgrade
+### Transport: HTTP polling (kept -- the NOTIFY upgrade was tried and cut)
 
-**As built (Phase 2a): `trax run` polls.** The inbound poll loop calls
+**As built: `trax run` polls.** The inbound poll loop calls
 `GET /api/sessions/<id>/inbound` (drain) on a fixed interval and injects
 whatever it drains (`trax/run/session.py` `_inbound_poll_loop`). Server
 state is the process-local `InboundQueue` (`server/inbound.py`). This is
@@ -243,15 +243,18 @@ the simplest thing that closes the loop and is fully testable without a
 streaming primitive; the cost is up-to-`poll_interval` latency and idle
 chatter.
 
-**The upgrade: reuse the existing push fanout.** The server already has
-Postgres `LISTEN/NOTIFY` -> SSE machinery powering the SPA's
-`/api/web/subscribe` (`server/notify.py:85`, `iter_sse_events`). A routed
-message could fire a notify scoped to the target session and the
-subscribed `trax run` would wake without polling. Deferred: polling is
-adequate for human-typed sends, and the seam (`drain_inbound` /
-`enqueue`) swaps to NOTIFY/SSE without touching the routes or the pump.
-The diagram's "subscribe (pull)" denotes the client-initiated pull
-(today HTTP polling; later a long-lived SSE), not server push.
+**The NOTIFY/SSE upgrade was evaluated during the subscriber-push work and
+rejected on measurement** (see `design_subscriber.md`, "Why a sweep
+and not LISTEN/NOTIFY"): a dead LISTEN connection fails silently, so a
+polling backstop must exist regardless, and end-to-end latency is gated by
+this very poll loop -- server-side immediacy is unobservable. The seam
+(`drain_inbound` / `enqueue`) still permits a streaming swap if a
+poller-free consumer ever appears. The diagram's "subscribe (pull)"
+denotes the client-initiated pull, not server push.
+
+The server-side **subscriber push** (change notifications routed into
+subscribers' live sessions through this same inbound queue) is documented
+in `design_subscriber.md`.
 
 ## What we're wiring
 

@@ -333,6 +333,15 @@ CREATE INDEX IF NOT EXISTS idx_change_log_created_id
 -- catch-up bounded by hits rather than total change_log size.
 CREATE INDEX IF NOT EXISTS idx_change_log_subscribers_snapshot
     ON change_log USING gin (subscribers_snapshot);
+-- Partial btree for ``what_changed_for_anyone`` (the subscriber-push scan,
+-- one query per doorbell against this append-only table). Its predicate
+-- (``!= '{}'``) is not GIN-indexable and ``cardinality(...) > 0`` is no
+-- better (both EXPLAIN as Seq Scan); the WHERE here matches the query's
+-- filter verbatim and the key matches its cursor ORDER BY, which planned
+-- as a Bitmap Index Scan at 6% of the seq-scan cost (5k rows, PGlite).
+CREATE INDEX IF NOT EXISTS idx_change_log_subscribed_created_id
+    ON change_log (created, id)
+    WHERE subscribers_snapshot != '{}';
 CREATE INDEX IF NOT EXISTS idx_change_log_caused_by
     ON change_log (caused_by) WHERE caused_by IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_change_log_new_status
