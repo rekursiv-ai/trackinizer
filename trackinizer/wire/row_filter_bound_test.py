@@ -924,10 +924,10 @@ class TestOpsThatStillEvaluate:
         )
 
     def test_an_array_regex_still_evaluates(self) -> None:
-        # knowop2 filters boards this way; it must keep working.
-        row = {"labels": ["board:study059:triage"]}
+        # Downstream orchestrators filter boards this way; it must keep working.
+        row = {"labels": ["board:triage:high"]}
         assert (
-            match_filter(row, Filter(field="labels", op="re", value="^board:study059:"))
+            match_filter(row, Filter(field="labels", op="re", value="^board:triage:"))
             is True
         )
 

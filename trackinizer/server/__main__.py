@@ -8,8 +8,8 @@ Runnable wrapper for the trackinizer server; the implementation lives in
 '''
 # fmt: on
 
-# Note: We intentionally don't use --no-sync in the polyglot so `ssh colossus
-# redeploy trackinizer` automatically triggers uv sync if needed.
+# Note: We intentionally don't use --no-sync in the polyglot so a remote
+# redeploy automatically triggers uv sync if needed.
 
 from __future__ import annotations
 
