@@ -6,10 +6,11 @@ equality and presence, whose ``str(dict)`` no SQL reproduces) for the store to
 answer here after the fetch.
 
 This predicate exists for the callers with no database to lean on -- the trax
-CLI test fake filtering in-memory dicts, and knowop2 filtering a single row
-delivered by a change event. Each would otherwise grow its own filter
-semantics, so all of them share this one, and :func:`reject_inadmissible`
-refuses whatever this predicate would answer differently from SQL.
+CLI test fake filtering in-memory dicts, and downstream orchestrators
+filtering a single row delivered by a change event. Each would otherwise grow
+its own filter semantics, so all of them share this one, and
+:func:`reject_inadmissible` refuses whatever this predicate would answer
+differently from SQL.
 
 :func:`match_filter` resolves the filter field through
 :func:`canonical_filter_field`, so a ``Filter`` carrying either an alias

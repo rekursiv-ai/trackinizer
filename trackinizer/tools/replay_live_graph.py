@@ -5,11 +5,11 @@
 exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
 Mirror the live trackinizer graph into a local (ephemeral) server.
 
-Reads every inquiry and edge from the authenticated source server (the saved
-trax profile, i.e. ``trackinizer.rekursiv.ai``) and replays them into a target
-server via atomic ``submit_batch`` calls, so the graph viz can be exercised on
-real data without putting read load on production each time. Node identity is
-not preserved (the target mints fresh ids); edges are rewired by replay index.
+Reads every inquiry and edge from the authenticated source server (the active
+trax profile's deployment) and replays them into a target server via atomic
+``submit_batch`` calls, so the graph viz can be exercised on real data without
+putting read load on production each time. Node identity is not preserved (the
+target mints fresh ids); edges are rewired by replay index.
 
 Reads are paginated per kind; edges are harvested from each node's
 ``/api/web/get`` projection (outbound ``edges`` only, to avoid double-counting)
@@ -79,9 +79,11 @@ _KIND_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "Artifact": ("title", "status"),
 }
 
-_DEFAULT_SOURCE: Final = "https://trackinizer.rekursiv.ai"
-"""The live trackinizer the replay reads from unless ``--source`` overrides it.
-Auth (the API key) still comes from the saved trax profile."""
+# The live server the replay reads from: the active trax profile's URL,
+# overridable with ``--source``. Auth (the API key) comes from the profile
+# either way, so the profile is the natural default for the address too.
+_DEFAULT_SOURCE: Final = ""
+"""Empty means "use the active trax profile's URL" (see ``_source_url``)."""
 
 
 def main() -> int:
@@ -132,9 +134,9 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--source",
         default=_DEFAULT_SOURCE,
-        help="Base URL of the live trackinizer to read from "
-        f"(default {_DEFAULT_SOURCE}). The API key still comes from the saved "
-        "trax profile.",
+        help="Base URL of the live trackinizer to read from (default: the "
+        "active trax profile's URL). The API key comes from the profile "
+        "either way.",
     )
     parser.add_argument(
         "--limit",
@@ -172,18 +174,19 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
 def _source_client(source_url: str) -> Client:
     """Client for ``source_url``, authed with the saved trax profile's key.
 
-    The URL is an explicit argument (``--source``); only the credential is
-    taken from the profile, so the source server can be pointed elsewhere
-    without rewriting the profile.
+    An empty ``source_url`` (the default) uses the profile's own URL -- the
+    deployment the operator is already pointed at. ``--source`` overrides
+    just the address; the credential comes from the profile either way.
     """
     profile = load_profile()
     if not profile.api_key:
         raise SystemExit(
             "no api_key in the active trax profile; cannot read the source server"
         )
-    return Client(
-        source_url, author=profile.author or "replay", api_key=profile.api_key
-    )
+    url = source_url or profile.url
+    if not url:
+        raise SystemExit("no --source given and the active trax profile has no URL")
+    return Client(url, author=profile.author or "replay", api_key=profile.api_key)
 
 
 def _pull_nodes(source: Client, *, limit: int) -> list[dict[str, Any]]:

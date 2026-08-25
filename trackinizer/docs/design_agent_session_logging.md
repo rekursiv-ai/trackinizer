@@ -230,12 +230,12 @@ function each.
 **Phase 2 (cold tier) = Parquet on S3/R2.** Old partitions roll out;
 DuckDB queries on demand for researcher use.
 
-### Why we already migrated colossus pglite → real Postgres
+### Why the production deployment migrated pglite → real Postgres
 
 The migration was triggered by *operational* pain (no `psql`, single
 connection, no monitoring), not by storage need. But it was a prerequisite:
 Timescale doesn't exist for pglite, and event ingest at any volume needs
-multi-connection. Done; see `ops/colossus/setup-postgres.sh`.
+multi-connection. Done; provisioning lives in the internal ops tree.
 
 ### Transport / API protocol
 
@@ -506,8 +506,8 @@ Codex and gemini are already narrow, which is why their rows are cheap.
 **Scoping claude's `session_dirs()` to the run's own project directory is
 the single highest-value change here, and it is independent of the timer.**
 The directory name appears to be the cwd with path separators replaced
-(observed: cwd `/opt/scratch/artifacts/trax-hook` ->
-`~/.claude/projects/-opt-scratch-artifacts-trax-hook`), but the full
+(observed: cwd `/tmp/work/trax-hook` ->
+`~/.claude/projects/-tmp-work-trax-hook`), but the full
 encoding is NOT specified anywhere in this repo and one observation is not
 a spec. Deriving it wrong drops capture to zero, which is worse than the
 scan. Establish the encoding against adversarial paths (dots, symlinks,
