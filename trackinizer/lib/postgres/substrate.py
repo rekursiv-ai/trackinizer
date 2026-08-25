@@ -284,7 +284,16 @@ class PGliteEngine:
             self._conn.terminate()
             self._conn = None
         if self._manager is not None:
+            # py-pglite spawns Node with ``stdout=PIPE`` and its ``stop()`` drops
+            # the Popen without closing that pipe, so the reader is finalized by
+            # GC and emits ``ResourceWarning: unclosed file``. Grab the handle
+            # before ``stop()`` clears ``manager.process``, close it after the
+            # process is dead so ``_drain_node_stdout`` sees EOF rather than a
+            # closed file mid-read.
+            proc = self._manager.process
             await asyncio.to_thread(self._manager.stop)
+            if proc is not None and proc.stdout is not None:
+                proc.stdout.close()
             self._manager = None
 
     async def __aexit__(self, *exc: object) -> None:
