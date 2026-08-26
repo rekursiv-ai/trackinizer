@@ -37,23 +37,17 @@ from trackinizer.types.agent_session_events import (
 )
 
 
-# Top-level ``type`` values that are CLI bookkeeping, not a captured turn.
-# None carry a ``message`` field (verified against on-disk session logs):
-# ``mode`` / ``permission-mode`` are UI-state markers, ``system`` is a meta
-# record (``isMeta`` / ``durationMs`` / ``gitBranch``), and
-# ``file-history-snapshot`` is an editor file-state dump.
-_SKIP_TYPES = frozenset(
-    {
-        "attachment",
-        "ai-title",
-        "queue-operation",
-        "last-prompt",
-        "mode",
-        "permission-mode",
-        "file-history-snapshot",
-        "system",
-    }
-)
+# Types that must be skipped DESPITE carrying a ``message`` field, so
+# ``_to_messages``'s structural test cannot reach them. ``system`` is claude's
+# meta record (``isMeta`` / ``durationMs`` / ``gitBranch``); it sometimes
+# carries content but is never a model turn.
+#
+# Everything else is handled structurally -- a record without ``message`` is
+# session state and is dropped without being named here. Do NOT re-add
+# name-by-name entries for state records: that list is vendor-owned and
+# open-ended, and enumerating it is what let ``atis-latch``,
+# ``bridge-session``, and ``cost-state`` each reach a captured transcript.
+_SKIP_TYPES = frozenset({"system"})
 
 
 class ClaudeAdapter:
@@ -115,7 +109,25 @@ class ClaudeAdapter:
 
 
 def _to_messages(obj: JSON) -> tuple[Message, ...]:
-    """Normalize one claude line into zero or more typed messages."""
+    """Normalize one claude line into zero or more typed messages.
+
+    Dispatch is STRUCTURAL, not a list of known names: a record that carries
+    no ``message`` is session state, never a turn. Measured across 58,842
+    records of on-disk claude 2.1.240 logs, the split is exact -- every
+    ``user`` / ``assistant`` line has ``message``, and no other type ever
+    does.
+
+    That matters because the set of state types is open and vendor-owned:
+    claude adds them without notice (``atis-latch``, ``bridge-session``,
+    ``cost-state`` all appeared this way), and an allowlist misses each new
+    one until someone notices an empty ``UnknownMessage`` sitting in the
+    middle of a captured transcript. It also fails the other way -- a future
+    turn-bearing type would be silently dropped. Keying on the field the
+    content actually lives in handles both without an edit.
+
+    ``_SKIP_TYPES`` remains for the exceptions only: types that DO carry a
+    ``message`` but still are not model turns.
+    """
     line_type = obj.get("type")
     if line_type in _SKIP_TYPES:
         return ()
@@ -123,6 +135,8 @@ def _to_messages(obj: JSON) -> tuple[Message, ...]:
         return _user_messages(obj)
     if line_type == "assistant":
         return (_assistant_message(obj),)
+    if obj.get("message") is None:
+        return ()
     return (UnknownMessage(raw=obj),)
 
 

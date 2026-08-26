@@ -72,12 +72,9 @@ class CodexAdapter:
         return (Path(home) if home else Path.home() / ".codex") / "sessions"
 
     def session_dirs(self) -> Iterable[Path]:
-        sessions = self._sessions_dir
-        if not sessions.is_dir():
-            return ()
         # Codex shards by Y/M/D; returning the root lets the runner glob
         # recursively, so older days still get captured if they keep growing.
-        return (sessions,)
+        return (self._sessions_dir,)
 
     def matches_session_file(self, path: Path) -> bool:
         return (

@@ -168,12 +168,46 @@ class TestClaudeParseLine:
             "permission-mode",
             "file-history-snapshot",
             "system",
+            # Session state, not turns. Each was observed in a live claude
+            # 2.1.240 transcript arriving as an UnknownMessage, which put an
+            # empty record in the middle of the captured conversation.
+            # ``bridge-session`` and ``cost-state`` came from a *different*
+            # operator's session: the set of these is not knowable from one
+            # machine's logs, which is why dispatch is structural.
+            "atis-latch",
+            "bridge-session",
+            "cost-state",
+            "file-history-delta",
+            "frame-link",
         ):
             event = _parse_one(_encode({"type": line_type, "sessionId": "s1"}))
             assert event is None, line_type
 
-    def test_unrecognized_type_is_unknown(self) -> None:
+    def test_an_unrecognized_state_record_is_skipped(self) -> None:
+        """A type nobody has seen, carrying no ``message``, is session state.
+
+        The whole point of dispatching on the field rather than a name list:
+        claude adds these without notice, and each new one used to land in the
+        transcript as an empty ``UnknownMessage``.
+        """
         event = _parse_one(_encode({"type": "telemetry-v2", "sessionId": "s1"}))
+        assert event is None
+
+    def test_an_unrecognized_type_carrying_a_message_is_kept(self) -> None:
+        """The other direction: content is never dropped for being unnamed.
+
+        A future turn-bearing type must survive as ``UnknownMessage`` rather
+        than be silently discarded -- an allowlist would have dropped it.
+        """
+        event = _parse_one(
+            _encode(
+                {
+                    "type": "turn-v2",
+                    "sessionId": "s1",
+                    "message": {"content": "something to keep"},
+                }
+            )
+        )
         assert event is not None
         assert isinstance(event.message, UnknownMessage)
 
