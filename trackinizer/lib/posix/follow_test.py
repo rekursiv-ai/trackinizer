@@ -461,6 +461,78 @@ class TestSubdirectories:
 class TestCursor:
     """Byte-offset bookkeeping, independent of which kernel wakes it."""
 
+    def test_a_same_size_replacement_is_re_read_whole(self, tmp_path: Path) -> None:
+        """A rewrite is not always a SHRINK; identity is content, not length.
+
+        ``test_restarts_after_a_rewrite`` only covers a file getting smaller,
+        so a cursor that resets on ``size < offset`` passes it while seeking
+        straight into the middle of a same-or-larger replacement -- yielding
+        the tail of a line nobody wrote.
+        """
+        target = tmp_path / "log"
+        _ = target.write_text("old\n")
+        cursor = follow._Cursor(target, offset=4)
+
+        _ = target.write_text("fresh\n")
+
+        assert cursor.drain() == ["fresh"]
+
+    def test_a_growing_file_is_not_re_read(self, tmp_path: Path) -> None:
+        """Growth past the cursor is new content, never a replacement.
+
+        The counterpart to the test above: a guard that re-read whenever the
+        size changed would replay the whole file on every append.
+        """
+        target = tmp_path / "log"
+        _ = target.write_text("one\n")
+        cursor = follow._Cursor(target, offset=0)
+        assert cursor.drain() == ["one"]
+
+        with target.open("a") as handle:
+            _ = handle.write("two\n")
+
+        assert cursor.drain() == ["two"]
+
+    def test_every_line_is_delivered_exactly_once(self, tmp_path: Path) -> None:
+        """A line read is a line recorded, however the file grew meanwhile.
+
+        The cursor must advance by what it READ, never by a length measured
+        before reading: a write landing between those two syscalls is read now
+        and would be delivered again on the next drain.
+        """
+        target = tmp_path / "log"
+        _ = target.write_bytes(b"a\n")
+        cursor = follow._Cursor(target, offset=0)
+        seen = cursor.drain()
+
+        with target.open("ab") as handle:
+            _ = handle.write(b"b\n")
+        seen += cursor.drain()
+        seen += cursor.drain()
+
+        assert seen == ["a", "b"]
+
+    def test_a_character_split_across_writes_survives(self, tmp_path: Path) -> None:
+        """A multibyte character split across appends is not two mojibake.
+
+        ``drain`` decodes each chunk on its own, so a UTF-8 sequence straddling
+        two reads is decoded as two invalid halves and ``errors="replace"``
+        turns each into U+FFFD -- silently corrupting the line rather than
+        holding the incomplete bytes for the next read.
+        """
+        target = tmp_path / "log"
+        # ``café`` cut mid-sequence: the leading byte of its final character
+        # is not decodable alone, and the byte completing it arrives next.
+        whole = "café".encode()
+        _ = target.write_bytes(whole[:-1])
+        cursor = follow._Cursor(target, offset=0)
+        assert cursor.drain() == []
+
+        with target.open("ab") as handle:
+            _ = handle.write(whole[-1:] + b"\n")
+
+        assert cursor.drain() == ["café"]
+
     def test_unreadable_file_yields_nothing(self, tmp_path: Path) -> None:
         """A file that cannot be opened is skipped, not raised through.
 

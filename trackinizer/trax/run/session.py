@@ -995,12 +995,15 @@ def _process_chunk(
     *,
     whole_file: bool,
 ) -> None:
-    """Parse one chunk into events and emit each; never let a parser bug abort.
+    """Parse one chunk into events and emit each; never let a bug abort capture.
 
-    ``parse`` runs untrusted CLI bytes through adapter code in a daemon drain
-    thread. An unguarded raise (e.g. a malformed turn failing an
-    ``AssistantMessage`` invariant) would kill the thread and silently stop
-    capture, so a parser failure logs and skips the chunk instead.
+    Both halves run untrusted work in a daemon drain thread, and an escaping
+    raise there kills the thread and silently ends capture for the rest of the
+    run. ``parse`` runs adapter code over CLI bytes (a malformed turn failing
+    an ``AssistantMessage`` invariant); ``emit`` reaches a sink that can fail
+    at the bottom of its own fallback chain -- ``ResilientSink`` degrades to a
+    local ``FileSink``, whose write raises on a full disk with nothing left to
+    catch it. Each is guarded so a failure costs one chunk or one turn.
     """
     try:
         events = tuple(adapter.parse(raw, whole_file=whole_file))
@@ -1017,8 +1020,17 @@ def _process_chunk(
     for event in events:
         # The sink mints the per-session seq and owns serialization (the
         # frozen payload is unfrozen at the sink boundary); the run only tallies.
-        stats.record(event.kind)
-        sink.emit(adapter.name, event)
+        try:
+            stats.record(event.kind)
+            sink.emit(adapter.name, event)
+        except Exception:
+            _logger.warning(
+                "trax run: %s sink failed to emit a %s; continuing",
+                adapter.name,
+                event.kind,
+                exc_info=True,
+            )
+            continue
         if config.verbose:
             sys.stderr.write(f"[trax run] {adapter.name}: {event.kind}\n")
 

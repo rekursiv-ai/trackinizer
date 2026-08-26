@@ -129,7 +129,6 @@ class GeminiAdapter:
             if len(messages) < emitted:
                 emitted = 0
             appended = messages[emitted:]
-            self._emitted[session_id] = len(messages)
         events: list[Event] = []
         for raw_msg in appended:
             if not isinstance(raw_msg, Mapping):
@@ -140,6 +139,13 @@ class GeminiAdapter:
             message = _to_message(cast(JSON, raw_msg))
             if message is not None:
                 events.append(Event(message=message))
+        # Advance only once every message normalized. A raise above (a turn
+        # failing an ``AssistantMessage`` invariant, say) is swallowed by the
+        # runner's ``_process_chunk``, which then re-feeds this same body on the
+        # next wake; a cursor advanced first would report nothing new and the
+        # slice would be lost for the whole run.
+        if session_id:
+            self._emitted[session_id] = len(messages)
         return tuple(events)
 
 
