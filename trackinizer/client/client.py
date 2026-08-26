@@ -1165,16 +1165,37 @@ class Client:
         ).queued
 
     def drain_inbound(
-        self, session_id: uuid.UUID
+        self,
+        session_id: uuid.UUID,
+        *,
+        wait_sec: float = 0.0,
     ) -> list[tuple[str, str | None, str | None]]:
         """Drain pending inbound messages for a session, oldest first.
 
-        Returns ``(text, source, room)`` triples so the caller (the ``trax
-        run`` poller) can render the ``[room] sender:`` injection context
-        without a wire-type import.
+        Returns ``(text, source, room)`` triples so the caller (``trax run``)
+        can render the ``[room] sender:`` injection context without a
+        wire-type import.
+
+        Args:
+          session_id: Session whose queue to drain.
+          wait_sec: How long the server may hold the request open waiting for
+            a message. Zero returns whatever is pending now. A non-zero value
+            replaces repeated asking: one held request per session instead of
+            one round trip per interval, and delivery on arrival rather than
+            up to an interval late. The read timeout must exceed it, or the
+            client aborts the very wait it asked for.
+
         """
         where = wire_sessions.session_inbound_path(session_id)
-        response = self._request("GET", where)
+        response = self._request(
+            "GET",
+            where,
+            params={"wait_sec": wait_sec} if wait_sec else None,
+            # Margin over the requested hold: the server returns empty AT the
+            # timeout, so a read deadline equal to it races that response and
+            # turns a normal empty result into a transport error.
+            timeout=wait_sec + 10.0 if wait_sec else None,
+        )
         drained = _validate_model(wire_sessions.DrainInboundResponse, response, where)
         return [(m.text, m.source, m.room) for m in drained.messages]
 
@@ -1222,6 +1243,7 @@ class Client:
         params: Mapping[str, object] | None = None,
         change_id: uuid.UUID | None = None,
         retry_attempts: int = 3,
+        timeout: float | None = None,
     ) -> JSONValue:
         # ``retry_attempts`` is how many tries a mutating request gets after a
         # 5xx or read timeout. Three bounds the worst-case wait (~1s) while
@@ -1247,6 +1269,13 @@ class Client:
                     json=body,
                     params=clean,
                     headers=headers,
+                    # A long-poll's read must outlast the hold it requested,
+                    # or the client aborts the very wait it asked the server
+                    # for. ``USE_CLIENT_DEFAULT`` keeps the transport's own
+                    # timeout for every other request.
+                    timeout=timeout
+                    if timeout is not None
+                    else httpx.USE_CLIENT_DEFAULT,
                 )
             # Connect and write failures are wrapped but not retried: a write
             # may already have reached the server, so a blind retry could

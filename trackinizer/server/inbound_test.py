@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import asyncio
 import threading
+import time
 import uuid
 
 from trackinizer.server.inbound import Inbound, InboundQueue
@@ -68,6 +70,84 @@ class TestInboundQueue:
         q.enqueue(sid, Inbound(text="hi", source="alice@x", room="sear"))
         (msg,) = q.drain(sid)
         assert (msg.text, msg.source, msg.room) == ("hi", "alice@x", "sear")
+
+
+class TestAwaitMessages:
+    """Waiting for a message rather than asking for one repeatedly.
+
+    A poller asking every 0.5s is one request per session per half-second
+    whether or not anything was sent, and still delivers up to 0.5s late. A
+    wait that returns the moment a message is enqueued costs one held request
+    and delivers immediately.
+    """
+
+    def test_returns_immediately_when_messages_are_pending(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        _ = queue.enqueue(session, Inbound(text="already here"))
+
+        started = time.monotonic()
+        drained = asyncio.run(queue.await_messages(session, timeout_sec=5.0))
+
+        assert [m.text for m in drained] == ["already here"]
+        assert time.monotonic() - started < 0.5, "waited despite a pending message"
+
+    def test_wakes_on_an_enqueue_from_another_thread(self) -> None:
+        """The wait ends when the message arrives, not when a timer expires."""
+        queue = InboundQueue()
+        session = uuid.uuid4()
+
+        async def run() -> tuple[list[str], float]:
+            loop = asyncio.get_running_loop()
+
+            def send_soon() -> None:
+                time.sleep(0.1)
+                _ = queue.enqueue(session, Inbound(text="from elsewhere"))
+
+            threading.Thread(target=send_soon, daemon=True).start()
+            started = loop.time()
+            drained = await queue.await_messages(session, timeout_sec=10.0)
+            return ([m.text for m in drained], loop.time() - started)
+
+        texts, elapsed = asyncio.run(run())
+        assert texts == ["from elsewhere"]
+        # Woken by the enqueue: far below the timeout, above the send delay.
+        assert elapsed < 2.0, f"waited {elapsed:.2f}s for a message sent at 0.1s"
+
+    def test_returns_empty_at_the_timeout(self) -> None:
+        """A quiet session returns empty so the caller can re-arm.
+
+        A held request cannot be held forever: proxies and load balancers cut
+        idle connections, and the caller needs a turn to notice ``stop``.
+        """
+        queue = InboundQueue()
+
+        started = time.monotonic()
+        drained = asyncio.run(queue.await_messages(uuid.uuid4(), timeout_sec=0.2))
+
+        assert drained == []
+        assert time.monotonic() - started >= 0.2
+
+    def test_a_second_waiter_does_not_steal_the_first_wake(self) -> None:
+        """Two waiters on one session both see the queue drained once.
+
+        Only one holds the messages -- ``drain`` is destructive -- but neither
+        may hang past its timeout because the other consumed the wakeup.
+        """
+        queue = InboundQueue()
+        session = uuid.uuid4()
+
+        async def run() -> list[list[str]]:
+            first = asyncio.create_task(queue.await_messages(session, timeout_sec=2.0))
+            second = asyncio.create_task(queue.await_messages(session, timeout_sec=2.0))
+            await asyncio.sleep(0.1)
+            _ = queue.enqueue(session, Inbound(text="one message"))
+            both = await asyncio.gather(first, second)
+            return [[m.text for m in drained] for drained in both]
+
+        results = asyncio.run(run())
+        delivered = [texts for texts in results if texts]
+        assert delivered == [["one message"]], f"message delivered twice: {results}"
 
 
 class TestSendIdempotency:

@@ -102,7 +102,7 @@ resumed log. The sink MUST seed `_next_seq` from the response on re-attach.
 
 ### Eager open — gated on sync
 
-`run` opens the session at auth, before `PtyPump(env=_routing_env(...))`, **only
+`run` opens the session at auth, before `ThreadedRelay(env=_routing_env(...))`, **only
 on the sync path** (`config.sync and config.client is not None`). A
 `--no-sync` / `--out` / `--dry-run` run has no server, no client, no session
 (`FileSink.session_id` is permanently None) — it must NOT eager-open or it

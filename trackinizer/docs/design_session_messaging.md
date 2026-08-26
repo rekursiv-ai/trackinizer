@@ -467,7 +467,7 @@ chat. Smallest first win: step 1 (one string).
   the user types into the CLI's own TUI -- `/exit`, `/model`, `/clear` -- are
   handled inside the CLI and never written to its rollout/session log, so the
   log tailer cannot see them. *As built*, the pump tees the human's stdin
-  (the `on_input` observer, `trax/run/pty_pump.py`) into a keystroke detector
+  (the `on_input` observer, `lib/posix/relay.py`) into a keystroke detector
   (`trax/run/slash.py`); a submitted leading-`/` line becomes a
   `SlashCommand` capture event, emitted by the drain thread (the single sink
   writer) so it serializes with file-sourced turns. It is **best-effort**:

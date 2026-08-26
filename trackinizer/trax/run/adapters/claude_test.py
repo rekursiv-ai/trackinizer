@@ -230,7 +230,7 @@ class TestClaudeProjectsDir:
         project.mkdir(parents=True)
         fixture = project / "abc-123-def.jsonl"
         fixture.write_text('{"type": "user"}\n')
-        assert tuple(adapter.session_dirs()) == (project,)
+        assert tuple(adapter.session_dirs()) == (tmp_path / "projects",)
         assert adapter.matches_session_file(fixture)
 
     def test_falls_back_to_home_claude_without_env(
@@ -240,7 +240,24 @@ class TestClaudeProjectsDir:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         project = tmp_path / ".claude" / "projects" / "hash"
         project.mkdir(parents=True)
-        assert tuple(adapter.session_dirs()) == (project,)
+        assert tuple(adapter.session_dirs()) == (tmp_path / ".claude" / "projects",)
+
+    def test_watches_the_root_so_a_new_project_is_covered(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The projects ROOT is returned, not the per-project subdirectories.
+
+        Claude mints ``projects/<hashed-cwd>/`` the first time it runs in a
+        workspace, which for the run being captured is after the watch was
+        armed. Returning today's leaves leaves tomorrow's sibling unwatched
+        and the run captures nothing silently.
+        """
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        projects = tmp_path / "projects"
+        (projects / "-one").mkdir(parents=True)
+        (projects / "-two").mkdir()
+        # One entry (the root), never one per project.
+        assert tuple(adapter.session_dirs()) == (projects,)
 
 
 if __name__ == "__main__":

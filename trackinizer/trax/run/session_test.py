@@ -8,7 +8,7 @@ sessions that already existed when the run started.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast, override
@@ -18,21 +18,23 @@ import json
 import os
 import threading
 import time
+import uuid
 
 import pytest
 
 from trackinizer.trax.run import session as session_mod
 from trackinizer.trax.run.adapters.base import Adapter, Event
+from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 from trackinizer.trax.run.session import (
     RunConfig,
     _drain_filesystem_loop,
     _emit_slash_commands,
     _existing_session_files,
+    _inbound_poll_loop,
     _process_chunk,
     _render_inbound,
     _routing_env,
-    _scan_and_read,
     _Stats,
     run,
 )
@@ -170,34 +172,69 @@ def _write(path: Path, lines: int) -> None:
     path.write_text("".join(json.dumps({"n": i}) + "\n" for i in range(lines)))
 
 
-def _scan_once(
-    adapter: Adapter, baseline: frozenset[Path]
+def _drain_once(
+    adapter: Adapter,
+    tmp_path: Path,
+    write: Callable[[], object],
+    *,
+    baseline: frozenset[Path] = frozenset(),
+    expected: int = 1,
 ) -> tuple[_Stats, _RecordingSink]:
+    """Run the real drain, perform ``write``, and collect what it captured.
+
+    The drain is wake-driven, so a test cannot call one scan and inspect the
+    result: it starts the loop, writes, and waits for delivery.
+    """
+    del tmp_path
     sink = _RecordingSink()
     stats = _Stats()
-    config = RunConfig(cli_name="fake")
-    _scan_and_read(adapter, sink, stats, config, {}, buffers={}, baseline=baseline)
+    stop = threading.Event()
+
+    def _run() -> None:
+        _drain_filesystem_loop(
+            adapter,
+            sink,
+            stats,
+            RunConfig(cli_name=adapter.name),
+            stop,
+            baseline=baseline,
+            slash_queue=deque(),
+        )
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    try:
+        time.sleep(0.2)  # let the watch arm
+        write()
+        deadline = time.monotonic() + 3.0
+        while len(sink.events) < expected and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        stop.set()
+        worker.join(timeout=5.0)
     return stats, sink
 
 
 class TestSessionScoping:
+    """Only this run's session files are captured."""
+
     def test_baseline_files_are_skipped(self, tmp_path: Path) -> None:
         old = tmp_path / "old.jsonl"
         _write(old, lines=5)
         adapter = _FakeAdapter(tmp_path)
-
         baseline = _existing_session_files(adapter)
         assert old in baseline
 
-        new = tmp_path / "new.jsonl"
-        _write(new, lines=3)
-
-        stats, sink = _scan_once(adapter, baseline)
+        stats, sink = _drain_once(
+            cast(Adapter, adapter),
+            tmp_path,
+            lambda: _write(tmp_path / "new.jsonl", lines=3),
+            baseline=baseline,
+            expected=3,
+        )
 
         # Only the 3 lines of the new file; none of the 5 pre-existing.
         assert stats.counts == {"UserMessage": 3}
-        assert len(sink.events) == 3
-        # seq is monotonic from 0 across the run.
         assert [seq for seq, _, _ in sink.events] == [0, 1, 2]
 
     def test_no_new_file_emits_nothing(self, tmp_path: Path) -> None:
@@ -206,200 +243,269 @@ class TestSessionScoping:
         adapter = _FakeAdapter(tmp_path)
         baseline = _existing_session_files(adapter)
 
-        stats, sink = _scan_once(adapter, baseline)
+        stats, sink = _drain_once(
+            cast(Adapter, adapter),
+            tmp_path,
+            lambda: None,
+            baseline=baseline,
+            expected=0,
+        )
 
         assert stats.counts == {}
         assert sink.events == []
 
-    def test_file_older_than_spawn_is_not_drained(self, tmp_path: Path) -> None:
-        """A non-baseline file that predates spawn belongs to an earlier run (#283).
+    def test_a_concurrent_runs_file_is_not_drained(self, tmp_path: Path) -> None:
+        """Another run's session file must not be swept in (#283).
 
-        The cross-pollination race: run B snapshots its baseline BEFORE fork; a
-        concurrent run A's file may already exist on disk but be missed by B's
-        snapshot, so it is not in B's baseline. Exclusion alone would make B
-        drain A's file. The spawn-time floor closes it: A's file mtime predates
-        B's spawn (A started first), so B skips it even though baseline missed
-        it.
+        The old drain needed an mtime floor for this, because it rescanned the
+        whole tree every tick and could pick up a file its baseline snapshot
+        had raced past. A watch armed before the spawn cannot: it reports only
+        what happens after it, and another run's file is not written by this
+        one.
         """
         adapter = _FakeAdapter(tmp_path)
-        # Run A's file: exists on disk, but NOT in B's baseline (B raced past it).
         others = tmp_path / "run_a.jsonl"
         _write(others, lines=5)
-        # Stamp A's file in the past, before this run (B) spawned.
         past = time.time() - 60
         os.utime(others, (past, past))
-        spawn_time = time.time()
-        baseline: frozenset[Path] = frozenset[
-            Path
-        ]()  # B's snapshot missed run A's file
 
-        sink = _RecordingSink()
-        stats = _Stats()
-        config = RunConfig(cli_name="fake")
-        _scan_and_read(
-            adapter,
-            sink,
-            stats,
-            config,
-            {},
-            buffers={},
-            baseline=baseline,
-            spawn_time=spawn_time,
+        stats, sink = _drain_once(
+            cast(Adapter, adapter),
+            tmp_path,
+            lambda: None,
+            expected=0,
         )
-        # A's file is older than B's spawn -> not B's -> not drained.
+
         assert sink.events == []
         assert stats.counts == {}
 
-    def test_file_at_or_after_spawn_is_drained(self, tmp_path: Path) -> None:
-        """A file created after spawn (this run's own) IS drained."""
+    def test_this_runs_own_file_is_drained(self, tmp_path: Path) -> None:
+        """A file created after the watch is armed IS this run's."""
         adapter = _FakeAdapter(tmp_path)
-        spawn_time = time.time()
-        mine = tmp_path / "mine.jsonl"
-        _write(mine, lines=3)  # created now, after spawn_time
-
-        sink = _RecordingSink()
-        stats = _Stats()
-        config = RunConfig(cli_name="fake")
-        _scan_and_read(
-            adapter,
-            sink,
-            stats,
-            config,
-            {},
-            buffers={},
-            baseline=frozenset(),
-            spawn_time=spawn_time,
+        stats, _sink = _drain_once(
+            cast(Adapter, adapter),
+            tmp_path,
+            lambda: _write(tmp_path / "mine.jsonl", lines=3),
+            expected=3,
         )
         assert stats.counts == {"UserMessage": 3}
 
 
 class TestAppendedLineDrain:
     def test_rotation_discards_the_previous_files_partial_line(
-        self,
-        tmp_path: Path,
+        self, tmp_path: Path
     ) -> None:
-        """A truncated file starts a new byte stream with an empty buffer."""
+        """A truncated file starts a new byte stream with an empty buffer.
+
+        A held fragment would prepend dead bytes to the first line of the
+        replacement, corrupting a turn that parsed fine on disk.
+        """
         log = tmp_path / "session.jsonl"
-        log.write_bytes(b"stale-partial")
         adapter = _PoisonAdapter(tmp_path)
-        sink = _RecordingSink()
-        stats = _Stats()
-        config = RunConfig(cli_name="fake")
-        offsets: dict[Path, int] = {}
-        buffers: dict[Path, bytearray] = {}
 
-        _scan_and_read(
-            adapter,
-            sink,
-            stats,
-            config,
-            offsets,
-            buffers=buffers,
-            baseline=frozenset(),
-        )
-        assert sink.events == []
+        def write() -> None:
+            log.write_bytes(b"stale-partial")
+            time.sleep(0.2)
+            log.write_bytes(b"fresh\n")
 
-        log.write_bytes(b"fresh\n")
-        _scan_and_read(
-            adapter,
-            sink,
-            stats,
-            config,
-            offsets,
-            buffers=buffers,
-            baseline=frozenset(),
-        )
+        _stats, sink = _drain_once(cast(Adapter, adapter), tmp_path, write)
 
         texts = [cast(UserMessage, event.message).text for _, _, event in sink.events]
         assert texts == ["fresh"]
+
+
+class TestProjectDirectoryBornMidRun:
+    """A session directory the CLI mints AFTER the watch is armed.
+
+    Claude shards sessions per project (a hashed cwd) and gemini per project
+    sha; neither directory exists before the CLI's first run in that
+    workspace. The watch is armed once, before the spawn, so whatever
+    ``session_dirs()`` returns has to be a tree the new directory appears
+    UNDER -- a watch on today's leaves cannot adopt tomorrow's sibling, and
+    the run captures nothing with no error anywhere.
+    """
+
+    def test_claude_captures_a_project_directory_created_after_the_watch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        projects = tmp_path / "projects"
+        # One project from an earlier run: what ``session_dirs()`` can see at
+        # arming time. The run under test happens in a DIFFERENT workspace.
+        (projects / "-existing-workspace").mkdir(parents=True)
+
+        def write() -> None:
+            fresh = projects / "-brand-new-workspace"
+            fresh.mkdir()
+            (fresh / "abc-123.jsonl").write_text(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "uuid": "u1",
+                        "message": {"role": "user", "content": "captured"},
+                    }
+                )
+                + "\n"
+            )
+
+        _stats, sink = _drain_once(cast(Adapter, ClaudeAdapter()), tmp_path, write)
+
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        assert texts == ["captured"], "a new project directory captured nothing"
+
+    def test_gemini_captures_a_project_directory_created_after_the_watch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        tmp = tmp_path / ".gemini" / "tmp"
+        (tmp / "existingsha" / "chats").mkdir(parents=True)
+
+        def write() -> None:
+            chats = tmp / "brandnewsha" / "chats"
+            chats.mkdir(parents=True)
+            (chats / "session-1.json").write_text(
+                json.dumps(
+                    {
+                        "sessionId": "sess-A",
+                        "messages": [{"type": "user", "content": "captured"}],
+                    }
+                )
+            )
+
+        _stats, sink = _drain_once(cast(Adapter, GeminiAdapter()), tmp_path, write)
+
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        assert texts == ["captured"], "a new project directory captured nothing"
+
+    def test_claude_captures_when_no_project_directory_exists_yet(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A first-ever run has no project dir at all when the watch arms.
+
+        With nothing to watch the runner arms no follower and capture is
+        disabled for the whole run -- the worst shape of this bug, since it
+        needs no concurrency to hit.
+        """
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        (tmp_path / "projects").mkdir()
+
+        def write() -> None:
+            fresh = tmp_path / "projects" / "-first-ever-workspace"
+            fresh.mkdir()
+            (fresh / "abc-123.jsonl").write_text(
+                json.dumps(
+                    {
+                        "type": "user",
+                        "uuid": "u1",
+                        "message": {"role": "user", "content": "captured"},
+                    }
+                )
+                + "\n"
+            )
+
+        _stats, sink = _drain_once(cast(Adapter, ClaudeAdapter()), tmp_path, write)
+
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        assert texts == ["captured"], "a first-ever run captured nothing"
 
 
 class TestWholeFileDrain:
     """A whole-file adapter (gemini) must receive the entire file, re-read."""
 
     def test_in_place_rewrite_emits_event(self, tmp_path: Path) -> None:
-        log = tmp_path / "session-x.json"
-        log.write_text(json.dumps({"messages": ["hello"]}))
         adapter = _WholeFileAdapter(tmp_path)
+        log = tmp_path / "session-x.json"
 
-        # No baseline; the freshly-written whole-file session is in scope.
-        stats, sink = _scan_once(adapter, frozenset())
+        stats, sink = _drain_once(
+            cast(Adapter, adapter),
+            tmp_path,
+            lambda: log.write_text(json.dumps({"messages": ["hello"]})),
+        )
 
-        # The byte-offset drain would feed a partial slice and emit nothing;
-        # a whole-file drain hands the full body over and emits one event.
         assert stats.counts == {"UserMessage": 1}
         texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
         assert texts == ["hello"]
 
     def test_same_size_rewrite_emits_event(self, tmp_path: Path) -> None:
-        """A whole-file rewrite to identical byte size still emits an event.
+        """A rewrite to identical byte size still emits.
 
-        Gemini rewrites one JSON object in place; a same-length edit (the new
-        message has the same byte count as the old) keeps ``st_size``
-        unchanged. Tracking size alone makes the second scan skip the re-read,
-        dropping the new turn. The drain must detect the change via mtime or
-        content, not size alone.
+        Gemini rewrites one JSON object in place; a same-length edit leaves
+        ``st_size`` unchanged, so a size-only check would drop the new turn.
         """
-        log = tmp_path / "session-x.json"
-        # Two payloads with the same single-character last message: identical
-        # byte length, different content.
-        log.write_text(json.dumps({"messages": ["a"]}))
         adapter = _WholeFileAdapter(tmp_path)
-        sink = _RecordingSink()
-        stats = _Stats()
-        config = RunConfig(cli_name="fake")
-        stamps: dict[Path, tuple[int, int]] = {}
+        log = tmp_path / "session-x.json"
 
-        _scan_and_read(
-            adapter,
-            sink,
-            stats,
-            config,
-            {},
-            buffers={},
-            baseline=frozenset(),
-            stamps=stamps,
-        )
-        assert [cast(UserMessage, e.message).text for _, _, e in sink.events] == ["a"]
+        def write() -> None:
+            log.write_text(json.dumps({"messages": ["a"]}))
+            time.sleep(0.3)
+            log.write_text(json.dumps({"messages": ["b"]}))
 
-        # Same byte length, different content; bump mtime so a time-based
-        # detector sees the change even on a coarse-grained filesystem clock.
-        first_mtime = log.stat().st_mtime
-        log.write_text(json.dumps({"messages": ["b"]}))
-        os.utime(log, (first_mtime + 1, first_mtime + 1))
-        assert log.stat().st_size == len(json.dumps({"messages": ["a"]}))
+        _stats, sink = _drain_once(cast(Adapter, adapter), tmp_path, write, expected=2)
 
-        _scan_and_read(
-            adapter,
-            sink,
-            stats,
-            config,
-            {},
-            buffers={},
-            baseline=frozenset(),
-            stamps=stamps,
-        )
-        assert [cast(UserMessage, e.message).text for _, _, e in sink.events] == [
-            "a",
-            "b",
-        ]
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        assert texts == ["a", "b"]
+
+    def test_an_unchanged_body_is_emitted_once(self, tmp_path: Path) -> None:
+        """The same bytes read twice are one turn, not two.
+
+        ``write_text`` truncates and then writes, so ONE rewrite queues two
+        inotify events. They usually drain in a single read, but a read landing
+        between them wakes the drain twice for the same rewrite, and the second
+        wake re-reads a body already emitted -- a duplicated last turn in the
+        transcript (CI flake on ``test_same_size_rewrite_emits_event``).
+        """
+        adapter = _WholeFileAdapter(tmp_path)
+        log = tmp_path / "session-x.json"
+        body = json.dumps({"messages": ["b"]})
+
+        def write() -> None:
+            log.write_text(body)
+            time.sleep(0.3)
+            log.write_text(body)  # identical bytes: no new turn
+            time.sleep(0.3)  # let the drain deliver whatever it captured
+
+        _stats, sink = _drain_once(cast(Adapter, adapter), tmp_path, write)
+
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        assert texts == ["b"]
+
+    def test_a_body_that_returns_after_a_change_is_emitted_again(
+        self, tmp_path: Path
+    ) -> None:
+        """Only the LAST body is remembered, never every body ever seen.
+
+        A session legitimately returns to earlier content -- a retry, an undo,
+        a regenerated answer that lands identically. The only thing separating
+        that from a double-wake is whether something else was written in
+        between, so the guard compares against the PREVIOUS body. Remembering
+        every digest instead would silently swallow the third write here, and
+        nothing else in this file would notice.
+        """
+        adapter = _WholeFileAdapter(tmp_path)
+        log = tmp_path / "session-x.json"
+
+        def write() -> None:
+            for text in ("a", "b", "a"):
+                log.write_text(json.dumps({"messages": [text]}))
+                time.sleep(0.3)
+
+        _stats, sink = _drain_once(cast(Adapter, adapter), tmp_path, write, expected=3)
+
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        assert texts == ["a", "b", "a"], "a returning body was swallowed"
 
 
 class TestGeminiMultiFileDrain:
-    """One GeminiAdapter draining multiple session files keeps cursors apart.
+    """One GeminiAdapter draining several session files keeps cursors apart.
 
-    #498: the runner reuses ONE adapter across every matching session file.
-    A per-adapter message cursor carried one file's count into the next, so a
-    second gemini session file's turns were dropped. Drive the real adapter
-    through ``_scan_and_read`` over two on-disk gemini session files and assert
-    every turn of both surfaces.
+    #498: the runner reuses ONE adapter across every matching session file. A
+    per-adapter message cursor carried one file's count into the next, so a
+    second gemini session file's turns were dropped.
     """
 
     def test_two_session_files_both_fully_drained(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # A fake $HOME whose ``.gemini/tmp/<sha>/chats`` holds two session
-        # files, each two messages. ``_tmp_dir`` resolves ``Path.home()``.
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         chats = tmp_path / ".gemini" / "tmp" / "deadbeef" / "chats"
         chats.mkdir(parents=True)
@@ -414,27 +520,15 @@ class TestGeminiMultiFileDrain:
                 )
             )
 
-        _session("session-1.json", "sess-A", ["a-q", "a-r"])
-        _session("session-2.json", "sess-B", ["b-q", "b-r"])
+        def write() -> None:
+            _session("session-1.json", "sess-A", ["a-q", "a-r"])
+            _session("session-2.json", "sess-B", ["b-q", "b-r"])
 
-        adapter = GeminiAdapter()  # ONE adapter for both files, like the runner
-        sink = _RecordingSink()
-        stats = _Stats()
-        config = RunConfig(cli_name="gemini")
-        stamps: dict[Path, tuple[int, int]] = {}
-        _scan_and_read(
-            cast(Adapter, adapter),
-            sink,
-            stats,
-            config,
-            {},
-            buffers={},
-            baseline=frozenset(),
-            stamps=stamps,
+        _stats, sink = _drain_once(
+            cast(Adapter, GeminiAdapter()), tmp_path, write, expected=4
         )
 
         texts = sorted(cast(UserMessage, e.message).text for _, _, e in sink.events)
-        # All four turns from both files, none dropped by a shared cursor.
         assert texts == ["a-q", "a-r", "b-q", "b-r"]
 
 
@@ -443,11 +537,14 @@ class TestDrainSurvivesParseError:
 
     def test_bad_line_is_skipped_and_drain_continues(self, tmp_path: Path) -> None:
         log = tmp_path / "session.jsonl"
-        log.write_bytes(b"alpha\nboom\nomega\n")
         adapter = _PoisonAdapter(tmp_path)
 
-        # No file existed at baseline, so the whole log is in scope.
-        stats, sink = _scan_once(adapter, frozenset())
+        stats, sink = _drain_once(
+            cast(Adapter, adapter),
+            tmp_path,
+            lambda: log.write_bytes(b"alpha\nboom\nomega\n"),
+            expected=2,
+        )
 
         # The poison line raised but was swallowed; the good lines emitted.
         texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
@@ -581,8 +678,10 @@ class TestDrainLoopSurvivesTransientError:
         stop = _FastPollingStop()
         slash_queue: deque[tuple[SlashCommand, datetime]] = deque()
 
+        # Written AFTER the drain arms its watch, as a real session file is:
+        # the runner starts watching before it spawns the CLI, and a file that
+        # predates the watch belongs to an earlier run.
         log = tmp_path / "session.jsonl"
-        log.write_bytes(b"alpha\n")
 
         def _run() -> None:
             _drain_filesystem_loop(
@@ -593,29 +692,306 @@ class TestDrainLoopSurvivesTransientError:
                 stop,
                 baseline=frozenset(),
                 slash_queue=slash_queue,
-                spawn_time=0.0,
             )
 
         worker = threading.Thread(target=_run, daemon=True)
         worker.start()
-        # Wait for the first (failing) flush, then write a second line that a
-        # surviving loop must still capture.
-        deadline = time.monotonic() + 3.0
-        while sink.flush_attempts == 0 and time.monotonic() < deadline:
-            time.sleep(0.005)
-        log.write_bytes(b"alpha\nomega\n")
+        # Each retry APPENDS rather than rewriting: a repeated identical
+        # rewrite leaves the byte length unchanged, so the follower's cursor
+        # correctly reports nothing new and the line would never arrive.
+        deadline = time.monotonic() + 5.0
+        while not sink.events and time.monotonic() < deadline:
+            with log.open("ab") as handle:
+                _ = handle.write(b"alpha\n")
+            time.sleep(0.05)
+        assert sink.events, "the first line never reached the sink"
+        assert sink.flush_attempts > 0, "the failing flush never fired"
+        before = len(sink.events)
 
-        deadline = time.monotonic() + 3.0
-        while len(sink.events) < 2 and time.monotonic() < deadline:
+        with log.open("ab") as handle:
+            _ = handle.write(b"omega\n")
+        deadline = time.monotonic() + 5.0
+        while len(sink.events) <= before and time.monotonic() < deadline:
             time.sleep(0.005)
         stop.set()
         worker.join(timeout=5.0)
 
         assert not worker.is_alive(), "drain thread died on the transient flush error"
         texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
-        assert texts == ["alpha", "omega"], (
+        # A retry may have appended ``alpha`` more than once; what the flush
+        # failure must not do is stop the line written after it.
+        assert texts[0] == "alpha"
+        assert texts[-1] == "omega", (
             "a transient flush error stopped capture instead of continuing"
         )
+
+
+class TestDrainIsWakeDriven:
+    """The drain must wake on a write, not on a timer.
+
+    The poll cost is discovery, not the tick: claude's ``session_dirs()``
+    returns every project directory it has ever used, so each 0.2s pass walked
+    999 of them -- 86ms median, 43% of every tick spent in ``stat``. A watch
+    replaces both the walk and the wait.
+    """
+
+    def test_a_line_arrives_without_any_timer(self, tmp_path: Path) -> None:
+        """With every sleep made fatal, a written line must still be captured.
+
+        Any timer left in the drain path fails here rather than merely being
+        slow, so a reintroduced poll cannot pass by running fast enough.
+        """
+        adapter = _FakeAdapter(tmp_path)
+        sink = _RecordingSink()
+        stats = _Stats()
+        config = RunConfig(cli_name="fake")
+        stop = threading.Event()
+
+        drain_thread: list[int] = []
+        slept_in_drain: list[float] = []
+        real_sleep = time.sleep
+
+        def watched_sleep(seconds: float) -> None:
+            # Only the DRAIN's sleeps are forbidden; this test's own waits run
+            # on another thread and must still work.
+            if threading.get_ident() in drain_thread:
+                slept_in_drain.append(seconds)
+            real_sleep(seconds)
+
+        def _run() -> None:
+            drain_thread.append(threading.get_ident())
+            _drain_filesystem_loop(
+                cast(Adapter, adapter),
+                sink,
+                stats,
+                config,
+                stop,
+                baseline=frozenset(),
+                slash_queue=deque(),
+            )
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(time, "sleep", watched_sleep)
+            worker = threading.Thread(target=_run, daemon=True)
+            worker.start()
+            try:
+                real_sleep(0.2)  # let the watch arm before the write
+                (tmp_path / "session.jsonl").write_bytes(b"alpha\n")
+                deadline = time.monotonic() + 5.0
+                while not sink.events and time.monotonic() < deadline:
+                    real_sleep(0.01)
+            finally:
+                stop.set()
+                worker.join(timeout=5.0)
+
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        assert texts == ["alpha"]
+        assert slept_in_drain == [], (
+            f"the drain slept {slept_in_drain}; it must wake on a write"
+        )
+
+    def test_does_not_walk_every_session_directory(self, tmp_path: Path) -> None:
+        """Discovery happens once, not per wake.
+
+        A drain that re-walks on every event pays claude's 999-directory scan
+        per captured line rather than per run.
+        """
+        adapter = _FakeAdapter(tmp_path)
+        walks: list[int] = []
+        real_session_dirs = adapter.session_dirs
+
+        def counting_dirs() -> Iterable[Path]:
+            walks.append(1)
+            return real_session_dirs()
+
+        adapter.session_dirs = counting_dirs  # ty: ignore[invalid-assignment]
+        sink = _RecordingSink()
+        stop = threading.Event()
+
+        def _run() -> None:
+            _drain_filesystem_loop(
+                cast(Adapter, adapter),
+                sink,
+                _Stats(),
+                RunConfig(cli_name="fake"),
+                stop,
+                baseline=frozenset(),
+                slash_queue=deque(),
+            )
+
+        worker = threading.Thread(target=_run, daemon=True)
+        worker.start()
+        try:
+            log = tmp_path / "session.jsonl"
+            # APPEND, never rewrite: an identical rewrite leaves the byte
+            # length unchanged, so the cursor rightly reports nothing new.
+            # Retry the first line until it lands, rather than guessing how
+            # long arming the watch takes.
+            deadline = time.monotonic() + 5.0
+            while not sink.events and time.monotonic() < deadline:
+                with log.open("ab") as handle:
+                    _ = handle.write(b"one\n")
+                time.sleep(0.05)
+            assert sink.events, "the first line never reached the sink"
+            delivered = len(sink.events)
+            for text in (b"two\n", b"three\n"):
+                with log.open("ab") as handle:
+                    _ = handle.write(text)
+                deadline = time.monotonic() + 3.0
+                while len(sink.events) <= delivered and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                delivered = len(sink.events)
+        finally:
+            stop.set()
+            worker.join(timeout=5.0)
+
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        assert texts[-2:] == ["two", "three"], "not every line was captured"
+        # One walk to arm the watch. The old loop walked once per 0.2s tick --
+        # measured at 24 walks for these three lines.
+        assert len(walks) <= 2, f"walked the session dirs {len(walks)} times"
+
+
+class TestWholeFileAdapterIsDrainedWhole:
+    """A whole-file adapter must receive the whole body, not one line.
+
+    Gemini rewrites one JSON object in place rather than appending records.
+    Fed line-by-line, its parser sees fragments of a pretty-printed object and
+    every turn is lost -- silently, because a fragment is simply unparseable
+    rather than an error.
+    """
+
+    def test_gemini_shaped_session_yields_its_turn(self, tmp_path: Path) -> None:
+        adapter = _WholeFileAdapter(tmp_path)
+        sink = _RecordingSink()
+        stop = threading.Event()
+        log = tmp_path / "session-x.json"
+
+        def _run() -> None:
+            _drain_filesystem_loop(
+                cast(Adapter, adapter),
+                sink,
+                _Stats(),
+                RunConfig(cli_name="wholefile"),
+                stop,
+                baseline=frozenset(),
+                slash_queue=deque(),
+            )
+
+        worker = threading.Thread(target=_run, daemon=True)
+        worker.start()
+        try:
+            # Pretty-printed across several lines, as gemini writes it: no
+            # single line is valid JSON on its own.
+            body = json.dumps({"messages": ["hello"]}, indent=2)
+            deadline = time.monotonic() + 5.0
+            while not sink.events and time.monotonic() < deadline:
+                log.write_text(body + "\n")
+                time.sleep(0.05)
+        finally:
+            stop.set()
+            worker.join(timeout=5.0)
+
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        assert texts == ["hello"], "a whole-file session was drained line-by-line"
+
+
+class TestCompactionDoesNotReEmit:
+    """A compacted transcript must not replay turns already captured.
+
+    Claude does not append on compaction -- it REWRITES the session file,
+    smaller, retaining the turns it kept. A byte cursor sees the shrink,
+    restarts from zero, and re-emits every retained line as new. The server
+    cannot dedup it either: ``seq`` is minted per read, so a re-read line
+    arrives with a fresh ordinal and lands as a distinct row.
+    """
+
+    def test_retained_lines_are_not_emitted_twice(self, tmp_path: Path) -> None:
+        adapter = _UuidAdapter(tmp_path)
+        sink = _RecordingSink()
+        stop = threading.Event()
+        log = tmp_path / "session.jsonl"
+
+        def _run() -> None:
+            _drain_filesystem_loop(
+                cast(Adapter, adapter),
+                sink,
+                _Stats(),
+                RunConfig(cli_name="uuids"),
+                stop,
+                baseline=frozenset(),
+                slash_queue=deque(),
+            )
+
+        worker = threading.Thread(target=_run, daemon=True)
+        worker.start()
+        try:
+            deadline = time.monotonic() + 5.0
+            while not sink.events and time.monotonic() < deadline:
+                with log.open("ab") as handle:
+                    _ = handle.write(_uuid_line("a"))
+                time.sleep(0.05)
+            assert sink.events, "the first line never reached the sink"
+            with log.open("ab") as handle:
+                _ = handle.write(_uuid_line("b") + _uuid_line("c"))
+            deadline = time.monotonic() + 3.0
+            while len(sink.events) < 3 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            captured = len(sink.events)
+
+            # Compaction: the file is REPLACED, smaller, and keeps ``c``.
+            log.write_bytes(_uuid_line("c") + _uuid_line("d"))
+            deadline = time.monotonic() + 3.0
+            while len(sink.events) <= captured and time.monotonic() < deadline:
+                time.sleep(0.01)
+        finally:
+            stop.set()
+            worker.join(timeout=5.0)
+
+        ids = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        assert "d" in ids, "the post-compaction turn was never captured"
+        assert ids.count("c") == 1, f"compaction re-emitted a captured turn: {ids}"
+
+
+def _uuid_line(marker: str) -> bytes:
+    """One claude-shaped record whose uuid is stable for ``marker``."""
+    return (
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": f"uuid-{marker}",
+                "message": {"role": "user", "content": marker},
+            }
+        )
+        + "\n"
+    ).encode()
+
+
+class _UuidAdapter:
+    """A line adapter over uuid-stamped records, like claude's."""
+
+    name: str = "uuids"
+    cli_binary: str = "uuids"
+    whole_file: bool = False
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+
+    def session_dirs(self) -> Iterable[Path]:
+        return (self._root,)
+
+    def matches_session_file(self, path: Path) -> bool:
+        return path.suffix == ".jsonl"
+
+    def session_id_from_path(self, path: Path) -> str | None:
+        del path
+        return None
+
+    def parse(self, raw: bytes, *, whole_file: bool) -> Iterable[Event]:
+        del whole_file
+        obj = cast(dict[str, object], json.loads(raw))
+        message = cast(dict[str, object], obj["message"])
+        return (Event(message=UserMessage(text=str(message["content"]))),)
 
 
 class TestAdapterRegistryFreshPerRun:
@@ -805,6 +1181,165 @@ class TestRunPreservesClient:
             session_mod._dry_run_drain = original
         assert rc == 0
         assert client.close_calls == 0
+
+
+class TestInboundIsWaitDriven:
+    """Inbound delivery waits on the server, rather than asking repeatedly.
+
+    A poller costs one request per session per interval whether or not
+    anything was sent, and delivers up to an interval late. A held request
+    costs one connection and delivers on arrival.
+    """
+
+    def test_asks_the_server_to_hold_the_request(self) -> None:
+        """Every drain must carry a non-zero hold, or it is still a poll."""
+        client = _WaitingClient(hold_sec=0.05)
+        stop = threading.Event()
+
+        worker = threading.Thread(
+            target=lambda: _inbound_poll_loop(
+                cast(Any, client),
+                cast(Any, _SessionSink()),
+                cast(Any, _RecordingRelay()),
+                stop,
+            ),
+            daemon=True,
+        )
+        worker.start()
+        try:
+            deadline = time.monotonic() + 3.0
+            while not client.waits and time.monotonic() < deadline:
+                time.sleep(0.01)
+        finally:
+            stop.set()
+            worker.join(timeout=5.0)
+
+        assert client.waits, "inbound never called the server"
+        assert all(w > 0 for w in client.waits), (
+            f"drained without asking the server to wait: {client.waits}"
+        )
+
+    def test_does_not_sleep_between_successful_waits(self) -> None:
+        """Re-arming must be immediate: the request itself was the wait.
+
+        A sleep after a successful hold adds latency on top of a mechanism
+        whose whole purpose is to remove it.
+        """
+        client = _WaitingClient(hold_sec=0.02)
+        stop = threading.Event()
+        drain_thread: list[int] = []
+        slept: list[float] = []
+        real_sleep = time.sleep
+
+        def watched_sleep(seconds: float) -> None:
+            if threading.get_ident() in drain_thread:
+                slept.append(seconds)
+            real_sleep(seconds)
+
+        def _run() -> None:
+            drain_thread.append(threading.get_ident())
+            _inbound_poll_loop(
+                cast(Any, client),
+                cast(Any, _SessionSink()),
+                cast(Any, _RecordingRelay()),
+                stop,
+            )
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(time, "sleep", watched_sleep)
+            worker = threading.Thread(target=_run, daemon=True)
+            worker.start()
+            try:
+                deadline = time.monotonic() + 3.0
+                while len(client.waits) < 3 and time.monotonic() < deadline:
+                    real_sleep(0.01)
+            finally:
+                stop.set()
+                worker.join(timeout=5.0)
+
+        assert len(client.waits) >= 3, "did not re-arm after a successful wait"
+        assert slept == [], f"slept between waits: {slept}"
+
+    def test_a_failure_backs_off_before_re_arming(self) -> None:
+        """A persistent outage must not become a hot retry loop."""
+        client = _FailingClient()
+        stop = threading.Event()
+
+        worker = threading.Thread(
+            target=lambda: _inbound_poll_loop(
+                cast(Any, client),
+                cast(Any, _SessionSink()),
+                cast(Any, _RecordingRelay()),
+                stop,
+                poll_interval=0.05,
+            ),
+            daemon=True,
+        )
+        worker.start()
+        try:
+            time.sleep(0.3)
+        finally:
+            stop.set()
+            worker.join(timeout=5.0)
+
+        # Bounded by the backoff, not spinning: ~6 at 0.05s, not hundreds.
+        assert 1 <= client.attempts <= 30, f"retried {client.attempts} times in 0.3s"
+
+
+class _SessionSink:
+    """A sink whose session is already open, so inbound has an id to use."""
+
+    session_id = uuid.UUID("11111111-2222-3333-4444-555555555555")
+
+
+class _RecordingRelay:
+    """Records what would have been typed into the CLI."""
+
+    def __init__(self) -> None:
+        self.submitted: list[str] = []
+
+    def submit(self, text: str) -> None:
+        self.submitted.append(text)
+
+
+def _busy_wait(seconds: float) -> None:
+    """Block without ``time.sleep``, so a sleep assertion stays meaningful."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        pass
+
+
+class _WaitingClient:
+    """A client whose drain holds, as the real long-poll route does."""
+
+    def __init__(self, *, hold_sec: float) -> None:
+        self._hold_sec = hold_sec
+        self.waits: list[float] = []
+
+    def drain_inbound(
+        self, session_id: uuid.UUID, *, wait_sec: float = 0.0
+    ) -> list[tuple[str, str | None, str | None]]:
+        del session_id
+        self.waits.append(wait_sec)
+        # A real hold blocks in the transport, not in ``time.sleep``: a fake
+        # that slept here would be indistinguishable from the loop sleeping,
+        # which is the very thing the caller asserts about.
+        _busy_wait(self._hold_sec)
+        return []
+
+
+class _FailingClient:
+    """A client whose drain always raises, to drive the backoff path."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def drain_inbound(
+        self, session_id: uuid.UUID, *, wait_sec: float = 0.0
+    ) -> list[tuple[str, str | None, str | None]]:
+        del session_id, wait_sec
+        self.attempts += 1
+        raise RuntimeError("back-channel down")
 
 
 class TestRenderInbound:
