@@ -12,7 +12,7 @@ The mutating routes require the ``writer`` role; the read requires
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, cast
+from typing import Annotated, Final, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -53,6 +53,11 @@ from trackinizer.wire.wire_sessions import (
 
 
 router = APIRouter()
+
+# Ceiling on how long the inbound drain holds a request open. Long enough that
+# a waiting caller re-arms rarely, short enough to stay under the idle timeout
+# of an intermediary that would otherwise cut the connection mid-wait.
+_MAX_INBOUND_WAIT_SEC: Final = 30.0
 
 
 def _actor(identity: AuthIdentity, supplied: str | None) -> str:
@@ -313,18 +318,33 @@ def _idempotency_key(request: Request) -> UUID | None:
 async def session_inbound_drain_route(
     session_id: UUID,
     request: Request,
+    wait_sec: float = 0.0,
 ) -> DrainInboundResponse:
     """Drain all pending inbound messages for a session (oldest first).
 
-    Polled by the session's ``trax run`` to inject queued messages into the
-    CLI. ``writer`` like enqueue. Unknown session -> 404.
+    Read by the session's ``trax run`` to inject queued messages into the CLI.
+    ``writer`` like enqueue. Unknown session -> 404.
+
+    ``wait_sec`` holds the request open until a message arrives, so the caller
+    waits instead of asking repeatedly: one held request per session rather
+    than one round trip per interval, and delivery on arrival rather than up
+    to an interval late. Zero (the default) returns whatever is pending now,
+    preserving the original contract for any caller that does not want to
+    block. The ceiling keeps a held request shorter than the idle timeout of
+    a proxy that would otherwise cut it.
 
     Writer-gated, not owner-gated: AgentSessions are a shared workspace, so any
     writer may drain. In practice the session's own ``trax run`` is the only
-    poller, but the route enforces no per-opener restriction.
+    reader, but the route enforces no per-opener restriction.
     """
     await _require_session(get_store(request), session_id)
-    drained = get_inbound(request).drain(session_id)
+    inbound = get_inbound(request)
+    held = min(max(wait_sec, 0.0), _MAX_INBOUND_WAIT_SEC)
+    drained = (
+        await inbound.await_messages(session_id, timeout_sec=held)
+        if held
+        else inbound.drain(session_id)
+    )
     return DrainInboundResponse(
         messages=[
             InboundDrainItem(text=m.text, source=m.source, room=m.room) for m in drained

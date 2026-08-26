@@ -47,13 +47,13 @@ import uvicorn
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.server.api import query, sessions_routes
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store, StubEmbedder
 from trackinizer.trax.run.adapters.base import Event
-from trackinizer.trax.run.pty_pump import PtyPump
 from trackinizer.trax.run.session import (
     RunConfig,
     _drain_filesystem_loop,
@@ -531,25 +531,31 @@ def test_capture_streams_incrementally_before_close(
             stop,
             baseline=frozenset(),
             slash_queue=deque(),
-            spawn_time=time.time(),
         ),
         daemon=True,
     )
     worker.start()
     try:
-        # First turn lands in the session file mid-run.
+        # First turn lands in the session file mid-run. APPENDED on a retry,
+        # never rewritten: the drain is wake-driven, so a write landing before
+        # its watch is armed is reported by no event -- ever -- and the loop
+        # needs a moment to walk the session dirs and arm one. Re-appending
+        # until the server holds something is what removes that race; an
+        # identical REWRITE would not, since the follower's cursor correctly
+        # reports nothing new for unchanged bytes.
         log = session_root / "live.jsonl"
-        log.write_text("first turn\n")
 
         # The server should hold it within a few flush intervals -- well
         # before we stop the loop (i.e. before any close()).
         deadline = time.monotonic() + 10.0
         events: list[dict[str, object]] = []
         while time.monotonic() < deadline:
+            with log.open("a") as handle:
+                _ = handle.write("first turn\n")
+            time.sleep(0.3)
             events = _latest_session_events(server, cli=adapter.name)
             if events:
                 break
-            time.sleep(0.1)
         assert events, "no events streamed to the server before close"
         assert any("first turn" in str(e["message"]) for e in events)
         # The session is still live: it streamed mid-run, before any close().
@@ -569,7 +575,7 @@ def test_capture_streams_incrementally_before_close(
 
 @pytest.mark.cli_python_subprocess
 def test_inbound_injection_reaches_child_end_to_end(server: str) -> None:
-    """Full loop: HTTP enqueue -> poller -> pump.inject -> child receives it.
+    """Full loop: HTTP enqueue -> poller -> relay -> child receives it.
 
     Proves the messaging channel end to end against the real server, real
     client, real inbound poller, and a real PTY child -- the only stand-in is
@@ -595,34 +601,34 @@ def test_inbound_injection_reaches_child_end_to_end(server: str) -> None:
     resp = client.session_start(SessionStart(cli="claude-inbound", actor="tester"))
     session_id = resp.id
 
-    pump = PtyPump([sys.executable, "-u", "-c", child])
+    relay = ThreadedRelay([sys.executable, "-u", "-c", child])
     sink = _StubSessionSink(session_id)
     stop = threading.Event()
     poller = threading.Thread(
-        target=lambda: _inbound_poll_loop(client, sink, pump, stop, poll_interval=0.2),
+        target=lambda: _inbound_poll_loop(client, sink, relay, stop, poll_interval=0.2),
         daemon=True,
     )
-    pump_thread = threading.Thread(target=pump.run, daemon=True)
-    pump_thread.start()
+    relay_thread = threading.Thread(target=relay.run, daemon=True)
+    relay_thread.start()
     poller.start()
     try:
         time.sleep(0.5)  # let the child start
         queued = client.enqueue_inbound(session_id, "run it")
         assert queued >= 1
-        # The poller should drain it and the pump inject it; the child echoes.
+        # The poller should drain it and the relay type it; the child echoes.
         deadline = time.monotonic() + 10.0
         seen = False
         while time.monotonic() < deadline:
-            if pump.injected_count() >= 1:
+            if relay.submitted >= 1:
                 seen = True
                 break
             time.sleep(0.1)
         assert seen, "injected message was never drained by the poller"
     finally:
         stop.set()
-        # Closing the pump's child ends it; signal via the master is simplest.
-        pump.terminate()
-        pump_thread.join(timeout=5.0)
+        # Closing the relay's child ends it; signal via the master is simplest.
+        relay.terminate()
+        relay_thread.join(timeout=5.0)
         poller.join(timeout=2.0)
 
 
@@ -652,9 +658,9 @@ def _drive_real_cli_injection(
     *,
     deadline_sec: float = 45.0,
 ) -> _InjectionResult:
-    """Full chain: HTTP enqueue -> poller -> pump -> real CLI; classify the run.
+    """Full chain: HTTP enqueue -> poller -> relay -> real CLI; classify the run.
 
-    Drives a real interactive CLI under the pump, captures the master output
+    Drives a real interactive CLI under the relay, captures the master output
     via a redirected ``sys.stdout`` pipe, opens a session, enqueues ``prompt``
     over HTTP, and lets the real poller drain + inject it. Returns which of the
     three :class:`_InjectionResult` outcomes the rendered output showed:
@@ -693,15 +699,15 @@ def _drive_real_cli_injection(
 
     client = Client(base_url=server)
     session_id = client.session_start(SessionStart(cli=cli, actor="tester")).id
-    pump = PtyPump([cli, *argv])
+    relay = ThreadedRelay([cli, *argv])
     sink = _StubSessionSink(session_id)
     stop = threading.Event()
     threads = [
-        threading.Thread(target=pump.run, daemon=True),
+        threading.Thread(target=relay.run, daemon=True),
         threading.Thread(target=drain_out, daemon=True),
         threading.Thread(
             target=lambda: _inbound_poll_loop(
-                client, sink, pump, stop, poll_interval=0.3
+                client, sink, relay, stop, poll_interval=0.3
             ),
             daemon=True,
         ),
@@ -739,7 +745,7 @@ def _drive_real_cli_injection(
         return _InjectionResult.INCONCLUSIVE
     finally:
         stop.set()
-        pump.terminate()
+        relay.terminate()
         threads[0].join(timeout=5.0)
         sys.stdout, sys.stdin = real_out, real_in
 
@@ -773,7 +779,7 @@ def test_injection_reaches_real_claude_end_to_end(server: str) -> None:
     """The full messaging loop drives a live, interactive claude.
 
     Closes the Phase-2a gap the echo-child test left: a real model CLI on the
-    pump receives a server-enqueued message and acts on it. Skips when the
+    relay receives a server-enqueued message and acts on it. Skips when the
     binary is absent or unauthenticated (the assertion needs a real turn).
     """
     if shutil.which("claude") is None:

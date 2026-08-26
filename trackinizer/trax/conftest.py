@@ -780,9 +780,9 @@ class FakeClient:
         return 1
 
     def drain_inbound(
-        self, session_id: uuid.UUID
+        self, session_id: uuid.UUID, *, wait_sec: float = 0.0
     ) -> list[tuple[str, str | None, str | None]]:
-        self.calls.append(("drain_inbound", (session_id,), {}))
+        self.calls.append(("drain_inbound", (session_id,), {"wait_sec": wait_sec}))
         return []
 
     def send_message(

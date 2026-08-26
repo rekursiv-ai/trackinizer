@@ -77,9 +77,16 @@ class ClaudeAdapter:
         projects = self._projects_dir
         if not projects.is_dir():
             return ()
-        # Claude shards sessions per project (hashed cwd); return every
-        # project dir and let the runner find the ``*.jsonl`` files.
-        return tuple(d for d in projects.iterdir() if d.is_dir())
+        # The projects ROOT, not the per-project subdirectories under it.
+        # Claude shards sessions by hashed cwd and mints that directory when
+        # it first runs in a workspace -- which, for the run being captured,
+        # is after the watch is already armed. A watch on the subdirectories
+        # existing at arming time cannot adopt a new sibling (recursion only
+        # descends INTO a watched tree), so the run would capture nothing and
+        # say nothing. Watching the root covers every project, present and
+        # future; ``matches_session_file`` still scopes capture to a
+        # ``<project>/<session>.jsonl``, so nothing extra is swept in.
+        return (projects,)
 
     def matches_session_file(self, path: Path) -> bool:
         return path.suffix == ".jsonl" and path.parent.parent == self._projects_dir

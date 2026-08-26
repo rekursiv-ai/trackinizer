@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import TYPE_CHECKING
+
 import json
+
+
+if TYPE_CHECKING:
+    import pytest
 
 from trackinizer.trax.run.adapters.base import Event
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
@@ -115,6 +122,23 @@ class TestGeminiParseLine:
     def test_is_whole_file_adapter(self) -> None:
         """Gemini rewrites its session in place; it must declare whole-file."""
         assert GeminiAdapter().whole_file is True
+
+    def test_watches_the_tmp_root_so_a_new_project_is_covered(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The tmp ROOT is returned, not each project's ``chats`` leaf.
+
+        Gemini mints ``<project-sha>/chats/`` the first time it runs in a
+        workspace, which for the run being captured is after the watch was
+        armed. Returning today's leaves leaves tomorrow's sibling unwatched
+        and the run captures nothing silently.
+        """
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        tmp = tmp_path / ".gemini" / "tmp"
+        (tmp / "sha-one" / "chats").mkdir(parents=True)
+        (tmp / "sha-two" / "chats").mkdir(parents=True)
+        # One entry (the root), never one per project.
+        assert tuple(GeminiAdapter().session_dirs()) == (tmp,)
 
     def test_parse_whole_file_emits_latest_message(self) -> None:
         line = _encode(

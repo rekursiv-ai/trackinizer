@@ -3,16 +3,16 @@
 Three things run side by side:
 
 1. The CLI, spawned on a pseudo-terminal whose master fd the wrapper holds
-   (:class:`~trax.run.pty_pump.PtyPump`). Owning the master is what lets the
-   server splice messages into the live session; the pump mirrors bytes both
-   ways so the human still drives the native TUI (byte-transparent, though
-   not literally inherited fds).
+   (:class:`~trackinizer.lib.posix.relay.ThreadedRelay`). Owning the master is what
+   lets the server splice messages into the live session; the relay mirrors
+   bytes both ways so the human still drives the native TUI (byte-transparent,
+   though not literally inherited fds).
 
 2. A drain thread that watches the adapter's session directories and emits
    events for each new log line, coping with rotation and new files.
 
 3. When syncing, an inbound-poll thread that drains server-queued messages
-   and injects them into the CLI via the pump.
+   and types them into the CLI via the relay.
 
 When the CLI exits, the wrapper drains pending lines for a short quiesce
 window, closes the sink, and exits with the CLI's status.
@@ -33,6 +33,9 @@ from pathlib import Path
 from typing import ClassVar, Final, cast
 
 import argparse
+import asyncio
+import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -42,6 +45,8 @@ import threading
 import time
 
 from trackinizer.client.client import Client
+from trackinizer.lib.posix.follow import follow_dir, follow_tree
+from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.userdirs import state_dir
 from trackinizer.trax.profile import LOCALHOST_FALLBACK_URL
 from trackinizer.trax.run.adapters.base import Adapter, Event, StreamAdapter
@@ -49,7 +54,6 @@ from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter, LineCapture
-from trackinizer.trax.run.pty_pump import PtyPump
 from trackinizer.trax.run.sink import (
     FileSink,
     LockedSink,
@@ -244,26 +248,22 @@ def _spawn_and_drain(
 ) -> int:
     """Run the CLI on a PTY while daemon threads drain logs and inject inbound.
 
-    The CLI runs on a pseudo-terminal the wrapper owns (the pump), so the
+    The CLI runs on a pseudo-terminal the wrapper owns (the relay), so the
     server can splice messages in while the human drives the native TUI. The
     drain thread reads the filesystem directly so it catches session files
     created after the wrapper starts; the live path needs no ``tail``
     subprocess. When syncing, an inbound-poll thread injects server-queued
-    messages through the pump.
+    messages through the relay.
 
     To avoid sweeping in unrelated concurrent sessions (these CLIs share one
     session root), we snapshot the files that exist *before* spawning and
     drain only files this run creates afterward.
     """
     baseline = _existing_session_files(adapter)
-    # Captured right after the pre-fork baseline snapshot: any session file
-    # whose mtime predates this is an earlier run's, so the drain skips it even
-    # if it raced past the baseline (#283 cross-pollination).
-    spawn_time = time.time()
     stop = threading.Event()
 
     # Slash-commands the human types (``/exit``) are handled inside the CLI and
-    # never logged, so the drain thread can't see them. The pump tees the
+    # never logged, so the drain thread can't see them. The relay tees the
     # human's keystrokes into a detector (main thread); detected commands queue
     # here and the drain thread -- the single sink writer -- emits them, so they
     # serialize with file-sourced events rather than racing the sink.
@@ -273,7 +273,7 @@ def _spawn_and_drain(
     )
 
     # Events parsed off the PTY stream (IO-stream runs) land here from the
-    # pump's IO thread; the drain thread -- the single sink writer -- empties
+    # relay's IO path; the drain thread -- the single sink writer -- empties
     # it each tick, exactly like ``slash_queue``. Always constructed (cheap)
     # so the drain signature stays uniform across adapter shapes. BOUNDED:
     # a chatty child (thousands of lines/sec) with a stalled sink (a
@@ -293,7 +293,6 @@ def _spawn_and_drain(
             baseline=baseline,
             slash_queue=slash_queue,
             stream_queue=stream_queue,
-            spawn_time=spawn_time,
         ),
         daemon=True,
     )
@@ -304,7 +303,7 @@ def _spawn_and_drain(
     # the PTY stream, not a session log, so a line-framing observer feeds each
     # completed line through the adapter's own ``parse``. Parsed events go
     # into ``stream_queue`` -- NOT straight into the sink: ``feed`` runs on
-    # the pump's IO thread, where a blocking ``sink.emit`` (a slow server
+    # the relay's IO path, where a blocking ``sink.emit`` (a slow server
     # POST) would stall terminal mirroring and input delivery.
     stream_capture: LineCapture | None = None
     if isinstance(adapter, StreamAdapter):
@@ -345,7 +344,7 @@ def _spawn_and_drain(
     # A plain line-reading child (IO-stream run) gets newline-terminated
     # injection: the TUI bracketed-paste protocol would deliver its escape
     # sentinels as literal bytes to a canonical-mode ``read``.
-    pump = PtyPump(
+    relay = ThreadedRelay(
         argv,
         env=_routing_env(config, granted_actor=granted_actor),
         on_input=detector.feed,
@@ -362,7 +361,7 @@ def _spawn_and_drain(
                 _inbound_poll_loop,
                 config.client,
                 sink,
-                pump,
+                relay,
                 stop,
                 stream=stream_capture is not None,
             ),
@@ -370,7 +369,7 @@ def _spawn_and_drain(
         )
         poll_thread.start()
 
-    rc = pump.run()
+    rc = relay.run()
     if stream_capture is not None:
         # Flush a trailing unterminated line so a child that exited mid-line
         # still gets its last words captured. The sink is a LockedSink, so
@@ -415,10 +414,21 @@ def _join_with_watchdog(
         )
 
 
-# Cap on stream events buffered between the pump's IO thread and the drain
+# Cap on stream events buffered between the relay's IO path and the drain
 # thread. At the 16KB/line clamp this bounds worst-case retention to ~128MB;
 # in practice lines are small and 8k events is minutes of typical output.
 _STREAM_QUEUE_MAX: Final = 8_192
+
+# How long a slash-command or stream event may sit before the drain emits it.
+# The FILES need no interval -- the kernel names them -- but these two queues
+# are filled by other threads and carry no wakeup of their own.
+_QUEUE_DRAIN_SEC: Final = 0.05
+
+# How long each inbound request asks the server to hold. Must not exceed the
+# route's own ceiling, or the server returns first and the extra is wasted.
+# Longer means fewer re-arms; it does not affect delivery latency, which is
+# whenever the message is enqueued.
+_INBOUND_WAIT_SEC: Final = 25.0
 
 
 def _parse_stream_line(adapter: Adapter, raw: bytes) -> Iterable[Event]:
@@ -449,40 +459,59 @@ def _enqueue_stream_event(queue: deque[Event], stats: _Stats, event: Event) -> N
 def _inbound_poll_loop(
     client: Client,
     sink: Sink,
-    pump: PtyPump,
+    relay: ThreadedRelay,
     stop: threading.Event,
     *,
     poll_interval: float = 0.5,
+    wait_sec: float = _INBOUND_WAIT_SEC,
     stream: bool = False,
 ) -> None:
-    """Drain server-queued inbound messages and inject them into the CLI.
+    """Wait on server-queued inbound messages and type them into the CLI.
 
-    Waits for the sink to open the session (its id is minted lazily on the
-    first captured event), then polls ``drain_inbound`` and feeds each message
-    to the pump. ``stream`` says what kind of child consumes the injections
-    (see :func:`_render_inbound`'s envelope shaping). Server errors are
-    swallowed -- a flaky back-channel must not crash the run or corrupt the
-    terminal, exactly like the capture sink's resilience.
+    The server HOLDS each request until a message arrives, so this is one
+    parked request per session rather than one round trip every interval, and
+    a message reaches the CLI when it is sent rather than up to an interval
+    later. The request returns empty at its own ceiling; this re-arms.
+
+    ``poll_interval`` is no longer the delivery latency -- only the gap before
+    re-arming after a FAILURE, and the wait for a session id that has not been
+    minted yet (it appears on the first captured event). ``stream`` says what
+    kind of child consumes the submissions (see :func:`_render_inbound`'s
+    envelope shaping).
+
+    Server errors are swallowed: a flaky back-channel must not crash the run
+    or corrupt the terminal, exactly like the capture sink's resilience.
     """
     warned = False
     while not stop.is_set():
+        session_id = sink.session_id
+        if session_id is None:
+            # No session yet; nothing to wait on. Re-check on the interval.
+            if stop.wait(poll_interval):
+                break
+            continue
         try:
-            session_id = sink.session_id
-            if session_id is not None:
-                for text, source, room in client.drain_inbound(session_id):
-                    pump.inject(_render_inbound(text, source, room, stream=stream))
-                warned = False  # recovered; allow a fresh warning next outage
+            for text, source, room in client.drain_inbound(
+                session_id, wait_sec=wait_sec
+            ):
+                relay.submit(_render_inbound(text, source, room, stream=stream))
+            warned = False  # recovered; allow a fresh warning next outage
+            # No sleep: the request itself was the wait, so re-arming
+            # immediately is what keeps the channel continuously parked.
+            continue
         except Exception:
             # Warn once per outage on stderr (mirrors the capture sink's
             # degrade banner) so a token expiry / network drop is visible,
             # not a silent stop; repeats stay at DEBUG to avoid flooding.
             if not warned:
                 sys.stderr.write(
-                    "[trax run] inbound polling failed; messages will not be "
+                    "[trax run] inbound delivery failed; messages will not be "
                     "delivered until it recovers\n"
                 )
                 warned = True
-            _logger.debug("inbound poll failed", exc_info=True)
+            _logger.debug("inbound wait failed", exc_info=True)
+        # Only a failure lands here: back off before re-arming so a persistent
+        # outage is not a hot retry loop.
         if stop.wait(poll_interval):
             break
 
@@ -563,8 +592,8 @@ def _routing_env(
 def _existing_session_files(adapter: Adapter) -> frozenset[Path]:
     """Snapshot the matching session files present before the run starts.
 
-    Files in this set belong to earlier or concurrent sessions; the drain
-    loop ignores them so this run captures only the session it spawned.
+    Files in this set belong to earlier or concurrent sessions; the follower
+    ignores them so this run captures only the session it spawned.
     """
     found: set[Path] = set()
     for session_dir in adapter.session_dirs():
@@ -586,104 +615,317 @@ def _drain_filesystem_loop(
     baseline: frozenset[Path],
     slash_queue: deque[tuple[SlashCommand, datetime]],
     stream_queue: deque[Event] | None = None,
-    spawn_time: float,
 ) -> None:
-    """Poll the adapter's session dirs and emit events for newly-appended lines.
+    """Watch the adapter's session dirs; emit events as lines are appended.
 
-    Rescanning each poll picks up files created after the wrapper started,
-    the common case since these CLIs make a fresh session file per run. Each
-    tracked file keeps a byte offset; each poll reads the new slice and feeds
-    completed lines to the adapter. ``baseline`` (files present at startup)
-    is skipped so concurrent unrelated sessions are not swept in. After
-    ``stop`` is set, one final sweep flushes anything written between the
-    last poll and exit.
+    Wake-driven, not polled. The cost of polling was never the tick -- it was
+    the DISCOVERY inside it: claude's ``session_dirs()`` returned every project
+    directory the CLI had ever used, and re-walking them cost 86ms of every
+    0.2s pass. The directories are walked ONCE here, to arm a watch; the
+    kernel then names each changed file.
 
-    ``slash_queue`` carries slash-commands the pump's keystroke detector
+    ``baseline`` (files present at startup) is skipped so a concurrent
+    session's log is never swept in. There is no mtime floor: it existed to
+    reject a file the pre-fork snapshot raced past, and a watch armed before
+    the spawn reports only what happens after it.
+
+    ``slash_queue`` carries slash-commands the relay's keystroke detector
     produced on the main thread; ``stream_queue`` carries events a stream
-    adapter's LineCapture parsed on the pump's IO thread. This loop owns the
-    sink, so both queues drain and emit here rather than have another thread
-    touch the sink (or block the pump on a slow server POST). Queued items
-    drain *before* the file scan each tick: they happened before whatever the
-    scan now sees, so emitting them first keeps the captured order matching
-    the real order.
+    adapter's LineCapture parsed on the relay's IO path. This loop owns the
+    sink, so both drain and emit here rather than have another thread touch
+    the sink (or block the relay on a slow server POST). Neither has a
+    filesystem event to ride on, so a short wait bounds how long a queued
+    item can sit -- that wait is for the QUEUES, never for the files.
     """
-    offsets: dict[Path, int] = {}
-    buffers: dict[Path, bytearray] = {}
-    stamps: dict[Path, tuple[int, int]] = {}
-    poll_interval = 0.2
-
-    while not stop.is_set():
-        _drain_tick(
+    asyncio.run(
+        _drain_until_stopped(
             adapter,
             sink,
             stats,
             config,
-            slash_queue,
-            stream_queue=stream_queue,
-            offsets=offsets,
-            buffers=buffers,
+            stop,
             baseline=baseline,
-            stamps=stamps,
-            spawn_time=spawn_time,
+            slash_queue=slash_queue,
+            stream_queue=stream_queue,
         )
-        if stop.wait(poll_interval):
-            break
-    _drain_tick(
-        adapter,
-        sink,
-        stats,
-        config,
-        slash_queue,
-        stream_queue=stream_queue,
-        offsets=offsets,
-        buffers=buffers,
-        baseline=baseline,
-        stamps=stamps,
-        spawn_time=spawn_time,
     )
 
 
-def _drain_tick(
+async def _drain_until_stopped(
     adapter: Adapter,
     sink: Sink,
     stats: _Stats,
     config: RunConfig,
-    slash_queue: deque[tuple[SlashCommand, datetime]],
+    stop: threading.Event,
     *,
-    stream_queue: deque[Event] | None = None,
-    offsets: dict[Path, int],
-    buffers: dict[Path, bytearray],
     baseline: frozenset[Path],
-    stamps: dict[Path, tuple[int, int]],
-    spawn_time: float,
+    slash_queue: deque[tuple[SlashCommand, datetime]],
+    stream_queue: deque[Event] | None,
+    replay: bool = False,
 ) -> None:
-    """Run one drain pass, swallowing any unhandled error to survive (R-57).
-
-    The drain runs on a daemon thread; an unhandled error here (a transient
-    sink flush failure, a filesystem stat race) would kill the thread and
-    silently stop all capture for the rest of the run. Catching, logging with
-    a traceback, and returning keeps the loop polling so a later turn still
-    lands. Each pass emits queued slash-commands before the file scan so the
-    captured order matches the real order, then flushes so a quiet session
-    still streams between bursts.
-    """
+    """Follow the session logs and drain the queues until ``stop``."""
+    watched = tuple(d for d in adapter.session_dirs() if d.is_dir())
+    lines: asyncio.Queue[tuple[Path, bytes]] = asyncio.Queue()
+    # Record ids already emitted. Compaction rewrites the transcript, so a
+    # retained turn is re-read; this is what keeps it from being captured
+    # twice (see ``_already_captured``).
+    seen: set[str] = set()
+    follower = (
+        asyncio.create_task(
+            _follow_session_files(adapter, watched, baseline, lines, replay=replay)
+        )
+        if watched
+        else None
+    )
     try:
-        _emit_slash_commands(adapter, sink, stats, config, slash_queue)
-        _emit_stream_events(adapter, sink, stats, stream_queue)
-        _scan_and_read(
+        while not stop.is_set():
+            await _drain_queues(
+                adapter,
+                sink,
+                stats,
+                config,
+                slash_queue=slash_queue,
+                stream_queue=stream_queue,
+            )
+            await _drain_lines(adapter, sink, stats, config, lines, seen=seen)
+            _flush(sink)
+            # Wait on the LINE queue, not a clock: a captured line wakes this
+            # the moment the follower delivers it. The timeout is the ceiling
+            # for the two thread-fed queues, which carry no wakeup of their
+            # own -- it never delays a line.
+            #
+            # The woken item is emitted HERE rather than pushed back: a
+            # ``put_nowait`` appends, so re-queueing it would move it BEHIND
+            # every line the follower delivered while this waited, and the
+            # transcript would record a later turn before an earlier one.
+            with contextlib.suppress(TimeoutError):
+                path, raw = await asyncio.wait_for(lines.get(), _QUEUE_DRAIN_SEC)
+                _emit_line(adapter, sink, stats, config, path=path, raw=raw, seen=seen)
+        # A final pass: the CLI's last write may land between the last wake
+        # and ``stop``, and a session-end record often does exactly that.
+        # The wait lets the follower run at least once -- a caller that set
+        # ``stop`` before entering (a replay, a test) skipped the loop body
+        # entirely, so nothing has been delivered yet.
+        with contextlib.suppress(TimeoutError):
+            path, raw = await asyncio.wait_for(lines.get(), _QUEUE_DRAIN_SEC)
+            _emit_line(adapter, sink, stats, config, path=path, raw=raw, seen=seen)
+        await _drain_queues(
             adapter,
             sink,
             stats,
             config,
-            offsets,
-            buffers=buffers,
-            baseline=baseline,
-            stamps=stamps,
-            spawn_time=spawn_time,
+            slash_queue=slash_queue,
+            stream_queue=stream_queue,
         )
+        await _drain_lines(adapter, sink, stats, config, lines, seen=seen)
+        _flush(sink)
+    finally:
+        if follower is not None:
+            _ = follower.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await follower
+
+
+async def _follow_session_files(
+    adapter: Adapter,
+    watched: tuple[Path, ...],
+    baseline: frozenset[Path],
+    lines: asyncio.Queue[tuple[Path, bytes]],
+    *,
+    replay: bool = False,
+) -> None:
+    """Feed every line this run's session files gain onto ``lines``.
+
+    Errors are swallowed and logged, like every other drain failure: a watch
+    that dies must not take capture with it silently.
+    """
+
+    def mine(path: Path) -> bool:
+        """Whether this run should capture ``path``."""
+        return path not in baseline and adapter.matches_session_file(path)
+
+    # Digest of the body last queued per whole-file session, so one rewrite
+    # delivered as two wakes is not read as two turns (see ``_queue_body``).
+    bodies: dict[Path, str] = {}
+    try:
+        if adapter.whole_file:
+            # Gemini rewrites ONE json object in place, so a line is a fragment
+            # of it and parses as nothing. Its body is re-read whole on each
+            # change instead; the watch says which file changed, which is all
+            # the old poll's ``(size, mtime)`` stamp was determining.
+            async with follow_dir(*watched) as changed:
+                if replay:
+                    # A dry run replays what is already on disk. Nothing is
+                    # going to change those files, so waiting for an event
+                    # would capture nothing at all.
+                    for directory in watched:
+                        for path in sorted(directory.rglob("*")):
+                            if path.is_file() and mine(path):
+                                _queue_body(path, lines, bodies)
+                async for paths in changed:
+                    for path in sorted(p for p in paths if mine(p)):
+                        _queue_body(path, lines, bodies)
+            return
+        async for path, line in follow_tree(*watched, match=mine, replay=replay):
+            lines.put_nowait((path, line.encode()))
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        _logger.warning("trax run: session-log watch failed", exc_info=True)
+
+
+def _queue_body(
+    path: Path, lines: asyncio.Queue[tuple[Path, bytes]], bodies: dict[Path, str]
+) -> None:
+    """Queue a whole-file session's body, skipping empty, unreadable, or unchanged.
+
+    ONE rewrite is not one wake: ``write_text`` truncates and then writes, so
+    the kernel queues two events for it, and a read landing between them wakes
+    the follower twice. The second wake re-reads a body already queued, and the
+    adapter turns it into the same turn again -- a duplicated last message in
+    the transcript. The line path needs no equivalent: its cursor advances past
+    what it read, so a second wake with nothing appended yields nothing.
+
+    Identity is the body's digest rather than ``(size, mtime)``: gemini rewrites
+    one JSON object in place, so a same-length edit within a timestamp's
+    granularity leaves both unchanged while the turn is new. Only the digest is
+    kept -- a session file grows to megabytes, and every one of them would
+    otherwise be held for the life of the run.
+    """
+    body = _read_bytes(path)
+    if not body.strip():
+        return
+    digest = hashlib.sha256(body).hexdigest()
+    if bodies.get(path) == digest:
+        return
+    bodies[path] = digest
+    lines.put_nowait((path, body))
+
+
+def _read_bytes(path: Path) -> bytes:
+    """The whole file, or empty when it cannot be read.
+
+    A read racing the writer's rewrite is routine, not an error: the next
+    change wakes another read.
+    """
+    try:
+        return path.read_bytes()
+    except OSError:
+        return b""
+
+
+async def _drain_lines(
+    adapter: Adapter,
+    sink: Sink,
+    stats: _Stats,
+    config: RunConfig,
+    lines: asyncio.Queue[tuple[Path, bytes]],
+    *,
+    seen: set[str],
+) -> None:
+    """Emit every line the follower has delivered so far, each turn once."""
+    while True:
+        try:
+            path, raw = lines.get_nowait()
+        except asyncio.QueueEmpty:
+            return
+        _emit_line(adapter, sink, stats, config, path=path, raw=raw, seen=seen)
+
+
+def _emit_line(
+    adapter: Adapter,
+    sink: Sink,
+    stats: _Stats,
+    config: RunConfig,
+    *,
+    path: Path,
+    raw: bytes,
+    seen: set[str],
+) -> None:
+    """Emit one captured line, unless it is blank or already captured."""
+    # Backfill the CLI's own session id (the file names it) so a fresh run
+    # becomes resumable on its next ``--resume``. The sink keeps the first
+    # non-empty id and ignores it on a local-file run.
+    cli_session_id = adapter.session_id_from_path(path)
+    if cli_session_id is not None:
+        sink.set_cli_session_id(cli_session_id)
+    if not raw.strip() or _already_captured(raw, seen):
+        return
+    _process_chunk(raw, adapter, sink, stats, config, whole_file=adapter.whole_file)
+
+
+def _already_captured(raw: bytes, seen: set[str]) -> bool:
+    """Whether this record was emitted earlier in the run.
+
+    Compaction does not append -- claude REWRITES the session file, smaller,
+    keeping the turns it did not summarize away. The follower correctly reads
+    the replacement from its start, so every retained turn arrives a second
+    time. Nothing downstream can catch it: the sink mints ``seq`` per read, so
+    a re-read turn lands under a fresh ordinal rather than colliding with the
+    ``(session_id, seq)`` key that would have deduped it.
+
+    Identity comes from the record's own id, not the bytes: a re-serialized
+    line can differ by whitespace or key order while naming the same turn. A
+    record carrying no id is always emitted -- a duplicate turn is a smaller
+    fault than a dropped one, and this is only reachable after a rewrite.
+    """
+    record_id = _record_id(raw)
+    if record_id is None:
+        return False
+    if record_id in seen:
+        return True
+    seen.add(record_id)
+    return False
+
+
+def _record_id(raw: bytes) -> str | None:
+    """One line's own identifier, or None when it carries none.
+
+    Claude stamps ``uuid`` on every record; codex rollouts carry none, which
+    is why this returns None rather than falling back to a hash of the line --
+    a CLI that legitimately repeats an identical line would then lose the
+    repeat.
+    """
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    found = cast(dict[str, object], parsed).get("uuid")
+    return found if isinstance(found, str) and found else None
+
+
+async def _drain_queues(
+    adapter: Adapter,
+    sink: Sink,
+    stats: _Stats,
+    config: RunConfig,
+    *,
+    slash_queue: deque[tuple[SlashCommand, datetime]],
+    stream_queue: deque[Event] | None,
+) -> None:
+    """Emit whatever the relay's threads have queued, oldest first.
+
+    Guarded like the file path: this runs on the drain's own loop, where an
+    escaping error would end capture for the rest of the run.
+    """
+    try:
+        _emit_slash_commands(adapter, sink, stats, config, slash_queue)
+        _emit_stream_events(adapter, sink, stats, stream_queue)
+    except Exception:
+        _logger.warning("trax run: queue drain failed; continuing", exc_info=True)
+
+
+def _flush(sink: Sink) -> None:
+    """Flush the sink, surviving a transient failure (R-57).
+
+    A flush hiccup must cost one pass, not the whole run's capture.
+    """
+    try:
         sink.flush()
     except Exception:
-        _logger.warning("trax run: drain pass failed; continuing", exc_info=True)
+        _logger.warning("trax run: sink flush failed; continuing", exc_info=True)
 
 
 def _emit_slash_commands(
@@ -696,7 +938,7 @@ def _emit_slash_commands(
     """Drain queued slash-commands into the sink as captured turns.
 
     Runs on the drain thread (the single sink writer). ``popleft`` on a
-    ``deque`` is atomic, so it needs no lock against the pump thread's
+    ``deque`` is atomic, so it needs no lock against the relay thread's
     ``append``; draining until ``IndexError`` empties whatever the human typed
     since the last tick. Each command carries the submit-time clock the
     detector stamped, since a typed command has no CLI-recorded timestamp.
@@ -721,7 +963,7 @@ def _emit_stream_events(
 ) -> None:
     """Drain stream-captured events into the sink (single sink writer).
 
-    Runs on the drain thread. The pump's IO thread only appends to the
+    Runs on the drain thread. The relay's IO path only appends to the
     deque (atomic), so parsing never blocks on a slow ``sink.emit``.
     """
     if stream_queue is None:
@@ -733,179 +975,6 @@ def _emit_stream_events(
             break
         stats.record(event.kind)
         sink.emit(adapter.name, event)
-
-
-def _scan_and_read(
-    adapter: Adapter,
-    sink: Sink,
-    stats: _Stats,
-    config: RunConfig,
-    offsets: dict[Path, int],
-    *,
-    buffers: dict[Path, bytearray],
-    baseline: frozenset[Path],
-    stamps: dict[Path, tuple[int, int]] | None = None,
-    spawn_time: float = 0.0,
-    mtime_grace_sec: float = 2.0,
-) -> None:
-    """Walk the session dirs once, draining each file this run created.
-
-    Two filters identify *this run's* file, positively (#283), so a concurrent
-    run's session is never swept in:
-
-    * ``baseline`` -- files present before spawn are skipped (earlier/concurrent
-      sessions).
-    * ``spawn_time`` -- a file whose mtime predates this run's spawn belongs to
-      an earlier run, even if the pre-fork ``baseline`` snapshot raced past it
-      (the cross-pollination window: run B snapshots before run A's file is
-      written, so A is absent from B's baseline; A's mtime still predates B's
-      spawn because A started first). ``0.0`` disables the floor (legacy
-      callers / tests that only exercise the baseline path).
-
-    ``stamps`` carries the per-file ``(size, mtime_ns)`` change-detection state
-    for whole-file adapters; ``offsets`` carries the byte offset for line
-    adapters. A run uses exactly one (``adapter.whole_file`` is fixed), so the
-    unused dict stays empty.
-    """
-    if stamps is None:
-        stamps = {}
-    for session_dir in adapter.session_dirs():
-        if not session_dir.is_dir():
-            continue
-        for path in session_dir.rglob("*"):
-            if path in baseline:
-                continue
-            if not path.is_file() or not adapter.matches_session_file(path):
-                continue
-            # Positive per-run id: a file older than this run's spawn belongs to
-            # an earlier run the baseline snapshot raced past. Skip it. The
-            # grace margin absorbs filesystem mtime granularity (some report
-            # whole-second mtimes, truncating a just-created file below the
-            # sub-second wall clock) and minor clock skew; an earlier run's file
-            # is reliably many seconds older (CLI boot takes seconds), so the
-            # grace never re-opens the cross-pollination window.
-            # ``mtime_grace_sec`` absorbs whole-second filesystem mtime
-            # granularity and minor clock skew, so a just-created file is never
-            # wrongly rejected; an earlier run's file is many seconds older (CLI
-            # boot takes seconds), so the grace never re-opens the window.
-            if spawn_time and path.stat().st_mtime < spawn_time - mtime_grace_sec:
-                continue
-            # Backfill the CLI's own session id (the file names it) so a fresh
-            # run becomes resumable on its next ``--resume``. First non-empty
-            # id wins; the sink ignores it on a local-file run.
-            cli_session_id = adapter.session_id_from_path(path)
-            if cli_session_id is not None:
-                sink.set_cli_session_id(cli_session_id)
-            _drain_file(
-                path,
-                adapter,
-                sink,
-                stats,
-                config,
-                offsets=offsets,
-                buffers=buffers,
-                stamps=stamps,
-            )
-
-
-def _drain_file(
-    path: Path,
-    adapter: Adapter,
-    sink: Sink,
-    stats: _Stats,
-    config: RunConfig,
-    *,
-    offsets: dict[Path, int],
-    buffers: dict[Path, bytearray],
-    stamps: dict[Path, tuple[int, int]],
-) -> None:
-    """Emit events for one file's new content, by the adapter's drain shape.
-
-    Whole-file adapters (gemini rewrites one JSON object in place) get the
-    entire body re-read on each change; line adapters (claude / codex append
-    JSONL) follow a byte offset and emit per newline-terminated line.
-    """
-    if adapter.whole_file:
-        _drain_whole_file(path, adapter, sink, stats, config, stamps=stamps)
-        return
-    _drain_appended_lines(
-        path, adapter, sink, stats, config, offsets=offsets, buffers=buffers
-    )
-
-
-def _drain_whole_file(
-    path: Path,
-    adapter: Adapter,
-    sink: Sink,
-    stats: _Stats,
-    config: RunConfig,
-    *,
-    stamps: dict[Path, tuple[int, int]],
-) -> None:
-    """Re-read a whole-file session and parse its full body when it changes.
-
-    ``stamps`` records the last seen ``(size, mtime_ns)`` per file; an
-    unchanged stamp skips the re-read so an idle file is not reparsed every
-    poll. Tracking mtime alongside size is what catches a same-length rewrite
-    (a gemini in-place edit to identical byte size), which a size-only check
-    would silently drop.
-    """
-    try:
-        info = path.stat()
-    except OSError:
-        return
-    stamp = (info.st_size, info.st_mtime_ns)
-    if stamp == stamps.get(path):
-        return
-    try:
-        body = path.read_bytes()
-    except OSError:
-        return
-    stamps[path] = stamp
-    if body.strip():
-        _process_chunk(body, adapter, sink, stats, config, whole_file=True)
-
-
-def _drain_appended_lines(
-    path: Path,
-    adapter: Adapter,
-    sink: Sink,
-    stats: _Stats,
-    config: RunConfig,
-    *,
-    offsets: dict[Path, int],
-    buffers: dict[Path, bytearray],
-) -> None:
-    """Read newly-appended bytes from one file and emit per newline line."""
-    try:
-        size = path.stat().st_size
-    except OSError:
-        return
-    last = offsets.get(path, 0)
-    if size < last:
-        # Shrunk means rotated or truncated; restart from the new end.
-        last = 0
-        buffers.pop(path, None)
-    if size == last:
-        return
-    try:
-        with path.open("rb") as fh:
-            fh.seek(last)
-            chunk = fh.read(size - last)
-    except OSError:
-        return
-    offsets[path] = last + len(chunk)
-    buf = buffers.setdefault(path, bytearray())
-    buf.extend(chunk)
-    while True:
-        nl = buf.find(b"\n")
-        if nl < 0:
-            return
-        line = bytes(buf[:nl])
-        del buf[: nl + 1]
-        if not line.strip():
-            continue
-        _process_chunk(line, adapter, sink, stats, config, whole_file=False)
 
 
 def _process_chunk(
@@ -955,51 +1024,30 @@ def _dry_run_drain(
 ) -> int:
     """The ``--dry-run`` loop: replay existing session files until Ctrl-C.
 
-    Polls the adapter's session dirs with the same per-shape dispatch as the
-    live drain (:func:`_scan_and_read`), so a whole-file adapter (gemini) is
-    re-read whole and a line adapter follows byte offsets -- unlike the old
-    ``tail -F`` path, which line-split every adapter and so could never parse a
-    whole-file JSON body. The baseline is empty (dry-run *replays* existing
-    files, the point of an offline session review).
+    The same watch the live drain uses, with two differences that are the
+    point of a dry run: nothing is excluded (there is no ``baseline`` -- the
+    existing files ARE the subject), and the follower replays what they
+    already hold rather than only what they gain.
 
     ``stop`` ends the loop (tests inject it); in a real run it is ``None`` and
-    a ``KeyboardInterrupt`` (Ctrl-C) ends it instead. Either way a final sweep
-    flushes anything written since the last poll.
+    a ``KeyboardInterrupt`` (Ctrl-C) ends it instead.
     """
     stop = stop or threading.Event()
-    offsets: dict[Path, int] = {}
-    buffers: dict[Path, bytearray] = {}
-    stamps: dict[Path, tuple[int, int]] = {}
     sys.stderr.write("[trax run] dry-run: replaying session files; Ctrl-C to stop\n")
-    try:
-        while not stop.is_set():
-            _scan_and_read(
+    with contextlib.suppress(KeyboardInterrupt):
+        asyncio.run(
+            _drain_until_stopped(
                 adapter,
                 sink,
                 stats,
                 config,
-                offsets,
-                buffers=buffers,
+                stop,
                 baseline=frozenset(),
-                stamps=stamps,
+                slash_queue=deque(),
+                stream_queue=None,
+                replay=True,
             )
-            sink.flush()
-            if stop.wait(0.2):
-                break
-    except KeyboardInterrupt:
-        pass
-    # Final sweep so a file written between the last poll and stop still lands.
-    _scan_and_read(
-        adapter,
-        sink,
-        stats,
-        config,
-        offsets,
-        buffers=buffers,
-        baseline=frozenset(),
-        stamps=stamps,
-    )
-    sink.flush()
+        )
     return 0
 
 

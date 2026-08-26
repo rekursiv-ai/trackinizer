@@ -37,6 +37,8 @@ dependencies = [
     "lark>=1.1",
     # lazy imports
     "wrapt",
+    # filesystem watching
+    "watchdog>=6.0.0 ; sys_platform == 'darwin'",
 ]
 
 [project.scripts]

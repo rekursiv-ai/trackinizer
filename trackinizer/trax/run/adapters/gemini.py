@@ -66,7 +66,14 @@ class GeminiAdapter:
         tmp = self._tmp_dir
         if not tmp.is_dir():
             return ()
-        return tuple(d / "chats" for d in tmp.iterdir() if (d / "chats").is_dir())
+        # The tmp ROOT, not each project's ``chats`` leaf. Gemini shards by
+        # project sha and mints ``<sha>/chats`` when it first runs in a
+        # workspace -- after the watch is armed for the run being captured. A
+        # watch on the leaves existing at arming time cannot adopt a new
+        # sibling, so the run would capture nothing silently.
+        # ``matches_session_file`` still requires a ``chats/session-*.json``,
+        # so widening the watch does not widen what is captured.
+        return (tmp,)
 
     def matches_session_file(self, path: Path) -> bool:
         return (

@@ -10,7 +10,7 @@ driver half of `trax/run/adapters/codex_appserver.py`.
 `trax run` captures agent sessions by scraping each CLI's on-disk
 session log (`trax/run/adapters/{claude,codex,gemini}.py`) and injects
 `trax send` messages as bracketed pastes into a PTY
-(`trax/run/pty_pump.py`). Both halves work, but both are built on
+(`lib/posix/relay.py`). Both halves work, but both are built on
 surfaces the vendors do not own as contracts:
 
 1. **Capture is pinned to undocumented log formats.** claude.py parses
@@ -103,7 +103,7 @@ Reuses the existing discipline. The ACP client owns one reader thread
 over the adapter's stdout; that thread is the **single sink writer**
 (the role the drain thread plays today, `session.py:259`). The inbound
 poll thread is unchanged except its delivery target: an injection
-queue consumed by the drive loop instead of `pty_pump.inject`. Writes
+queue consumed by the drive loop instead of `ThreadedRelay.submit`. Writes
 to the adapter's stdin go through one lock. `LockedSink` already
 serializes cross-thread sink access.
 
