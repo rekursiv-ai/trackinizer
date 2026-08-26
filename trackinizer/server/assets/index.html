@@ -1971,12 +1971,40 @@ function buildSearch() {
   });
 }
 
+// Minimum gap between SSE-driven re-renders. Long enough that a burst of
+// change events costs one render, short enough to still read as live.
+const RERENDER_MS = 500;
+
 function startSse() {
   // Native EventSource auto-reconnects on transient errors; only abort on
   // the terminal CLOSED state. Calling sse.close() on every error -- as
   // the original code did -- disabled recovery entirely and left the UI
   // stale after the first hiccup.
   const sse = new EventSource("/api/web/subscribe");
+  // Coalesce: re-render at most once per RERENDER_MS, however many events
+  // arrive. The payload carries only an id, so a list view cannot tell
+  // whether the changed row is even on screen and must re-render for any
+  // event; under load (66 concurrent agents writing AgentSession events) that
+  // was 4-7 full fetch + DOM rebuilds a second. Batching bounds the work at
+  // one render per window regardless of event rate.
+  //
+  // The ids are kept, not just counted: an inquiry view re-renders only when
+  // the batch actually contains the row being displayed.
+  let pending = new Set();
+  let timer = null;
+  const rerender = () => {
+    timer = null;
+    const ids = pending;
+    pending = new Set();
+    const { path } = parseHash();
+    if (path[0] === "inquiry") {
+      if (ids.has(path[1])) viewInquiry(path[1]);
+    } else if (path[0] === "list") {
+      viewList(path[1] || "Issue");
+    } else if (path[0] === "recent" || path[0] === "" || !path[0]) {
+      viewRecent();
+    }
+  };
   sse.onmessage = (e) => {
     let payload;
     try {
@@ -1984,14 +2012,10 @@ function startSse() {
     } catch (_) {
       return;
     }
-    const { path } = parseHash();
-    if (path[0] === "inquiry" && path[1] === payload.id) {
-      viewInquiry(payload.id);
-    } else if (path[0] === "list") {
-      viewList(path[1] || "Issue");
-    } else if (path[0] === "recent" || path[0] === "" || !path[0]) {
-      viewRecent();
-    }
+    pending.add(payload.id);
+    // Trailing edge only: the first event of a burst starts the window and
+    // the render happens at its end, so a burst costs exactly one render.
+    if (timer === null) timer = setTimeout(rerender, RERENDER_MS);
   };
   sse.onerror = () => {
     if (sse.readyState === EventSource.CLOSED) {
