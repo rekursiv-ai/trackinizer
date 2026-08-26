@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import json
 
+import pytest
 
-if TYPE_CHECKING:
-    import pytest
-
+from trackinizer.trax.run.adapters import gemini
 from trackinizer.trax.run.adapters.base import Event
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 from trackinizer.types.agent_session_events import (
@@ -262,6 +260,43 @@ class TestGeminiEmitsAppendedSlice:
         # Poll 3: B grew by one; A unchanged.
         assert texts("A", ["a1", "a2"]) == []
         assert texts("B", ["b1", "b2"]) == ["b2"]
+
+    def test_a_raise_mid_slice_does_not_consume_the_slice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A parse that dies partway must leave its messages still pending.
+
+        The cursor advanced BEFORE the messages were normalized, so any raise
+        during normalization -- an ``AssistantMessage`` invariant, a malformed
+        block -- consumed the slice anyway. ``_process_chunk`` swallows the
+        exception, the runner re-feeds the same body on the next wake, and the
+        adapter reports nothing new: those turns are gone for the run.
+        """
+        adapter = GeminiAdapter()
+        body = _encode(
+            {
+                "sessionId": "x",
+                "messages": [
+                    {"type": "user", "content": "q1"},
+                    {"type": "gemini", "content": "a1"},
+                ],
+            }
+        )
+
+        def explode(msg: object) -> Message:
+            del msg
+            raise RuntimeError("malformed turn")
+
+        monkeypatch.setattr(gemini, "_assistant_message", explode)
+        with pytest.raises(RuntimeError):
+            _ = list(adapter.parse(body, whole_file=True))
+        monkeypatch.undo()
+
+        # The failed parse consumed nothing: a re-feed still yields both turns.
+        assert [_text(e.message) for e in adapter.parse(body, whole_file=True)] == [
+            "q1",
+            "a1",
+        ]
 
     def test_keyless_files_do_not_share_a_cursor(self) -> None:
         """Two bodies with no ``sessionId`` must not collide on a shared cursor.

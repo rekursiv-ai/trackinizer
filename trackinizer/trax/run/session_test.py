@@ -597,6 +597,68 @@ class TestDrainSurvivesParseError:
         ]
 
 
+class _FlakyEmitSink(_RecordingSink):
+    """Records events, but the first ``emit`` raises, as a full disk would."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts = 0
+
+    @override
+    def emit(self, adapter_name: str, event: Event) -> None:
+        self.attempts += 1
+        if self.attempts == 1:
+            raise RuntimeError("sink write failed")
+        super().emit(adapter_name, event)
+
+
+class TestDrainSurvivesSinkError:
+    """A sink failure costs one turn, never the rest of the run's capture.
+
+    ``_process_chunk`` guards ``parse`` but emits OUTSIDE that guard, so a
+    raise from ``sink.emit`` escapes to ``asyncio.run`` and kills the daemon
+    drain thread -- silently ending capture. The wrapping sinks do not close
+    this: ``ResilientSink`` degrades to a local :class:`FileSink`, whose write
+    raises on a full disk with nothing left to catch it.
+    """
+
+    def test_a_failing_emit_does_not_stop_capture(self, tmp_path: Path) -> None:
+        log = tmp_path / "session.jsonl"
+        adapter = _FakeAdapter(tmp_path)
+        sink = _FlakyEmitSink()
+        stats = _Stats()
+        stop = threading.Event()
+
+        def _run() -> None:
+            _drain_filesystem_loop(
+                adapter,
+                sink,
+                stats,
+                RunConfig(cli_name=adapter.name),
+                stop,
+                baseline=frozenset(),
+                slash_queue=deque(),
+            )
+
+        worker = threading.Thread(target=_run, daemon=True)
+        worker.start()
+        try:
+            time.sleep(0.2)  # let the watch arm
+            log.write_bytes(b"boom\n")
+            time.sleep(0.3)
+            with log.open("ab") as handle:
+                _ = handle.write(b"survived\n")
+            deadline = time.monotonic() + 3.0
+            while not sink.events and time.monotonic() < deadline:
+                time.sleep(0.01)
+        finally:
+            stop.set()
+            worker.join(timeout=5.0)
+
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        assert texts == ["survived"], "the drain thread died with the failed emit"
+
+
 class _FlakyFlushSink(_RecordingSink):
     """Records events, but ``flush`` raises a transient error a fixed number of
     times before succeeding, to drive the drain loop's resilience.

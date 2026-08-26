@@ -40,7 +40,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import IO, Any, Final, cast
 
 import asyncio
 import ctypes
@@ -146,33 +146,90 @@ async def follow_tree(
 
 
 class _Cursor:
-    """Tracks how far into a file has been read, and any partial line."""
+    """Tracks how far into a file has been read, and any partial line.
+
+    Reads in BINARY and advances by the bytes actually read. Both are
+    load-bearing, for hazards a size-and-text-handle cursor loses data to:
+
+    * A multibyte character can be split across two appends. A text handle
+      decodes each read independently, so with ``errors="replace"`` each half
+      becomes U+FFFD and the line is silently corrupted. Holding the
+      undecodable tail as bytes carries the character across the split.
+    * A rewrite is not always a SHRINK. Deciding "was this replaced?" by
+      length leaves a same-or-larger replacement read from the stale offset,
+      yielding the tail of a line nobody wrote. The bytes immediately before
+      the offset are re-read and compared instead.
+    * A write landing between measuring and reading is read now; recording
+      the measurement rather than the read would deliver it again next time.
+    """
 
     def __init__(self, path: Path, *, offset: int) -> None:
         self._path = path
         self._offset = offset
-        self._partial = ""
+        # Bytes read but not yet forming a complete line: an unterminated
+        # line, and possibly a partial UTF-8 sequence at its end.
+        self._partial = b""
+        # The bytes immediately before ``offset``, which a later drain
+        # re-reads to tell an append from a replacement. Seeded here because a
+        # cursor may START mid-file (``offset=_size(path)``, the skip-history
+        # case) without ever having read them itself.
+        self._seen = _tail(path, offset)
 
     def drain(self) -> list[str]:
         """Return every complete line appended since the last call."""
-        size = _size(self._path)
-        if size < self._offset:
-            # Shrunk: the file was rewritten. Both the offset and any held
-            # fragment describe bytes that no longer exist.
-            self._offset = 0
-            self._partial = ""
-        if size == self._offset:
-            return []
         try:
-            with self._path.open(encoding="utf-8", errors="replace") as handle:
+            with self._path.open("rb") as handle:
+                if self._offset and not self._continues(handle):
+                    # The bytes this cursor already read are gone or changed:
+                    # the file was replaced. Its offset and held fragment both
+                    # describe bytes that no longer exist.
+                    self._offset = 0
+                    self._partial = b""
+                    self._seen = b""
                 _ = handle.seek(self._offset)
                 chunk = handle.read()
         except OSError:
             return []
-        self._offset = size
-        text = self._partial + chunk
-        complete, _, self._partial = text.rpartition("\n")
-        return complete.split("\n") if complete else []
+        if not chunk:
+            return []
+        self._offset += len(chunk)
+        self._seen = (self._seen + chunk)[-_REPLACEMENT_WINDOW:]
+        raw = self._partial + chunk
+        # Split on BYTES; decode only complete lines, so a character
+        # straddling two reads is held rather than replaced.
+        complete, newline, self._partial = raw.rpartition(b"\n")
+        if not newline:
+            return []
+        return complete.decode("utf-8", errors="replace").split("\n")
+
+    def _continues(self, handle: IO[bytes]) -> bool:
+        """Whether the file still holds the bytes this cursor last read."""
+        if not self._seen:
+            return False
+        _ = handle.seek(self._offset - len(self._seen))
+        return handle.read(len(self._seen)) == self._seen
+
+
+_REPLACEMENT_WINDOW: Final = 4_096
+"""How many consumed bytes a cursor keeps to recognise a replacement.
+
+Bounded because a session file reaches megabytes. A window is sufficient
+because a rewrite would have to reproduce this many preceding bytes exactly
+and then diverge to pass as an append, which a session log does not do.
+"""
+
+
+def _tail(path: Path, offset: int) -> bytes:
+    """The bytes just before ``offset``, or empty when unreadable."""
+    if offset <= 0:
+        return b""
+    window = min(offset, _REPLACEMENT_WINDOW)
+    try:
+        with path.open("rb") as handle:
+            _ = handle.seek(offset - window)
+            return handle.read(window)
+    except OSError:
+        return b""
 
 
 def _size(path: Path) -> int:
