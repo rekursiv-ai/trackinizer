@@ -71,7 +71,9 @@ class Adapter(Protocol):
 
         An iterable, so a CLI that shards sessions across per-project
         subdirs (claude's ``~/.claude/projects/<hash>/``) can yield each
-        one. An empty iterable just means nothing gets captured.
+        one. Paths may not exist before a first hermetic run; the live runner
+        creates them before arming its filesystem watches. An empty iterable
+        means the adapter has no filesystem capture source.
         """
         ...
 

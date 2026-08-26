@@ -25,6 +25,7 @@ import pytest
 from trackinizer.trax.run import session as session_mod
 from trackinizer.trax.run.adapters.base import Adapter, Event
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
+from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 from trackinizer.trax.run.session import (
     RunConfig,
@@ -324,6 +325,19 @@ class TestProjectDirectoryBornMidRun:
     UNDER -- a watch on today's leaves cannot adopt tomorrow's sibling, and
     the run captures nothing with no error anywhere.
     """
+
+    def test_missing_codex_session_root_is_created_before_the_watch(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A hermetic first run must have a real directory to watch."""
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+        expected = tmp_path / "codex" / "sessions"
+
+        assert not expected.exists()
+        session_mod._prepare_session_dirs(CodexAdapter())
+        assert expected.is_dir()
 
     def test_claude_captures_a_project_directory_created_after_the_watch(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

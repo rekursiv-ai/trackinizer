@@ -259,6 +259,7 @@ def _spawn_and_drain(
     session root), we snapshot the files that exist *before* spawning and
     drain only files this run creates afterward.
     """
+    _prepare_session_dirs(adapter)
     baseline = _existing_session_files(adapter)
     stop = threading.Event()
 
@@ -587,6 +588,14 @@ def _routing_env(
     if config.rooms:
         env["TRAX_ROOMS"] = ",".join(config.rooms)
     return env
+
+
+def _prepare_session_dirs(adapter: Adapter) -> None:
+    """Create a file adapter's watch roots before the wrapped CLI starts."""
+    if isinstance(adapter, StreamAdapter):
+        return
+    for session_dir in adapter.session_dirs():
+        session_dir.mkdir(parents=True, exist_ok=True)
 
 
 def _existing_session_files(adapter: Adapter) -> frozenset[Path]:
