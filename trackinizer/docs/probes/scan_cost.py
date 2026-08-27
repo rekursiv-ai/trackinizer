@@ -23,7 +23,7 @@ from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 
 
 if TYPE_CHECKING:
-    from trackinizer.trax.run.adapters.base import Adapter
+    from trackinizer.trax.run.adapters.custom_types import Adapter
 
 
 def scan_once(adapter: Adapter) -> tuple[int, int]:

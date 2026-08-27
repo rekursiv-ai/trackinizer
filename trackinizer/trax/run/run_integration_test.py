@@ -53,7 +53,7 @@ from trackinizer.server.api import query, sessions_routes
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store, StubEmbedder
-from trackinizer.trax.run.adapters.base import Event
+from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.session import (
     RunConfig,
     _drain_filesystem_loop,
@@ -490,6 +490,9 @@ class _LineAdapter:
 
     def matches_session_file(self, path: Path) -> bool:
         return path.suffix == ".jsonl"
+
+    def session_scope(self) -> Path | None:
+        return None
 
     def session_id_from_path(self, path: Path) -> str | None:
         del path

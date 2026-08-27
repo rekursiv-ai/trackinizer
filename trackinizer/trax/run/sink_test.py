@@ -12,7 +12,7 @@ import json
 import threading
 
 from trackinizer.client.client import Client
-from trackinizer.trax.run.adapters.base import Event
+from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.sink import (
     FileSink,
     LockedSink,
@@ -461,6 +461,38 @@ class _FailingOpenPrimary:
         self.closed = True
 
 
+class _FailingSessionIdPrimary:
+    """A primary whose ``set_cli_session_id`` raises, to drive that degrade."""
+
+    def __init__(self) -> None:
+        self.emit_attempts = 0
+        self.closed = False
+
+    @property
+    def session_id(self) -> None:
+        return None
+
+    def open(self) -> str | None:
+        return None
+
+    def set_cli_session_id(self, cli_session_id: str) -> None:
+        del cli_session_id
+        raise RuntimeError("server unreachable")
+
+    def emit(self, adapter_name: str, event: Event) -> None:
+        del adapter_name, event
+        self.emit_attempts += 1
+
+    def flush(self) -> None:
+        pass
+
+    def drain_pending(self) -> list[EventBody]:
+        return []
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class TestResilientSink:
     """A failing primary sink must never propagate; it degrades to local file."""
 
@@ -543,6 +575,68 @@ class TestResilientSink:
             "after open failed"
         ]
         # The primary was abandoned after the open failure: no later calls.
+        assert primary.emit_attempts == 0
+
+    def test_the_event_that_triggered_the_degrade_lands_once(
+        self, tmp_path: Path
+    ) -> None:
+        """The event whose emit failed must not be written twice.
+
+        A ``TrackinizerSink.emit`` buffers the event BEFORE the batch flush, so
+        an ``append_events`` failure raises with that event still in the buffer.
+        ``_degrade`` replays the buffer into the fallback -- including it -- and
+        then ``emit`` falls through and writes it again under a fresh seq. Two
+        rows for one turn, and the seqs no longer name distinct turns.
+        """
+        client = _FlakyFlushClient()  # the first append_events raises
+        primary = TrackinizerSink(cast(Client, client), "claude", batch_size=1)
+        fallback_path = tmp_path / "fallback.jsonl"
+        sink = ResilientSink(primary, fallback_path=fallback_path)
+
+        sink.emit("claude", _event(UserMessage(text="only")))
+        sink.close()
+
+        lines = fallback_path.read_text(encoding="utf-8").splitlines()
+        texts = [json.loads(line)["message"]["text"] for line in lines]
+        assert texts == ["only"]
+
+    def test_a_degrade_with_nothing_buffered_still_writes_the_event(
+        self, tmp_path: Path
+    ) -> None:
+        """The counterpart: an unbuffered failure must still reach the fallback.
+
+        A primary that raises without ever buffering (an unreachable server on
+        the very first call) drains an empty buffer, so the triggering event is
+        the fallback's only chance to record the turn.
+        """
+        primary = _ExplodingSink()
+        fallback_path = tmp_path / "fallback.jsonl"
+        sink = ResilientSink(cast(Sink, primary), fallback_path=fallback_path)
+
+        sink.emit("claude", _event(UserMessage(text="only")))
+        sink.close()
+
+        lines = fallback_path.read_text(encoding="utf-8").splitlines()
+        assert [json.loads(line)["message"]["text"] for line in lines] == ["only"]
+
+    def test_set_cli_session_id_failure_degrades(self, tmp_path: Path) -> None:
+        """Every primary call degrades on failure -- including this one.
+
+        It was the one call reaching the primary with no guard, so a server
+        that failed there raised straight into the drain thread and ended
+        capture, contradicting the wrapper's whole contract.
+        """
+        primary = _FailingSessionIdPrimary()
+        fallback_path = tmp_path / "fallback.jsonl"
+        sink = ResilientSink(cast(Sink, primary), fallback_path=fallback_path)
+
+        sink.set_cli_session_id("claude-abc-123")  # must not raise
+
+        # Degraded: the primary is abandoned and capture continues locally.
+        sink.emit("claude", _event(UserMessage(text="after")))
+        sink.close()
+        lines = fallback_path.read_text(encoding="utf-8").splitlines()
+        assert [json.loads(line)["message"]["text"] for line in lines] == ["after"]
         assert primary.emit_attempts == 0
 
     def test_healthy_primary_never_touches_fallback(self, tmp_path: Path) -> None:

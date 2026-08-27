@@ -24,7 +24,7 @@ from typing import cast
 import json
 
 from trackinizer.lib.custom_json import JSON, json_freeze
-from trackinizer.trax.run.adapters.base import Event
+from trackinizer.trax.run.custom_types import Event
 from trackinizer.types.agent_session_events import (
     AssistantMessage,
     Message,

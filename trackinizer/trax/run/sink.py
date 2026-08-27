@@ -1,7 +1,7 @@
 """Event sinks for ``trax run``: local-file (default) and Trackinizer.
 
 The session runner produces one :class:`Event` per captured turn and hands
-it to a :class:`Sink`. Three sinks exist:
+it to a :class:`Sink`. Four exist -- two that record, two that wrap:
 
 - :class:`FileSink` -- the default. Writes one JSON line per event to a
   local JSONL file, exactly as the harness always has. No network.
@@ -25,7 +25,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO, Protocol, cast
+from typing import IO, Protocol, cast, override
 from uuid import UUID
 
 import json
@@ -35,7 +35,7 @@ import time
 
 from trackinizer.client.client import Client
 from trackinizer.lib.custom_json import JSON
-from trackinizer.trax.run.adapters.base import Event
+from trackinizer.trax.run.custom_types import Event
 from trackinizer.wire.wire_sessions import (
     EventBody,
     SessionEnd,
@@ -50,6 +50,13 @@ class Sink(Protocol):
     server dedup key with the session id, so the counter must live with the
     session, not with the run (a run-wide counter would mis-number a sink that
     ever opened a second session). The runner just hands over parsed events.
+
+    Every implementation below SUBCLASSES this rather than matching it
+    structurally, and marks each method ``@override``. Structural conformance
+    is silent when it lapses: the degrade seam reaches ``drain_pending`` by
+    name, so a rename on one sink leaves the others satisfying the Protocol
+    while that one strands its buffer. Declaring the base makes the same
+    mistake a type error.
     """
 
     @property
@@ -118,7 +125,7 @@ def _event_body(seq: int, event: Event) -> EventBody:
     )
 
 
-class FileSink:
+class FileSink(Sink):
     """Write one JSON line per event to a local JSONL file."""
 
     def __init__(self, handle: IO[str]) -> None:
@@ -127,23 +134,28 @@ class FileSink:
         self._next_seq = 0
 
     @property
+    @override
     def session_id(self) -> UUID | None:
         # A local-file sink opens no server session; nothing to poll inbound for.
         return None
 
+    @override
     def open(self) -> str | None:
         # No server session, so no granted handle; the requested name stands.
         return None
 
+    @override
     def set_cli_session_id(self, cli_session_id: str) -> None:
         # No server session to backfill; nothing to record locally.
         del cli_session_id
 
+    @override
     def emit(self, adapter_name: str, event: Event) -> None:
         seq = self._next_seq
         self._next_seq += 1
         self._write_record(adapter_name, _event_body(seq, event))
 
+    @override
     def drain_pending(self) -> list[EventBody]:
         # Every emit writes through immediately; nothing is ever buffered.
         return []
@@ -165,23 +177,29 @@ class FileSink:
         record = cast(JSON, {"adapter": adapter_name, **body.model_dump(mode="json")})
         self._handle.write(json.dumps(record) + "\n")
 
+    @override
     def flush(self) -> None:
         # The handle is opened line-buffered, so each event already reaches
         # disk on its newline; a flush is a cheap no-op kept for the Protocol.
         if not self._closed:
             self._handle.flush()
 
+    @override
     def close(self) -> None:
         if not self._closed:
             self._handle.close()
             self._closed = True
 
 
-class TrackinizerSink:
+class TrackinizerSink(Sink):
     """Open a Session, batch events to the ingest API, close on exit.
 
-    The session is opened lazily on the first event so a run that captures
-    nothing leaves no empty Session row. Events flush on two triggers: the
+    The session opens on whichever comes first: an explicit :meth:`open` or
+    the first event. The runner calls ``open`` before forking the child, so a
+    live run opens eagerly -- the server-granted routing handle has to be in
+    the child's environment from the start (#453). Nothing else does, so a
+    caller that captures no events still leaves no empty Session row. Events
+    flush on two triggers: the
     buffer reaching ``batch_size`` (a busy burst), or :meth:`flush` finding
     the buffer older than ``flush_interval_sec`` (a quiet session the drain
     loop ticks). ``close`` flushes the remainder and ends the session. Retry
@@ -228,10 +246,12 @@ class TrackinizerSink:
         return self._granted_actor
 
     @property
+    @override
     def session_id(self) -> UUID | None:
         """The server session id once opened (lazily, on first event)."""
         return self._session_id
 
+    @override
     def emit(self, adapter_name: str, event: Event) -> None:
         del adapter_name  # the session already names its CLI
         self._ensure_session()
@@ -243,6 +263,7 @@ class TrackinizerSink:
         if len(self._buffer) >= self._batch_size:
             self._flush()
 
+    @override
     def flush(self) -> None:
         # Time-driven partial flush: send a non-empty buffer once it has aged
         # past the interval. The drain loop calls this each poll, so a session
@@ -252,6 +273,7 @@ class TrackinizerSink:
         if self._clock() - self._oldest_buffered_at >= self._flush_interval_sec:
             self._flush()
 
+    @override
     def open(self) -> str | None:
         """Open the session now (eagerly) and return the granted routing handle.
 
@@ -263,6 +285,7 @@ class TrackinizerSink:
         self._ensure_session()
         return self._granted_actor
 
+    @override
     def set_cli_session_id(self, cli_session_id: str) -> None:
         """Record the CLI's own session id (discovered mid-run).
 
@@ -300,6 +323,7 @@ class TrackinizerSink:
                 f"using '{resp.actor}'\n"
             )
 
+    @override
     def drain_pending(self) -> list[EventBody]:
         """Remove and return events buffered but not yet sent to the server.
 
@@ -320,6 +344,7 @@ class TrackinizerSink:
         self._buffer = []
         self._oldest_buffered_at = None
 
+    @override
     def close(self) -> None:
         if self._closed:
             return
@@ -346,7 +371,7 @@ class TrackinizerSink:
         self._closed = True
 
 
-class ResilientSink:
+class ResilientSink(Sink):
     """Wrap a primary sink and degrade to a local file on its first failure.
 
     Sync runs in the drain thread, so an unhandled sink error there crashes
@@ -366,12 +391,14 @@ class ResilientSink:
         self._adapter_for_fallback = ""
 
     @property
+    @override
     def session_id(self) -> UUID | None:
         # The poller wants the live server session: only the primary
         # (TrackinizerSink) has one. Once degraded to the local fallback there
         # is no session, so inbound polling correctly stops.
         return self._primary.session_id if self._primary is not None else None
 
+    @override
     def open(self) -> str | None:
         # Eager open routes through the primary server sink; the local fallback
         # has no session, so a degraded sink returns None. The runner opens the
@@ -384,10 +411,18 @@ class ResilientSink:
                 self._degrade(err)
         return None
 
+    @override
     def set_cli_session_id(self, cli_session_id: str) -> None:
+        # Guarded like every other primary call: the runner invokes this from
+        # the drain thread on each captured line, so an unguarded raise here
+        # ends capture -- the exact failure this wrapper exists to prevent.
         if self._primary is not None:
-            self._primary.set_cli_session_id(cli_session_id)
+            try:
+                self._primary.set_cli_session_id(cli_session_id)
+            except Exception as err:  # noqa: BLE001 -- a backfill failure degrades like an emit failure.
+                self._degrade(err)
 
+    @override
     def emit(self, adapter_name: str, event: Event) -> None:
         self._adapter_for_fallback = adapter_name
         if self._primary is not None:
@@ -395,9 +430,17 @@ class ResilientSink:
                 self._primary.emit(adapter_name, event)
                 return
             except Exception as err:  # noqa: BLE001 -- any sink failure must degrade, not crash the drain thread.
-                self._degrade(err)
+                replayed = self._degrade(err)
+            # A primary that buffers (``TrackinizerSink``) has already taken
+            # this event, so ``_degrade`` just replayed it into the fallback;
+            # writing it again here would record one turn twice, under two
+            # seqs. A primary that raised before buffering replays nothing, so
+            # this is the event's only chance to be recorded.
+            if replayed:
+                return
         self._ensure_fallback().emit(adapter_name, event)
 
+    @override
     def flush(self) -> None:
         if self._primary is not None:
             try:
@@ -408,11 +451,13 @@ class ResilientSink:
         if self._fallback is not None:
             self._fallback.flush()
 
+    @override
     def drain_pending(self) -> list[EventBody]:
         # The primary's buffer is replayed into the fallback on degrade, and
         # the fallback writes through; nothing is ever pending at this layer.
         return []
 
+    @override
     def close(self) -> None:
         if self._primary is not None:
             try:
@@ -422,11 +467,17 @@ class ResilientSink:
         if self._fallback is not None:
             self._fallback.close()
 
-    def _degrade(self, err: Exception) -> None:
+    def _degrade(self, err: Exception) -> bool:
         """Abandon the primary sink and route the rest to a local file.
 
         Any events the primary had buffered but not yet sent are replayed into
         the fallback first, in order, so a flush failure loses nothing (REV-02).
+
+        Returns:
+          replayed: Whether anything was replayed. ``emit`` needs this to tell
+            a primary that already took the failing event (buffered, so
+            replayed just now) from one that raised before taking it.
+
         """
         primary, self._primary = self._primary, None
         assert primary is not None, "degrade is only reachable with a live primary"
@@ -435,8 +486,10 @@ class ResilientSink:
             f"falling back to local capture at {self._fallback_path}\n"
         )
         fallback = self._ensure_fallback()
-        for body in primary.drain_pending():
+        pending = primary.drain_pending()
+        for body in pending:
             fallback.write_body(self._adapter_for_fallback, body)
+        return bool(pending)
 
     def _ensure_fallback(self) -> FileSink:
         if self._fallback is None:
@@ -446,7 +499,7 @@ class ResilientSink:
         return self._fallback
 
 
-class LockedSink:
+class LockedSink(Sink):
     """Serialize all access to an inner sink with one lock (thread-safety).
 
     The runner touches one sink from three threads: the drain thread (``emit``
@@ -476,30 +529,37 @@ class LockedSink:
         self._lock = threading.RLock()
 
     @property
+    @override
     def session_id(self) -> UUID | None:
         with self._lock:
             return self._inner.session_id
 
+    @override
     def open(self) -> str | None:
         with self._lock:
             return self._inner.open()
 
+    @override
     def set_cli_session_id(self, cli_session_id: str) -> None:
         with self._lock:
             self._inner.set_cli_session_id(cli_session_id)
 
+    @override
     def emit(self, adapter_name: str, event: Event) -> None:
         with self._lock:
             self._inner.emit(adapter_name, event)
 
+    @override
     def flush(self) -> None:
         with self._lock:
             self._inner.flush()
 
+    @override
     def drain_pending(self) -> list[EventBody]:
         with self._lock:
             return self._inner.drain_pending()
 
+    @override
     def close(self) -> None:
         # Non-blocking teardown: a worker wedged inside a locked ``emit`` /
         # ``flush`` (a hung server POST that outlived the join watchdog) still

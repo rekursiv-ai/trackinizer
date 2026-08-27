@@ -9,6 +9,8 @@ from typing import Any, cast
 
 import asyncio
 import contextlib
+import ctypes
+import errno
 import os
 import platform
 
@@ -552,6 +554,155 @@ class TestCursor:
         assert follow._size(tmp_path / "absent") == 0
 
 
+def _recording_warning(into: list[str]) -> Callable[..., None]:
+    """A ``logger.warning`` stand-in that captures the formatted message."""
+
+    def warning(msg: str, *args: object, **kwargs: object) -> None:
+        del kwargs  # ``exc_info`` and friends; only the text is asserted on.
+        into.append(msg % args)
+
+    return warning
+
+
+class TestWatchFailures:
+    """What the watch does when the kernel refuses, not when it obliges.
+
+    Each of these silently disables capture: the caller keeps awaiting an
+    iterator that will never name the file it is waiting for.
+    """
+
+    def test_a_descendant_vanishing_mid_walk_does_not_kill_the_watch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A temp directory deleted between ``rglob`` and its watch is routine.
+
+        The walk lists the tree and then registers each entry, so anything
+        short-lived under it is gone by the time its turn comes. Letting that
+        ENOENT propagate closes the descriptor and takes the ROOT watch with
+        it -- the run then captures nothing at all, over a directory it never
+        needed.
+        """
+        doomed = tmp_path / "doomed"
+        doomed.mkdir()
+        real_add = follow._add_watch
+
+        def vanishing(
+            libc: ctypes.CDLL, fd: int, directory: Path, watches: dict[int, Path]
+        ) -> None:
+            if directory == doomed:
+                raise FileNotFoundError(errno.ENOENT, "no such directory", str(doomed))
+            real_add(libc, fd, directory, watches)
+
+        monkeypatch.setattr(follow, "_add_watch", vanishing)
+
+        async def run() -> set[Path]:
+            async with follow.follow_dir(tmp_path) as changed:
+                await asyncio.sleep(0.1)
+                _ = (tmp_path / "session.jsonl").write_text("{}\n")
+                return await asyncio.wait_for(anext(changed), 5.0)
+
+        assert asyncio.run(run()) == {tmp_path / "session.jsonl"}
+
+    def test_a_missing_root_is_still_an_error(self, tmp_path: Path) -> None:
+        """Tolerating a vanished DESCENDANT must not tolerate a missing ROOT.
+
+        The root is what the caller asked for; silently covering nothing is
+        the failure mode the whole watch exists to rule out.
+        """
+
+        async def run() -> None:
+            async with follow.follow_dir(tmp_path / "absent") as changed:
+                _ = await anext(changed)
+
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(run())
+
+    def test_a_refused_adoption_is_reported_not_swallowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hitting the watch limit is not "the directory vanished".
+
+        ``_adopt`` treated every OSError as a race, so exhausting
+        ``max_user_watches`` left the new subtree permanently unwatched with
+        nothing said -- the one failure an operator can actually act on.
+        """
+        warned: list[str] = []
+        real_tree = follow._watch_tree
+
+        def refusing(
+            libc: ctypes.CDLL, fd: int, directory: Path, watches: dict[int, Path]
+        ) -> None:
+            if directory.name == "born-later":
+                raise OSError(errno.ENOSPC, "watch limit reached", str(directory))
+            real_tree(libc, fd, directory, watches)
+
+        monkeypatch.setattr(follow, "_watch_tree", refusing)
+        monkeypatch.setattr(follow._logger, "warning", _recording_warning(warned))
+
+        async def run() -> None:
+            async with follow.follow_dir(tmp_path) as changed:
+                await asyncio.sleep(0.1)
+                (tmp_path / "born-later").mkdir()
+                with contextlib.suppress(TimeoutError):
+                    _ = await asyncio.wait_for(anext(changed), 1.0)
+
+        asyncio.run(run())
+        assert any("watch" in w for w in warned), (
+            "a refused watch left the subtree uncovered with nothing logged"
+        )
+
+    def test_a_queue_overflow_rescans_rather_than_losing_the_writes(
+        self, tmp_path: Path
+    ) -> None:
+        """``IN_Q_OVERFLOW`` means events were DROPPED, not that none happened.
+
+        The kernel queues a bounded number of events; past that it discards
+        them and reports one overflow instead. It arrives with ``wd = -1``,
+        which names no watch, so the reader skipped it like any unknown
+        descriptor -- and every write it stood for was lost for good. The only
+        recovery is to re-list the watched tree, which is what a caller cannot
+        do for itself: it never learns anything was dropped.
+        """
+        existing = tmp_path / "already-there.jsonl"
+        _ = existing.write_text("{}\n")
+        watches = {1: tmp_path}
+        overflow = follow._EVENT_HEADER.pack(-1, follow._IN_Q_OVERFLOW, 0, 0)
+
+        changed = follow._read_events(overflow, follow._libc(), -1, watches)
+
+        assert existing in changed, "an overflow reported nothing was dropped"
+
+    def test_a_vanished_adoption_is_not_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The counterpart: a directory that really did vanish is routine.
+
+        Warning on it would make the log useless for the case above.
+        """
+        warned: list[str] = []
+        real_tree = follow._watch_tree
+
+        def vanished(
+            libc: ctypes.CDLL, fd: int, directory: Path, watches: dict[int, Path]
+        ) -> None:
+            if directory.name == "born-later":
+                raise FileNotFoundError(errno.ENOENT, "gone", str(directory))
+            real_tree(libc, fd, directory, watches)
+
+        monkeypatch.setattr(follow, "_watch_tree", vanished)
+        monkeypatch.setattr(follow._logger, "warning", _recording_warning(warned))
+
+        async def run() -> None:
+            async with follow.follow_dir(tmp_path) as changed:
+                await asyncio.sleep(0.1)
+                (tmp_path / "born-later").mkdir()
+                with contextlib.suppress(TimeoutError):
+                    _ = await asyncio.wait_for(anext(changed), 1.0)
+
+        asyncio.run(run())
+        assert warned == []
+
+
 class TestFollowTree:
     """Following every matching file under a set of directories.
 
@@ -800,7 +951,7 @@ class TestFsEventsAdapter:
 
         async def run() -> None:
             async with follow._fsevents_events(
-                cast(Any, observer), (Path("/first"), Path("/second"))
+                observer, (Path("/first"), Path("/second"))
             ):
                 pass
 
@@ -842,9 +993,7 @@ def _run_fsevents(fire: Callable[[_StubObserver], object]) -> list[set[Path]]:
 
     async def run() -> None:
         observer = _StubObserver()
-        async with follow._fsevents_events(
-            cast(Any, observer), (Path("/watched"),)
-        ) as changed:
+        async with follow._fsevents_events(observer, (Path("/watched"),)) as changed:
             collector = asyncio.create_task(_gather(changed, emitted, 1))
             await asyncio.sleep(0.05)
             _ = fire(observer)

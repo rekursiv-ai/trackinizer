@@ -1,50 +1,23 @@
-"""The ``Adapter`` protocol and the ``Event`` record it produces.
+"""The ``Adapter`` protocol each supported CLI implements.
 
-Each supported CLI ships one ``Adapter`` saying where its session log lives
-and how to turn one raw chunk into zero or more ``Event``s. The session
-runner stays CLI-agnostic and drives every adapter through this protocol.
+Each CLI ships one ``Adapter`` saying where its session log lives and how to
+turn one raw chunk into zero or more :class:`Event`s. The session runner stays
+CLI-agnostic and drives every adapter through this protocol.
+
+The :class:`Event` it produces lives one level up, in the run package's own
+``custom_types``: the sinks consume events without ever touching an adapter.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
-from typing import Protocol, cast, runtime_checkable
+from typing import Protocol, runtime_checkable
 
-from trackinizer.types.agent_session_events import (
-    Kind,
-    Message,
-)
+from trackinizer.trax.run.custom_types import Event
 
 
-__all__ = ["Adapter", "Event", "StreamAdapter"]
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class Event:
-    """One parsed turn, in memory, before it becomes an ``EventBody``.
-
-    ``message`` is the typed turn content (a :data:`Message` member) the
-    adapter normalized the CLI's native record into; :attr:`kind` is derived
-    from it. ``model`` / ``timestamp`` are the per-turn envelope the adapter
-    could read, or ``None``.
-    """
-
-    message: Message
-    """The normalized turn content; its class name is the row ``kind``."""
-
-    model: str | None = None
-    """Per-turn model, when the CLI surfaced it."""
-
-    timestamp: datetime | None = None
-    """When the turn happened, on the CLI clock, when available."""
-
-    @property
-    def kind(self) -> Kind:
-        """The row discriminator: the message member's class name."""
-        return cast(Kind, type(self.message).__name__)
+__all__ = ["Adapter", "StreamAdapter"]
 
 
 class Adapter(Protocol):
@@ -81,6 +54,23 @@ class Adapter(Protocol):
         """Whether ``path`` under ``session_dirs()`` is a log this adapter parses.
 
         Usually a check on the suffix (``*.jsonl``) and maybe the parent dir.
+        """
+        ...
+
+    def session_scope(self) -> Path | None:
+        """The subtree THIS run's session files land in, if the CLI has one.
+
+        ``session_dirs()`` is deliberately wide -- a root, so a project
+        directory minted mid-run is still covered. That width is what makes a
+        concurrent run's brand-new file indistinguishable from this run's:
+        both appear under the watched root after it was armed, and a
+        first-seen-wins rule captures whichever writes first.
+
+        A CLI that derives its directory from the working directory (claude
+        encodes the cwd; gemini hashes it) can say so here, and the runner
+        drops anything outside it. ``None`` means the CLI offers no such
+        signal -- codex shards by DATE, which every concurrent run shares --
+        and the run falls back to capturing every new match.
         """
         ...
 

@@ -9,8 +9,8 @@ import json
 import pytest
 
 from trackinizer.trax.run.adapters import gemini
-from trackinizer.trax.run.adapters.base import Event
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
+from trackinizer.trax.run.custom_types import Event
 from trackinizer.types.agent_session_events import (
     AssistantMessage,
     Message,
@@ -297,6 +297,28 @@ class TestGeminiEmitsAppendedSlice:
             "q1",
             "a1",
         ]
+
+    def test_a_keyless_file_still_advances_its_own_cursor(self) -> None:
+        """A body with no ``sessionId`` must not replay its history each change.
+
+        Keyless bodies were given no cursor at all, so every whole-file re-read
+        re-emitted every message it held: a 200-turn session that gains one
+        turn emits 201, and the transcript accumulates the whole history again
+        on each change. Keeping them apart (K6-002) does not require having no
+        cursor -- it requires not SHARING one.
+        """
+        adapter = GeminiAdapter()
+
+        def body(contents: list[str]) -> bytes:
+            return _encode(
+                {"messages": [{"type": "user", "content": c} for c in contents]}
+            )
+
+        first = adapter.parse(body(["a"]), whole_file=True)
+        assert [_text(e.message) for e in first] == ["a"]
+        # The second read gains one message; only that one is new.
+        second = adapter.parse(body(["a", "b"]), whole_file=True)
+        assert [_text(e.message) for e in second] == ["b"]
 
     def test_keyless_files_do_not_share_a_cursor(self) -> None:
         """Two bodies with no ``sessionId`` must not collide on a shared cursor.

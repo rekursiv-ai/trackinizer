@@ -20,13 +20,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 
 import json
 import os
+import re
 
 from trackinizer.lib.custom_json import JSON, json_freeze
-from trackinizer.trax.run.adapters.base import Event
+from trackinizer.trax.run.custom_types import Event
 from trackinizer.types.agent_session_events import (
     AssistantMessage,
     Message,
@@ -49,6 +50,11 @@ from trackinizer.types.agent_session_events import (
 # ``bridge-session``, and ``cost-state`` each reach a captured transcript.
 _SKIP_TYPES = frozenset({"system"})
 
+_NOT_KEPT: Final = re.compile(r"[^A-Za-z0-9-]")
+"""What claude replaces with a dash when naming a project directory after a
+working directory. Everything outside ``[A-Za-z0-9-]``, so ``/home/x/repo``
+becomes ``-home-x-repo``."""
+
 
 class ClaudeAdapter:
     """Reads the ``claude`` CLI's per-project session JSONL files."""
@@ -68,9 +74,12 @@ class ClaudeAdapter:
         return (Path(root) if root else Path.home() / ".claude") / "projects"
 
     def session_dirs(self) -> Iterable[Path]:
-        projects = self._projects_dir
-        if not projects.is_dir():
-            return ()
+        # Returned whether or not it exists yet: the runner MINTS these before
+        # arming its watch (``_prepare_session_dirs``), so an adapter that
+        # withheld an absent root would leave the runner nothing to create --
+        # and a first-ever run, whose root is absent by definition, would arm
+        # no watch and capture nothing while logging nothing.
+        #
         # The projects ROOT, not the per-project subdirectories under it.
         # Claude shards sessions by hashed cwd and mints that directory when
         # it first runs in a workspace -- which, for the run being captured,
@@ -80,10 +89,21 @@ class ClaudeAdapter:
         # say nothing. Watching the root covers every project, present and
         # future; ``matches_session_file`` still scopes capture to a
         # ``<project>/<session>.jsonl``, so nothing extra is swept in.
-        return (projects,)
+        return (self._projects_dir,)
 
     def matches_session_file(self, path: Path) -> bool:
         return path.suffix == ".jsonl" and path.parent.parent == self._projects_dir
+
+    def session_scope(self) -> Path | None:
+        """The one project directory this run's cwd maps to.
+
+        Claude names it after the working directory, replacing every character
+        outside ``[A-Za-z0-9-]`` with a dash. Encoding the RESOLVED path is
+        load-bearing: the CLI encodes what it resolved at startup, so a
+        symlinked or relative cwd would name a directory that never receives a
+        write, and the run would capture nothing.
+        """
+        return self._projects_dir / _NOT_KEPT.sub("-", str(Path.cwd().resolve()))
 
     def session_id_from_path(self, path: Path) -> str | None:
         """Claude's own session id is the ``<session-id>.jsonl`` filename stem.

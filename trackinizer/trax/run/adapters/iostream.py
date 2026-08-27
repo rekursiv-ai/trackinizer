@@ -19,7 +19,7 @@ from typing import Final
 import logging
 import re
 
-from trackinizer.trax.run.adapters.base import Event
+from trackinizer.trax.run.custom_types import Event
 from trackinizer.types.agent_session_events import AssistantMessage
 
 
@@ -68,6 +68,10 @@ class IOStreamAdapter:
     def matches_session_file(self, path: Path) -> bool:
         del path
         return False
+
+    def session_scope(self) -> Path | None:
+        # The capture source is the PTY stream; no session file to scope.
+        return None
 
     def session_id_from_path(self, path: Path) -> str | None:
         del path

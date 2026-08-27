@@ -12,8 +12,8 @@ import json
 if TYPE_CHECKING:
     import pytest
 
-from trackinizer.trax.run.adapters.base import Event
 from trackinizer.trax.run.adapters.codex import CodexAdapter
+from trackinizer.trax.run.custom_types import Event
 from trackinizer.types.agent_session_events import (
     AgentSendMessage,
     AssistantMessage,
