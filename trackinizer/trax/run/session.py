@@ -49,11 +49,12 @@ from trackinizer.lib.posix.follow import follow_dir, follow_tree
 from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.userdirs import state_dir
 from trackinizer.trax.profile import LOCALHOST_FALLBACK_URL
-from trackinizer.trax.run.adapters.base import Adapter, Event, StreamAdapter
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
+from trackinizer.trax.run.adapters.custom_types import Adapter, StreamAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter, LineCapture
+from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.sink import (
     FileSink,
     LockedSink,
@@ -66,6 +67,44 @@ from trackinizer.types.agent_session_events import SlashCommand
 
 
 _logger = logging.getLogger(__name__)
+
+# Cap on stream events buffered between the relay's IO path and the drain
+# thread. At the 16KB/line clamp this bounds worst-case retention to ~128MB;
+# in practice lines are small and 8k events is minutes of typical output.
+_STREAM_QUEUE_MAX: Final = 8_192
+
+# How long to wait before rebuilding a session-log watch that failed. The
+# causes are external and transient (an inotify instance or watch limit hit
+# while another process churns directories), so retrying is right -- but a
+# persistent refusal must not become a hot loop.
+_WATCH_REARM_SEC: Final = 0.2
+
+# How long the runner waits for the drain thread to arm its watch before
+# spawning the CLI anyway. Arming is a walk plus one syscall per directory, so
+# this is orders of magnitude of headroom; it exists so a pathological tree
+# cannot wedge the launch outright.
+_ARM_TIMEOUT_SEC: Final = 10.0
+
+# How long a slash-command or stream event may sit before the drain emits it.
+# The FILES need no interval -- the kernel names them -- but these two queues
+# are filled by other threads and carry no wakeup of their own.
+_QUEUE_DRAIN_SEC: Final = 0.05
+
+# How long each inbound request asks the server to hold. Must not exceed the
+# route's own ceiling, or the server returns first and the extra is wasted.
+# Longer means fewer re-arms; it does not affect delivery latency, which is
+# whenever the message is enqueued.
+_INBOUND_WAIT_SEC: Final = 25.0
+
+# Total time the worker threads get to stop before the runner proceeds to
+# ``sink.close``. Shared across every join rather than granted per thread: two
+# sequential 30s budgets plus the sink's own 5s lock timeout made a wedged exit
+# take 65s, which reads as a hang. One deadline bounds the whole teardown.
+#
+# It has to exceed ``_INBOUND_WAIT_SEC``: the poll thread only re-checks
+# ``stop`` between requests, so on a perfectly healthy exit it can still be
+# parked in one for that long, and a shorter budget would warn every time.
+_JOIN_DEADLINE_SEC: Final = 30.0
 
 
 # Adapter *factories*, not singletons: each run builds a fresh adapter so
@@ -99,7 +138,7 @@ class _Stats:
         return ", ".join(f"{k}={v}" for k, v in sorted(self.counts.items()))
 
 
-@dataclass(slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class RunConfig:
     """Settings for one ``trax run`` invocation."""
 
@@ -209,13 +248,18 @@ def _open_trackinizer_sink(config: RunConfig, adapter: Adapter) -> Sink:
 def _default_out_path(adapter_name: str) -> Path:
     """Default JSONL path under ``state_dir() / "rekursiv-ai" / "trax" / "run"``.
 
-    One file per invocation; the name carries the adapter and start
-    timestamp so concurrent runs don't collide and recent captures are
-    easy to find. The caller creates the parent and writes the file.
+    One file per invocation; the name carries the adapter and start timestamp
+    so recent captures are easy to find. The caller creates the parent and
+    writes the file.
+
+    The pid disambiguates. The timestamp resolves to the second, and the
+    sinks open with ``"a"`` -- two runs of the same CLI launched together (a
+    swarm, a script) then interleave their events into ONE file, each minting
+    ``seq`` from 0, and neither transcript can be recovered from the result.
     """
     stamp = time.strftime("%Y%m%dT%H%M%S")
     base = state_dir() / "rekursiv-ai" / "trax" / "run"
-    return base / f"{stamp}-{adapter_name}.jsonl"
+    return base / f"{stamp}-{os.getpid()}-{adapter_name}.jsonl"
 
 
 def _open_sink(config: RunConfig, adapter: Adapter) -> Sink:
@@ -283,6 +327,12 @@ def _spawn_and_drain(
     # ``maxlen`` drops OLDEST on overflow -- capture prefers a visible gap
     # over runner OOM, matching the inbound queue's stance.
     stream_queue: deque[Event] = deque(maxlen=_STREAM_QUEUE_MAX)
+    # Set once the kernel watch is armed. ``Thread.start`` returns when the
+    # thread is SCHEDULED, not when it has run, and the relay forks the CLI on
+    # the next statement -- so without waiting here the child can write its
+    # first record into an unwatched directory. Codex does exactly that
+    # (``session_meta`` at launch), and no later event ever names it.
+    armed = threading.Event()
     drain_thread = threading.Thread(
         target=partial(
             _drain_filesystem_loop,
@@ -294,10 +344,18 @@ def _spawn_and_drain(
             baseline=baseline,
             slash_queue=slash_queue,
             stream_queue=stream_queue,
+            armed=armed,
         ),
         daemon=True,
     )
     drain_thread.start()
+    if not armed.wait(_ARM_TIMEOUT_SEC):
+        # Spawn anyway: a run that captures nothing still beats one that never
+        # starts. Say so, since the alternative is a silently empty transcript.
+        sys.stderr.write(
+            f"[trax run] session-log watch not ready within {_ARM_TIMEOUT_SEC:.0f}s; "
+            "starting the CLI anyway (early output may not be captured)\n"
+        )
 
     # A stream adapter names no binary of its own: the command is the ``--``
     # args verbatim (``trax run sh -- bash -c '...'``). Its capture source is
@@ -308,6 +366,7 @@ def _spawn_and_drain(
     # POST) would stall terminal mirroring and input delivery.
     stream_capture: LineCapture | None = None
     if isinstance(adapter, StreamAdapter):
+        stream_adapter = adapter
         if not config.cli_args:
             stop.set()
             drain_thread.join(timeout=1.0)
@@ -315,9 +374,9 @@ def _spawn_and_drain(
                 f"trax run {adapter.name}: no command given; "
                 f"usage: trax run {adapter.name} -- CMD [ARGS...]"
             )
-        argv: list[str] = list(config.cli_args)
+        argv = list(config.cli_args)
         stream_capture = LineCapture(
-            partial(_parse_stream_line, adapter),
+            partial(_parse_stream_line, stream_adapter),
             partial(_enqueue_stream_event, stream_queue, stats),
         )
     else:
@@ -356,7 +415,7 @@ def _spawn_and_drain(
     # Poll the server for inbound messages and inject them into the live CLI.
     # Only when syncing: a local-file run has no server session to poll.
     poll_thread: threading.Thread | None = None
-    if config.sync and config.client is not None:
+    if config.syncing and config.client is not None:
         poll_thread = threading.Thread(
             target=partial(
                 _inbound_poll_loop,
@@ -370,69 +429,63 @@ def _spawn_and_drain(
         )
         poll_thread.start()
 
-    rc = relay.run()
-    if stream_capture is not None:
-        # Flush a trailing unterminated line so a child that exited mid-line
-        # still gets its last words captured. The sink is a LockedSink, so
-        # this emit serializes with the drain thread's.
-        stream_capture.close()
+    # The teardown runs even when ``relay.run`` raises. Skipping it would leave
+    # ``stop`` unset and both daemon threads live, and ``run``'s own ``finally``
+    # would then close the sink underneath a drain still emitting into it --
+    # exactly the race ``LockedSink`` and the joins exist to rule out.
+    try:
+        rc = relay.run()
+    finally:
+        if stream_capture is not None:
+            # Flush a trailing unterminated line so a child that exited mid-line
+            # still gets its last words captured. The sink is a LockedSink, so
+            # this emit serializes with the drain thread's.
+            stream_capture.close()
 
-    # Let the drain thread finish pending reads before stopping it.
-    time.sleep(config.quiesce_seconds)
-    stop.set()
-    # Join with a generous bound so the worker threads normally stop before
-    # ``run`` calls ``sink.close``: an unbounded-feeling wait lets a slow drain
-    # (a retrying server POST) finish rather than racing ``close`` (R2R-024).
-    # The watchdog caps the worst case -- a permanently wedged POST -- so the
-    # process can never hang forever; the LockedSink's ``close`` then acquires
-    # its lock with a short timeout and skips locked teardown rather than
-    # deadlocking against a straggler that outlived the watchdog.
-    _join_with_watchdog(drain_thread, "drain")
-    if poll_thread is not None:
-        _join_with_watchdog(poll_thread, "inbound poll")
+        # Let the drain thread finish pending reads before stopping it.
+        time.sleep(config.quiesce_seconds)
+        stop.set()
+        # One deadline for the whole teardown: the workers normally stop well
+        # inside it, so a slow drain (a retrying server POST) finishes rather
+        # than racing ``sink.close`` (R2R-024), while a permanently wedged POST
+        # cannot hang the process. The LockedSink's ``close`` then acquires its
+        # lock with a short timeout and skips locked teardown rather than
+        # deadlocking against a straggler that outlived the deadline.
+        deadline = time.monotonic() + _JOIN_DEADLINE_SEC
+        _join_with_watchdog(drain_thread, "drain", deadline=deadline)
+        if poll_thread is not None:
+            _join_with_watchdog(poll_thread, "inbound poll", deadline=deadline)
     return rc
 
 
 def _join_with_watchdog(
-    thread: threading.Thread, name: str, *, watchdog_sec: float = 30.0
+    thread: threading.Thread, name: str, *, deadline: float
 ) -> None:
-    """Join ``thread`` with a generous bound, warning if it outlives the watchdog.
+    """Join ``thread`` until ``deadline``, warning if it outlives it.
 
     A too-short ``join`` made thread ownership non-binding, so ``sink.close``
-    could race an in-flight ``emit`` / ``flush`` (R2R-024). This waits up to
-    ``watchdog_sec`` so the worker normally stops first, then logs and returns if
-    the thread is still alive (a wedged blocking call) rather than hanging ``trax
-    run`` forever; ``LockedSink.close`` then declines to block on the lock that
-    straggler still holds. The default is generous enough that a normal in-flight
-    flush (a retrying client POST) completes, but bounded so a permanently wedged
-    network call cannot hang the process.
+    could race an in-flight ``emit`` / ``flush`` (R2R-024). Waiting lets the
+    worker normally stop first; a thread still alive at the deadline (a wedged
+    blocking call) is logged and left rather than hanging ``trax run`` forever,
+    and ``LockedSink.close`` then declines to block on the lock that straggler
+    still holds.
+
+    Args:
+      thread: The worker to join.
+      name: Its name, for the warning.
+      deadline: A ``time.monotonic`` instant. Shared by every join in one
+        teardown, so the total wait is bounded rather than per-thread.
+
     """
-    thread.join(timeout=watchdog_sec)
+    thread.join(timeout=max(0.0, deadline - time.monotonic()))
     if thread.is_alive():
         sys.stderr.write(
-            f"[trax run] {name} thread did not stop within "
-            f"{watchdog_sec:.0f}s; proceeding to close\n"
+            f"[trax run] {name} thread did not stop before the teardown "
+            "deadline; proceeding to close\n"
         )
 
 
-# Cap on stream events buffered between the relay's IO path and the drain
-# thread. At the 16KB/line clamp this bounds worst-case retention to ~128MB;
-# in practice lines are small and 8k events is minutes of typical output.
-_STREAM_QUEUE_MAX: Final = 8_192
-
-# How long a slash-command or stream event may sit before the drain emits it.
-# The FILES need no interval -- the kernel names them -- but these two queues
-# are filled by other threads and carry no wakeup of their own.
-_QUEUE_DRAIN_SEC: Final = 0.05
-
-# How long each inbound request asks the server to hold. Must not exceed the
-# route's own ceiling, or the server returns first and the extra is wasted.
-# Longer means fewer re-arms; it does not affect delivery latency, which is
-# whenever the message is enqueued.
-_INBOUND_WAIT_SEC: Final = 25.0
-
-
-def _parse_stream_line(adapter: Adapter, raw: bytes) -> Iterable[Event]:
+def _parse_stream_line(adapter: StreamAdapter, raw: bytes) -> Iterable[Event]:
     """Parse one framed output line through the stream adapter."""
     return adapter.parse(raw, whole_file=False)
 
@@ -492,10 +545,20 @@ def _inbound_poll_loop(
                 break
             continue
         try:
-            for text, source, room in client.drain_inbound(
-                session_id, wait_sec=wait_sec
-            ):
-                relay.submit(_render_inbound(text, source, room, stream=stream))
+            batch = client.drain_inbound(session_id, wait_sec=wait_sec)
+            # Each submission is guarded on its own. ``drain_inbound`` CONSUMES
+            # server-side, so the batch is already gone from the queue: one
+            # message that cannot be typed must not take its siblings with it,
+            # since no later drain will ever return them again.
+            for text, source, room in batch:
+                try:
+                    relay.submit(_render_inbound(text, source, room, stream=stream))
+                except Exception:
+                    _logger.warning(
+                        "trax run: could not deliver an inbound message; "
+                        "continuing with the rest of the batch",
+                        exc_info=True,
+                    )
             warned = False  # recovered; allow a fresh warning next outage
             # No sleep: the request itself was the wait, so re-arming
             # immediately is what keeps the channel continuously parked.
@@ -537,7 +600,9 @@ def _render_inbound(
     ``agent_message`` line: the remaining fields would spend the model's
     context on metadata it can fetch on demand (the line itself names the
     ``trax`` command). An IO-stream session (``stream=True``) receives the
-    raw JSON and parses it itself. Only the route-attested ``trackinizer``
+    whole envelope to parse itself -- behind the same room/sender prefix as
+    any other message, since a line-reading child needs to know who sent it
+    just as much. Only the route-attested ``trackinizer``
     sender unwraps -- ``source`` is stamped server-side from the principal,
     so another sender's JSON-looking text renders as a plain message.
     """
@@ -624,6 +689,7 @@ def _drain_filesystem_loop(
     baseline: frozenset[Path],
     slash_queue: deque[tuple[SlashCommand, datetime]],
     stream_queue: deque[Event] | None = None,
+    armed: threading.Event | None = None,
 ) -> None:
     """Watch the adapter's session dirs; emit events as lines are appended.
 
@@ -645,6 +711,10 @@ def _drain_filesystem_loop(
     the sink (or block the relay on a slow server POST). Neither has a
     filesystem event to ride on, so a short wait bounds how long a queued
     item can sit -- that wait is for the QUEUES, never for the files.
+
+    ``armed`` is set once the kernel watch exists, so the caller can hold the
+    child's spawn until then; a run with no filesystem source sets it too,
+    since there is nothing to wait for.
     """
     asyncio.run(
         _drain_until_stopped(
@@ -656,6 +726,7 @@ def _drain_filesystem_loop(
             baseline=baseline,
             slash_queue=slash_queue,
             stream_queue=stream_queue,
+            armed=armed,
         )
     )
 
@@ -671,6 +742,7 @@ async def _drain_until_stopped(
     slash_queue: deque[tuple[SlashCommand, datetime]],
     stream_queue: deque[Event] | None,
     replay: bool = False,
+    armed: threading.Event | None = None,
 ) -> None:
     """Follow the session logs and drain the queues until ``stop``."""
     watched = tuple(d for d in adapter.session_dirs() if d.is_dir())
@@ -681,11 +753,18 @@ async def _drain_until_stopped(
     seen: set[str] = set()
     follower = (
         asyncio.create_task(
-            _follow_session_files(adapter, watched, baseline, lines, replay=replay)
+            _follow_session_files(
+                adapter, watched, baseline, lines, replay=replay, armed=armed
+            )
         )
         if watched
         else None
     )
+    if follower is None and armed is not None:
+        # No filesystem source (a stream adapter, or no directory exists):
+        # nothing will ever arm, so release the caller rather than make it
+        # wait out the timeout before every such run.
+        armed.set()
     try:
         while not stop.is_set():
             await _drain_queues(
@@ -742,20 +821,79 @@ async def _follow_session_files(
     lines: asyncio.Queue[tuple[Path, bytes]],
     *,
     replay: bool = False,
+    armed: threading.Event | None = None,
 ) -> None:
     """Feed every line this run's session files gain onto ``lines``.
 
-    Errors are swallowed and logged, like every other drain failure: a watch
-    that dies must not take capture with it silently.
+    Errors are logged and the watch is REBUILT rather than abandoned: the
+    causes are transient and external (an inotify instance or watch limit hit
+    while another process churns directories), and a follower that returned
+    would leave the drain loop ticking against a queue nothing fills -- capture
+    dead for the rest of the run, with one log line an hour earlier as the only
+    sign.
     """
+    # The subtree this run's own files land in, when the CLI derives one from
+    # the working directory. Resolved ONCE: a wrapped CLI cannot change the
+    # runner's cwd, and re-deriving per candidate would pay a ``resolve`` on
+    # every event.
+    scope = adapter.session_scope()
 
     def mine(path: Path) -> bool:
-        """Whether this run should capture ``path``."""
-        return path not in baseline and adapter.matches_session_file(path)
+        """Whether this run should capture ``path``.
+
+        Three conditions, and the third is what makes ownership more than a
+        timing accident. ``baseline`` excludes what already existed and
+        ``matches_session_file`` excludes what is not a transcript, but
+        between them any NEW match qualifies -- including one a concurrent run
+        in another workspace just created, since both appear under the same
+        watched root. ``scope`` is the CLI's own answer to "which of these is
+        mine"; adapters that cannot tell return ``None`` and this stays off.
+        """
+        if path in baseline or not adapter.matches_session_file(path):
+            return False
+        return scope is None or scope in path.parents
 
     # Digest of the body last queued per whole-file session, so one rewrite
     # delivered as two wakes is not read as two turns (see ``_queue_body``).
+    # Held ACROSS rearms: a rebuilt watch re-reads bodies it already queued,
+    # and the digests are what keep those from becoming duplicate turns.
     bodies: dict[Path, str] = {}
+    rearming = False
+    while True:
+        # A REARM always replays. A fresh watch starts each file it finds at
+        # its current end, so this run's own session file -- written during the
+        # outage, and excluded from ``baseline`` -- would resume past every
+        # line it already holds and those turns would be lost with nothing
+        # said. Replaying re-reads them: ``_already_captured`` drops the ones
+        # carrying an id, and a duplicated turn is the survivable direction to
+        # err in where it does not. ``mine`` still excludes ``baseline``, so a
+        # replay never reaches another session's transcript.
+        await _watch_session_files(
+            adapter,
+            watched,
+            lines,
+            bodies,
+            mine,
+            replay=replay or rearming,
+            armed=armed,
+        )
+        rearming = True
+        # Only a failure returns; a healthy watch iterates until cancelled.
+        # Back off so a persistent refusal is not a hot retry loop.
+        await asyncio.sleep(_WATCH_REARM_SEC)
+
+
+async def _watch_session_files(
+    adapter: Adapter,
+    watched: tuple[Path, ...],
+    lines: asyncio.Queue[tuple[Path, bytes]],
+    bodies: dict[Path, str],
+    mine: Callable[[Path], bool],
+    *,
+    replay: bool,
+    armed: threading.Event | None = None,
+) -> None:
+    """Arm one watch and feed it until it fails; the caller rearms."""
     try:
         if adapter.whole_file:
             # Gemini rewrites ONE json object in place, so a line is a fragment
@@ -763,6 +901,8 @@ async def _follow_session_files(
             # change instead; the watch says which file changed, which is all
             # the old poll's ``(size, mtime)`` stamp was determining.
             async with follow_dir(*watched) as changed:
+                if armed is not None:
+                    armed.set()
                 if replay:
                     # A dry run replays what is already on disk. Nothing is
                     # going to change those files, so waiting for an event
@@ -775,12 +915,23 @@ async def _follow_session_files(
                     for path in sorted(p for p in paths if mine(p)):
                         _queue_body(path, lines, bodies)
             return
-        async for path, line in follow_tree(*watched, match=mine, replay=replay):
+        async for path, line in follow_tree(
+            *watched,
+            match=mine,
+            replay=replay,
+            on_armed=None if armed is None else armed.set,
+        ):
             lines.put_nowait((path, line.encode()))
     except asyncio.CancelledError:
         raise
     except Exception:
         _logger.warning("trax run: session-log watch failed", exc_info=True)
+    finally:
+        # A watch that never armed must not leave the spawn waiting out the
+        # full timeout: the failure is already logged, and the run proceeds
+        # uncaptured either way.
+        if armed is not None:
+            armed.set()
 
 
 def _queue_body(
@@ -1159,16 +1310,19 @@ def main(
         cli_argv = ()
     parser = build_parser()
     args = parser.parse_args(trax_argv)
-    config = RunConfig(
-        cli_name=args.cli,
-        cli_args=tuple(cli_argv),
-        actor=args.actor or os.environ.get("AGENTNAME", "Agent"),
-        rooms=tuple(args.rooms or ()),
-        out_path=args.out,
-        verbose=args.verbose,
-        dry_run=args.dry_run,
-        sync=args.sync,
+    # ``syncing`` off the parsed args, not off a half-built config: the client
+    # is then an ordinary constructor argument and ``RunConfig`` stays frozen.
+    syncing = args.sync and args.out is None and not args.dry_run
+    return run(
+        RunConfig(
+            cli_name=args.cli,
+            cli_args=tuple(cli_argv),
+            actor=args.actor or os.environ.get("AGENTNAME", "Agent"),
+            rooms=tuple(args.rooms or ()),
+            out_path=args.out,
+            verbose=args.verbose,
+            dry_run=args.dry_run,
+            sync=args.sync,
+            client=client_factory() if syncing and client_factory else None,
+        )
     )
-    if config.syncing and client_factory:
-        config.client = client_factory()
-    return run(config)

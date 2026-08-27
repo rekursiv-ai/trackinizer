@@ -40,12 +40,13 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import IO, Any, Final, cast
+from typing import IO, Final, Protocol, cast
 
 import asyncio
 import ctypes
 import ctypes.util
 import errno
+import logging
 import os
 import platform
 import struct
@@ -54,6 +55,14 @@ from wrapt import lazy_import
 
 
 __all__ = ["follow_dir", "follow_file", "follow_tree"]
+
+
+_logger = logging.getLogger(__name__)
+
+# How long to wait for watchdog's observer thread to exit on teardown. Bounded
+# because it is a plain thread, not a daemon: a wedged join would hang the
+# caller's whole process on exit.
+_OBSERVER_JOIN_SEC: Final = 5.0
 
 
 async def follow_file(path: Path, *, replay: bool = False) -> AsyncIterator[str]:
@@ -67,6 +76,11 @@ async def follow_file(path: Path, *, replay: bool = False) -> AsyncIterator[str]
 
     Yields:
       line: One line, without its terminator.
+
+    Raises:
+      FileNotFoundError: ``path.parent`` does not exist. The FILE may be
+        absent -- that is the point -- but its directory is what gets watched.
+      NotImplementedError: The platform has no supported watch mechanism.
 
     """
     state = _Cursor(path, offset=0 if replay else _size(path))
@@ -87,6 +101,7 @@ async def follow_tree(
     *directories: Path,
     match: Callable[[Path], bool],
     replay: bool = False,
+    on_armed: Callable[[], None] | None = None,
 ) -> AsyncIterator[tuple[Path, str]]:
     """Yield each line gained by any matching file under ``directories``.
 
@@ -101,6 +116,11 @@ async def follow_tree(
       replay: Whether to yield what matching files already hold. Off by
         default: a file present before the follow began belongs to an earlier
         session, and replaying it would re-capture that session's history.
+      on_armed: Called once the watch is registered, before anything is
+        yielded. A caller that STARTS the writer -- spawning the process whose
+        output it is following -- has no other way to know when doing so is
+        safe: arming happens on the first ``anext``, which it cannot await
+        before the writer exists.
 
     Yields:
       line: The file it came from, and one line without its terminator.
@@ -125,6 +145,8 @@ async def follow_tree(
         if path.is_file() and match(path)
     }
     async with follow_dir(*directories) as changed:
+        if on_armed is not None:
+            on_armed()
         if replay:
             for path in sorted(existing):
                 cursors[path] = _Cursor(path, offset=0)
@@ -255,6 +277,15 @@ _IN_ISDIR: Final = 0x4000_0000
 """Set on an event naming a directory rather than a file; the only way to
 know a new entry needs a watch of its own."""
 
+_IN_Q_OVERFLOW: Final = 0x0000_4000
+"""The kernel's event queue filled and it DISCARDED events.
+
+Unsolicited -- it is not in the requested mask -- and it arrives with
+``wd = -1``, naming no watch. Whatever it stands for is gone: no later event
+repeats a dropped one, and the caller cannot detect the loss itself. The only
+recovery is to re-list every watched directory, which is what the reader does
+on seeing it."""
+
 _WATCH_MASK: Final = _IN_MODIFY | _IN_CREATE | _IN_MOVED_TO
 
 _EVENT_HEADER: Final = struct.Struct("iIII")
@@ -338,7 +369,33 @@ does not exist. The proxy defers that failure to the one call that needs it.
 """
 
 
-def _fsevents_observer() -> object:
+class _Observer(Protocol):
+    """The four methods this module calls on a watchdog observer.
+
+    Named rather than cast to ``Any``: watchdog ships no types reachable here
+    (its FSEvents module does not import off macOS), and a Protocol keeps the
+    call sites checked -- a renamed ``schedule`` is a type error instead of an
+    AttributeError on a Mac nobody runs the tests on.
+    """
+
+    def schedule(self, handler: object, path: str, *, recursive: bool) -> None:
+        """Watch one directory tree, dispatching events to ``handler``."""
+        ...
+
+    def start(self) -> None:
+        """Begin dispatching on the observer's own thread."""
+        ...
+
+    def stop(self) -> None:
+        """Ask the observer thread to finish."""
+        ...
+
+    def join(self, timeout: float | None = None) -> None:
+        """Wait for the observer thread to exit."""
+        ...
+
+
+def _fsevents_observer() -> _Observer:
     """Build watchdog's FSEvents observer.
 
     Raises:
@@ -347,7 +404,7 @@ def _fsevents_observer() -> object:
 
     """
     try:
-        return cast("Any", _fsevents).FSEventsObserver()
+        return cast("_Observer", _fsevents.FSEventsObserver())
     except ImportError as err:
         raise NotImplementedError(
             "watchdog's FSEvents backend is unavailable; "
@@ -357,7 +414,7 @@ def _fsevents_observer() -> object:
 
 @asynccontextmanager
 async def _fsevents_events(
-    observer: object, directories: tuple[Path, ...]
+    observer: _Observer, directories: tuple[Path, ...]
 ) -> AsyncGenerator[AsyncIterator[set[Path]]]:
     """Adapt a watchdog observer to the changed-path iterator this module yields.
 
@@ -379,15 +436,14 @@ async def _fsevents_events(
                 loop.call_soon_threadsafe(queue.put_nowait, Path(os.fsdecode(raw)))
 
     handler = _FsEventsHandler(deliver)
-    scheduler = cast("Any", observer)
     for directory in directories:
-        scheduler.schedule(handler, str(directory), recursive=True)
-    scheduler.start()
+        observer.schedule(handler, str(directory), recursive=True)
+    observer.start()
     try:
         yield _drain_queue(queue)
     finally:
-        scheduler.stop()
-        await asyncio.to_thread(scheduler.join, 5.0)
+        observer.stop()
+        await asyncio.to_thread(observer.join, _OBSERVER_JOIN_SEC)
 
 
 class _FsEventsHandler:
@@ -453,11 +509,28 @@ def _inotify_fd(*directories: Path) -> tuple[int, dict[int, Path]]:
 def _watch_tree(
     libc: ctypes.CDLL, fd: int, directory: Path, watches: dict[int, Path]
 ) -> None:
-    """Watch ``directory`` and every subdirectory below it."""
+    """Watch ``directory`` and every subdirectory below it.
+
+    The ROOT's failure propagates -- it is what the caller asked for, and a
+    watch silently covering nothing is the fault this module exists to rule
+    out. A DESCENDANT's does not: ``rglob`` lists the tree and the watches are
+    added after, so anything short-lived under it is already gone by its turn.
+    Failing the whole call there would close the descriptor and lose the root
+    watch too, disabling capture over a directory nobody needed.
+    """
     _add_watch(libc, fd, directory, watches)
     for path in directory.rglob("*"):
-        if path.is_dir():
+        if not path.is_dir():
+            continue
+        try:
             _add_watch(libc, fd, path, watches)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # Not a race: the kernel refused (typically ``max_user_watches``).
+            # The subtree is uncovered for the rest of the run and only an
+            # operator can fix it, so say so rather than continue silently.
+            _logger.warning("inotify refused a watch on %s", path, exc_info=True)
 
 
 def _add_watch(
@@ -506,16 +579,23 @@ def _resolve(ready: asyncio.Future[None]) -> None:
 
 
 def _read_inotify(libc: ctypes.CDLL, fd: int, watches: dict[int, Path]) -> set[Path]:
-    """Read every queued event; return the paths they name.
+    """Read every queued event; return the paths they name."""
+    try:
+        raw = os.read(fd, 64 * 1024)
+    except BlockingIOError:
+        return set()
+    return _read_events(raw, libc, fd, watches)
+
+
+def _read_events(
+    raw: bytes, libc: ctypes.CDLL, fd: int, watches: dict[int, Path]
+) -> set[Path]:
+    """Decode one read's worth of ``struct inotify_event``s into paths.
 
     A new subdirectory is watched as it is seen, and then LISTED: a file
     written into it before that watch existed is named by no later event, so
     the listing is the only thing that can report it (``inotify(7)``).
     """
-    try:
-        raw = os.read(fd, 64 * 1024)
-    except BlockingIOError:
-        return set()
     changed: set[Path] = set()
     offset = 0
     while offset < len(raw):
@@ -523,6 +603,15 @@ def _read_inotify(libc: ctypes.CDLL, fd: int, watches: dict[int, Path]) -> set[P
         offset += _EVENT_HEADER.size
         name = raw[offset : offset + length].split(b"\0", 1)[0]
         offset += length
+        if mask & _IN_Q_OVERFLOW:
+            # Events were discarded and are named by nothing that follows. Fall
+            # back to listing what is watched, which is the only way anything
+            # dropped can still be seen. Checked BEFORE the descriptor lookup:
+            # an overflow carries ``wd = -1``, so the unknown-watch skip below
+            # would swallow it.
+            _logger.warning("inotify queue overflowed; rescanning watched trees")
+            changed |= _rescan(watches)
+            continue
         if mask & _IN_IGNORED:
             # The kernel may hand this number to a later directory.
             _ = watches.pop(descriptor, None)
@@ -538,6 +627,22 @@ def _read_inotify(libc: ctypes.CDLL, fd: int, watches: dict[int, Path]) -> set[P
     return changed
 
 
+def _rescan(watches: dict[int, Path]) -> set[Path]:
+    """Every file directly under a watched directory.
+
+    Non-recursive on purpose: each subdirectory of a watched tree carries its
+    own watch, so it is already in ``watches`` and listed in its own right.
+    """
+    found: set[Path] = set()
+    for directory in watches.values():
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            continue
+        found |= {path for path in entries if path.is_file()}
+    return found
+
+
 def _adopt(
     libc: ctypes.CDLL, fd: int, directory: Path, watches: dict[int, Path]
 ) -> set[Path]:
@@ -549,9 +654,14 @@ def _adopt(
     """
     try:
         _watch_tree(libc, fd, directory, watches)
+    except FileNotFoundError:
+        # It vanished as fast as it appeared; nothing under it to report.
+        return set()
     except OSError:
-        # It vanished as fast as it appeared, or the kernel refused; either
-        # way there is nothing under it to report.
+        # The kernel refused (typically ``max_user_watches``). Unlike a
+        # vanished directory this one still exists and will keep receiving
+        # writes nobody watches, for the life of the run.
+        _logger.warning("inotify refused a watch on %s", directory, exc_info=True)
         return set()
     found: set[Path] = set()
     for path in directory.rglob("*"):

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from trackinizer.trax.run.adapters.base import Event
 from trackinizer.trax.run.adapters.iostream import (
     _MAX_LINE_BYTES,
     IOStreamAdapter,
     LineCapture,
 )
+from trackinizer.trax.run.custom_types import Event
 from trackinizer.types.agent_session_events import AssistantMessage
 
 

@@ -29,7 +29,7 @@ import json
 import os
 
 from trackinizer.lib.custom_json import JSON, json_freeze
-from trackinizer.trax.run.adapters.base import Event
+from trackinizer.trax.run.custom_types import Event
 from trackinizer.types.agent_session_events import (
     AgentSendMessage,
     AssistantMessage,
@@ -82,6 +82,13 @@ class CodexAdapter:
             and path.name.startswith("rollout-")
             and self._sessions_dir in path.parents
         )
+
+    def session_scope(self) -> Path | None:
+        # Codex shards by DATE, not by workspace, so every concurrent run
+        # writes into the same ``<Y>/<M>/<D>/`` directory. There is nothing in
+        # the layout that distinguishes this run's rollout from a sibling's,
+        # so the runner keeps its capture-every-new-match fallback.
+        return None
 
     def session_id_from_path(self, path: Path) -> str | None:
         # Codex's ``rollout-<ts>-<uuid>.jsonl`` has no single stable id this

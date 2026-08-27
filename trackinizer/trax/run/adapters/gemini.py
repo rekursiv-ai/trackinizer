@@ -6,8 +6,8 @@ Unlike the others, the session is one JSON object that gemini rewrites in
 place on every update, so there are no appended lines to follow.
 
 The runner hands the whole file body to ``parse`` on each change (the adapter
-declares ``whole_file = True``); this adapter parses it and normalizes the
-most recent message into a typed :data:`Message`.
+declares ``whole_file = True``); this adapter parses it and normalizes every
+message appended since its last read into a typed :data:`Message`.
 
 See ``docs/cli-scraping-investigation.md`` for the empirical layout.
 """
@@ -18,10 +18,11 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import cast
 
+import hashlib
 import json
 
 from trackinizer.lib.custom_json import JSON, json_freeze
-from trackinizer.trax.run.adapters.base import Event
+from trackinizer.trax.run.custom_types import Event
 from trackinizer.types.agent_session_events import (
     AssistantMessage,
     Message,
@@ -43,8 +44,9 @@ class GeminiAdapter:
     The cursor is keyed by the body's ``sessionId`` (every gemini session file
     stamps one), not a single counter: the runner reuses ONE adapter across
     every matching session file, so a per-adapter counter would carry one
-    file's count into the next and drop the second file's turns (#498). Each
-    run builds a fresh adapter, so the cursors never leak across runs.
+    file's count into the next and drop the second file's turns (#498). A body
+    carrying no id is keyed by its first message instead (:func:`_keyless_id`).
+    Each run builds a fresh adapter, so the cursors never leak across runs.
     """
 
     name: str = "gemini"
@@ -63,9 +65,10 @@ class GeminiAdapter:
         return Path.home() / ".gemini" / "tmp"
 
     def session_dirs(self) -> Iterable[Path]:
-        tmp = self._tmp_dir
-        if not tmp.is_dir():
-            return ()
+        # Returned whether or not it exists yet: the runner MINTS these before
+        # arming its watch (see ClaudeAdapter for why withholding an absent
+        # root silently disables capture on a first-ever run).
+        #
         # The tmp ROOT, not each project's ``chats`` leaf. Gemini shards by
         # project sha and mints ``<sha>/chats`` when it first runs in a
         # workspace -- after the watch is armed for the run being captured. A
@@ -73,7 +76,7 @@ class GeminiAdapter:
         # sibling, so the run would capture nothing silently.
         # ``matches_session_file`` still requires a ``chats/session-*.json``,
         # so widening the watch does not widen what is captured.
-        return (tmp,)
+        return (self._tmp_dir,)
 
     def matches_session_file(self, path: Path) -> bool:
         return (
@@ -81,6 +84,18 @@ class GeminiAdapter:
             and path.parent.name == "chats"
             and path.name.startswith("session-")
         )
+
+    def session_scope(self) -> Path | None:
+        """The one project directory this run's cwd hashes to.
+
+        Gemini shards ``tmp/`` by the sha256 of the working directory, so the
+        run's own subtree is derivable and a concurrent run in another
+        workspace lands under a different hash. The path is RESOLVED first:
+        the CLI hashes what it resolved at startup, so a symlinked cwd would
+        name a directory that never receives a write.
+        """
+        digest = hashlib.sha256(str(Path.cwd().resolve()).encode()).hexdigest()
+        return self._tmp_dir / digest
 
     def session_id_from_path(self, path: Path) -> str | None:
         # Gemini's ``session-<id>.json`` stem carries an id, but resume
@@ -113,22 +128,11 @@ class GeminiAdapter:
         # files keeps their counts apart (#498). A shorter list than already
         # emitted means the file rotated or was rewritten from scratch; restart
         # from its start so nothing is silently skipped (REV-004).
-        #
-        # A body with no ``sessionId`` (malformed / pre-id file) carries no
-        # stable per-file identity, so it cannot share the keyed cursor map: two
-        # keyless files would both key ``""`` and the second's turns would be
-        # dropped against the first's count (K6-002). Such a body emits every
-        # message it carries -- the runner only re-parses a whole-file on a
-        # ``(size, mtime)`` change, so a keyless file is re-emitted only when it
-        # actually changes, never per idle poll.
-        session_id = _str(obj.get("sessionId"))
-        if not session_id:
-            appended = messages
-        else:
-            emitted = self._emitted.get(session_id, 0)
-            if len(messages) < emitted:
-                emitted = 0
-            appended = messages[emitted:]
+        session_id = _str(obj.get("sessionId")) or _keyless_id(messages)
+        emitted = self._emitted.get(session_id, 0)
+        if len(messages) < emitted:
+            emitted = 0
+        appended = messages[emitted:]
         events: list[Event] = []
         for raw_msg in appended:
             if not isinstance(raw_msg, Mapping):
@@ -144,9 +148,26 @@ class GeminiAdapter:
         # runner's ``_process_chunk``, which then re-feeds this same body on the
         # next wake; a cursor advanced first would report nothing new and the
         # slice would be lost for the whole run.
-        if session_id:
-            self._emitted[session_id] = len(messages)
+        self._emitted[session_id] = len(messages)
         return tuple(events)
+
+
+def _keyless_id(messages: Sequence[object]) -> str:
+    """A stand-in cursor key for a body carrying no ``sessionId``.
+
+    Such a body (malformed, or a pre-id gemini file) still needs a cursor, or
+    every re-read of a file re-emits its whole history -- a 200-turn session
+    that gains one turn emits 201 (D2). But keying them all as ``""`` is worse:
+    two keyless files then share one count and the second file's opening turns
+    are dropped against the first's (K6-002).
+
+    The FIRST message is the discriminator. Gemini appends, so a file's opening
+    turn is fixed for its lifetime while its length is not, which is exactly
+    what a per-file identity needs. Two files whose first turns are identical
+    still collide, but they then share a cursor that advances the same way --
+    the failure is a duplicate, not a silent drop.
+    """
+    return hashlib.sha256(repr(messages[0]).encode()).hexdigest()
 
 
 def _to_message(msg: JSON) -> Message | None:

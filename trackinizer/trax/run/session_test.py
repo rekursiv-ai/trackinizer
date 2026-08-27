@@ -16,17 +16,20 @@ from typing import Any, cast, override
 import inspect
 import json
 import os
+import shutil
 import threading
 import time
 import uuid
 
 import pytest
 
+from trackinizer.lib.posix.follow import follow_tree
 from trackinizer.trax.run import session as session_mod
-from trackinizer.trax.run.adapters.base import Adapter, Event
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
+from trackinizer.trax.run.adapters.custom_types import Adapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
+from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.session import (
     RunConfig,
     _drain_filesystem_loop,
@@ -100,6 +103,9 @@ class _FakeAdapter:
     def matches_session_file(self, path: Path) -> bool:
         return path.suffix == ".jsonl"
 
+    def session_scope(self) -> Path | None:
+        return None
+
     def session_id_from_path(self, path: Path) -> str | None:
         del path
         return None
@@ -128,6 +134,9 @@ class _WholeFileAdapter:
 
     def matches_session_file(self, path: Path) -> bool:
         return path.suffix == ".json"
+
+    def session_scope(self) -> Path | None:
+        return None
 
     def session_id_from_path(self, path: Path) -> str | None:
         del path
@@ -158,6 +167,9 @@ class _PoisonAdapter:
     def matches_session_file(self, path: Path) -> bool:
         return path.suffix == ".jsonl"
 
+    def session_scope(self) -> Path | None:
+        return None
+
     def session_id_from_path(self, path: Path) -> str | None:
         del path
         return None
@@ -167,6 +179,14 @@ class _PoisonAdapter:
         if raw == b"boom":
             raise ValueError("parser blew up")
         return (Event(message=UserMessage(text=raw.decode())),)
+
+
+def _always_found(
+    cmd: str, mode: int = os.F_OK | os.X_OK, path: str | None = None
+) -> str:
+    """A ``shutil.which`` that resolves anything: the binary is never exec'd."""
+    del mode, path
+    return f"/bin/{cmd}"
 
 
 def _write(path: Path, lines: int) -> None:
@@ -280,6 +300,46 @@ class TestSessionScoping:
         assert sink.events == []
         assert stats.counts == {}
 
+    def test_a_concurrent_run_starting_later_is_not_drained(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sibling run's file, created AFTER the watch, must not be captured.
+
+        ``baseline`` only excludes what already existed, so ownership rests on
+        a timing accident: nothing distinguishes this run's new file from a
+        concurrent run's. Two agents in different workspaces then write each
+        other's turns into both transcripts. Claude names its project
+        directory after the cwd, so the run's own workspace is what scopes it.
+        """
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        mine = tmp_path / "projects" / "-mine"
+        theirs = tmp_path / "projects" / "-theirs"
+        mine.mkdir(parents=True)
+        theirs.mkdir()
+
+        def record(text: str) -> str:
+            return (
+                json.dumps(
+                    {
+                        "type": "user",
+                        "uuid": text,
+                        "message": {"role": "user", "content": text},
+                    }
+                )
+                + "\n"
+            )
+
+        def write() -> None:
+            _ = (theirs / "other.jsonl").write_text(record("theirs"))
+            _ = (mine / "own.jsonl").write_text(record("mine"))
+
+        adapter = ClaudeAdapter()
+        monkeypatch.setattr(adapter, "session_scope", lambda: mine)
+        _stats, sink = _drain_once(cast(Adapter, adapter), tmp_path, write)
+
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        assert texts == ["mine"], f"a concurrent run's file was swept in: {texts}"
+
     def test_this_runs_own_file_is_drained(self, tmp_path: Path) -> None:
         """A file created after the watch is armed IS this run's."""
         adapter = _FakeAdapter(tmp_path)
@@ -347,9 +407,12 @@ class TestProjectDirectoryBornMidRun:
         # One project from an earlier run: what ``session_dirs()`` can see at
         # arming time. The run under test happens in a DIFFERENT workspace.
         (projects / "-existing-workspace").mkdir(parents=True)
+        # The directory claude will mint for THIS run's cwd -- the adapter
+        # names it, so the test cannot drift from the encoding.
+        fresh = ClaudeAdapter().session_scope()
+        assert fresh is not None
 
         def write() -> None:
-            fresh = projects / "-brand-new-workspace"
             fresh.mkdir()
             (fresh / "abc-123.jsonl").write_text(
                 json.dumps(
@@ -373,9 +436,13 @@ class TestProjectDirectoryBornMidRun:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         tmp = tmp_path / ".gemini" / "tmp"
         (tmp / "existingsha" / "chats").mkdir(parents=True)
+        # The project directory gemini will hash THIS run's cwd to; asking the
+        # adapter keeps the test from re-deriving the hashing scheme.
+        scope = GeminiAdapter().session_scope()
+        assert scope is not None
 
         def write() -> None:
-            chats = tmp / "brandnewsha" / "chats"
+            chats = scope / "chats"
             chats.mkdir(parents=True)
             (chats / "session-1.json").write_text(
                 json.dumps(
@@ -391,6 +458,34 @@ class TestProjectDirectoryBornMidRun:
         texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
         assert texts == ["captured"], "a new project directory captured nothing"
 
+    def test_a_missing_claude_projects_root_is_created_before_the_watch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``_prepare_session_dirs`` must MINT the root, not skip it.
+
+        It iterates ``session_dirs()`` to decide what to create, and claude's
+        returns ``()`` when the root is absent -- so the one case the mkdir
+        exists for is the one case it cannot reach. Nothing is watched, no
+        follower is armed, and the run captures nothing while logging nothing.
+        """
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "fresh"))
+        expected = tmp_path / "fresh" / "projects"
+
+        assert not expected.exists()
+        session_mod._prepare_session_dirs(ClaudeAdapter())
+        assert expected.is_dir()
+
+    def test_a_missing_gemini_tmp_root_is_created_before_the_watch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Gemini has the same shape: an absent root reports no directories."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        expected = tmp_path / ".gemini" / "tmp"
+
+        assert not expected.exists()
+        session_mod._prepare_session_dirs(GeminiAdapter())
+        assert expected.is_dir()
+
     def test_claude_captures_when_no_project_directory_exists_yet(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -402,9 +497,10 @@ class TestProjectDirectoryBornMidRun:
         """
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         (tmp_path / "projects").mkdir()
+        fresh = ClaudeAdapter().session_scope()
+        assert fresh is not None
 
         def write() -> None:
-            fresh = tmp_path / "projects" / "-first-ever-workspace"
             fresh.mkdir()
             (fresh / "abc-123.jsonl").write_text(
                 json.dumps(
@@ -521,7 +617,11 @@ class TestGeminiMultiFileDrain:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        chats = tmp_path / ".gemini" / "tmp" / "deadbeef" / "chats"
+        # Both files belong to THIS run, so both sit under its own project
+        # directory -- the adapter names it from the cwd.
+        scope = GeminiAdapter().session_scope()
+        assert scope is not None
+        chats = scope / "chats"
         chats.mkdir(parents=True)
 
         def _session(name: str, session_id: str, msgs: list[str]) -> None:
@@ -595,6 +695,111 @@ class TestDrainSurvivesParseError:
         assert calls == [
             ("trax run: %s adapter failed to parse a chunk", ("poison",), True)
         ]
+
+
+class TestTheWatchIsArmedBeforeTheChildSpawns:
+    """The child must not be able to write before the watch exists.
+
+    ``drain_thread.start()`` returns once the thread is SCHEDULED, and the
+    relay forks the CLI on the next statement. Between those two the watch is
+    not armed, and a CLI that writes its first record immediately -- codex's
+    ``session_meta`` lands at launch -- loses it with nothing said. Every test
+    here papers over the gap with ``time.sleep(0.2)``; the runner has no such
+    pause.
+    """
+
+    def test_a_write_racing_the_spawn_is_still_captured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        scope = ClaudeAdapter().session_scope()
+        assert scope is not None
+        log = scope / "abc.jsonl"
+        log.parent.mkdir(parents=True)
+        sink = _RecordingSink()
+
+        class _WritingRelay:
+            """A "CLI" that writes its first record the instant it starts."""
+
+            def __init__(self, argv: object, **kwargs: object) -> None:
+                del argv, kwargs
+
+            def run(self) -> int:
+                _ = log.write_text(
+                    json.dumps(
+                        {
+                            "type": "user",
+                            "uuid": "u1",
+                            "message": {"role": "user", "content": "first"},
+                        }
+                    )
+                    + "\n"
+                )
+                # Stay alive briefly so the drain has every chance to see it.
+                time.sleep(0.5)
+                return 0
+
+        monkeypatch.setattr(session_mod, "ThreadedRelay", _WritingRelay)
+        monkeypatch.setattr(shutil, "which", _always_found)
+
+        rc = session_mod._spawn_and_drain(
+            RunConfig(cli_name="claude", quiesce_seconds=0.5),
+            ClaudeAdapter(),
+            cast(Any, sink),
+            _Stats(),
+        )
+
+        assert rc == 0
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        assert texts == ["first"], "the CLI's first record raced the watch"
+
+
+class TestFollowerRearmsAfterAFailure:
+    """A watch that dies must be rebuilt, not silently abandoned.
+
+    ``_follow_session_files`` logs its exception and returns, and the drain
+    loop never restarts it -- so one transient failure (an inotify limit hit
+    while another process churns directories) ends capture for the whole run
+    while the loop keeps ticking as though it were watching.
+    """
+
+    def test_a_watch_that_raises_once_is_rearmed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        log = tmp_path / "session.jsonl"
+        adapter = _FakeAdapter(tmp_path)
+        real_follow = follow_tree
+        attempts: list[int] = []
+
+        def flaky(*directories: Path, **kwargs: object) -> object:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise OSError("inotify instance limit reached")
+            return real_follow(*directories, **cast(Any, kwargs))
+
+        monkeypatch.setattr(session_mod, "follow_tree", flaky)
+
+        def write_until_the_rearm_lands() -> None:
+            # Append repeatedly rather than once. The first watch raises, so the
+            # capturing one is the REARM -- and a single write can land in its
+            # arming window (after the existing-files snapshot, before the watch
+            # exists), which no event ever names. Retrying spans that window
+            # instead of guessing how long the rearm takes.
+            for _ in range(5):
+                with log.open("ab") as handle:
+                    _ = handle.write(b"recovered\n")
+                time.sleep(0.2)
+
+        _stats, sink = _drain_once(
+            cast(Adapter, adapter),
+            tmp_path,
+            write_until_the_rearm_lands,
+            expected=1,
+        )
+
+        assert len(attempts) >= 2, "the follower was never rearmed"
+        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        assert texts, "capture stayed dead after one transient watch failure"
 
 
 class _FlakyEmitSink(_RecordingSink):
@@ -866,7 +1071,9 @@ class TestDrainIsWakeDriven:
             f"the drain slept {slept_in_drain}; it must wake on a write"
         )
 
-    def test_does_not_walk_every_session_directory(self, tmp_path: Path) -> None:
+    def test_does_not_walk_every_session_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Discovery happens once, not per wake.
 
         A drain that re-walks on every event pays claude's 999-directory scan
@@ -880,7 +1087,7 @@ class TestDrainIsWakeDriven:
             walks.append(1)
             return real_session_dirs()
 
-        adapter.session_dirs = counting_dirs  # ty: ignore[invalid-assignment]
+        monkeypatch.setattr(adapter, "session_dirs", counting_dirs)
         sink = _RecordingSink()
         stop = threading.Event()
 
@@ -1058,6 +1265,9 @@ class _UuidAdapter:
 
     def matches_session_file(self, path: Path) -> bool:
         return path.suffix == ".jsonl"
+
+    def session_scope(self) -> Path | None:
+        return None
 
     def session_id_from_path(self, path: Path) -> str | None:
         del path
@@ -1259,6 +1469,55 @@ class TestRunPreservesClient:
         assert client.close_calls == 0
 
 
+class TestTeardownRunsEvenWhenTheRelayRaises:
+    """A relay failure must still stop the workers before the sink closes.
+
+    ``run``'s ``finally`` closes the sink unconditionally. Without a matching
+    guard in ``_spawn_and_drain``, a raise from ``relay.run`` skips
+    ``stop.set()`` and both joins, so the daemon drain is still emitting into
+    a sink being torn down -- the race the joins and ``LockedSink`` exist for.
+    """
+
+    def test_a_raising_relay_still_stops_the_drain(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _ExplodingRelay:
+            def __init__(self, argv: object, **kwargs: object) -> None:
+                del argv, kwargs
+
+            def run(self) -> int:
+                raise RuntimeError("pty allocation failed")
+
+        # The drain thread observes ``stop`` and exits; that it observed the
+        # set at all is the assertion. A real drain would need session files.
+        observed: list[bool] = []
+
+        def watching_drain(*args: object, **kwargs: object) -> None:
+            armed = kwargs["armed"]
+            assert isinstance(armed, threading.Event)
+            armed.set()  # release the spawn, as a real armed watch would
+            stop = args[4]
+            assert isinstance(stop, threading.Event)
+            observed.append(stop.wait(timeout=5.0))
+
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(session_mod, "ThreadedRelay", _ExplodingRelay)
+        monkeypatch.setattr(shutil, "which", _always_found)
+        monkeypatch.setattr(session_mod, "_drain_filesystem_loop", watching_drain)
+
+        with pytest.raises(RuntimeError, match="pty allocation"):
+            _ = session_mod._spawn_and_drain(
+                RunConfig(cli_name="claude", quiesce_seconds=0.0),
+                ClaudeAdapter(),
+                cast(Any, _RecordingSink()),
+                _Stats(),
+            )
+
+        assert observed == [True], (
+            "the relay raised and the drain was never told to stop"
+        )
+
+
 class TestInboundIsWaitDriven:
     """Inbound delivery waits on the server, rather than asking repeatedly.
 
@@ -1362,6 +1621,62 @@ class TestInboundIsWaitDriven:
         assert 1 <= client.attempts <= 30, f"retried {client.attempts} times in 0.3s"
 
 
+class TestInboundBatchSurvivesOneBadMessage:
+    """One undeliverable message must not discard the rest of its batch.
+
+    ``drain_inbound`` CONSUMES server-side: the messages it returns are gone
+    from the queue. A submit that raises partway then aborts the loop with the
+    remaining messages already dequeued and never typed -- silently dropped
+    for good, since no later drain will return them.
+    """
+
+    def test_a_failed_submit_still_delivers_the_rest(self) -> None:
+        client = _BatchClient(["first", "poison", "third"])
+        relay = _PickyRelay(reject="poison")
+        stop = threading.Event()
+
+        worker = threading.Thread(
+            target=lambda: _inbound_poll_loop(
+                cast(Any, client),
+                cast(Any, _SessionSink()),
+                cast(Any, relay),
+                stop,
+                poll_interval=0.01,
+            ),
+            daemon=True,
+        )
+        worker.start()
+        try:
+            deadline = time.monotonic() + 3.0
+            while len(relay.submitted) < 2 and time.monotonic() < deadline:
+                time.sleep(0.01)
+        finally:
+            stop.set()
+            worker.join(timeout=5.0)
+
+        assert relay.submitted[:2] == ["first", "third"], (
+            f"a bad message took the rest of its batch with it: {relay.submitted}"
+        )
+
+
+class _BatchClient:
+    """Returns one batch of messages, then nothing (the queue is drained)."""
+
+    def __init__(self, texts: list[str]) -> None:
+        self._texts = texts
+        self.drains = 0
+
+    def drain_inbound(
+        self, session_id: uuid.UUID, *, wait_sec: float = 0.0
+    ) -> list[tuple[str, str | None, str | None]]:
+        del session_id, wait_sec
+        self.drains += 1
+        if self.drains > 1:
+            _busy_wait(0.02)
+            return []
+        return [(text, None, None) for text in self._texts]
+
+
 class _SessionSink:
     """A sink whose session is already open, so inbound has an id to use."""
 
@@ -1376,6 +1691,20 @@ class _RecordingRelay:
 
     def submit(self, text: str) -> None:
         self.submitted.append(text)
+
+
+class _PickyRelay(_RecordingRelay):
+    """Rejects one message, as a wedged PTY write would."""
+
+    def __init__(self, *, reject: str) -> None:
+        super().__init__()
+        self._reject = reject
+
+    @override
+    def submit(self, text: str) -> None:
+        if text == self._reject:
+            raise RuntimeError("pty write failed")
+        super().submit(text)
 
 
 def _busy_wait(seconds: float) -> None:
