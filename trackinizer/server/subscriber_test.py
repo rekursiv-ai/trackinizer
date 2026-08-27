@@ -329,6 +329,162 @@ class TestPushChanges:
         assert inbound.pending(session_id) == 1
 
 
+class _AlwaysFailingStore(_StubStore):
+    """A store whose cursor query never succeeds -- Postgres down."""
+
+    @override
+    async def what_changed_for_anyone(
+        self,
+        since: datetime,
+        *,
+        after_id: UUID | None = None,
+        limit: int = 200,
+    ) -> list[tuple[Change, int | None]]:
+        self.query_count += 1
+        raise ConnectionRefusedError(111, "Connection refused")
+
+
+async def _run_failing_sweep(
+    store: _StubStore,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    attempts: int,
+    max_backoff_sec: float = 60.0,
+) -> list[float]:
+    """Run the sweep against a failing store; return the delays it slept.
+
+    ``asyncio.sleep`` is stubbed so the test observes the SCHEDULE without
+    waiting it out -- a real exponential backoff reaches minutes per retry,
+    and the schedule is the subject under test, not the clock.
+    """
+    delays: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def _record(delay: float) -> None:
+        delays.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", _record)
+    task = asyncio.create_task(
+        push_changes_to_live_subscribers(
+            cast(Any, store),
+            InboundQueue(),
+            sweep_interval_sec=0.5,
+            max_backoff_sec=max_backoff_sec,
+        )
+    )
+    try:
+        deadline = asyncio.get_running_loop().time() + 5.0
+        while len(delays) < attempts:
+            assert asyncio.get_running_loop().time() < deadline, (
+                f"sweep produced {len(delays)} delays, wanted {attempts}"
+            )
+            await real_sleep(0.001)
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+    return delays
+
+
+class TestFailureBackoff:
+    """A dead database must not become a log storm.
+
+    Measured during a production outage: with PostgreSQL down, the sweep
+    retried on its fixed 0.5s interval and logged a full asyncpg traceback
+    per attempt, once per uvicorn worker. The application emitted ~33,000
+    lines/sec -- journald's default rate limit discarded ~1M messages per
+    30s interval and passed the rest to a syslog daemon that has no limit.
+    Tracebacks accounted for 23.6 MB of the resulting 68 MB log, 35% of it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_repeated_failure_backs_off_exponentially(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each consecutive failure must wait longer than the last."""
+        store = _AlwaysFailingStore(changes=[], live_sessions={})
+
+        delays = await _run_failing_sweep(store, monkeypatch, attempts=5)
+
+        assert delays == sorted(delays), f"backoff not monotonic: {delays}"
+        assert delays[-1] > delays[0], (
+            f"no backoff: every retry waited {delays[0]}s ({delays})"
+        )
+
+    @pytest.mark.asyncio
+    async def test_backoff_is_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An outage lasting hours must not push the retry interval to days."""
+        store = _AlwaysFailingStore(changes=[], live_sessions={})
+
+        delays = await _run_failing_sweep(
+            store, monkeypatch, attempts=12, max_backoff_sec=8.0
+        )
+
+        assert max(delays) <= 8.0, f"backoff exceeded its cap: {max(delays)}"
+
+    @pytest.mark.asyncio
+    async def test_one_traceback_per_outage(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The stack is identical every attempt; only the first is diagnostic.
+
+        Repeats carried ~16.7x the bytes of their own header line, which is
+        what filled the partition.
+        """
+        store = _AlwaysFailingStore(changes=[], live_sessions={})
+
+        with caplog.at_level("DEBUG", logger="trackinizer.server.subscriber"):
+            _ = await _run_failing_sweep(store, monkeypatch, attempts=6)
+
+        with_traceback = [r for r in caplog.records if r.exc_info is not None]
+        assert len(with_traceback) == 1, (
+            f"{len(with_traceback)} tracebacks logged for one outage; "
+            "every retry re-logged the same stack"
+        )
+
+    @pytest.mark.asyncio
+    async def test_recovery_is_announced(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Silence is ambiguous: suppressed failures look like health.
+
+        Without a recovery line an operator cannot tell a healed sweep from
+        one still failing quietly.
+        """
+        session_id = new_uuid()
+
+        class _RecoveringStore(_StubStore):
+            @override
+            async def what_changed_for_anyone(
+                self,
+                since: datetime,
+                *,
+                after_id: UUID | None = None,
+                limit: int = 200,
+            ) -> list[tuple[Change, int | None]]:
+                if self.query_count < 3:
+                    self.query_count += 1
+                    raise ConnectionRefusedError(111, "Connection refused")
+                return await super().what_changed_for_anyone(
+                    since, after_id=after_id, limit=limit
+                )
+
+        store = _RecoveringStore(
+            changes=[_change()], live_sessions={"alice": [session_id]}
+        )
+        inbound = InboundQueue()
+
+        with caplog.at_level("INFO", logger="trackinizer.server.subscriber"):
+            await _run_sweep_until(
+                store, inbound, lambda: inbound.pending(session_id) > 0
+            )
+
+        assert any("recovered" in r.getMessage() for r in caplog.records), (
+            "sweep recovered from a failing query without saying so"
+        )
+
+
 class TestPayloadAndKey:
     def test_change_payload_is_a_compact_envelope(self) -> None:
         """The payload is metadata only: who did what to which row, when."""

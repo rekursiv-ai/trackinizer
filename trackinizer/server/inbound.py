@@ -12,6 +12,14 @@ process; drop-if-absent semantics). The two functions
 :meth:`InboundQueue.enqueue` / :meth:`InboundQueue.drain` are the seam: a
 durable-inbox or multi-process upgrade (NOTIFY, a table, Redis) replaces them
 without touching routes or the client.
+
+TODO(inbound-multiworker): "one trackinizer process" is enforced, not
+assumed. This class is the ONLY per-worker state in the server, so it is why
+``--workers > 1`` is refused at startup: each worker would hold its own
+queue and its own dedup receipts, losing and duplicating messages.
+``TestMultiWorkerDelivery`` in ``inbound_test.py`` proves both (xfail,
+strict: they flip when a fix lands). The defect, the measurements, and the
+plan to lift the restriction are in ``docs/private/workers.md``.
 """
 
 from __future__ import annotations

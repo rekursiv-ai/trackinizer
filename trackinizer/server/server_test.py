@@ -93,18 +93,6 @@ class TestPureFunctions:
         assert args.embedder == "stub"
         assert remaining == []
 
-    @pytest.mark.parametrize("count", ["0", "-1"])
-    def test_worker_count_must_be_positive(self, count: str) -> None:
-        """Zero or negative workers is an operator typo, not a mode.
-
-        ``main`` treats every ``<=1`` value as single-worker and forwards it to
-        uvicorn unchanged, so a typo'd ``-1`` silently ran a server rather than
-        saying so. The deployment path already rejects it
-        (``validate_worker_config``); the CLI must agree.
-        """
-        with pytest.raises(SystemExit):
-            _ = _parse_args(argparse.ArgumentParser(), ["--workers", count])
-
     def test_session_ttl_env_typo_exits_cleanly(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -249,7 +237,7 @@ class TestLogLevelReachesUvicorn:
 
 
 class TestMultiWorkerLaunch:
-    """``--workers N`` must actually fan out, not die on startup.
+    """The fan-out plumbing, kept intact behind the single-worker clamp.
 
     uvicorn forks workers by re-importing the app in each child, so it accepts
     ``workers>1`` ONLY when the first argument is an import string. Handed a
@@ -257,11 +245,25 @@ class TestMultiWorkerLaunch:
     string" and exits 3 -- which is what a hand-written ``--workers 4`` unit
     drop-in produced: a crash loop whose message names nothing the operator
     typed.
+
+    ``main`` now clamps every request to one worker (inbound messaging is
+    per-worker state; see ``TODO(inbound-multiworker)`` in ``inbound.py``), so
+    the import-string branch is currently unreachable in production. It is
+    exercised directly here rather than deleted: the clamp is a stopgap for a
+    fixable queue, and re-enabling fan-out must not have to rediscover why
+    passing the app object exits 3.
     """
 
-    def test_multi_worker_passes_an_import_string(
+    def test_the_import_string_branch_survives(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Reached by asking ``main`` for the multi-worker target directly.
+
+        The clamp rewrites ``args.workers`` before ``main`` picks its target,
+        so a ``--workers 4`` argv can no longer reach this branch; the
+        single-worker predicate is what selects between an app object and the
+        factory import string.
+        """
         called: dict[str, object] = {}
 
         def fake_run(target: object, **kwargs: object) -> None:
@@ -271,10 +273,10 @@ class TestMultiWorkerLaunch:
         monkeypatch.setattr(uvicorn, "run", fake_run)
         monkeypatch.setattr(
             "sys.argv",
-            ["trackinizer", "--engine", "pg", "--dsn", "x", "--workers", "4"],
+            ["trackinizer", "--engine", "pg", "--dsn", "x"],
         )
-
-        main()
+        # Ask for the fan-out branch no CLI flag can reach.
+        main(workers=4)
 
         assert isinstance(called["target"], str), (
             "uvicorn was handed an app object with workers>1; it cannot fork "
@@ -330,8 +332,14 @@ class TestTheFactoryAppliesEveryStartupInvariant:
     processes that actually serve requests.
     """
 
-    def test_rejects_pglite_fan_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The workdir-corruption guard must hold on the worker path too."""
+    def test_rejects_a_worker_count_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``--workers`` was removed; a unit still passing it must not boot.
+
+        Fan-out is unsupported (the inbound queue is per-worker state), so the
+        flag is gone rather than validated. A deploy config or unit drop-in
+        carrying it now fails loudly at startup instead of silently running a
+        mode that loses and duplicates messages.
+        """
         monkeypatch.setattr(
             "sys.argv", ["trackinizer", "--engine", "pglite", "--workers", "4"]
         )

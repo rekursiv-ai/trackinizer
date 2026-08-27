@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import asyncio
 import threading
 import time
 import uuid
 
+import pytest
+
 from trackinizer.server.inbound import Inbound, InboundQueue
-
-
-if TYPE_CHECKING:
-    import pytest
+from trackinizer.server.subscriber import _delivery_key
 
 
 class TestInboundQueue:
@@ -211,6 +208,78 @@ class TestSendIdempotency:
         # Both callers get the same receipt; exactly one message is queued.
         assert results == [[sid], [sid]]
         assert q.pending(sid) == 1
+
+
+class TestMultiWorkerDelivery:
+    """The queue must behave as ONE queue however many workers serve it.
+
+    Uvicorn's ``--workers N`` forks children that each re-import the app
+    (``server.py`` names a factory precisely because of this), so each holds
+    its own ``InboundQueue``. Nothing pins a session to a worker: the
+    children accept from one shared listening socket. So the worker that
+    serves ``POST /api/messages`` and the worker that serves the poller's
+    ``GET /api/sessions/{id}/inbound`` are independent draws.
+
+    Two instances stand in for two workers. Every existing test in this file
+    uses one instance, which is why single-worker deployments -- every test,
+    every example script -- never exposed this.
+    """
+
+    @pytest.mark.xfail(
+        reason="TODO(inbound-multiworker): per-worker queues lose cross-worker "
+        "sends; needs a shared backing store (see inbound.py module docstring)",
+        strict=True,
+    )
+    def test_message_enqueued_on_one_worker_is_drainable_from_another(
+        self,
+    ) -> None:
+        """A send must reach the session regardless of which worker took it.
+
+        ``trax send @alice`` lands on whichever worker the kernel picked;
+        alice's poller lands on another. With per-worker state the message
+        is enqueued somewhere nobody reads and is silently lost -- no error
+        to the sender, who gets a delivery receipt naming the session.
+        """
+        served_the_send = InboundQueue()
+        served_the_poll = InboundQueue()
+        sid = uuid.uuid4()
+
+        served_the_send.enqueue(sid, Inbound(text="hello alice", source="dan"))
+
+        assert served_the_poll.drain(sid) == [
+            Inbound(text="hello alice", source="dan")
+        ], "message enqueued on one worker was invisible to another"
+
+    @pytest.mark.xfail(
+        reason="TODO(inbound-multiworker): every worker's sweep re-derives the "
+        "same uuid5 key and misses its own receipts; needs a shared store",
+        strict=True,
+    )
+    def test_one_change_enqueues_once_across_workers(self) -> None:
+        """Every worker runs its own subscriber sweep over the same rows.
+
+        The sweep's dedup key is ``uuid5(change_id, subscriber)`` -- stable
+        BY DESIGN so a re-read cannot double-inject. Across processes that
+        determinism works against it: each worker derives the same key, each
+        misses its own receipt table, and each enqueues. N workers deliver
+        one change N times.
+        """
+        worker_a = InboundQueue()
+        worker_b = InboundQueue()
+        sid = uuid.uuid4()
+        change_id = uuid.uuid4()
+        # The REAL key each sweep derives, not a hand-shared uuid: the point
+        # is that two independent workers compute the same one from the same
+        # (change, subscriber) and neither can see the other's receipt.
+        key_a = _delivery_key(change_id, "alice")
+        key_b = _delivery_key(change_id, "alice")
+        assert key_a == key_b, "sweeps must derive one key per (change, subscriber)"
+
+        worker_a.send_once(key_a, [(sid, Inbound(text="change", source="trackinizer"))])
+        worker_b.send_once(key_b, [(sid, Inbound(text="change", source="trackinizer"))])
+
+        queued = worker_a.pending(sid) + worker_b.pending(sid)
+        assert queued == 1, f"one change enqueued {queued} times across 2 workers"
 
 
 if __name__ == "__main__":
