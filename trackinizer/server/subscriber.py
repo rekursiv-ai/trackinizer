@@ -19,6 +19,14 @@ drop-if-absent, capped queues. A subscriber with no running session misses
 events; offline catch-up is the polling surface (``what_changed_for_me``),
 not this pipe. The cursor starts at task boot, so changes committed while
 the server was down are never pushed (nobody had a live poller then either).
+
+The lifespan starts one sweep per app instance, so ``--workers N`` runs N
+independent sweeps over the same rows. That is redundant when healthy and
+actively wrong at delivery: :func:`_delivery_key` is deterministic, but the
+receipts it is checked against live in each worker's own ``InboundQueue``,
+so every worker enqueues the same change. See the
+``TODO(inbound-multiworker)`` in ``inbound.py`` -- that queue owns the
+defect and the candidate fixes.
 """
 
 from __future__ import annotations
@@ -47,10 +55,11 @@ async def push_changes_to_live_subscribers(
     *,
     page_size: int = 200,
     sweep_interval_sec: float = 0.5,
+    max_backoff_sec: float = 60.0,
 ) -> None:
     """Sweep the change log forever; started and cancelled by the lifespan.
 
-    Two structural invariants, each earned by a review finding:
+    Three structural invariants, each earned by a review finding:
 
     - Every sweep drains the cursor query to a short page, so a burst wider
       than ``page_size`` never strands its tail.
@@ -58,6 +67,13 @@ async def push_changes_to_live_subscribers(
       always advances. Skipping is safe because the change_log row is
       durable (``what_changed_for_me`` still serves it); a pinned cursor
       would block every later change for every subscriber forever.
+    - A failing QUERY (as opposed to a failing delivery) backs off, and logs
+      its stack once rather than once per attempt. Observed in production: a
+      full log partition stopped PostgreSQL, and this loop then retried on
+      its fixed interval with a full asyncpg traceback each time, once per
+      uvicorn worker -- ~33,000 lines/sec, of which tracebacks were 35% of
+      the bytes. The database is down either way; the logging is what turned
+      that into a second incident on the same partition.
 
     Deliveries are deduped by a deterministic per-``(change, subscriber)``
     key, so a replayed read does not double-inject (within the inbound
@@ -65,16 +81,30 @@ async def push_changes_to_live_subscribers(
     """
     since = datetime.now(UTC)
     after_id: UUID | None = None
+    failures = 0
     logger.info(
         "subscriber push sweeping every %.1fs (page_size=%d)",
         sweep_interval_sec,
         page_size,
     )
     while True:
-        since, after_id = await _drain_pending_changes(
-            store, inbound, since, after_id, page_size=page_size
+        since, after_id, ok = await _drain_pending_changes(
+            store, inbound, since, after_id, page_size=page_size, failures=failures
         )
-        await asyncio.sleep(sweep_interval_sec)
+        if ok:
+            if failures:
+                logger.info(
+                    "subscriber push catch-up query recovered after %d failure(s)",
+                    failures,
+                )
+            failures = 0
+            delay = sweep_interval_sec
+        else:
+            failures += 1
+            # Doubling from the base interval, capped: a 12-hour outage costs
+            # ~720 attempts instead of ~86,400 per worker.
+            delay = min(sweep_interval_sec * 2**failures, max_backoff_sec)
+        await asyncio.sleep(delay)
 
 
 async def _drain_pending_changes(
@@ -84,25 +114,40 @@ async def _drain_pending_changes(
     after_id: UUID | None,
     *,
     page_size: int,
-) -> tuple[datetime, UUID | None]:
+    failures: int = 0,
+) -> tuple[datetime, UUID | None, bool]:
     """Deliver every change past the cursor; return the advanced cursor.
 
     Pages until a short page. The cursor advances past EVERY change,
     delivered or not (failing rows are logged and skipped; the durable row
     remains readable via polling). A failing query returns the cursor
-    unchanged -- the next sweep retries.
+    unchanged and ``ok=False`` -- the caller backs off and retries.
+
+    ``failures`` is the caller's consecutive-failure count, used only to
+    decide whether this failure is the first of an outage (stack included)
+    or a repeat (one line, no stack).
     """
     while True:
         try:
             changes = await store.what_changed_for_anyone(
                 since, after_id=after_id, limit=page_size
             )
-        except Exception:
-            logger.warning(
-                "subscriber push catch-up query failed; will retry",
-                exc_info=True,
-            )
-            return since, after_id
+        except Exception as exc:
+            if failures == 0:
+                logger.warning(
+                    "subscriber push catch-up query failed; will retry",
+                    exc_info=True,
+                )
+            else:
+                # The stack is identical every attempt and was 35% of the
+                # bytes that filled the log partition; the exception's own
+                # repr is the part that changes and the part worth keeping.
+                logger.warning(
+                    "subscriber push catch-up query still failing (%d consecutive): %r",
+                    failures + 1,
+                    exc,
+                )
+            return since, after_id, False
         for change, subject_seq in changes:
             try:
                 await _deliver_change(store, inbound, change, subject_seq)
@@ -115,7 +160,7 @@ async def _drain_pending_changes(
                 )
             since, after_id = change.created, change.id
         if len(changes) < page_size:
-            return since, after_id
+            return since, after_id, True
 
 
 async def _deliver_change(

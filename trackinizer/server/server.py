@@ -81,14 +81,17 @@ def build_app() -> FastAPI:
     return app
 
 
-def main() -> None:
-    """Parse args, configure the app, and run uvicorn."""
+def main(*, workers: int = 1) -> None:
+    """Parse args, configure the app, and run uvicorn.
+
+    NOTE: multi-worker is currently unsupported, see ``docs/private/workers.md``.
+    """
     args, log_level = _start_process()
     # One worker runs the app in THIS process, so hand uvicorn the object it
     # is already holding. More than one forks children that re-import, which
     # only an import string can name -- passing the object there makes
     # uvicorn refuse the fan-out and exit 3.
-    single_worker = args.workers <= 1
+    single_worker = workers <= 1
     target: FastAPI | str = APP_FACTORY_TARGET
     if single_worker:
         _configure_app(args)
@@ -98,7 +101,7 @@ def main() -> None:
         factory=not single_worker,
         host=args.host,
         port=args.port,
-        workers=args.workers,
+        workers=workers,
         # Also sets the level of ``uvicorn.access``, which logs one INFO line
         # per request. Without this the flag configures only this package's
         # logger and uvicorn keeps its own INFO default, so an operator who
@@ -138,13 +141,6 @@ def _start_process() -> tuple[argparse.Namespace, int | None]:
     args, remaining = _parse_args(parser)
     if remaining:
         parser.error(f"unrecognized arguments: {' '.join(remaining)}")
-    # PGlite is single-process; two engines on one workdir corrupt the
-    # catalog, so worker fan-out is only safe on Postgres.
-    if args.workers > 1 and args.engine == "pglite":
-        parser.error(
-            "PGlite is single-process; --workers > 1 corrupts the workdir. "
-            "Use --workers 1 or run on --engine pg."
-        )
     log_level = _configure_logging(args.log_level)
     # Silence uvicorn's spurious zero-task cancel ERROR on every clean shutdown
     # (a consequence of timeout_graceful_shutdown=0); a real N>0 cancel still logs.
@@ -215,15 +211,6 @@ def _parse_args(
         "--port",
         type=int,
         default=8765,
-    )
-    parser.add_argument(
-        "--workers",
-        type=_positive_worker_count,
-        default=1,
-        help=(
-            "Number of uvicorn workers. Must stay at 1 for --engine pglite "
-            "(workdir corruption otherwise). Postgres can run more."
-        ),
     )
     # Server idle must exceed the upstream proxy's idle timeout so the
     # proxy owns eviction; otherwise it holds dead sockets and surfaces
@@ -309,18 +296,6 @@ def _positive_session_ttl(value: str) -> int:
             f"session TTL must be >= 1 second, got {seconds}"
         )
     return seconds
-
-
-def _positive_worker_count(value: str) -> int:
-    """Parse a ``--workers`` value; reject zero and negatives.
-
-    Every ``<=1`` count is treated as single-worker downstream, so without this
-    a typo'd ``-1`` would quietly start a server instead of naming the typo.
-    """
-    workers = int(value)
-    if workers < 1:
-        raise argparse.ArgumentTypeError(f"--workers must be >= 1, got {workers}")
-    return workers
 
 
 def _configure_logging(level: str | None) -> int | None:
