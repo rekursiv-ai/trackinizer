@@ -38,6 +38,7 @@ import termios
 
 
 __all__ = [
+    "ESSENTIAL_ENV",
     "PASTE_END",
     "PASTE_START",
     "SUBMIT",
@@ -55,6 +56,22 @@ PASTE_END: Final = b"\x1b[201~"
 
 SUBMIT: Final = b"\r"
 """What a terminal sends for Enter."""
+
+ESSENTIAL_ENV: Final = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TERM",
+    "TZ",
+    "LANG",
+)
+"""Kept even under ``clean_env``: without these a child cannot run at all.
+
+No ``PATH`` and it cannot exec; no ``HOME`` and every library writing a
+dotfile picks a different wrong answer.
+"""
 
 # Written to a real terminal once the child is gone. These are DECSET private
 # modes the child turned on by emitting escape sequences; they live in the
@@ -158,7 +175,12 @@ class Terminal:
       cwd: Directory to run in; the caller's when None. A ``PWD`` in ``env``
         is not a substitute -- that is a shell convention, and a program
         asking the kernel where it is gets the inherited directory.
-      env: Extra environment for the child, merged over the inherited one.
+      env: Extra environment for the child, merged over the inherited one --
+        or the WHOLE environment when ``clean_env`` is set.
+      clean_env: Whether the child starts from an empty environment. Off, the
+        child inherits the caller's, which makes a run depend on the operator's
+        shell. On, it sees only ``env`` plus the few variables a process cannot
+        work without (see :data:`ESSENTIAL_ENV`).
       enter_delay_sec: Gap between a paste and its Enter. Must exceed codex's
         120ms paste-Enter suppression window or the Enter is swallowed and the
         line never submits.
@@ -178,6 +200,7 @@ class Terminal:
         *,
         cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
+        clean_env: bool = False,
         enter_delay_sec: float = 0.15,
         terminate_grace_sec: float = 1.0,
         winsize: tuple[int, int] = (24, 80),
@@ -186,6 +209,7 @@ class Terminal:
         self._argv = list(argv)
         self._cwd = cwd
         self._env = dict(env or {})
+        self._clean_env = clean_env
         self._enter_delay_sec = enter_delay_sec
         self._terminate_grace_sec = terminate_grace_sec
         self._winsize = winsize
@@ -248,6 +272,14 @@ class Terminal:
             raise FileNotFoundError(self._argv[0])
         self._pid, self._master_fd = pty.fork()
         if self._pid == 0:
+            if self._clean_env:
+                kept = {
+                    name: os.environ[name]
+                    for name in ESSENTIAL_ENV
+                    if name in os.environ
+                }
+                os.environ.clear()
+                os.environ.update(kept)
             # A TUI on a pty needs ``TERM``; a non-tty parent environment may
             # lack it, which degrades rendering and input handling.
             os.environ.setdefault("TERM", "xterm-256color")
