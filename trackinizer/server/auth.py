@@ -626,12 +626,13 @@ async def bootstrap_admin(conn: Conn) -> None:
         )
         # name = email local part so the identity column isn't blank;
         # status='active' so the minted key works immediately. The empty-users
-        # probe above is outside this tx, so under ``--workers N`` two workers
-        # can both clear it; ``ON CONFLICT (email) DO NOTHING`` makes the loser's
-        # insert a no-op instead of a unique-violation crash. ``RETURNING id``
-        # distinguishes winner from loser: a NULL means another worker already
-        # seeded the admin, so this worker must not mint a second key or publish
-        # a token for a credential it does not own.
+        # probe above is outside this tx, so two servers booting against one
+        # database (a redeploy overlap) can both clear it; ``ON CONFLICT
+        # (email) DO NOTHING`` makes the loser's insert a no-op instead of a
+        # unique-violation crash. ``RETURNING id`` distinguishes winner from
+        # loser: a NULL means another process already seeded the admin, so this
+        # one must not mint a second key or publish a token for a credential it
+        # does not own.
         inserted_id = await conn.fetchval(
             "INSERT INTO users (id, email, name, role, status) "
             "VALUES ($1, $2, $3, 'admin', 'active') "

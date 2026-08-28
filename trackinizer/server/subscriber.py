@@ -20,13 +20,13 @@ events; offline catch-up is the polling surface (``what_changed_for_me``),
 not this pipe. The cursor starts at task boot, so changes committed while
 the server was down are never pushed (nobody had a live poller then either).
 
-The lifespan starts one sweep per app instance, so ``--workers N`` runs N
-independent sweeps over the same rows. That is redundant when healthy and
-actively wrong at delivery: :func:`_delivery_key` is deterministic, but the
-receipts it is checked against live in each worker's own ``InboundQueue``,
-so every worker enqueues the same change. See the
-``TODO(inbound-multiworker)`` in ``inbound.py`` -- that queue owns the
-defect and the candidate fixes.
+The lifespan starts one sweep per app instance, and the server runs
+single-process, so exactly one sweep exists. That is load-bearing:
+:func:`_delivery_key` is deterministic, but the receipts it is checked
+against live in the in-memory ``InboundQueue``, so a second sweep in a
+second process would re-derive the same key, miss those receipts, and
+deliver the change twice. Electing a single sweeper by advisory lock is
+step 4 of ``docs/private/workers.md``.
 """
 
 from __future__ import annotations

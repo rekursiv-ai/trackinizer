@@ -24,7 +24,6 @@ from trackinizer.server.server import (
     _configure_logging,
     _parse_args,
     _SuppressZeroTaskCancel,
-    build_app,
     logger,
     main,
 )
@@ -160,7 +159,6 @@ class TestCLIHelpers:
         main()
         assert called["host"] == "127.0.0.1"
         assert called["port"] == 1234
-        assert called["workers"] == 1
         assert called["timeout_keep_alive"] == 240
         # Force-close on shutdown (don't wait for connections to drain); the
         # zero-task cancel ERROR this causes is suppressed by the log filter.
@@ -236,116 +234,36 @@ class TestLogLevelReachesUvicorn:
         assert access.isEnabledFor(logging.INFO) is False
 
 
-class TestMultiWorkerLaunch:
-    """The fan-out plumbing, kept intact behind the single-worker clamp.
+class TestMainAppliesEveryStartupInvariant:
+    """One process serves everything, so ``main`` owns every startup step.
 
-    uvicorn forks workers by re-importing the app in each child, so it accepts
-    ``workers>1`` ONLY when the first argument is an import string. Handed a
-    constructed app object it logs "You must pass the application as an import
-    string" and exits 3 -- which is what a hand-written ``--workers 4`` unit
-    drop-in produced: a crash loop whose message names nothing the operator
-    typed.
-
-    ``main`` now clamps every request to one worker (inbound messaging is
-    per-worker state; see ``TODO(inbound-multiworker)`` in ``inbound.py``), so
-    the import-string branch is currently unreachable in production. It is
-    exercised directly here rather than deleted: the clamp is a stopgap for a
-    fixable queue, and re-enabling fan-out must not have to rediscover why
-    passing the app object exits 3.
+    There is no worker fan-out: the inbound queue and the subscriber sweep are
+    in-process state, so uvicorn is handed the configured app object rather
+    than an import string it would re-import in forked children. Anything not
+    applied here is applied nowhere.
     """
 
-    def test_the_import_string_branch_survives(
+    def test_configures_the_app_before_serving(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Reached by asking ``main`` for the multi-worker target directly.
-
-        The clamp rewrites ``args.workers`` before ``main`` picks its target,
-        so a ``--workers 4`` argv can no longer reach this branch; the
-        single-worker predicate is what selects between an app object and the
-        factory import string.
-        """
-        called: dict[str, object] = {}
+        """Uvicorn gets the app object, already carrying its config."""
+        served: dict[str, object] = {}
 
         def fake_run(target: object, **kwargs: object) -> None:
-            called["target"] = target
-            called.update(kwargs)
+            del kwargs
+            served["target"] = target
 
         monkeypatch.setattr(uvicorn, "run", fake_run)
-        monkeypatch.setattr(
-            "sys.argv",
-            ["trackinizer", "--engine", "pg", "--dsn", "x"],
-        )
-        # Ask for the fan-out branch no CLI flag can reach.
-        main(workers=4)
-
-        assert isinstance(called["target"], str), (
-            "uvicorn was handed an app object with workers>1; it cannot fork "
-            "workers from one and exits 3"
-        )
-        assert called["workers"] == 4
-        assert called.get("factory") is True
-
-    def test_single_worker_still_runs_the_configured_app(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """One worker keeps the in-process app, so no re-import is needed."""
-        called: dict[str, object] = {}
-
-        def fake_run(target: object, **kwargs: object) -> None:
-            called["target"] = target
-            called.update(kwargs)
-
-        monkeypatch.setattr(uvicorn, "run", fake_run)
-        monkeypatch.setattr("sys.argv", ["trackinizer"])
-
-        main()
-
-        assert not isinstance(called["target"], str)
-        assert called["workers"] == 1
-
-    def test_the_factory_builds_a_configured_app(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A forked worker re-imports and must rebuild its own config.
-
-        The parent's ``app.state.config`` does not survive the fork, so the
-        factory has to re-derive it from argv -- otherwise each worker serves
-        with no config at all.
-        """
         monkeypatch.setattr(
             "sys.argv",
             ["trackinizer", "--engine", "pg", "--dsn", "postgres://probe/db"],
         )
 
-        built = build_app()
+        main()
 
-        assert built.state.config.engine == "pg"
-        assert built.state.config.dsn == "postgres://probe/db"
-
-
-class TestTheFactoryAppliesEveryStartupInvariant:
-    """A worker enters through the factory, never through ``main``.
-
-    uvicorn forks workers with the ``spawn`` context and each child re-imports
-    this module and calls the factory (``uvicorn/_subprocess.py``), so any
-    startup step written only into ``main`` silently does not happen in the
-    processes that actually serve requests.
-    """
-
-    def test_rejects_a_worker_count_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """``--workers`` was removed; a unit still passing it must not boot.
-
-        Fan-out is unsupported (the inbound queue is per-worker state), so the
-        flag is gone rather than validated. A deploy config or unit drop-in
-        carrying it now fails loudly at startup instead of silently running a
-        mode that loses and duplicates messages.
-        """
-        monkeypatch.setattr(
-            "sys.argv", ["trackinizer", "--engine", "pglite", "--workers", "4"]
-        )
-
-        with pytest.raises(SystemExit):
-            _ = build_app()
+        assert served["target"] is app
+        assert app.state.config.engine == "pg"
+        assert app.state.config.dsn == "postgres://probe/db"
 
     def test_rejects_unrecognized_arguments(
         self, monkeypatch: pytest.MonkeyPatch
@@ -353,16 +271,33 @@ class TestTheFactoryAppliesEveryStartupInvariant:
         monkeypatch.setattr("sys.argv", ["trackinizer", "--bogus-flag"])
 
         with pytest.raises(SystemExit):
-            _ = build_app()
+            main()
+
+    def test_rejects_a_worker_count_flag(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A stale unit drop-in passing ``--workers`` must fail loudly.
+
+        Fan-out was removed rather than validated, and systemd's base unit can
+        only be rewritten by root -- so an old command line outliving a deploy
+        is the observed failure mode, not a hypothetical. Exiting on the
+        unknown flag names it; silently ignoring it would run a mode the
+        operator's config claims and the server does not have.
+        """
+        monkeypatch.setattr(
+            "sys.argv", ["trackinizer", "--engine", "pglite", "--workers", "4"]
+        )
+
+        with pytest.raises(SystemExit):
+            main()
+
+        assert "--workers" in capsys.readouterr().err
 
     def test_applies_the_requested_log_level(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``--log-level`` must reach this package's logger inside the worker.
-
-        uvicorn re-runs its own logging setup per child, which covers the
-        ``uvicorn.*`` loggers only; this package's logger is ours to configure.
-        """
+        """``--log-level`` must reach this package's logger, not just uvicorn's."""
+        monkeypatch.setattr(uvicorn, "run", _ignore_run)
         monkeypatch.delenv("TRACKINIZER_LOG_LEVEL", raising=False)
         monkeypatch.setattr(logger, "level", logging.NOTSET)
         monkeypatch.setattr(
@@ -370,19 +305,20 @@ class TestTheFactoryAppliesEveryStartupInvariant:
             ["trackinizer", "--engine", "pg", "--dsn", "x", "--log-level", "DEBUG"],
         )
 
-        _ = build_app()
+        main()
 
         assert logger.level == logging.DEBUG
 
     def test_installs_the_shutdown_noise_filter(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Workers run the shutdown that emits the ERROR the filter suppresses.
+        """Shutdown emits the ERROR the filter suppresses.
 
-        Measured on the deployed 8-worker service before this fix: 24 spurious
+        Measured on the deployed service before this fix: 24 spurious
         ``Cancel 0 running task(s)`` errors in 30 minutes.
         """
         error_logger = logging.getLogger("uvicorn.error")
+        monkeypatch.setattr(uvicorn, "run", _ignore_run)
         monkeypatch.setattr(
             error_logger,
             "filters",
@@ -390,7 +326,7 @@ class TestTheFactoryAppliesEveryStartupInvariant:
         )
         monkeypatch.setattr("sys.argv", ["trackinizer", "--engine", "pg", "--dsn", "x"])
 
-        _ = build_app()
+        main()
 
         assert any(_is_noise_filter(f) for f in error_logger.filters)
 
@@ -399,6 +335,7 @@ class TestTheFactoryAppliesEveryStartupInvariant:
     ) -> None:
         """Re-entry must not stack duplicates onto the process-wide logger."""
         error_logger = logging.getLogger("uvicorn.error")
+        monkeypatch.setattr(uvicorn, "run", _ignore_run)
         monkeypatch.setattr(
             error_logger,
             "filters",
@@ -406,10 +343,15 @@ class TestTheFactoryAppliesEveryStartupInvariant:
         )
         monkeypatch.setattr("sys.argv", ["trackinizer", "--engine", "pg", "--dsn", "x"])
 
-        _ = build_app()
-        _ = build_app()
+        main()
+        main()
 
         assert sum(_is_noise_filter(f) for f in error_logger.filters) == 1
+
+
+def _ignore_run(target: object, **kwargs: object) -> None:
+    """Stand in for ``uvicorn.run`` when a test asserts only side effects."""
+    del target, kwargs
 
 
 def _is_noise_filter(candidate: object) -> bool:
@@ -483,26 +425,6 @@ class TestMainRejectsBadInvocations:
         with pytest.raises(SystemExit):
             main()
 
-    def test_main_pglite_with_workers_errors(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """``--workers >1`` against PGlite must error out -- it corrupts the workdir."""
-
-        # **kwargs, not a pinned signature: an exact list would raise TypeError
-        # if the guard ever regressed and uvicorn.run were reached, masking the
-        # SystemExit this test asserts.
-        def noop(app: object, **kwargs: object) -> None:
-            del app, kwargs
-
-        monkeypatch.setattr(uvicorn, "run", noop)
-        monkeypatch.setattr(
-            "sys.argv",
-            ["trackinizer", "--engine", "pglite", "--workers", "2"],
-        )
-        with pytest.raises(SystemExit):
-            main()
-
 
 class TestCoverageRoutesAndCli:
     def test_main_web_branch_and_engine_errors(
@@ -520,10 +442,8 @@ class TestCoverageRoutesAndCli:
         monkeypatch.setattr(uvicorn, "run", fake_run)
         main()
         assert called == {
-            "factory": False,
             "host": "127.0.0.1",
             "port": 9999,
-            "workers": 1,
             "log_level": None,
             "timeout_keep_alive": 240,
             "timeout_graceful_shutdown": 0,
