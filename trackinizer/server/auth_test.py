@@ -815,9 +815,9 @@ class TestBootstrapAdmin:
     async def test_lost_race_skips_api_key_and_token(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        # The empty-users probe cleared, but a concurrent worker committed the
+        # The empty-users probe cleared, but a concurrent server committed the
         # admin first: the ``INSERT INTO users ... ON CONFLICT DO NOTHING
-        # RETURNING id`` returns None. This worker must NOT mint a second
+        # RETURNING id`` returns None. This process must NOT mint a second
         # api_key or publish a token for a credential it does not own -- it just
         # rolls its no-op tx forward and returns.
         token_file = tmp_path / "bootstrap_token"
@@ -832,7 +832,7 @@ class TestBootstrapAdmin:
         assert not any("INSERT INTO api_keys" in s for s in sqls)
         assert any(s.strip().upper().startswith("COMMIT") for s in sqls)
         assert not any(s.strip().upper().startswith("ROLLBACK") for s in sqls)
-        # No token published for a credential this worker never created.
+        # No token published for a credential this process never created.
         assert not token_file.exists()
 
     @pytest.mark.asyncio
@@ -1113,7 +1113,7 @@ class _SeedAfterUsersProbe:
     Delegates every attribute to a real connection, but the first
     ``INSERT INTO users`` it sees first commits an identical-email admin row on
     an independent connection -- reproducing the probe-stale window where a
-    second worker has already won. Used to drive ``bootstrap_admin`` through the
+    second server has already won. Used to drive ``bootstrap_admin`` through the
     exact interleaving that triggers K3-BOOTSTRAP-RACE.
     """
 
@@ -1140,13 +1140,14 @@ class _SeedAfterUsersProbe:
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 class TestBootstrapAdminRace:
-    """Concurrent ``bootstrap_admin`` on empty ``users`` must not crash a worker.
+    """Concurrent ``bootstrap_admin`` on empty ``users`` must not crash a server.
 
-    Under ``--engine pg --workers N`` two workers can both pass the
-    empty-``users`` probe before either commits its admin row. Without
-    ``ON CONFLICT`` the loser hits the ``users.email`` unique violation and the
-    worker dies at startup (K3-BOOTSTRAP-RACE). The seed must instead converge
-    on exactly one admin row, no exception, regardless of interleaving.
+    Two servers booting against one ``--engine pg`` database (a redeploy
+    overlap) can both pass the empty-``users`` probe before either commits its
+    admin row. Without ``ON CONFLICT`` the loser hits the ``users.email``
+    unique violation and dies at startup (K3-BOOTSTRAP-RACE). The seed must
+    instead converge on exactly one admin row, no exception, regardless of
+    interleaving.
     """
 
     async def test_loser_bootstrap_on_committed_admin_does_not_crash(
@@ -1163,7 +1164,7 @@ class TestBootstrapAdminRace:
 
         # Reproduce the TOCTOU deterministically: between ``bootstrap_admin``'s
         # own empty-``users`` probe and its ``INSERT INTO users``, a competing
-        # worker commits the admin row. A connection wrapper interposes on the
+        # server commits the admin row. A connection wrapper interposes on the
         # first users-insert -- rather than racing two coroutines on one event
         # loop -- so the probe-stale window is pinned every run. The insert must
         # converge on that row, not crash on the unique constraint.

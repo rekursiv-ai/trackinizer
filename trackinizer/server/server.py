@@ -14,7 +14,7 @@ Usage::
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, override
+from typing import override
 
 import argparse
 import logging
@@ -30,10 +30,6 @@ from trackinizer.server.config import (
     ConfigError,
     session_max_age_from_env,
 )
-
-
-if TYPE_CHECKING:
-    from fastapi import FastAPI
 
 
 logger = logging.getLogger("trackinizer")
@@ -56,83 +52,15 @@ class _SuppressZeroTaskCancel(logging.Filter):
         )
 
 
-APP_FACTORY_TARGET: str = f"{__name__}:build_app"
-"""Import string uvicorn re-imports in each forked worker.
+def main() -> None:
+    """Parse args, configure the app, and run uvicorn in THIS process.
 
-Multi-worker uvicorn spawns children that import the app themselves, so it
-rejects a constructed app object -- it logs "You must pass the application as
-an import string" and exits 3. Naming this module's factory is what lets
-``--workers N`` fan out at all.
-"""
-
-
-def build_app() -> FastAPI:
-    """Build a fully configured app from ``sys.argv``.
-
-    The entry point for a forked uvicorn worker. A worker is a fresh
-    interpreter that re-imports this module, so nothing the parent set up
-    survives -- not ``app.state``, not the logging configuration, not the
-    filters on the process-wide loggers. Every startup step is therefore
-    re-derived here from the argv the child inherited, which is what keeps
-    one source of truth with :func:`main`.
-    """
-    args, _log_level = _start_process()
-    _configure_app(args)
-    return app
-
-
-def main(*, workers: int = 1) -> None:
-    """Parse args, configure the app, and run uvicorn.
-
-    NOTE: multi-worker is currently unsupported, see ``docs/private/workers.md``.
-    """
-    args, log_level = _start_process()
-    # One worker runs the app in THIS process, so hand uvicorn the object it
-    # is already holding. More than one forks children that re-import, which
-    # only an import string can name -- passing the object there makes
-    # uvicorn refuse the fan-out and exit 3.
-    single_worker = workers <= 1
-    target: FastAPI | str = APP_FACTORY_TARGET
-    if single_worker:
-        _configure_app(args)
-        target = app
-    uvicorn.run(
-        target,
-        factory=not single_worker,
-        host=args.host,
-        port=args.port,
-        workers=workers,
-        # Also sets the level of ``uvicorn.access``, which logs one INFO line
-        # per request. Without this the flag configures only this package's
-        # logger and uvicorn keeps its own INFO default, so an operator who
-        # asked for WARNING still gets an access line per request -- behind a
-        # proxy that is a duplicate of the proxy's log, with the proxy's IP
-        # instead of the caller's, and it fills the log partition.
-        log_level=log_level,
-        timeout_keep_alive=args.timeout_keep_alive,
-        # Force-close connections immediately on shutdown instead of waiting for
-        # them to drain. Without this, uvicorn's default (wait indefinitely) made
-        # SIGTERM hang on a held connection (e.g. an open Web UI tab) until the
-        # 240s keep-alive window -- the "Waiting for connections to close" stall.
-        # In-flight DB writes are atomic (a force-closed asyncpg/PGlite tx rolls
-        # back), so there is nothing to drain for; 0 = don't wait, tear down now.
-        timeout_graceful_shutdown=0,
-    )
-
-
-def _start_process() -> tuple[argparse.Namespace, int | None]:
-    """Parse argv and apply every invariant a fresh server process needs.
-
-    Called by BOTH entry points. ``main`` runs in the supervisor; ``build_app``
-    runs in each forked worker, which is a fresh interpreter that inherited
-    only argv. Anything written into just one of them applies to only half the
-    deployment -- and the half that serves requests is the worker.
-
-    Returns:
-        args: The parsed arguments.
-        log_level: Resolved numeric level to hand uvicorn, or None when
-            neither the flag nor the environment named one.
-
+    One process serves everything. The inbound message queue
+    (:mod:`trackinizer.server.inbound`) and the subscriber sweep
+    (:mod:`trackinizer.server.subscriber`) are in-process state, so
+    uvicorn's fork-based fan-out would lose and duplicate messages; the app
+    object is handed to uvicorn directly rather than through a re-import
+    factory.
     """
     parser = argparse.ArgumentParser(
         description=(__doc__ or "").split("\n", 1)[0],
@@ -149,7 +77,27 @@ def _start_process() -> tuple[argparse.Namespace, int | None]:
     error_logger = logging.getLogger("uvicorn.error")
     if not any(isinstance(f, _SuppressZeroTaskCancel) for f in error_logger.filters):
         error_logger.addFilter(_SuppressZeroTaskCancel())
-    return args, log_level
+    _configure_app(args)
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        # Also sets the level of ``uvicorn.access``, which logs one INFO line
+        # per request. Without this the flag configures only this package's
+        # logger and uvicorn keeps its own INFO default, so an operator who
+        # asked for WARNING still gets an access line per request -- behind a
+        # proxy that is a duplicate of the proxy's log, with the proxy's IP
+        # instead of the caller's, and it fills the log partition.
+        log_level=log_level,
+        timeout_keep_alive=args.timeout_keep_alive,
+        # Force-close connections immediately on shutdown instead of waiting for
+        # them to drain. Without this, uvicorn's default (wait indefinitely) made
+        # SIGTERM hang on a held connection (e.g. an open Web UI tab) until the
+        # 240s keep-alive window -- the "Waiting for connections to close" stall.
+        # In-flight DB writes are atomic (a force-closed asyncpg/PGlite tx rolls
+        # back), so there is nothing to drain for; 0 = don't wait, tear down now.
+        timeout_graceful_shutdown=0,
+    )
 
 
 def _configure_app(args: argparse.Namespace) -> None:

@@ -167,8 +167,9 @@ class _LifecycleMixin(_StoreShared):
         :meth:`forget_bearer_identity_for_key` instead, which spares the
         user's other (still valid) keys.
 
-        It only reaches THIS process's cache. Under ``--workers N`` the other
-        workers keep serving their own entries until expiry, which is what
+        It only reaches THIS process's cache. Any other process against the
+        same database keeps serving its own entries until expiry -- a
+        redeploy overlap, or a second host on one Postgres -- which is what
         bounds :data:`auth.VERIFIED_BEARER_TTL_SEC`.
         """
         self._forget_bearers_where(lambda identity: identity.user_id == user_id)

@@ -7,19 +7,15 @@ deliberately **separate from** ``agent_session_events`` (capture): an inbound
 message is transient routing, not a recorded turn. When the agent consumes
 it, the capture path logs it as a normal turn.
 
-Phase-2a transport is a process-local in-memory queue (one trackinizer
-process; drop-if-absent semantics). The two functions
-:meth:`InboundQueue.enqueue` / :meth:`InboundQueue.drain` are the seam: a
-durable-inbox or multi-process upgrade (NOTIFY, a table, Redis) replaces them
-without touching routes or the client.
-
-TODO(inbound-multiworker): "one trackinizer process" is enforced, not
-assumed. This class is the ONLY per-worker state in the server, so it is why
-``--workers > 1`` is refused at startup: each worker would hold its own
-queue and its own dedup receipts, losing and duplicating messages.
-``TestMultiWorkerDelivery`` in ``inbound_test.py`` proves both (xfail,
-strict: they flip when a fix lands). The defect, the measurements, and the
-plan to lift the restriction are in ``docs/private/workers.md``.
+Transport is a process-local in-memory queue: one trackinizer process,
+drop-if-absent semantics. The server runs single-process for exactly this
+reason -- the queues, the dedup receipts, and the waiters below all live in
+memory, so a second process would neither see a send enqueued by the first
+nor its receipts. The two functions :meth:`InboundQueue.enqueue` /
+:meth:`InboundQueue.drain` are the seam: a durable-inbox or multi-process
+upgrade (NOTIFY, a table, Redis) replaces them without touching routes or
+the client. ``docs/private/workers.md`` specs that upgrade -- this class is
+the only per-process state standing between the server and ``--workers N``.
 """
 
 from __future__ import annotations
