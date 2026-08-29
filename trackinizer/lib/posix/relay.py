@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import asyncio
 import concurrent.futures
@@ -431,7 +431,7 @@ async def _readable(fd: int) -> bool:
     -- it is one blocking read per chunk, off the event loop.
     """
     loop = asyncio.get_running_loop()
-    ready: asyncio.Future[None] = loop.create_future()
+    ready = cast(asyncio.Future[None], loop.create_future())
     try:
         loop.add_reader(fd, _resolve, ready)
     except (OSError, ValueError):
