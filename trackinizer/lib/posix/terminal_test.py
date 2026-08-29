@@ -480,7 +480,7 @@ class TestLifecycle:
             "time.sleep(5)"
         )
 
-        async def run() -> int:
+        async def run() -> tuple[int, bool]:
             async with Terminal(
                 [sys.executable, "-c", deaf], terminate_grace_sec=0.2
             ) as term:
@@ -488,9 +488,12 @@ class TestLifecycle:
                 # does would prove nothing about the escalation.
                 await asyncio.sleep(0.3)
                 await term.terminate()
-                return await term.wait()
+                alive = _still_running(term._pid)
+                return await term.wait(), alive
 
-        assert asyncio.run(run()) == 128 + signal.SIGKILL
+        status, survived = asyncio.run(run())
+        assert status == 128 + signal.SIGKILL
+        assert not survived
 
     def test_terminate_escalation_is_bounded_by_the_grace(self) -> None:
         """The KILL lands after the grace, not after the child's own lifetime."""
@@ -778,12 +781,12 @@ class TestWriteFailures:
 
 
 def _still_running(pid: int) -> bool:
-    """Whether ``pid`` is alive and unreaped."""
+    """Whether ``pid`` is alive, without consuming its exit status."""
     try:
-        done, _ = os.waitpid(pid, os.WNOHANG)
+        exited = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
     except ChildProcessError:
         return False
-    return done == 0
+    return exited is None
 
 
 async def _read_until(term: Terminal, needle: bytes, timeout_sec: float) -> bytes:

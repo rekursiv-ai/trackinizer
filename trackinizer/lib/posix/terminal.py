@@ -457,7 +457,8 @@ class Terminal:
             await asyncio.sleep(0.01)
         # The whole group received TERM; once its leader is gone, the rest are
         # stragglers with no reason to outlive it.
-        _ = self._signal(signal.SIGKILL)
+        if self._signal(signal.SIGKILL):
+            await asyncio.to_thread(self._wait_until_exited)
 
     async def wait(self) -> int:
         """Return the child's exit status, or ``128 + signal`` when killed.
@@ -516,6 +517,14 @@ class Terminal:
         except ChildProcessError:
             return True
         return exited is not None
+
+    def _wait_until_exited(self) -> None:
+        """Wait for child exit without consuming the status used by wait()."""
+        pid = self._pid
+        if pid <= 0:
+            return
+        with contextlib.suppress(ChildProcessError):
+            _ = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
 
     def _reap(self) -> int:
         """Block until the child exits; return its status."""
