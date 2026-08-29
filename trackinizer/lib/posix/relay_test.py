@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import asyncio
 import contextlib
@@ -543,7 +544,7 @@ async def _drain(fd: int, into: bytearray) -> None:
     """Accumulate everything ``fd`` produces into ``into``."""
     loop = asyncio.get_running_loop()
     while True:
-        ready: asyncio.Future[None] = loop.create_future()
+        ready = cast(asyncio.Future[None], loop.create_future())
         loop.add_reader(fd, lambda f=ready: f.done() or f.set_result(None))
         try:
             await ready

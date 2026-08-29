@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
-from typing import Final, Self
+from typing import Final, Self, cast
 
 import asyncio
 import contextlib
@@ -414,7 +414,7 @@ class Terminal:
         """
         loop = asyncio.get_running_loop()
         while self._master_fd >= 0:
-            ready: asyncio.Future[None] = loop.create_future()
+            ready = cast(asyncio.Future[None], loop.create_future())
             loop.add_reader(self._master_fd, _resolve, ready)
             try:
                 await ready
