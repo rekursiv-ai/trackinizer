@@ -244,7 +244,41 @@
   .turn-tool code { font-size: 12px; }
   .turn-diff { background: var(--bg-row); }
   .turn-error { color: var(--danger, #c0392b); }
+  /* A tool call and its result, as one collapsible unit. Collapsed by default
+     so a long result cannot bury the conversation it belongs to; errors open
+     themselves, since a collapsed failure is a failure nobody reads. */
+  .tool-call { margin: 4px 0; border-left: 2px solid var(--border, #ddd); padding-left: 8px; }
+  .tool-call > summary { cursor: pointer; list-style: none; display: flex; gap: 8px;
+                         align-items: baseline; font-size: 12px; }
+  .tool-call > summary::-webkit-details-marker { display: none; }
+  .tool-call > summary::before { content: "\25B8"; color: var(--muted, #888); }
+  .tool-call[open] > summary::before { content: "\25BE"; }
+  .tool-call-error { border-left-color: var(--danger, #c0392b); }
+  .tool-name { font-weight: 600; }
+  .tool-args { color: var(--muted, #666); overflow: hidden; text-overflow: ellipsis;
+               white-space: nowrap; flex: 1 1 auto; min-width: 0; }
+  .tool-status { flex: 0 0 auto; font-size: 11px; }
+  .tool-status.ok { color: var(--muted, #888); }
+  .tool-status.bad { color: var(--danger, #c0392b); font-weight: 600; }
+  .tool-status.pending { color: var(--warning, #b8860b); }
+  .tool-receipt { font-size: 12px; color: var(--muted, #666); margin: 2px 0; }
+  .tool-missing { font-size: 12px; color: var(--warning, #b8860b); margin: 2px 0; }
+  /* Orphans are LOUD on purpose: they mean the capture is incomplete, and a
+     quieter treatment would let the transcript read as whole when it is not. */
+  .turn-orphan { border-left: 2px solid var(--warning, #b8860b); }
+  .tool-orphan-note { font-size: 12px; color: var(--warning, #b8860b); }
+  .tool-orphan-banner { font-size: 12px; color: var(--warning, #b8860b);
+                        border: 1px solid var(--warning, #b8860b); border-radius: 4px;
+                        padding: 6px 8px; margin-bottom: 8px; }
   .turn-compaction { color: var(--muted); font-style: italic; }
+  .turn-difffile { font-size: 11px; color: var(--muted); }
+  .turn-attachments { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+  .attach { display: flex; gap: 6px; align-items: baseline; font-size: 12px; }
+  .attach-kind { color: var(--muted, #888); font-size: 11px; flex: 0 0 auto; }
+  .attach-preview > summary { cursor: pointer; list-style: none; }
+  .attach-preview > summary::-webkit-details-marker { display: none; }
+  .attach-img { max-width: 100%; max-height: 320px; border: 1px solid var(--border, #ddd);
+                border-radius: 4px; }
   details.turn-thinking > summary { cursor: pointer; color: var(--muted); font-size: 11px; }
 
   /* Modal + picker. */
@@ -1290,16 +1324,79 @@ function renderTranscript(container, events) {
   const systemCount = events.filter(e => e.kind === "SystemMessage").length;
   let showSystem = false;
   const turns = el("div");
+  // ToolResult events are joined to the ToolCall that requested them and
+  // rendered inside it. Built once per paint, keyed on the provider's own id.
+  const results = new Map();
+  for (const ev of events) {
+    if (ev.kind === "ToolResult") {
+      const cid = (ev.message || {}).call_id;
+      if (cid) results.set(cid, ev);
+    }
+  }
   const paint = () => {
     turns.replaceChildren();
     const shown = showSystem ? events : events.filter(e => e.kind !== "SystemMessage");
     if (shown.length === 0) {
       turns.appendChild(el("div", { class: "empty" }, "no turns captured yet"));
     }
-    for (const ev of shown) turns.appendChild(renderTurn(ev));
+    // NESTING MUST NOT BECOME A FILTER.
+    //
+    // A ToolResult is hidden from the top level only once it has actually been
+    // rendered inside its call. Anything left over -- a result whose call_id
+    // matches no captured call, because the assistant turn was truncated or
+    // never captured -- is rendered where it always was, and SAID to be
+    // orphaned. A view that quietly drops what it cannot place reports a
+    // tidier session than the one that happened, which is the same defect as
+    // a row that stops describing the world without being able to say so.
+    const consumed = new Set();
+    for (const ev of shown) {
+      if (ev.kind === "ToolResult") continue;   // drawn inside its call, below
+      turns.appendChild(renderTurn(ev, results, consumed));
+    }
+    let orphans = 0;
+    for (const ev of shown) {
+      if (ev.kind !== "ToolResult" || consumed.has(ev)) continue;
+      orphans += 1;
+      const node = renderTurn(ev, results, consumed);
+      node.classList.add("turn-orphan");
+      node.prepend(el("div", { class: "tool-orphan-note" },
+        `Orphaned result: no captured tool call has id ${(ev.message || {}).call_id || "(none)"}.`));
+      turns.appendChild(node);
+    }
+    if (orphans > 0) {
+      turns.prepend(el("div", { class: "tool-orphan-banner" },
+        `${orphans} tool result${orphans === 1 ? "" : "s"} could not be matched to a captured call `
+        + `and are shown separately below.`));
+    }
   };
   const header = el("div", { class: "detail-header" },
     el("h3", {}, `Transcript (${events.length})`));
+  // The heading counts EVENTS; nesting means the reader now sees fewer
+  // top-level turns than that. Saying so keeps the number honest -- an
+  // unexplained gap between "Transcript (120)" and 80 visible turns reads as
+  // events having gone missing, which is the reading this whole view is
+  // trying to make impossible.
+  const nestedCount = events.filter(e => {
+    if (e.kind !== "ToolResult") return false;
+    const cid = (e.message || {}).call_id;
+    return Boolean(cid && results.has(cid));
+  }).length;
+  // Usage is a property of the SESSION, not of every turn. A CLI reports one
+  // total; putting a token chip on each assistant turn was chrome on every row
+  // for a number nobody compares turn-by-turn.
+  let totalTokens = 0;
+  for (const e of events) {
+    const tk = (e.message || {}).tokens;
+    if (tk) for (const v of Object.values(tk)) if (typeof v === "number") totalTokens += v;
+  }
+  if (totalTokens > 0) {
+    header.appendChild(el("span", { class: "hint", style: { fontSize: "11px" } },
+      `${totalTokens.toLocaleString()} tokens`));
+  }
+  if (nestedCount > 0) {
+    header.appendChild(el("span", { class: "hint", style: { fontSize: "11px" } },
+      `${nestedCount} tool result${nestedCount === 1 ? "" : "s"} shown inside their calls`));
+  }
   if (systemCount > 0) {
     const box = el("input", { type: "checkbox" });
     box.addEventListener("change", () => { showSystem = box.checked; paint(); });
@@ -1343,7 +1440,138 @@ function buildInboundBox(sessionId) {
   );
 }
 
-function renderTurn(ev) {
+// Media a turn carried: inline bytes, a file path, or a link. Captured by the
+// adapters since the schema was written and drawn nowhere until now -- an image
+// the model was shown, or a PDF a tool produced, existed in the record and was
+// invisible in the only view of it.
+//
+// TERSE BY DEFAULT, REACHABLE ON DEMAND. Each attachment is one line saying
+// what it is and how big; an image opens on click. The goal is not to put
+// everything on screen -- this view exists to be scanned like a CLI -- it is
+// that nothing in the record is unreachable from it.
+//
+// Inline preview is limited to raster images on purpose. An SVG data URI is not
+// scriptable inside <img> in current browsers, but the guarantee is
+// browser-version-dependent and this content is captured third-party tool
+// output, so anything outside the allowlist stays a chip and is never turned
+// into markup.
+const INLINE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+function attachChip(kind, label) {
+  return el("div", { class: "attach" },
+    el("span", { class: "attach-kind" }, kind),
+    el("span", { class: "mono" }, label));
+}
+
+function renderAttachments(attachments) {
+  const list = attachments || [];
+  if (!list.length) return null;
+  const box = el("div", { class: "turn-attachments" });
+  for (const a of list) {
+    const t = a && a.__type__;
+    if (t === "WebUrl") {
+      const href = httpUrl(a.url);
+      box.appendChild(el("div", { class: "attach" },
+        el("span", { class: "attach-kind" }, "link"),
+        href
+          ? el("a", { href, target: "_blank", rel: "noopener noreferrer" }, a.url)
+          : el("span", { class: "mono" }, a.url || "(empty)")));
+    } else if (t === "FilePath") {
+      box.appendChild(attachChip("file", a.path || "(empty)"));
+    } else if (t === "BytesAttachment") {
+      const desc = a.descriptor || "application/octet-stream";
+      // base64 length -> byte count, so the size is shown without decoding a
+      // potentially large payload just to measure it.
+      const b64 = a.data || "";
+      const kb = Math.floor(b64.length * 3 / 4 / 1024);
+      const label = `${desc} · ${kb.toLocaleString()} KB`;
+      if (INLINE_IMAGE_TYPES.has(desc)) {
+        const d = el("details", { class: "attach-preview" },
+          el("summary", {}, attachChip("image", label)));
+        d.appendChild(el("img", { class: "attach-img",
+          src: `data:${desc};base64,${b64}`, alt: desc }));
+        box.appendChild(d);
+      } else {
+        box.appendChild(attachChip("attachment", label));
+      }
+    } else {
+      // An attachment kind this view does not know is still announced: the
+      // alternative is a turn that silently carried something.
+      box.appendChild(attachChip("attachment", String(t || "unknown")));
+    }
+  }
+  return box;
+}
+
+// A one-line precis of call arguments: enough to tell two calls of the same
+// tool apart without pasting a whole file into the transcript.
+function toolArgSummary(args) {
+  // A CLI prints `Read(foo.py)`. It picks the one argument that identifies the
+  // call and drops the rest, because a reader scanning a hundred calls needs to
+  // tell them apart, not to audit their parameters -- the full arguments are
+  // one click away in the expanded body.
+  const a = args || {};
+  for (const k of ["file_path", "path", "notebook_path", "command", "pattern",
+                   "url", "query", "prompt", "description"]) {
+    if (typeof a[k] === "string" && a[k]) {
+      let v = a[k].replace(/\s+/g, " ");
+      if (v.length > 48) v = "\u2026" + v.slice(-47);
+      return v;
+    }
+  }
+  const n = Object.keys(a).length;
+  return n ? `${n} arg${n === 1 ? "" : "s"}` : "";
+}
+
+// One tool call with its result nested inside it, collapsed by default.
+//
+// The call and its result are joined on ToolCall.id === ToolResult.call_id --
+// a real provider-assigned key, not an inference from adjacency. Rendering
+// them as separate top-level turns (the previous behaviour) left the reader to
+// re-pair them by eye, and a long result buried the conversation it belonged to.
+//
+// Failures open by default. A collapsed error is an error nobody reads.
+function renderToolCall(tc, result) {
+  const err = result && result.is_error;
+  const summary = el("summary", { class: "tool-summary" },
+    el("span", { class: "tool-name" }, tc.name || "(tool)"),
+    el("span", { class: "tool-args mono" }, toolArgSummary(tc.args)),
+    el("span", { class: "tool-status " + (result ? (err ? "bad" : "ok") : "pending") },
+       result ? (err ? "error" : "ok") : "no result captured"),
+  );
+  const box = el("details", { class: "tool-call" + (err ? " tool-call-error" : "") }, summary);
+  if (err) box.open = true;
+  if (result) {
+    if (result.summary) box.appendChild(el("div", { class: "tool-receipt" }, result.summary));
+    if (result.diff) {
+      if (result.diff_file_path) {
+        box.appendChild(el("div", { class: "turn-difffile mono" }, result.diff_file_path));
+      }
+      box.appendChild(el("pre", { class: "turn-diff" }, result.diff));
+    } else if (result.content) {
+      box.appendChild(el("pre", { class: err ? "turn-error" : "" }, result.content));
+    }
+  } else {
+    // Not silently blank: a call whose result never arrived is a fact about the
+    // capture, and the reader should be told rather than left to assume the
+    // tool returned nothing.
+    box.appendChild(el("div", { class: "tool-missing" },
+      "No ToolResult was captured for this call id."));
+  }
+  if (result) {
+    const att = renderAttachments(result.attachments);
+    if (att) box.appendChild(att);
+  }
+  return box;
+}
+
+// Lines in a result body, for the fold's summary line.
+function bodyLineCount(m) {
+  const t = m.diff || m.content || "";
+  return t ? t.split("\n").length : 0;
+}
+
+function renderTurn(ev, results, consumed) {
   const m = ev.message || {};
   const head = el("div", { class: "turn-head" },
     el("span", { class: "turn-kind" }, ev.kind),
@@ -1354,6 +1582,8 @@ function renderTurn(ev) {
   if (ev.kind === "UserMessage" || ev.kind === "AgentSendMessage") {
     if (m.source) head.appendChild(el("span", { class: "turn-source" }, `from ${m.source}`));
     body.appendChild(renderMarkdown(m.text || ""));
+    const att = renderAttachments(m.attachments);
+    if (att) body.appendChild(att);
   } else if (ev.kind === "SystemMessage") {
     if (m.role) head.appendChild(el("span", { class: "turn-source" }, m.role));
     body.appendChild(renderMarkdown(m.text || ""));
@@ -1364,25 +1594,55 @@ function renderTurn(ev) {
     }
     if (m.text) body.appendChild(renderMarkdown(m.text));
     for (const tc of (m.tool_calls || [])) {
-      body.appendChild(el("div", { class: "turn-tool" },
-        el("code", {}, `${tc.name}(${JSON.stringify(tc.args || {})})`)));
+      const res = results && tc.id ? results.get(tc.id) : null;
+      if (res && consumed) consumed.add(res);
+      body.appendChild(renderToolCall(tc, res ? (res.message || {}) : null));
     }
   } else if (ev.kind === "ToolResult") {
+    // Reached only when the result could not be nested. It is folded like a
+    // nested one: the FACT that it is orphaned is the signal, and 574 lines of
+    // output are not -- an orphan that owns the viewport buries the very banner
+    // announcing it.
+    const d = el("details", { class: "tool-call" },
+      el("summary", { class: "tool-summary" },
+        el("span", { class: "tool-name" }, "result"),
+        el("span", { class: "tool-args mono" }, m.diff_file_path || `${bodyLineCount(m)} lines`),
+        el("span", { class: "tool-status " + (m.is_error ? "bad" : "ok") },
+           m.is_error ? "error" : "ok")));
+    if (m.is_error) d.open = true;
     if (m.diff) {
-      body.appendChild(el("pre", { class: "turn-diff" }, m.diff));
+      // A diff with no path is a diff you cannot act on.
+      if (m.diff_file_path) {
+        d.appendChild(el("div", { class: "turn-difffile mono" }, m.diff_file_path));
+      }
+      d.appendChild(el("pre", { class: "turn-diff" }, m.diff));
     } else {
-      body.appendChild(el("pre", { class: m.is_error ? "turn-error" : "" }, m.content || ""));
+      d.appendChild(el("pre", { class: m.is_error ? "turn-error" : "" }, m.content || ""));
     }
+    body.appendChild(d);
+    const att = renderAttachments(m.attachments);
+    if (att) body.appendChild(att);
   } else if (ev.kind === "Compaction") {
     body.appendChild(el("div", { class: "turn-compaction" },
-      `compacted ${m.token_before || 0} → ${m.token_after || 0} tokens`));
+      `compacted ${m.token_before || 0} → ${m.token_after || 0} tokens`
+      + (m.fallback_reason ? ` (fallback: ${m.fallback_reason})` : "")));
     if (m.text) body.appendChild(renderMarkdown(m.text));
   } else if (ev.kind === "SlashCommand") {
     // A CLI command the human typed (e.g. /exit); the model never saw it.
     body.appendChild(el("div", { class: "turn-tool" },
       el("code", {}, `/${m.command || ""}${m.args ? " " + m.args : ""}`)));
   } else {
-    body.appendChild(el("pre", {}, JSON.stringify(m, null, 2)));
+    // A kind this view does not know is folded rather than dumped: the raw CLI
+    // record is arbitrary in size, and pasting it inline puts an unbounded blob
+    // in the scan path for an event nobody has taught the view to summarise.
+    // Still one click away -- unknown must not become unreachable, or the
+    // escape hatch that keeps unrecognised records stops being one.
+    const raw = JSON.stringify(m, null, 2);
+    body.appendChild(el("details", { class: "tool-call" },
+      el("summary", { class: "tool-summary" },
+        el("span", { class: "tool-name" }, "raw record"),
+        el("span", { class: "tool-args mono" }, `${raw.length.toLocaleString()} chars`)),
+      el("pre", {}, raw)));
   }
   return el("div", { class: "turn" }, head, body);
 }
