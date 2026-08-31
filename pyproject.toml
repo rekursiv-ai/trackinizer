@@ -46,7 +46,7 @@ trackinizer = "trackinizer.server.server:main"
 trax = "trackinizer.trax.cli:main"
 
 [dependency-groups]
-# uv sync --all-groups
+# uv sync --all-groups --all-extras --frozen
 
 debug = [
     "ipython",
@@ -56,13 +56,13 @@ lint = [
     "ruff",
 ]
 test = [
-    "nodejs-wheel-binaries>=24.16.0",
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.8.0",
     "pytest>=7.0",
+    "nodejs-wheel-binaries>=24.16.0",
     "hypothesis>=6.155.1",
     "pytest-asyncio>=1.3.0",
-    "pytest-postgresql>=8.0",
+    "pytest-postgresql>=9.0",
 ]
 typecheck = [
     "basedpyright>=1.10",
@@ -76,8 +76,8 @@ typecheck = [
     {include-group = "typecheck"},
 ]
 dev = [
-    {include-group = "debug"},
     {include-group = "pre-commit"},
+    {include-group = "debug"},
 ]
 
 [project.urls]
@@ -150,6 +150,7 @@ markers = [
     "gpu_jax_cuda: requires JAX CUDA execution",
     "gpu_nvidia: requires NVIDIA GPU hardware",
     "gpu_torch_cuda: requires torch CUDA execution",
+    "gpu_torch_mps: requires torch MPS execution",
     "gpu_triton: requires Triton kernels",
     "network_anthropic: reaches Anthropic over the network",
     "network_duckduckgo: reaches DuckDuckGo over the network",
@@ -158,6 +159,7 @@ markers = [
     "network_github: reaches GitHub over the network",
     "network_huggingface: reaches Hugging Face over the network",
     "network_kaggle: reaches Kaggle over the network",
+    "network_localhost: opens a loopback network socket",
     "network_openai: reaches OpenAI over the network",
     "network_openml: reaches OpenML over the network",
     "network_openreview: reaches OpenReview over the network",
@@ -424,7 +426,7 @@ from-first = true
 lines-between-types = 1
 lines-after-imports = 2
 extra-standard-library = ["typing", "typing_extensions", "ty_extensions"]
-known-first-party = ["loop"]
+known-first-party = ["trackinizer"]
 no-lines-before = ["future"]
 order-by-type = true
 relative-imports-order = "closest-to-furthest"
@@ -440,6 +442,7 @@ section-order = [
 typeCheckingMode = "recommended"
 failOnWarnings = true  # Warnings fail the check (basedpyright default; pinned explicitly).
 useLibraryCodeForTypes = false
+extraPaths = ["typings"]
 exclude = [
     "**/.venv/",
     "**/.venv-ci312/",
@@ -538,6 +541,10 @@ package = true
 environments = [
     "sys_platform == 'linux'",
     "sys_platform == 'darwin'",
+]
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
 [tool.uv.pip]
