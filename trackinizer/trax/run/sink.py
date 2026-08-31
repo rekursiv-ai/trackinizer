@@ -34,7 +34,7 @@ import threading
 import time
 
 from trackinizer.client.client import Client
-from trackinizer.lib.custom_json import JSON
+from trackinizer.lib.custom_json import JSON, DataclassCodec
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.wire.wire_sessions import (
     EventBody,
@@ -121,7 +121,7 @@ def _event_body(seq: int, event: Event) -> EventBody:
         kind=event.kind,
         timestamp=event.timestamp,
         model=event.model,
-        message=event.message.to_json(),
+        message=DataclassCodec.to_json(event.message),
     )
 
 

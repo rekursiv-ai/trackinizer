@@ -41,7 +41,7 @@ import uuid
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import dict_val, float_val, str_val
+from trackinizer.lib.custom_json import DictCodec, FloatCodec, StrCodec
 from trackinizer.trax.profile import load_profile
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import Inquiry
@@ -61,7 +61,7 @@ def _peer_map(detail: Mapping[str, object], key: str) -> _PeerMap:
 
 def _opt_float(value: object) -> float | None:
     """Coerce a JSON edge ``valence`` to ``float`` (``None`` stays ``None``)."""
-    return None if value is None else float_val(value)
+    return None if value is None else FloatCodec.coerce(value)
 
 
 # The subset of fields the graph view (and a faithful-enough replay) needs,
@@ -300,7 +300,7 @@ def _crawl_and_insert(
     for ref in seeds:
         seed_id = _resolve_seed(source, ref)
         if seed_id not in seen:
-            seen[seed_id] = dict_val(source.get(f"/api/web/get/{seed_id}"))
+            seen[seed_id] = DictCodec.coerce(source.get(f"/api/web/get/{seed_id}"))
             frontier.append(seed_id)
 
     pending: list[dict[str, Any]] = []
@@ -321,7 +321,7 @@ def _crawl_and_insert(
         pending.append(detail)
         for peer_id in _detail_peers(detail):
             if peer_id not in seen:
-                seen[peer_id] = dict_val(source.get(f"/api/web/get/{peer_id}"))
+                seen[peer_id] = DictCodec.coerce(source.get(f"/api/web/get/{peer_id}"))
                 frontier.append(peer_id)
         if len(pending) >= chunk:
             flush()
@@ -397,8 +397,8 @@ def _resolve_seed(source: Client, ref: str) -> str:
     text = ref.strip()
     if "#" in text:
         kind, _, seq = text.partition("#")
-        row = dict_val(source.get(f"/api/inquiries/{kind}/{seq}"))
-        return str_val(row.get("id"))
+        row = DictCodec.coerce(source.get(f"/api/inquiries/{kind}/{seq}"))
+        return StrCodec.coerce(row.get("id"))
     return text
 
 

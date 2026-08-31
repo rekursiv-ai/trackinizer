@@ -16,11 +16,11 @@ import asyncpg
 
 from trackinizer.conftest import FakeEngine, make_store
 from trackinizer.lib.custom_json import (
+    DictCodec,
+    FloatCodec,
+    IntCodec,
     SchemaError,
-    dict_val,
-    float_val,
-    int_val,
-    str_val,
+    StrCodec,
 )
 from trackinizer.server.api import app as app_module
 from trackinizer.server.api.app import (
@@ -165,15 +165,15 @@ class TestRequestLogging:
             for record in caplog.records
             if getattr(record, "event", "") == "trackinizer_request_completed"
         )
-        fields = dict_val(record.__dict__)
-        assert str_val(fields.get("request_id")) == str(request_id)
-        assert str_val(fields.get("method")) == "GET"
-        assert str_val(fields.get("path")) == "/api/version"
-        assert str_val(fields.get("outcome")) == "success"
-        assert int_val(fields.get("status_code"), 0) == 200
-        assert int_val(fields.get("worker_pid"), 0) > 0
-        assert float_val(fields.get("response_start_sec"), -1) >= 0
-        assert float_val(fields.get("duration_sec"), -1) >= float_val(
+        fields = DictCodec.coerce(record.__dict__)
+        assert StrCodec.coerce(fields.get("request_id")) == str(request_id)
+        assert StrCodec.coerce(fields.get("method")) == "GET"
+        assert StrCodec.coerce(fields.get("path")) == "/api/version"
+        assert StrCodec.coerce(fields.get("outcome")) == "success"
+        assert IntCodec.coerce(fields.get("status_code"), 0) == 200
+        assert IntCodec.coerce(fields.get("worker_pid"), 0) > 0
+        assert FloatCodec.coerce(fields.get("response_start_sec"), -1) >= 0
+        assert FloatCodec.coerce(fields.get("duration_sec"), -1) >= FloatCodec.coerce(
             fields.get("response_start_sec"),
             0,
         )
@@ -198,10 +198,10 @@ class TestRequestLogging:
             for record in caplog.records
             if getattr(record, "event", "") == "trackinizer_request_completed"
         )
-        fields = dict_val(record.__dict__)
-        assert str_val(fields.get("request_id")) == request_id
-        assert str_val(fields.get("outcome")) == "rejected"
-        assert int_val(fields.get("status_code"), 0) == 404
+        fields = DictCodec.coerce(record.__dict__)
+        assert StrCodec.coerce(fields.get("request_id")) == request_id
+        assert StrCodec.coerce(fields.get("outcome")) == "rejected"
+        assert IntCodec.coerce(fields.get("status_code"), 0) == 404
 
 
 class TestAuthDisabledWarning:

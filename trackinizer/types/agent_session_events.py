@@ -37,10 +37,9 @@ The message union::
 own; ``Attachment`` (bytes, a file path, or a URL) rides on the message
 types that can carry media. These message/attachment classes are value
 types -- like :class:`Cost`, they live inside a row, so they carry no
-``ColumnSpec``. Each gains ``to_json`` / ``from_json`` from the shared
-:class:`~trackinizer.lib.custom_json.JsonCodec` mixin, round-tripping through the
-``message`` JSONB column; :func:`message_for_kind` resolves the row's
-``kind`` string back to its class for decode (``{cls.__name__: cls}``).
+``ColumnSpec``. Each round-trips through :class:`~trackinizer.lib.custom_json.DataclassCodec` and the
+``message`` JSONB column; :func:`message_for_kind` resolves the row's ``kind``
+string back to its class for decode (``{cls.__name__: cls}``).
 """
 
 from __future__ import annotations
@@ -52,23 +51,21 @@ from pathlib import Path
 from typing import Any, Literal, Self, cast
 from uuid import UUID, uuid4
 
-from trackinizer.lib.custom_json import JSON, JsonCodec
+from trackinizer.lib.custom_json import JSON, DataclassCodec
 from trackinizer.types.columns import ColumnSpec, Row
 from trackinizer.types.cost import TokenCount
 
 
-# Value types (attachments, tool calls, token counts, message members) all
-# round-trip via the shared, type-hint-driven :class:`JsonCodec` mixin: each
-# gains ``to_json`` / ``from_json`` with no per-type code. ``bytes`` (base64),
-# ``Path`` / ``UUID`` / ``datetime``, and the ``Attachment`` union (tagged by
-# class name) are handled by the codec, not here.
+# Value types round-trip through the shared, type-hint-driven DataclassCodec.
+# ``bytes`` (base64), ``Path`` / ``UUID`` / ``datetime``, and the ``Attachment``
+# union are handled by the codec, not here.
 
 
 # -- Attachments --------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class BytesAttachment(JsonCodec):
+class BytesAttachment:
     """A binary attachment held inline: an image or PDF.
 
     An :data:`Attachment`, not a :data:`Message`: it rides on a message, it is
@@ -84,7 +81,7 @@ class BytesAttachment(JsonCodec):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class FilePath(JsonCodec):
+class FilePath:
     """An attachment referenced by path rather than carried inline."""
 
     path: Path = Path()
@@ -92,7 +89,7 @@ class FilePath(JsonCodec):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class WebUrl(JsonCodec):
+class WebUrl:
     """A web link attached to a turn."""
 
     url: str = ""
@@ -107,7 +104,7 @@ type Attachment = BytesAttachment | FilePath | WebUrl
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ToolCall(JsonCodec):
+class ToolCall:
     """One tool invocation the model requested, nested in an assistant turn.
 
     Never a row of its own: a model turn can request several tools at once,
@@ -127,7 +124,7 @@ class ToolCall(JsonCodec):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class UserMessage(JsonCodec):
+class UserMessage:
     """Human-authored user-role input the model saw."""
 
     text: str = ""
@@ -138,7 +135,7 @@ class UserMessage(JsonCodec):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class AgentSendMessage(JsonCodec):
+class AgentSendMessage:
     """Agent-authored user-role input the model saw.
 
     The same shape as :class:`UserMessage`, plus :attr:`source` -- the label
@@ -158,7 +155,7 @@ class AgentSendMessage(JsonCodec):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class SystemMessage(JsonCodec):
+class SystemMessage:
     """System / developer context the model saw but the human did not type.
 
     A CLI primes the model with provider-injected context -- a permissions or
@@ -178,7 +175,7 @@ class SystemMessage(JsonCodec):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class AssistantMessage(JsonCodec):
+class AssistantMessage:
     """One model turn: text and/or thinking and/or tool calls, together.
 
     A single turn -- not split per modality. The user-visible reply, the
@@ -224,7 +221,7 @@ class AssistantMessage(JsonCodec):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class ToolResult(JsonCodec):
+class ToolResult:
     """The result of one tool invocation, echoed back to the model."""
 
     call_id: str = ""
@@ -250,7 +247,7 @@ class ToolResult(JsonCodec):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class Compaction(JsonCodec):
+class Compaction:
     """A context-window compaction event.
 
     Compaction runs its own summarizing model call, so it carries
@@ -273,7 +270,7 @@ class Compaction(JsonCodec):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class SlashCommand(JsonCodec):
+class SlashCommand:
     """A CLI slash-command the human typed into the TUI (``/exit``, ``/model``).
 
     Handled inside the CLI -- it changes CLI state, not model context -- so the
@@ -293,7 +290,7 @@ class SlashCommand(JsonCodec):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class UnknownMessage(JsonCodec):
+class UnknownMessage:
     """A record an adapter recognized but cannot yet map to a typed member.
 
     The escape hatch: rather than drop an unrecognized CLI log record, the
@@ -340,9 +337,8 @@ There is no standalone ``ToolCall`` kind -- a tool call is nested in
 
 
 # The one irreducible piece of decode-from-a-kind-string: a class lookup.
-# Encoding needs no registry (``message.to_json()``); decoding from a row's
-# ``kind`` string resolves the member here and calls its inherited
-# ``from_json``. Used inline by :meth:`AgentSessionEvent.from_row`.
+# Encoding needs no registry; decoding from a row's ``kind`` string resolves
+# the member here. Used inline by :meth:`AgentSessionEvent.from_row`.
 _MESSAGE_BY_KIND: Mapping[str, type[Message]] = {
     cls.__name__: cls
     for cls in (
@@ -363,7 +359,7 @@ def message_for_kind(kind: str) -> type[Message]:
 
     The one place the ``kind`` string maps to a class -- the analog of
     :data:`KIND_TO_CLASS` for inquiries. Callers decode a stored / wire
-    ``message`` via ``message_for_kind(kind).from_json(data)``.
+    ``message`` via ``DataclassCodec.from_json(message_for_kind(kind), data)``.
     """
     member = _MESSAGE_BY_KIND.get(kind)
     if member is None:
@@ -465,5 +461,7 @@ class AgentSessionEvent:
             if f.name in row:
                 kwargs[f.name] = row[f.name]
         raw = cast(Mapping[str, object], row.get("message") or {})
-        kwargs["message"] = message_for_kind(str(kwargs["kind"])).from_json(raw)
+        kwargs["message"] = DataclassCodec.from_json(
+            message_for_kind(str(kwargs["kind"])), raw
+        )
         return cls(**kwargs)

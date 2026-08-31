@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 import pytest
 
-from trackinizer.lib.custom_json import SchemaError
+from trackinizer.lib.custom_json import DataclassCodec, SchemaError
 from trackinizer.types.agent_session_events import (
     AgentSendMessage,
     AgentSessionEvent,
@@ -127,11 +127,11 @@ class TestEventBody:
             assert EventBody(seq=0, kind=kind).kind == kind
 
     def test_untagged_wrong_shape_message_rejected(self) -> None:
-        # A ToolResult body whose JSON carries no ``__type__`` tag and only
+        # A ToolResult body whose JSON carries no type tag and only
         # foreign keys ({"text": "x"}) must not silently decode to a default
         # ToolResult with the unknown keys dropped; the kind/message shape
         # disagreement is a 422, not a lossy default.
-        with pytest.raises(ValueError, match=r"omits the __type__|disagrees"):
+        with pytest.raises(ValueError, match=r"omits the py/object|disagrees"):
             EventBody(kind="ToolResult", seq=0, message={"text": "x"}).to_event(
                 uuid.uuid4()
             )
@@ -146,7 +146,7 @@ class TestEventBody:
             EventBody(
                 kind="ToolResult",
                 seq=0,
-                message={"__type__": "ToolResult", "bogus": 1},
+                message={"py/object": "ToolResult", "bogus": 1},
             ).to_event(uuid.uuid4())
 
     def test_round_trip_through_event(self) -> None:
@@ -170,7 +170,7 @@ class TestEventBody:
         # ``from_event`` (trusted typed source) and ``to_event`` (untrusted
         # wire decode) must be exact inverses for EVERY message kind, not just
         # AssistantMessage -- a member that serialized lossily (a dropped field,
-        # an unset ``__type__``) would silently corrupt one captured turn. Pins
+        # an unset type tag) would silently corrupt one captured turn. Pins
         # the symmetry as a drift guard across the whole Kind vocabulary.
         sid = uuid.uuid4()
         # ``kind`` equals the member class name by construction (the
@@ -195,7 +195,7 @@ class TestAppendEventsRequest:
                 EventBody(
                     seq=0,
                     kind="UserMessage",
-                    message=UserMessage(text="hi").to_json(),
+                    message=DataclassCodec.to_json(UserMessage(text="hi")),
                 ),
                 EventBody(seq=1, kind="AssistantMessage", model="gpt-5.5"),
             ]

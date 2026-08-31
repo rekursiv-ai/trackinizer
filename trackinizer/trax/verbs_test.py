@@ -11,7 +11,7 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import int_val
+from trackinizer.lib.custom_json import IntCodec
 from trackinizer.trax import verbs
 from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.grammar import (
@@ -1940,7 +1940,7 @@ def test_whole_collection_views_never_exceed_server_cap(client: FakeClient) -> N
         for call in (c for c in client.calls if c[0] == "list_kind"):
             kwargs = call[-1]
             assert isinstance(kwargs, dict)
-            assert int_val(kwargs["limit"], 0) <= MAX_LIST_LIMIT, verb
+            assert IntCodec.coerce(kwargs["limit"], 0) <= MAX_LIST_LIMIT, verb
 
 
 # Folded in from former crasher_test.py.

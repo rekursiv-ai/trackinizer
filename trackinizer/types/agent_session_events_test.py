@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 
+from trackinizer.lib.custom_json import DataclassCodec
 from trackinizer.types.agent_session_events import (
     AgentSendMessage,
     AgentSessionEvent,
@@ -61,7 +62,7 @@ _MESSAGES = [
 class TestMessageRoundTrip:
     @pytest.mark.parametrize("msg", _MESSAGES, ids=lambda m: type(m).__name__)
     def test_to_from_json_is_identity(self, msg: Message) -> None:
-        assert type(msg).from_json(msg.to_json()) == msg
+        assert DataclassCodec.from_json(type(msg), DataclassCodec.to_json(msg)) == msg
 
     def test_kind_matches_class_name(self) -> None:
         for msg in _MESSAGES:
@@ -112,7 +113,7 @@ class TestAgentSessionEvent:
             "kind": "AssistantMessage",
             "model": "gpt-5.5",
             "timestamp": now,
-            "message": msg.to_json(),
+            "message": DataclassCodec.to_json(msg),
             "created": None,
         }
         rebuilt = AgentSessionEvent.from_row(cast(Row, row))
@@ -129,7 +130,7 @@ class TestAgentSessionEvent:
             "kind": "UnknownMessage",
             "model": None,
             "timestamp": None,
-            "message": msg.to_json(),
+            "message": DataclassCodec.to_json(msg),
             "created": None,
         }
         rebuilt = AgentSessionEvent.from_row(cast(Row, row))

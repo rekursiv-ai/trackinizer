@@ -23,6 +23,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from trackinizer.lib.custom_json import DataclassCodec
 from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.store.core import Store, StubEmbedder
@@ -92,7 +93,9 @@ async def test_agentsession_lifecycle_writes_succeed(store: Store) -> None:
         session_id,
         [
             EventBody(
-                seq=0, kind="UserMessage", message=UserMessage(text="hi").to_json()
+                seq=0,
+                kind="UserMessage",
+                message=DataclassCodec.to_json(UserMessage(text="hi")),
             )
         ],
     )
@@ -122,10 +125,12 @@ async def test_session_events_strip_postgres_incompatible_nuls(store: Store) -> 
     event = EventBody(
         seq=0,
         kind="ToolResult",
-        message=ToolResult(
-            call_id="call-1",
-            content="before\0after; literal \\u0000 remains",
-        ).to_json(),
+        message=DataclassCodec.to_json(
+            ToolResult(
+                call_id="call-1",
+                content="before\0after; literal \\u0000 remains",
+            )
+        ),
     )
 
     appended, skipped = await store.append_events(session_id, [event])
@@ -202,7 +207,9 @@ async def test_append_events_after_purge_is_not_found(store: Store) -> None:
             session_id,
             [
                 EventBody(
-                    seq=0, kind="UserMessage", message=UserMessage(text="hi").to_json()
+                    seq=0,
+                    kind="UserMessage",
+                    message=DataclassCodec.to_json(UserMessage(text="hi")),
                 )
             ],
         )

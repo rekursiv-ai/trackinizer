@@ -19,6 +19,7 @@ import httpx
 import pytest
 
 from trackinizer.conftest import new_uuid
+from trackinizer.lib.custom_json import DataclassCodec
 from trackinizer.server import web
 from trackinizer.server.api import (
     edit,
@@ -139,13 +140,15 @@ class TestIntegrationEndToEnd:
         )
         batch = [
             EventBody(
-                seq=0, kind="UserMessage", message=UserMessage(text="hi").to_json()
+                seq=0,
+                kind="UserMessage",
+                message=DataclassCodec.to_json(UserMessage(text="hi")),
             ),
             EventBody(seq=1, kind="AssistantMessage", model="gpt-5.5"),
             EventBody(
                 seq=2,
                 kind="AssistantMessage",
-                message=AssistantMessage(text="ok").to_json(),
+                message=DataclassCodec.to_json(AssistantMessage(text="ok")),
             ),
         ]
         appended, skipped = await integ_store.append_events(sid, batch)
@@ -1533,7 +1536,9 @@ class TestIntegrationEndToEnd:
             sci,
             [
                 EventBody(
-                    seq=0, kind="UserMessage", message=UserMessage(text="a").to_json()
+                    seq=0,
+                    kind="UserMessage",
+                    message=DataclassCodec.to_json(UserMessage(text="a")),
                 )
             ],
         )
@@ -1541,7 +1546,9 @@ class TestIntegrationEndToEnd:
             eng,
             [
                 EventBody(
-                    seq=0, kind="UserMessage", message=UserMessage(text="b").to_json()
+                    seq=0,
+                    kind="UserMessage",
+                    message=DataclassCodec.to_json(UserMessage(text="b")),
                 )
             ],
         )
@@ -1799,7 +1806,7 @@ class TestIntegrationEndToEnd:
         forged = EventBody(
             seq=0,
             kind="UserMessage",
-            message=AssistantMessage(text="not a user message").to_json(),
+            message=DataclassCodec.to_json(AssistantMessage(text="not a user message")),
         )
         with pytest.raises(ValueError, match="disagrees with message type"):
             await integ_store.append_events(sid, [forged])
@@ -1852,7 +1859,7 @@ class TestIntegrationEndToEnd:
                 EventBody(
                     seq=0,
                     kind="ToolResult",
-                    message=ToolResult(content=big_text).to_json(),
+                    message=DataclassCodec.to_json(ToolResult(content=big_text)),
                 )
             ],
         )
@@ -1913,7 +1920,7 @@ class TestIntegrationEndToEnd:
                         {
                             "seq": 0,
                             "kind": "UserMessage",
-                            "message": UserMessage(text="hi").to_json(),
+                            "message": DataclassCodec.to_json(UserMessage(text="hi")),
                         },
                         {"seq": 1, "kind": "AssistantMessage", "model": "gpt-5.5"},
                     ]

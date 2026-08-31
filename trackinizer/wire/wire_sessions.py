@@ -28,7 +28,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from trackinizer.lib.custom_json import JSON
+from trackinizer.lib.custom_json import JSON, TYPE_TAG, DataclassCodec
 from trackinizer.types.agent_session_events import (
     AgentSessionEvent,
     Kind,
@@ -191,32 +191,34 @@ class EventBody(BaseModel):
             kind=event.kind,
             timestamp=event.timestamp,
             model=event.model,
-            message=event.message.to_json(),
+            message=DataclassCodec.to_json(event.message),
         )
 
     def to_event(self, session_id: uuid.UUID) -> AgentSessionEvent:
         """Rebuild the typed event for ``session_id`` from this wire body.
 
         Raises:
-          ValueError: The ``message`` body's encoded ``__type__`` tag
-            disagrees with ``kind``, or a non-empty body omits the tag
+          ValueError: The ``message`` body's encoded type tag disagrees
+            with ``kind``, or a non-empty body omits the tag
             entirely -- a forged or wrong-shape body cannot smuggle one
             message type under another's discriminator, nor silently decode
             to a default member with its foreign keys dropped.
 
         """
         member = message_for_kind(self.kind)
-        tag = self.message.get("__type__")
+        tag = self.message.get(TYPE_TAG)
         # An empty ``{}`` is the explicit default-member sentinel (no fields
-        # to carry, so no tag). Any other body must carry ``__type__``: a
+        # to carry, so no tag). Any other body must carry the tag: a
         # non-empty untagged body is wrong-shape, and the tag is what names
         # WHICH member to check it against. (``from_json`` also rejects a
         # foreign key outright now, but only once a member is chosen.)
         if self.message and tag is None:
             raise ValueError(
-                f"kind {self.kind!r} message omits the __type__ discriminator"
+                f"kind {self.kind!r} message omits the {TYPE_TAG} discriminator"
             )
-        if tag is not None and tag != self.kind:
+        # The tag is a dotted import path; ``kind`` names only the class, so
+        # the comparison is on the final segment.
+        if tag is not None and str(tag).rsplit(".", 1)[-1] != self.kind:
             raise ValueError(f"kind {self.kind!r} disagrees with message type {tag!r}")
         return AgentSessionEvent(
             session_id=session_id,
@@ -224,7 +226,7 @@ class EventBody(BaseModel):
             kind=self.kind,
             timestamp=self.timestamp,
             model=self.model,
-            message=member.from_json(self.message),
+            message=DataclassCodec.from_json(member, self.message),
         )
 
 

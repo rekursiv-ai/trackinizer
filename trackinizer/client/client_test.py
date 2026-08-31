@@ -21,7 +21,7 @@ from trackinizer.client.client import (
     server_url,
 )
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import dict_val, float_val, int_val, str_val
+from trackinizer.lib.custom_json import DictCodec, FloatCodec, IntCodec, StrCodec
 from trackinizer.trax import cli, profile
 from trackinizer.trax.conftest import FakeClient
 from trackinizer.trax.grammar import parse_kind, parse_ref
@@ -424,17 +424,17 @@ class TestRequests:
             for record in caplog.records
             if getattr(record, "event", "") == "trackinizer_transport_failure"
         )
-        fields = dict_val(record.__dict__)
-        assert str_val(fields.get("method")) == "GET"
-        assert str_val(fields.get("path")) == "/api/version"
-        assert str_val(fields.get("server")) == "https://server"
-        assert int_val(fields.get("client_request_index"), 0) == 1
-        assert int_val(fields.get("attempt"), 0) == 1
-        assert str_val(fields.get("failure_class")) == "connect_timeout"
-        assert str_val(fields.get("failure_detail")) == "tls_handshake_timeout"
-        assert str_val(fields.get("error_type")) == "ConnectTimeout"
-        assert float_val(fields.get("client_age_sec"), -1) >= 0
-        assert len(str_val(fields.get("client_id"))) == 12
+        fields = DictCodec.coerce(record.__dict__)
+        assert StrCodec.coerce(fields.get("method")) == "GET"
+        assert StrCodec.coerce(fields.get("path")) == "/api/version"
+        assert StrCodec.coerce(fields.get("server")) == "https://server"
+        assert IntCodec.coerce(fields.get("client_request_index"), 0) == 1
+        assert IntCodec.coerce(fields.get("attempt"), 0) == 1
+        assert StrCodec.coerce(fields.get("failure_class")) == "connect_timeout"
+        assert StrCodec.coerce(fields.get("failure_detail")) == "tls_handshake_timeout"
+        assert StrCodec.coerce(fields.get("error_type")) == "ConnectTimeout"
+        assert FloatCodec.coerce(fields.get("client_age_sec"), -1) >= 0
+        assert len(StrCodec.coerce(fields.get("client_id"))) == 12
 
     def test_retries_5xx_with_same_change_id(
         self, monkeypatch: pytest.MonkeyPatch
