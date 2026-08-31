@@ -22,7 +22,7 @@ from hypothesis import (
     strategies as st,
 )
 
-import httpx
+import httpx2
 import pytest
 
 from trackinizer.conftest import (
@@ -799,9 +799,9 @@ def test_list_endpoint_never_500s_on_bad_params(
         params += [("filter", v) for v in filters]
         params.append(("limit", str(limit)))
         params.append(("offset", str(offset)))
-        # httpx.QueryParams is the typed carrier the TestClient stub accepts and
+        # httpx2.QueryParams is the typed carrier the TestClient stub accepts and
         # preserves the repeated keys (seq_range/filter) a bare list encodes.
-        r = client.get("/api/inquiries", params=httpx.QueryParams(params))
+        r = client.get("/api/inquiries", params=httpx2.QueryParams(params))
         assert r.status_code != 500, f"500 on params {params!r}: {r.text[:200]}"
     finally:
         clear_identity_override()

@@ -81,7 +81,7 @@ class TestClientSharing:
     """A long-lived process must not build a connection pool per invocation.
 
     The daemon calls ``parse_and_run`` once per request. A client cached
-    inside that call would open a fresh ``httpx`` pool -- and a fresh TCP
+    inside that call would open a fresh ``httpx2`` pool -- and a fresh TCP
     handshake -- every time, discarding the keep-alive the transport exists
     to provide, and would accumulate open sockets for the daemon's whole life.
     """

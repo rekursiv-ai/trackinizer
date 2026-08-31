@@ -234,7 +234,7 @@ def parse_and_run(
     if client_factory is None:
         # ``connect`` shares one Client per resolved target for the life of
         # the process, so every verb here -- and every later invocation, when
-        # a daemon runs this function repeatedly -- reuses one httpx pool.
+        # a daemon runs this function repeatedly -- reuses one httpx2 pool.
         client_factory = functools.partial(connect, top)
     if leftover and leftover[0] in {"--help", "-h"}:
         echo(Help.help_text(), nl=False)
@@ -313,7 +313,7 @@ def _prefix_end(argv: list[str]) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    # Drain pooled sockets at exit; httpx warns if a Client is garbage
+    # Drain pooled sockets at exit; httpx2 warns if a Client is garbage
     # collected with any still open. The daemon never reaches this path -- it
     # calls ``parse_and_run`` directly and keeps its clients for its lifetime.
     atexit.register(close_clients)

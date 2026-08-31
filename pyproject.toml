@@ -28,7 +28,7 @@ dependencies = [
     "starlette>=0.40",
     "uvicorn>=0.30.0",
     # http client
-    "httpx>=0.27",
+    "httpx2>=2.12",
     # session signing
     "itsdangerous>=2.2.0",
     # data models

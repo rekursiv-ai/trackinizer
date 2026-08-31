@@ -1,6 +1,6 @@
 """Tests for ``/auth/login`` / ``/auth/callback`` / ``/auth/logout``.
 
-The HTTP round-trips to Google are mocked via :class:`httpx.MockTransport`
+The HTTP round-trips to Google are mocked via :class:`httpx2.MockTransport`
 so the suite never hits the network. The mock is installed by
 monkey-patching :func:`oauth_routes._http_client` -- the production
 code already routes every Google call through that one factory, so a
@@ -23,7 +23,7 @@ import uuid
 
 from fastapi.testclient import TestClient
 
-import httpx
+import httpx2
 import pytest
 
 from trackinizer.conftest import FakeEngine, make_store
@@ -81,13 +81,13 @@ def _install_oauth_state(
 
 def _install_http_mock(
     monkeypatch: pytest.MonkeyPatch,
-    handler: Callable[[httpx.Request], httpx.Response],
+    handler: Callable[[httpx2.Request], httpx2.Response],
 ) -> None:
     """Replace :func:`oauth_routes._http_client` with a MockTransport-backed one."""
-    transport = httpx.MockTransport(handler)
+    transport = httpx2.MockTransport(handler)
 
-    def _make_client() -> httpx.AsyncClient:
-        return httpx.AsyncClient(transport=transport)
+    def _make_client() -> httpx2.AsyncClient:
+        return httpx2.AsyncClient(transport=transport)
 
     monkeypatch.setattr(oauth_routes, "_http_client", _make_client)
 
@@ -141,7 +141,7 @@ def client() -> TestClient:
 
     ``base_url`` is HTTPS so ``Secure`` cookies (the OAuth state and
     session cookies) survive cross-request persistence in the TestClient
-    cookie jar -- httpx filters Secure cookies on plain
+    cookie jar -- httpx2 filters Secure cookies on plain
     ``http://testserver``.
     """
     return TestClient(app, follow_redirects=False, base_url="https://testserver")
@@ -297,12 +297,12 @@ def _google_handler_factory(
     email: str = "alice@rekursiv.ai",
     email_verified: object = True,
     name: str = "Alice",
-) -> Callable[[httpx.Request], httpx.Response]:
-    """Return an httpx mock handler returning canned token + userinfo JSON."""
+) -> Callable[[httpx2.Request], httpx2.Response]:
+    """Return an httpx2 mock handler returning canned token + userinfo JSON."""
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
         if request.url.path == "/token":
-            return httpx.Response(
+            return httpx2.Response(
                 200,
                 json={
                     "access_token": "ya29.fake-access-token",
@@ -313,7 +313,7 @@ def _google_handler_factory(
             )
         if request.url.path == "/v1/userinfo":
             assert request.headers["authorization"] == "Bearer ya29.fake-access-token"
-            return httpx.Response(
+            return httpx2.Response(
                 200,
                 json={
                     "sub": "google-sub-123",
@@ -322,7 +322,7 @@ def _google_handler_factory(
                     "name": name,
                 },
             )
-        return httpx.Response(404, text=f"unexpected url: {request.url}")
+        return httpx2.Response(404, text=f"unexpected url: {request.url}")
 
     return handler
 
@@ -578,10 +578,10 @@ class TestAuthCallbackErrors:
         leak = "client_id=SENSITIVE redirect_uri=DEPLOYMENT"
         parseable_error = {"error": "invalid_grant", "error_description": leak}
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             if request.url.path == "/token":
-                return httpx.Response(400, json=parseable_error)
-            return httpx.Response(404)
+                return httpx2.Response(400, json=parseable_error)
+            return httpx2.Response(404)
 
         _install_http_mock(monkeypatch, handler)
         state = _start_login(client)
@@ -614,10 +614,10 @@ class TestAuthCallbackErrors:
         _install_oauth_state()
         leak = "<html>client_id=SENSITIVE redirect_uri=DEPLOYMENT</html>"
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             if request.url.path == "/token":
-                return httpx.Response(502, text=leak)
-            return httpx.Response(404)
+                return httpx2.Response(502, text=leak)
+            return httpx2.Response(404)
 
         _install_http_mock(monkeypatch, handler)
         state = _start_login(client)
@@ -637,10 +637,10 @@ class TestAuthCallbackErrors:
     ) -> None:
         _install_oauth_state()
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             if request.url.path == "/token":
-                return httpx.Response(200, text="not-json")
-            return httpx.Response(404)
+                return httpx2.Response(200, text="not-json")
+            return httpx2.Response(404)
 
         _install_http_mock(monkeypatch, handler)
         state = _start_login(client)
@@ -658,15 +658,15 @@ class TestAuthCallbackErrors:
         leak = "access_token=SECRETTOKEN granted_scopes=PRIVATE"
         parseable_error = {"error": "internal_failure", "error_description": leak}
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             if request.url.path == "/token":
-                return httpx.Response(
+                return httpx2.Response(
                     200,
                     json={"access_token": "ya29.fake", "token_type": "Bearer"},
                 )
             if request.url.path == "/v1/userinfo":
-                return httpx.Response(500, json=parseable_error)
-            return httpx.Response(404)
+                return httpx2.Response(500, json=parseable_error)
+            return httpx2.Response(404)
 
         _install_http_mock(monkeypatch, handler)
         state = _start_login(client)
@@ -691,15 +691,15 @@ class TestAuthCallbackErrors:
     ) -> None:
         _install_oauth_state()
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             if request.url.path == "/token":
-                return httpx.Response(
+                return httpx2.Response(
                     200,
                     json={"access_token": "ya29.fake", "token_type": "Bearer"},
                 )
             if request.url.path == "/v1/userinfo":
-                return httpx.Response(200, text="not-json")
-            return httpx.Response(404)
+                return httpx2.Response(200, text="not-json")
+            return httpx2.Response(404)
 
         _install_http_mock(monkeypatch, handler)
         state = _start_login(client)

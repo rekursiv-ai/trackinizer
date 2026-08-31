@@ -41,8 +41,8 @@ _FORBIDDEN_THIRD_PARTY: frozenset[str] = frozenset(
     }
 )
 
-# ``client`` legitimately uses httpx; ``wire`` and ``types`` do not, but
-# httpx is allowed package-wide since it is a client transport dep, not a
+# ``client`` legitimately uses httpx2; ``wire`` and ``types`` do not, but
+# httpx2 is allowed package-wide since it is a client transport dep, not a
 # server dep.
 _CLIENT_PACKAGES: tuple[str, ...] = ("types", "wire", "client")
 

@@ -1,6 +1,6 @@
 """Connect-or-spawn daemon that amortizes ``trax``'s module-import cost.
 
-A ``trax`` invocation spends ~145ms importing the HTTP client (httpx and its
+A ``trax`` invocation spends ~145ms importing the HTTP client (httpx2 and its
 dependency cone) before it does any work, and pays it again on every run. A
 polling swarm of 70 agents therefore burns whole cores on imports alone. The
 daemon holds those imports for the life of a login session, and shares one

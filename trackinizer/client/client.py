@@ -1,6 +1,6 @@
 """HTTP transport for the trackinizer server.
 
-A thin wrapper over a persistent ``httpx.Client`` that round-trips JSON
+A thin wrapper over a persistent ``httpx2.Client`` that round-trips JSON
 against the API. Pure transport: no profile loading, no argparse, no
 connection-resolution chain. The CLI layer composes a profile and flags
 into a constructor call; ``Client`` itself knows only ``base_url`` /
@@ -12,7 +12,7 @@ retry after a lost response collides on the primary key and the server
 replays the original outcome instead of applying it twice. ``Client``
 retries 5xx (500/502/503/504) and read-timeout failures with the *same*
 UUID so the retry stays dedup-eligible; a stale pooled socket is handled
-transparently by ``httpx.HTTPTransport(retries=1)``. ``500`` is included
+transparently by ``httpx2.HTTPTransport(retries=1)``. ``500`` is included
 because the single-writer PGlite substrate can return a transient 500
 under concurrent load, and the idempotency key makes the replay safe (a
 write that already landed dedups on the primary key rather than applying
@@ -29,7 +29,7 @@ retry is only triggered when nothing -- or everything -- has been applied.
 Connect and write failures (``ConnectError`` / ``ConnectTimeout`` /
 ``WriteError`` / ``WriteTimeout``) are wrapped in ``ClientError`` but *not*
 retried: a write may already have reached the server, so a blind retry
-could duplicate the operation. Either way the raw httpx exception never
+could duplicate the operation. Either way the raw httpx2 exception never
 escapes the ``ClientError`` contract.
 """
 
@@ -46,7 +46,7 @@ import threading
 import time
 import uuid
 
-import httpx
+import httpx2
 import pydantic
 
 from trackinizer.client.errors import ClientError
@@ -203,12 +203,12 @@ def server_url(raw: str, source: str) -> str:
 def _clean_params(
     params: Mapping[str, object] | None,
 ) -> tuple[tuple[str, str], ...] | None:
-    """Drop ``None`` and empty values, stringifying the rest for httpx.
+    """Drop ``None`` and empty values, stringifying the rest for httpx2.
 
     A sequence-valued entry emits one repeated query param per element
     (``filter`` is the current consumer), with empty elements dropped just
     like empty scalars. Returns a tuple of ``(key, value)`` pairs, which
-    matches httpx's ``QueryParams`` signature without an unsafe cast.
+    matches httpx2's ``QueryParams`` signature without an unsafe cast.
     """
     if not params:
         return None
@@ -226,33 +226,33 @@ def _clean_params(
     return tuple(out) or None
 
 
-def _transport_failure(error: httpx.TransportError) -> tuple[str, str]:
+def _transport_failure(error: httpx2.TransportError) -> tuple[str, str]:
     """Return stable coarse and detailed transport classifications."""
     message = str(error).casefold()
-    if isinstance(error, httpx.ConnectTimeout):
+    if isinstance(error, httpx2.ConnectTimeout):
         detail = (
             "tls_handshake_timeout"
             if "handshake operation timed out" in message
             else "connect_timeout"
         )
         return "connect_timeout", detail
-    if isinstance(error, httpx.ConnectError):
+    if isinstance(error, httpx2.ConnectError):
         if "connection refused" in message:
             return "connect_error", "connection_refused"
         if "connection reset" in message:
             return "connect_error", "connection_reset"
         return "connect_error", "connect_error"
-    if isinstance(error, httpx.ReadTimeout):
+    if isinstance(error, httpx2.ReadTimeout):
         return "read_timeout", "read_timeout"
-    if isinstance(error, httpx.ReadError):
+    if isinstance(error, httpx2.ReadError):
         return "read_error", "read_error"
-    if isinstance(error, httpx.WriteTimeout):
+    if isinstance(error, httpx2.WriteTimeout):
         return "write_timeout", "write_timeout"
-    if isinstance(error, httpx.WriteError):
+    if isinstance(error, httpx2.WriteError):
         return "write_error", "write_error"
-    if isinstance(error, httpx.PoolTimeout):
+    if isinstance(error, httpx2.PoolTimeout):
         return "pool_timeout", "pool_timeout"
-    if isinstance(error, httpx.RemoteProtocolError):
+    if isinstance(error, httpx2.RemoteProtocolError):
         return "remote_protocol_error", "remote_protocol_error"
     return "transport_error", "transport_error"
 
@@ -292,7 +292,7 @@ class Client:
         headers: dict[str, str] = {"Accept": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-        limits = httpx.Limits(
+        limits = httpx2.Limits(
             max_connections=8,
             max_keepalive_connections=8,
             keepalive_expiry=90.0,
@@ -302,9 +302,9 @@ class Client:
         # phases are split out: a short connect window covers DNS+TLS+TCP,
         # write is short because bodies are tiny, and pool guards against
         # connection-pool starvation.
-        self._http: httpx.Client = httpx.Client(
+        self._http: httpx2.Client = httpx2.Client(
             base_url=self.base_url,
-            timeout=httpx.Timeout(
+            timeout=httpx2.Timeout(
                 connect=5.0,
                 read=timeout_sec,
                 write=10.0,
@@ -314,7 +314,7 @@ class Client:
             # idle timeout in the path (Cloudflare's ~100s, Caddy's 2m) so the
             # client is the one that decides when to evict.
             limits=limits,
-            transport=httpx.HTTPTransport(retries=1, limits=limits),
+            transport=httpx2.HTTPTransport(retries=1, limits=limits),
             headers=headers,
         )
 
@@ -1275,18 +1275,18 @@ class Client:
                     # timeout for every other request.
                     timeout=timeout
                     if timeout is not None
-                    else httpx.USE_CLIENT_DEFAULT,
+                    else httpx2.USE_CLIENT_DEFAULT,
                 )
             # Connect and write failures are wrapped but not retried: a write
             # may already have reached the server, so a blind retry could
             # duplicate the operation, and a connect failure won't recover
-            # within this loop. Either way the raw httpx error must not escape
+            # within this loop. Either way the raw httpx2 error must not escape
             # the ClientError contract.
             except (
-                httpx.ConnectError,
-                httpx.ConnectTimeout,
-                httpx.WriteError,
-                httpx.WriteTimeout,
+                httpx2.ConnectError,
+                httpx2.ConnectTimeout,
+                httpx2.WriteError,
+                httpx2.WriteTimeout,
             ) as err:
                 self._log_transport_failure(
                     method,
@@ -1297,10 +1297,10 @@ class Client:
                 )
                 raise ClientError(f"{method} {path} failed: {err}") from err
             except (
-                httpx.RemoteProtocolError,
-                httpx.ReadError,
-                httpx.ReadTimeout,
-                httpx.PoolTimeout,
+                httpx2.RemoteProtocolError,
+                httpx2.ReadError,
+                httpx2.ReadTimeout,
+                httpx2.PoolTimeout,
             ) as err:
                 self._log_transport_failure(
                     method,
@@ -1355,7 +1355,7 @@ class Client:
         self,
         method: str,
         path: str,
-        error: httpx.TransportError,
+        error: httpx2.TransportError,
         *,
         request_index: int,
         attempt: int,
