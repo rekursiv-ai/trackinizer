@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import uuid
 
 from pytest_postgresql.exceptions import ExecutableMissingException
-from pytest_postgresql.executor import PostgreSQLExecutor
+from pytest_postgresql.executors.proc import PostgreSQLExecutor
 from pytest_postgresql.janitor import DatabaseJanitor
 
 import pytest
@@ -240,7 +240,6 @@ def pg_dsn(request: pytest.FixtureRequest) -> Iterator[str]:
             host=postgresql_proc.host,
             port=postgresql_proc.port,
             dbname=postgresql_proc.dbname,
-            version=postgresql_proc.version,
             password=postgresql_proc.password,
         ):
             password = (
