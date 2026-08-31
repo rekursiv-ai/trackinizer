@@ -508,7 +508,7 @@ class LockedSink(Sink):
     runner's ``join(timeout=...)`` makes drain-thread ownership non-binding, so
     ``close`` (a blocking ``session_end``) could run concurrently with an
     in-flight ``emit`` / ``flush`` -- corrupting the inner sink's state or its
-    one non-thread-safe ``httpx`` client (R2R-024, and the same race class as
+    one non-thread-safe ``httpx2`` client (R2R-024, and the same race class as
     R2R-028/029/013). Wrapping every Protocol method in one lock makes them
     mutually exclusive, so the runner's threads serialize on the sink boundary.
 

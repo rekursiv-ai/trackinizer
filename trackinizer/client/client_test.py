@@ -12,7 +12,7 @@ import json
 import logging
 import uuid
 
-import httpx
+import httpx2
 import pytest
 
 from trackinizer.client.client import (
@@ -39,14 +39,14 @@ def _install_mock_transport(
 ) -> None:
     """Replace the client's transport with one that calls ``handler``.
 
-    ``handler`` receives an ``httpx.Request`` and returns an
-    ``httpx.Response``. The test asserts on the request that arrives
+    ``handler`` receives an ``httpx2.Request`` and returns an
+    ``httpx2.Response``. The test asserts on the request that arrives
     in the handler.
     """
     client._http.close()
-    client._http = httpx.Client(
+    client._http = httpx2.Client(
         base_url=client.base_url,
-        transport=httpx.MockTransport(handler),
+        transport=httpx2.MockTransport(handler),
         headers=dict(client._http.headers),
     )
 
@@ -271,17 +271,17 @@ class TestRequests:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        real_limits = httpx.Limits
-        real_transport = httpx.HTTPTransport
+        real_limits = httpx2.Limits
+        real_transport = httpx2.HTTPTransport
         observed: list[tuple[int, int, float]] = []
-        transport_limits: list[httpx.Limits] = []
+        transport_limits: list[httpx2.Limits] = []
 
         def make_limits(
             *,
             max_connections: int,
             max_keepalive_connections: int,
             keepalive_expiry: float,
-        ) -> httpx.Limits:
+        ) -> httpx2.Limits:
             observed.append(
                 (max_connections, max_keepalive_connections, keepalive_expiry)
             )
@@ -294,13 +294,13 @@ class TestRequests:
         def make_transport(
             *,
             retries: int,
-            limits: httpx.Limits,
-        ) -> httpx.HTTPTransport:
+            limits: httpx2.Limits,
+        ) -> httpx2.HTTPTransport:
             transport_limits.append(limits)
             return real_transport(retries=retries, limits=limits)
 
-        monkeypatch.setattr(httpx, "Limits", make_limits)
-        monkeypatch.setattr(httpx, "HTTPTransport", make_transport)
+        monkeypatch.setattr(httpx2, "Limits", make_limits)
+        monkeypatch.setattr(httpx2, "HTTPTransport", make_transport)
 
         with Client("https://server"):
             pass
@@ -309,11 +309,11 @@ class TestRequests:
         assert len(transport_limits) == 1
 
     def test_request_builds_url_headers_and_body(self) -> None:
-        seen: dict[str, httpx.Request] = {}
+        seen: dict[str, httpx2.Request] = {}
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             seen["req"] = request
-            return httpx.Response(200, json={"ok": True})
+            return httpx2.Response(200, json={"ok": True})
 
         with Client("http://server/") as client:
             _install_mock_transport(client, handler)
@@ -328,11 +328,11 @@ class TestRequests:
         uuid.UUID(req.headers["Idempotency-Key"])
 
     def test_request_encodes_query_and_empty_response(self) -> None:
-        seen: dict[str, httpx.Request] = {}
+        seen: dict[str, httpx2.Request] = {}
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             seen["req"] = request
-            return httpx.Response(200, content=b"")
+            return httpx2.Response(200, content=b"")
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -347,11 +347,11 @@ class TestRequests:
         assert "Idempotency-Key" not in req.headers
 
     def test_request_omits_authorization_header_without_api_key(self) -> None:
-        seen: dict[str, httpx.Request] = {}
+        seen: dict[str, httpx2.Request] = {}
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             seen["req"] = request
-            return httpx.Response(200, content=b"")
+            return httpx2.Response(200, content=b"")
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -359,11 +359,11 @@ class TestRequests:
         assert "Authorization" not in seen["req"].headers
 
     def test_request_adds_bearer_when_api_key_set(self) -> None:
-        seen: dict[str, httpx.Request] = {}
+        seen: dict[str, httpx2.Request] = {}
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             seen["req"] = request
-            return httpx.Response(200, content=b"")
+            return httpx2.Response(200, content=b"")
 
         with Client("http://server", api_key="trax_abcdef") as client:
             _install_mock_transport(client, handler)
@@ -371,9 +371,9 @@ class TestRequests:
         assert seen["req"].headers["Authorization"] == "Bearer trax_abcdef"
 
     def test_request_wraps_http_and_connection_errors(self) -> None:
-        def http_error(request: httpx.Request) -> httpx.Response:
+        def http_error(request: httpx2.Request) -> httpx2.Response:
             del request
-            return httpx.Response(409, content=b'{"detail":"bad"}')
+            return httpx2.Response(409, content=b'{"detail":"bad"}')
 
         with Client("http://server") as client:
             _install_mock_transport(client, http_error)
@@ -381,8 +381,8 @@ class TestRequests:
                 client.post("/x")
 
     def test_http_error_carries_structured_code(self) -> None:
-        def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
+        def handler(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(
                 409,
                 json={"detail": "clash", "code": "conflict"},
             )
@@ -397,9 +397,9 @@ class TestRequests:
         assert exc_info.value.code == "conflict"
 
     def test_wraps_connection_errors(self) -> None:
-        def connect_error(request: httpx.Request) -> httpx.Response:
+        def connect_error(request: httpx2.Request) -> httpx2.Response:
             del request
-            raise httpx.ConnectError("offline")
+            raise httpx2.ConnectError("offline")
 
         with Client("http://server") as client:
             _install_mock_transport(client, connect_error)
@@ -410,9 +410,11 @@ class TestRequests:
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        def handshake_timeout(request: httpx.Request) -> httpx.Response:
+        def handshake_timeout(request: httpx2.Request) -> httpx2.Response:
             del request
-            raise httpx.ConnectTimeout("_ssl.c:1063: The handshake operation timed out")
+            raise httpx2.ConnectTimeout(
+                "_ssl.c:1063: The handshake operation timed out"
+            )
 
         with Client("https://server") as client:
             _install_mock_transport(client, handshake_timeout)
@@ -445,13 +447,13 @@ class TestRequests:
             pass
 
         monkeypatch.setattr("trackinizer.client.client.time.sleep", _no_sleep)
-        seen: list[httpx.Request] = []
+        seen: list[httpx2.Request] = []
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(request)
             if len(seen) < 3:
-                return httpx.Response(502, content=b"bad gateway")
-            return httpx.Response(200, json={"ok": True})
+                return httpx2.Response(502, content=b"bad gateway")
+            return httpx2.Response(200, json={"ok": True})
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -479,13 +481,13 @@ class TestRequests:
             pass
 
         monkeypatch.setattr("trackinizer.client.client.time.sleep", _no_sleep)
-        seen: list[httpx.Request] = []
+        seen: list[httpx2.Request] = []
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(request)
             if len(seen) < 2:
-                return httpx.Response(500, content=b"internal server error")
-            return httpx.Response(200, json={"ok": True})
+                return httpx2.Response(500, content=b"internal server error")
+            return httpx2.Response(200, json={"ok": True})
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -502,11 +504,11 @@ class TestRequests:
             pass
 
         monkeypatch.setattr("trackinizer.client.client.time.sleep", _no_sleep)
-        attempts: list[httpx.Request] = []
+        attempts: list[httpx2.Request] = []
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             attempts.append(request)
-            return httpx.Response(503, content=b"down")
+            return httpx2.Response(503, content=b"down")
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -517,24 +519,24 @@ class TestRequests:
     @pytest.mark.parametrize(
         "exc",
         [
-            httpx.WriteError("broken pipe"),
-            httpx.WriteTimeout("write timed out"),
-            httpx.ConnectTimeout("connect timed out"),
+            httpx2.WriteError("broken pipe"),
+            httpx2.WriteTimeout("write timed out"),
+            httpx2.ConnectTimeout("connect timed out"),
         ],
     )
     def test_wraps_write_and_connect_timeouts_without_retry(
-        self, exc: httpx.HTTPError
+        self, exc: httpx2.HTTPError
     ) -> None:
-        """Write/connect-timeout errors surface as ``ClientError``, not raw httpx.
+        """Write/connect-timeout errors surface as ``ClientError``, not raw httpx2.
 
         ``WriteError`` / ``WriteTimeout`` / ``ConnectTimeout`` must be wrapped
         in the client's ``ClientError`` contract like the other transport
         failures. They are *not* retried: the request bytes may already have
         reached the server, so a blind retry could duplicate a mutation.
         """
-        attempts: list[httpx.Request] = []
+        attempts: list[httpx2.Request] = []
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             attempts.append(request)
             raise exc
 
@@ -554,8 +556,8 @@ def test_request_truncates_oversized_error_text() -> None:
     """
     big = "x" * 4_096
 
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(400, content=big.encode())
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(400, content=big.encode())
 
     with Client("http://server") as client:
         _install_mock_transport(client, handler)
@@ -568,8 +570,8 @@ def test_request_truncates_oversized_error_text() -> None:
 
 class TestVersion:
     def test_returns_server_sha(self) -> None:
-        def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"sha": "deadbeef"})
+        def handler(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json={"sha": "deadbeef"})
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -578,8 +580,8 @@ class TestVersion:
     def test_servers_own_unknown_passes_through(self) -> None:
         # The server resolved its build to the literal "unknown"; that is a
         # real answer, returned verbatim (distinct from a malformed payload).
-        def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"sha": "unknown"})
+        def handler(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json={"sha": "unknown"})
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -588,8 +590,8 @@ class TestVersion:
     def test_malformed_payload_raises_not_silent_unknown(self) -> None:
         # A response with no ``sha`` key is a contract violation; it must raise,
         # not masquerade as the server's own "unknown".
-        def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={})
+        def handler(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json={})
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -609,8 +611,8 @@ class TestClientErrorContract:
     def test_resolve_id_seq_missing_id_raises_client_error(self) -> None:
         """A scalar-returning seam: ``resolve_id`` SeqRef with no ``id`` key."""
 
-        def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"wrong": "shape"})
+        def handler(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json={"wrong": "shape"})
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -620,8 +622,8 @@ class TestClientErrorContract:
     def test_resolve_id_uuid_non_dict_raises_client_error(self) -> None:
         """A dict-shaped seam fed a list must not leak ``TypeError``."""
 
-        def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json=[1, 2, 3])
+        def handler(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json=[1, 2, 3])
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -631,8 +633,8 @@ class TestClientErrorContract:
     def test_resolve_ids_missing_found_raises_client_error(self) -> None:
         """``resolve_ids`` reads ``response['found']``; absence must wrap."""
 
-        def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"nope": {}})
+        def handler(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json={"nope": {}})
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -642,8 +644,8 @@ class TestClientErrorContract:
     def test_submit_missing_id_raises_client_error(self) -> None:
         """``submit`` reads the server-minted ``id``; absence must wrap."""
 
-        def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"nope": "x"})
+        def handler(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json={"nope": "x"})
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -653,8 +655,8 @@ class TestClientErrorContract:
     def test_submit_non_uuid_id_raises_client_error(self) -> None:
         """A non-UUID ``id`` value must wrap, not leak ``ValueError``."""
 
-        def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"id": "not-a-uuid"})
+        def handler(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json={"id": "not-a-uuid"})
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -664,8 +666,8 @@ class TestClientErrorContract:
     def test_submit_batch_missing_ids_raises_client_error(self) -> None:
         """A list-returning seam: ``submit_batch`` reads ``response['ids']``."""
 
-        def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"nope": []})
+        def handler(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json={"nope": []})
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -675,8 +677,8 @@ class TestClientErrorContract:
     def test_next_issue_non_dict_raises_client_error(self) -> None:
         """``next_issue`` promises ``dict | None``; a list is malformed."""
 
-        def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json=[1, 2, 3])
+        def handler(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json=[1, 2, 3])
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -686,8 +688,8 @@ class TestClientErrorContract:
     def test_recent_changes_non_list_raises_client_error(self) -> None:
         """A list-returning read fed a dict must surface ``ClientError``."""
 
-        def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"not": "a list"})
+        def handler(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(200, json={"not": "a list"})
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -697,8 +699,8 @@ class TestClientErrorContract:
     def test_session_start_malformed_wraps_validation_error(self) -> None:
         """A pydantic ``model_validate`` seam must wrap ``ValidationError``."""
 
-        def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(201, json={"bogus": True})
+        def handler(_request: httpx2.Request) -> httpx2.Response:
+            return httpx2.Response(201, json={"bogus": True})
 
         with Client("http://server") as client:
             _install_mock_transport(client, handler)
@@ -759,11 +761,11 @@ class TestClientMethods:
         escaping entirely. The order in which the CLI emits filters
         must be preserved so server-side semantics stay deterministic.
         """
-        captured: dict[str, httpx.Request] = {}
+        captured: dict[str, httpx2.Request] = {}
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             captured["r"] = request
-            return httpx.Response(200, json=[])
+            return httpx2.Response(200, json=[])
 
         client = Client("http://server")
         _install_mock_transport(client, handler)
@@ -781,7 +783,7 @@ class TestClientMethods:
         assert req.url.path == "/api/inquiries"
         # ``kind`` is now a (repeatable) query param, not a path segment.
         assert req.url.params.get_list("kind") == ["Issue"]
-        # ``httpx.URL.params`` exposes repeated keys via ``get_list``.
+        # ``httpx2.URL.params`` exposes repeated keys via ``get_list``.
         assert req.url.params.get_list("filter") == [
             '{"field":"title","op":"re","value":"needle:with:colons"}',
             '{"field":"priority","op":"gt","value":"5"}',
@@ -794,11 +796,11 @@ class TestClientMethods:
         ORs the intervals, so the CLI sends them as repeated params in the
         order it parsed them and never fans out per interval.
         """
-        captured: dict[str, httpx.Request] = {}
+        captured: dict[str, httpx2.Request] = {}
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             captured["r"] = request
-            return httpx.Response(200, json=[])
+            return httpx2.Response(200, json=[])
 
         client = Client("http://server")
         _install_mock_transport(client, handler)
@@ -824,14 +826,14 @@ class TestClientMethods:
         """
         offsets: list[str | None] = []
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             offset = request.url.params.get("offset")
             offsets.append(offset)
             if offset == "0":
-                return httpx.Response(
+                return httpx2.Response(
                     200, json=[{"seq": i} for i in range(MAX_LIST_LIMIT)]
                 )
-            return httpx.Response(200, json=[{"seq": MAX_LIST_LIMIT}])
+            return httpx2.Response(200, json=[{"seq": MAX_LIST_LIMIT}])
 
         client = Client("http://server")
         _install_mock_transport(client, handler)
@@ -849,14 +851,14 @@ class TestClientMethods:
         """
         calls = 0
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             nonlocal calls
             calls += 1
             if request.url.params.get("offset") == "0":
-                return httpx.Response(
+                return httpx2.Response(
                     200, json=[{"seq": i} for i in range(MAX_LIST_LIMIT)]
                 )
-            return httpx.Response(200, json=[])
+            return httpx2.Response(200, json=[])
 
         client = Client("http://server")
         _install_mock_transport(client, handler)
@@ -1276,8 +1278,8 @@ def test_request_wraps_malformed_json_on_2xx() -> None:
     the ``ClientError`` contract the module promises.
     """
 
-    def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, content=b"<html>oops")
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, content=b"<html>oops")
 
     with Client("http://server") as client:
         _install_mock_transport(client, handler)
@@ -1450,10 +1452,10 @@ class TestSessionMethods:
         sid = uuid.uuid4()
         seen: dict[str, object] = {}
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             seen["path"] = request.url.path
             seen["body"] = json.loads(request.content)
-            return httpx.Response(201, json={"id": str(sid), "seq": 3})
+            return httpx2.Response(201, json={"id": str(sid), "seq": 3})
 
         client = Client("http://server")
         _install_mock_transport(client, handler)
@@ -1470,10 +1472,10 @@ class TestSessionMethods:
         sid = uuid.uuid4()
         seen: dict[str, object] = {}
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             seen["path"] = request.url.path
             seen["body"] = json.loads(request.content)
-            return httpx.Response(200, json={"appended": 2, "skipped": 0})
+            return httpx2.Response(200, json={"appended": 2, "skipped": 0})
 
         client = Client("http://server")
         _install_mock_transport(client, handler)
@@ -1494,10 +1496,10 @@ class TestSessionMethods:
         sid = uuid.uuid4()
         seen: dict[str, object] = {}
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             seen["path"] = request.url.path
             seen["params"] = request.url.params
-            return httpx.Response(
+            return httpx2.Response(
                 200,
                 json={
                     "events": [
@@ -1515,7 +1517,7 @@ class TestSessionMethods:
             kind="AssistantMessage",
         )
         assert seen["path"] == f"/api/sessions/{sid}/events"
-        params = cast(httpx.QueryParams, seen["params"])
+        params = cast(httpx2.QueryParams, seen["params"])
         assert params["limit"] == "10"
         assert params.get_list("seq_range") == ["5..9", "20.."]
         assert params["kind"] == "AssistantMessage"
@@ -1527,9 +1529,9 @@ class TestSessionMethods:
         sid = uuid.uuid4()
         seen: dict[str, object] = {}
 
-        def handler(request: httpx.Request) -> httpx.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
             seen["path"] = request.url.path
-            return httpx.Response(200, json={"id": str(sid)})
+            return httpx2.Response(200, json={"id": str(sid)})
 
         client = Client("http://server")
         _install_mock_transport(client, handler)

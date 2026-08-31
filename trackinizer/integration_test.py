@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 import asyncpg
-import httpx
+import httpx2
 import pytest
 
 from trackinizer.conftest import new_uuid
@@ -1014,9 +1014,9 @@ class TestIntegrationEndToEnd:
 
         await _seed_active_user(integ_store, TEST_USER_EMAIL)
         app.dependency_overrides[current_user] = _identity
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 first = await http.post(
@@ -1074,9 +1074,9 @@ class TestIntegrationEndToEnd:
         await _seed_active_user(integ_store, TEST_USER_EMAIL)
         app.dependency_overrides[current_user] = _identity
         app.dependency_overrides[web.optional_identity] = _identity
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 logged = await http.post(
@@ -1149,9 +1149,9 @@ class TestIntegrationEndToEnd:
 
         await _seed_active_user(integ_store, "editor@test")
         app.dependency_overrides[current_user] = _identity
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 start = await http.post(
@@ -1230,9 +1230,9 @@ class TestIntegrationEndToEnd:
 
         await _seed_active_user(integ_store, "sender@test")
         app.dependency_overrides[current_user] = _identity
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 start = await http.post(
@@ -1288,9 +1288,9 @@ class TestIntegrationEndToEnd:
 
         await _seed_active_user(integ_store, "sender@test")
         app.dependency_overrides[current_user] = _identity
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 await http.post(
@@ -1336,9 +1336,9 @@ class TestIntegrationEndToEnd:
 
         await _seed_active_user(integ_store, "sender@test")
         app.dependency_overrides[current_user] = _identity
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 start = await http.post(
@@ -1387,9 +1387,9 @@ class TestIntegrationEndToEnd:
 
         await _seed_active_user(integ_store, "sender@test")
         app.dependency_overrides[current_user] = _identity
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 start = await http.post(
@@ -1438,9 +1438,9 @@ class TestIntegrationEndToEnd:
 
         await _seed_active_user(integ_store, "sender@test")
         app.dependency_overrides[current_user] = _identity
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 start = await http.post(
@@ -1488,9 +1488,9 @@ class TestIntegrationEndToEnd:
             return make_test_identity(api_key_id=None)
 
         app.dependency_overrides[current_user] = _identity
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 resp = await http.post(
@@ -1658,9 +1658,9 @@ class TestIntegrationEndToEnd:
             return make_test_identity(api_key_id=None, email="router@test")
 
         app.dependency_overrides[current_user] = _identity
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 # A client-sent ``source`` is forbidden, not ignored.
@@ -1774,9 +1774,9 @@ class TestIntegrationEndToEnd:
             return make_test_identity()
 
         app.dependency_overrides[current_user] = _identity_override
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 r = await http.get(f"/api/web/get/{sid}")
@@ -1903,9 +1903,9 @@ class TestIntegrationEndToEnd:
             return identity
 
         app.dependency_overrides[current_user] = _identity_override
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 r = await http.post(
@@ -1986,9 +1986,9 @@ class TestIntegrationEndToEnd:
             return identity
 
         app.dependency_overrides[current_user] = _identity_override
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 r = await http.post("/api/sessions/start", json={"cli": "codex"})
@@ -2060,9 +2060,9 @@ class TestIntegrationEndToEnd:
             return identity
 
         app.dependency_overrides[current_user] = _identity_override
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 # Start WITHOUT a cli_session_id so the end-time backfill is a
@@ -2119,9 +2119,9 @@ class TestIntegrationEndToEnd:
             return identity
 
         app.dependency_overrides[current_user] = _identity_override
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 # Page: limit/offset window over the seq order.
@@ -4265,7 +4265,7 @@ class TestIntegrationEndToEnd:
         the *exact* JSON-per-filter query string the trax CLI client
         emits through the real FastAPI route against the real
         Postgres-backed store. It catches every category of bug that
-        hides between layers: wire shape disagreement (httpx
+        hides between layers: wire shape disagreement (httpx2
         serializer vs FastAPI parser), missing query param plumbing,
         JSON quoting / URL escaping edge cases, and the exact bug
         Issue#256 reports -- a matching row past the default recency
@@ -4313,9 +4313,9 @@ class TestIntegrationEndToEnd:
         # ASGI transport keeps the route on the same event loop as
         # the integ_store. ``TestClient`` would spin a worker thread,
         # which is illegal for the shared asyncpg connection.
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 # 1. regex filter against title: the original bug.
@@ -4345,7 +4345,7 @@ class TestIntegrationEndToEnd:
                 assert [row["id"] for row in r.json()] == [str(needle_id)]
 
                 # 3. value containing URL-sensitive characters (``:``)
-                # round-trips through httpx percent-encoding and
+                # round-trips through httpx2 percent-encoding and
                 # FastAPI decoding without escape damage.
                 r = await http.get(
                     "/api/inquiries",
@@ -4478,9 +4478,9 @@ class TestIntegrationEndToEnd:
             return identity
 
         app.dependency_overrides[current_user] = _identity_override
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 # The Paper detail: own fields surface bare, and the
@@ -4557,9 +4557,9 @@ class TestIntegrationEndToEnd:
             return make_test_identity()
 
         app.dependency_overrides[current_user] = _identity_override
-        transport = httpx.ASGITransport(app=app)
+        transport = httpx2.ASGITransport(app=app)
         try:
-            async with httpx.AsyncClient(
+            async with httpx2.AsyncClient(
                 transport=transport, base_url="http://testserver"
             ) as http:
                 r = await http.get("/api/web/search", params={"q": "%"})

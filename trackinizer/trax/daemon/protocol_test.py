@@ -325,7 +325,7 @@ class TestImportPurity:
             "import sys;"
             f"import {module};"
             "print(','.join(sorted(m for m in "
-            "('httpx', 'pydantic', 'wrapt', 'dataclasses')"
+            "('httpx2', 'pydantic', 'wrapt', 'dataclasses')"
             " if m in sys.modules)))"
         )
         result = subprocess.run(  # noqa: S603 -- fixed interpreter, literal probe.

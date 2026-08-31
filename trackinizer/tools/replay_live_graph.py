@@ -95,9 +95,9 @@ def main() -> int:
     _add_arguments(parser)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    # The httpx per-request INFO lines (one per node fetch) drown the replay's
+    # The httpx2 per-request INFO lines (one per node fetch) drown the replay's
     # own progress; quiet them to WARNING.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpx2").setLevel(logging.WARNING)
 
     source = _source_client(args.source)
     target = Client(args.target, author="replay")

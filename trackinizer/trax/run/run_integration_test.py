@@ -41,7 +41,7 @@ import uuid
 
 from fastapi import FastAPI
 
-import httpx
+import httpx2
 import pytest
 import uvicorn
 
@@ -312,7 +312,7 @@ def _latest_session_row(
     unique per test: ``fakeline`` / ``claude`` / ``codex``), keeping "latest"
     unambiguous instead of picking up another test's session.
     """
-    with httpx.Client(base_url=base_url, timeout=30.0) as http:
+    with httpx2.Client(base_url=base_url, timeout=30.0) as http:
         # ``kind`` is the PascalCase InquiryKind Literal, not the URL token. Pull
         # a small page (not limit=1) so the client-side ``cli`` filter has rows
         # to match even when a sibling test's session sorts newest.
@@ -340,7 +340,7 @@ def _latest_session_events(
     if row is None:
         return []
     session_id = str(row["id"])
-    with httpx.Client(base_url=base_url, timeout=30.0) as http:
+    with httpx2.Client(base_url=base_url, timeout=30.0) as http:
         events = http.get(f"/api/sessions/{session_id}/events", params={"limit": 1000})
         events.raise_for_status()
         body = cast(dict[str, object], events.json())
@@ -867,7 +867,7 @@ def test_server_fixture_boots(server: str) -> None:
     server fixture is module-scoped, so a sibling test may have already minted
     a session by the time this runs.
     """
-    with httpx.Client(base_url=server, timeout=10.0) as http:
+    with httpx2.Client(base_url=server, timeout=10.0) as http:
         r = http.get("/api/inquiries", params={"kind": "AgentSession", "limit": 1})
         assert r.status_code == 200
         assert isinstance(r.json(), list)

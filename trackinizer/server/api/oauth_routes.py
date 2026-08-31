@@ -29,7 +29,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse, Response
 
-import httpx
+import httpx2
 
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.api._routes_shared import engine_of
@@ -353,7 +353,7 @@ async def _fetch_userinfo(*, access_token: object) -> dict[str, object]:
     return cast(dict[str, object], payload)
 
 
-def _parse_google_json(response: httpx.Response, *, op: str) -> object:
+def _parse_google_json(response: httpx2.Response, *, op: str) -> object:
     """Parse a Google JSON response, raising 400 on invalid JSON."""
     try:
         return response.json()
@@ -364,7 +364,7 @@ def _parse_google_json(response: httpx.Response, *, op: str) -> object:
         ) from exc
 
 
-def _log_google_failure(op: str, *, endpoint: str, response: httpx.Response) -> None:
+def _log_google_failure(op: str, *, endpoint: str, response: httpx2.Response) -> None:
     """Log a non-2xx Google response with only safe metadata.
 
     The raw body is never logged: Google's OAuth error bodies can echo
@@ -394,15 +394,15 @@ def _log_google_failure(op: str, *, endpoint: str, response: httpx.Response) -> 
     )
 
 
-def _http_client(*, timeout_seconds: float = 10.0) -> httpx.AsyncClient:
-    """Build the httpx client used for both Google round-trips.
+def _http_client(*, timeout_seconds: float = 10.0) -> httpx2.AsyncClient:
+    """Build the httpx2 client used for both Google round-trips.
 
     Tests monkey-patch this module-level helper to inject an
-    ``httpx.MockTransport`` so the suite never hits Google. Routing both
+    ``httpx2.MockTransport`` so the suite never hits Google. Routing both
     call sites through one helper lets a single patch cover them without
     threading a client argument into each route.
     """
-    return httpx.AsyncClient(timeout=timeout_seconds)
+    return httpx2.AsyncClient(timeout=timeout_seconds)
 
 
 async def _upsert_user_on_login(
