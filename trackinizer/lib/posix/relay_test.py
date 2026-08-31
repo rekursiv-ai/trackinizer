@@ -467,12 +467,17 @@ class TestThreadedRelay:
         relay.terminate()
 
     def test_terminate_ends_a_child_deaf_to_term(self) -> None:
+        # The child announces its handler rather than the test guessing a
+        # startup budget: interpreter startup passes 0.3s under a loaded
+        # machine, and a TERM landing first kills it for 143 instead of 137.
         deaf = (
-            "import signal,time; "
+            "import signal,sys,time; "
             "signal.signal(signal.SIGTERM, lambda *_: None); "
+            "sys.stdout.write('DEAF\\n'); sys.stdout.flush(); "
             "time.sleep(30)"
         )
-        relay = ThreadedRelay([sys.executable, "-c", deaf])
+        captured = bytearray()
+        relay = ThreadedRelay([sys.executable, "-c", deaf], on_output=captured.extend)
         status: list[int] = []
 
         def drive() -> None:
@@ -481,7 +486,8 @@ class TestThreadedRelay:
         worker = threading.Thread(target=drive, daemon=True)
         worker.start()
         _wait_running(relay, 5.0)
-        time.sleep(0.3)  # let the child install its handler
+        _wait(lambda: b"DEAF" in bytes(captured), 10.0)
+        assert b"DEAF" in bytes(captured)
         relay.terminate()
         worker.join(timeout=10.0)
         assert not worker.is_alive()
