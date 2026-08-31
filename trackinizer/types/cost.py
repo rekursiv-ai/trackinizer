@@ -7,7 +7,6 @@ from typing import Self
 
 import math
 
-from trackinizer.lib.custom_json import JsonCodec
 from trackinizer.types.columns import Row
 
 
@@ -106,7 +105,7 @@ class Cost:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class TokenCount(JsonCodec):
+class TokenCount:
     """Per-turn LLM token usage, mirroring ``sagent.types.model.TokenCount``.
 
     Lives alongside :class:`Cost` because both are per-action accounting

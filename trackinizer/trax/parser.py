@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Literal, cast, get_args
 import uuid
 
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import float_val
+from trackinizer.lib.custom_json import FloatCodec
 from trackinizer.trax.grammar import (
     AGAINST_RELATION_SPELLINGS,
     COST_FIELDS,
@@ -968,7 +968,7 @@ def _apply_valence_alias(edge: Edge, metadata: dict[str, object]) -> dict[str, o
     if given is None:
         metadata["valence"] = edge.valence_default
         return metadata
-    value = float_val(given)
+    value = FloatCodec.coerce(given)
     if value < 0:
         # The magnitude is non-negative; the for/against polarity is carried by
         # the spelling (plain vs ``dis*``), not by a negative value. A positive

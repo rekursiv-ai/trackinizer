@@ -16,7 +16,7 @@ from uuid import UUID
 
 import asyncpg
 
-from trackinizer.lib.custom_json import JSONValue, json_unfreeze
+from trackinizer.lib.custom_json import DataclassCodec, JSONValue, json_unfreeze
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import (
@@ -405,7 +405,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 e.model,
                 e.kind,
                 e.timestamp,
-                json_unfreeze(_strip_postgres_nuls(e.message.to_json())),
+                json_unfreeze(_strip_postgres_nuls(DataclassCodec.to_json(e.message))),
             )
             for e in typed
         ]
