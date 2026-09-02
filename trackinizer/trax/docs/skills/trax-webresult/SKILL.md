@@ -10,7 +10,7 @@ graph it is most often a **companion** of a Paper (its code repo, dataset,
 notebook, or project page).
 
 Per-kind expectations doc (SoT). Fields owned by `types/inquiries.py`; grammar by
-`../trax-skill.md`.
+`../trax/SKILL.md`.
 
 ## Completeness bar
 
@@ -34,7 +34,7 @@ paper's OWN artifact; filter dependency/library repos.
 ## Expectations
 
 - Every paper with a real code/data companion should have ≥1 linked WebResult
-  (see `paper.md`).
+  (see `../trax-paper/SKILL.md`).
 - A WebResult can stand alone as evidence that `proves`/`favors` a Belief, or be
   produced by a WebSearch that surfaced it.
 
