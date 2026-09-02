@@ -9,7 +9,7 @@ A `Belief` is a proposition whose support comes from cited artifacts. Write it s
 the claim is falsifiable and its evidence is legible.
 
 Per-kind expectations doc (SoT). Fields owned by `types/inquiries.py`; grammar by
-`../trax-skill.md`.
+`../trax/SKILL.md`.
 
 ## Completeness bar
 
@@ -33,7 +33,7 @@ the Belief is the target. So:
   kind. `disproves`/`disfavors` are aliases that negate valence.
 
 Do NOT model a paper citing a paper as a Belief citation — that is `cites_paper`
-(see `paper.md`). A Belief is a *claim*; a Paper is *evidence*. "Two papers agree"
+(see `../trax-paper/SKILL.md`). A Belief is a *claim*; a Paper is *evidence*. "Two papers agree"
 is expressed as both `proves`/`favors` the same Belief, not one citing the other.
 
 ## Expectations

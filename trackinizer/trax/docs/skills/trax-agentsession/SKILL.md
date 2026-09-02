@@ -9,7 +9,7 @@ An `AgentSession` is a captured agent-CLI session envelope, citeable like any
 other artifact. Produced by `trax run <cli>`.
 
 Per-kind expectations doc (SoT). Fields owned by `types/inquiries.py`; grammar by
-`../trax-skill.md`.
+`../trax/SKILL.md`.
 
 ## Completeness bar
 

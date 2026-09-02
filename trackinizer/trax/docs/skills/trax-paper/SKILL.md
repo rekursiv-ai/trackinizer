@@ -11,7 +11,7 @@ cascade below, fill what resolves, record what does not — never fail the node
 for a missing optional field, never invent a value, never write a placeholder.
 
 Per-kind expectations doc (SoT). Fields are owned by `types/inquiries.py`; write
-grammar by `../trax-skill.md`. This file owns *what a complete Paper looks like
+grammar by `../trax/SKILL.md`. This file owns *what a complete Paper looks like
 and how to source it.*
 
 ## Completeness bar
@@ -140,14 +140,14 @@ Every paper: **try** to find and attach companions.
    paper's OWN artifact.
 3. Create + link: `trax webresult title to "Code: <slug>" url to <URL>` then
    `trax paper <seq> produces webresult <wseq>`. Dedup WebResults on `url`.
-See `webresult.md`.
+See `../trax-webresult/SKILL.md`.
 
 ## Citation edges
 
 - Paper→Paper bibliographic citation = `cites_paper` (`trax paper A cites paper
   B`): historical, no valence, provenance-neutral. Add an edge to every in-graph
   reference. This is NOT `proves`/`favors` (those target Belief/Experiment — see
-  `belief.md`).
+  `../trax-belief/SKILL.md`).
 - **Getting a paper's references is usually a PDF-read, not an API call.** S2 and
   arXiv only carry reference lists for older, well-indexed papers; for anything
   recent (the common case) S2 returns nothing, so you **fetch the PDF and parse

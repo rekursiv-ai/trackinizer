@@ -10,9 +10,9 @@ engineer or agent to act without redoing the investigation. The writeup
 must make the work independently implementable and verifiable.
 
 This is the per-kind expectations doc for `Issue` (one of the
-`trax/docs/skills/*.md` set, the SoT for how each inquiry kind should be
+`trax/docs/skills/trax-*/SKILL.md` set, the SoT for how each inquiry kind should be
 filled). It covers CONTENT quality; for command mechanics (`trax issue ...`),
-see `../trax-skill.md`.
+see `../trax/SKILL.md`.
 
 ## General issue body standard
 

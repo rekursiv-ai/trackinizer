@@ -9,7 +9,7 @@ A `WebSearch` records a web/paper search and the references it surfaced, so the
 search is reproducible and its findings are linked.
 
 Per-kind expectations doc (SoT). Fields owned by `types/inquiries.py`; grammar by
-`../trax-skill.md`.
+`../trax/SKILL.md`.
 
 ## Completeness bar
 
