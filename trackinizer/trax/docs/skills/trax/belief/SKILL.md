@@ -33,7 +33,7 @@ the Belief is the target. So:
   kind. `disproves`/`disfavors` are aliases that negate valence.
 
 Do NOT model a paper citing a paper as a Belief citation — that is `cites_paper`
-(see `../trax-paper/SKILL.md`). A Belief is a *claim*; a Paper is *evidence*. "Two papers agree"
+(see `../paper/SKILL.md`). A Belief is a *claim*; a Paper is *evidence*. "Two papers agree"
 is expressed as both `proves`/`favors` the same Belief, not one citing the other.
 
 ## Expectations

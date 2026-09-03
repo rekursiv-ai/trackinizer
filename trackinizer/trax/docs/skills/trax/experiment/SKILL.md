@@ -17,7 +17,7 @@ Per-kind expectations doc (SoT). Fields owned by `types/inquiries.py`; grammar b
   test-time-FT").
 - **codechanges** = the `CodeChange` row(s) the run executed at — the exact code
   state. More than one when the experiment compares states. Link real rows; use
-  the full 40-char SHA (see `../trax-codechange/SKILL.md`).
+  the full 40-char SHA (see `../codechange/SKILL.md`).
 - **outcome** = what was observed, as free text with the number AND its
   measurement condition ("24.0% exact on ARC-AGI-2 private, pass@2, $0.20/task").
   Empty until the run concludes.

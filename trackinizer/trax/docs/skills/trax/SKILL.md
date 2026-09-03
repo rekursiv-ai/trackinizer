@@ -313,7 +313,7 @@ substantial row of that kind:
 | `trax-websearch` | WebSearch (query, provider, findings as edges) |
 | `trax-agentsession` | AgentSession (envelope vs events asymmetry) |
 
-The bodies live at `trackinizer/trax/docs/skills/trax-<kind>/SKILL.md`.
+The bodies live at `trackinizer/trax/docs/skills/trax/<kind>/SKILL.md`.
 
 For live trackinizer DB schema/shape changes (migrations, constraints,
 new Inquiry kinds), read
