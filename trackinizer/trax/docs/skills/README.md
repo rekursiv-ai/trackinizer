@@ -6,18 +6,21 @@ command grammar (that is `trax/SKILL.md`, `../grammar.lark`, `../GRAMMAR.md`),
 but the **content expectations** — what makes a well-formed, complete instance of
 each kind.
 
-One directory per instantiable kind, each holding a `SKILL.md`:
+The children nest UNDER `trax/`, one directory per instantiable kind, each
+holding a `SKILL.md`. Nesting is not cosmetic: the codex CLI's loader skips a
+skill whose `SKILL.md` is a symlink, so the whole tree has to be reachable
+through ONE directory symlink from `.sagent/skills/trax`.
 
 | Kind | File | Owns |
 |---|---|---|
-| Issue | `trax-issue/SKILL.md` | issue-body + bug-report standard; success criteria; verification |
-| Paper | `trax-paper/SKILL.md` | full bib completeness; source cascade; DOI resolution; companion WebResults |
-| Belief | `trax-belief/SKILL.md` | judgement/confidence; signed-valence citations; claims-not-papers |
-| Experiment | `trax-experiment/SKILL.md` | codechanges; outcome; config; proved_by |
-| CodeChange | `trax-codechange/SKILL.md` | full 40-char SHA; produced-link |
-| WebResult | `trax-webresult/SKILL.md` | url; companion-of-paper pattern |
-| WebSearch | `trax-websearch/SKILL.md` | query/provider; findings as produced_by |
-| AgentSession | `trax-agentsession/SKILL.md` | envelope vs events asymmetry |
+| Issue | `trax/issue/SKILL.md` | issue-body + bug-report standard; success criteria; verification |
+| Paper | `trax/paper/SKILL.md` | full bib completeness; source cascade; DOI resolution; companion WebResults |
+| Belief | `trax/belief/SKILL.md` | judgement/confidence; signed-valence citations; claims-not-papers |
+| Experiment | `trax/experiment/SKILL.md` | codechanges; outcome; config; proved_by |
+| CodeChange | `trax/codechange/SKILL.md` | full 40-char SHA; produced-link |
+| WebResult | `trax/webresult/SKILL.md` | url; companion-of-paper pattern |
+| WebSearch | `trax/websearch/SKILL.md` | query/provider; findings as produced_by |
+| AgentSession | `trax/agentsession/SKILL.md` | envelope vs events asymmetry |
 
 Rules for these docs:
 - Describe EXPECTATIONS, not field enumerations. `types/inquiries.py` owns fields;

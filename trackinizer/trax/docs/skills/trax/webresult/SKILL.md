@@ -34,7 +34,7 @@ paper's OWN artifact; filter dependency/library repos.
 ## Expectations
 
 - Every paper with a real code/data companion should have ≥1 linked WebResult
-  (see `../trax-paper/SKILL.md`).
+  (see `../paper/SKILL.md`).
 - A WebResult can stand alone as evidence that `proves`/`favors` a Belief, or be
   produced by a WebSearch that surfaced it.
 
