@@ -617,6 +617,9 @@ class TestWatchFailures:
         with pytest.raises(FileNotFoundError):
             asyncio.run(run())
 
+    @pytest.mark.skipif(
+        platform.system() != "Linux", reason="inotify watch limits are Linux-only"
+    )
     def test_a_refused_adoption_is_reported_not_swallowed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -651,6 +654,9 @@ class TestWatchFailures:
             "a refused watch left the subtree uncovered with nothing logged"
         )
 
+    @pytest.mark.skipif(
+        platform.system() != "Linux", reason="IN_Q_OVERFLOW is an inotify event"
+    )
     def test_a_queue_overflow_rescans_rather_than_losing_the_writes(
         self, tmp_path: Path
     ) -> None:

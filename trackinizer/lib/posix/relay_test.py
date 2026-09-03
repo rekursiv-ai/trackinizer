@@ -13,14 +13,21 @@ import os
 import pty
 import signal
 import struct
+import subprocess
 import sys
 import termios
+import textwrap
 import threading
 import time
 
 import pytest
 
-from trackinizer.lib.posix.relay import Relay, ThreadedRelay, real_fd, terminal_size
+from trackinizer.lib.posix.relay import (
+    Relay,
+    ThreadedRelay,
+    real_fd,
+    terminal_size,
+)
 from trackinizer.lib.posix.terminal import Terminal
 
 
@@ -259,7 +266,58 @@ class TestTerminalHandback:
                         os.close(fd)
 
         before, after = asyncio.run(run())
-        assert before == after
+        # ``PENDIN`` is kernel bookkeeping -- input queued for reprocessing --
+        # not a discipline the relay sets or promises to hand back, and it can
+        # be raised by traffic that arrived while the child ran. Comparing it
+        # would assert on the kernel's state rather than on the restore.
+        before_flags, after_flags = _without_pendin(before), _without_pendin(after)
+        assert before_flags == after_flags
+
+    def test_handback_does_not_wait_for_output_nobody_is_draining(self) -> None:
+        """Restoring the line discipline must not block on undrained output.
+
+        ``TCSADRAIN`` waits for the terminal's pending output to be consumed
+        before it applies the new attributes. When the human's terminal has
+        bytes queued and nothing is reading its master -- a mirror task already
+        gone, a harness that stopped draining, a disconnected emulator -- there
+        is no consumer to make that drain finish, so the call blocks forever
+        and the relay never returns from ``serve``.
+
+        Run in a CHILD PROCESS, not a thread: a blocked ``tcsetattr`` sits in a
+        C call no Python-level timeout can interrupt, so a thread that loses
+        this race is unkillable and wedges the whole pytest process -- the
+        failure mode would stop being an assertion and start being a hang.
+        """
+        source = textwrap.dedent(
+            """
+            import os, pty, termios
+
+            from trackinizer.lib.posix.relay import _restore
+
+            master, slave = pty.openpty()
+            borrowed = os.dup(slave)
+            before = termios.tcgetattr(borrowed)
+            # Bytes sent to the slave are echoed back by the line discipline,
+            # which is what fills the OUTPUT queue TCSADRAIN waits on. Nothing
+            # reads master, so that queue can never drain.
+            os.write(master, b"Z" * 4096)
+            _restore(borrowed, before)
+            assert termios.tcgetattr(borrowed) == before
+            """
+        )
+        completed = subprocess.run(  # noqa: S603 -- internal literal source.
+            [sys.executable, "-c", source],
+            capture_output=True,
+            check=False,
+            cwd=Path(__file__).resolve().parents[3],
+            text=True,
+            timeout=60,
+        )
+        assert completed.returncode == 0, (
+            "restoring the terminal blocked on output nobody is draining; the "
+            "handback must not wait for a consumer that may never arrive. "
+            f"stderr: {completed.stderr[-2000:]}"
+        )
 
     def test_a_child_that_cannot_spawn_restores_nothing_and_raises(self) -> None:
         """A missing binary fails before the terminal is ever borrowed."""
@@ -564,6 +622,19 @@ async def _drain(fd: int, into: bytearray) -> None:
         if not chunk:
             return
         into.extend(chunk)
+
+
+def _without_pendin(attributes: object) -> list[object]:
+    """Return ``tcgetattr`` output with the kernel's ``PENDIN`` bit cleared.
+
+    ``PENDIN`` reports that input is queued for reprocessing. It is set by the
+    kernel, never by this module, so a comparison including it tests the
+    kernel's mood rather than whether the line discipline was handed back.
+    """
+    values = list(cast(list[object], attributes))
+    lflag_index = 3
+    values[lflag_index] = cast(int, values[lflag_index]) & ~termios.PENDIN
+    return values
 
 
 def _wait(predicate: Callable[[], bool], timeout_sec: float) -> None:
