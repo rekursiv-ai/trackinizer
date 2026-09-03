@@ -414,11 +414,23 @@ def _enter_raw(fd: int) -> list[Any] | None:
 
 
 def _restore(fd: int, old_attr: list[Any] | None) -> None:
-    """Restore terminal attributes saved by :func:`_enter_raw`."""
+    """Restore terminal attributes saved by :func:`_enter_raw`.
+
+    ``TCSANOW``, not ``TCSADRAIN``: draining waits for the terminal's pending
+    output to be consumed, and by here the relay has stopped reading, so a
+    queue nobody drains never empties. On Darwin that call then blocks
+    FOREVER -- the child is already gone and the human's shell never comes
+    back. Linux returns immediately from the same call, which is why only a
+    macOS run ever hung and CI stayed green throughout.
+
+    The guarantee ``TCSADRAIN`` buys -- queued bytes reach the terminal under
+    the old discipline -- is unobtainable anyway when there is no consumer to
+    reach them.
+    """
     if old_attr is None:
         return
     with contextlib.suppress(termios.error):
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_attr)
+        termios.tcsetattr(fd, termios.TCSANOW, old_attr)
 
 
 async def _readable(fd: int) -> bool:
