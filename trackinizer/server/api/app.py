@@ -28,6 +28,7 @@ from trackinizer.server.api import (
     metrics_routes,
     oauth_routes,
     query,
+    session_ir_routes,
     sessions_routes,
     submit,
 )
@@ -159,6 +160,7 @@ for route_module in (
     metrics_routes,
     oauth_routes,
     query,
+    session_ir_routes,
     sessions_routes,
     submit,
 ):
@@ -193,8 +195,8 @@ async def validation_handler(request: Request, exc: ValidationError) -> JSONResp
 async def schema_handler(request: Request, exc: SchemaError) -> JSONResponse:
     """Translate a codec ``SchemaError`` into HTTP 422.
 
-    A stray key in a client-supplied ``message`` body reaches the codec
-    through ``EventBody.to_event`` on the append-events path. It is a
+    A stray key in a client-supplied record ``payload`` reaches the codec
+    through ``RecordBody``'s decode on the append-records path. It is a
     malformed request, not a server fault, but the codec raises a
     ``ValueError`` -- which matched no handler and so surfaced as a 500.
     """

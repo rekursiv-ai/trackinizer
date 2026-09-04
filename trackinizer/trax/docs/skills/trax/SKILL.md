@@ -102,8 +102,8 @@ Two artifact boundaries are easy to get wrong:
 
 - A `codechange` row must use the full 40-character SHA from `git rev-parse`,
   never an abbreviated SHA.
-- An `agentsession` row is the captured session envelope; its turn log lives in
-  `agent_session_events`, outside normal inquiry edges and change logs.
+- An `agentsession` row is the captured session envelope; its transcript lives
+  in `session_records`, outside normal inquiry edges and change logs.
 
 ## Editing Trackinizer/trax
 
@@ -116,11 +116,12 @@ When changing Trackinizer, keep the skill aligned with the owning contracts:
 - Do not hand-maintain kind, token, field, or route lists in this skill. Point
   to the owning source instead.
 - Treat `types/inquiries.py`, `types/edges.py`, `types/change_log.py`, and
-  `types/agent_session_events.py` as the DB/domain source of truth. API docs
-  explain the wire surface; types win on names and structure.
-- Follow `docs/api.md` and `docs/api_agent_session_events.md` for API naming.
+  `types/session_records.py` as the DB/domain source of truth. API docs
+  explain the wire surface; types win on names and structure. The record
+  VOCABULARY is not trackinizer's: it is `trackinizer.lib.agent.types.sessions`.
+- Follow `docs/api.md` and `docs/api_session_records.md` for API naming.
   Do not invent aliases or parallel names.
-- Preserve the `agent_session_events` asymmetry: it is deliberately outside
+- Preserve the `session_records` asymmetry: it is deliberately outside
   `inquiries` and `change_log`; simplifying trax must not collapse that
   boundary.
 

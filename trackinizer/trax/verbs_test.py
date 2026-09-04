@@ -19,6 +19,7 @@ from trackinizer.trax.grammar import (
     WRITE_FIELDS_CLI,
     ListQuery,
 )
+from trackinizer.trax.run.errors import NotResumableError
 from trackinizer.trax.verbs import (
     LABELS_BY_EDGE_KIND,
     Blocked,
@@ -1851,10 +1852,17 @@ def test_version_prints_server_sha(
     assert "testsha" in capsys.readouterr().out
 
 
-def test_search_calls_search(client: FakeClient) -> None:
-    run(["search", "needle"], client)
-    search_calls = [c for c in client.calls if c[0] == "search"]
-    assert search_calls[0][1][0] == "needle"
+def test_kindless_filter_queries_every_kind(client: FakeClient) -> None:
+    """A leading filter field lists across every kind.
+
+    Replaces the ``search`` verb: the query reaches the same rows through the
+    ordinary list path, one ``list_kind`` call per kind.
+    """
+    run(["title", "re", "row"], client)
+
+    listed = [c[1][0] for c in client.calls if c[0] == "list_kind"]
+    assert "Issue" in listed
+    assert "Experiment" in listed
 
 
 def test_kind_list_width_limits_table_output(
@@ -2666,7 +2674,7 @@ def test_limit_zero_is_rejected(client: FakeClient) -> None:
 
 def test_limit_negative_is_rejected(client: FakeClient) -> None:
     with pytest.raises(SystemExit):
-        run(["search", "needle", "--limit", "-3"], client)
+        run(["belief", "--limit", "-3"], client)
 
 
 def test_help_flag_after_positional_shows_help_page(
@@ -3252,6 +3260,97 @@ def test_issue_metric_is_unknown_token(client: FakeClient) -> None:
     # ``metric`` as an unknown token (it is not a field/edge/relation).
     with pytest.raises(ClientError):
         run(["issue", "2", "metric", "at", "loss"], client)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["CiphertextDroppedError", "LossyConversionError", "NotResumableError"],
+    ids=["ciphertext", "lossy", "not-resumable"],
+)
+def test_a_caught_exception_is_a_class_not_a_lazy_proxy(name: str) -> None:
+    """``except`` needs a real class, which a ``lazy_import`` proxy is not.
+
+    Deferring an EXCEPTION the way a function is deferred type-checks and
+    imports fine, then raises ``TypeError: catching classes that do not
+    inherit from BaseException`` at the moment the handler runs -- so the
+    failure surfaces only on the error path, replacing the diagnostic the
+    handler existed to print with a traceback.
+
+    Exercised by CATCHING rather than by ``isinstance``: wrapt forwards
+    ``__class__``, so a proxy passes every structural check and only the
+    actual ``except`` tells the two apart.
+
+    Asserted on every deferred exception, not just the one that bit: the
+    three share one cause, and a class fixed instance-by-instance comes back.
+    """
+    assert _declines(getattr(verbs, name)), f"{name} is a proxy, not a class"
+
+
+def _declines(caught: type[BaseException]) -> bool:
+    """Whether ``caught`` works in an ``except`` and lets a stranger through.
+
+    The operation itself, because wrapt forwards ``__class__``: a proxy passes
+    ``isinstance``/``issubclass`` and only a real ``except`` tells the two
+    apart, raising ``TypeError`` rather than declining.
+    """
+    try:
+        _ = int("not a number")
+    except caught:
+        return False
+    except ValueError:
+        return True
+    return False
+
+
+def test_the_resume_tail_accepts_its_own_lossy_flag(client: FakeClient) -> None:
+    """``--lossy`` reaches ``run_resume``, which is the only thing that reads it.
+
+    The kind parser rejects flags it does not declare, and it runs BEFORE
+    dispatch -- so the flag the refusal message tells a user to pass was
+    itself refused by argparse, with no way to get past the gate at all.
+    """
+    with pytest.raises(ClientError, match="Resumable: claude, codex"):
+        run(["agentsession", "1", "run", "gemini", "--lossy"], client)
+
+
+def test_the_lossy_flag_reaches_the_conversion(
+    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Declaring the flag is not plumbing it.
+
+    Both halves are needed and they pull against each other: the parser must
+    declare ``--lossy`` (or the command is rejected outright), and declaring
+    it means argparse CONSUMES it -- so the tail scan that used to find it
+    sees nothing and every ``--lossy`` resume is refused anyway. The value
+    has to come off the parsed namespace.
+    """
+    seen: list[bool] = []
+
+    def _prepare(
+        _client: object, _session_id: object, _target: str, *, lossy: bool = False
+    ) -> object:
+        seen.append(lossy)
+        raise NotResumableError("stop here; the flag is what this asserts")
+
+    monkeypatch.setattr(verbs, "prepare_resume", _prepare)
+
+    with pytest.raises(ClientError):
+        run(["agentsession", "1", "run", "codex", "--lossy"], client)
+
+    assert seen == [True]
+
+
+def test_an_unresumable_target_reports_why_rather_than_raising(
+    client: FakeClient,
+) -> None:
+    """The refusal is a message, not a traceback.
+
+    Gemini rewrites one document in place and names no session to re-enter, so
+    a resume is refused by design. A user asking for one has made an ordinary
+    mistake and must get the sentence naming the resumable targets.
+    """
+    with pytest.raises(ClientError, match="Resumable: claude, codex"):
+        run(["agentsession", "1", "run", "gemini"], client)
 
 
 if __name__ == "__main__":

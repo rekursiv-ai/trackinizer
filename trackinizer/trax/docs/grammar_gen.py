@@ -56,6 +56,7 @@ from trackinizer.trax.grammar import (
     WRITE_FIELDS_CLI,
 )
 from trackinizer.trax.profile import Profiles
+from trackinizer.trax.run.materialize import RESUMABLE_TARGETS
 from trackinizer.trax.run.session import build_parser as run_parser
 from trackinizer.types.inquiries import (
     Belief,
@@ -67,6 +68,7 @@ from trackinizer.wire.filters import (
     FILTER_OPS,
     VALUELESS_FILTER_OPS,
 )
+from trackinizer.wire.session_record_fields import SESSION_RECORD_FIELDS
 from trackinizer.wire.wire_metrics_query import (
     METRIC_AXES,
     METRIC_COMPARE_OPS,
@@ -141,7 +143,7 @@ filter: FILTER_FIELD FILTER_OP VALUE   // owner is Josh ; title re bug
 // TAILS on the subject, left to right.  DEL and a bare relation projection are
 // TERMINAL (must be last).  A scalar FIELD may be set at most once per command.
 tail_seq: tail*
-tail: set_mutation | cost_action | edge_action | relation_action | read_field | metric_action | DEL
+tail: set_mutation | cost_action | edge_action | relation_action | read_field | metric_action | resume_action | DEL
 // Setting ANY field needs the operator -- `FIELD to VALUE`, never bare
 // `FIELD VALUE` (`title to x`, not `title x`; `priority to high`, not `priority
 // high`). The same holds inside an inline create.
@@ -169,6 +171,15 @@ relation_action: EDGE_KEYWORD SEQ?        // no target = list related rows
 // `at <word>` (word not key/step/value) is the shorthand `at key is <word>`.
 // SEMANTIC (parser-enforced, grammar-accepted): max/min apply to step only; a
 // write forbids sort/limit; a bulk write (multi-cell mask) needs --makeitso.
+// RESUME: hand a stored AgentSession back to a CLI as its own native file.
+// The target is chosen HERE, not by whatever captured the session -- that is
+// what lets a codex-captured session resume as claude. `--lossy` is the tail's
+// own (it gates the CONVERSION, before any runner exists); everything after
+// the target goes verbatim to `trax run`.
+//   agentsession 42 run claude
+//   agentsession 42 run claude --lossy --as bob -- --model opus
+resume_action: RUN CLI_TARGET
+
 metric_action: METRIC metric_clause*
 metric_clause: metric_mask | metric_write | metric_sort | metric_limit
 metric_mask: AT METRIC_FIELD METRIC_OP VALUE   // at step is 4
@@ -254,7 +265,7 @@ def _literal_terminal(name: str, spellings: Sequence[str], comment: str = "") ->
 
 
 def _verb_spellings() -> list[str]:
-    """The non-kind top-level verb spellings (`next`, `search`, `profile`, ...).
+    """The non-kind top-level verb spellings (`next`, `recent`, `profile`, ...).
 
     Sourced from the live ``DISPATCHERS`` table minus the kind verbs (which lead
     row commands, not verb commands), plus ``run`` -- special-cased in
@@ -290,6 +301,10 @@ def _terminal_block() -> str:
             "id",
             "created",
             "modified",
+            # IR record kinds: ``agentsession tool_call re bar``. Derived from
+            # which record classes project any searchable text, so a class
+            # added upstream reaches the grammar without an edit here.
+            *SESSION_RECORD_FIELDS,
         }
     )
     lines = [
@@ -315,6 +330,11 @@ def _terminal_block() -> str:
         # dynamic lexer resolves each by parse position, exactly as the parser's
         # ``parse_metric_action`` dispatches on the lead word.
         _literal_terminal("METRIC", ["metric"]),
+        # The resume tail. ``CLI_TARGET`` is the RUNNABLE subset of the
+        # convert formats -- derived from ``RESUMABLE_TARGETS`` so a CLI that
+        # gains a stable session id reaches the grammar without an edit here.
+        _literal_terminal("RUN", ["run"]),
+        _literal_terminal("CLI_TARGET", sorted(RESUMABLE_TARGETS)),
         _literal_terminal("AT", ["at"]),
         _literal_terminal("SORT", ["sort"]),
         _literal_terminal("LIMIT", ["limit"]),
@@ -475,8 +495,8 @@ def _semantics_block() -> str:
         "// proves/favors carry a signed valence, dis* negates it = against):",
         *_edge_direction_lines(),
         "// VERBS (full usage, generated from each verb's argparse). What they do:",
-        "//   next=next unblocked Issue; blocked/board/graph=Issue views; search=text",
-        "//   search; recent=audit feed; cost=cost rollup; id=show row by uuid;",
+        "//   next=next unblocked Issue; blocked/board/graph=Issue views;",
+        "//   recent=audit feed; cost=cost rollup; id=show row by uuid;",
         "//   profile=manage server profiles; send=message a live agent session;",
         "//   run=wrap an agent CLI (claude/gemini/codex) and sync its session.",
         *_verb_lines(),

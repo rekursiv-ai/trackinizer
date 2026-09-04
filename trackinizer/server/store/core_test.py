@@ -18,6 +18,7 @@ from trackinizer.conftest import (
     new_uuid,
 )
 from trackinizer.lib.postgres import DatabaseEngine
+from trackinizer.server.sql import schema_migrations
 from trackinizer.server.store.core import (
     Store,
     StubEmbedder,
@@ -184,9 +185,11 @@ class TestStoreBootstrap:
             for c in engine.conn.execute.call_args_list
             if "INSERT INTO applied_migrations" in c.args[0]
         ]
-        # A fresh database records the baseline. The schema is squashed to a
-        # single baseline, so there are no numbered migrations to mark.
-        assert inserts == ["schema.sql"]
+        # A fresh database gets the baseline, which already carries every
+        # numbered migration's tables -- so each is RECORDED without being
+        # executed. Replaying one here would re-create what it just built.
+        assert inserts == [name for name, _body in schema_migrations()]
+        assert "schema.sql" in inserts
 
     @pytest.mark.asyncio
     async def test_bootstrap_skips_baseline_for_existing_db(self) -> None:
@@ -207,9 +210,12 @@ class TestStoreBootstrap:
             for c in engine.conn.execute.call_args_list
             if "INSERT INTO applied_migrations" in c.args[0]
         ]
-        # The baseline is already applied and the schema is squashed to a single
-        # baseline, so there are no numbered migrations left to run or record.
-        assert inserts == []
+        # The baseline is already applied, so it is neither re-run nor
+        # re-recorded. Every NUMBERED migration is unrecorded here, so each
+        # runs and is recorded -- this is the deployed database's path, and
+        # the one that actually creates their tables.
+        numbered = [name for name, _body in schema_migrations()][1:]
+        assert inserts == numbered
 
     @pytest.mark.asyncio
     async def test_bootstrap_partial_state_does_not_recreate_baseline(
@@ -239,7 +245,7 @@ class TestStoreBootstrap:
             for c in engine.conn.execute.call_args_list
             if "INSERT INTO applied_migrations" in c.args[0]
         }
-        assert recorded == {"schema.sql"}
+        assert recorded == {name for name, _body in schema_migrations()}
 
     @pytest.mark.asyncio
     async def test_bootstrap_reconciles_lagging_sequences(self) -> None:

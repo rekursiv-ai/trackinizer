@@ -1,9 +1,9 @@
-"""Agent-session ingest routes: ``start`` / ``events`` / ``end``.
+"""Agent-session lifecycle and messaging routes: ``start`` / ``end`` / inbound.
 
 The server side of the ``trax run`` capture-and-sync layer. A run opens a
-session (minting an ``AgentSession`` inquiry row, server-assigned id),
-streams batches of turn-grained events into ``agent_session_events``, then
-closes it. ``GET .../events`` reads them back, paginated.
+session (minting an ``AgentSession`` inquiry row, server-assigned id) and
+later closes it; the captured records themselves flow through the separate
+``.../records`` routes in :mod:`server.api.session_ir_routes`.
 
 The mutating routes require the ``writer`` role; the read requires
 ``viewer``. Tenant scope is derived by joining to ``inquiries``.
@@ -15,12 +15,9 @@ from datetime import UTC, datetime
 from typing import Annotated, Final, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from trackinizer.server.api._deps import get_inbound, get_store
-from trackinizer.server.api._routes_shared import (
-    parse_seq_ranges,
-)
 from trackinizer.server.auth import (
     AuthIdentity,
     assert_account_active,
@@ -30,19 +27,11 @@ from trackinizer.server.inbound import Inbound
 from trackinizer.server.store.core import Store
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.bodies import SubmitAgentSession
-from trackinizer.wire.routes import (
-    DEFAULT_LIST_LIMIT,
-    MAX_LIST_LIMIT,
-)
 from trackinizer.wire.wire_sessions import (
-    KINDS,
-    AppendEventsRequest,
-    AppendEventsResponse,
     DrainInboundResponse,
     InboundDrainItem,
     InboundEnqueueRequest,
     InboundEnqueueResponse,
-    ReadEventsResponse,
     SendMessage,
     SendMessageResponse,
     SessionEnd,
@@ -121,71 +110,6 @@ async def session_start_route(
         cli_session_id=row.cli_session_id,
         actor=row.owner,
     )
-
-
-@router.post(
-    "/api/sessions/{session_id}/events",
-    dependencies=[Depends(require_role("writer"))],
-)
-async def session_events_route(
-    session_id: UUID,
-    body: AppendEventsRequest,
-    request: Request,
-) -> AppendEventsResponse:
-    """Batch-append events to an open session; idempotent on ``(id, seq)``.
-
-    Writer-gated, not owner-gated: AgentSessions are a shared workspace (design
-    step 5 -- mutations ``writer``, reads ``viewer``), so any writer may append.
-    ``opened_by_api_key_id`` is attribution + resume-correlation, not an access
-    boundary.
-    """
-    store = get_store(request)
-    await _require_session(store, session_id)
-    appended, skipped = await store.append_events(session_id, body.events)
-    return AppendEventsResponse(appended=appended, skipped=skipped)
-
-
-@router.get(
-    "/api/sessions/{session_id}/events",
-    dependencies=[Depends(require_role("viewer"))],
-)
-async def read_session_events_route(
-    session_id: UUID,
-    request: Request,
-    *,
-    limit: int = DEFAULT_LIST_LIMIT,
-    offset: int = 0,
-    seq_range: Annotated[list[str] | None, Query()] = None,
-    kind: str | None = None,
-) -> ReadEventsResponse:
-    """Read one page of a session's events in ``seq`` order.
-
-    Paginated so a caller never pulls a whole large session at once;
-    mirrors the inquiry-list grammar (api.md 4.3), including the repeated
-    ``seq_range=a..b`` union param. Event ``seq`` starts at 0
-    (harness-assigned), so a bound accepts 0 here, unlike the inquiry
-    ``seq`` which starts at 1.
-    """
-    if limit < 1 or limit > MAX_LIST_LIMIT:
-        raise HTTPException(
-            status_code=400, detail=f"limit must be in [1, {MAX_LIST_LIMIT}]"
-        )
-    if offset < 0:
-        raise HTTPException(status_code=400, detail="offset must be >= 0")
-    # Event ``seq`` starts at 0 (harness-assigned).
-    seq_ranges = parse_seq_ranges(seq_range, min_seq=0)
-    if kind is not None and kind not in KINDS:
-        raise HTTPException(status_code=400, detail=f"unknown event kind {kind!r}")
-    store = get_store(request)
-    await _require_session(store, session_id)
-    events = await store.read_session_events(
-        session_id,
-        limit=limit,
-        offset=offset,
-        seq_ranges=seq_ranges,
-        kind=kind,
-    )
-    return ReadEventsResponse(events=events)
 
 
 @router.post("/api/sessions/{session_id}/inbound")

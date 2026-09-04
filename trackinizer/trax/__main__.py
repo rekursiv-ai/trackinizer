@@ -48,7 +48,7 @@ Grammar:
   trax <kind> <seq> <edge> <kind> <seq> field to value -- annotate an edge
   trax <kind> <seq> <edge> <kind> <seq> del -- remove an edge
   trax next                            -- next active issue
-  trax search <query>                  -- cross-kind search
+  trax <field> <op> <value>            -- filter every kind
   trax recent                          -- audit-log feed
   trax cost <kind> <seq> [--deep]      -- agent-cost/resource-cost
 

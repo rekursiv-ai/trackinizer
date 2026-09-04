@@ -51,11 +51,23 @@
   .row .room { color: var(--muted); }
   .row .arrow { color: var(--muted); margin: 0 4px; }
   .row .kind { color: var(--muted); font-size: 11px; margin-left: 4px; }
+  /* One rule per IR record class the feed carries. Every typed tool result
+     is muted alike: the class says what the tool DID, and the console
+     distinguishes conversation from tooling, not one tool from another. */
   .row.k-AssistantMessage .body { opacity: 0.92; }
-  .row.k-ToolResult .body { color: var(--muted); }
+  .row.k-Thinking .body { color: var(--muted); font-style: italic; }
+  .row.k-ToolCall .body { color: var(--muted); }
+  .row.k-ShellCommandResult .body,
+  .row.k-FileReadResult .body,
+  .row.k-FileWriteResult .body,
+  .row.k-FileEditResult .body,
+  .row.k-WebSearchResults .body,
+  .row.k-WebFetchResult .body,
+  .row.k-AgentStatusResult .body,
+  .row.k-UncategorizedToolResult .body { color: var(--muted); }
   .row.k-SystemMessage .body { color: var(--muted); font-style: italic; }
-  .row.k-SlashCommand .body { color: var(--warning); }
-  .row.k-UserMessage .body, .row.k-AgentSendMessage .body { color: var(--info); }
+  .row.k-ContextCompaction .body, .row.k-ContextClear .body { color: var(--warning); }
+  .row.k-UserMessage .body, .row.k-AgentToAgentMessage .body { color: var(--info); }
   .body { display: inline; }
   .body.cont { display: block; margin-left: 2ch; }
 
@@ -261,31 +273,34 @@ function feedUrl() {
   return `/api/web/feed?${p}`;
 }
 
-// ---- Message body extraction ------------------------------------------------
+// ---- Record body extraction -------------------------------------------------
 
-// Pull a one-line-ish display body out of a typed message, by kind.
+// Pull a one-line-ish display body out of one IR record.
+//
+// `ev.text` FIRST, for every kind: the server computes the search projection
+// at ingest (`types/session_records.py::search_text`) and the feed carries it,
+// so the console shows exactly what a `trax` filter would match. A per-kind
+// switch here would be a second projection of 21 record types that could
+// silently disagree with the one the query grammar uses.
+//
+// Only the kinds whose interest is STRUCTURAL rather than prose get a case:
+// a tool call is its name and arguments, and a record with no prose at all
+// still deserves a legible line rather than a blank one.
 function bodyText(ev) {
+  if (ev.text) return ev.text;
   const m = ev.message || {};
   switch (ev.kind) {
-    case "UserMessage":
-    case "AgentSendMessage":
-      return m.text || "";
-    case "SystemMessage":
-      return m.text || "";
-    case "AssistantMessage": {
-      const parts = [];
-      if (m.text) parts.push(m.text);
-      for (const tc of (m.tool_calls || [])) {
-        parts.push(`→ ${tc.name}(${JSON.stringify(tc.args || {})})`);
-      }
-      return parts.join("\n") || (m.thinking ? "(thinking)" : "");
-    }
-    case "ToolResult":
-      return m.diff || m.content || (m.is_error ? "(error)" : "");
-    case "Compaction":
-      return `compacted ${m.token_before || 0} → ${m.token_after || 0} tokens`;
-    case "SlashCommand":
-      return `/${m.command || ""}${m.args ? " " + m.args : ""}`;
+    case "ToolCall":
+      return `→ ${m.name || "?"}(${JSON.stringify(m.arguments || {})})`;
+    case "Thinking":
+      // Sealed reasoning: the ciphertext is stripped from the payload, so
+      // there is nothing to show but the fact that the model thought.
+      return "(thinking)";
+    case "TokenUsage":
+    case "TurnContext":
+      // Bookkeeping. Named, not rendered: dumping the payload would bury the
+      // conversation under provider accounting.
+      return "";
     default:
       return JSON.stringify(m);
   }

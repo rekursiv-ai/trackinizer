@@ -40,9 +40,14 @@ from trackinizer.wire.wire_metrics_query import (
     MetricMaskClause,
     MetricRankRow,
 )
+from trackinizer.wire.wire_session_ir import (
+    AppendRecordsResponse,
+    ManifestBody,
+    PartBody,
+    RecordBody,
+    SlashCommandBody,
+)
 from trackinizer.wire.wire_sessions import (
-    AppendEventsResponse,
-    EventBody,
     SessionEnd,
     SessionEndResponse,
     SessionStart,
@@ -116,6 +121,10 @@ class FakeClient:
         # ``EdgeWrite(created=False, changed=...)``, mirroring the server, where
         # ``changed`` is True iff the supplied annotations differ from stored.
         self._edges: dict[tuple[uuid.UUID, uuid.UUID, str], dict[str, object]] = {}
+        # Part per source-file basename, as the server resolves it: a second
+        # file gets the next number, and the same file resolves to what it
+        # already had (which is what lets a resumed run append to its part).
+        self._parts: dict[str, int] = {}
         self.target_id = uuid.uuid4()
         self.child_low_id = uuid.uuid4()
         self.child_high_id = uuid.uuid4()
@@ -520,16 +529,6 @@ class FakeClient:
             )
         )
 
-    def search(
-        self,
-        query: str,
-        *,
-        kind: Inquiry.InquiryKind | None = None,
-        limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        self.calls.append(("search", (query,), {"kind": kind, "limit": limit}))
-        return list(self.rows)
-
     def recent_changes(self, *, limit: int = 50) -> list[dict[str, Any]]:
         self.calls.append(("recent_changes", (), {"limit": limit}))
         return list(self.changes)
@@ -667,34 +666,80 @@ class FakeClient:
         self.calls.append(("session_start", (body,), {}))
         return SessionStartResponse(id=self.target_id, seq=1)
 
-    def append_events(
-        self, session_id: uuid.UUID, events: Sequence[EventBody]
-    ) -> AppendEventsResponse:
-        self.calls.append(("append_events", (session_id, events), {}))
-        return AppendEventsResponse(appended=len(list(events)), skipped=0)
-
-    def read_events(
+    def append_records(
         self,
         session_id: uuid.UUID,
         *,
-        limit: int = DEFAULT_LIST_LIMIT,
-        offset: int = 0,
-        seq_ranges: Sequence[SeqRange] = (),
-        kind: str | None = None,
-    ) -> list[EventBody]:
+        name: str = "",
+        manifest: ManifestBody | None = None,
+        records: Sequence[RecordBody] = (),
+        restart: bool = False,
+        slash_commands: Sequence[SlashCommandBody] = (),
+    ) -> AppendRecordsResponse:
+        """Record an IR append; resolve a part per file, as the server does.
+
+        Parts are resolved from the basename here too rather than always
+        returning 0: a caller asserting that two files land in two parts would
+        otherwise pass against the fake and fail against the server.
+        """
         self.calls.append(
             (
-                "read_events",
+                "append_records",
                 (session_id,),
                 {
+                    "name": name,
+                    "manifest": manifest,
+                    "records": records,
+                    "restart": restart,
+                    "slash_commands": slash_commands,
+                },
+            )
+        )
+        part = self._parts.setdefault(name, len(self._parts)) if name else None
+        return AppendRecordsResponse(
+            part=part,
+            written=len(list(records)),
+            skipped=0,
+            slash_commands=len(list(slash_commands)),
+        )
+
+    def read_session_parts(self, session_id: uuid.UUID) -> list[PartBody]:
+        self.calls.append(("read_session_parts", (session_id,), {}))
+        return []
+
+    def read_session_records(
+        self,
+        session_id: uuid.UUID,
+        *,
+        part: int = 0,
+        after_idx: int = -1,
+        limit: int = DEFAULT_LIST_LIMIT,
+        plaintext_only: bool = False,
+    ) -> list[RecordBody]:
+        self.calls.append(
+            (
+                "read_session_records",
+                (session_id,),
+                {
+                    "part": part,
+                    "after_idx": after_idx,
                     "limit": limit,
-                    "offset": offset,
-                    "seq_ranges": tuple(seq_ranges),
-                    "kind": kind,
+                    "plaintext_only": plaintext_only,
                 },
             )
         )
         return []
+
+    def set_cli_session_id(
+        self,
+        session_id: uuid.UUID,
+        cli_session_id: str,
+        *,
+        actor: Inquiry.Actor = "agent",
+    ) -> None:
+        self.calls.append(
+            ("set_cli_session_id", (session_id, cli_session_id), {"actor": actor})
+        )
 
     def log_metrics(
         self, experiment_id: uuid.UUID, points: Sequence[MetricPoint]

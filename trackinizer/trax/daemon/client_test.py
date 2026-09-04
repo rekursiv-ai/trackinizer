@@ -103,6 +103,31 @@ class TestShouldDelegate:
         """Global flags precede the verb, so the scan cannot just read argv[0]."""
         assert not should_delegate(["--profile", "origin", "run", "claude"])
 
+    def test_refuses_the_resume_tail(self) -> None:
+        """``agentsession 42 run codex`` spawns a PTY too, under another verb.
+
+        The verb here is ``agentsession``, so a guard reading only the verb
+        delegates it -- and the daemon then spawns the CLI on ITS terminal.
+        Measured: the child ran on the daemon's tty while the user's shell
+        blocked on the socket forever, with a live CLI waiting for input on a
+        terminal nobody was attached to.
+        """
+        assert not should_delegate(["agentsession", "42", "run", "codex"])
+
+    def test_refuses_the_resume_tail_after_global_flags(self) -> None:
+        assert not should_delegate(
+            ["--profile", "localhost", "agentsession", "1", "run", "codex", "--lossy"]
+        )
+
+    def test_delegates_a_row_whose_title_ends_in_run(self) -> None:
+        """``run`` spawns a PTY only where a target CLI follows it.
+
+        A value is not a tail: refusing every argv containing the word would
+        make an ordinary edit forfeit the daemon.
+        """
+        assert should_delegate(["issue", "7", "title", "to", "run"])
+        assert should_delegate(["agentsession", "title", "re", "run"])
+
 
 class TestDelegate:
     def test_returns_the_daemon_response(self, tmp_path: Path) -> None:

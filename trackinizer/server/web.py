@@ -312,6 +312,7 @@ async def web_feed(
     *,
     after_created: datetime | None = None,
     after_session: UUID | None = None,
+    after_part: int | None = None,
     after_seq: int | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
@@ -325,10 +326,11 @@ async def web_feed(
     Interleaves every session's turns into one time-ordered stream so the
     console shows many agents at once.
 
-    ``after_created`` / ``after_session`` / ``after_seq`` together form the
-    composite keyset cursor a poll resumes past (all three are required to
-    resume; the order key is composite so a bare ``created`` resume would skip
-    same-instant ties). ``since`` / ``until`` bound a fixed historical window;
+    ``after_created`` / ``after_session`` / ``after_part`` / ``after_seq``
+    together form the composite keyset cursor a poll resumes past (all are
+    required; the order key is composite so a bare ``created`` resume would
+    skip same-instant ties, and ``part`` joined it when the feed moved to IR
+    records -- position restarts within each source file). ``since`` / ``until`` bound a fixed historical window;
     ``room`` / ``actor`` filter by routing identity. ``tail=true`` returns the
     newest page (the live console's first load) so a backlog does not force a
     replay from the beginning. The response carries ``next_after`` (a composite
@@ -338,7 +340,7 @@ async def web_feed(
     del identity
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be in [1, 1000]")
-    after = _feed_cursor(after_created, after_session, after_seq)
+    after = _feed_cursor(after_created, after_session, after_part, after_seq)
     events = await get_store(request).read_feed(
         after=after,
         since=since,
@@ -351,10 +353,15 @@ async def web_feed(
     if events:
         last = events[-1]
         next_after = FeedCursor(
-            created=last.created, session_id=last.session_id, seq=last.seq
+            created=last.created,
+            session_id=last.session_id,
+            part=last.part,
+            seq=last.seq,
         )
     elif after is not None:
-        next_after = FeedCursor(created=after[0], session_id=after[1], seq=after[2])
+        next_after = FeedCursor(
+            created=after[0], session_id=after[1], part=after[2], seq=after[3]
+        )
     else:
         next_after = None
     return FeedResponse(events=events, next_after=next_after)
@@ -363,22 +370,33 @@ async def web_feed(
 def _feed_cursor(
     created: datetime | None,
     session_id: UUID | None,
+    part: int | None,
     seq: int | None,
-) -> tuple[datetime, UUID, int] | None:
+) -> tuple[datetime, UUID, int, int] | None:
     """Assemble the composite feed cursor, or ``None`` when unset.
 
-    All three parts must be present together: a partial cursor cannot resume
-    the ``(created, session_id, seq)`` order and is a client error.
+    Every component must be present together: a partial cursor cannot resume
+    the ``(created, session_id, part, idx)`` order and is a client error.
+
+    ``part`` is the one exception -- it defaults to 0 when the rest are given,
+    so a client written against the pre-IR three-part cursor still resumes
+    rather than 400ing. It cannot skip rows: 0 is the lowest real part, and a
+    legacy backfill sits at -1, which such a client never asked about.
     """
-    parts = (created, session_id, seq)
-    if all(p is None for p in parts):
+    required = (created, session_id, seq)
+    if all(p is None for p in required) and part is None:
         return None
-    if any(p is None for p in parts):
+    if any(p is None for p in required):
         raise HTTPException(
             status_code=400,
             detail="after_created, after_session, after_seq must be given together",
         )
-    return (cast(datetime, created), cast(UUID, session_id), IntCodec.coerce(seq, 0))
+    return (
+        cast(datetime, created),
+        cast(UUID, session_id),
+        IntCodec.coerce(part, 0),
+        IntCodec.coerce(seq, 0),
+    )
 
 
 def graph_legend() -> dict[str, list[str]]:

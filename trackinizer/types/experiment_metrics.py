@@ -4,22 +4,22 @@ This is the typed contract for the ``experiment_metrics`` table -- the
 append-only, step-grained time-series produced when an experiment logs a
 metric (the wandb ``log({key: value}, step=)`` analogue). It is the source
 of truth for that table the same way :mod:`types.inquiries` is for
-``inquiries`` and :mod:`types.agent_session_events` is for
-``agent_session_events``: the SQL columns, the wire body, and the Store all
-derive from the :class:`ExperimentMetric` dataclass here.
+``inquiries`` and :mod:`types.session_records` is for ``session_records``:
+the SQL columns, the wire body, and the Store all derive from the
+:class:`ExperimentMetric` dataclass here.
 
 It is **not** an :class:`~trackinizer.types.inquiries.Inquiry`.
 The owning experiment is the :class:`Experiment` artifact row in
 ``inquiries``; these points hang off it by ``experiment_id`` and carry no
 edges, cost, supersession, or ``change_log`` audit -- a logged metric is
 telemetry, not a knowledge mutation (the same exemption
-:class:`~trackinizer.types.agent_session_events.AgentSessionEvent`
-takes; see ``docs/design.md``, "Everything is provenance").
+:class:`~trackinizer.types.session_records.SessionRecordRow` takes; see
+``docs/design.md``, "Everything is provenance").
 
 Identity is ``(experiment_id, key, step)``: one value per metric key per
 step per experiment. ``step`` is caller-assigned and monotonic per key, so
 a re-sent point collides and dedups (``ON CONFLICT DO NOTHING``) rather than
-duplicating -- the same trick ``(session_id, seq)`` plays for session events.
+duplicating -- the same trick ``(session_id, part, idx)`` plays for records.
 
 :attr:`value` is a bare finite ``float`` scalar; :attr:`kind` is a
 discriminator closed to ``"scalar"`` today. Both are constrained on the wire
@@ -51,10 +51,10 @@ class ExperimentMetric:
     This dataclass is the field/type contract the schema files and the wire
     ``MetricPoint`` cite as their source of truth. Its ``ColumnSpec`` metadata
     rides along for symmetry with the rest of ``types/``, but -- like
-    :class:`AgentSessionEvent` and unlike an :class:`Inquiry` -- this side
+    :class:`SessionRecordRow` and unlike an :class:`Inquiry` -- this side
     table's DDL is hand-written SQL (``assets/schema.NNN.sql``), not generated
     from these specs. The read path builds the wire ``MetricPoint`` from rows
-    directly (as ``read_session_events`` builds ``EventBody``), so this type
+    directly (as ``read_session_records`` builds ``RecordBody``), so this type
     carries no ``from_row``.
     """
 

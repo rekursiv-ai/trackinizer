@@ -296,24 +296,29 @@ Compare against the SHA the deployment is pinned to. If `/api/version`
 service is stale and must be restarted. If they differ, restart the unit
 and re-check before trusting any behavioral smoke test.
 
-## agent_session_events: Timescale hypertable (open design question)
+## session_records: Timescale hypertable (open design question)
 
-`agent_session_events` ships as a **plain Postgres table** in `assets/schema.sql`
+`session_records` ships as a **plain Postgres table** in `assets/schema.sql`
 (Phase 0). It is bit-identical for correctness without Timescale; the
 hypertable would be pure scale. It stays out of `schema.sql` regardless:
 PGlite (the default prototype substrate) cannot run `create_hypertable`.
 
 **Adopting Timescale is a redesign, not a deploy-time `ALTER`.** Timescale
 requires the partitioning column in every unique index on a hypertable, and
-the table's primary key is `(session_id, seq)` -- it excludes any time
-column, so `create_hypertable('agent_session_events', by_range('created'))`
-aborts. Widening the key to `(session_id, seq, created)` is not a fix:
+the table's primary key is `(session_id, part, idx)` -- it excludes any time
+column, so `create_hypertable('session_records', by_range('created'))`
+aborts. Widening the key to `(session_id, part, idx, created)` is not a fix:
 `created` defaults to `clock_timestamp()`, which differs on every retry, so
-`ON CONFLICT DO NOTHING` would stop absorbing a replayed batch and the
-per-event dedup contract (exact appended/skipped counts in `append_events`)
-breaks. Before any `create_hypertable`, the idempotency mechanism must be
-redesigned around a replay-stable partition key -- until then there is no
-paste-able upgrade command.
+`ON CONFLICT` would stop absorbing a replayed batch and the per-record dedup
+contract (exact written/skipped counts in `append_session_records`) breaks.
+
+The IR made this WORSE, not better, and deliberately: `idx` is derived from
+the record's position in its file, so a re-fed file lands every record back
+on the key it already holds. That is the property ingest idempotency rests
+on, and it is precisely what a time-partitioned key cannot preserve. Before
+any `create_hypertable`, the idempotency mechanism must be redesigned around
+a replay-stable partition key -- until then there is no paste-able upgrade
+command.
 
 ## Common failure modes
 

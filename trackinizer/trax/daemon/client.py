@@ -76,14 +76,14 @@ class DaemonRequestLostError(Exception):
 def should_delegate(argv: Sequence[str]) -> bool:
     """Whether ``argv`` may run in the daemon rather than this process.
 
-    Refuses the daemon's own serve flag, the PTY-owning ``run`` verb, and any
-    command whose value is the ``-`` stdin sentinel. Both are judged by
-    POSITION: ``run`` counts only as the verb, and ``-`` only after ``to``,
-    so a row whose title happens to be "run" still gets the daemon.
+    Refuses the daemon's own serve flag, anything that SPAWNS a CLI on a PTY,
+    and any command whose value is the ``-`` stdin sentinel. Each is judged by
+    POSITION rather than by presence, so a row whose title happens to be "run"
+    still gets the daemon.
     """
     if SERVE_FLAG in argv:
         return False
-    if _verb(argv) in _LOCAL_ONLY_VERBS:
+    if _spawns_a_terminal(argv):
         return False
     return not _reads_stdin(argv)
 
@@ -138,6 +138,35 @@ def delegate(
     if not spawn or not _spawn(path):
         return None
     return _try_once(argv, path, source_version)
+
+
+def _spawns_a_terminal(argv: Sequence[str]) -> bool:
+    """Whether ``argv`` will put a CLI on a PTY this process must own.
+
+    TWO spellings, and the second is why this is not a verb lookup:
+
+    * ``trax run claude`` -- ``run`` in verb position.
+    * ``trax agentsession 42 run codex`` -- the RESUME tail, whose verb is
+      ``agentsession``. Judging by the verb alone delegated it, and the daemon
+      then spawned the CLI on ITS terminal: measured, the child ran on the
+      daemon's tty while the user's shell blocked on the socket forever, with
+      a live CLI waiting for input on a terminal nobody was attached to.
+
+    The tail is recognized by ``run`` FOLLOWED BY a target, which is what
+    distinguishes it from the word appearing as a value (``title to run``) --
+    refusing on presence alone would make an ordinary edit forfeit the daemon.
+    """
+    if _verb(argv) in _LOCAL_ONLY_VERBS:
+        return True
+    return any(
+        token.lower() in _LOCAL_ONLY_VERBS
+        and index + 1 < len(argv)
+        and not argv[index + 1].startswith("-")
+        for index, token in enumerate(argv)
+        # Past the verb: a leading ``run`` is the case above, and the tail
+        # always sits after a kind and its ref.
+        if index > 0
+    )
 
 
 def _verb(argv: Sequence[str]) -> str:

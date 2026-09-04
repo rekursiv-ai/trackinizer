@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from trackinizer.wire import (
         wire_metrics,
         wire_metrics_query,
+        wire_session_ir,
         wire_sessions,
     )
     from trackinizer.wire.wire_metrics import (
@@ -80,9 +81,14 @@ if TYPE_CHECKING:
         MetricMaskClause,
         MetricRankRow,
     )
+    from trackinizer.wire.wire_session_ir import (
+        AppendRecordsResponse,
+        ManifestBody,
+        PartBody,
+        RecordBody,
+        SlashCommandBody,
+    )
     from trackinizer.wire.wire_sessions import (
-        AppendEventsResponse,
-        EventBody,
         SessionEnd,
         SessionEndResponse,
         SessionStart,
@@ -96,6 +102,9 @@ else:
     # session. Bind it as a lazy module proxy so the import fires on first
     # attribute access -- inside the session methods below, never on cold start.
     wire_sessions = lazy_import("trackinizer.wire.wire_sessions")
+    # Same lazy-bind for the IR bodies: only ``append_records`` touches them,
+    # so their pydantic-model build stays off the cold-start path.
+    wire_session_ir = lazy_import("trackinizer.wire.wire_session_ir")
     # Same lazy-bind for ``wire_metrics``: only ``log_metrics`` / ``read_metrics``
     # touch it, so its pydantic-model build stays off the cold-start path.
     wire_metrics = lazy_import("trackinizer.wire.wire_metrics")
@@ -579,21 +588,6 @@ class Client:
             else:
                 return
 
-    def search(
-        self,
-        query: str,
-        *,
-        kind: Inquiry.InquiryKind | None = None,
-        limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        return _require_list(
-            self.get(
-                "/api/web/search",
-                params={"q": query, "kind": kind, "limit": limit},
-            ),
-            "/api/web/search",
-        )
-
     def recent_changes(self, *, limit: int = 50) -> list[dict[str, Any]]:
         return _require_list(
             self.get("/api/web/recent_changes", params={"limit": limit}),
@@ -1011,41 +1005,118 @@ class Client:
             wire_sessions.SESSION_START_PATH,
         )
 
-    def append_events(
-        self,
-        session_id: uuid.UUID,
-        events: Sequence[EventBody],
-    ) -> AppendEventsResponse:
-        """Batch-append captured events; idempotent on ``(session_id, seq)``."""
-        req = wire_sessions.AppendEventsRequest(events=list(events))
-        where = wire_sessions.session_events_path(session_id)
-        response = self._request("POST", where, body=req.model_dump(mode="json"))
-        return _validate_model(wire_sessions.AppendEventsResponse, response, where)
-
-    def read_events(
+    def append_records(
         self,
         session_id: uuid.UUID,
         *,
-        limit: int = DEFAULT_LIST_LIMIT,
-        offset: int = 0,
-        seq_ranges: Sequence[SeqRange] = (),
-        kind: str | None = None,
-    ) -> list[EventBody]:
-        """Read one page of a session's events in ``seq`` order.
+        name: str = "",
+        manifest: ManifestBody | None = None,
+        records: Sequence[RecordBody] = (),
+        restart: bool = False,
+        slash_commands: Sequence[SlashCommandBody] = (),
+    ) -> AppendRecordsResponse:
+        """Append one file's records; idempotent on ``(session_id, part, idx)``.
 
-        Paginated (``limit`` / ``offset`` / ``seq_range`` / ``kind``) so a
-        caller never pulls a whole large session at once. ``seq_ranges`` is
-        a union of inclusive intervals, each riding the wire as one
-        repeated ``seq_range=a..b`` param, exactly as ``list_kind`` does.
+        One part per request. The client names the FILE and the server
+        resolves the part, so a restarted or resumed run cannot invent a
+        conflicting number.
+
+        Args:
+          session_id: The session these records belong to.
+          name: The source file's basename. Empty only on a
+            slash-command-only append: a typed command belongs to the SESSION,
+            so one submitted before the CLI has written a transcript names no
+            file. The request body rejects records without it.
+          manifest: What that file declares, re-sent every batch because it
+            changes as the file grows. ``None`` exactly when ``name`` is empty.
+          records: The records themselves, each carrying its derived position.
+          restart: Whether this batch re-derived the part from its start,
+            which makes the append overwrite rather than skip.
+          slash_commands: Commands the human typed since the last batch. They
+            ride this request so they commit with the turns around them.
+
+        Returns:
+          response: The resolved part, and how many records were written
+            versus already present.
+
         """
-        params: dict[str, object] = {"limit": limit, "offset": offset}
-        if seq_ranges:
-            params["seq_range"] = [format_interval(r) for r in seq_ranges]
-        if kind is not None:
-            params["kind"] = kind
-        where = wire_sessions.session_events_path(session_id)
-        response = self._request("GET", where, params=params)
-        return _validate_model(wire_sessions.ReadEventsResponse, response, where).events
+        req = wire_session_ir.AppendRecordsRequest(
+            name=name,
+            manifest=manifest,
+            restart=restart,
+            records=list(records),
+            slash_commands=list(slash_commands),
+        )
+        where = wire_session_ir.session_records_path(session_id)
+        response = self._request("POST", where, body=req.model_dump(mode="json"))
+        return _validate_model(wire_session_ir.AppendRecordsResponse, response, where)
+
+    def read_session_parts(self, session_id: uuid.UUID) -> list[PartBody]:
+        """The files this session was captured from, in ``part`` order."""
+        where = wire_session_ir.session_parts_path(session_id)
+        response = self._request("GET", where)
+        parsed = _validate_model(wire_session_ir.ReadPartsResponse, response, where)
+        return parsed.parts
+
+    def read_session_records(
+        self,
+        session_id: uuid.UUID,
+        *,
+        part: int = 0,
+        after_idx: int = -1,
+        limit: int = MAX_LIST_LIMIT,
+        plaintext_only: bool = False,
+    ) -> list[RecordBody]:
+        """One part's records in ``idx`` order, paging until the part ends.
+
+        Pages rather than trusting one request: a real transcript exceeds any
+        single page, and a caller REPLAYING one needs all of it -- a truncated
+        materialization is a file the provider rejects, or worse, accepts as a
+        shorter conversation than the one that happened.
+
+        ``plaintext_only`` skips the ciphertext, which is what a viewer wants;
+        a replay needs the sealed half and leaves it false.
+        """
+        where = wire_session_ir.session_records_path(session_id)
+        found: list[RecordBody] = []
+        cursor = after_idx
+        while True:
+            response = self._request(
+                "GET",
+                where,
+                params={
+                    "part": part,
+                    "after_idx": cursor,
+                    "limit": limit,
+                    "plaintext_only": plaintext_only,
+                },
+            )
+            page = _validate_model(wire_session_ir.ReadRecordsResponse, response, where)
+            if not page.records:
+                return found
+            found.extend(page.records)
+            cursor = page.records[-1].idx
+
+    def set_cli_session_id(
+        self,
+        session_id: uuid.UUID,
+        cli_session_id: str,
+        *,
+        actor: Inquiry.Actor = "agent",
+    ) -> None:
+        """Stamp the CLI's own session id, so a resumed run re-attaches.
+
+        Sent BEFORE the resumed run opens its session: the server correlates a
+        resume by finding the existing row whose stored id matches, so without
+        this the run mints a second AgentSession and the transcript splits.
+        """
+        self.edit(
+            session_id,
+            "cli_session_id",
+            cli_session_id,
+            actor=actor,
+            reason="resume: minted a fresh CLI session id",
+        )
 
     def log_metrics(
         self,

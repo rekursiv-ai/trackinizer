@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from trackinizer.trax.run.slash import SlashCommandDetector
-from trackinizer.types.agent_session_events import SlashCommand
+from trackinizer.trax.run.slash import SlashCommand, SlashCommandDetector
 
 
 def _collect(*chunks: bytes) -> list[SlashCommand]:

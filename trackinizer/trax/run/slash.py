@@ -5,7 +5,8 @@ and never written to its rollout/session log, so the log tailer cannot see it
 (``docs/design_session_messaging.md``, "Known gaps"). The pump already owns the
 master fd and tees the human's stdin; this consumer reassembles typed lines
 from that raw byte stream and emits a :class:`SlashCommand` when the human
-submits one beginning with ``/``.
+submits one beginning with ``/``. The type lives here too: this detector is the
+only thing that can produce one.
 
 Best-effort by nature: raw-mode stdin carries control bytes (arrows, history
 recall, paste), so the detector handles the common editing keys (backspace,
@@ -20,15 +21,41 @@ never corrupts capture.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Final
 
 import logging
 
-from trackinizer.types.agent_session_events import SlashCommand
+
+__all__ = ["SlashCommand", "SlashCommandDetector"]
 
 
 _logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SlashCommand:
+    """A CLI slash-command the human typed into the TUI (``/exit``, ``/model``).
+
+    Handled inside the CLI -- it changes CLI state, not model context -- so the
+    model never sees it and it is absent from the session log. It is therefore
+    NOT a :data:`~trackinizer.lib.agent.types.sessions.SessionRecord`: a record has an
+    ``idx``, its position in the file's normalized stream, and a command that
+    was never written to that file has none. It is captured by observing the
+    human's keystrokes on the PTY (the only place it is visible) and stored
+    beside the records, in ``session_slash_commands``.
+
+    Lives here, with the detector that mints it: this module is the only thing
+    that can produce one, and the sink carries it straight to the wire.
+    """
+
+    command: str = ""
+    """The command verb without its leading slash (``exit``, ``model``)."""
+
+    args: str = ""
+    """Everything after the verb (``gpt-5`` for ``/model gpt-5``); empty for a
+    bare command."""
 
 
 # Raw-mode control bytes the line accumulator interprets; everything else

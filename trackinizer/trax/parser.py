@@ -21,6 +21,7 @@ from trackinizer.trax.grammar import (
     LIST_FIELDS,
     RELATION_ALIASES,
     UUID_RE,
+    VALID_KINDS,
     Action,
     AddCost,
     AddList,
@@ -83,15 +84,30 @@ _ALL_FILTER_FIELDS: frozenset[str] = frozenset(
 
 
 def parse_list_query(
-    kind: Inquiry.InquiryKind,
+    kind: Inquiry.InquiryKind | None,
     tokens: Sequence[str],
 ) -> ListQuery | None:
-    """Parse list-query tokens; return ``None`` if this is a row or create form."""
+    """Parse list-query tokens; return ``None`` if this is a row or create form.
+
+    Args:
+      kind: The kind the command named, or ``None`` when it named none. A
+        kindless query (``trax title re foo``) spans every kind, and a
+        kind-specific field narrows it to the kinds that own that field --
+        so ``trax judgement is proven`` is a Belief query without saying so.
+      tokens: The command's remaining tokens.
+
+    Returns:
+      query: The parsed list query, or ``None`` when the tokens are a row or
+        create form instead.
+
+    """
     if not tokens:
-        return ListQuery(kinds=(kind,), ranges={}, filters=())
+        return ListQuery(
+            kinds=VALID_KINDS if kind is None else (kind,), ranges={}, filters=()
+        )
     if starts_with_ref(tokens):
         return None
-    kinds: list[Inquiry.InquiryKind] = [kind]
+    kinds: list[Inquiry.InquiryKind] = [] if kind is None else [kind]
     ranges: dict[Inquiry.InquiryKind, tuple[SeqRange, ...]] = {}
     cli_filters: list[tuple[str, FilterOp, str]] = []  # CLI names, not yet canonical
     committed = False  # a range or filter has fixed this as a query, not a create
@@ -124,8 +140,11 @@ def parse_list_query(
                     f"after field {clause.token!r}"
                 )
             return None
-    kinds_tuple = tuple(dict.fromkeys(kinds))
-    _validate_cli_filters(kinds_tuple, cli_filters)
+    if kinds:
+        kinds_tuple = tuple(dict.fromkeys(kinds))
+        _validate_cli_filters(kinds_tuple, cli_filters)
+    else:
+        kinds_tuple = _kinds_owning(cli_filters)
     # Canonicalize every CLI alias before the ``Filter`` crosses the wire,
     # through the same ``wire/filters`` map the server and row evaluator use.
     # The server rejects any alias that slips through a non-CLI HTTP caller.
@@ -780,6 +799,45 @@ def _validate_cli_filters(
         if not missing:
             continue
         raise ClientError(f"unknown filter field {field!r} for {', '.join(missing)}")
+
+
+def _kinds_owning(
+    filters: Sequence[tuple[str, FilterOp, str]],
+) -> tuple[Inquiry.InquiryKind, ...]:
+    """The kinds every filtered field is valid for, for a kindless query.
+
+    A query that named no kind means "every kind", but a kind-specific field
+    narrows that set rather than failing against the kinds that lack it:
+    ``trax judgement is proven`` is a Belief query because Belief is the only
+    kind owning ``judgement``. Validating instead (the named-kind path) would
+    reject it against the other eight.
+
+    Args:
+      filters: The query's CLI-spelled filter triples.
+
+    Returns:
+      kinds: Every kind owning all filtered fields, in declaration order.
+
+    Raises:
+      ClientError: No kind owns some field, so the token is a typo rather
+        than a narrowing; or the fields are individually valid but share no
+        kind, which no row could satisfy.
+
+    """
+    for field, _op, _value in filters:
+        if not any(field in FILTER_FIELDS_CLI[k] for k in VALID_KINDS):
+            raise ClientError(f"unknown filter field {field!r}")
+    kinds: tuple[Inquiry.InquiryKind, ...] = tuple(
+        k
+        for k in VALID_KINDS
+        if all(field in FILTER_FIELDS_CLI[k] for field, _op, _value in filters)
+    )
+    if not kinds:
+        raise ClientError(
+            "no kind carries every filtered field: "
+            + ", ".join(repr(field) for field, _op, _value in filters)
+        )
+    return kinds
 
 
 def consume_ref(

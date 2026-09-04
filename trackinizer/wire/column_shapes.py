@@ -22,6 +22,10 @@ from trackinizer.types.columns import (
     storage_name,
 )
 from trackinizer.types.inquiries import INQUIRY_CLASSES
+from trackinizer.wire.session_record_fields import (
+    SESSION_RECORD_FIELDS,
+    record_kind_for,
+)
 
 
 __all__ = [
@@ -69,6 +73,16 @@ class ColumnShape(StrEnum):
     stored offset, so the predicate never sees a local offset to normalize.
     """
 
+    SESSION_RECORD = "session_record"
+    """One IR record kind's ``text``, over the session's stored records.
+
+    A LIST-shaped column like :attr:`TEXT_ARRAY`, differing only in where the
+    elements live: a side table rather than an array on the row. Every op maps
+    onto the array row's meaning -- ``is`` is membership, ``re`` is an EXISTS
+    over the elements, ``notnull`` asks whether the session has any such
+    record at all.
+    """
+
 
 # Reproduces ``str(datetime)``: UTC, space separator, ``+00:00``, microseconds
 # only when non-zero.
@@ -102,6 +116,13 @@ _REAL_TEXT: Final = (
     " THEN CASE WHEN {col}::float8::text = '-0' THEN '-' ELSE '' END"
     " || {col}::float8::bigint::text || '.0'"
     " ELSE {col}::float8::text END)"
+)
+
+# One session's records of one kind. Correlated on ``inquiries.id``, which is
+# the row the filter is selecting; ``{col}`` is the record KIND, not a column.
+_RECORDS_WHERE: Final = (
+    "SELECT 1 FROM session_records r "
+    "WHERE r.session_id = inquiries.id AND r.kind = '{col}'"
 )
 
 # An op is absent where the two evaluators would order differently:
@@ -182,6 +203,29 @@ _SQL_BY_SHAPE: Final[dict[ColumnShape, dict[str, str]]] = {
         "isnull": "{col} IS NULL",
         "notnull": "{col} IS NOT NULL",
     },
+    # The elements of one session's records of a given kind. ``{col}`` is NOT
+    # a column here -- it is the record kind, quoted into the subquery by
+    # ``sql_template``, drawn from the closed derived set in
+    # ``session_record_fields``. A kind never reaches the query as user input.
+    #
+    # NO tsvector prefilter. A tsvector matches whole LEXEMES and a regex
+    # matches SUBSTRINGS, so narrowing by ``search @@ plainto_tsquery`` drops
+    # rows the regex keeps: measured on PG16, ``'Read\n/tmp/gamma'`` lexes as
+    # ``'/tmp/gamma'``, which the tsquery ``'gamma'`` does NOT match while
+    # ``~ 'gamma'`` does. The scan is bounded instead by the correlation --
+    # each subquery reads one session's records of one kind, which
+    # ``idx_session_records_kind`` on ``(session_id, kind)`` serves. The
+    # 15.2s figure that motivated a prefilter was an UNCORRELATED regex over
+    # all 3.08M rows, which no clause here issues.
+    ColumnShape.SESSION_RECORD: {
+        "is": f"EXISTS ({_RECORDS_WHERE} AND r.text = {{p}})",
+        "ne": f"NOT EXISTS ({_RECORDS_WHERE} AND r.text = {{p}})",
+        "re": f"EXISTS ({_RECORDS_WHERE} AND r.text ~ {{p}})",
+        "nre": f"NOT EXISTS ({_RECORDS_WHERE} AND r.text ~ {{p}})",
+        # Presence of the RECORD KIND, not of a text: "did a compact happen".
+        "isnull": f"NOT EXISTS ({_RECORDS_WHERE})",
+        "notnull": f"EXISTS ({_RECORDS_WHERE})",
+    },
     ColumnShape.TIMESTAMP: {
         "is": f"{_TS_TEXT} = {{p}}",
         "ne": f"{_TS_TEXT} IS DISTINCT FROM {{p}}",
@@ -205,10 +249,18 @@ def sql_template(column: str, op: str) -> str | None:
 
     ``column`` must already be canonical. ``{col}`` and ``{p}`` are the
     caller's to format: the column name (drawn from the closed set this module
-    derives, never user input) and the bound placeholder.
+    derives, never user input) and the bound placeholder. ``{p}`` may appear
+    several times -- a repeated ``$N`` binds one operand, which is how the
+    record shapes prefilter on the same pattern they match.
+
+    A RECORD field has no column of its own, so its ``{col}`` is resolved
+    HERE, to the record kind its subquery selects. Baking it into the template
+    rather than passing it as an operand is what keeps a kind out of the
+    query's parameters: the value comes from a closed derived set, never from
+    the caller.
 
     Args:
-      column: Canonical storage column name.
+      column: Canonical storage column name, or a record field.
       op: A ``FilterOp`` spelling.
 
     Returns:
@@ -217,7 +269,15 @@ def sql_template(column: str, op: str) -> str | None:
 
     """
     shape = COLUMN_SHAPES.get(column)
-    return None if shape is None else _SQL_BY_SHAPE[shape].get(op)
+    if shape is None:
+        return None
+    template = _SQL_BY_SHAPE[shape].get(op)
+    if template is None or shape is not ColumnShape.SESSION_RECORD:
+        return template
+    kind = record_kind_for(column)
+    assert kind is not None, "a SESSION_RECORD shape is seeded only for a record field"
+    # ``{col}`` consumed here; ``{p}`` is left for the caller to bind.
+    return template.replace("{col}", kind)
 
 
 def compares_as_float(column: str, op: str) -> bool:
@@ -266,6 +326,12 @@ def _column_shapes() -> dict[str, ColumnShape]:
         "created": ColumnShape.TIMESTAMP,
         "modified": ColumnShape.TIMESTAMP,
     }
+    # IR record kinds, seeded for the same reason as the identity columns
+    # above: ``_classify`` reads a ``ColumnSpec.sql_type``, and a record field
+    # has no column on ``inquiries`` at all -- its values live in
+    # ``session_records``. The SET is still derived (from which record classes
+    # project any ``text``), so a new record class needs no edit here.
+    out.update(dict.fromkeys(SESSION_RECORD_FIELDS, ColumnShape.SESSION_RECORD))
     for source in INQUIRY_CLASSES:
         for name, flat in flat_column_specs(source).items():
             column = storage_name(name, flat.spec)

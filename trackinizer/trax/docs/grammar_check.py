@@ -117,7 +117,7 @@ CORPUS: tuple[Case, ...] = (
     # args lex unambiguously, even though they share spellings with keywords.
     Case(label="bare verb (next)", tokens="next"),
     Case(label="bare verb (blocked)", tokens="blocked"),
-    Case(label="verb with flags (search)", tokens="search retry --kind issue"),
+    Case(label="verb with flags (recent)", tokens="recent --limit 10"),
     Case(label="verb id + uuid", tokens="id 0a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d"),
     Case(label="verb cost + ref", tokens="cost issue 7 --deep"),
     Case(label="verb profile bare", tokens="profile"),

@@ -249,9 +249,9 @@ into a live session by routing name.
 
 ```
 POST   /api/sessions/start
-POST   /api/sessions/<uuid>/events
-GET    /api/sessions/<uuid>/events
-GET    /api/sessions/<uuid>/events?limit=N&offset=N&seq_range=<a..b>&kind=<kind>
+POST   /api/sessions/<uuid>/records
+GET    /api/sessions/<uuid>/records?part=N&after_idx=N&limit=N&plaintext_only=B
+GET    /api/sessions/<uuid>/parts
 POST   /api/sessions/<uuid>/end
 POST   /api/sessions/<uuid>/inbound
 GET    /api/sessions/<uuid>/inbound

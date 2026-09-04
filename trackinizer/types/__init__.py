@@ -9,7 +9,6 @@ submodule that defines it (per ``STYLE.md`` "import from the definition
 module"). The model is big enough that a flat namespace would hide where each
 name lives:
 
-  - :mod:`.agent_session_events` -- ``AgentSessionEvent``.
   - :mod:`.change_log` -- ``Change``, ``Snapshot``.
   - :mod:`.columns` -- ``ColumnSpec``, ``Row``, ``column_specs``.
   - :mod:`.cost` -- ``Cost``.

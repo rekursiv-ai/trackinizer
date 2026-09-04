@@ -2,9 +2,9 @@
 
 Adding the ``AgentSession`` Inquiry kind wove objects through generated DDL
 in several places: per-kind columns + CHECKs on ``inquiries``, the
-``seq_agentsession`` ref sequence, the ``agent_session_events`` child table,
-and the kind enumerations on ``inquiries`` / ``change_log`` / ``edges``. A
-fresh database built from ``schema.sql`` must contain all of them, or every
+``seq_agentsession`` ref sequence, the ``session_*`` child tables, and the
+kind enumerations on ``inquiries`` / ``change_log`` / ``edges``. A fresh
+database built from ``schema.sql`` must contain all of them, or every
 AgentSession write 500s/409s while reads pass.
 
 This guards the *fresh* schema (the numbered migration that retrofitted
@@ -23,14 +23,12 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.custom_json import DataclassCodec
+from trackinizer.lib.agent.types.sessions import UserMessage as IRUserMessage
 from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.store.core import Store, StubEmbedder
-from trackinizer.types.agent_session_events import ToolResult, UserMessage
-from trackinizer.types.errors import NotFoundError
+from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.bodies import SubmitAgentSession, SubmitIssue
-from trackinizer.wire.wire_sessions import EventBody
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -66,19 +64,25 @@ async def _sequence_exists(store: Store, name: str) -> bool:
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_fresh_schema_has_agentsession_objects(store: Store) -> None:
-    """A fresh DB carries the AgentSession table and ref sequence."""
-    assert await _table_exists(store, "agent_session_events")
+    """A fresh DB carries the record store and the AgentSession ref sequence.
+
+    ``agent_session_events`` is deliberately ABSENT: 021 retired it and the
+    baseline no longer declares it, so a fresh install has only the IR tables.
+    """
+    assert await _table_exists(store, "session_records")
+    assert await _table_exists(store, "session_manifests")
+    assert not await _table_exists(store, "agent_session_events")
     assert await _sequence_exists(store, "seq_agentsession")
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_agentsession_lifecycle_writes_succeed(store: Store) -> None:
-    """A session opens, takes events, and an unrelated Issue write still works.
+    """A session opens, takes records, and an unrelated Issue write still works.
 
     Exercises every kind enum AgentSession touches: the ``inquiries`` insert,
-    the ``change_log`` audit row, the ``agent_session_events`` append, and an
-    Issue write that shares the widened ``change_log`` enum.
+    the ``change_log`` audit row, the ``session_records`` append, and an Issue
+    write that shares the widened ``change_log`` enum.
     """
     session_id = await store.submit_agentsession(
         SubmitAgentSession(
@@ -89,17 +93,18 @@ async def test_agentsession_lifecycle_writes_succeed(store: Store) -> None:
     )
     assert await store.get_inquiry(session_id) is not None
 
-    appended, _ = await store.append_events(
+    written, _skipped, _slash = await store.append_session_records(
         session_id,
         [
-            EventBody(
-                seq=0,
-                kind="UserMessage",
-                message=DataclassCodec.to_json(UserMessage(text="hi")),
+            SessionRecordRow.of(
+                session_id=session_id,
+                part=0,
+                idx=0,
+                record=IRUserMessage(content="hi"),
             )
         ],
     )
-    assert appended == 1
+    assert written == 1
 
     issue_id = await store.submit_issue(
         SubmitIssue(title="probe issue", account="tester@example.com"),
@@ -107,40 +112,6 @@ async def test_agentsession_lifecycle_writes_succeed(store: Store) -> None:
         actor="ci",
     )
     assert await store.get_inquiry(issue_id) is not None
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_session_events_strip_postgres_incompatible_nuls(store: Store) -> None:
-    """A NUL artifact cannot make an otherwise valid transcript batch fail."""
-    session_id = await store.submit_agentsession(
-        SubmitAgentSession(
-            title="codex session",
-            cli="codex",
-            account="tester@example.com",
-        ),
-        api_key_id=None,
-        actor="ci",
-    )
-    event = EventBody(
-        seq=0,
-        kind="ToolResult",
-        message=DataclassCodec.to_json(
-            ToolResult(
-                call_id="call-1",
-                content="before\0after; literal \\u0000 remains",
-            )
-        ),
-    )
-
-    appended, skipped = await store.append_events(session_id, [event])
-
-    assert (appended, skipped) == (1, 0)
-    stored = (await store.read_session_events(session_id))[0]
-    assert stored.to_event(session_id).message == ToolResult(
-        call_id="call-1",
-        content=r"beforeafter; literal \u0000 remains",
-    )
 
 
 @pytest.mark.db_pglite
@@ -182,37 +153,6 @@ async def test_submit_agentsession_stamps_opening_api_key(store: Store) -> None:
             session_id,
         )
     assert stored == opener
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_append_events_after_purge_is_not_found(store: Store) -> None:
-    """Appending to a purged session is a clean 404, not a leaky FK 409.
-
-    The ``agent_session_events.session_id`` FK fails when the session row is
-    gone (purged in the race window after the kind check). The store maps
-    that to ``NotFoundError`` -> 404, never a raw constraint-name 409
-    (REV-OPUS-03).
-    """
-    session_id = await store.submit_agentsession(
-        SubmitAgentSession(
-            title="claude session", cli="claude", account="tester@example.com"
-        ),
-        api_key_id=None,
-        actor="ci",
-    )
-    await store.purge(session_id, actor="ci")
-    with pytest.raises(NotFoundError):
-        await store.append_events(
-            session_id,
-            [
-                EventBody(
-                    seq=0,
-                    kind="UserMessage",
-                    message=DataclassCodec.to_json(UserMessage(text="hi")),
-                )
-            ],
-        )
 
 
 @pytest.mark.db_pglite

@@ -52,6 +52,7 @@ from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
 )
+from trackinizer.wire.session_record_fields import SESSION_RECORD_FIELDS
 
 
 # Identity/housekeeping columns the schema declares directly: not editable,
@@ -392,7 +393,11 @@ def _filter_columns_for(kind: Inquiry.InquiryKind) -> frozenset[str]:
         for source in (Inquiry, cls)
         for name, flat in flat_column_specs(source).items()
     }
-    return IDENTITY_COLUMNS | frozenset(declared)
+    # IR record kinds are filterable on the one kind that HAS records. They
+    # carry no ColumnSpec (their values live in ``session_records``), so the
+    # spec walk cannot see them.
+    records = SESSION_RECORD_FIELDS if kind == "AgentSession" else ()
+    return IDENTITY_COLUMNS | frozenset(declared) | frozenset(records)
 
 
 def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:

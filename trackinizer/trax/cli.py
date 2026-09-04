@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, override
+from typing import TYPE_CHECKING, Final, cast, override
 from urllib.parse import urlparse
 
 import argparse
@@ -22,7 +22,7 @@ from trackinizer.client.client import Client, server_url
 from trackinizer.client.errors import ClientError
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import env
-from trackinizer.trax.grammar import VALID_KINDS, ListQuery
+from trackinizer.trax.parser import parse_list_query
 from trackinizer.trax.profile import (
     Profile,
     Profiles,
@@ -39,7 +39,6 @@ from trackinizer.trax.verbs import (
     Kind,
     Next,
     Recent,
-    Search,
     Send,
     Version,
     run_list_query,
@@ -161,13 +160,14 @@ class Help(Command):
             'trax issue title to "Retry bug" priority to high     create issue',
             "trax issue 7 priority to high                        set field",
             "trax issue 7 blocks issue 3                          link rows",
-            "trax search retry --kind issue                       search rows",
+            "trax issue title re retry                            filter rows",
+            "trax title re retry                                  filter every kind",
             "trax recent --limit 10                               show audit log",
             "trax profile                                         show active profile",
             "trax profile url to https://trackinizer.example      set server URL",
         ),
         notes=(
-            "Commands: search recent next blocked graph board cost profile",
+            "Commands: recent next blocked graph board cost profile",
             "Help: trax issue help; trax issue 7 priority help; trax profile url help",
         ),
     )
@@ -202,7 +202,6 @@ class Help(Command):
 DISPATCHERS: tuple[type[Command], ...] = (
     Kind,
     Id,
-    Search,
     Recent,
     Next,
     Blocked,
@@ -240,9 +239,7 @@ def parse_and_run(
         echo(Help.help_text(), nl=False)
         return None
     if not leftover:
-        args = Kind.make_parser().parse_args([])
-        query = ListQuery(kinds=VALID_KINDS, ranges={}, filters=())
-        return run_list_query(query, args, client_factory)
+        return _run_kindless(leftover, client_factory)
     verb = leftover[0].lower()
     rest = leftover[1:]
     if verb == "run":
@@ -259,7 +256,27 @@ def parse_and_run(
     for dispatcher in DISPATCHERS:
         if dispatcher.matches(verb):
             return dispatcher.dispatch(verb, rest, client_factory)
-    raise ClientError(f"unknown verb: {verb!r}")
+    # Neither a verb nor a kind: the token is a FILTER FIELD, and the query
+    # spans every kind (``trax title re retry``). Verbs and kinds are matched
+    # first, so adding a field can never steal an existing command. A token
+    # that is no field either fails inside the parser naming the field, which
+    # is the accurate diagnosis -- it was never a verb position.
+    return _run_kindless(leftover, client_factory)
+
+
+def _run_kindless(tokens: Sequence[str], client_factory: Callable[[], Client]) -> None:
+    """List across every kind, filtered by ``tokens``.
+
+    The one kindless path: bare ``trax`` reaches it with no tokens, and a
+    leading filter field reaches it with the whole command. Parsed through
+    ``Kind``'s parser so ``--format`` / ``--limit`` / ``--sort`` mean the same
+    thing they do after a kind name.
+    """
+    args = Kind.make_parser().parse_args(list(tokens))
+    query = parse_list_query(None, cast(Sequence[str], args.rest))
+    if query is None:
+        raise ClientError(f"unknown verb: {tokens[0]!r}")
+    return run_list_query(query, args, client_factory)
 
 
 def _peel_top_flags(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:

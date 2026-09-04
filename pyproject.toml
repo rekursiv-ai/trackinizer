@@ -35,6 +35,8 @@ dependencies = [
     "pydantic>=2.0",
     # trax grammar
     "lark>=1.1",
+    # shell parsing: lifts a captured `cat`/`echo >` into a typed file result
+    "bashlex>=0.18",
     # lazy imports
     "wrapt",
     # filesystem watching

@@ -204,7 +204,10 @@ back to `inquiries(id)` and deleted with it:
 | table | holds |
 |---|---|
 | `experiment_metrics` | `(key, step, value)` time series for an Experiment. CHECKs mirror the wire's validators -- non-blank bounded key, non-negative step, finite value -- so a stored row can always be read back. |
-| `agent_session_events` | the ordered event log of an AgentSession, `(session_id, seq)`, each with a JSONB message. Backs the live console feed. |
+| `session_records` | the ordered record log of an AgentSession, `(session_id, part, idx)`, each holding one `trackinizer.lib.agent` IR record as JSON. `part` is one source FILE (a session spans several); `idx` is DERIVED from position in it, which is what makes re-ingest idempotent. Backs the live console feed. |
+| `session_manifests` | one row per `part`: what the file was called, what it declared, and how much of it is live. |
+| `session_ciphertext` | `Thinking.encrypted`, split off so retention can drop it without touching what search indexes. |
+| `session_slash_commands` | commands the human typed into the TUI. Not records: never written to any session log, so they hold no `idx`. |
 | `inquiry_embeddings` | one vector per `(inquiry_id, model)` for semantic search. |
 
 Auth is three more: `users`, `api_keys` (scrypt-hashed, prefix-indexed),

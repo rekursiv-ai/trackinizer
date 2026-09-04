@@ -1,7 +1,7 @@
 """Real-CLI end-to-end capture test for ``trax run --sync``.
 
 The unit tiers cover each seam with fakes (fake adapter over hand-written
-JSONL, fake client, hand-built ``EventBody`` over HTTP). This module closes
+JSONL, fake client, hand-built ``RecordBody`` over HTTP). This module closes
 the last gap: it spawns a **real** ``claude`` / ``codex`` binary through
 ``trax run --sync``, against a **real** listening server backed by an
 in-process PGlite database, and asserts the captured session reached the DB
@@ -16,9 +16,9 @@ toolchain is required.
 What it proves, per CLI:
 
 - ``trax run <cli> --sync`` drives the real binary non-interactively.
-- The on-disk session log is tailed, parsed into typed ``Message`` members,
-  and POSTed to ``/api/sessions/*``.
-- The events land in ``agent_session_events`` and read back (over HTTP, same
+- The on-disk session log is tailed, normalized into typed IR records, and
+  POSTed to ``/api/sessions/*``.
+- The records land in ``session_records`` and read back (over HTTP, same
   server) as a non-empty transcript containing at least one model turn.
 """
 
@@ -27,8 +27,9 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Iterator
 from contextlib import asynccontextmanager, closing
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Self, cast
+from typing import Any, Self, TextIO, cast, override
 
 import enum
 import os
@@ -47,12 +48,14 @@ import uvicorn
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.agent.types.sessions import SessionRecord, UserMessage
 from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.postgres import PGliteEngine
-from trackinizer.server.api import query, sessions_routes
+from trackinizer.server.api import query, session_ir_routes, sessions_routes
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store, StubEmbedder
+from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.session import (
     RunConfig,
@@ -61,9 +64,11 @@ from trackinizer.trax.run.session import (
     _Stats,
     run,
 )
-from trackinizer.trax.run.sink import TrackinizerSink
-from trackinizer.types.agent_session_events import UserMessage
-from trackinizer.wire.wire_sessions import KINDS, EventBody, SessionStart
+from trackinizer.trax.run.sink import Sink, TrackinizerSink
+from trackinizer.trax.run.slash import SlashCommand
+from trackinizer.types.session_records import _BY_KIND
+from trackinizer.wire.wire_session_ir import RecordBody
+from trackinizer.wire.wire_sessions import SessionStart
 
 
 # A trivial prompt that forces exactly one model turn and exits fast. The
@@ -150,8 +155,11 @@ def _build_app(workdir: Path) -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
     app.include_router(sessions_routes.router)
+    # The IR append/read routes ingest now targets. Without them the capture's
+    # POST 404s and the run reports success having stored nothing.
+    app.include_router(session_ir_routes.router)
     # The query router serves ``GET /api/inquiries`` so the test can find the
-    # AgentSession the capture minted and read its events back.
+    # AgentSession the capture minted and read its records back.
     app.include_router(query.router)
 
     async def _identity() -> AuthIdentity:
@@ -326,25 +334,44 @@ def _latest_session_row(
         return rows[0] if rows else None
 
 
-def _latest_session_events(
+def _latest_session_records(
     base_url: str, *, cli: str | None = None
 ) -> list[dict[str, object]]:
-    """Read the most recently created session's events back over HTTP.
+    """Read the most recently created session's IR records back over HTTP.
 
     The capture mints exactly one AgentSession per run; this finds it via the
     inquiry list (scoped to ``cli`` when given, so a sibling test's session is
-    not picked up) and pages its events. Returns the raw event bodies so the
-    caller asserts on ``kind`` / ``message`` without a domain import.
+    not picked up), then pages EVERY part -- a session spans several files
+    (claude splits on compaction, codex forks) and each is stored separately,
+    so reading part 0 alone would silently miss a compacted run's later turns.
+
+    Returns the raw record bodies so the caller asserts on ``kind`` / ``text``
+    without a domain import.
     """
     row = _latest_session_row(base_url, cli=cli)
     if row is None:
         return []
     session_id = str(row["id"])
+    found: list[dict[str, object]] = []
     with httpx2.Client(base_url=base_url, timeout=30.0) as http:
-        events = http.get(f"/api/sessions/{session_id}/events", params={"limit": 1000})
-        events.raise_for_status()
-        body = cast(dict[str, object], events.json())
-        return cast(list[dict[str, object]], body["events"])
+        parts = http.get(f"/api/sessions/{session_id}/parts")
+        parts.raise_for_status()
+        listing = cast(dict[str, object], parts.json())
+        for part in cast(list[dict[str, object]], listing["parts"]):
+            page = http.get(
+                f"/api/sessions/{session_id}/records",
+                params={"part": int(cast(int, part["part"])), "limit": 1000},
+            )
+            page.raise_for_status()
+            body = cast(dict[str, object], page.json())
+            # ``RecordBody`` carries no ``part`` -- the route resolves one and
+            # returns it alongside -- so stamp it here, or a caller checking
+            # positions cannot tell two parts apart.
+            found.extend(
+                {**record, "part": body["part"]}
+                for record in cast(list[dict[str, object]], body["records"])
+            )
+    return found
 
 
 def _run_capture(cli_name: str, cli_args: tuple[str, ...], server_url: str) -> int:
@@ -391,16 +418,29 @@ def _run_capture(cli_name: str, cli_args: tuple[str, ...], server_url: str) -> i
 
 def _assert_transcript_synced(base_url: str, *, cli: str) -> None:
     """The run produced a non-empty, typed transcript with a model turn."""
-    events = _latest_session_events(base_url, cli=cli)
-    assert events, "no events synced to the server"
-    kinds = {str(e["kind"]) for e in events}
-    # ``kind`` is the Message member class name; the allowed set is exactly the
-    # wire ``KINDS`` union, so a new member never silently fails this here.
-    assert kinds <= set(KINDS), f"unexpected kinds: {kinds}"
+    records = _latest_session_records(base_url, cli=cli)
+    assert records, "no records synced to the server"
+    kinds = {str(r["kind"]) for r in records}
+    # Every kind must name a real IR record class -- the registry that decodes
+    # a stored payload -- so a capture that invented one fails here rather than
+    # at read time.
+    assert kinds <= set(_BY_KIND), f"unexpected kinds: {kinds}"
     assert "AssistantMessage" in kinds, f"no model turn captured; got {kinds}"
-    # Every event carries its typed message object, not an opaque blob.
-    for event in events:
-        assert isinstance(event["message"], dict)
+    # Every record carries its typed payload, not an opaque blob, and a
+    # position derived from its place in the file's normalized stream.
+    for record in records:
+        assert isinstance(record["payload"], dict)
+        assert int(cast(int, record["idx"])) >= 0
+    # Each part numbers its records from 0 with no gaps: the key is derived
+    # from stream position, so a hole means a record was dropped in ingest.
+    by_part: dict[int, list[int]] = {}
+    for record in records:
+        part = int(cast(int, record["part"]))
+        by_part.setdefault(part, []).append(int(cast(int, record["idx"])))
+    for part, idxs in by_part.items():
+        assert sorted(idxs) == list(range(len(idxs))), (
+            f"gap in part {part}'s positions: {sorted(idxs)}"
+        )
     # The close path must stamp ``ended``; a bare ``SessionEnd()`` would leave
     # it NULL even as status flips to complete (Issue#278 Disease 4).
     row = _latest_session_row(base_url, cli=cli)
@@ -462,7 +502,7 @@ def _skip_if_cli_unauthenticated(cli: str, rc: int, base_url: str) -> None:
     """
     if rc == 0:
         return
-    kinds = {str(e["kind"]) for e in _latest_session_events(base_url, cli=cli)}
+    kinds = {str(r["kind"]) for r in _latest_session_records(base_url, cli=cli)}
     if "AssistantMessage" not in kinds:
         pytest.skip(
             f"{cli} exited {rc} with no model turn (commonly unauthenticated: "
@@ -471,8 +511,14 @@ def _skip_if_cli_unauthenticated(cli: str, rc: int, base_url: str) -> None:
         )
 
 
+def _line_records(stream: TextIO) -> Iterator[SessionRecord]:
+    """One ``UserMessage`` record per line, carrying the line's text."""
+    for line in stream:
+        yield UserMessage(content=line.rstrip("\n"))
+
+
 class _LineAdapter:
-    """A line adapter over a temp dir: one ``*.jsonl`` line -> one UserMessage.
+    """A line adapter over a temp dir: one ``*.jsonl`` line -> one record.
 
     Stands in for a real CLI so the streaming test needs no binary: the test
     appends lines to the session file over time and the drain loop tails them.
@@ -498,9 +544,8 @@ class _LineAdapter:
         del path
         return None
 
-    def parse(self, raw: bytes, *, whole_file: bool) -> Iterator[Event]:
-        del whole_file
-        yield Event(message=UserMessage(text=raw.decode()))
+    def reader(self) -> Tail:
+        return Tail(_line_records)
 
 
 @pytest.mark.cli_python_subprocess
@@ -556,11 +601,11 @@ def test_capture_streams_incrementally_before_close(
             with log.open("a") as handle:
                 _ = handle.write("first turn\n")
             time.sleep(0.3)
-            events = _latest_session_events(server, cli=adapter.name)
+            events = _latest_session_records(server, cli=adapter.name)
             if events:
                 break
         assert events, "no events streamed to the server before close"
-        assert any("first turn" in str(e["message"]) for e in events)
+        assert any("first turn" in str(e["text"]) for e in events)
         # The session is still live: it streamed mid-run, before any close().
         row = _latest_session_row(server, cli=adapter.name)
         assert row is not None
@@ -824,31 +869,48 @@ def test_injection_reaches_real_codex_end_to_end(server: str) -> None:
     _assert_injection_or_skip("codex", result)
 
 
-class _StubSessionSink:
-    """A minimal Sink exposing a fixed ``session_id`` for the poller."""
+class _StubSessionSink(Sink):
+    """A minimal Sink exposing a fixed ``session_id`` for the poller.
+
+    SUBCLASSES ``Sink`` rather than matching it structurally, which is the
+    Protocol's own rule: the poller takes a ``Sink``, so a structural
+    stand-in is a type error at the call site rather than a contract the
+    checker verifies here.
+    """
 
     def __init__(self, session_id: uuid.UUID) -> None:
         self._session_id = session_id
 
     @property
+    @override
     def session_id(self) -> uuid.UUID | None:
         return self._session_id
 
+    @override
     def open(self) -> str | None:
         return None
 
+    @override
     def set_cli_session_id(self, cli_session_id: str) -> None:
         del cli_session_id
 
+    @override
     def emit(self, adapter_name: str, event: Event) -> None:
         del adapter_name, event
 
+    @override
+    def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
+        del command, at
+
+    @override
     def flush(self) -> None:
         pass
 
-    def drain_pending(self) -> list[EventBody]:
+    @override
+    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
         return []
 
+    @override
     def close(self) -> None:
         pass
 

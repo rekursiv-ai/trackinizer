@@ -189,7 +189,13 @@ _INTEG_TABLES: Final = (
     "change_log",
     "edges",
     "inquiry_embeddings",
-    "agent_session_events",
+    # The IR record store. ``session_records`` and its siblings all cascade
+    # from ``inquiries``, but truncating explicitly keeps the order stated
+    # rather than relying on the FK sweep.
+    "session_ciphertext",
+    "session_slash_commands",
+    "session_manifests",
+    "session_records",
     "inquiries",
     # Auth v2 (Phase 1) state. Order before ``users`` so the CASCADE
     # from ``api_keys.user_id`` / ``allowlist.added_by`` doesn't surprise.

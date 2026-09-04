@@ -8,10 +8,10 @@ sessions that already existed when the run started.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast, override
+from typing import Any, TextIO, cast, override
 
 import inspect
 import json
@@ -23,12 +23,19 @@ import uuid
 
 import pytest
 
+from trackinizer.lib.agent.types.sessions import (
+    AssistantMessage,
+    IncompleteRecord,
+    SessionRecord,
+    UserMessage,
+)
 from trackinizer.lib.posix.follow import follow_tree
 from trackinizer.trax.run import session as session_mod
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.custom_types import Adapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
+from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.session import (
     RunConfig,
@@ -40,55 +47,138 @@ from trackinizer.trax.run.session import (
     _render_inbound,
     _routing_env,
     _Stats,
+    resume_argv,
     run,
 )
-from trackinizer.types.agent_session_events import (
-    SlashCommand,
-    UserMessage,
-)
-from trackinizer.wire.wire_sessions import EventBody
+from trackinizer.trax.run.sink import Sink
+from trackinizer.trax.run.slash import SlashCommand
+from trackinizer.wire.wire_session_ir import RecordBody
 
 
-class _RecordingSink:
-    """Collects emitted events for assertions; mirrors the ``Sink`` protocol.
+class _RecordingSink(Sink):
+    """Collects emitted records for assertions.
 
-    Mints its own per-session ``seq`` like the real sinks, so tests can assert
-    the sequence is monotonic from 0.
+    SUBCLASSES ``Sink`` rather than matching it structurally -- which is the
+    Protocol's own rule, and load-bearing here: ``feed`` is concrete on the
+    Protocol and reaches ``_readers``, so a structural stand-in gets the
+    method without the state it needs.
+
+    Positions are per-FILE, exactly as the real sinks derive them, so a test
+    can assert each part numbers its records from 0.
     """
 
     def __init__(self) -> None:
         self.events: list[tuple[int, str, Event]] = []
+        self.slash: list[tuple[SlashCommand, datetime]] = []
         self.closed = False
         self.flushes = 0
         self.cli_session_ids: list[str] = []
-        self._next_seq = 0
+        self._next_idx: dict[Path, int] = {}
 
     @property
+    @override
     def session_id(self) -> None:
         return None
 
+    @override
     def open(self) -> str | None:
         return None
 
+    @override
     def set_cli_session_id(self, cli_session_id: str) -> None:
         self.cli_session_ids.append(cli_session_id)
 
+    @override
     def emit(self, adapter_name: str, event: Event) -> None:
-        self.events.append((self._next_seq, adapter_name, event))
-        self._next_seq += 1
+        if event.restart:
+            self._next_idx[event.path] = 0
+        idx = self._next_idx.get(event.path, 0)
+        self._next_idx[event.path] = idx + 1
+        self.events.append((idx, adapter_name, event))
 
+    @override
+    def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
+        self.slash.append((command, at))
+
+    @override
     def flush(self) -> None:
         self.flushes += 1
 
-    def drain_pending(self) -> list[EventBody]:
+    @override
+    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
         return []
 
+    @override
     def close(self) -> None:
         self.closed = True
 
 
+def _texts(sink: _RecordingSink) -> list[str]:
+    """The prose of each captured record that carries any, in emit order.
+
+    Reads the record's own field rather than a projection, so a test failure
+    names the turn that went missing rather than a search string.
+
+    Records with no prose are SKIPPED, not asserted against: one native line
+    legitimately produces several records -- a claude user line also emits the
+    ``TurnContext`` that applies to it -- and the drain tests are about which
+    turns were captured and in what order, not how many records a dialect
+    spends saying so.
+    """
+    out: list[str] = []
+    for _idx, _name, event in sink.events:
+        match event.record:
+            case IncompleteRecord() as record:
+                out.append(record.text)
+            case UserMessage() | AssistantMessage() as record:
+                out.append(record.content or "")
+            case _:
+                continue
+    return out
+
+
+def _line_records(stream: TextIO) -> Iterator[SessionRecord]:
+    """One record per line, carrying the line's own text.
+
+    The fake dialect the file-drain tests use: it makes "which turns were
+    captured, in what order" the only thing under test, with no provider
+    grammar in the way -- so it states no opening ``TurnContext`` either,
+    which a real dialect does and which would show up in every count here.
+    """
+    for line in stream:
+        yield UserMessage(content=line.rstrip("\n"))
+
+
+def _poison_records(stream: TextIO) -> Iterator[SessionRecord]:
+    """One record per line; raise on the line whose text is ``boom``.
+
+    STREAMING, like the real dialects: the reader runs on the ``Tail``'s own
+    thread, and a generator that raises is finished -- so the tail rebuilds it
+    and the raise is handed back to whoever fed the poison line. That is what
+    keeps one bad line costing one line rather than the rest of the file.
+    """
+    for line in stream:
+        text = line.rstrip("\n")
+        if text == "boom":
+            raise ValueError("reader blew up")
+        yield UserMessage(content=text)
+
+
+def _document_records(stream: TextIO) -> Iterator[SessionRecord]:
+    """Every message a whole document holds, re-read from its start.
+
+    Mirrors gemini, which rewrites ONE JSON object in place: the runner
+    re-feeds the whole body on each change and marks the chunk a restart, so
+    each record lands back on the position it already held rather than the
+    reader having to remember what it emitted.
+    """
+    obj = cast(dict[str, list[str]], json.loads(stream.read()))
+    for text in obj.get("messages") or []:
+        yield UserMessage(content=text)
+
+
 class _FakeAdapter:
-    """Treats every ``*.jsonl`` line as a ``UserMessage`` event."""
+    """Treats every ``*.jsonl`` line as one ``UserMessage`` record."""
 
     name: str = "fake"
     cli_binary: str = "fake"
@@ -110,75 +200,39 @@ class _FakeAdapter:
         del path
         return None
 
-    def parse(self, raw: bytes, *, whole_file: bool) -> Iterable[Event]:
-        del whole_file
-        return (Event(message=UserMessage(text=raw.decode())),)
+    def reader(self) -> Tail:
+        return Tail(_line_records)
 
 
-class _WholeFileAdapter:
+class _WholeFileAdapter(_FakeAdapter):
     """A whole-file adapter: the runner must feed it the entire file body.
 
     Mirrors gemini, which rewrites one JSON object in place rather than
-    appending lines. ``parse`` reads ``messages[-1]`` from the whole body.
+    appending lines.
     """
 
     name: str = "wholefile"
     cli_binary: str = "wholefile"
     whole_file: bool = True
 
-    def __init__(self, root: Path) -> None:
-        self._root = root
-
-    def session_dirs(self) -> Iterable[Path]:
-        return (self._root,)
-
+    @override
     def matches_session_file(self, path: Path) -> bool:
         return path.suffix == ".json"
 
-    def session_scope(self) -> Path | None:
-        return None
-
-    def session_id_from_path(self, path: Path) -> str | None:
-        del path
-        return None
-
-    def parse(self, raw: bytes, *, whole_file: bool) -> Iterable[Event]:
-        assert whole_file
-        obj = cast(dict[str, list[str]], json.loads(raw))
-        messages = obj.get("messages") or []
-        if not messages:
-            return ()
-        return (Event(message=UserMessage(text=messages[-1])),)
+    @override
+    def reader(self) -> Tail:
+        return Tail(_document_records, whole_file=True)
 
 
-class _PoisonAdapter:
+class _PoisonAdapter(_FakeAdapter):
     """Raises on a line whose text is ``boom``; otherwise a ``UserMessage``."""
 
     name: str = "poison"
     cli_binary: str = "poison"
-    whole_file: bool = False
 
-    def __init__(self, root: Path) -> None:
-        self._root = root
-
-    def session_dirs(self) -> Iterable[Path]:
-        return (self._root,)
-
-    def matches_session_file(self, path: Path) -> bool:
-        return path.suffix == ".jsonl"
-
-    def session_scope(self) -> Path | None:
-        return None
-
-    def session_id_from_path(self, path: Path) -> str | None:
-        del path
-        return None
-
-    def parse(self, raw: bytes, *, whole_file: bool) -> Iterable[Event]:
-        del whole_file
-        if raw == b"boom":
-            raise ValueError("parser blew up")
-        return (Event(message=UserMessage(text=raw.decode())),)
+    @override
+    def reader(self) -> Tail:
+        return Tail(_poison_records)
 
 
 def _always_found(
@@ -337,7 +391,7 @@ class TestSessionScoping:
         monkeypatch.setattr(adapter, "session_scope", lambda: mine)
         _stats, sink = _drain_once(cast(Adapter, adapter), tmp_path, write)
 
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts == ["mine"], f"a concurrent run's file was swept in: {texts}"
 
     def test_this_runs_own_file_is_drained(self, tmp_path: Path) -> None:
@@ -362,7 +416,7 @@ class TestAppendedLineDrain:
         replacement, corrupting a turn that parsed fine on disk.
         """
         log = tmp_path / "session.jsonl"
-        adapter = _PoisonAdapter(tmp_path)
+        adapter = _FakeAdapter(tmp_path)
 
         def write() -> None:
             log.write_bytes(b"stale-partial")
@@ -371,7 +425,7 @@ class TestAppendedLineDrain:
 
         _stats, sink = _drain_once(cast(Adapter, adapter), tmp_path, write)
 
-        texts = [cast(UserMessage, event.message).text for _, _, event in sink.events]
+        texts = _texts(sink)
         assert texts == ["fresh"]
 
 
@@ -427,7 +481,7 @@ class TestProjectDirectoryBornMidRun:
 
         _stats, sink = _drain_once(cast(Adapter, ClaudeAdapter()), tmp_path, write)
 
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts == ["captured"], "a new project directory captured nothing"
 
     def test_gemini_captures_a_project_directory_created_after_the_watch(
@@ -455,7 +509,7 @@ class TestProjectDirectoryBornMidRun:
 
         _stats, sink = _drain_once(cast(Adapter, GeminiAdapter()), tmp_path, write)
 
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts == ["captured"], "a new project directory captured nothing"
 
     def test_a_missing_claude_projects_root_is_created_before_the_watch(
@@ -515,7 +569,7 @@ class TestProjectDirectoryBornMidRun:
 
         _stats, sink = _drain_once(cast(Adapter, ClaudeAdapter()), tmp_path, write)
 
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts == ["captured"], "a first-ever run captured nothing"
 
 
@@ -533,7 +587,7 @@ class TestWholeFileDrain:
         )
 
         assert stats.counts == {"UserMessage": 1}
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts == ["hello"]
 
     def test_same_size_rewrite_emits_event(self, tmp_path: Path) -> None:
@@ -552,7 +606,7 @@ class TestWholeFileDrain:
 
         _stats, sink = _drain_once(cast(Adapter, adapter), tmp_path, write, expected=2)
 
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts == ["a", "b"]
 
     def test_an_unchanged_body_is_emitted_once(self, tmp_path: Path) -> None:
@@ -576,7 +630,7 @@ class TestWholeFileDrain:
 
         _stats, sink = _drain_once(cast(Adapter, adapter), tmp_path, write)
 
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts == ["b"]
 
     def test_a_body_that_returns_after_a_change_is_emitted_again(
@@ -601,7 +655,7 @@ class TestWholeFileDrain:
 
         _stats, sink = _drain_once(cast(Adapter, adapter), tmp_path, write, expected=3)
 
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts == ["a", "b", "a"], "a returning body was swallowed"
 
 
@@ -642,7 +696,7 @@ class TestGeminiMultiFileDrain:
             cast(Adapter, GeminiAdapter()), tmp_path, write, expected=4
         )
 
-        texts = sorted(cast(UserMessage, e.message).text for _, _, e in sink.events)
+        texts = sorted(_texts(sink))
         assert texts == ["a-q", "a-r", "b-q", "b-r"]
 
 
@@ -661,7 +715,7 @@ class TestDrainSurvivesParseError:
         )
 
         # The poison line raised but was swallowed; the good lines emitted.
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts == ["alpha", "omega"]
         assert stats.counts == {"UserMessage": 2}
 
@@ -684,17 +738,14 @@ class TestDrainSurvivesParseError:
         monkeypatch.setattr(session_mod._logger, "warning", record_warning)
 
         _process_chunk(
-            b"boom",
+            session_mod._Captured(path=tmp_path / "s.jsonl", raw=b"boom"),
             cast(Adapter, adapter),
             sink,
             _Stats(),
             RunConfig(cli_name="poison"),
-            whole_file=False,
         )
 
-        assert calls == [
-            ("trax run: %s adapter failed to parse a chunk", ("poison",), True)
-        ]
+        assert calls == [("trax run: %s failed to capture a chunk", ("poison",), True)]
 
 
 class TestTheWatchIsArmedBeforeTheChildSpawns:
@@ -750,7 +801,7 @@ class TestTheWatchIsArmedBeforeTheChildSpawns:
         )
 
         assert rc == 0
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts == ["first"], "the CLI's first record raced the watch"
 
 
@@ -798,7 +849,7 @@ class TestFollowerRearmsAfterAFailure:
         )
 
         assert len(attempts) >= 2, "the follower was never rearmed"
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts, "capture stayed dead after one transient watch failure"
 
 
@@ -860,7 +911,7 @@ class TestDrainSurvivesSinkError:
             stop.set()
             worker.join(timeout=5.0)
 
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts == ["survived"], "the drain thread died with the failed emit"
 
 
@@ -892,15 +943,13 @@ class TestStreamQueueIsBounded:
     """
 
     def test_overflow_drops_oldest_not_memory(self) -> None:
-        queue: deque[Event] = deque(maxlen=session_mod._STREAM_QUEUE_MAX)
+        queue: deque[bytes] = deque(maxlen=session_mod._STREAM_QUEUE_MAX)
         overfill = session_mod._STREAM_QUEUE_MAX + 1_000
         for i in range(overfill):
-            queue.append(Event(message=UserMessage(text=str(i))))
+            queue.append(f"{i}\n".encode())
         assert len(queue) == session_mod._STREAM_QUEUE_MAX
         # Oldest dropped, newest kept.
-        newest = queue[-1].message
-        assert isinstance(newest, UserMessage)
-        assert newest.text == str(overfill - 1)
+        assert queue[-1] == f"{overfill - 1}\n".encode()
 
     def test_spawn_constructs_a_bounded_queue(self) -> None:
         """The runner's queue literal must carry the cap, not a bare deque.
@@ -919,13 +968,11 @@ class TestStreamQueueIsBounded:
         A silent drop is a quiet gap in the transcript; the counter surfaces
         in the end-of-run stats line and the WARN names the stall.
         """
-        queue: deque[Event] = deque(maxlen=2)
+        queue: deque[bytes] = deque(maxlen=2)
         stats = _Stats()
         with caplog.at_level("WARNING"):
             for i in range(5):
-                session_mod._enqueue_stream_event(
-                    queue, stats, Event(message=UserMessage(text=str(i)))
-                )
+                session_mod._enqueue_stream_line(queue, stats, f"{i}\n".encode())
         assert stats.counts["StreamEventDropped"] == 3
         warns = [r for r in caplog.records if "queue full" in r.message]
         assert len(warns) == 1, "one WARN per run, not one per dropped event"
@@ -998,7 +1045,7 @@ class TestDrainLoopSurvivesTransientError:
         worker.join(timeout=5.0)
 
         assert not worker.is_alive(), "drain thread died on the transient flush error"
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         # A retry may have appended ``alpha`` more than once; what the flush
         # failure must not do is stop the line written after it.
         assert texts[0] == "alpha"
@@ -1065,7 +1112,7 @@ class TestDrainIsWakeDriven:
                 stop.set()
                 worker.join(timeout=5.0)
 
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts == ["alpha"]
         assert slept_in_drain == [], (
             f"the drain slept {slept_in_drain}; it must wake on a write"
@@ -1128,7 +1175,7 @@ class TestDrainIsWakeDriven:
             stop.set()
             worker.join(timeout=5.0)
 
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts[-2:] == ["two", "three"], "not every line was captured"
         # One walk to arm the watch. The old loop walked once per 0.2s tick --
         # measured at 24 walks for these three lines.
@@ -1175,21 +1222,26 @@ class TestWholeFileAdapterIsDrainedWhole:
             stop.set()
             worker.join(timeout=5.0)
 
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts == ["hello"], "a whole-file session was drained line-by-line"
 
 
-class TestCompactionDoesNotReEmit:
-    """A compacted transcript must not replay turns already captured.
+class TestCompactionReDerivesPositions:
+    """A compacted transcript re-derives its part rather than appending twice.
 
     Claude does not append on compaction -- it REWRITES the session file,
-    smaller, retaining the turns it kept. A byte cursor sees the shrink,
-    restarts from zero, and re-emits every retained line as new. The server
-    cannot dedup it either: ``seq`` is minted per read, so a re-read line
-    arrives with a fresh ordinal and lands as a distinct row.
+    smaller, retaining the turns it kept. A byte cursor sees the shrink and
+    re-reads the file whole, so the retained lines arrive again.
+
+    They must not become second copies. The runner no longer dedups by record
+    id (it cannot: a compaction legitimately CHANGES a record, and identity
+    could only ever suppress a duplicate, never correct a change). Instead the
+    rewrite is reported as a ``restart``, positions re-derive from zero, and
+    the re-read records land back on the keys they already held -- an
+    overwrite, which is what makes disk the truth.
     """
 
-    def test_retained_lines_are_not_emitted_twice(self, tmp_path: Path) -> None:
+    def test_a_rewrite_restarts_the_parts_positions(self, tmp_path: Path) -> None:
         adapter = _UuidAdapter(tmp_path)
         sink = _RecordingSink()
         stop = threading.Event()
@@ -1231,9 +1283,22 @@ class TestCompactionDoesNotReEmit:
             stop.set()
             worker.join(timeout=5.0)
 
-        ids = [cast(UserMessage, e.message).text for _, _, e in sink.events]
-        assert "d" in ids, "the post-compaction turn was never captured"
-        assert ids.count("c") == 1, f"compaction re-emitted a captured turn: {ids}"
+        # The retained turn re-derives to position 0 of the rewritten file, so
+        # it OVERWRITES its stored row rather than appending a duplicate.
+        after = [
+            (idx, text)
+            for (idx, _n, _e), text in zip(sink.events, _texts(sink), strict=True)
+        ]
+        assert "d" in [t for _i, t in after], (
+            "the post-compaction turn was never captured"
+        )
+        restarted = [i for i, (_idx, _n, e) in enumerate(sink.events) if e.restart]
+        assert restarted, "the rewrite was never reported as a restart"
+        # Everything from the restart onward re-numbers from zero.
+        tail = [idx for idx, _t in after[restarted[0] :]]
+        assert tail == list(range(len(tail))), (
+            f"a compacted file did not re-derive its positions: {after}"
+        )
 
 
 def _uuid_line(marker: str) -> bytes:
@@ -1250,34 +1315,23 @@ def _uuid_line(marker: str) -> bytes:
     ).encode()
 
 
-class _UuidAdapter:
+def _uuid_records(stream: TextIO) -> Iterator[SessionRecord]:
+    """Read the claude-shaped fixture lines ``_uuid_line`` writes."""
+    for line in stream:
+        obj = cast(dict[str, object], json.loads(line))
+        message = cast(dict[str, object], obj["message"])
+        yield UserMessage(content=str(message["content"]))
+
+
+class _UuidAdapter(_FakeAdapter):
     """A line adapter over uuid-stamped records, like claude's."""
 
     name: str = "uuids"
     cli_binary: str = "uuids"
-    whole_file: bool = False
 
-    def __init__(self, root: Path) -> None:
-        self._root = root
-
-    def session_dirs(self) -> Iterable[Path]:
-        return (self._root,)
-
-    def matches_session_file(self, path: Path) -> bool:
-        return path.suffix == ".jsonl"
-
-    def session_scope(self) -> Path | None:
-        return None
-
-    def session_id_from_path(self, path: Path) -> str | None:
-        del path
-        return None
-
-    def parse(self, raw: bytes, *, whole_file: bool) -> Iterable[Event]:
-        del whole_file
-        obj = cast(dict[str, object], json.loads(raw))
-        message = cast(dict[str, object], obj["message"])
-        return (Event(message=UserMessage(text=str(message["content"]))),)
+    @override
+    def reader(self) -> Tail:
+        return Tail(_uuid_records)
 
 
 class TestAdapterRegistryFreshPerRun:
@@ -1367,14 +1421,16 @@ class TestEmitSlashCommands:
             RunConfig(cli_name="fake"),
             queue,
         )
-        kinds = [ev.kind for _seq, _name, ev in sink.events]
-        assert kinds == ["SlashCommand", "SlashCommand"]
         assert not queue  # fully drained
-        first = sink.events[0][2]
-        assert isinstance(first.message, SlashCommand)
-        assert first.message.command == "exit"
-        # The submit-time clock the detector stamped rides onto the event.
-        assert first.timestamp == at
+        # NOT records: a command is absent from the session log, so it holds no
+        # position in any part and must not consume one.
+        assert sink.events == []
+        assert [c.command for c, _at in sink.slash] == ["exit", "model"]
+        assert sink.slash[1][0].args == "gpt-5"
+        # The submit-time clock the detector stamped rides along -- a typed
+        # command has no CLI-recorded timestamp.
+        assert [when for _c, when in sink.slash] == [at, at]
+        assert stats.counts == {"SlashCommand": 2}
 
     def test_empty_queue_is_a_noop(self) -> None:
         sink = _RecordingSink()
@@ -1414,7 +1470,7 @@ class TestDryRunDrain:
             stop=stop,
         )
         assert rc == 0
-        texts = [cast(UserMessage, e.message).text for _, _, e in sink.events]
+        texts = _texts(sink)
         assert texts == ["replayed"]
 
     def test_returns_when_stopped(self, tmp_path: Path) -> None:
@@ -1805,6 +1861,30 @@ class TestRenderInboundEnvelopes:
         # lacks agent_message) must still be delivered, not dropped.
         rendered = _render_inbound("not json", "trackinizer", None, stream=False)
         assert rendered == "trackinizer: not json"
+
+
+class TestResumeArgv:
+    """Each CLI spells "continue this session" its own way."""
+
+    def test_claude_takes_a_resume_flag(self) -> None:
+        """``claude --resume <uuid>``, verified against ``claude --help``."""
+        assert resume_argv("claude", "abc-123") == ("--resume", "abc-123")
+
+    def test_codex_takes_a_resume_subcommand(self) -> None:
+        """``codex resume <SESSION_ID>`` -- a SUBCOMMAND, not a flag.
+
+        Verified against the installed CLI: ``codex resume --help`` reads
+        "Usage: codex resume [OPTIONS] [SESSION_ID]". Passing claude's
+        ``--resume`` spelling makes codex reject the argument outright, so a
+        resume that materialized a perfectly good rollout still fails to
+        start.
+        """
+        assert resume_argv("codex", "abc-123") == ("resume", "abc-123")
+
+    def test_no_id_forwards_nothing(self) -> None:
+        """A fresh run names no session, so it gets no resume tokens."""
+        assert resume_argv("claude", None) == ()
+        assert resume_argv("codex", None) == ()
 
 
 if __name__ == "__main__":
