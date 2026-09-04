@@ -223,6 +223,35 @@ def test_graph_live_adds_are_seeded_before_reheat() -> None:
     assert "function relaxNewEdges()" not in html
 
 
+def test_search_box_routes_exact_refs_before_text_search() -> None:
+    """The existing search control doubles as the exact-reference control."""
+    html = _INDEX_HTML.read_text()
+    assert 'placeholder="search title/description or enter Kind#seq..."' in html
+    assert 'id="exact-seq"' not in html
+
+    destination = html[
+        html.index("function searchDestination") : html.index(
+            "function buildSearch()",
+        )
+    ]
+    ordered_routes = [
+        "UUID_RE.test(trimmed)",
+        "`#/lookup/${trimmed}`",
+        "SHORT_RE.exec(trimmed)",
+        "`#/ref/${encodeURIComponent(short[1])}/${short[2]}`",
+        "`#/search?q=${encodeURIComponent(trimmed)}`",
+    ]
+    positions = [destination.index(route) for route in ordered_routes]
+    assert positions == sorted(positions)
+
+    search = html[
+        html.index("function buildSearch()") : html.index(
+            "const RERENDER_MS",
+        )
+    ]
+    assert "location.hash = searchDestination(search.value);" in search
+
+
 def _render_turn_block() -> str:
     """The body of ``renderTurn``, up to the next top-level function."""
     html = _INDEX_HTML.read_text()

@@ -290,7 +290,8 @@
     <select id="new-picker">
       <option value="">New...</option>
     </select>
-    <input type="search" id="search-box" placeholder="search title/description...">
+    <input type="search" id="search-box"
+           placeholder="search title/description or enter Kind#seq...">
     <button id="recent-btn">recent</button>
     <a href="/console" style="margin-left:auto">Console</a>
     <a id="user-nav-me" href="/me">Profile</a>
@@ -2049,11 +2050,21 @@ function buildPickers() {
   });
 }
 
+function searchDestination(value) {
+  const trimmed = value.trim();
+  if (UUID_RE.test(trimmed)) return `#/lookup/${trimmed}`;
+  const short = SHORT_RE.exec(trimmed);
+  if (short) {
+    return `#/ref/${encodeURIComponent(short[1])}/${short[2]}`;
+  }
+  return `#/search?q=${encodeURIComponent(trimmed)}`;
+}
+
 function buildSearch() {
   const search = document.getElementById("search-box");
   search.addEventListener("keypress", e => {
     if (e.key === "Enter") {
-      location.hash = `#/search?q=${encodeURIComponent(search.value)}`;
+      location.hash = searchDestination(search.value);
     }
   });
 }
