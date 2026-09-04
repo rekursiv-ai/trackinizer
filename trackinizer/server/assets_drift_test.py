@@ -223,6 +223,62 @@ def test_graph_live_adds_are_seeded_before_reheat() -> None:
     assert "function relaxNewEdges()" not in html
 
 
+def _render_turn_block() -> str:
+    """The body of ``renderTurn``, up to the next top-level function."""
+    html = _INDEX_HTML.read_text()
+    start = html.index("function renderTurn(ev)")
+    return html[start : html.index("\nfunction ", start + 1)]
+
+
+def test_every_turn_shows_its_structure_and_its_raw_record() -> None:
+    """Structured rendering AND the record's JSON, on every kind.
+
+    The per-kind arms each append ONE body form, so a kind with a structured
+    arm showed no JSON and a kind without one showed only JSON -- the reader
+    could never see both. The raw block is appended after the dispatch, outside
+    every arm, so it cannot be skipped by adding a twenty-second ``else if``.
+    """
+    block = _render_turn_block()
+    assert "function rawRecord(" in _INDEX_HTML.read_text()
+    assert block.count("rawRecord(ev)") == 1, (
+        "the raw record must be appended exactly once, from outside the "
+        "per-kind dispatch"
+    )
+    # After the last arm's closing brace, and before the return: unconditional.
+    assert block.index("rawRecord(ev)") > block.rindex("} else {")
+    assert block.index("rawRecord(ev)") < block.index('return el("div"')
+
+
+def test_the_raw_record_omits_ciphertext() -> None:
+    """A sealed ``Thinking`` block is base64 megabytes, and unreadable.
+
+    ``rawRecord`` must strip it rather than paste it into every reasoning turn;
+    the transcript read also asks the route for plaintext only, which is what
+    ``read_session_records_route`` documents a viewer wants.
+    """
+    html = _INDEX_HTML.read_text()
+    start = html.index("function rawRecord(")
+    block = html[start : html.index("\nfunction ", start + 1)]
+    assert "ciphertext" in block, "rawRecord must drop the ciphertext key"
+    assert "plaintext_only=true" in html, (
+        "the transcript read must not pull ciphertext it never renders"
+    )
+
+
+def test_a_context_clear_shows_what_the_fresh_context_was_given() -> None:
+    """The record that delineates a session must render what it states.
+
+    ``ContextClear`` carries the system prompt as the agent saw it and the
+    summary a compaction carried in; rendering only the words "context
+    cleared" threw both away.
+    """
+    block = _render_turn_block()
+    arm = block[block.index('ev.kind === "ContextClear"') :]
+    arm = arm[: arm.index("} else ")]
+    assert "m.system_prompt" in arm
+    assert "m.summary" in arm
+
+
 if __name__ == "__main__":  # pragma: no cover -- entry point only.
     from trackinizer.lib.testing.main import test_main
 

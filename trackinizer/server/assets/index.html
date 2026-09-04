@@ -246,6 +246,8 @@
   .turn-error { color: var(--danger, #c0392b); }
   .turn-compaction { color: var(--muted); font-style: italic; }
   details.turn-thinking > summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+  details.turn-raw > summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+  details.turn-raw pre { background: var(--bg-row); font-size: 11px; }
 
   /* Modal + picker. */
   #modal-bg {
@@ -547,8 +549,10 @@ const Api = {
   // and each numbers its records from zero, so a page without one would mix
   // two files' positions. Legacy turns backfilled from the retired
   // ``Message`` union live at part -1.
+  // ``plaintext_only``: the viewer never renders ciphertext, and it is the
+  // largest thing on a row.
   sessionRecords: (id, part = 0, limit = 200) =>
-    api(`/api/sessions/${id}/records?part=${part}&limit=${limit}`),
+    api(`/api/sessions/${id}/records?part=${part}&limit=${limit}&plaintext_only=true`),
   // The source files one session was captured from.
   sessionParts: (id) => api(`/api/sessions/${id}/parts`),
   // An experiment's logged metric points, in (key, step) order. Single literal
@@ -1431,16 +1435,43 @@ function renderTurn(ev) {
       `compacted ${(m.history || []).length} record(s)`));
     if (m.summary) body.appendChild(renderMarkdown(m.summary));
   } else if (ev.kind === "ContextClear") {
-    body.appendChild(el("div", { class: "turn-compaction" }, "context cleared"));
+    // The record that DELINEATES a session: what the fresh context was given.
+    // "context cleared" alone threw away the two things it exists to state.
+    body.appendChild(el("div", { class: "turn-compaction" },
+      m.cleared_session_id ? `context cleared (was ${m.cleared_session_id})` : "context cleared"));
+    if (m.summary) {
+      body.appendChild(el("details", { class: "turn-thinking" },
+        el("summary", {}, "carried summary"), renderMarkdown(m.summary)));
+    }
+    if (m.system_prompt) {
+      body.appendChild(el("details", { class: "turn-thinking" },
+        el("summary", {}, `system prompt (${m.system_prompt.length} chars)`),
+        el("pre", {}, m.system_prompt)));
+    }
   } else if (ev.kind === "TokenUsage" || ev.kind === "TurnContext") {
-    // Bookkeeping: named in the head, and folded away so provider accounting
-    // does not bury the conversation.
-    body.appendChild(el("details", {},
-      el("summary", {}, "details"), el("pre", {}, JSON.stringify(m, null, 2))));
+    // Bookkeeping: named in the head. The raw block below carries the numbers,
+    // so there is nothing left for an arm here to add.
   } else {
-    body.appendChild(el("pre", {}, ev.text || JSON.stringify(m, null, 2)));
+    body.appendChild(el("pre", {}, ev.text || ""));
   }
+  // Structure AND source, on EVERY kind. Appended outside the dispatch rather
+  // than in each arm: a reader who expands wants the fields the record names
+  // and the record itself, and a twenty-second `else if` cannot forget it.
+  body.appendChild(rawRecord(ev));
   return el("div", { class: "turn" }, head, body);
+}
+
+// One record's stored JSON, collapsed.
+//
+// Ciphertext is dropped rather than pasted: a sealed `Thinking` block is
+// base64 megabytes with nothing to read. The transcript read asks the route
+// for `plaintext_only`, so this is belt-and-braces against a caller that does
+// not -- the console's own reads, say.
+function rawRecord(ev) {
+  const { ciphertext, ...rest } = ev;
+  return el("details", { class: "turn-raw" },
+    el("summary", {}, ciphertext ? "record (ciphertext elided)" : "record"),
+    el("pre", {}, JSON.stringify(rest, null, 2)));
 }
 
 function buildField(label, value, opts = {}) {
