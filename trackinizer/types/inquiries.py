@@ -1116,7 +1116,7 @@ class AgentSession(Artifact):
     native session log, and ingests turn-grained events. This row is the
     queryable handle -- edge-able to the Issues/CodeChanges the session bore
     on, supersede-able when a session is resumed. The per-turn events live in
-    the separate append-only ``agent_session_events`` table (outside
+    the separate append-only ``session_records`` table (outside
     ``inquiries``), scoped to this row by ``session_id``.
 
     The session transcript proper (user/assistant/thinking/tool turns) is not
@@ -1144,8 +1144,8 @@ class AgentSession(Artifact):
     id), for correlation with the vendor's own records.
 
     Model and working directory are intentionally **not** fields: both can
-    change mid-session, so a single value would be lossy. Per-turn model
-    lives on ``agent_session_events.model``."""
+    change mid-session, so a single value would be lossy. Per-record model
+    lives on ``session_records.model``."""
 
     started: datetime | None = field(
         default=None,

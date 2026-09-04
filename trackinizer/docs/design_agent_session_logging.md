@@ -31,31 +31,74 @@ A live-capture spike settled the two gates that block the build:
    (An earlier spike conclusion that this needed `codex app-server` was a
    flag error; the rollout tailer suffices.)
 
-The build is complete: the `AgentSession` artifact kind, the
-`agent_session_events` table (typed by `types/agent_session_events.py`),
-the ingest + read API, and the client SDK / `--sync` sink all exist. The
-authoritative reference is [`api_agent_session_events.md`](api_agent_session_events.md);
-this doc is the design narrative and rationale behind it.
+The build is complete: the `AgentSession` artifact kind, the four
+`session_*` tables (typed by `types/session_records.py`), the ingest +
+read API, and the client SDK / `--sync` sink all exist. The authoritative
+reference is [`api_session_records.md`](api_session_records.md); this doc
+is the design narrative and rationale behind it.
 
 The spike also found two load-bearing bugs in the harness, fixed first
 (see [Two bugs](#two-bugs-the-spike-exposed-both-fixed-first-in-the-plan)).
+
+## Superseded: the `Message` union (2026-09)
+
+This document was written against a **turn-grained** capture: one
+`agent_session_events` row per turn, holding one member of an 8-member
+`Message` union. That union is retired. Sessions are now stored as the
+shared session IR (`trackinizer.lib.agent.types.sessions`) -- 21 concrete record
+types, byte-exact round-trip -- in `session_records`, keyed
+`(session_id, part, idx)`. See
+[`private/sessions.md`](private/sessions.md) for that migration's design
+and [`api_session_records.md`](api_session_records.md) for the now-state.
+
+Three of this doc's conclusions did not survive, and the reasons are worth
+keeping because each was a decision made on evidence available at the time:
+
+- **"Typed `Message`, not opaque payload" was right and did not go far
+  enough.** Normalizing both CLIs into one vocabulary was correct; making
+  that vocabulary 8 members was not. A union built around *what a turn
+  looks like* forced an `AssistantMessage` to aggregate text, thinking,
+  and every tool call into one row, and the aggregate is lossy: the
+  session cannot be written back out. The IR splits every distinct act
+  into its own record (axiom 3) precisely so the file can be rebuilt.
+- **`seq` was harness-assigned; `idx` is DERIVED.** This doc argues a
+  harness counter is necessary "because claude lines carry no monotonic
+  counter". True, but the file's own line order IS the counter. Deriving
+  the position makes a re-fed file idempotent, which a harness counter
+  cannot be -- a claude compaction rewrites the transcript, and a counter
+  appends a second copy of every retained record.
+- **`UnknownMessage` as "the escape hatch" understated the problem.** An
+  unrecognized record was wrapped verbatim, which loses nothing but also
+  reconstructs nothing. `UncategorizedRecord` plays the same role in the
+  IR, but the surrounding records now carry enough structure that the
+  escape hatch is rare rather than routine.
+
+Everything below is the original narrative. The [empirical
+findings](#empirical-findings-2026-05-31) about what each CLI exposes, the
+[storage](#storage-backend) and [transport](#transport--api-protocol)
+rationale, and the [addendum](#addendum-the-drain-timer-its-discovery-scan-and-the-inbound-poll)
+measurements are unaffected by the storage change and remain current.
 
 ## What we're wiring
 
 ```
 ┌────────────┐                    ┌──────────────────┐
 │ trax-claude│                    │   Trackinizer    │
-│ trax-gemini│ ─POST events─────▶ │  /api/sessions/* │
+│ trax-gemini│ ─POST records────▶ │  /api/sessions/* │
 │ trax-codex │   HTTP+JSON        └────────┬─────────┘
 │ trax-sh    │                             │
 └────────────┘                             ▼
    wraps the CLI,        ┌───────────────────────────────────────┐
-   spawns it in its      │ Postgres (+ Timescale extension, opt)  │
+   spawns it in its      │ Postgres                               │
    verbose/streaming     │  - inquiries (AgentSession row)        │
-   mode, forwards the    │  - agent_session_events (append-only)  │
-   structured stream     │  - message JSONB (typed Message union) │
+   mode, forwards the    │  - session_records (append-only)       │
+   structured stream     │  - payload JSON (one IR record)        │
                          └───────────────────────────────────────┘
 ```
+
+(As drawn when this was written the destination was `agent_session_events`
+with a `message JSONB` holding one `Message` member; see [Superseded]
+(#superseded-the-message-union-2026-09).)
 
 **`trax run sh` -- the IO-stream adapter.** Besides the model CLIs, `sh`
 wraps ANY binary in a live, addressable session (`trax run --as alice sh
@@ -79,12 +122,14 @@ Two layers, one DB today:
 
 - **AgentSession** = `Artifact` kind in `inquiries`. Queryable, edge-able to
   Issues/CodeChange, supersede-able for resumed sessions.
-- **agent_session_events** = append-only table, NOT in `inquiries`.
-  Turn-grain rows whose `kind` is the class name of the typed `Message`
-  member they hold: `UserMessage`, `AgentSendMessage`, `AssistantMessage`,
-  `ToolResult`, `Compaction`, `UnknownMessage`. The `message` JSONB is that
-  typed value, not opaque CLI JSON; Postgres TOAST absorbs large ones (no
-  app-level blob offload).
+- **session_records** = append-only table, NOT in `inquiries`.
+  Record-grain rows whose `kind` is the class name of the IR member they
+  hold. The `payload` JSON is that typed value, not opaque CLI JSON;
+  Postgres TOAST absorbs large ones (no app-level blob offload).
+
+  *As written:* `agent_session_events`, turn-grain, whose `kind` named one
+  of six `Message` members (`UserMessage`, `AgentSendMessage`,
+  `AssistantMessage`, `ToolResult`, `Compaction`, `UnknownMessage`).
 
 ## Empirical findings (2026-05-31)
 
@@ -215,18 +260,18 @@ counter and dir-wide scanning is unsafe (Bug B).
 | Day-2 ops burden manageable  | ✅ | 🟡 | ✅ | ✅ | ❌ |
 | Reversible without re-ingest | ✅ | ✅ | ✅ | n/a | ❌ |
 
-**Phase 0 = Postgres.** `agent_session_events` ships as a **plain Postgres
-table** first (`PRIMARY KEY (session_id, seq)` dedup). A Timescale
+**Phase 0 = Postgres.** The record table ships as a **plain Postgres**
+table first (`PRIMARY KEY (session_id, part, idx)` dedup). A Timescale
 hypertable stays out of bootstrap DDL regardless (PGlite cannot run
 `create_hypertable`) -- but adopting it is a redesign, not a deploy-time
 `ALTER`: Timescale requires the partitioning column in every unique index,
 and the dedup PK excludes any time column
 (see `docs/db_schema_migration.md`, "Timescale hypertable").
 
-**Phase 1 (when events cross ~10⁹) = ClickHouse for `agent_session_events`
+**Phase 1 (when records cross ~10⁹) = ClickHouse for `session_records`
 only.** `inquiries` stays in Postgres forever. Migration is mechanical
-because the seam (`append_events()`, `read_session_events()`) is one
-function each.
+because the seam (`append_session_records()`, `read_session_records()`) is
+one function each.
 
 **Phase 2 (cold tier) = Parquet on S3/R2.** Old partitions roll out;
 DuckDB queries on demand for researcher use.
@@ -248,10 +293,12 @@ multi-connection. Done; provisioning lives in the internal ops tree.
 | Needed for one producer/consumer | ✅ | ✅ | ✅ | ❌ |
 | Stable spec for agent telemetry  | ✅ | ✅ | ❌ | n/a |
 
-**REST+JSON.** Wire bodies in `wire/wire_sessions.py`, carrying the
-`types/agent_session_events.py` domain type. Four endpoints: `start`,
-`events` (POST + GET), `end`. Idempotency follows `design_idempotency.md`
-(server-minted ids, client-supplied `idempotency_key`).
+**REST+JSON.** Wire bodies in `wire/wire_session_ir.py` (records) and
+`wire/wire_sessions.py` (lifecycle), carrying the
+`types/session_records.py` domain type. Endpoints: `start`, `records`
+(POST + GET), `parts` (GET), `end`. Idempotency follows
+`design_idempotency.md` (server-minted ids, client-supplied
+`idempotency_key`).
 
 ### Why not OTel (yet)
 
@@ -324,13 +371,20 @@ batching, retry, idempotency, POST to `/api/sessions/events`) is shared.
 ## Multi-tenant
 
 Tenant scope lives on the `AgentSession` row (its `owner` / producing
-principal); `agent_session_events` derives scope by joining on
+principal); the record table derives scope by joining on
 `session_id` rather than carrying a denormalized `org_id` column (dropped
 as speculative -- re-add only if RLS profiling shows the join hurts). GDPR
 delete cascades from the `AgentSession` row via the FK. Per-tenant
 retention policy + ingest rate limit ride on the same join.
 
 ## Build plan
+
+**Historical.** Every step below shipped, and steps 3-6 shipped the
+turn-grained shape that
+[Superseded](#superseded-the-message-union-2026-09) later retired -- they
+name `EventBody`, `append_events`, and `types/agent_session_events.py`,
+none of which exist now. Kept as the record of what was built and in what
+order; read `api_session_records.md` for the now-state.
 
 Decomposed into independently shippable, testable steps. Verification
 command per step: `uv --quiet run --frozen pytest -n 8 <paths>`. Steps
@@ -426,19 +480,27 @@ adapters normalize each CLI's native record into a `Message` member.
 
 ## What's load-bearing vs. incidental
 
+Restated against the now-state; the ones the `Message` retirement changed
+are marked.
+
 **Load-bearing** (changing breaks the design):
 - Server-minted `session_id`; clients never name a session.
-- `agent_session_events` is append-only and outside `inquiries`.
-- `PRIMARY KEY (session_id, seq)` is the per-event dedup mechanism.
-- `message` is a typed `Message` member, selected by `kind` (its class name).
-- `kind` always equals `type(message).__name__`; enforced at construction.
-- Two seam functions (`append_events`, `read_session_events`) make storage
-  swappable.
+- The record table is append-only and outside `inquiries`.
+- **(changed)** `PRIMARY KEY (session_id, part, idx)` is the dedup
+  mechanism, and `idx` is DERIVED from stream position -- that is what
+  makes a re-fed file idempotent. Was `(session_id, seq)` with a
+  harness-assigned `seq`.
+- **(changed)** `payload` is one IR record selected by `kind`; the column
+  is `JSON`, never `JSONB`, because jsonb reorders keys and breaks the
+  byte-exact rewrite resume depends on.
+- **(changed)** Two seam functions (`append_session_records`,
+  `read_session_records`) make storage swappable.
 - Codex must be spawned with `model_reasoning_summary=detailed`, else the
   rollout `reasoning` item's `summary[].text` is empty (no thinking).
 
 **Incidental** (could change without redesign):
-- The exact `Message` member set (new members promote from `UnknownMessage`).
+- The exact record member set (new members promote from
+  `UncategorizedRecord`).
 - REST+JSON vs gRPC for the same wire shape.
 - **Timescale hypertable**: not part of the data model; plain Postgres is
   the Phase-0 substrate. Adopting it requires reworking the dedup key
@@ -448,8 +510,8 @@ adapters normalize each CLI's native record into a `Message` member.
 
 | Trigger | What changes |
 |---|---|
-| `agent_session_events` > 10⁹ rows | Phase 1: swap event store to ClickHouse |
-| `agent_session_events` > 10¹² rows or storage $$$ dominates | Phase 2: Parquet on object storage for cold tier |
+| `session_records` > 10⁹ rows | Phase 1: swap the record store to ClickHouse |
+| `session_records` > 10¹² rows or storage $$$ dominates | Phase 2: Parquet on object storage for cold tier |
 | Real CLI emits OTel agent traces | Add `/v1/logs` + `/v1/traces` OTLP endpoint |
 | Second downstream consumer wants the firehose | Add Kafka between ingest API and consumers |
 | Public third-party tenancy | Add `Idempotency-Key` header alias, per-tenant API key scoping |

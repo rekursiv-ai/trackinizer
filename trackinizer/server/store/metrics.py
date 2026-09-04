@@ -5,8 +5,8 @@ Owns the append/read seam for step-grained metric points logged against an
 pure leaf like :class:`_ReadMixin` -- it reads and writes through
 ``self.engine`` and calls no other mixin. Metrics are telemetry, not a
 knowledge mutation, so this path emits no ``change_log`` audit, no cost, and
-no ``LISTEN/NOTIFY`` fanout (the same exemption ``agent_session_events``
-takes).
+no ``LISTEN/NOTIFY`` fanout (unlike ``session_records``, whose append DOES
+wake the console fanout).
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ class _MetricsMixin(_StoreShared):
         ``ON CONFLICT DO NOTHING RETURNING`` reports exactly the rows this
         call newly wrote, so ``logged`` and ``skipped`` are exact even under a
         concurrent same-experiment appender (no count-subtraction race) --
-        mirroring :meth:`Store.append_events`.
+        mirroring :meth:`Store.append_session_records`.
 
         Raises:
           NotFoundError: ``experiment_id`` is not an existing inquiry.
@@ -172,7 +172,7 @@ class _MetricsMixin(_StoreShared):
         (``None`` defaults to ``DEFAULT_LIST_LIMIT``). The store trusts the
         caller's ``limit`` / ``offset`` -- the *route* enforces the
         ``[1, MAX_LIST_LIMIT]`` ceiling, matching the sibling
-        ``read_session_events`` seam; a direct in-process caller may pass a
+        ``read_session_records`` seam; a direct in-process caller may pass a
         larger window deliberately.
         """
         clauses = ["experiment_id = $1"]
@@ -182,7 +182,7 @@ class _MetricsMixin(_StoreShared):
             clauses.append(f"key = ${len(params)}")
         where = " AND ".join(clauses)
         # Default to the shared list page size, matching the sibling
-        # ``read_session_events`` seam -- the route/client pass an explicit
+        # ``read_session_records`` seam -- the route/client pass an explicit
         # limit, so this default only applies to direct in-process callers, and
         # a divergent metrics-only default silently disagreed with the wire.
         params.append(limit if limit is not None else DEFAULT_LIST_LIMIT)

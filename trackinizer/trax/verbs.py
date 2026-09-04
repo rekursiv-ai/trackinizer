@@ -1,6 +1,6 @@
 """The inquiry-kind verbs (``issue``, ``belief``, ...) and the helper commands.
 
-The 8 kind names share one ``Kind`` command; ``search``, ``recent``, ``next``,
+The 8 kind names share one ``Kind`` command; ``recent``, ``next``,
 ``blocked``, ``graph``, ``board``, and ``cost`` each get their own class.
 """
 
@@ -45,7 +45,6 @@ from trackinizer.trax.grammar import (
     SetField,
     cost_key,
     field_value,
-    parse_kind,
     validate_writable_fields,
 )
 from trackinizer.trax.parser import (
@@ -66,6 +65,18 @@ from trackinizer.trax.render import (
     table_cell,
     table_width,
 )
+
+# EAGER, unlike the functions below: an exception must be a real class to be
+# caught, and a proxy in an ``except`` raises ``TypeError: catching classes
+# that do not inherit from BaseException`` -- on the error path only, so the
+# handler's diagnostic becomes a traceback exactly when a user made an
+# ordinary mistake. ``run.errors`` imports nothing, so this costs no PTY,
+# tail, or adapter machinery.
+from trackinizer.trax.run.errors import (
+    CiphertextDroppedError,
+    LossyConversionError,
+    NotResumableError,
+)
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
@@ -74,6 +85,18 @@ from trackinizer.wire.routes import (
     MAX_LIST_LIMIT,
 )
 
+
+if TYPE_CHECKING:
+    from trackinizer.trax.run.resume import prepare_resume
+    from trackinizer.trax.run.session import main as run_main
+else:
+    from wrapt import lazy_import
+
+    # The resume tail is the only path needing the PTY/tail/adapter machinery
+    # (importing ``trax.run.session`` costs ~324ms), so the WORK is bound
+    # lazily -- mirroring ``cli.py``, which does the same for ``run``.
+    prepare_resume = lazy_import("trackinizer.trax.run.resume", "prepare_resume")
+    run_main = lazy_import("trackinizer.trax.run.session", "main")
 
 if TYPE_CHECKING:
     from trackinizer.wire.wire_metrics import MetricPoint
@@ -211,6 +234,19 @@ class Kind(Command):
             action="store_true",
             help="apply a bulk field mutation that matches more than one row",
         )
+        # Declared here even though only the ``run`` tail reads it: this parser
+        # runs BEFORE dispatch and rejects any flag it has not heard of, so a
+        # tail-only flag is refused by argparse and never reaches the verb that
+        # would consume it -- the refusal message then names a flag the CLI
+        # will not accept.
+        parser.add_argument(
+            "--lossy",
+            action="store_true",
+            help=(
+                "accept a resume conversion that drops records the target "
+                "format cannot express (trax agentsession 42 run codex --lossy)"
+            ),
+        )
         add_write_flags(parser)
         return parser
 
@@ -230,6 +266,12 @@ class Kind(Command):
         # generic list/create dispatch, which does not know the ``metric`` word.
         if kind == "Experiment" and (split := _split_metric_tail(rest)) is not None:
             return cls.run_metric(split[0], split[1], args, client_factory)
+        # The ``run`` tail is AgentSession-only: re-enter a stored session with
+        # a CLI. Intercepted here for the same reason as ``metric`` -- the
+        # generic dispatch below does not know the word, and would read it as
+        # a field to show.
+        if kind == "AgentSession" and (split := _split_run_tail(rest)) is not None:
+            return cls.run_resume(split[0], split[1], args, client_factory)
         if not rest:
             return run_list_query(
                 ListQuery(kinds=(kind,), ranges={}, filters=()),
@@ -314,6 +356,66 @@ class Kind(Command):
             cls._run_metric_cross(before, action, args, client_factory)
         else:
             cls._run_metric_create(before, action, args, client_factory)
+
+    @classmethod
+    def run_resume(
+        cls,
+        before: Sequence[str],
+        tail: Sequence[str],
+        args: argparse.Namespace,
+        client_factory: Callable[[], Client],
+    ) -> None:
+        """Dispatch ``agentsession 42 run claude [--lossy] [runner args]``.
+
+        ``before`` names the session; ``tail`` is the target CLI followed by
+        whatever the runner should receive. The target is chosen HERE rather
+        than by whatever captured the session -- that is what lets a
+        codex-captured session resume as claude.
+
+        The tail takes its own ``--lossy`` (it gates the CONVERSION, which
+        happens before any runner exists) and passes everything else through:
+        ``run claude --as bob -- --model opus`` re-emits as
+        ``run_main(["claude", "--as", "bob", "--", "--model", "opus"])``.
+        """
+        if not tail:
+            raise ClientError("run needs a target CLI: trax agentsession 42 run claude")
+        if not starts_with_ref(before):
+            raise ClientError("run needs one session: trax agentsession 42 run claude")
+        target, *runner_args = tail
+        # ``--lossy`` gates the CONVERSION, which happens before any runner
+        # exists, so it is the tail's own rather than something to forward.
+        #
+        # Read off the parsed namespace, not the raw tail: this parser
+        # declares the flag (it must, or it rejects the command outright) and
+        # therefore has already consumed it -- scanning ``runner_args`` for it
+        # found nothing and every ``--lossy`` resume was refused anyway.
+        lossy = bool(args.lossy)
+        forwarded = [arg for arg in runner_args if arg != "--lossy"]
+        ref, consumed = consume_ref(before, 0, kind_hint="AgentSession")
+        if before[consumed:]:
+            raise ClientError(
+                f"unexpected tokens before 'run': {list(before[consumed:])}"
+            )
+        client = client_factory()
+        _kind, session_id = client.resolve_id(ref)
+        try:
+            written = prepare_resume(client, session_id, target, lossy=lossy)
+        except NotResumableError as err:
+            raise ClientError(str(err)) from err
+        except LossyConversionError as err:
+            raise ClientError(str(err)) from err
+        except CiphertextDroppedError as err:
+            raise ClientError(
+                f"{err} (its records remain searchable; only the replay is lost)"
+            ) from err
+        del args
+        echo(f"resuming {ref} as {target} from {written.path}")
+        run_main(
+            [target, *forwarded],
+            client_factory=client_factory,
+            resume_path=written.path,
+            cli_session_id=str(written.cli_session_id),
+        )
 
     @classmethod
     def _run_metric_single(
@@ -1731,6 +1833,21 @@ def _split_metric_tail(
     return None
 
 
+def _split_run_tail(
+    rest: Sequence[str],
+) -> tuple[Sequence[str], Sequence[str]] | None:
+    """Split ``rest`` at the ``run`` keyword into ``(subject, tail)``.
+
+    ``run`` is not a field, kind, edge, or relation word on an AgentSession, so
+    its first appearance is unambiguously the resume marker. Returns ``None``
+    for an ordinary list/show command.
+    """
+    for index, token_text in enumerate(rest):
+        if token_text.lower() == "run":
+            return rest[:index], rest[index + 1 :]
+    return None
+
+
 def _mask_clauses(masks: Sequence[MetricMask]) -> list[MetricMaskClause]:
     """Translate parsed :class:`MetricMask`es into wire :class:`MetricMaskClause`es.
 
@@ -1891,56 +2008,6 @@ def _resolve_set_value(action: SetField, client: Client) -> object:
     return [
         str(client.resolve_id(ref)[1]) for ref in cast(tuple[Ref, ...], action.value)
     ]
-
-
-class Search(Command):
-    """Search summaries and descriptions across kinds."""
-
-    names = ("search",)
-    help = """\
-Usage: trax search QUERY... [OPTIONS]
-
-Examples:
-  trax search retry timeout                     search all subjects
-  trax search retry --kind issue                restrict to issues
-  trax search arxiv --kind paper --limit 20     limit results
-  trax search bug --format json                 print JSON
-
-Values:
-  kinds: issue artifact experiment paper belief codechange webresult websearch agentsession
-
-Options:
-  --kind TEXT; --limit INT; --format table|json|ids
-"""
-
-    @classmethod
-    @override
-    def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax search", description=cls.__doc__)
-        parser.add_argument("query", nargs="+")
-        parser.add_argument("--kind", default="")
-        parser.add_argument("--limit", type=_positive_int, default=50)
-        parser.add_argument(
-            "--format",
-            dest="format_",
-            default="table",
-            choices=("table", "json", "ids"),
-        )
-        return parser
-
-    @classmethod
-    @override
-    def run(
-        cls,
-        verb: str,
-        args: argparse.Namespace,
-        client_factory: Callable[[], Client],
-    ) -> None:
-        del verb
-        client = client_factory()
-        kind = parse_kind(args.kind) if args.kind else None
-        rows = client.search(" ".join(args.query), kind=kind, limit=args.limit)
-        print_rows(rows, args.format_)
 
 
 class Recent(Command):

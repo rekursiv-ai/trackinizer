@@ -1,43 +1,30 @@
-"""Wire contract for agent-session ingest.
+"""Wire contract for agent-session lifecycle, messaging, and the feed.
 
-Sessions captured by ``trax run`` flow to trackinizer through three
-endpoints -- ``start`` (mint the ``AgentSession`` row), ``events``
-(batch-append + read turn-grained events), and ``end`` (mark the session
-closed). This module is the single source for the request/response shapes
-and path templates; the server registers handlers against them and the
-client builds requests from them, so neither can drift.
+Sessions captured by ``trax run`` flow to trackinizer through ``start``
+(mint the ``AgentSession`` row) and ``end`` (mark it closed); the records
+themselves ride the separate :mod:`wire.wire_session_ir` contract. This
+module is the single source for these request/response shapes and their
+path templates; the server registers handlers against them and the client
+builds requests from them, so neither can drift.
 
-The domain type is :class:`AgentSessionEvent` in
-:mod:`types.agent_session_events`; this module holds the wire bodies that
-carry it. An event's ``message`` is the **typed** turn content (a
-:data:`Message` member), serialized whole into the JSON body via the
-type's own ``to_json`` / ``from_json``.
+It also carries the cross-session console feed (:class:`FeedEvent`,
+:class:`FeedCursor`) and the inbound/routed messaging bodies -- everything
+about a session that is not one of its records.
 
 This package is part of the publishable client distribution, so it must
 not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
-The turn-kind enum lives in ``types`` and is re-exported here as
-:data:`Kind` for the capture adapters' one import surface.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Final, cast, get_args
+from typing import Final
 
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from trackinizer.lib.custom_json import JSON, TYPE_TAG, DataclassCodec
-from trackinizer.types.agent_session_events import (
-    AgentSessionEvent,
-    Kind,
-    message_for_kind,
-)
-
-
-KINDS: tuple[Kind, ...] = cast(tuple[Kind, ...], get_args(Kind.__value__))
-"""Runtime tuple of every :data:`Kind`, for validation and iteration."""
+from trackinizer.lib.custom_json import JSON
 
 
 _MAX_MESSAGE_CHARS: Final = 16_384
@@ -64,25 +51,21 @@ def _reject_blank(value: str | None) -> str | None:
 
 __all__ = [
     "FEED_PATH",
-    "KINDS",
     "SEND_MESSAGE_PATH",
     "SESSION_API_PATHS",
     "SESSION_END_PATH",
-    "SESSION_EVENTS_PATH",
     "SESSION_INBOUND_PATH",
+    "SESSION_PARTS_PATH",
+    "SESSION_RECORDS_PATH",
     "SESSION_START_PATH",
     "VERSION_PATH",
-    "AppendEventsRequest",
-    "AppendEventsResponse",
     "DrainInboundResponse",
-    "EventBody",
     "FeedCursor",
     "FeedEvent",
     "FeedResponse",
     "InboundDrainItem",
     "InboundEnqueueRequest",
     "InboundEnqueueResponse",
-    "ReadEventsResponse",
     "SendMessage",
     "SendMessageResponse",
     "SessionEnd",
@@ -160,116 +143,16 @@ class SessionStartResponse(BaseModel):
     (``scientist`` -> ``scientist#2``); the client adopts whatever is here."""
 
 
-class EventBody(BaseModel):
-    """One captured turn, as sent over the wire.
-
-    The wire carrier for an
-    :class:`~types.agent_session_events.AgentSessionEvent`. ``seq`` is
-    harness-assigned per session (the CLIs carry no reliable monotonic
-    counter) and is the dedup key together with the session id. ``message``
-    is the turn content encoded by the typed member's ``to_json`` and
-    discriminated by ``kind``; :meth:`to_event` / :meth:`from_event` convert
-    to and from the typed :class:`AgentSessionEvent`.
-    """
-
-    seq: int = Field(ge=0)
-    """Harness-assigned per-session ordinal; the ``(session_id, seq)`` key
-    makes a repeated batch a no-op."""
-
-    kind: Kind
-    timestamp: datetime | None = None
-    model: str | None = None
-    message: JSON = Field(default_factory=dict)
-    """The turn content, JSON-encoded from its typed :data:`Message` member
-    (``kind`` selects which). Decoded back via that member's ``from_json``."""
-
-    @classmethod
-    def from_event(cls, event: AgentSessionEvent) -> EventBody:
-        """Build a wire body from a typed event."""
-        return cls(
-            seq=event.seq,
-            kind=event.kind,
-            timestamp=event.timestamp,
-            model=event.model,
-            message=DataclassCodec.to_json(event.message),
-        )
-
-    def to_event(self, session_id: uuid.UUID) -> AgentSessionEvent:
-        """Rebuild the typed event for ``session_id`` from this wire body.
-
-        Raises:
-          ValueError: The ``message`` body's encoded type tag disagrees
-            with ``kind``, or a non-empty body omits the tag
-            entirely -- a forged or wrong-shape body cannot smuggle one
-            message type under another's discriminator, nor silently decode
-            to a default member with its foreign keys dropped.
-
-        """
-        member = message_for_kind(self.kind)
-        tag = self.message.get(TYPE_TAG)
-        # An empty ``{}`` is the explicit default-member sentinel (no fields
-        # to carry, so no tag). Any other body must carry the tag: a
-        # non-empty untagged body is wrong-shape, and the tag is what names
-        # WHICH member to check it against. (``from_json`` also rejects a
-        # foreign key outright now, but only once a member is chosen.)
-        if self.message and tag is None:
-            raise ValueError(
-                f"kind {self.kind!r} message omits the {TYPE_TAG} discriminator"
-            )
-        # The tag is a dotted import path; ``kind`` names only the class, so
-        # the comparison is on the final segment.
-        if tag is not None and str(tag).rsplit(".", 1)[-1] != self.kind:
-            raise ValueError(f"kind {self.kind!r} disagrees with message type {tag!r}")
-        return AgentSessionEvent(
-            session_id=session_id,
-            seq=self.seq,
-            kind=self.kind,
-            timestamp=self.timestamp,
-            model=self.model,
-            message=DataclassCodec.from_json(member, self.message),
-        )
-
-
-class AppendEventsRequest(BaseModel):
-    """Batch-append events to an open session."""
-
-    events: list[EventBody] = Field(min_length=1)
-
-
-class AppendEventsResponse(BaseModel):
-    """How many events the append actually persisted.
-
-    ``appended`` counts rows newly written; ``skipped`` counts those that
-    collided on ``(session_id, seq)`` and were idempotently ignored, so a
-    retried batch reports ``appended=0``.
-    """
-
-    appended: int
-    skipped: int
-
-
-class ReadEventsResponse(BaseModel):
-    """One page of a session's events, in ``seq`` order.
-
-    Paginated (``limit`` / ``offset`` / ``seq_range`` / ``kind``) so a
-    caller never pulls an arbitrarily large session into memory at once.
-    ``seq_range`` repeats one ``a..b`` interval per param; their union
-    selects across disjoint seq windows, as on the inquiry list.
-    """
-
-    events: list[EventBody]
-
-
 class FeedEvent(BaseModel):
     """One captured turn plus the session context the console needs.
 
     The cross-session feed (the multi-agent console) interleaves turns from
     every session into one time-ordered stream, so each item must carry which
-    session it came from and that session's routing identity -- unlike
-    :class:`EventBody`, which is always read in the context of one known
-    session. ``created`` (the server write clock) is the feed's order key, not
-    the per-session ``seq``, because ``seq`` is only monotonic within a
-    session.
+    session it came from and that session's routing identity -- unlike a
+    record read through :mod:`wire.wire_session_ir`, which is always read in
+    the context of one known session and part. ``created`` (the server write
+    clock) is the feed's order key, not the per-part ``seq``, because ``seq``
+    is only monotonic within a part.
     """
 
     session_id: uuid.UUID
@@ -279,28 +162,47 @@ class FeedEvent(BaseModel):
     cli: str | None = None
     """The session's wrapped CLI; carried for a future per-CLI console badge,
     not yet rendered."""
+    part: int = 0
+    """Which source FILE the record came from.
+
+    A session spans several (claude splits on compaction, codex forks), and
+    ``seq`` restarts within each -- so the pair is what identifies a record.
+    Legacy turns backfilled from ``agent_session_events`` carry ``-1``, a
+    reserved namespace that cannot collide with a real part."""
     seq: int = Field(ge=0)
-    kind: Kind
+    """Position within ``part``. Named ``seq`` rather than ``idx`` because the
+    console's cursor protocol is public; it IS the record's ``idx``."""
+    kind: str = Field(min_length=1)
+    """The record class's name. Widened from the closed 8-member legacy
+    Literal: the IR has 21 concrete kinds and a console that rejected an
+    unknown one would break on every new record type."""
     created: datetime
     """Server write clock -- the feed's cross-session order key."""
     timestamp: datetime | None = None
     model: str | None = None
     message: JSON = Field(default_factory=dict)
+    """The record's payload, under the legacy field name so the console's
+    renderer needs no rewrite for the shape it already reads."""
+    text: str = ""
+    """The record's searchable prose, which the console renders directly."""
 
 
 class FeedCursor(BaseModel):
-    """A composite keyset cursor into the feed's ``(created, session_id, seq)``
+    """A keyset cursor into the feed's ``(created, session_id, part, seq)``
     order.
 
-    The cursor must carry all three order-key components, not just
-    ``created``: a page boundary can fall inside a group of rows that share a
-    ``created`` instant, and a bare-``created`` resume (``> created``) would
-    skip every tied row after the boundary. The next poll passes this back to
-    resume strictly past the last item.
+    The cursor must carry EVERY order-key component, not just ``created``: a
+    page boundary can fall inside a group of rows sharing a ``created``
+    instant, and a bare-``created`` resume (``> created``) would skip every
+    tied row after it. ``part`` joined the key when the feed moved to IR
+    records, since ``seq`` restarts within each source file.
     """
 
     created: datetime
     session_id: uuid.UUID
+    part: int = 0
+    """Part of the order key, so a boundary inside one session's records does
+    not skip the rest."""
     seq: int = Field(ge=0)
 
 
@@ -434,7 +336,8 @@ class SessionEndResponse(BaseModel):
 
 # API route paths -- wire contract shared with the client, not tunables.
 SESSION_START_PATH: Final = "/api/sessions/start"
-SESSION_EVENTS_PATH: Final = "/api/sessions/{session_id}/events"
+SESSION_RECORDS_PATH: Final = "/api/sessions/{session_id}/records"
+SESSION_PARTS_PATH: Final = "/api/sessions/{session_id}/parts"
 SESSION_END_PATH: Final = "/api/sessions/{session_id}/end"
 SESSION_INBOUND_PATH: Final = "/api/sessions/{session_id}/inbound"
 SEND_MESSAGE_PATH: Final = "/api/messages"
@@ -450,7 +353,8 @@ FEED_PATH: Final = "/api/web/feed"
 # here so the same drift guard covers it.
 SESSION_API_PATHS: tuple[str, ...] = (
     SESSION_START_PATH,
-    SESSION_EVENTS_PATH,
+    SESSION_RECORDS_PATH,
+    SESSION_PARTS_PATH,
     SESSION_END_PATH,
     SESSION_INBOUND_PATH,
     SEND_MESSAGE_PATH,
@@ -459,9 +363,9 @@ SESSION_API_PATHS: tuple[str, ...] = (
 )
 
 
-def session_events_path(session_id: uuid.UUID) -> str:
-    """The events-append path for one session."""
-    return SESSION_EVENTS_PATH.format(session_id=session_id)
+def session_records_path(session_id: uuid.UUID) -> str:
+    """The record append/read path for one session."""
+    return SESSION_RECORDS_PATH.format(session_id=session_id)
 
 
 def session_end_path(session_id: uuid.UUID) -> str:

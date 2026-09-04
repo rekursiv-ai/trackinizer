@@ -122,12 +122,12 @@ and cost adjustment, with old/new snapshots. `purged` rows leave tombstones.
 Nothing is quietly forgotten; the history of belief is itself first-class.
 
 `change_log` audits **knowledge mutations** only. Bulk capture logs are an
-adjacent universe: `agent_session_events` (agent-session turns; see
-`docs/api_agent_session_events.md`) is append-only and deliberately *outside*
-`change_log`, because a captured turn is not a change to what the org
+adjacent universe: `session_records` (agent-session records; see
+`docs/api_session_records.md`) is append-only and deliberately *outside*
+`change_log`, because a captured act is not a change to what the org
 believes -- forcing it in would bury the high-signal audit feed under
 ingest volume. Its provenance is intrinsic: the immutable rows plus the
-owning `Session` artifact's own lifecycle (a real Inquiry, whose edits
+owning `AgentSession` artifact's own lifecycle (a real Inquiry, whose edits
 *do* flow through `change_log`). The rule: knowledge mutations are
 audited; an append-only capture log records itself.
 

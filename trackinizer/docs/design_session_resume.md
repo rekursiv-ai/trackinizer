@@ -87,18 +87,24 @@ The match SQL must guard non-null (`WHERE agentsession_cli_session_id = $1`,
 $1 non-null) -- never `IS NOT DISTINCT FROM NULL`, which would correlate every
 fresh (null-id) run to the first null-id row.
 
-**Re-open lives ONLY here, not in `append_events`.** `append_events` keeps the
+**Re-open lives ONLY here, not in the append path.** The append keeps the
 #465 ended-guard verbatim ("session has ended; cannot append"). Because
 `start_session` runs once at auth, before any append, a re-opened session is
 already live by the time the sink appends -- append never sees an ended
 session, and #465's zombie-guard stays intact and meaningful. (An earlier draft
-re-opened inside `append_events`; that contradicted #465 and smeared re-open
+re-opened inside the append; that contradicted #465 and smeared re-open
 across the hot path. Dropped.)
 
-**Seq seeding (load-bearing).** The sink hardcodes `_next_seq = 0` and ignores
-the `SessionStartResponse.seq`. A resumed run would collide every seq against
-the PK `(session_id, seq)` and silently `ON CONFLICT DO NOTHING`-drop the whole
-resumed log. The sink MUST seed `_next_seq` from the response on re-attach.
+**Seq seeding -- OBSOLETE.** This was load-bearing while the harness assigned
+`seq`: the sink hardcoded `_next_seq = 0`, so a resumed run collided every seq
+against the PK and silently dropped the resumed log, and the sink had to seed
+from `SessionStartResponse.seq`.
+
+The IR removed the failure mode rather than the fix. A record's `idx` is
+DERIVED from its position in its file's normalized stream, and a resumed run
+reads a file whose positions are what they always were -- so a re-fed record
+lands back on the key it already holds instead of colliding at 0. There is no
+counter to seed; `SessionStartResponse.seq` is vestigial and unread.
 
 ### Eager open — gated on sync
 

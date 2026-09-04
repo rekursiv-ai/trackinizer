@@ -61,7 +61,7 @@ filter: FILTER_FIELD FILTER_OP VALUE   // owner is Josh ; title re bug
 // TAILS on the subject, left to right.  DEL and a bare relation projection are
 // TERMINAL (must be last).  A scalar FIELD may be set at most once per command.
 tail_seq: tail*
-tail: set_mutation | cost_action | edge_action | relation_action | read_field | metric_action | DEL
+tail: set_mutation | cost_action | edge_action | relation_action | read_field | metric_action | resume_action | DEL
 // Setting ANY field needs the operator -- `FIELD to VALUE`, never bare
 // `FIELD VALUE` (`title to x`, not `title x`; `priority to high`, not `priority
 // high`). The same holds inside an inline create.
@@ -89,6 +89,15 @@ relation_action: EDGE_KEYWORD SEQ?        // no target = list related rows
 // `at <word>` (word not key/step/value) is the shorthand `at key is <word>`.
 // SEMANTIC (parser-enforced, grammar-accepted): max/min apply to step only; a
 // write forbids sort/limit; a bulk write (multi-cell mask) needs --makeitso.
+// RESUME: hand a stored AgentSession back to a CLI as its own native file.
+// The target is chosen HERE, not by whatever captured the session -- that is
+// what lets a codex-captured session resume as claude. `--lossy` is the tail's
+// own (it gates the CONVERSION, before any runner exists); everything after
+// the target goes verbatim to `trax run`.
+//   agentsession 42 run claude
+//   agentsession 42 run claude --lossy --as bob -- --model opus
+resume_action: RUN CLI_TARGET
+
 metric_action: METRIC metric_clause*
 metric_clause: metric_mask | metric_write | metric_sort | metric_limit
 metric_mask: AT METRIC_FIELD METRIC_OP VALUE   // at step is 4
@@ -146,14 +155,14 @@ group_create: KIND (inline_field | cost_action | safe_meta | EDGE edge_meta)+ (e
 
 // ---- terminals (keyword sets; spellings overlap across classes, e.g.
 // codechange is KIND+REF_LIST_FIELD, resolved by position) ----
-VERB: "blocked" | "profile" | "version" | "recent" | "search" | "board" | "graph" | "cost" | "help" | "next" | "send" | "run" | "id"
+VERB: "blocked" | "profile" | "version" | "recent" | "board" | "graph" | "cost" | "help" | "next" | "send" | "run" | "id"
 KIND: "agentsession" | "codechange" | "experiment" | "webresult" | "websearch" | "artifact" | "belief" | "issue" | "paper"
 EDGE_KEYWORD: "disfavored_by" | "superseded_by" | "broadened_by" | "disproved_by" | "narrowed_by" | "produced_by" | "required_by" | "blocked_by" | "favored_by" | "supersedes" | "disfavors" | "disproves" | "proved_by" | "broadens" | "cited_by" | "produced" | "produces" | "requires" | "narrows" | "blocks" | "favors" | "proves" | "cites"
 FIELD: "google_scholar_cluster_id" | "google_scholar_cites_id" | "publication_type" | "cli_session_id" | "publish_date" | "description" | "confidence" | "validation" | "judgement" | "abstract" | "priority" | "provider" | "subvenue" | "account" | "outcome" | "started" | "config" | "source" | "status" | "owner" | "query" | "title" | "venue" | "cli" | "sha" | "url"
 LIST_FIELD: "subscribers" | "issue_kind" | "subscriber" | "issuekind" | "authors" | "author" | "labels" | "label" | "kind"
 REF_LIST_FIELD: "codechanges" | "codechange"
 COST_FIELD: "resource-cost" | "agent-cost"
-FILTER_FIELD: "google_scholar_cluster_id" | "google_scholar_cites_id" | "publication_type" | "cli_session_id" | "resource-cost" | "publish_date" | "codechanges" | "description" | "subscribers" | "agent-cost" | "codechange" | "confidence" | "issue_kind" | "subscriber" | "validation" | "issuekind" | "judgement" | "abstract" | "modified" | "priority" | "provider" | "subvenue" | "account" | "authors" | "created" | "outcome" | "started" | "author" | "labels" | "source" | "status" | "label" | "owner" | "query" | "title" | "venue" | "kind" | "cli" | "seq" | "sha" | "url" | "id"
+FILTER_FIELD: "google_scholar_cluster_id" | "uncategorized_tool_result" | "google_scholar_cites_id" | "agent_to_agent_message" | "shell_command_result" | "agent_status_result" | "context_compaction" | "web_search_results" | "assistant_message" | "file_write_result" | "incomplete_record" | "file_edit_result" | "file_read_result" | "publication_type" | "web_fetch_result" | "cli_session_id" | "system_message" | "context_state" | "resource-cost" | "publish_date" | "user_message" | "codechanges" | "description" | "subscribers" | "agent-cost" | "codechange" | "confidence" | "issue_kind" | "subscriber" | "validation" | "issuekind" | "judgement" | "tool_call" | "abstract" | "modified" | "priority" | "provider" | "subvenue" | "thinking" | "account" | "authors" | "created" | "outcome" | "started" | "author" | "labels" | "source" | "status" | "stderr" | "stdout" | "label" | "owner" | "query" | "stdin" | "title" | "venue" | "kind" | "cli" | "seq" | "sha" | "url" | "id"
 FILTER_OP: "nre" | "ge" | "gt" | "is" | "le" | "lt" | "ne" | "re"
 VALUELESS_OP: "notnull" | "isnull"
 TO: "to"
@@ -163,6 +172,8 @@ EDGE: "edge"
 BEGIN: "begin"
 END: "end"
 METRIC: "metric"
+RUN: "run"
+CLI_TARGET: "claude" | "codex"
 AT: "at"
 SORT: "sort"
 LIMIT: "limit"
@@ -209,8 +220,8 @@ VERB_ARG: /\S+/
 //   supersedes: supersedes   (reverse voice: superseded_by)
 //   cites_paper: cites   (reverse voice: cited_by)
 // VERBS (full usage, generated from each verb's argparse). What they do:
-//   next=next unblocked Issue; blocked/board/graph=Issue views; search=text
-//   search; recent=audit feed; cost=cost rollup; id=show row by uuid;
+//   next=next unblocked Issue; blocked/board/graph=Issue views;
+//   recent=audit feed; cost=cost rollup; id=show row by uuid;
 //   profile=manage server profiles; send=message a live agent session;
 //   run=wrap an agent CLI (claude/gemini/codex) and sync its session.
 //   blocked
@@ -223,7 +234,6 @@ VERB_ARG: /\S+/
 //   profile [NAME] [ url|actor|token [to V] | current NAME | del ]
 //   recent [--limit V] [--format text|json]
 //   run claude|gemini|codex|sh [--out V] [--verbose] [--dry-run] [--no-sync] [--as V] [--room V]
-//   search QUERY... [--kind V] [--limit V] [--format table|json|ids]
 //   send TARGET TEXT...
 //   version
 //   ^ run --as NAME = the session's owner; doubles as its routing handle

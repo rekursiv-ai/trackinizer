@@ -22,6 +22,7 @@ from trackinizer.trax.grammar import (
     EDITABLE_FIELDS,
     KIND_LOWER,
     LIST_FIELDS,
+    VALID_KINDS,
     AddCost,
     AddList,
     DeleteRow,
@@ -123,6 +124,42 @@ def test_parse_list_query_bare_kind() -> None:
     q = parse_list_query("Issue", [])
     assert q is not None
     assert q.kinds == ("Issue",)
+
+
+def test_parse_list_query_without_kind_spans_every_kind() -> None:
+    """No leading kind means every kind, so a bare filter is a global query.
+
+    The entry point ``trax content re foo`` needs: with ``kind=None`` the
+    query is seeded with all kinds rather than one.
+    """
+    q = parse_list_query(None, ["title", "re", "alpha"])
+
+    assert q is not None
+    assert q.kinds == VALID_KINDS
+    assert q.filters == (Filter(field="title", op="re", value="alpha"),)
+
+
+def test_parse_list_query_without_kind_narrows_to_owning_kinds() -> None:
+    """A kind-specific field kindless keeps only the kinds that own it.
+
+    ``judgement`` is Belief-only. Validating it against all nine kinds would
+    reject it, so the kindless query narrows to the owners instead -- which is
+    what makes ``trax judgement is proven`` mean something.
+    """
+    q = parse_list_query(None, ["judgement", "is", "proven"])
+
+    assert q is not None
+    assert q.kinds == ("Belief",)
+
+
+def test_parse_list_query_without_kind_rejects_an_unowned_field() -> None:
+    """A field no kind owns is still an error, naming the field.
+
+    This is the message a mistyped leading token now produces, replacing the
+    dispatcher's older ``unknown verb``.
+    """
+    with pytest.raises(ClientError, match="unknown filter field 'nonsense'"):
+        parse_list_query(None, ["nonsense", "re", "x"])
 
 
 def test_parse_list_query_filter_missing_value_raises() -> None:

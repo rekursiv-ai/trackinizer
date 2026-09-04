@@ -1,9 +1,13 @@
 """Types shared across ``trax run``, above the adapter package.
 
-The ``Event`` record every adapter produces and every sink consumes. It lives
-here rather than beside the ``Adapter`` protocol because the sinks never touch
-an adapter: keeping it in ``adapters/`` made every sink import the adapter
-package for one dataclass.
+The ``Event`` record every sink consumes: one act a session performed, plus
+where it came from. It lives here rather than beside the ``Adapter`` protocol
+because the sinks never touch an adapter -- keeping it in ``adapters/`` made
+every sink import the adapter package for one dataclass.
+
+The act itself is the shared IR record (``trackinizer.lib.agent.types.sessions``)
+widened by the scrape's stream records (:data:`TraxRecord`): one vocabulary
+reads a session, stores it, and writes it back out as any CLI's native format.
 
 The adapter-facing protocols are the sibling ``adapters/custom_types.py``.
 """
@@ -11,10 +15,9 @@ The adapter-facing protocols are the sibling ``adapters/custom_types.py``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-from typing import cast
+from pathlib import Path
 
-from trackinizer.types.agent_session_events import Kind, Message
+from trackinizer.types.streams import TraxRecord
 
 
 __all__ = ["Event"]
@@ -22,24 +25,33 @@ __all__ = ["Event"]
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Event:
-    """One parsed turn, in memory, before it becomes an ``EventBody``.
+    """One captured act, in memory, before it becomes a wire body.
 
-    ``message`` is the typed turn content (a :data:`Message` member) the
-    adapter normalized the CLI's native record into; :attr:`kind` is derived
-    from it. ``model`` / ``timestamp`` are the per-turn envelope the adapter
-    could read, or ``None``.
+    Carries the FILE it came from because a session is several of them --
+    claude splits on compaction, codex forks -- and each is stored as its own
+    part with positions numbered from zero within it.
     """
 
-    message: Message
-    """The normalized turn content; its class name is the row ``kind``."""
+    record: TraxRecord
+    """The act itself: a message, a tool call, a result, a context change --
+    or, from a scrape, one line and the stream it crossed."""
 
-    model: str | None = None
-    """Per-turn model, when the CLI surfaced it."""
+    path: Path
+    """The session file this record was read from. The server resolves a part
+    number from its BASENAME, since the absolute path differs across
+    machines -- which is what lets a resumed run append to the part it
+    materialized."""
 
-    timestamp: datetime | None = None
-    """When the turn happened, on the CLI clock, when available."""
+    restart: bool = False
+    """Whether the file was REPLACED immediately before this record.
+
+    A claude compaction rewrites the transcript rather than appending, keeping
+    the turns it did not summarize away. The record stored at a given position
+    may therefore have changed, so a restarted batch overwrites rather than
+    skipping what is already there.
+    """
 
     @property
-    def kind(self) -> Kind:
-        """The row discriminator: the message member's class name."""
-        return cast(Kind, type(self.message).__name__)
+    def kind(self) -> str:
+        """The record's class name, which selects its type on decode."""
+        return type(self.record).__name__

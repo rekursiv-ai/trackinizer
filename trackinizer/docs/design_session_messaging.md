@@ -48,10 +48,10 @@ long-poll on its own outbound connection), exactly as the SPA's
 
 ## Why the log cannot be the channel
 
-The captured `agent_session_events` are a record of what the agent
+The captured `session_records` are a record of what the agent
 *did* -- written *after* the agent acts, downstream of it. To send a
 message *into* a running session you need a path *upstream* of the
-agent, to its input. Writing a row to `agent_session_events` does not
+agent, to its input. Writing a row to `session_records` does not
 cause the CLI to read anything; the agent never reads that table. The
 log is a transcript, not a mailbox.
 
@@ -291,7 +291,7 @@ is scraping to the server correctly.** No injection yet.
 Verified starting facts (read from the SPA, not assumed):
 
 - `AgentSession` is a full inquiry kind on the **server** (routes exist,
-  `api_agent_session_events.md:51`), but the SPA omits it: `ALL_KINDS`
+  `api_session_records.md:51`), but the SPA omits it: `ALL_KINDS`
   (`server/assets/index.html:324`) draws from `ARTIFACT_KINDS`
   (`:320`), which lists `Artifact, Experiment, Paper, Belief, CodeChange,
   WebResult, WebSearch` -- no `AgentSession`. So it does not list today.
@@ -300,16 +300,16 @@ Verified starting facts (read from the SPA, not assumed):
   a route, **not** kind coverage. Adding `AgentSession` breaks nothing.
 - The SPA's SSE (`index.html:1535`, `/api/web/subscribe`) is
   inquiry-grained: payload is a mutated inquiry `{id}` (`web.py:202`),
-  and appended events fire **no** NOTIFY (events sit outside
-  `inquiries`/`change_log`, `api_agent_session_events.md:98`). Live event
-  streaming therefore needs a new notify-on-append hook.
+  and appended records fired **no** NOTIFY (they sit outside
+  `inquiries`/`change_log`, `api_session_records.md` §3.9). Live streaming
+  therefore needed a new notify-on-append hook, which step 2 added.
 
 Steps:
 
 1. **List `AgentSession`.** Add `"AgentSession"` to the SPA kind set
    (`index.html:321`). Lists + detail + picker come for free via the
    existing kind machinery. (Free; safe under the drift test.)
-2. **Notify on event append.** `Store.append_events` fires a Postgres
+2. **Notify on record append.** `Store.append_session_records` fires a Postgres
    notify carrying the session id (+ a marker distinguishing it from
    inquiry mutations). Reuses `server/notify.py`. Touches
    `server/store.py`. This hook is the one server change Phase 1a needs
@@ -401,19 +401,20 @@ Name resolution, rooms, agent-to-agent, receipts.
     session's turns in one time-ordered feed, not one session at a time. It
     is backed by a cross-session aggregated feed route
     (`GET /api/web/feed`, `Store.read_feed`) that interleaves
-    `agent_session_events` across sessions ordered by the server `created`
-    clock, each turn joined to its session's routing identity
+    `session_records` across sessions ordered by the server `created`
+    clock, each record joined to its session's routing identity
     (`actor`/`rooms`/`cli`). The page polls the feed with a **composite**
-    keyset cursor (`(created, session_id, seq)` -- the full order key, so a
-    same-`created` tie split across a page boundary is never skipped); the
+    keyset cursor (`(created, session_id, part, idx)` -- the full order key, so
+    a same-`created` tie split across a page boundary is never skipped;
+    `part` joined it when the feed moved to IR records, since position
+    restarts within each source file); the
     first live page is fetched `tail=true` (newest N) so a backlog does not
     replay from the beginning. It supports a **time-range** filter
     (`since`/`until` for history vs. the live tail), per-room and per-agent
     pill filters applied client-side over a capped retained buffer, and a
     targeting input (`@actor` / `@actor:room` / `@*` broadcast over the
     visible agent/room pairs) that posts to `/api/messages`. A dedicated
-    `(created, session_id, seq)` index on `agent_session_events` serves the
-    hot polling path. Transport is HTTP polling, consistent with the
+    `(created, session_id, part, idx)` order serves the hot polling path. Transport is HTTP polling, consistent with the
     [Transport](#transport-http-polling-now-notifysse-is-the-upgrade)
     stance; the feed route is the seam a later NOTIFY/SSE push swaps in
     behind. Tested: cross-session interleave + room/actor filters + the
@@ -429,7 +430,7 @@ chat. Smallest first win: step 1 (one string).
 **Load-bearing** (changing breaks the design):
 
 - The channel is **separate from the log**; sends are not extracted from
-  `agent_session_events`.
+  `session_records`.
 - `trax run` owns the **PTY master**; the human and the injector are peers
   on it.
 - Injection protocol: **bracketed paste + Enter delayed >120ms**. Each

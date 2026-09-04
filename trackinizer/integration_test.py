@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import asyncio
 import json
@@ -19,7 +20,8 @@ import httpx2
 import pytest
 
 from trackinizer.conftest import new_uuid
-from trackinizer.lib.custom_json import DataclassCodec
+from trackinizer.lib.agent.types.sessions import UserMessage as IRUserMessage
+from trackinizer.lib.custom_json import json_freeze
 from trackinizer.server import web
 from trackinizer.server.api import (
     edit,
@@ -42,18 +44,12 @@ from trackinizer.server.auth import (
 )
 from trackinizer.server.config import Config
 from trackinizer.server.inbound import InboundQueue
-from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.primitives import insert_inquiry
 from trackinizer.server.store.change_id_slot import (
     set_client_change_id,
 )
 from trackinizer.server.store.core import Store
 from trackinizer.server.store.edge import INFERRED_PROVENANCE_REASON
-from trackinizer.types.agent_session_events import (
-    AssistantMessage,
-    ToolResult,
-    UserMessage,
-)
 from trackinizer.types.cost import Cost
 from trackinizer.types.edges import Edge
 from trackinizer.types.errors import (
@@ -69,6 +65,7 @@ from trackinizer.types.inquiries import (
     Issue,
     Paper,
 )
+from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.bodies import (
     BatchEdge,
     Citation,
@@ -83,7 +80,6 @@ from trackinizer.wire.bodies import (
 )
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.wire_metrics import MetricPoint
-from trackinizer.wire.wire_sessions import EventBody
 
 
 async def _seed_active_user(store: Store, email: str) -> None:
@@ -102,6 +98,39 @@ async def _seed_active_user(store: Store, email: str) -> None:
             uuid.uuid4(),
             email,
         )
+
+
+async def _record(store: Store, session_id: UUID, *, idx: int, text: str) -> None:
+    """Append one IR record to a session's part 0.
+
+    The replacement for the legacy per-turn append these tests used: a
+    record's key is its POSITION in its source file, so the caller states the
+    ``idx`` rather than relying on a server-side counter.
+
+    The MANIFEST is written too, because a read is bounded by it: it declares
+    the part's live prefix, and a part without one reads as empty rather than
+    unbounded -- rows with no manifest are a torn write. Appending alone left
+    every row invisible to ``read_session_records``.
+    """
+    _ = await store.upsert_session_manifest(
+        session_id,
+        name="part0.jsonl",
+        metadata=json_freeze({}),
+        ir_id=uuid5(NAMESPACE_URL, f"{session_id}:0"),
+        format="claude",
+        records=idx + 1,
+    )
+    await store.append_session_records(
+        session_id,
+        [
+            SessionRecordRow.of(
+                session_id=session_id,
+                part=0,
+                idx=idx,
+                record=IRUserMessage(content=text),
+            )
+        ],
+    )
 
 
 @pytest.mark.db_pglite
@@ -126,43 +155,6 @@ class TestIntegrationEndToEnd:
         assert cast(Issue, await integ_store.get_inquiry(i1)).seq == 1
         assert cast(Issue, await integ_store.get_inquiry(i2)).seq == 2
         assert cast(Belief, await integ_store.get_inquiry(c1)).seq == 1
-
-    async def test_session_events_append_read_and_dedup(
-        self, integ_store: Store
-    ) -> None:
-        sid = await integ_store.submit_agentsession(
-            SubmitAgentSession(
-                account="tester@example.com",
-                title="run",
-                cli="codex",
-                cli_session_id="t1",
-            )
-        )
-        batch = [
-            EventBody(
-                seq=0,
-                kind="UserMessage",
-                message=DataclassCodec.to_json(UserMessage(text="hi")),
-            ),
-            EventBody(seq=1, kind="AssistantMessage", model="gpt-5.5"),
-            EventBody(
-                seq=2,
-                kind="AssistantMessage",
-                message=DataclassCodec.to_json(AssistantMessage(text="ok")),
-            ),
-        ]
-        appended, skipped = await integ_store.append_events(sid, batch)
-        assert (appended, skipped) == (3, 0)
-
-        # A retried batch is a no-op on (session_id, seq).
-        appended2, skipped2 = await integ_store.append_events(sid, batch)
-        assert (appended2, skipped2) == (0, 3)
-
-        events = await integ_store.read_session_events(sid)
-        assert [e.seq for e in events] == [0, 1, 2]
-        assert events[1].kind == "AssistantMessage"
-        assert events[1].model == "gpt-5.5"
-        assert events[0].to_event(sid).message == UserMessage(text="hi")
 
     async def test_log_metrics_append_read_and_dedup(self, integ_store: Store) -> None:
         """Metric points log, read back in (key, step) order, and dedup.
@@ -350,7 +342,7 @@ class TestIntegrationEndToEnd:
     async def test_metrics_db_rejects_negative_step(self, integ_store: Store) -> None:
         """The ``step >= 0`` DB CHECK backstops the wire ``ge=0`` guard.
 
-        Mirrors ``agent_session_events.seq``'s CHECK: a direct-SQL writer that
+        Mirrors ``session_records.idx``'s CHECK: a direct-SQL writer that
         bypasses the wire cannot persist a negative step.
         """
         eid = await integ_store.submit_experiment(
@@ -430,7 +422,7 @@ class TestIntegrationEndToEnd:
         reconstructs that Literal, so a stored non-scalar row would 500 the read
         (the same failure class the value finiteness guard closes). The CHECK
         stops a direct-SQL / bulk-load writer from persisting one -- mirroring
-        the ``agent_session_events.kind`` CHECK.
+        the ``session_records.kind`` CHECK.
         """
         eid = await integ_store.submit_experiment(
             SubmitExperiment(account="tester@example.com", title="run")
@@ -489,25 +481,6 @@ class TestIntegrationEndToEnd:
                 new_uuid(), [MetricPoint(key="loss", step=0, value=1.0)]
             )
 
-    async def test_append_events_rejected_on_ended_session(
-        self, integ_store: Store
-    ) -> None:
-        """An ended session rejects further events (its poller is gone).
-
-        ``append_events`` guards liveness symmetrically with the ``/inbound``
-        enqueue route: a closed session 409s and writes no row.
-        """
-        sid = await integ_store.submit_agentsession(
-            SubmitAgentSession(account="tester@example.com", title="run", cli="codex")
-        )
-        await integ_store.append_events(sid, [EventBody(seq=0, kind="UserMessage")])
-        await integ_store.end_session(sid, ended=datetime.now(UTC), actor="u")
-        with pytest.raises(ConflictError, match="has ended"):
-            await integ_store.append_events(sid, [EventBody(seq=1, kind="UserMessage")])
-        # No new row: only the pre-end event remains.
-        events = await integ_store.read_session_events(sid)
-        assert [e.seq for e in events] == [0]
-
     async def test_start_session_correlates_resume_by_cli_session_id(
         self, integ_store: Store
     ) -> None:
@@ -528,12 +501,12 @@ class TestIntegrationEndToEnd:
             ),
             requested_actor="scientist",
         )
-        assert seq0 == 0  # fresh log starts at 0
-        await integ_store.append_events(sid, [EventBody(seq=0, kind="UserMessage")])
+        assert seq0 == 0
+        await _record(integ_store, sid, idx=0, text="first")
         await integ_store.end_session(sid, ended=datetime.now(UTC), actor=owner)
 
-        # Resume: same cli_session_id re-attaches the SAME session + handle,
-        # re-opens it, and reports the continuation seq (1, after the seq-0 event).
+        # Resume: same cli_session_id re-attaches the SAME session + handle and
+        # re-opens it. This is the correlation phase 6's resume depends on.
         rsid, rowner, rseq = await integ_store.start_session(
             SubmitAgentSession(
                 account="tester@example.com",
@@ -545,11 +518,14 @@ class TestIntegrationEndToEnd:
         )
         assert rsid == sid
         assert rowner == owner
-        assert rseq == 1  # continues after the prior seq-0 event
-        # The session is live again (re-opened), so append succeeds.
-        await integ_store.append_events(sid, [EventBody(seq=1, kind="UserMessage")])
-        events = await integ_store.read_session_events(sid)
-        assert [e.seq for e in events] == [0, 1]
+        # ``rseq`` is always 0 now: it continued the legacy event log, and a
+        # record's key is derived from its position in its source file.
+        assert rseq == 0
+        # The session is live again (re-opened), so the append succeeds and
+        # continues the SAME part rather than forking one.
+        await _record(integ_store, sid, idx=1, text="second")
+        rows = await integ_store.read_session_records(sid, part=0, limit=100)
+        assert [row.idx for row in rows] == [0, 1]
 
     async def test_resume_is_principal_scoped(self, integ_store: Store) -> None:
         """A resume only re-attaches a session opened by the SAME credential (B2).
@@ -1532,29 +1508,9 @@ class TestIntegrationEndToEnd:
             )
         )
         # Interleave appends so created-order spans both sessions.
-        await integ_store.append_events(
-            sci,
-            [
-                EventBody(
-                    seq=0,
-                    kind="UserMessage",
-                    message=DataclassCodec.to_json(UserMessage(text="a")),
-                )
-            ],
-        )
-        await integ_store.append_events(
-            eng,
-            [
-                EventBody(
-                    seq=0,
-                    kind="UserMessage",
-                    message=DataclassCodec.to_json(UserMessage(text="b")),
-                )
-            ],
-        )
-        await integ_store.append_events(
-            sci, [EventBody(seq=1, kind="AssistantMessage")]
-        )
+        await _record(integ_store, sci, idx=0, text="a")
+        await _record(integ_store, eng, idx=0, text="b")
+        await _record(integ_store, sci, idx=1, text="c")
 
         feed = await integ_store.read_feed()
         # All three turns, oldest first, each carrying its session context.
@@ -1576,7 +1532,12 @@ class TestIntegrationEndToEnd:
 
         # The composite keyset cursor resumes strictly past the given event.
         after_first = await integ_store.read_feed(
-            after=(feed[0].created, feed[0].session_id, feed[0].seq)
+            after=(
+                feed[0].created,
+                feed[0].session_id,
+                feed[0].part,
+                feed[0].seq,
+            )
         )
         assert [f.actor for f in after_first] == ["eng", "scientist"]
 
@@ -1612,9 +1573,9 @@ class TestIntegrationEndToEnd:
         async with integ_store.engine.acquire() as conn:
             for sid in (a, b):
                 await conn.execute(
-                    "INSERT INTO agent_session_events "
-                    "(session_id, seq, kind, created, message) "
-                    "VALUES ($1, 0, 'UserMessage', $2, '{}'::jsonb)",
+                    "INSERT INTO session_records "
+                    "(session_id, part, idx, kind, created, payload) "
+                    "VALUES ($1, 0, 0, 'UserMessage', $2, '{}'::json)",
                     sid,
                     tie,
                 )
@@ -1626,7 +1587,7 @@ class TestIntegrationEndToEnd:
         # Resume past the first via the composite cursor; the tied second row
         # (same created, different session) must still be returned.
         page2 = await integ_store.read_feed(
-            after=(first.created, first.session_id, first.seq)
+            after=(first.created, first.session_id, first.part, first.seq)
         )
         assert [f.session_id for f in page2] == [
             sid for sid in (a, b) if sid != first.session_id
@@ -1708,43 +1669,6 @@ class TestIntegrationEndToEnd:
         finally:
             app.dependency_overrides.pop(current_user, None)
 
-    async def test_append_notifies_subscribers_on_real_append(
-        self, integ_store: Store
-    ) -> None:
-        """A real append fires a Postgres NOTIFY for this session.
-
-        Proves only the integration-unique fact: an append flows through
-        native ``LISTEN/NOTIFY`` and the frame carries this session id (so the
-        SPA / poller wakes). The *dedup-is-silent* property (appended == 0 ->
-        no notify) is proven deterministically by the unit test
-        ``store_test.test_append_events_notifies_on_real_append``; asserting it
-        here would require a fragile "no frame within N seconds" negative that
-        flakes under parallel load when a sibling test shares the channel.
-        """
-        sid = await integ_store.submit_agentsession(
-            SubmitAgentSession(account="tester@example.com", title="live", cli="claude")
-        )
-        stream = integ_store.engine.listen(NOTIFY_CHANNEL)
-        try:
-            # Prime the subscription BEFORE appending: ``listen`` is an async
-            # generator whose queue registers only on first advance, so a
-            # NOTIFY fired before that first ``anext`` would be published to
-            # zero subscribers and lost. Start the wait first, then append.
-            first = asyncio.ensure_future(anext(stream))
-            await asyncio.sleep(0)  # let the generator reach ``await q.get()``
-            appended, _ = await integ_store.append_events(
-                sid, [EventBody(seq=0, kind="UserMessage")]
-            )
-            assert appended == 1
-            # Skip any interleaved foreign-session frames (shared channel).
-            payload = json.loads(await asyncio.wait_for(first, timeout=10.0))
-            while payload.get("id") != str(sid):
-                payload = json.loads(
-                    await asyncio.wait_for(anext(stream), timeout=10.0)
-                )
-        finally:
-            await stream.aclose()
-
     async def test_web_get_surfaces_agentsession_fields(
         self, integ_store: Store
     ) -> None:
@@ -1791,166 +1715,16 @@ class TestIntegrationEndToEnd:
         finally:
             app.dependency_overrides.pop(current_user, None)
 
-    async def test_append_rejects_kind_message_mismatch(
-        self, integ_store: Store
-    ) -> None:
-        """A body whose ``kind`` disagrees with its ``message`` type is rejected.
-
-        Routing append through ``AgentSessionEvent`` runs its invariant, so a
-        forged body (``kind="UserMessage"`` carrying an ``AssistantMessage``)
-        cannot land in the store.
-        """
-        sid = await integ_store.submit_agentsession(
-            SubmitAgentSession(account="tester@example.com", title="run", cli="codex")
-        )
-        forged = EventBody(
-            seq=0,
-            kind="UserMessage",
-            message=DataclassCodec.to_json(AssistantMessage(text="not a user message")),
-        )
-        with pytest.raises(ValueError, match="disagrees with message type"):
-            await integ_store.append_events(sid, [forged])
-        assert await integ_store.read_session_events(sid) == []
-
-    async def test_append_rejects_non_session_parent(self, integ_store: Store) -> None:
-        """Events may only attach to an ``AgentSession``, not an Issue."""
-        issue_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="not a session")
-        )
-        with pytest.raises(ConflictError, match="not an AgentSession"):
-            await integ_store.append_events(
-                issue_id, [EventBody(seq=0, kind="UserMessage")]
-            )
-
-    async def test_concurrent_appends_never_report_negative_skipped(
-        self, integ_store: Store
-    ) -> None:
-        """Two concurrent same-session appends each account exactly, no race.
-
-        The append counts the rows its own ``ON CONFLICT DO NOTHING
-        RETURNING`` statement wrote, so a concurrent same-session appender
-        cannot inflate the count or drive ``skipped`` negative; disjoint
-        ``seq`` ranges each land in full.
-        """
-        sid = await integ_store.submit_agentsession(
-            SubmitAgentSession(account="tester@example.com", title="race", cli="codex")
-        )
-        batch_a = [EventBody(seq=s, kind="UserMessage") for s in range(10)]
-        batch_b = [EventBody(seq=s, kind="UserMessage") for s in range(10, 20)]
-        (app_a, skip_a), (app_b, skip_b) = await asyncio.gather(
-            integ_store.append_events(sid, batch_a),
-            integ_store.append_events(sid, batch_b),
-        )
-        assert (app_a, skip_a) == (10, 0)
-        assert (app_b, skip_b) == (10, 0)
-        assert len(await integ_store.read_session_events(sid)) == 20
-
-    async def test_session_events_large_message_round_trips(
-        self, integ_store: Store
-    ) -> None:
-        """A large message stays whole (Postgres TOAST, no app-level offload)."""
-        sid = await integ_store.submit_agentsession(
-            SubmitAgentSession(account="tester@example.com", title="big", cli="codex")
-        )
-        big_text = "x" * 20_000
-        await integ_store.append_events(
-            sid,
-            [
-                EventBody(
-                    seq=0,
-                    kind="ToolResult",
-                    message=DataclassCodec.to_json(ToolResult(content=big_text)),
-                )
-            ],
-        )
-        events = await integ_store.read_session_events(sid)
-        assert events[0].to_event(sid).message == ToolResult(content=big_text)
-
-    async def test_session_events_cascade_on_session_purge(
+    async def test_session_records_cascade_on_session_purge(
         self, integ_store: Store
     ) -> None:
         sid = await integ_store.submit_agentsession(
             SubmitAgentSession(account="tester@example.com", title="run", cli="claude")
         )
-        await integ_store.append_events(sid, [EventBody(seq=0, kind="UserMessage")])
+        await _record(integ_store, sid, idx=0, text="captured")
         await integ_store.purge(sid, actor="user")
-        # FK ON DELETE CASCADE drops the events with the Session row.
-        assert await integ_store.read_session_events(sid) == []
-
-    async def test_session_ingest_http_start_events_end(
-        self, integ_store: Store
-    ) -> None:
-        """End-to-end ingest over HTTP: start -> events -> end, with dedup.
-
-        Drives the real ``sessions_routes`` against the ASGI app so the wire
-        bodies, the store seam, and the SQL all agree.
-        """
-        # A bare app wired to the integ store (no lifespan, so it does not
-        # bootstrap a second DB and clobber app.state). Mirrors the
-        # web-read integration test's setup.
-        app = FastAPI()
-        app.state.engine = integ_store.engine
-        app.state.store = integ_store
-        app.state.inbound = InboundQueue()
-        app.include_router(sessions_routes.router)
-        # Session-authed (api_key_id=None) so the created change_log row
-        # carries no api_keys FK -- the test DB has no seeded key.
-        identity = make_test_identity(api_key_id=None)
-
-        await _seed_active_user(integ_store, TEST_USER_EMAIL)
-
-        async def _identity_override() -> object:
-            return identity
-
-        app.dependency_overrides[current_user] = _identity_override
-        transport = httpx2.ASGITransport(app=app)
-        try:
-            async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
-            ) as http:
-                r = await http.post(
-                    "/api/sessions/start",
-                    json={"cli": "codex", "cli_session_id": "t1"},
-                )
-                assert r.status_code == 201, r.text
-                session_id = r.json()["id"]
-
-                events = {
-                    "events": [
-                        {
-                            "seq": 0,
-                            "kind": "UserMessage",
-                            "message": DataclassCodec.to_json(UserMessage(text="hi")),
-                        },
-                        {"seq": 1, "kind": "AssistantMessage", "model": "gpt-5.5"},
-                    ]
-                }
-                r = await http.post(f"/api/sessions/{session_id}/events", json=events)
-                assert r.status_code == 200, r.text
-                assert r.json() == {"appended": 2, "skipped": 0}
-
-                # Retried batch is idempotent.
-                r = await http.post(f"/api/sessions/{session_id}/events", json=events)
-                assert r.json() == {"appended": 0, "skipped": 2}
-
-                r = await http.post(
-                    f"/api/sessions/{session_id}/end",
-                    json={"ended": "2026-05-31T16:00:00Z"},
-                )
-                assert r.status_code == 200, r.text
-
-                # Events persisted in order; the Session is now complete.
-                stored = await integ_store.read_session_events(uuid.UUID(session_id))
-                assert [e.seq for e in stored] == [0, 1]
-                sess = await integ_store.get_inquiry(uuid.UUID(session_id))
-                assert sess is not None
-                assert sess.status == "complete"
-
-                # Unknown session id -> 404.
-                r = await http.post(f"/api/sessions/{new_uuid()}/events", json=events)
-                assert r.status_code == 404, r.text
-        finally:
-            app.dependency_overrides.pop(current_user, None)
+        # FK ON DELETE CASCADE drops the records with the Session row.
+        assert await integ_store.read_session_records(sid, part=0) == []
 
     async def test_session_end_retry_same_key_replays_not_409(
         self, integ_store: Store
@@ -2089,85 +1863,6 @@ class TestIntegrationEndToEnd:
                 )
                 assert retry.status_code == 200, retry.text
                 assert retry.json() == first.json()
-        finally:
-            app.dependency_overrides.pop(current_user, None)
-
-    async def test_read_session_events_http_paginates_and_filters(
-        self, integ_store: Store
-    ) -> None:
-        """GET .../events pages and filters per api.md grammar (4.3)."""
-        sid = await integ_store.submit_agentsession(
-            SubmitAgentSession(account="tester@example.com", title="read", cli="codex")
-        )
-        await integ_store.append_events(
-            sid,
-            [
-                EventBody(seq=0, kind="UserMessage"),
-                EventBody(seq=1, kind="ToolResult"),
-                EventBody(seq=2, kind="AssistantMessage"),
-                EventBody(seq=3, kind="ToolResult"),
-            ],
-        )
-        app = FastAPI()
-        app.state.engine = integ_store.engine
-        app.state.store = integ_store
-        app.state.inbound = InboundQueue()
-        app.include_router(sessions_routes.router)
-        identity = make_test_identity(api_key_id=None)
-
-        async def _identity_override() -> object:
-            return identity
-
-        app.dependency_overrides[current_user] = _identity_override
-        transport = httpx2.ASGITransport(app=app)
-        try:
-            async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
-            ) as http:
-                # Page: limit/offset window over the seq order.
-                r = await http.get(
-                    f"/api/sessions/{sid}/events", params={"limit": 2, "offset": 1}
-                )
-                assert r.status_code == 200, r.text
-                assert [e["seq"] for e in r.json()["events"]] == [1, 2]
-
-                # seq range, inclusive, with 0 allowed (events start at 0).
-                r = await http.get(
-                    f"/api/sessions/{sid}/events",
-                    params={"seq_range": "0..1"},
-                )
-                assert [e["seq"] for e in r.json()["events"]] == [0, 1]
-
-                # Disjoint union: repeated ``seq_range`` ORs the intervals,
-                # the same reader inquiries use, against real Postgres.
-                r = await http.get(
-                    f"/api/sessions/{sid}/events",
-                    params=[("seq_range", "0..0"), ("seq_range", "3..")],
-                )
-                assert [e["seq"] for e in r.json()["events"]] == [0, 3]
-
-                # Event seq starts at 0, so a negative bound is a 400.
-                r = await http.get(
-                    f"/api/sessions/{sid}/events",
-                    params={"seq_range": "-1..1"},
-                )
-                assert r.status_code == 400, r.text
-
-                # kind filter.
-                r = await http.get(
-                    f"/api/sessions/{sid}/events", params={"kind": "ToolResult"}
-                )
-                assert [e["seq"] for e in r.json()["events"]] == [1, 3]
-
-                # bad limit -> 400; unknown kind -> 400.
-                assert (
-                    await http.get(f"/api/sessions/{sid}/events", params={"limit": 0})
-                ).status_code == 400
-                assert (
-                    await http.get(
-                        f"/api/sessions/{sid}/events", params={"kind": "nope"}
-                    )
-                ).status_code == 400
         finally:
             app.dependency_overrides.pop(current_user, None)
 

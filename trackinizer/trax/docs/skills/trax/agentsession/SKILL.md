@@ -21,14 +21,14 @@ Per-kind expectations doc (SoT). Fields owned by `types/inquiries.py`; grammar b
   edit — a standalone PUT desyncs the lifecycle CHECK.
 - `rooms` = namespaces the session can be addressed within (`@actor:room`).
 
-## The events asymmetry (do not collapse it)
+## The records asymmetry (do not collapse it)
 
-This row is only the ENVELOPE. The per-turn transcript (user/assistant/thinking/
-tool turns) lives in the separate append-only `agent_session_events` table,
-scoped by `session_id`, **outside** `inquiries`, edges, and `change_log`.
-Per-turn model/cwd live on the events, not this row (both can change mid-session,
-so a single row value would be lossy). Preserve this boundary — simplifying trax
-must not fold events into the inquiry graph.
+This row is only the ENVELOPE. The transcript (user/assistant/thinking/tool
+records) lives in the separate append-only `session_records` table, scoped by
+`session_id`, **outside** `inquiries`, edges, and `change_log`. Per-record
+model lives on the records, not this row (it can change mid-session, so a
+single row value would be lossy). Preserve this boundary — simplifying trax
+must not fold records into the inquiry graph.
 
 ## Expectations
 
@@ -39,6 +39,6 @@ must not fold events into the inquiry graph.
 ## Common mistakes
 
 - A blind `ended`/`status` edit that breaks the lifecycle CHECK.
-- Treating the row as the transcript (it is the envelope; turns are in
-  `agent_session_events`).
-- Putting per-turn model/cwd on the row instead of the events.
+- Treating the row as the transcript (it is the envelope; records are in
+  `session_records`).
+- Putting per-record model on the row instead of the records.

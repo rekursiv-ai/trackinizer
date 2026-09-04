@@ -788,6 +788,104 @@ class TestFollowTree:
         expected = tmp_path / "2026" / "08" / "25" / "rollout.jsonl"
         assert asyncio.run(run()) == [(expected, '{"n":1}')]
 
+    def test_a_rewrite_is_announced_as_a_restart(self, tmp_path: Path) -> None:
+        """A replaced file says so, so the reader can re-derive it.
+
+        ``drain`` already detects the replacement -- it must, or it would read
+        from a stale offset -- but reporting only ``(path, line)`` made that
+        knowledge die inside the cursor. A consumer that stores records keyed
+        by their position CANNOT recover it afterwards: the re-read lines look
+        exactly like appended ones.
+
+        This is claude's compaction: the transcript is rewritten smaller,
+        keeping the turns it did not summarize away.
+        """
+        target = tmp_path / "s.jsonl"
+
+        async def run() -> list[follow.Line]:
+            seen: list[follow.Line] = []
+            lines = follow.follow_tree(tmp_path, match=lambda p: p.suffix == ".jsonl")
+            task = asyncio.create_task(_collect_lines(lines, seen, 2))
+            await asyncio.sleep(0.1)
+            _ = target.write_text("first\n")
+            await asyncio.sleep(0.2)
+            _ = target.write_text("rewritten\n")
+            await asyncio.wait_for(task, 5.0)
+            return seen
+
+        got = asyncio.run(run())
+        assert [line.text for line in got] == ["first", "rewritten"]
+        assert [line.restart for line in got] == [False, True]
+
+    def test_a_restart_survives_a_drain_that_finds_no_lines(
+        self, tmp_path: Path
+    ) -> None:
+        """A rewrite seen mid-truncate must still reach the line it replaced.
+
+        Replacing a file is not atomic -- ``write_text`` truncates, then
+        writes -- so a drain can land in that window. It sees the file no
+        longer holds the bytes it read (a restart) but has NO lines to carry
+        the flag on, and the next drain returns the replacement's lines. A
+        flag cleared per-drain is therefore lost exactly when the file was
+        rewritten, and the re-read records append as duplicates rather than
+        overwriting the rows they already occupy.
+
+        Driven through ``_Cursor`` rather than the watcher: the window is
+        microseconds wide under a real writer, and reproducing it by timing
+        would be the flake this fixes rather than a test of it.
+        """
+        target = tmp_path / "s.jsonl"
+        _ = target.write_text("first\n")
+        cursor = follow._Cursor(target, offset=0)
+        assert cursor.drain() == ["first"]
+        assert not cursor.restarted
+
+        _ = target.write_text("")  # the truncate half of a replacement
+        assert cursor.drain() == []
+
+        _ = target.write_text("rewritten\n")  # the write half
+        assert cursor.drain() == ["rewritten"]
+        assert cursor.restarted, "the restart was lost before any line carried it"
+
+    def test_a_restart_clears_once_its_lines_are_delivered(
+        self, tmp_path: Path
+    ) -> None:
+        """Sticky until delivered, not sticky forever.
+
+        A flag that never cleared would mark every later append as a rewrite,
+        making the consumer re-derive the whole part on each batch.
+        """
+        target = tmp_path / "s.jsonl"
+        _ = target.write_text("first\n")
+        cursor = follow._Cursor(target, offset=0)
+        _ = cursor.drain()
+        _ = target.write_text("rewritten\n")
+        assert cursor.drain() == ["rewritten"]
+        assert cursor.restarted
+
+        with target.open("a") as handle:
+            _ = handle.write("appended\n")
+        assert cursor.drain() == ["appended"]
+        assert not cursor.restarted
+
+    def test_an_append_is_not_a_restart(self, tmp_path: Path) -> None:
+        """Ordinary growth carries no restart, or every batch would rewrite."""
+        target = tmp_path / "s.jsonl"
+
+        async def run() -> list[follow.Line]:
+            seen: list[follow.Line] = []
+            lines = follow.follow_tree(tmp_path, match=lambda p: p.suffix == ".jsonl")
+            task = asyncio.create_task(_collect_lines(lines, seen, 2))
+            await asyncio.sleep(0.1)
+            _ = target.write_text("one\n")
+            await asyncio.sleep(0.2)
+            with target.open("a") as handle:
+                _ = handle.write("two\n")
+            await asyncio.wait_for(task, 5.0)
+            return seen
+
+        assert [line.restart for line in asyncio.run(run())] == [False, False]
+
     def test_skips_files_present_before_the_follow(self, tmp_path: Path) -> None:
         """A prior session's transcript is not this run's to capture."""
         _ = (tmp_path / "old.jsonl").write_text("stale\n")
@@ -824,11 +922,23 @@ class TestFollowTree:
 
 
 async def _collect(
-    lines: AsyncIterator[tuple[Path, str]],
+    lines: AsyncIterator[follow.Line],
     into: list[tuple[Path, str]],
     count: int,
 ) -> None:
-    """Accumulate ``count`` items from ``lines`` into ``into``."""
+    """Accumulate ``count`` ``(path, text)`` pairs from ``lines``."""
+    async for item in lines:
+        into.append((item.path, item.text))
+        if len(into) >= count:
+            return
+
+
+async def _collect_lines(
+    lines: AsyncIterator[follow.Line],
+    into: list[follow.Line],
+    count: int,
+) -> None:
+    """Accumulate ``count`` whole lines, restart flag included."""
     async for item in lines:
         into.append(item)
         if len(into) >= count:

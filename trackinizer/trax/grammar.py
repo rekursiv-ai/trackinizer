@@ -39,6 +39,7 @@ from trackinizer.types.inquiries import (
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
 from trackinizer.wire.seq_ranges import SeqRange
+from trackinizer.wire.session_record_fields import SESSION_RECORD_FIELDS
 
 
 __all__ = [
@@ -872,6 +873,11 @@ def _filter_fields_cli(kind: Inquiry.InquiryKind) -> tuple[str, ...]:
     for spec in _FIELDS:
         if spec.filterable and spec.payload_key in canonical:
             names.add(spec.cli_name)
+    if kind == "AgentSession":
+        # IR record kinds, on the one kind that HAS records. Offering them on
+        # an Issue would accept a clause whose subquery can never match, which
+        # reads as "no results" rather than as the mistake it is.
+        names.update(SESSION_RECORD_FIELDS)
     return tuple(sorted(names))
 
 

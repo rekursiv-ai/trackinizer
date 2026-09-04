@@ -1,0 +1,21 @@
+-- schema.021.sql -- drop agent_session_events, now that 020 backfilled it.
+--
+-- Step 3 of retiring the 8-member ``Message`` union. SEPARATE from 020 so a
+-- rollback can stop after the backfill with both representations intact: 020
+-- is additive and reversible by deleting ``part = -1`` rows, while this one
+-- is not reversible at all.
+--
+-- Do not run this until 020 has been verified against the deployed data. The
+-- backfill is the only copy of those turns afterwards.
+
+-- ============================================================================
+-- Every legacy turn now lives in ``session_records`` at ``part = -1``, with
+-- its ciphertext in ``session_ciphertext`` and a manifest bounding the part.
+-- ``schema_backfill_test.py`` pins each of those properties against a real
+-- database, so this DROP is gated on evidence rather than on sequence.
+--
+-- CASCADE is deliberately NOT used: nothing should still depend on this
+-- table, and a silent cascade would drop whatever did. If this statement
+-- fails on a dependency, that dependency is a reader phase 7 missed -- which
+-- is exactly what the failure should say.
+DROP TABLE IF EXISTS agent_session_events;

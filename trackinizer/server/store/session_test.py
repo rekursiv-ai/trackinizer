@@ -6,9 +6,6 @@ from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
 
-import json
-import uuid
-
 import asyncpg
 import pytest
 
@@ -19,123 +16,12 @@ from trackinizer.conftest import (
     new_uuid,
     set_field_row,
 )
-from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
     set_client_change_id,
 )
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.wire.bodies import SubmitAgentSession
-from trackinizer.wire.seq_ranges import SeqRange
-from trackinizer.wire.wire_sessions import EventBody
-
-
-class TestAppendEvents:
-    @pytest.mark.asyncio
-    async def test_append_events_notifies_on_real_append(self) -> None:
-        """A successful append wakes subscribers via the session id."""
-        conn = make_conn()
-        store, engine = make_store(conn)
-        session_id = uuid.uuid4()
-        set_field_row(conn, {"kind": "AgentSession", "agentsession_ended": None})
-        # ON CONFLICT DO NOTHING RETURNING yields the one newly-written seq.
-        conn.fetch = AsyncMock(return_value=[{"seq": 0}])
-        appended, skipped = await store.append_events(
-            session_id, [EventBody(seq=0, kind="UserMessage")]
-        )
-        assert (appended, skipped) == (1, 0)
-        assert engine.notify_calls == [
-            (NOTIFY_CHANNEL, json.dumps({"id": str(session_id)}))
-        ]
-
-    @pytest.mark.asyncio
-    async def test_append_events_fk_violation_raises_not_found(self) -> None:
-        # The session passed the kind check but was purged in the race window
-        # before the INSERT, so the ``session_id`` FK fails. The store maps
-        # that to NotFoundError (-> 404), never a raw constraint-name 409
-        # (REV-OPUS-03).
-        conn = make_conn()
-        store, _engine = make_store(conn)
-        set_field_row(conn, {"kind": "AgentSession", "agentsession_ended": None})
-
-        # Only the event INSERT trips the FK; ``tx()``'s rollback also runs over
-        # ``fetch`` (extended protocol) and must succeed so the store maps the
-        # violation cleanly rather than dying on the rollback.
-        async def fetch(sql: str, *args: object) -> list[object]:
-            del args
-            if "INSERT INTO agent_session_events" in sql:
-                raise asyncpg.ForeignKeyViolationError("session_id fkey")
-            return []
-
-        conn.fetch = AsyncMock(side_effect=fetch)
-        with pytest.raises(NotFoundError, match="not found"):
-            await store.append_events(
-                uuid.uuid4(), [EventBody(seq=0, kind="UserMessage")]
-            )
-
-    @pytest.mark.asyncio
-    async def test_append_events_count_is_exact_under_concurrent_appender(
-        self,
-    ) -> None:
-        """A concurrent same-session commit must not corrupt the accounting.
-
-        The count-delta approach (two whole-session ``count(*)`` reads around
-        the insert) over-counts when another transaction commits between the
-        reads: a one-row append could report appended=2 / skipped=-1. The
-        ``RETURNING``-based count reports only the rows THIS call wrote.
-        """
-        conn = make_conn()
-        store, _engine = make_store(conn)
-        session_id = uuid.uuid4()
-        set_field_row(conn, {"kind": "AgentSession", "agentsession_ended": None})
-        # This call newly wrote exactly one row -> RETURNING yields one seq.
-        conn.fetch = AsyncMock(return_value=[{"seq": 0}])
-        appended, skipped = await store.append_events(
-            session_id, [EventBody(seq=0, kind="UserMessage")]
-        )
-        assert appended == 1
-        assert skipped == 0
-        assert 0 <= appended <= 1
-        assert skipped >= 0
-
-    @pytest.mark.asyncio
-    async def test_append_events_duplicate_batch_stays_silent(self) -> None:
-        """A fully-duplicate retry (appended == 0) emits no notification."""
-        conn = make_conn()
-        store, engine = make_store(conn)
-        session_id = uuid.uuid4()
-        set_field_row(conn, {"kind": "AgentSession", "agentsession_ended": None})
-        # Every row collided -> ON CONFLICT DO NOTHING RETURNING yields none.
-        conn.fetch = AsyncMock(return_value=[])
-        appended, skipped = await store.append_events(
-            session_id, [EventBody(seq=0, kind="UserMessage")]
-        )
-        assert (appended, skipped) == (0, 1)
-        assert engine.notify_calls == []
-
-    @pytest.mark.asyncio
-    async def test_append_events_rejects_ended_session(self) -> None:
-        # Events may attach only to a LIVE session: an ended session's poller
-        # is gone and will never inject them. Reject (no row written),
-        # mirroring the /inbound enqueue route's ended-session 409.
-        conn = make_conn()
-        set_field_row(
-            conn,
-            {
-                "kind": "AgentSession",
-                "agentsession_ended": datetime(2025, 1, 1, tzinfo=UTC),
-            },
-        )
-        store, _engine = make_store(conn)
-        with pytest.raises(ConflictError, match="has ended"):
-            await store.append_events(
-                new_uuid(), [EventBody(seq=0, kind="UserMessage")]
-            )
-        # No row written: the INSERT (a ``conn.fetch`` RETURNING) never ran.
-        assert not any(
-            c.args and "INSERT INTO agent_session_events" in c.args[0]
-            for c in conn.fetch.call_args_list
-        )
 
 
 class TestStartSession:
@@ -171,16 +57,21 @@ class TestStartSession:
             )
 
     @pytest.mark.asyncio
-    async def test_start_session_returns_committed_owner_and_seq_not_reserved(
+    async def test_start_session_returns_the_committed_owner_not_our_reserve(
         self,
     ) -> None:
-        """A replayed start echoes the COMMITTED owner/next_seq, not our reserve.
+        """A replayed start echoes the COMMITTED owner, not the name we reserved.
 
         Under a concurrent same-key race ``submit_agentsession`` may replay the
         winner's row instead of inserting ours. ``start_session`` must read back
-        the authoritative owner + next event seq for the returned id, not assume
-        the name WE reserved and an empty (seq 0) log -- otherwise the racing
+        the authoritative owner for the returned id -- otherwise the racing
         caller gets a receipt that mismatches the live session.
+
+        ``next_seq`` is no longer part of that receipt: it continued the legacy
+        event log, and a record's key is DERIVED from its position in its
+        source file, so a resumed run re-derives the same keys rather than
+        seeding a counter. It is always 0 now, asserted here so a reader does
+        not mistake the field for live information.
         """
         conn = make_conn()
         conn.fetch = AsyncMock(return_value=[])  # reservation sees no live owners
@@ -191,13 +82,8 @@ class TestStartSession:
             # committed owner ("alice") differs from a racer's reserved "alice#2".
             return existing_id
 
-        # The row's committed owner + a non-empty event log (max seq 4 -> next 5).
         async def fetchval(sql: str, *_args: object) -> object:
-            if "owner" in sql:
-                return "alice"
-            if "max(seq)" in sql:
-                return 4
-            return None
+            return "alice" if "owner" in sql else None
 
         conn.fetchval.side_effect = fetchval
         store, _engine = make_store(conn)
@@ -210,28 +96,7 @@ class TestStartSession:
         )
         assert sid == existing_id
         assert owner == "alice"
-        assert next_seq == 5
-
-
-class TestReadSessionEvents:
-    @pytest.mark.asyncio
-    async def test_read_session_events_seq_ranges_lower_to_one_or_group(self) -> None:
-        """Event reads share the inquiry list's OR-of-intervals lowering.
-
-        Same union, same single-query SQL shape -- the one
-        ``seq_range_clause`` helper backs both readers, so disjoint event
-        windows never fan out per interval either.
-        """
-        conn = make_conn()
-        conn.fetch.return_value = []
-        store, _engine = make_store(conn)
-        sid = new_uuid()
-        await store.read_session_events(
-            sid, seq_ranges=(SeqRange(start=0, stop=1), SeqRange(start=3))
-        )
-        sql, *params = conn.fetch.call_args_list[0].args
-        assert "(seq >= $2 AND seq <= $3) OR (seq >= $4)" in sql
-        assert params[:4] == [sid, 0, 1, 3]
+        assert next_seq == 0
 
 
 class TestEndSession:

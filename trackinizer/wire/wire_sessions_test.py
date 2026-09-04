@@ -1,8 +1,8 @@
-"""Tests for the session-ingest wire contract."""
+"""Tests for the session lifecycle, messaging, and feed wire contract."""
 
 from __future__ import annotations
 
-from typing import cast
+from datetime import UTC, datetime
 
 import uuid
 
@@ -10,46 +10,20 @@ from pydantic import ValidationError
 
 import pytest
 
-from trackinizer.lib.custom_json import DataclassCodec, SchemaError
-from trackinizer.types.agent_session_events import (
-    AgentSendMessage,
-    AgentSessionEvent,
-    AssistantMessage,
-    Compaction,
-    Kind,
-    Message,
-    SlashCommand,
-    SystemMessage,
-    ToolResult,
-    UnknownMessage,
-    UserMessage,
-)
 from trackinizer.wire.wire_sessions import (
-    KINDS,
-    AppendEventsRequest,
-    EventBody,
+    FeedCursor,
+    FeedEvent,
     InboundDrainItem,
     InboundEnqueueRequest,
     SendMessage,
     SessionEnd,
     SessionStart,
     session_end_path,
-    session_events_path,
+    session_records_path,
 )
 
 
-# One non-default instance of every ``Message`` member, so the round-trip
-# drift test exercises the whole Kind vocabulary (not just AssistantMessage).
-_ROUND_TRIP_MESSAGES: list[Message] = [
-    UserMessage(text="hi"),
-    AgentSendMessage(text="go", source="agent7"),
-    SystemMessage(text="<permissions>", role="developer"),
-    AssistantMessage(text="ok", thinking="hmm"),
-    ToolResult(call_id="t1", content="out", is_error=True),
-    Compaction(text="summary", token_before=100, token_after=20),
-    SlashCommand(command="exit", args="now"),
-    UnknownMessage(raw={"weird": [1, 2, 3]}),
-]
+_NOW = datetime(2026, 8, 24, 20, 29, tzinfo=UTC)
 
 
 class TestSessionStart:
@@ -107,101 +81,63 @@ class TestSessionEnd:
         assert SessionEnd(actor=None).actor is None
 
 
-class TestEventBody:
-    def test_defaults_message_to_empty(self) -> None:
-        ev = EventBody(seq=0, kind="UserMessage")
-        assert ev.message == {}
-        assert ev.timestamp is None
+class TestFeedEvent:
+    def test_kind_is_open_not_a_closed_vocabulary(self) -> None:
+        """The IR has 21 record kinds and gains more.
 
-    def test_rejects_negative_seq(self) -> None:
+        A closed Literal here would 422 the console on the first record type
+        added upstream, so the feed carries the class name as free text and
+        the renderer decides what it can draw.
+        """
+        event = FeedEvent(
+            session_id=uuid.uuid4(),
+            actor="scientist",
+            part=0,
+            seq=0,
+            kind="ShellCommandResult",
+            created=_NOW,
+        )
+        assert event.kind == "ShellCommandResult"
+
+    def test_kind_must_be_named(self) -> None:
         with pytest.raises(ValidationError):
-            EventBody(seq=-1, kind="UserMessage")
-
-    def test_rejects_unknown_kind(self) -> None:
-        with pytest.raises(ValidationError):
-            # Intentionally invalid kind to assert the Literal validation.
-            EventBody(seq=0, kind="not_a_kind")  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType]
-
-    def test_every_event_kind_accepted(self) -> None:
-        for kind in KINDS:
-            assert EventBody(seq=0, kind=kind).kind == kind
-
-    def test_untagged_wrong_shape_message_rejected(self) -> None:
-        # A ToolResult body whose JSON carries no type tag and only
-        # foreign keys ({"text": "x"}) must not silently decode to a default
-        # ToolResult with the unknown keys dropped; the kind/message shape
-        # disagreement is a 422, not a lossy default.
-        with pytest.raises(ValueError, match=r"omits the py/object|disagrees"):
-            EventBody(kind="ToolResult", seq=0, message={"text": "x"}).to_event(
-                uuid.uuid4()
+            FeedEvent(
+                session_id=uuid.uuid4(),
+                actor="scientist",
+                seq=0,
+                kind="",
+                created=_NOW,
             )
 
-    def test_tagged_message_with_a_foreign_key_is_a_client_error(self) -> None:
-        # A correctly-tagged body carrying one stray key reaches the codec's
-        # unknown-field check. That check raises, and this route runs on
-        # client-supplied input (``store.append_events`` -> ``to_event``), so
-        # the exception must be one the API maps to 4xx: a bare ``ValueError``
-        # matched no registered handler and surfaced as a 500.
-        with pytest.raises(SchemaError, match="bogus"):
-            EventBody(
-                kind="ToolResult",
-                seq=0,
-                message={"py/object": "ToolResult", "bogus": 1},
-            ).to_event(uuid.uuid4())
-
-    def test_round_trip_through_event(self) -> None:
-        sid = uuid.uuid4()
-        event = AgentSessionEvent(
-            session_id=sid,
+    def test_a_legacy_backfilled_turn_carries_the_reserved_part(self) -> None:
+        """``-1`` namespaces rows that came from no file and cannot collide."""
+        event = FeedEvent(
+            session_id=uuid.uuid4(),
+            actor="scientist",
+            part=-1,
             seq=3,
-            kind="AssistantMessage",
-            message=AssistantMessage(text="hi"),
+            kind="UserMessage",
+            created=_NOW,
         )
-        body = EventBody.from_event(event)
-        assert body.seq == 3
-        assert body.kind == "AssistantMessage"
-        rebuilt = body.to_event(sid)
-        assert rebuilt == event
-
-    @pytest.mark.parametrize(
-        "msg", _ROUND_TRIP_MESSAGES, ids=lambda m: type(m).__name__
-    )
-    def test_from_event_to_event_round_trips_every_kind(self, msg: Message) -> None:
-        # ``from_event`` (trusted typed source) and ``to_event`` (untrusted
-        # wire decode) must be exact inverses for EVERY message kind, not just
-        # AssistantMessage -- a member that serialized lossily (a dropped field,
-        # an unset type tag) would silently corrupt one captured turn. Pins
-        # the symmetry as a drift guard across the whole Kind vocabulary.
-        sid = uuid.uuid4()
-        # ``kind`` equals the member class name by construction (the
-        # ``AgentSessionEvent.__post_init__`` invariant); cast for the checker.
-        event = AgentSessionEvent(
-            session_id=sid,
-            seq=7,
-            kind=cast(Kind, type(msg).__name__),
-            message=msg,
-        )
-        assert EventBody.from_event(event).to_event(sid) == event
+        assert event.part == -1
 
 
-class TestAppendEventsRequest:
-    def test_rejects_empty_batch(self) -> None:
+class TestFeedCursor:
+    def test_the_cursor_carries_every_order_key_component(self) -> None:
+        """A bare-``created`` resume skips every row tied at the boundary.
+
+        ``part`` is a component because ``seq`` restarts within each source
+        file, so ``(created, session_id, seq)`` alone is not a total order.
+        """
+        cursor = FeedCursor(created=_NOW, session_id=uuid.uuid4(), part=2, seq=7)
+        assert (cursor.part, cursor.seq) == (2, 7)
+
+    def test_part_defaults_for_a_client_that_predates_it(self) -> None:
+        assert FeedCursor(created=_NOW, session_id=uuid.uuid4(), seq=0).part == 0
+
+    def test_seq_must_not_be_negative(self) -> None:
         with pytest.raises(ValidationError):
-            AppendEventsRequest(events=[])
-
-    def test_accepts_events(self) -> None:
-        req = AppendEventsRequest(
-            events=[
-                EventBody(
-                    seq=0,
-                    kind="UserMessage",
-                    message=DataclassCodec.to_json(UserMessage(text="hi")),
-                ),
-                EventBody(seq=1, kind="AssistantMessage", model="gpt-5.5"),
-            ]
-        )
-        assert len(req.events) == 2
-        assert req.events[1].model == "gpt-5.5"
+            FeedCursor(created=_NOW, session_id=uuid.uuid4(), seq=-1)
 
 
 class TestRoomValidation:
@@ -263,8 +199,8 @@ class TestRoomValidation:
 class TestPaths:
     def test_path_helpers_interpolate_session_id(self) -> None:
         sid = uuid.uuid4()
-        assert str(sid) in session_events_path(sid)
-        assert session_events_path(sid).endswith("/events")
+        assert str(sid) in session_records_path(sid)
+        assert session_records_path(sid).endswith("/records")
         assert session_end_path(sid).endswith("/end")
 
 

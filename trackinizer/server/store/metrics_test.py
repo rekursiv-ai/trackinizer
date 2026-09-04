@@ -83,7 +83,7 @@ class TestLogMetrics:
 
         The ``experiment_id`` FK then fails; the store maps that to
         NotFoundError (404), never a raw constraint-name 409 -- mirroring
-        ``append_events``.
+        ``append_session_records``.
         """
         conn = make_conn()
         store, _engine = make_store(conn)

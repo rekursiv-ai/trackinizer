@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Final, Protocol, cast
 
@@ -54,7 +55,29 @@ import struct
 from wrapt import lazy_import
 
 
-__all__ = ["follow_dir", "follow_file", "follow_tree"]
+__all__ = ["Line", "follow_dir", "follow_file", "follow_tree"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Line:
+    """One line a followed file gained, and whether the file had restarted.
+
+    ``restart`` is set on the FIRST line read after a rewrite -- the file was
+    replaced rather than appended to, so everything this cursor had read is
+    gone. A consumer keyed by position needs that: re-read lines are otherwise
+    indistinguishable from new ones, and it would store a second copy of a
+    transcript that was rewritten in place (which is what a claude compaction
+    does).
+    """
+
+    path: Path
+    """The file the line came from."""
+
+    text: str
+    """The line, without its terminator."""
+
+    restart: bool = False
+    """Whether the file was replaced immediately before this line."""
 
 
 _logger = logging.getLogger(__name__)
@@ -101,8 +124,9 @@ async def follow_tree(
     *directories: Path,
     match: Callable[[Path], bool],
     replay: bool = False,
+    resume: frozenset[Path] = frozenset(),
     on_armed: Callable[[], None] | None = None,
-) -> AsyncIterator[tuple[Path, str]]:
+) -> AsyncIterator[Line]:
     """Yield each line gained by any matching file under ``directories``.
 
     :func:`follow_file` needs the path in advance. A caller draining a CLI's
@@ -116,6 +140,13 @@ async def follow_tree(
       replay: Whether to yield what matching files already hold. Off by
         default: a file present before the follow began belongs to an earlier
         session, and replaying it would re-capture that session's history.
+      resume: Files that exist but whose history the caller WANTS, read from
+        offset 0 like a new file rather than seeded at EOF. ``replay`` is the
+        all-or-nothing form of this and answers a different question ("re-read
+        everything"); a caller continuing ONE known file -- a materialized
+        transcript it is about to hand back to the process that wrote it --
+        names just that file, so its neighbours keep their skip-history
+        behavior.
       on_armed: Called once the watch is registered, before anything is
         yielded. A caller that STARTS the writer -- spawning the process whose
         output it is following -- has no other way to know when doing so is
@@ -123,7 +154,9 @@ async def follow_tree(
         before the writer exists.
 
     Yields:
-      line: The file it came from, and one line without its terminator.
+      line: A :class:`Line` naming the file, the text, and whether that file
+        had just been REPLACED -- which a consumer keyed by position needs,
+        since a re-read line otherwise looks exactly like an appended one.
 
     Raises:
       ValueError: No directory was given.
@@ -143,16 +176,25 @@ async def follow_tree(
         for directory in directories
         for path in directory.rglob("*")
         if path.is_file() and match(path)
-    }
+    } - resume
     async with follow_dir(*directories) as changed:
         if on_armed is not None:
             on_armed()
+        # A resumed file is drained NOW rather than on its next change: the
+        # process that will append to it has not started yet, so waiting for
+        # an event would withhold the whole transcript until the first new
+        # turn -- and a run that produced none would capture nothing at all.
+        for path in sorted(resume) if not replay else ():
+            if path.is_file() and match(path):
+                cursors[path] = _Cursor(path, offset=0)
+                for line in cursors[path].drain():
+                    yield Line(path=path, text=line)
         if replay:
-            for path in sorted(existing):
+            for path in sorted(existing | resume):
                 cursors[path] = _Cursor(path, offset=0)
             for path in sorted(cursors):
                 for line in cursors[path].drain():
-                    yield (path, line)
+                    yield Line(path=path, text=line)
         async for paths in changed:
             for path in sorted(paths):
                 if not match(path):
@@ -163,8 +205,17 @@ async def follow_tree(
                         path, offset=_size(path) if path in existing else 0
                     )
                     cursors[path] = cursor
-                for line in cursor.drain():
-                    yield (path, line)
+                drained = cursor.drain()
+                for index, line in enumerate(drained):
+                    # Only the FIRST line of a restarted batch carries the
+                    # flag: it marks the boundary, and setting it on every
+                    # line would make a consumer re-derive the part once per
+                    # record rather than once per rewrite.
+                    yield Line(
+                        path=path,
+                        text=line,
+                        restart=cursor.restarted and not index,
+                    )
 
 
 class _Cursor:
@@ -188,6 +239,17 @@ class _Cursor:
     def __init__(self, path: Path, *, offset: int) -> None:
         self._path = path
         self._offset = offset
+        # Whether the batch the last drain RETURNED followed a replacement.
+        # Public because it is this cursor's only output besides the lines
+        # themselves, and the detection cannot be repeated afterwards -- once
+        # the offset is reset, a re-read line is indistinguishable from an
+        # appended one.
+        self.restarted = False
+        # A replacement detected but not yet carried out to any line. Separate
+        # from ``restarted`` because the two differ exactly when a drain lands
+        # inside a non-atomic rewrite: the replacement is known, and the lines
+        # that belong to it arrive on a later call.
+        self._pending_restart = False
         # Bytes read but not yet forming a complete line: an unterminated
         # line, and possibly a partial UTF-8 sequence at its end.
         self._partial = b""
@@ -198,7 +260,20 @@ class _Cursor:
         self._seen = _tail(path, offset)
 
     def drain(self) -> list[str]:
-        """Return every complete line appended since the last call."""
+        """Return every complete line appended since the last call.
+
+        Sets :attr:`restarted` when the file was replaced rather than appended
+        to, so a caller keyed by position can tell a re-read line from a new
+        one. It describes the batch this call RETURNS.
+
+        The detection is held until lines actually carry it, rather than being
+        cleared on entry. Replacing a file is not atomic -- a truncate precedes
+        the write -- so a drain can land in that window: it sees the
+        replacement but has no lines to report it on, and the replacement's
+        lines arrive on a LATER call. Clearing per-call dropped the flag in
+        exactly that case, and the re-read records then appended as duplicates
+        instead of overwriting the rows they already held.
+        """
         try:
             with self._path.open("rb") as handle:
                 if self._offset and not self._continues(handle):
@@ -208,6 +283,7 @@ class _Cursor:
                     self._offset = 0
                     self._partial = b""
                     self._seen = b""
+                    self._pending_restart = True
                 _ = handle.seek(self._offset)
                 chunk = handle.read()
         except OSError:
@@ -222,6 +298,10 @@ class _Cursor:
         complete, newline, self._partial = raw.rpartition(b"\n")
         if not newline:
             return []
+        # Lines are being delivered, so the pending detection rides THIS batch
+        # and is spent.
+        self.restarted = self._pending_restart
+        self._pending_restart = False
         return complete.decode("utf-8", errors="replace").split("\n")
 
     def _continues(self, handle: IO[bytes]) -> bool:

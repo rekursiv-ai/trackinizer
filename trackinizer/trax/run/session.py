@@ -25,7 +25,7 @@ or replaying a finished session.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
@@ -54,7 +54,6 @@ from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.custom_types import Adapter, StreamAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter, LineCapture
-from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.sink import (
     FileSink,
     LockedSink,
@@ -62,8 +61,7 @@ from trackinizer.trax.run.sink import (
     Sink,
     TrackinizerSink,
 )
-from trackinizer.trax.run.slash import SlashCommandDetector
-from trackinizer.types.agent_session_events import SlashCommand
+from trackinizer.trax.run.slash import SlashCommand, SlashCommandDetector
 
 
 _logger = logging.getLogger(__name__)
@@ -107,6 +105,13 @@ _INBOUND_WAIT_SEC: Final = 25.0
 _JOIN_DEADLINE_SEC: Final = 30.0
 
 
+# The part name a PTY scrape is stored under. A stream adapter follows no
+# file, but every record still belongs to a part and the server resolves one
+# from a basename -- so the stream names itself. A constant rather than a
+# per-run name: a resumed scrape must append to the part it already has.
+_STREAM_PART: Final = Path("stream")
+
+
 # Adapter *factories*, not singletons: each run builds a fresh adapter so
 # per-run parse state (e.g. codex's last ``turn_context.model``) never leaks
 # into a second run in the same process (tests, a future supervisor).
@@ -116,6 +121,21 @@ _ADAPTERS: dict[str, Callable[[], Adapter]] = {
     CodexAdapter.name: CodexAdapter,
     IOStreamAdapter.name: IOStreamAdapter,
 }
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Captured:
+    """One line read off a session file, and how it was produced.
+
+    ``restart`` marks the first line after the file was REPLACED rather than
+    appended to -- a claude compaction rewrites the transcript, keeping the
+    turns it did not summarize away. The record stored at a given position may
+    therefore have CHANGED, so such a batch overwrites rather than skipping.
+    """
+
+    path: Path
+    raw: bytes
+    restart: bool = False
 
 
 @dataclass(slots=True, kw_only=True)
@@ -182,6 +202,25 @@ class RunConfig:
     Built by the CLI from the active profile so ``trax run`` reaches the
     same server as every other ``trax`` verb. ``None`` means no profile was
     resolved; a ``sync`` run then falls back to the localhost default.
+    """
+
+    resume_path: Path | None = None
+    """A materialized transcript this run continues, exempt from ``baseline``.
+
+    A resumed run's file is written BEFORE the CLI starts, so the pre-spawn
+    snapshot would classify it as a previous session's and never capture it --
+    and the follower would seed it at EOF, skipping every turn it already
+    holds. Naming it here exempts it from both: it is followed from offset 0,
+    so the stored records re-derive to the keys they already have and the
+    append is idempotent.
+    """
+
+    cli_session_id: str | None = None
+    """The CLI's own id for a resumed run, known before the CLI writes.
+
+    A fresh run learns this from the file the CLI mints; a resumed one MINTS
+    it, stamps the server with it, and passes it to ``--resume``. Given here,
+    the sink backfills it at open rather than waiting to observe it.
     """
 
     quiesce_seconds: float = 1.0
@@ -304,7 +343,7 @@ def _spawn_and_drain(
     drain only files this run creates afterward.
     """
     _prepare_session_dirs(adapter)
-    baseline = _existing_session_files(adapter)
+    baseline = _existing_session_files(adapter, config)
     stop = threading.Event()
 
     # Slash-commands the human types (``/exit``) are handled inside the CLI and
@@ -317,16 +356,18 @@ def _spawn_and_drain(
         lambda command, at: slash_queue.append((command, at))
     )
 
-    # Events parsed off the PTY stream (IO-stream runs) land here from the
+    # Lines framed off the PTY stream (IO-stream runs) land here from the
     # relay's IO path; the drain thread -- the single sink writer -- empties
-    # it each tick, exactly like ``slash_queue``. Always constructed (cheap)
-    # so the drain signature stays uniform across adapter shapes. BOUNDED:
-    # a chatty child (thousands of lines/sec) with a stalled sink (a
-    # slow-but-alive server can hold the drain thread ~90s before
+    # it each tick, exactly like ``slash_queue``. RAW, not normalized: the
+    # sink owns one normalizer per part, so normalizing on the relay's thread
+    # would advance that reader's position from two threads at once. Always
+    # constructed (cheap) so the drain signature stays uniform across adapter
+    # shapes. BOUNDED: a chatty child (thousands of lines/sec) with a stalled
+    # sink (a slow-but-alive server can hold the drain thread ~90s before
     # ResilientSink degrades) would otherwise grow this without limit.
     # ``maxlen`` drops OLDEST on overflow -- capture prefers a visible gap
     # over runner OOM, matching the inbound queue's stance.
-    stream_queue: deque[Event] = deque(maxlen=_STREAM_QUEUE_MAX)
+    stream_queue: deque[bytes] = deque(maxlen=_STREAM_QUEUE_MAX)
     # Set once the kernel watch is armed. ``Thread.start`` returns when the
     # thread is SCHEDULED, not when it has run, and the relay forks the CLI on
     # the next statement -- so without waiting here the child can write its
@@ -359,14 +400,13 @@ def _spawn_and_drain(
 
     # A stream adapter names no binary of its own: the command is the ``--``
     # args verbatim (``trax run sh -- bash -c '...'``). Its capture source is
-    # the PTY stream, not a session log, so a line-framing observer feeds each
-    # completed line through the adapter's own ``parse``. Parsed events go
-    # into ``stream_queue`` -- NOT straight into the sink: ``feed`` runs on
-    # the relay's IO path, where a blocking ``sink.emit`` (a slow server
-    # POST) would stall terminal mirroring and input delivery.
+    # the PTY stream, not a session log, so a line-framing observer queues
+    # each completed line. Lines go into ``stream_queue`` -- NOT straight
+    # into the sink: framing runs on the relay's IO path, where a blocking
+    # ``sink.feed`` (a slow server POST) would stall terminal mirroring and
+    # input delivery.
     stream_capture: LineCapture | None = None
     if isinstance(adapter, StreamAdapter):
-        stream_adapter = adapter
         if not config.cli_args:
             stop.set()
             drain_thread.join(timeout=1.0)
@@ -375,10 +415,7 @@ def _spawn_and_drain(
                 f"usage: trax run {adapter.name} -- CMD [ARGS...]"
             )
         argv = list(config.cli_args)
-        stream_capture = LineCapture(
-            partial(_parse_stream_line, stream_adapter),
-            partial(_enqueue_stream_event, stream_queue, stats),
-        )
+        stream_capture = LineCapture(partial(_enqueue_stream_line, stream_queue, stats))
     else:
         argv = [adapter.cli_binary, *config.cli_args]
 
@@ -394,6 +431,13 @@ def _spawn_and_drain(
     # real address (``scientist#2`` on a collision), not the requested name
     # (#453). A local-file / dry-run sink has no server session and returns
     # None, so the requested ``config.actor`` is exported unchanged.
+    #
+    # A resumed run KNOWS its CLI session id before the CLI writes anything --
+    # it minted the id and materialized the transcript under it -- and handing
+    # it over BEFORE the session opens is what makes the server re-attach the
+    # existing AgentSession instead of forking a second one.
+    if config.cli_session_id is not None:
+        sink.set_cli_session_id(config.cli_session_id)
     granted_actor = sink.open()
     # Run the CLI on a PTY we own rather than letting it inherit the terminal:
     # owning the master fd is what lets the server splice messages into the
@@ -485,29 +529,24 @@ def _join_with_watchdog(
         )
 
 
-def _parse_stream_line(adapter: StreamAdapter, raw: bytes) -> Iterable[Event]:
-    """Parse one framed output line through the stream adapter."""
-    return adapter.parse(raw, whole_file=False)
-
-
-def _enqueue_stream_event(queue: deque[Event], stats: _Stats, event: Event) -> None:
-    """Queue one stream event for the drain thread, making overflow VISIBLE.
+def _enqueue_stream_line(queue: deque[bytes], stats: _Stats, raw: bytes) -> None:
+    """Queue one framed stream line for the drain thread, overflow VISIBLE.
 
     ``deque(maxlen=...)`` evicts the oldest silently; a full queue here means
     the sink has stalled while the child keeps printing, and each eviction is
-    a captured-event loss. Count it (surfaces in the end-of-run stats line as
+    a captured-line loss. Count it (surfaces in the end-of-run stats line as
     ``StreamEventDropped=N``) and WARN once per run on the first drop so the
     loss is diagnosable rather than a quiet gap in the transcript.
     """
     if len(queue) == queue.maxlen:
         if not stats.counts.get("StreamEventDropped"):
             _logger.warning(
-                "stream capture queue full (%d); dropping oldest events until "
+                "stream capture queue full (%d); dropping oldest lines until "
                 "the sink drains",
                 queue.maxlen,
             )
         stats.record("StreamEventDropped")
-    queue.append(event)
+    queue.append(raw)
 
 
 def _inbound_poll_loop(
@@ -663,11 +702,18 @@ def _prepare_session_dirs(adapter: Adapter) -> None:
         session_dir.mkdir(parents=True, exist_ok=True)
 
 
-def _existing_session_files(adapter: Adapter) -> frozenset[Path]:
+def _existing_session_files(
+    adapter: Adapter, config: RunConfig | None = None
+) -> frozenset[Path]:
     """Snapshot the matching session files present before the run starts.
 
     Files in this set belong to earlier or concurrent sessions; the follower
     ignores them so this run captures only the session it spawned.
+
+    A ``resume_path`` is EXEMPT: this run materialized it moments ago and is
+    about to continue it, so excluding it would drop the very transcript being
+    resumed -- every turn the CLI appends would be captured while the ones it
+    was handed were not.
     """
     found: set[Path] = set()
     for session_dir in adapter.session_dirs():
@@ -676,7 +722,8 @@ def _existing_session_files(adapter: Adapter) -> frozenset[Path]:
         for path in session_dir.rglob("*"):
             if path.is_file() and adapter.matches_session_file(path):
                 found.add(path)
-    return frozenset(found)
+    resume = config.resume_path if config is not None else None
+    return frozenset(found - {resume} if resume is not None else found)
 
 
 def _drain_filesystem_loop(
@@ -688,10 +735,10 @@ def _drain_filesystem_loop(
     *,
     baseline: frozenset[Path],
     slash_queue: deque[tuple[SlashCommand, datetime]],
-    stream_queue: deque[Event] | None = None,
+    stream_queue: deque[bytes] | None = None,
     armed: threading.Event | None = None,
 ) -> None:
-    """Watch the adapter's session dirs; emit events as lines are appended.
+    """Watch the adapter's session dirs; emit records as lines are appended.
 
     Wake-driven, not polled. The cost of polling was never the tick -- it was
     the DISCOVERY inside it: claude's ``session_dirs()`` returned every project
@@ -740,21 +787,27 @@ async def _drain_until_stopped(
     *,
     baseline: frozenset[Path],
     slash_queue: deque[tuple[SlashCommand, datetime]],
-    stream_queue: deque[Event] | None,
+    stream_queue: deque[bytes] | None,
     replay: bool = False,
     armed: threading.Event | None = None,
 ) -> None:
     """Follow the session logs and drain the queues until ``stop``."""
     watched = tuple(d for d in adapter.session_dirs() if d.is_dir())
-    lines: asyncio.Queue[tuple[Path, bytes]] = asyncio.Queue()
-    # Record ids already emitted. Compaction rewrites the transcript, so a
-    # retained turn is re-read; this is what keeps it from being captured
-    # twice (see ``_already_captured``).
-    seen: set[str] = set()
+    lines: asyncio.Queue[_Captured] = asyncio.Queue()
     follower = (
         asyncio.create_task(
             _follow_session_files(
-                adapter, watched, baseline, lines, replay=replay, armed=armed
+                adapter,
+                watched,
+                baseline,
+                lines,
+                replay=replay,
+                resume=(
+                    frozenset({config.resume_path})
+                    if config.resume_path is not None
+                    else frozenset()
+                ),
+                armed=armed,
             )
         )
         if watched
@@ -775,7 +828,7 @@ async def _drain_until_stopped(
                 slash_queue=slash_queue,
                 stream_queue=stream_queue,
             )
-            await _drain_lines(adapter, sink, stats, config, lines, seen=seen)
+            await _drain_lines(adapter, sink, stats, config, lines)
             _flush(sink)
             # Wait on the LINE queue, not a clock: a captured line wakes this
             # the moment the follower delivers it. The timeout is the ceiling
@@ -787,16 +840,16 @@ async def _drain_until_stopped(
             # every line the follower delivered while this waited, and the
             # transcript would record a later turn before an earlier one.
             with contextlib.suppress(TimeoutError):
-                path, raw = await asyncio.wait_for(lines.get(), _QUEUE_DRAIN_SEC)
-                _emit_line(adapter, sink, stats, config, path=path, raw=raw, seen=seen)
+                captured = await asyncio.wait_for(lines.get(), _QUEUE_DRAIN_SEC)
+                _emit_line(adapter, sink, stats, config, captured)
         # A final pass: the CLI's last write may land between the last wake
         # and ``stop``, and a session-end record often does exactly that.
         # The wait lets the follower run at least once -- a caller that set
         # ``stop`` before entering (a replay, a test) skipped the loop body
         # entirely, so nothing has been delivered yet.
         with contextlib.suppress(TimeoutError):
-            path, raw = await asyncio.wait_for(lines.get(), _QUEUE_DRAIN_SEC)
-            _emit_line(adapter, sink, stats, config, path=path, raw=raw, seen=seen)
+            captured = await asyncio.wait_for(lines.get(), _QUEUE_DRAIN_SEC)
+            _emit_line(adapter, sink, stats, config, captured)
         await _drain_queues(
             adapter,
             sink,
@@ -805,7 +858,7 @@ async def _drain_until_stopped(
             slash_queue=slash_queue,
             stream_queue=stream_queue,
         )
-        await _drain_lines(adapter, sink, stats, config, lines, seen=seen)
+        await _drain_lines(adapter, sink, stats, config, lines)
         _flush(sink)
     finally:
         if follower is not None:
@@ -818,9 +871,10 @@ async def _follow_session_files(
     adapter: Adapter,
     watched: tuple[Path, ...],
     baseline: frozenset[Path],
-    lines: asyncio.Queue[tuple[Path, bytes]],
+    lines: asyncio.Queue[_Captured],
     *,
     replay: bool = False,
+    resume: frozenset[Path] = frozenset(),
     armed: threading.Event | None = None,
 ) -> None:
     """Feed every line this run's session files gain onto ``lines``.
@@ -864,10 +918,10 @@ async def _follow_session_files(
         # its current end, so this run's own session file -- written during the
         # outage, and excluded from ``baseline`` -- would resume past every
         # line it already holds and those turns would be lost with nothing
-        # said. Replaying re-reads them: ``_already_captured`` drops the ones
-        # carrying an id, and a duplicated turn is the survivable direction to
-        # err in where it does not. ``mine`` still excludes ``baseline``, so a
-        # replay never reaches another session's transcript.
+        # said. Replaying re-reads them, and re-reading is free: a record's key
+        # is its POSITION in the file's normalized stream, so a replayed line
+        # lands back on the key it already had. ``mine`` still excludes
+        # ``baseline``, so a replay never reaches another session's transcript.
         await _watch_session_files(
             adapter,
             watched,
@@ -875,6 +929,7 @@ async def _follow_session_files(
             bodies,
             mine,
             replay=replay or rearming,
+            resume=resume,
             armed=armed,
         )
         rearming = True
@@ -886,11 +941,12 @@ async def _follow_session_files(
 async def _watch_session_files(
     adapter: Adapter,
     watched: tuple[Path, ...],
-    lines: asyncio.Queue[tuple[Path, bytes]],
+    lines: asyncio.Queue[_Captured],
     bodies: dict[Path, str],
     mine: Callable[[Path], bool],
     *,
     replay: bool,
+    resume: frozenset[Path] = frozenset(),
     armed: threading.Event | None = None,
 ) -> None:
     """Arm one watch and feed it until it fails; the caller rearms."""
@@ -915,13 +971,20 @@ async def _watch_session_files(
                     for path in sorted(p for p in paths if mine(p)):
                         _queue_body(path, lines, bodies)
             return
-        async for path, line in follow_tree(
+        async for followed in follow_tree(
             *watched,
             match=mine,
             replay=replay,
+            resume=resume,
             on_armed=None if armed is None else armed.set,
         ):
-            lines.put_nowait((path, line.encode()))
+            lines.put_nowait(
+                _Captured(
+                    path=followed.path,
+                    raw=followed.text.encode(),
+                    restart=followed.restart,
+                )
+            )
     except asyncio.CancelledError:
         raise
     except Exception:
@@ -935,7 +998,7 @@ async def _watch_session_files(
 
 
 def _queue_body(
-    path: Path, lines: asyncio.Queue[tuple[Path, bytes]], bodies: dict[Path, str]
+    path: Path, lines: asyncio.Queue[_Captured], bodies: dict[Path, str]
 ) -> None:
     """Queue a whole-file session's body, skipping empty, unreadable, or unchanged.
 
@@ -959,7 +1022,7 @@ def _queue_body(
     if bodies.get(path) == digest:
         return
     bodies[path] = digest
-    lines.put_nowait((path, body))
+    lines.put_nowait(_Captured(path=path, raw=body, restart=True))
 
 
 def _read_bytes(path: Path) -> bytes:
@@ -979,17 +1042,15 @@ async def _drain_lines(
     sink: Sink,
     stats: _Stats,
     config: RunConfig,
-    lines: asyncio.Queue[tuple[Path, bytes]],
-    *,
-    seen: set[str],
+    lines: asyncio.Queue[_Captured],
 ) -> None:
-    """Emit every line the follower has delivered so far, each turn once."""
+    """Emit every line the follower has delivered so far."""
     while True:
         try:
-            path, raw = lines.get_nowait()
+            captured = lines.get_nowait()
         except asyncio.QueueEmpty:
             return
-        _emit_line(adapter, sink, stats, config, path=path, raw=raw, seen=seen)
+        _emit_line(adapter, sink, stats, config, captured)
 
 
 def _emit_line(
@@ -997,63 +1058,26 @@ def _emit_line(
     sink: Sink,
     stats: _Stats,
     config: RunConfig,
-    *,
-    path: Path,
-    raw: bytes,
-    seen: set[str],
+    captured: _Captured,
 ) -> None:
-    """Emit one captured line, unless it is blank or already captured."""
+    """Emit one captured line.
+
+    No line-level dedup. A record's stored key is its POSITION in the file's
+    normalized stream, so re-feeding a file the CLI rewrote lands each record
+    back where it already was. Identity by record id (what this did before)
+    could only ever suppress a duplicate, never correct one that CHANGED --
+    and a compaction is a replacement, so a re-derived record legitimately
+    differs from the stored one.
+    """
     # Backfill the CLI's own session id (the file names it) so a fresh run
     # becomes resumable on its next ``--resume``. The sink keeps the first
     # non-empty id and ignores it on a local-file run.
-    cli_session_id = adapter.session_id_from_path(path)
+    cli_session_id = adapter.session_id_from_path(captured.path)
     if cli_session_id is not None:
         sink.set_cli_session_id(cli_session_id)
-    if not raw.strip() or _already_captured(raw, seen):
+    if not captured.raw.strip():
         return
-    _process_chunk(raw, adapter, sink, stats, config, whole_file=adapter.whole_file)
-
-
-def _already_captured(raw: bytes, seen: set[str]) -> bool:
-    """Whether this record was emitted earlier in the run.
-
-    Compaction does not append -- claude REWRITES the session file, smaller,
-    keeping the turns it did not summarize away. The follower correctly reads
-    the replacement from its start, so every retained turn arrives a second
-    time. Nothing downstream can catch it: the sink mints ``seq`` per read, so
-    a re-read turn lands under a fresh ordinal rather than colliding with the
-    ``(session_id, seq)`` key that would have deduped it.
-
-    Identity comes from the record's own id, not the bytes: a re-serialized
-    line can differ by whitespace or key order while naming the same turn. A
-    record carrying no id is always emitted -- a duplicate turn is a smaller
-    fault than a dropped one, and this is only reachable after a rewrite.
-    """
-    record_id = _record_id(raw)
-    if record_id is None:
-        return False
-    if record_id in seen:
-        return True
-    seen.add(record_id)
-    return False
-
-
-def _record_id(raw: bytes) -> str | None:
-    """One line's own identifier, or None when it carries none.
-
-    Claude stamps ``uuid`` on every record; codex rollouts carry none, which
-    is why this returns None rather than falling back to a hash of the line --
-    a CLI that legitimately repeats an identical line would then lose the
-    repeat.
-    """
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    found = cast(dict[str, object], parsed).get("uuid")
-    return found if isinstance(found, str) and found else None
+    _process_chunk(captured, adapter, sink, stats, config)
 
 
 async def _drain_queues(
@@ -1063,7 +1087,7 @@ async def _drain_queues(
     config: RunConfig,
     *,
     slash_queue: deque[tuple[SlashCommand, datetime]],
-    stream_queue: deque[Event] | None,
+    stream_queue: deque[bytes] | None,
 ) -> None:
     """Emit whatever the relay's threads have queued, oldest first.
 
@@ -1072,7 +1096,7 @@ async def _drain_queues(
     """
     try:
         _emit_slash_commands(adapter, sink, stats, config, slash_queue)
-        _emit_stream_events(adapter, sink, stats, stream_queue)
+        _emit_stream_lines(adapter, sink, stats, stream_queue)
     except Exception:
         _logger.warning("trax run: queue drain failed; continuing", exc_info=True)
 
@@ -1095,7 +1119,11 @@ def _emit_slash_commands(
     config: RunConfig,
     slash_queue: deque[tuple[SlashCommand, datetime]],
 ) -> None:
-    """Drain queued slash-commands into the sink as captured turns.
+    """Drain queued slash-commands into the sink.
+
+    NOT as records: a command is handled inside the TUI and never written to
+    the session log, so it has no position in any part and cannot be
+    re-derived. It goes down its own path and the server numbers it.
 
     Runs on the drain thread (the single sink writer). ``popleft`` on a
     ``deque`` is atomic, so it needs no lock against the relay thread's
@@ -1108,82 +1136,76 @@ def _emit_slash_commands(
             command, submitted_at = slash_queue.popleft()
         except IndexError:
             break
-        event = Event(message=command, timestamp=submitted_at)
-        stats.record(event.kind)
-        sink.emit(adapter.name, event)
+        sink.emit_slash_command(command, submitted_at)
+        stats.record("SlashCommand")
         if config.verbose:
-            sys.stderr.write(f"[trax run] {adapter.name}: {event.kind}\n")
+            sys.stderr.write(f"[trax run] {adapter.name}: SlashCommand\n")
 
 
-def _emit_stream_events(
+def _emit_stream_lines(
     adapter: Adapter,
     sink: Sink,
     stats: _Stats,
-    stream_queue: deque[Event] | None,
+    stream_queue: deque[bytes] | None,
 ) -> None:
-    """Drain stream-captured events into the sink (single sink writer).
+    """Drain stream-captured lines into the sink (single sink writer).
 
-    Runs on the drain thread. The relay's IO path only appends to the
-    deque (atomic), so parsing never blocks on a slow ``sink.emit``.
+    Runs on the drain thread. The relay's IO path only appends to the deque
+    (atomic), so framing never blocks on a slow ``sink.feed``.
+
+    Every line goes to ONE part: a scrape follows no file, but a record still
+    needs one, so the stream names itself (:data:`_STREAM_PART`) and the
+    positions run from zero across the whole run.
     """
     if stream_queue is None:
         return
     while True:
         try:
-            event = stream_queue.popleft()
+            raw = stream_queue.popleft()
         except IndexError:
             break
-        stats.record(event.kind)
-        sink.emit(adapter.name, event)
+        for kind in sink.feed(adapter, _STREAM_PART, raw):
+            stats.record(kind)
 
 
 def _process_chunk(
-    raw: bytes,
+    captured: _Captured,
     adapter: Adapter,
     sink: Sink,
     stats: _Stats,
     config: RunConfig,
-    *,
-    whole_file: bool,
 ) -> None:
-    """Parse one chunk into events and emit each; never let a bug abort capture.
+    """Feed one chunk to the sink; never let a bug abort capture.
 
     Both halves run untrusted work in a daemon drain thread, and an escaping
     raise there kills the thread and silently ends capture for the rest of the
-    run. ``parse`` runs adapter code over CLI bytes (a malformed turn failing
-    an ``AssistantMessage`` invariant); ``emit`` reaches a sink that can fail
-    at the bottom of its own fallback chain -- ``ResilientSink`` degrades to a
-    local ``FileSink``, whose write raises on a full disk with nothing left to
-    catch it. Each is guarded so a failure costs one chunk or one turn.
+    run. Normalizing runs adapter code over CLI bytes (a malformed line failing
+    a record invariant); the sink can fail at the bottom of its own fallback
+    chain -- ``ResilientSink`` degrades to a local ``FileSink``, whose write
+    raises on a full disk with nothing left to catch it. One guard covers both,
+    so a failure costs one chunk rather than the run.
     """
     try:
-        events = tuple(adapter.parse(raw, whole_file=whole_file))
+        emitted = sink.feed(
+            adapter,
+            captured.path,
+            captured.raw,
+            restart=captured.restart,
+        )
     except Exception:
         # ``exc_info`` so the swallowed failure carries a traceback: without it
         # a malformed-output loss is an opaque one-liner with no clue which
         # adapter path raised (K6-004).
         _logger.warning(
-            "trax run: %s adapter failed to parse a chunk",
+            "trax run: %s failed to capture a chunk",
             adapter.name,
             exc_info=True,
         )
         return
-    for event in events:
-        # The sink mints the per-session seq and owns serialization (the
-        # frozen payload is unfrozen at the sink boundary); the run only tallies.
-        try:
-            stats.record(event.kind)
-            sink.emit(adapter.name, event)
-        except Exception:
-            _logger.warning(
-                "trax run: %s sink failed to emit a %s; continuing",
-                adapter.name,
-                event.kind,
-                exc_info=True,
-            )
-            continue
+    for kind in emitted:
+        stats.record(kind)
         if config.verbose:
-            sys.stderr.write(f"[trax run] {adapter.name}: {event.kind}\n")
+            sys.stderr.write(f"[trax run] {adapter.name}: {kind}\n")
 
 
 def _dry_run_drain(
@@ -1286,8 +1308,37 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def resume_argv(cli_name: str, cli_session_id: str | None) -> tuple[str, ...]:
+    """The tokens that tell ``cli_name`` to continue ``cli_session_id``.
+
+    Per-CLI because the spelling is: claude takes a FLAG (``--resume <uuid>``)
+    and codex a SUBCOMMAND (``codex resume <SESSION_ID>``), both verified
+    against the installed binaries' help. Handing codex claude's spelling
+    makes it reject the argument, so a resume that materialized a perfectly
+    good rollout never starts.
+
+    Args:
+      cli_name: Which CLI is being spawned.
+      cli_session_id: The id it should re-enter, or ``None`` for a fresh run.
+
+    Returns:
+      argv: Tokens to prepend to the CLI's own arguments; empty for a fresh
+        run, and for a CLI with no resume spelling at all.
+
+    """
+    if not cli_session_id:
+        return ()
+    if cli_name == "codex":
+        return ("resume", cli_session_id)
+    return ("--resume", cli_session_id)
+
+
 def main(
-    argv: Sequence[str], *, client_factory: Callable[[], Client] | None = None
+    argv: Sequence[str],
+    *,
+    client_factory: Callable[[], Client] | None = None,
+    resume_path: Path | None = None,
+    cli_session_id: str | None = None,
 ) -> int:
     """Entry point for ``trax run``, called from ``trax/cli.py``.
 
@@ -1296,6 +1347,12 @@ def main(
       client_factory: Builds the Trackinizer client from the active profile.
         Invoked only when the run actually syncs, so a ``--no-sync`` or
         ``--out`` capture never resolves a profile or opens a socket.
+      resume_path: A materialized transcript this run continues. Not a flag:
+        the file is written by the resume tail moments before, so there is no
+        spelling of it a human would type.
+      cli_session_id: The id that transcript was materialized under, which
+        ``--resume`` takes and which re-attaches the run to its stored
+        AgentSession.
 
     Returns:
       exit_code: The wrapped CLI's exit status.
@@ -1316,7 +1373,8 @@ def main(
     return run(
         RunConfig(
             cli_name=args.cli,
-            cli_args=tuple(cli_argv),
+            # Prepended, so a caller's own ``--`` args still win over it.
+            cli_args=(*resume_argv(args.cli, cli_session_id), *cli_argv),
             actor=args.actor or os.environ.get("AGENTNAME", "Agent"),
             rooms=tuple(args.rooms or ()),
             out_path=args.out,
@@ -1324,5 +1382,7 @@ def main(
             dry_run=args.dry_run,
             sync=args.sync,
             client=client_factory() if syncing and client_factory else None,
+            resume_path=resume_path,
+            cli_session_id=cli_session_id,
         )
     )

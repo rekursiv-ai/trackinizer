@@ -2,8 +2,8 @@
 
 Owns session open/resume/end (:meth:`start_session`, :meth:`_resume_session`,
 :meth:`end_session`), routing-name reservation, and the append/read seam for
-captured turns (:meth:`append_events`, :meth:`read_session_events`,
-:meth:`read_feed`). Sessions are ``AgentSession`` inquiries, so submit and
+captured records (:meth:`read_feed`; the append/read of the records
+themselves lives in :mod:`store.session_ir`). Sessions are ``AgentSession`` inquiries, so submit and
 edit machinery is reused through the composed :class:`Store`.
 """
 
@@ -14,9 +14,15 @@ from datetime import datetime
 from typing import cast
 from uuid import UUID
 
+import json
+
 import asyncpg
 
-from trackinizer.lib.custom_json import DataclassCodec, JSONValue, json_unfreeze
+from trackinizer.lib.custom_json import (
+    DictCodec,
+    JSONValue,
+    json_freeze,
+)
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import (
@@ -24,16 +30,13 @@ from trackinizer.server.store.change_id_slot import (
     set_client_change_id,
 )
 from trackinizer.server.store.edit import _EditMixin
-from trackinizer.server.store.read import seq_range_clause
 from trackinizer.server.store.submit import _SubmitMixin
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.bodies import SubmitAgentSession
-from trackinizer.wire.routes import DEFAULT_LIST_LIMIT
-from trackinizer.wire.seq_ranges import SeqRange
-from trackinizer.wire.wire_sessions import EventBody, FeedEvent
+from trackinizer.wire.wire_sessions import FeedEvent
 
 
 __all__ = [
@@ -213,12 +216,20 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
 
     @staticmethod
     async def _next_event_seq(conn: Conn, session_id: UUID) -> int:
-        """The event log's next free seq for ``session_id`` (``max(seq)+1``, 0 if empty)."""
-        last = await conn.fetchval(
-            "SELECT max(seq) FROM agent_session_events WHERE session_id = $1",
-            session_id,
-        )
-        return 0 if last is None else int(last) + 1
+        """Deprecated: always 0, kept because the wire field still exists.
+
+        It reported the legacy event log's continuation point, which a resumed
+        run seeded its counter from. A record's key is DERIVED from its
+        position in its source file, so a resumed run re-derives the same keys
+        and needs no continuation -- and the table it read is gone.
+
+        ``SessionStartResponse.seq`` is the last consumer; no client reads it
+        (``trax/run/sink.py::_ensure_session`` says so explicitly). The field
+        goes when the wire type can change without a coordinated client
+        release.
+        """
+        del conn, session_id
+        return 0
 
     async def _resume_session(
         self, req: SubmitAgentSession, *, api_key_id: UUID | None, actor: Inquiry.Actor
@@ -364,177 +375,10 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             )
         return [(row["id"], tuple(row["agentsession_rooms"] or ())) for row in rows]
 
-    async def append_events(
-        self,
-        session_id: UUID,
-        events: Sequence[EventBody],
-    ) -> tuple[int, int]:
-        """Append agent-session events idempotently; return ``(appended, skipped)``.
-
-        The storage seam for session capture (the one function ``trax run``
-        sync drives, and the swap point if the event store moves to
-        ClickHouse later). Each wire body is rebuilt into a typed
-        :class:`AgentSessionEvent` (``ev.to_event``) before storage, so its
-        ``kind == type(message).__name__`` invariant runs here, on the hot
-        path -- a forged body whose ``kind`` disagrees with its ``message``
-        is rejected, not persisted.
-
-        ``PRIMARY KEY (session_id, seq)`` makes a retried batch a no-op:
-        ``ON CONFLICT DO NOTHING RETURNING`` reports exactly the rows this
-        call newly wrote, so ``appended`` and ``skipped`` are exact even
-        under a concurrent same-session appender (no count-subtraction race).
-
-        Raises:
-          NotFoundError: ``session_id`` is not an existing inquiry.
-          ConflictError: ``session_id`` is not an ``AgentSession`` row (an
-            Issue / Belief is not a session), or it has already ended -- a
-            dead session's poller will never inject the events, mirroring the
-            ``/inbound`` enqueue route's ended-session 409.
-          ValueError: A body's ``kind`` disagrees with its ``message`` type.
-
-        """
-        if not events:
-            return (0, 0)
-        # Build typed events first: ``to_event`` runs the kind/message
-        # invariant, so a mismatch fails before any row is written.
-        typed = [ev.to_event(session_id) for ev in events]
-        rows = [
-            (
-                session_id,
-                e.seq,
-                e.model,
-                e.kind,
-                e.timestamp,
-                json_unfreeze(_strip_postgres_nuls(DataclassCodec.to_json(e.message))),
-            )
-            for e in typed
-        ]
-        # One transaction so the kind check, the insert, and the row-accounting
-        # are atomic: a concurrent same-session appender can neither slip events
-        # under a non-session guard nor inflate the count between the two reads.
-        # ``notify_after_commit`` lets a successful append wake live subscribers
-        # (the SPA session view, a ``trax run`` injection listener) -- the
-        # session id is an inquiry id, so the existing ``/api/web/subscribe``
-        # fanout carries it with no new payload shape.
-        async with (
-            notify_after_commit(),
-            self.engine.acquire() as conn,
-            tx(conn),
-        ):
-            # Read kind + liveness under the row lock so a concurrent ``end``
-            # can't slip between the check and the insert: events must attach
-            # only to a LIVE AgentSession.
-            session = await conn.fetchrow(
-                "SELECT kind, agentsession_ended FROM inquiries "
-                "WHERE id = $1 FOR UPDATE",
-                session_id,
-            )
-            if session is None:
-                raise NotFoundError(f"session {session_id} not found")
-            if session["kind"] != "AgentSession":
-                raise ConflictError(
-                    f"inquiry {session_id} is not an AgentSession "
-                    f"(kind={session['kind']!r}); events may only attach to a session"
-                )
-            if session["agentsession_ended"] is not None:
-                # The session is closed; its poller is gone and will never
-                # inject these events. Reject (no row written), mirroring the
-                # ``/inbound`` enqueue route's ended-session 409.
-                raise ConflictError(
-                    f"session {session_id} has ended; cannot append events"
-                )
-            # ``ON CONFLICT DO NOTHING RETURNING`` reports exactly the rows
-            # this statement newly inserted -- the seqs that did NOT collide.
-            # A single ``unnest`` INSERT (not ``executemany``, which cannot
-            # RETURNING) makes the accounting exact and race-free: a
-            # concurrent same-session commit cannot inflate the count because
-            # we count returned rows, not a whole-session ``count(*)`` delta.
-            try:
-                inserted = await conn.fetch(
-                    "INSERT INTO agent_session_events "
-                    "(session_id, seq, model, kind, timestamp, message) "
-                    "SELECT * FROM unnest("
-                    "$1::uuid[], $2::int[], $3::text[], $4::text[], "
-                    "$5::timestamptz[], $6::jsonb[]) "
-                    "ON CONFLICT (session_id, seq) DO NOTHING "
-                    "RETURNING seq",
-                    [r[0] for r in rows],
-                    [r[1] for r in rows],
-                    [r[2] for r in rows],
-                    [r[3] for r in rows],
-                    [r[4] for r in rows],
-                    [r[5] for r in rows],
-                )
-            except asyncpg.ForeignKeyViolationError as exc:
-                # The ``session_id`` FK to ``inquiries`` failed: the session
-                # was purged in the race window between the kind check and the
-                # insert. It is gone, so this is a clean 404 -- not a raw 409
-                # that would leak the constraint name.
-                raise NotFoundError(f"session {session_id} not found") from exc
-            appended = len(inserted)
-            # Only a real append wakes subscribers: a fully-duplicate retry
-            # (appended == 0) is a no-op and must stay silent.
-            if appended:
-                self._buffer_notification(session_id)
-        return (appended, len(events) - appended)
-
-    async def read_session_events(
-        self,
-        session_id: UUID,
-        *,
-        limit: int | None = None,
-        offset: int = 0,
-        seq_ranges: Sequence[SeqRange] = (),
-        kind: str | None = None,
-    ) -> list[EventBody]:
-        """Read a window of one session's events in ``seq`` order.
-
-        The read half of the capture seam. Returns typed
-        :class:`EventBody`s ordered by ``seq`` (out-of-order appends sort
-        correctly because ``seq`` is the order key, not insertion time).
-        ``seq_ranges`` is a union of inclusive intervals, sharing the
-        ``OR``-of-intervals lowering with :meth:`list_kind`; ``kind``
-        narrows to one turn kind. ``limit`` bounds the window so a caller
-        never pulls an arbitrarily large session into memory at once.
-        """
-        clauses = ["session_id = $1"]
-        params: list[object] = [session_id]
-        if (seq_clause := seq_range_clause(params, seq_ranges)) is not None:
-            clauses.append(seq_clause)
-        if kind is not None:
-            params.append(kind)
-            clauses.append(f"kind = ${len(params)}")
-        where = " AND ".join(clauses)
-        params.append(limit if limit is not None else DEFAULT_LIST_LIMIT)
-        limit_pos = len(params)
-        params.append(offset)
-        offset_pos = len(params)
-        sql = vetted_sql(
-            "SELECT seq, kind, timestamp, model, message "
-            "FROM agent_session_events WHERE ",
-            where,
-            " ORDER BY seq LIMIT $",
-            str(limit_pos),
-            " OFFSET $",
-            str(offset_pos),
-        )
-        async with self.engine.acquire() as conn:
-            rows = await conn.fetch(sql, *params)
-        return [
-            EventBody(
-                seq=row["seq"],
-                kind=row["kind"],
-                timestamp=row["timestamp"],
-                model=row["model"],
-                message=row["message"] or {},
-            )
-            for row in rows
-        ]
-
     async def read_feed(
         self,
         *,
-        after: tuple[datetime, UUID, int] | None = None,
+        after: tuple[datetime, UUID, int, int] | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
         room: str | None = None,
@@ -545,14 +389,14 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         """Read a cross-session window of captured turns, oldest first.
 
         The backing read for the multi-agent console: it interleaves turns from
-        every session into one stream ordered by ``(created, session_id, seq)``
-        -- the server write clock, since per-session ``seq`` is not comparable
+        every session into one stream ordered by ``(created, session_id, part, idx)``
+        -- the server write clock, since per-session position is not comparable
         across sessions. Each turn is joined to its ``AgentSession`` row for the
         routing context the console shows (``actor`` = owner, ``rooms``, ``cli``).
 
         Args:
           after: Exclusive composite keyset cursor ``(created, session_id,
-            seq)`` to resume past. The cursor is composite (not bare
+            part, idx)`` to resume past. The cursor is composite (not bare
             ``created``) because the order key is, so a page boundary falling
             inside a same-``created`` group does not skip the rows after it.
           since: Inclusive lower bound on ``created`` -- a historical window's
@@ -569,7 +413,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             differs.
 
         Returns:
-          events: ``FeedEvent``s ordered by ``(created, session_id, seq)``.
+          events: ``FeedEvent``s ordered by ``(created, session_id, part, idx)``.
 
         """
         clauses = ["i.kind = 'AgentSession'"]
@@ -578,7 +422,8 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             params.extend(after)
             n = len(params)
             clauses.append(
-                f"(e.created, e.session_id, e.seq) > (${n - 2}, ${n - 1}, ${n})"
+                f"(e.created, e.session_id, e.part, e.idx) > "
+                f"(${n - 3}, ${n - 2}, ${n - 1}, ${n})"
             )
         if since is not None:
             params.append(since)
@@ -599,16 +444,19 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         # end was read.
         order = "DESC" if tail else "ASC"
         sql = vetted_sql(
-            "SELECT e.session_id, e.seq, e.kind, e.created, e.timestamp, "
-            "e.model, e.message, i.owner, i.agentsession_rooms, i.agentsession_cli "
-            "FROM agent_session_events e JOIN inquiries i ON i.id = e.session_id "
+            "SELECT e.session_id, e.part, e.idx, e.kind, e.created, e.timestamp, "
+            "e.model, e.payload, e.text, "
+            "i.owner, i.agentsession_rooms, i.agentsession_cli "
+            "FROM session_records e JOIN inquiries i ON i.id = e.session_id "
             "WHERE ",
             where,
             " ORDER BY e.created ",
             order,
             ", e.session_id ",
             order,
-            ", e.seq ",
+            ", e.part ",
+            order,
+            ", e.idx ",
             order,
             " LIMIT $",
             str(len(params)),
@@ -623,12 +471,14 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 actor=row["owner"] or "",
                 rooms=list(row["agentsession_rooms"] or []),
                 cli=row["agentsession_cli"],
-                seq=row["seq"],
+                part=row["part"],
+                seq=row["idx"],
                 kind=row["kind"],
                 created=row["created"],
                 timestamp=row["timestamp"],
                 model=row["model"],
-                message=row["message"] or {},
+                message=json_freeze(DictCodec.coerce(json.loads(row["payload"]))),
+                text=row["text"],
             )
             for row in rows
         ]

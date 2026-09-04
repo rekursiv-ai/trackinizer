@@ -1,23 +1,43 @@
 """The ``Adapter`` protocol each supported CLI implements.
 
-Each CLI ships one ``Adapter`` saying where its session log lives and how to
-turn one raw chunk into zero or more :class:`Event`s. The session runner stays
-CLI-agnostic and drives every adapter through this protocol.
+Each CLI ships one ``Adapter`` saying where its session log lives and which
+reader turns that log into records. The session runner stays CLI-agnostic and
+drives every adapter through this protocol.
 
-The :class:`Event` it produces lives one level up, in the run package's own
-``custom_types``: the sinks consume events without ever touching an adapter.
+The records themselves are the shared IR (``trackinizer.lib.agent.types.sessions``),
+not a trackinizer-specific shape: one vocabulary reads a session, stores it,
+and writes it back out as any CLI's native format.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
-from trackinizer.trax.run.custom_types import Event
+from trackinizer.trax.run.adapters.tail import Tail
 
 
-__all__ = ["Adapter", "StreamAdapter"]
+__all__ = ["Adapter", "Capture", "StreamAdapter"]
+
+
+type Capture = Literal["pty", "pipe"]
+"""How a wrapped child is spawned, and therefore what its capture can say.
+
+Measured on a child printing three lines then one to stderr:
+
+* ``"pty"`` -- one terminal for both output streams, so the kernel interleaves
+  them before any reader sees a byte and ``Stderr`` is not recoverable. Lines
+  arrive as they are printed (0.01s, 0.31s, 0.61s), because libc line-buffers
+  on a tty. The child gets a real terminal, which is what a TUI needs.
+* ``"pipe"`` -- three real descriptors, so ``Stdin``, ``Stdout``, and
+  ``Stderr`` are all distinguishable. Nothing arrives until 0.91s, when the
+  child exits and flushes its block buffer; flushing is the CHILD's business
+  (``python -u``, ``stdbuf -oL``) and a child killed first loses what it held.
+
+So the two are not better and worse: one buys separation, the other buys a
+terminal and liveness.
+"""
 
 
 class Adapter(Protocol):
@@ -30,13 +50,14 @@ class Adapter(Protocol):
     """The executable we exec (``"claude"`` / ``"gemini"`` / ``"codex"``)."""
 
     whole_file: bool
-    """How the runner drains this adapter's session files.
+    """Whether the CLI rewrites its session file rather than appending.
 
-    ``False`` (claude / codex): the log is append-only JSONL; the runner
-    follows a byte offset and hands each new newline-terminated line to
-    :meth:`parse`. ``True`` (gemini): the CLI rewrites one JSON object in
-    place, so the runner re-reads the whole file on each change and hands
-    the entire body to :meth:`parse`.
+    ``False`` (claude / codex): append-only JSONL, so the runner follows a
+    byte offset and feeds each new line. ``True`` (gemini): one JSON object
+    rewritten in place, so the runner re-reads the whole body on each change
+    and feeds that -- which the reader takes as the whole session again, and
+    the chunk is marked a restart so each record lands back on the position it
+    already held.
     """
 
     def session_dirs(self) -> Iterable[Path]:
@@ -84,47 +105,49 @@ class Adapter(Protocol):
         """
         ...
 
-    def parse(self, raw: bytes, *, whole_file: bool) -> Iterable[Event]:
-        """Translate one raw chunk into zero or more ``Event``s.
+    def reader(self) -> Tail:
+        """A fresh reader for one of this CLI's session files.
 
-        One transport chunk is not one turn: a single line can carry several
-        results (claude's batched parallel ``tool_result`` blocks), and a
-        whole-file body carries the latest turn. Yielding an iterable lets the
-        adapter map a chunk to however many turns it really contains.
+        One per FILE, not per run: a reader carries the position it has read
+        to, and a session spans several files (claude splits on compaction,
+        codex forks). Sharing one across files would number the second file's
+        records after the first's.
 
-        Args:
-          raw: One newline-terminated log line (``whole_file=False``) or the
-            entire file body (``whole_file=True``), matching :attr:`whole_file`.
-          whole_file: Whether ``raw`` is the full file (vs. one appended line);
-            the runner passes the adapter's own :attr:`whole_file` value.
-
-        Yields:
-          event: One captured turn. Non-event chunks (blank lines, CLI
-            bookkeeping) yield nothing. On malformed JSON the adapter chooses:
-            raise to surface a parser bug, or yield nothing for known partial
-            writes.
-
+        A :class:`Tail` rather than a reader of this module's own: the IR's
+        ``normalize`` PULLS lines and the runner PUSHES them, and ``Tail`` is
+        that turn -- so capture runs the same reader conversion does, and a
+        dialect fix lands in both.
         """
         ...
 
 
 @runtime_checkable
 class StreamAdapter(Adapter, Protocol):
-    """An adapter whose session source is the child's own PTY stream.
+    """An adapter whose session source is the child's own IO streams.
 
     The wrapped command writes no session log, so the runner takes the
-    binary from the ``--`` args, tails nothing, and instead frames the
-    pump's output bytes into lines (``LineCapture``), feeding each
-    completed line to :meth:`Adapter.parse` -- here ``raw`` is one output
-    line, never a log line, and ``whole_file`` is always ``False``.
+    binary from the ``--`` args, tails nothing, and instead frames the child's
+    output bytes into lines (``LineCapture``), feeding each completed line to
+    this adapter's reader -- there the "line" is one line of output, never a
+    log line.
 
-    Structurally an :class:`Adapter` whose :attr:`cli_binary` is empty;
-    the marker :attr:`stream_source` is what the runner dispatches on
-    (``runtime_checkable`` isinstance only sees attribute presence, so a
-    plain file adapter never matches). A new stream dialect (say
-    JSON-lines to richer typed events) is one subclass overriding
-    ``parse`` plus a registry entry.
+    Structurally an :class:`Adapter` whose :attr:`cli_binary` is empty; the
+    marker :attr:`stream_source` is what the runner dispatches on
+    (``runtime_checkable`` isinstance only sees attribute presence, so a plain
+    file adapter never matches). A new stream dialect is one subclass with its
+    own reader plus a registry entry.
     """
 
     stream_source: bool
     """Marker: True on every stream adapter; absent on file adapters."""
+
+    capture: Capture
+    """How the child is spawned, which decides what can be distinguished.
+
+    Not a preference: a file adapter has no choice at all. Claude and codex
+    are TUIs whose injected messages must be indistinguishable from typed
+    ones, and owning the pty master is what makes that true -- so ``"pty"`` is
+    their only mode and they do not carry this field. A stream adapter names
+    one because both are usable and they trade against each other; see
+    :data:`Capture`.
+    """

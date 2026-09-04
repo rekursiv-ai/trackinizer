@@ -196,8 +196,71 @@ def test_empty_argv_lists_all_subjects(
 
 
 def test_unknown_verb(client: FakeClient) -> None:
+    """A lone unknown token is still an unknown verb.
+
+    One bare word is a create form, not a filter (a filter needs an operator),
+    so the parser declines it and the dispatcher's own error stands.
+    """
     with pytest.raises(ClientError, match="unknown verb"):
         run(["wtf"], client)
+
+
+def test_search_verb_is_gone(client: FakeClient) -> None:
+    """``trax search`` no longer dispatches.
+
+    The filter grammar subsumes it (``trax issue title re foo``), so the verb
+    was removed rather than extended. ``search`` is not a filter field either,
+    so the leading token no longer resolves to anything.
+    """
+    with pytest.raises(ClientError, match="unknown"):
+        run(["search", "retry"], client)
+
+
+def test_kindless_filter_lists_every_kind(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A filter with no leading kind queries every kind.
+
+    This is what replaces ``trax search``: the leading token is a FIELD, so the
+    query widens to all kinds instead of naming one. ``row`` matches the Issue
+    fixture and ``experiment row`` matches the Experiment one, so a result from
+    two different kinds proves the query was not narrowed to one.
+    """
+    run(["title", "re", "row"], client)
+
+    out = capsys.readouterr().out
+    assert "Issue#1" in out
+    assert "Experiment#2" in out
+
+
+def test_kindless_filter_narrows_to_kinds_owning_the_field(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A kind-specific field kindless narrows to the kinds that own it.
+
+    ``judgement`` exists only on Belief, so ``trax judgement is proven`` is a
+    Belief query -- not an error, and not a scan of every kind.
+    """
+    run(["judgement", "is", "proven"], client)
+
+    assert "Belief#3" in capsys.readouterr().out
+
+
+def test_verb_beats_a_same_spelled_field(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A verb still wins when a field shares its spelling.
+
+    ``version`` is both a verb and (on no kind today) a plausible field name;
+    the dispatcher must keep resolving verbs first, or adding a field could
+    silently steal an existing command.
+    """
+    run(["version"], client)
+
+    assert "unknown filter field" not in capsys.readouterr().out
 
 
 def test_kind_help_shows_local_forms(

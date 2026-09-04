@@ -17,7 +17,6 @@ from typing import Final, Literal, cast, get_args
 import re
 
 from trackinizer.server.setter_dispatch import COLUMN_SPECS
-from trackinizer.types.agent_session_events import Kind
 from trackinizer.types.change_log import Change
 from trackinizer.types.columns import ColumnSpec, column_specs
 from trackinizer.types.edges import Edge, kind_group_members
@@ -188,7 +187,6 @@ def substitute_schema_placeholders(body: str) -> str:
             ", ".join(f"'{k}'" for k in kind_group_members("paper")),
         )
         .replace("{change_kinds}", quote_literal(Change.Kind))
-        .replace("{agent_session_event_kinds}", quote_literal(Kind))
     )
 
 

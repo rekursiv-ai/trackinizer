@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import cast
 from uuid import UUID
 
+from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import tx
 from trackinizer.server.projection import (
     fetch_edges,
@@ -40,6 +41,7 @@ from trackinizer.wire.row_filter import (
     reject_inadmissible,
 )
 from trackinizer.wire.seq_ranges import SeqRange
+from trackinizer.wire.session_record_fields import record_kind_for
 
 
 __all__ = [
@@ -62,6 +64,48 @@ def _lower_filter(filt: RowFilter, params: list[object]) -> str | None:
         return template.format(col=column, p="")
     params.append(filt.value)
     return template.format(col=column, p=f"${len(params)}")
+
+
+async def _record_texts(
+    conn: Conn, ids: Sequence[UUID], filters: Sequence[RowFilter]
+) -> dict[UUID, dict[str, object]]:
+    """One session's IR record texts per id, for the record clauses in ``filters``.
+
+    A record field names no column on ``inquiries``, so the Python evaluator
+    has nothing to read unless the texts come along. Only the fields actually
+    filtered are fetched, and only when one is present -- the common case adds
+    no query at all, and returns an empty mapping.
+
+    ``match_filter`` reads a list-shaped value as "any element matches", which
+    is the rule the lowered ``EXISTS`` implements too, so the two evaluators
+    agree by construction rather than by coincidence.
+
+    Returns the texts keyed by session and then by FIELD, for the caller to
+    overlay onto a row it is about to filter -- rather than a rewritten row,
+    which would lose the ``Record`` that ``materialize`` needs.
+    """
+    kinds = {
+        kind: field
+        for field in {canonical_filter_field(f.field) for f in filters}
+        if (kind := record_kind_for(field)) is not None
+    }
+    if not kinds or not ids:
+        return {}
+    found = await conn.fetch(
+        "SELECT session_id, kind, array_agg(text) AS texts FROM session_records "
+        "WHERE session_id = ANY($1::uuid[]) AND kind = ANY($2::text[]) "
+        "GROUP BY session_id, kind",
+        list(ids),
+        list(kinds),
+    )
+    # A session with no such record is ABSENT rather than an empty list: absent
+    # reads as NULL, where an empty list would make ``notnull`` answer true.
+    texts: dict[UUID, dict[str, object]] = {}
+    for record in found:
+        texts.setdefault(record["session_id"], {})[kinds[record["kind"]]] = list(
+            record["texts"]
+        )
+    return texts
 
 
 def _partition_filters(
@@ -119,7 +163,7 @@ def seq_range_clause(
     returns the ``(... OR ...)`` clause. Empty ``seq_ranges`` returns
     ``None`` so the caller omits the clause entirely. Shared by every
     ``seq``-windowed reader (:meth:`Store.list_kind`,
-    :meth:`Store.read_session_events`) so the disjoint-union lowering has
+    :meth:`Store.read_session_records`) so the disjoint-union lowering has
     exactly one implementation.
     """
     if not seq_ranges:
@@ -228,7 +272,18 @@ class _ReadMixin(_StoreShared):
             async with self.engine.acquire() as conn, tx(conn):
                 await apply_regex_statement_timeout(conn)
                 rows = await conn.fetch(sql, *params)
-                kept = [r for r in rows if all(match_filter(r, f) for f in filters)]
+                # Overlaid for the PREDICATE only: the row itself stays the
+                # ``Record`` ``materialize`` reads, since a record text is a
+                # filtering aid and not a column of the inquiry.
+                texts = await _record_texts(conn, [r["id"] for r in rows], filters)
+                kept = [
+                    r
+                    for r in rows
+                    if all(
+                        match_filter({**r, **texts.get(r["id"], {})}, f)
+                        for f in filters
+                    )
+                ]
                 window = kept[offset : offset + limit]
                 outbound, inbound = await fetch_edges_bulk(
                     conn, [r["id"] for r in window]

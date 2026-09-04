@@ -1,0 +1,5 @@
+# The capture script's working tree: throwaway CLI config roots and
+# workspaces. House-authorized deviation from keeping generated data out of
+# the checkout -- it lives beside the fixtures so a failed capture leaves the
+# CLI's own state to read, which a self-deleting temp dir destroys.
+scratch/

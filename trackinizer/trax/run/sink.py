@@ -1,12 +1,12 @@
 """Event sinks for ``trax run``: local-file (default) and Trackinizer.
 
-The session runner produces one :class:`Event` per captured turn and hands
-it to a :class:`Sink`. Four exist -- two that record, two that wrap:
+The session runner hands each captured chunk to a :class:`Sink`, which
+normalizes it into IR records. Four exist -- two that record, two that wrap:
 
-- :class:`FileSink` -- the default. Writes one JSON line per event to a
+- :class:`FileSink` -- the default. Writes one JSON line per record to a
   local JSONL file, exactly as the harness always has. No network.
 - :class:`TrackinizerSink` -- opt-in via ``--sync``. Opens a Session row
-  on the server, batches events to the ingest API (retry + idempotency
+  on the server, batches records to the ingest API (retry + idempotency
   handled by the client), and closes the session on exit.
 - :class:`ResilientSink` -- wraps a primary sink (the Trackinizer one) and
   degrades to a local :class:`FileSink` on its first failure, so a server
@@ -15,9 +15,15 @@ it to a :class:`Sink`. Four exist -- two that record, two that wrap:
   inbound-poll, and main threads serialize their ``emit`` / ``flush`` /
   ``session_id`` / ``close`` calls instead of racing (R2R-024).
 
-The sink mints each event's monotonic per-session ``seq`` (the counter
-lives with the session, not the run), since the CLIs carry no reliable
-counter and the ``(session_id, seq)`` pair is the server-side dedup key.
+A record's key is its POSITION in its file's normalized stream, not a
+counter: the runner re-feeds a file the CLI rewrote (a claude compaction
+does exactly that), and a derived position lands each record back where it
+already was rather than appending a second copy. So the sink tracks one
+counter per FILE, reset when that file restarts.
+
+A slash command is the exception with no position at all -- it is typed
+into the TUI and never written to the log -- so it travels its own way
+(:meth:`Sink.emit_slash_command`) and the server numbers it.
 """
 
 from __future__ import annotations
@@ -26,7 +32,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Protocol, cast, override
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import json
 import sys
@@ -34,22 +40,27 @@ import threading
 import time
 
 from trackinizer.client.client import Client
-from trackinizer.lib.custom_json import JSON, DataclassCodec
+from trackinizer.lib.custom_json import JSON, json_freeze
+from trackinizer.trax.run.adapters.custom_types import Adapter
+from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.trax.run.custom_types import Event
-from trackinizer.wire.wire_sessions import (
-    EventBody,
-    SessionEnd,
-    SessionStart,
+from trackinizer.trax.run.slash import SlashCommand
+from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.wire_session_ir import (
+    ManifestBody,
+    RecordBody,
+    SlashCommandBody,
 )
+from trackinizer.wire.wire_sessions import SessionEnd, SessionStart
 
 
 class Sink(Protocol):
-    """Where captured events go.
+    """Where captured records go.
 
-    The sink mints each event's ``seq``: ``seq`` is per-session and is the
-    server dedup key with the session id, so the counter must live with the
-    session, not with the run (a run-wide counter would mis-number a sink that
-    ever opened a second session). The runner just hands over parsed events.
+    The runner hands over raw chunks; :meth:`feed` normalizes them and each
+    record's position within its file becomes its key. That position is
+    per-FILE, so a session spanning several files (claude splits on
+    compaction, codex forks) numbers each from zero.
 
     Every implementation below SUBCLASSES this rather than matching it
     structurally, and marks each method ``@override``. Structural conformance
@@ -86,8 +97,94 @@ class Sink(Protocol):
         ...
 
     def emit(self, adapter_name: str, event: Event) -> None:
-        """Record one captured event, assigning it the next per-session ``seq``."""
+        """Record one captured record at its position in its part."""
         ...
+
+    def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
+        """Record one slash command the human typed.
+
+        NOT an :class:`Event`: a command is handled inside the CLI's TUI and
+        never reaches the session log, so it cannot be re-derived and holds no
+        position in any part. It is stored beside the records, not among them.
+
+        Args:
+          command: The parsed verb and its arguments.
+          at: The submit-time clock the keystroke detector stamped; a typed
+            command has no CLI-recorded time.
+
+        """
+        ...
+
+    def feed(
+        self,
+        adapter: Adapter,
+        path: Path,
+        raw: bytes,
+        *,
+        restart: bool = False,
+    ) -> list[str]:
+        """Normalize one captured chunk into records and record each.
+
+        Concrete on the Protocol because normalization is identical for every
+        sink -- what differs is where the records GO. One reader per PATH,
+        built on first sight: a session spans several files (claude splits on
+        compaction, codex forks), and a shared reader would number the second
+        file's records after the first's.
+
+        The reader comes from the ADAPTER rather than a name lookup here: the
+        adapter already declares ``reader()``, so a table in this module would
+        be a second registry to keep in step with ``_ADAPTERS``.
+
+        Args:
+          adapter: The CLI whose dialect ``raw`` is in; supplies the reader.
+          path: The file the chunk came from; keys the normalizer.
+          raw: One log line, or a whole document for a rewriting CLI.
+          restart: Whether the file was REPLACED immediately before this
+            chunk, which discards the reader's position -- the records that
+            follow re-derive the part from its start.
+
+        Returns:
+          kinds: The record kind names this chunk produced, for the run's
+            end-of-run tally.
+
+        """
+        if restart:
+            # The file was rewritten, so the reader's position describes bytes
+            # that no longer exist. A fresh reader re-derives from offset 0 and
+            # each record lands back on the key it already held.
+            _ = self.readers.pop(path, None)
+        reader = self.readers.get(path)
+        if reader is None:
+            reader = adapter.reader()
+            self.readers[path] = reader
+        kinds: list[str] = []
+        for record in reader.feed(raw.decode(errors="replace")):
+            self.emit(adapter.name, Event(record=record, path=path, restart=restart))
+            kinds.append(type(record).__name__)
+        return kinds
+
+    @property
+    def readers(self) -> dict[Path, Tail]:
+        """Per-file readers, one per source file this sink has seen.
+
+        A PROPERTY over a lazily built dict rather than an attribute every
+        implementation must remember to initialize: ``feed`` is concrete here
+        and each sink writes its own ``__init__``, so an attribute would be a
+        contract enforced only by whichever sink happened to be tested.
+        """
+        built = self._readers
+        if built is None:
+            built = {}
+            self._readers = built
+        return built
+
+    _readers: dict[Path, Tail] | None = None
+    """Backing store for :attr:`readers`; ``None`` until first use.
+
+    Declared on the Protocol with a class-level default so the lazy build
+    needs no ``getattr`` and every sink inherits it. The default is immutable,
+    so no instance shares another's readers.
+    """
 
     def flush(self) -> None:
         """Push any buffered events now; idempotent and safe on an empty buffer.
@@ -98,7 +195,7 @@ class Sink(Protocol):
         """
         ...
 
-    def drain_pending(self) -> list[EventBody]:
+    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
         """Remove and return events buffered but not yet delivered.
 
         The degrade seam: when a primary sink fails, ``ResilientSink``
@@ -114,24 +211,34 @@ class Sink(Protocol):
         ...
 
 
-def _event_body(seq: int, event: Event) -> EventBody:
-    """The wire body for one captured turn: typed message + envelope."""
-    return EventBody(
-        seq=seq,
-        kind=event.kind,
-        timestamp=event.timestamp,
-        model=event.model,
-        message=DataclassCodec.to_json(event.message),
+def _record_body(idx: int, event: Event) -> RecordBody:
+    """The wire body for one captured record at position ``idx``.
+
+    Built through :class:`SessionRecordRow` rather than field by field, so the
+    ciphertext split and the search projection are computed in ONE place and
+    the stored row cannot disagree with what the wire carried.
+    """
+    # ``session_id`` is the server's to assign; the row type needs one, and
+    # only its projections are read here.
+    row = SessionRecordRow.of(
+        session_id=UUID(int=0), part=0, idx=idx, record=event.record
     )
+    return RecordBody.of(row)
 
 
 class FileSink(Sink):
-    """Write one JSON line per event to a local JSONL file."""
+    """Write one JSON line per record to a local JSONL file."""
 
     def __init__(self, handle: IO[str]) -> None:
         self._handle = handle
         self._closed = False
-        self._next_seq = 0
+        # Positions per FILE, not per run: a session spans several files and
+        # each is stored as its own part, numbered from zero.
+        self._next_idx: dict[Path, int] = {}
+        # Files whose CURRENT chunk re-derived the part from its start. The
+        # restart flag rides every record of that chunk, and the reset is one
+        # per chunk, so this remembers that it already happened.
+        self._restarted: set[Path] = set()
 
     @property
     @override
@@ -151,30 +258,65 @@ class FileSink(Sink):
 
     @override
     def emit(self, adapter_name: str, event: Event) -> None:
-        seq = self._next_seq
-        self._next_seq += 1
-        self._write_record(adapter_name, _event_body(seq, event))
+        if event.restart and event.path not in self._restarted:
+            # ONCE per rewritten chunk, not once per record. The flag rides
+            # every record the chunk produced -- a restart re-reads the file,
+            # so its first line yields the opening context and clear as well as
+            # its turn -- and resetting on each of them numbered all three 0.
+            self._restarted.add(event.path)
+            self._next_idx[event.path] = 0
+        elif not event.restart:
+            self._restarted.discard(event.path)
+        idx = self._next_idx.get(event.path, 0)
+        self._next_idx[event.path] = idx + 1
+        self._write_record(adapter_name, event.path, _record_body(idx, event))
 
     @override
-    def drain_pending(self) -> list[EventBody]:
+    def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
+        # Its own line shape, tagged so a reader can tell it from a record: it
+        # belongs to no part and carries no idx.
+        self._handle.write(
+            json.dumps(
+                {
+                    "slash_command": {
+                        "timestamp": at.isoformat(),
+                        "command": command.command,
+                        "args": command.args,
+                    }
+                }
+            )
+            + "\n"
+        )
+
+    @override
+    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
         # Every emit writes through immediately; nothing is ever buffered.
         return []
 
-    def write_body(self, adapter_name: str, body: EventBody) -> None:
-        """Write a pre-built :class:`EventBody`, preserving its own ``seq``.
+    def write_body(self, adapter_name: str, path: Path, body: RecordBody) -> None:
+        """Write a pre-built :class:`RecordBody`, preserving its own ``idx``.
 
-        Used to replay events stranded in a degrading server sink (its bodies
-        are already seq-stamped), so the local file keeps their original
-        ordinals rather than re-minting from this sink's counter. Advancing
-        ``_next_seq`` past the replayed seq is load-bearing: a later live
-        ``emit`` would otherwise re-mint from 0 and collide with the replayed
-        ordinals against the server's ``(session_id, seq)`` key (REV-001).
+        Used to replay records stranded in a degrading server sink, so the
+        local file keeps their original positions rather than re-deriving from
+        this sink's counter. Advancing past the replayed ``idx`` is
+        load-bearing: a later live ``emit`` would otherwise restart at 0 and
+        collide with what was just replayed.
         """
-        self._next_seq = max(self._next_seq, body.seq + 1)
-        self._write_record(adapter_name, body)
+        self._next_idx[path] = max(self._next_idx.get(path, 0), body.idx + 1)
+        self._write_record(adapter_name, path, body)
 
-    def _write_record(self, adapter_name: str, body: EventBody) -> None:
-        record = cast(JSON, {"adapter": adapter_name, **body.model_dump(mode="json")})
+    def _write_record(self, adapter_name: str, path: Path, body: RecordBody) -> None:
+        record = cast(
+            JSON,
+            {
+                "adapter": adapter_name,
+                # The BASENAME, matching how the server resolves a part: the
+                # absolute path differs across machines, so a capture replayed
+                # elsewhere must still name the same file.
+                "part_name": path.name,
+                **body.model_dump(mode="json"),
+            },
+        )
         self._handle.write(json.dumps(record) + "\n")
 
     @override
@@ -233,8 +375,22 @@ class TrackinizerSink(Sink):
         # The CLI's own session id, discovered mid-run and backfilled at close
         # so a fresh run becomes resumable on its next ``--resume``.
         self._cli_session_id: str | None = None
-        self._buffer: list[EventBody] = []
-        self._next_seq = 0
+        self._buffer: list[tuple[Path, RecordBody]] = []
+        # Typed commands awaiting the next flush. Not in ``_buffer``: they
+        # belong to the session rather than to any file, so they cannot be
+        # grouped by path.
+        self._slash: list[SlashCommandBody] = []
+        self._next_idx: dict[Path, int] = {}
+        # Files whose current batch re-derived the part from its start, so the
+        # append overwrites rather than skipping what is stored.
+        self._restarted: set[Path] = set()
+        # Files whose CURRENT chunk already reset its numbering. Separate from
+        # ``_restarted``, which a flush clears: the reset is once per chunk,
+        # and a chunk can span flushes.
+        self._renumbered: set[Path] = set()
+        # One IR id per file, minted on first send: the manifest records what
+        # the file declared, and a fresh id per BATCH would rewrite it.
+        self._ir_ids: dict[Path, UUID] = {}
         self._oldest_buffered_at: float | None = None
         self._closed = False
 
@@ -255,20 +411,43 @@ class TrackinizerSink(Sink):
     def emit(self, adapter_name: str, event: Event) -> None:
         del adapter_name  # the session already names its CLI
         self._ensure_session()
-        seq = self._next_seq
-        self._next_seq += 1
+        if event.restart:
+            self._restarted.add(event.path)
+        if event.restart and event.path not in self._renumbered:
+            # ONCE per rewritten chunk, not once per record. The flag rides
+            # every record the chunk produced -- a restart re-reads the file,
+            # so its first line yields the opening context and clear as well as
+            # its turn -- and resetting on each of them numbered all three 0.
+            #
+            # Its own set, not ``_restarted``: that one is cleared by a flush,
+            # which a chunk larger than the batch triggers mid-chunk.
+            self._renumbered.add(event.path)
+            self._next_idx[event.path] = 0
+        elif not event.restart:
+            self._renumbered.discard(event.path)
+        idx = self._next_idx.get(event.path, 0)
+        self._next_idx[event.path] = idx + 1
         if not self._buffer:
             self._oldest_buffered_at = self._clock()
-        self._buffer.append(_event_body(seq, event))
+        self._buffer.append((event.path, _record_body(idx, event)))
         if len(self._buffer) >= self._batch_size:
             self._flush()
+
+    @override
+    def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
+        self._ensure_session()
+        if not self._buffer and not self._slash:
+            self._oldest_buffered_at = self._clock()
+        self._slash.append(
+            SlashCommandBody(timestamp=at, command=command.command, args=command.args)
+        )
 
     @override
     def flush(self) -> None:
         # Time-driven partial flush: send a non-empty buffer once it has aged
         # past the interval. The drain loop calls this each poll, so a session
         # that paused mid-run still streams instead of waiting for ``close``.
-        if not self._buffer or self._oldest_buffered_at is None:
+        if (not self._buffer and not self._slash) or self._oldest_buffered_at is None:
             return
         if self._clock() - self._oldest_buffered_at >= self._flush_interval_sec:
             self._flush()
@@ -306,14 +485,20 @@ class TrackinizerSink(Sink):
                 actor=self._actor,
                 rooms=list(self._rooms) or None,
                 started=datetime.now(UTC),
+                # Sent when already known, which is the RESUME case: the
+                # server re-attaches the AgentSession whose stored id matches
+                # rather than minting a second one. A fresh run has none yet
+                # (the CLI has not written its file), so this is null there
+                # and the id is backfilled at close instead.
+                cli_session_id=self._cli_session_id,
             )
         )
         self._session_id = resp.id
-        # Continue the event log where the server says: 0 for a fresh session,
-        # ``max(seq)+1`` for a resumed one. Seeding here is load-bearing -- a
-        # resumed run that re-minted seq 0 would collide every event against the
-        # ``(session_id, seq)`` PK and the server would silently drop the log.
-        self._next_seq = resp.seq
+        # ``resp.seq`` is deliberately unread. It continued the legacy event
+        # log, which a resumed run had to seed from; a record's key is derived
+        # from its position in its file, so a resumed run re-derives the same
+        # keys and needs no continuation point.
+        #
         # Adopt the granted routing name: the server may have suffixed it on a
         # collision (``scientist`` -> ``scientist#2``).
         self._granted_actor = resp.actor
@@ -324,13 +509,13 @@ class TrackinizerSink(Sink):
             )
 
     @override
-    def drain_pending(self) -> list[EventBody]:
-        """Remove and return events buffered but not yet sent to the server.
+    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
+        """Remove and return records buffered but not yet sent to the server.
 
         The escape hatch for :class:`ResilientSink`: when this sink fails and
         the wrapper degrades to a local file, the already-buffered (but
-        unflushed) bodies would otherwise be lost. They are seq-stamped, so
-        the fallback replays them verbatim.
+        unflushed) bodies would otherwise be lost. Each carries its own
+        position, so the fallback replays them verbatim.
         """
         pending = self._buffer
         self._buffer = []
@@ -338,11 +523,75 @@ class TrackinizerSink(Sink):
         return pending
 
     def _flush(self) -> None:
-        if not self._buffer or self._session_id is None:
+        """Send each file's records as its own batch.
+
+        One part per request: the server resolves a part from the file's
+        basename, so records from two files cannot share a request without
+        one of them landing under the wrong part.
+
+        Buffered slash commands ride the FIRST request, so they commit in the
+        same transaction as the turns around them. A batch with no records at
+        all still sends them, naming no file -- a command typed before the CLI
+        has written anything belongs to no part.
+        """
+        if self._session_id is None or not (self._buffer or self._slash):
             return
-        self._client.append_events(self._session_id, self._buffer)
+        by_path: dict[Path, list[RecordBody]] = {}
+        for path, body in self._buffer:
+            by_path.setdefault(path, []).append(body)
+        for path, bodies in by_path.items():
+            self._client.append_records(
+                self._session_id,
+                name=path.name,
+                manifest=ManifestBody(
+                    name=path.name,
+                    metadata=self._metadata_for(path),
+                    ir_id=self._ir_ids.setdefault(path, uuid4()),
+                    format=self._cli,
+                    records=self._next_idx.get(path, 0),
+                ),
+                records=bodies,
+                restart=path in self._restarted,
+                slash_commands=self._slash,
+            )
+            # Cleared only once the request RETURNED. A command's ``seq`` is
+            # server-assigned, so a resend after a failure partway through
+            # would store a second copy rather than collide -- unlike a
+            # record, whose derived key makes a retry a no-op.
+            self._slash = []
+            self._restarted.discard(path)
+            # Sent with the first part only; the rest carry records alone.
+            self._buffer = [entry for entry in self._buffer if entry[0] != path]
+        if self._slash:
+            self._client.append_records(self._session_id, slash_commands=self._slash)
+            self._slash = []
         self._buffer = []
         self._oldest_buffered_at = None
+
+    def _metadata_for(self, path: Path) -> JSON:
+        r"""How the file SPELLS its bytes, as its own reader has read it so far.
+
+        Not decoration, and not derivable server-side: claude's ascii-escaping
+        convention (a majority flag plus its exception bitmap) rides on the
+        ``TurnContext`` in force, and a rewrite without it writes raw UTF-8
+        where the CLI wrote ``\\u00e9``. Every record still matches, so nothing
+        downstream notices -- but the bytes differ, and a provider handed a
+        transcript it did not write is entitled to reject it.
+
+        Read from the per-file reader at FLUSH time rather than captured once:
+        ``ascii_escaped`` is a majority over the lines consumed, so the value
+        correct for one batch may be wrong for the next, and the reader
+        restates it when it moves. That is the same reason the manifest is
+        re-sent per batch at all.
+
+        A path with no reader yet -- a body replayed into a degraded sink,
+        which carries positions but no reader -- declares nothing, which the
+        empty default already says.
+        """
+        reader = self.readers.get(path)
+        if reader is None:
+            return json_freeze({})
+        return json_freeze(reader.encoding)
 
     @override
     def close(self) -> None:
@@ -423,6 +672,16 @@ class ResilientSink(Sink):
                 self._degrade(err)
 
     @override
+    def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
+        if self._primary is not None:
+            try:
+                self._primary.emit_slash_command(command, at)
+                return
+            except Exception as err:  # noqa: BLE001 -- any sink failure must degrade, not crash the drain thread.
+                self._degrade(err)
+        self._ensure_fallback().emit_slash_command(command, at)
+
+    @override
     def emit(self, adapter_name: str, event: Event) -> None:
         self._adapter_for_fallback = adapter_name
         if self._primary is not None:
@@ -452,7 +711,7 @@ class ResilientSink(Sink):
             self._fallback.flush()
 
     @override
-    def drain_pending(self) -> list[EventBody]:
+    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
         # The primary's buffer is replayed into the fallback on degrade, and
         # the fallback writes through; nothing is ever pending at this layer.
         return []
@@ -487,8 +746,8 @@ class ResilientSink(Sink):
         )
         fallback = self._ensure_fallback()
         pending = primary.drain_pending()
-        for body in pending:
-            fallback.write_body(self._adapter_for_fallback, body)
+        for path, body in pending:
+            fallback.write_body(self._adapter_for_fallback, path, body)
         return bool(pending)
 
     def _ensure_fallback(self) -> FileSink:
@@ -550,12 +809,32 @@ class LockedSink(Sink):
             self._inner.emit(adapter_name, event)
 
     @override
+    def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
+        with self._lock:
+            self._inner.emit_slash_command(command, at)
+
+    @override
+    def feed(
+        self,
+        adapter: Adapter,
+        path: Path,
+        raw: bytes,
+        *,
+        restart: bool = False,
+    ) -> list[str]:
+        # Held across the WHOLE chunk, not per record: the inner sink's
+        # per-file position advances once per record, so another thread
+        # emitting between two of them would interleave positions.
+        with self._lock:
+            return self._inner.feed(adapter, path, raw, restart=restart)
+
+    @override
     def flush(self) -> None:
         with self._lock:
             self._inner.flush()
 
     @override
-    def drain_pending(self) -> list[EventBody]:
+    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
         with self._lock:
             return self._inner.drain_pending()
 

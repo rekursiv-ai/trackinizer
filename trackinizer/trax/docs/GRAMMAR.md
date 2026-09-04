@@ -432,10 +432,14 @@ These are the non-row top-level verbs. Each parses its own argv with
 flags documented here.
 
 ```
-verb_name   ::= "help" | "profile" | "next" | "search" | "recent"
+verb_name   ::= "help" | "profile" | "next" | "recent"
              |  "cost" | "blocked" | "board" | "graph" | "id"
              |  "version" | "send" | "run"
 ```
+
+A leading token that is neither a verb nor a kind is a FILTER FIELD, and the
+query spans every kind: `trax title re retry` is the cross-kind form. Verbs and
+kinds resolve first, so a field can never shadow a command.
 
 - `trax help [topic]` -- top-level or per-verb help. `--help`/`-h`
   anywhere is **only** accepted as a leading or trailing token; never
@@ -446,8 +450,6 @@ verb_name   ::= "help" | "profile" | "next" | "search" | "recent"
   redundant). Unlike `trax <kind> <uuid>` it applies no kind typo-guard.
 - `trax next [--format text|json|ids]` -- show the next unblocked
   active Issue.
-- `trax search QUERY... [--kind KIND] [--limit INT] [--format
-  table|json|ids]` -- cross-kind title/description search.
 - `trax recent [--limit INT] [--format text|json]` -- audit-log feed.
 - `trax cost KIND SEQ [--deep] [--format text|json]` -- cost rollup.
 - `trax blocked` -- active Issues with at least one active blocker.
@@ -893,7 +895,7 @@ trax next --format ids
 ```
 
 ```trax
-trax search retry timeout --kind issue --limit 10
+trax issue title re retry --limit 10
 ```
 
 ```trax

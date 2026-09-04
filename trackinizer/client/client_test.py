@@ -30,7 +30,7 @@ from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import SeqRef, UuidRef
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
-from trackinizer.wire.wire_sessions import EventBody, SessionStart
+from trackinizer.wire.wire_sessions import SessionStart
 
 
 def _install_mock_transport(
@@ -735,7 +735,6 @@ class TestClientMethods:
                 {"kind": "Issue"},
                 {"self": {"id": str(target_id)}},
                 {"id": str(target_id)},
-                [{"id": "s"}],
                 [{"id": "c"}],
                 {"agent_usd": 1.0},
             ]
@@ -749,7 +748,6 @@ class TestClientMethods:
         ) == [{"id": "1"}]
         assert client.get_inquiry(UuidRef(uuid=target_id))[0] == "Issue"
         assert client.next_issue() == {"id": str(target_id)}
-        assert client.search("hello", kind="Belief") == [{"id": "s"}]
         assert client.recent_changes(limit=2) == [{"id": "c"}]
         assert client.cost_for(target_id, deep=True) == {"agent_usd": 1.0}
 
@@ -1467,63 +1465,6 @@ class TestSessionMethods:
         assert body["idempotency_key"] is not None
         assert resp.id == sid
         assert resp.seq == 3
-
-    def test_append_events_posts_batch(self) -> None:
-        sid = uuid.uuid4()
-        seen: dict[str, object] = {}
-
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            seen["path"] = request.url.path
-            seen["body"] = json.loads(request.content)
-            return httpx2.Response(200, json={"appended": 2, "skipped": 0})
-
-        client = Client("http://server")
-        _install_mock_transport(client, handler)
-        resp = client.append_events(
-            sid,
-            [
-                EventBody(seq=0, kind="UserMessage"),
-                EventBody(seq=1, kind="AssistantMessage", model="gpt-5.5"),
-            ],
-        )
-        assert seen["path"] == f"/api/sessions/{sid}/events"
-        body = cast(dict[str, object], seen["body"])
-        events = cast(list[dict[str, object]], body["events"])
-        assert [e["seq"] for e in events] == [0, 1]
-        assert resp.appended == 2
-
-    def test_read_events_gets_and_parses(self) -> None:
-        sid = uuid.uuid4()
-        seen: dict[str, object] = {}
-
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            seen["path"] = request.url.path
-            seen["params"] = request.url.params
-            return httpx2.Response(
-                200,
-                json={
-                    "events": [
-                        {"seq": 5, "kind": "AssistantMessage", "model": "gpt-5.5"}
-                    ]
-                },
-            )
-
-        client = Client("http://server")
-        _install_mock_transport(client, handler)
-        events = client.read_events(
-            sid,
-            limit=10,
-            seq_ranges=(SeqRange(start=5, stop=9), SeqRange(start=20)),
-            kind="AssistantMessage",
-        )
-        assert seen["path"] == f"/api/sessions/{sid}/events"
-        params = cast(httpx2.QueryParams, seen["params"])
-        assert params["limit"] == "10"
-        assert params.get_list("seq_range") == ["5..9", "20.."]
-        assert params["kind"] == "AssistantMessage"
-        assert len(events) == 1
-        assert events[0].seq == 5
-        assert events[0].model == "gpt-5.5"
 
     def test_session_end_posts(self) -> None:
         sid = uuid.uuid4()

@@ -3,7 +3,7 @@
 A message addressed to a session (web chat box, another agent) is enqueued
 here and drained by that session's ``trax run`` poller, which injects it into
 the CLI. This is the routing seam for the messaging channel; it is
-deliberately **separate from** ``agent_session_events`` (capture): an inbound
+deliberately **separate from** ``session_records`` (capture): an inbound
 message is transient routing, not a recorded turn. When the agent consumes
 it, the capture path logs it as a normal turn.
 

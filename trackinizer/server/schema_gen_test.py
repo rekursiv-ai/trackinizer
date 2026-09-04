@@ -180,11 +180,25 @@ class TestSchema:
         assert "{edge_kinds}" not in sql
         assert "{inquiry_kinds}" not in sql
 
-    def test_schema_migrations_enumerate_baseline_only(self) -> None:
-        # The schema is squashed to a single clean baseline: ``schema.sql`` is
-        # the only schema asset, with no numbered ``schema.NNN.sql`` migrations.
+    def test_schema_migrations_are_the_reviewed_manifest(self) -> None:
+        """The baseline plus every numbered migration, named explicitly.
+
+        A manifest, not a bound: a migration reaches the deployed database on
+        the next boot and can never be un-run, so adding one is a decision
+        that gets recorded here rather than a file that appears unnoticed.
+
+        Numbered from 019 because the deployed ``applied_migrations`` ledger
+        already holds ``schema.018.sql`` -- the repo squashed to a bare
+        baseline without resetting it, so a lower number reads as already
+        applied and its tables would silently never be created.
+        """
         migrations = list(dict(schema_migrations()))
-        assert migrations == ["schema.sql"]
+        assert migrations == [
+            "schema.sql",
+            "schema.019.sql",
+            "schema.020.sql",
+            "schema.021.sql",
+        ]
 
     def test_canonical_schema_contains_artifact_audit_columns(self) -> None:
         sql = substitute_schema_placeholders(load_sql("schema"))

@@ -1,121 +1,140 @@
-"""Tests for the IO-stream adapter and its line framing."""
+"""Line framing for the PTY stream capture.
+
+The adapter itself is now just a locator plus a normalizer factory (the
+reading is ``trackinizer.trax.run.adapters.scrape``'s, tested there). What remains
+here is :class:`LineCapture`: the framing that turns raw master-fd chunks
+into whole lines, which no other component owns.
+"""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from pathlib import Path
 
 from trackinizer.trax.run.adapters.iostream import (
     _MAX_LINE_BYTES,
     IOStreamAdapter,
     LineCapture,
 )
-from trackinizer.trax.run.custom_types import Event
-from trackinizer.types.agent_session_events import AssistantMessage
 
 
-def _texts(events: list[Event]) -> list[str]:
-    """The captured line texts; asserts every event is an AssistantMessage."""
-    out: list[str] = []
-    for event in events:
-        assert isinstance(event.message, AssistantMessage)
-        out.append(event.message.text)
-    return out
-
-
-def _collect() -> tuple[list[Event], LineCapture]:
-    adapter = IOStreamAdapter()
-    events: list[Event] = []
-    capture = LineCapture(
-        lambda raw: adapter.parse(raw, whole_file=False),
-        events.append,
-    )
-    return events, capture
+def _collect() -> tuple[list[bytes], LineCapture]:
+    """A capture writing framed lines into a list."""
+    lines: list[bytes] = []
+    return lines, LineCapture(lines.append)
 
 
 class TestAdapter:
-    def test_parse_strips_csi_and_carriage_return(self) -> None:
+    def test_has_no_session_files_to_tail(self) -> None:
+        """A wrapped command writes no log; the PTY stream is the source."""
         adapter = IOStreamAdapter()
-        events = list(adapter.parse(b"\x1b[32mgreen\x1b[0m text\r", whole_file=False))
-        assert _texts(events) == ["green text"]
 
-    def test_parse_strips_osc_sequences(self) -> None:
-        r"""OSC (title-set etc.) must not survive into captured text.
+        assert tuple(adapter.session_dirs()) == ()
+        assert adapter.session_scope() is None
 
-        Shells routinely emit ``\x1b]0;title\x07``; the contract is "the
-        text, not the rendering", and OSC is rendering exactly like CSI.
+    def test_names_no_cli_binary(self) -> None:
+        """The command comes from the ``--`` args, not the adapter.
+
+        The empty binary is what the runner dispatches on to take the
+        command line from the user instead of exec'ing a known CLI.
         """
-        adapter = IOStreamAdapter()
-        events = list(adapter.parse(b"\x1b]0;my title\x07hello", whole_file=False))
-        assert _texts(events) == ["hello"]
+        assert IOStreamAdapter().cli_binary == ""
 
-    def test_blank_line_yields_nothing(self) -> None:
-        adapter = IOStreamAdapter()
-        assert list(adapter.parse(b"\r", whole_file=False)) == []
-
-    def test_events_carry_timestamps(self) -> None:
-        adapter = IOStreamAdapter()
-        before = datetime.now(UTC)
-        (event,) = adapter.parse(b"x", whole_file=False)
-        assert event.timestamp is not None
-        assert event.timestamp >= before
+    def test_is_not_resumable(self) -> None:
+        """No CLI wrote these bytes, so none can be handed them back."""
+        assert IOStreamAdapter().session_id_from_path(Path("x")) is None
 
 
 class TestLineCapture:
     def test_frames_lines_across_chunk_boundaries(self) -> None:
-        events, capture = _collect()
+        lines, capture = _collect()
+
         capture.feed(b"al")
         capture.feed(b"pha\nbe")
-        assert _texts(events) == ["alpha"]
+        assert lines == [b"alpha\n"]
+
         capture.feed(b"ta\n")
-        assert _texts(events) == ["alpha", "beta"]
+        assert lines == [b"alpha\n", b"beta\n"]
+
+    def test_a_framed_line_keeps_its_terminator(self) -> None:
+        """The reader downstream is TOTAL, so the newline is content.
+
+        Every line becomes one ``IncompleteRecord`` and the records concatenate
+        back to the bytes read. A stripped terminator would make a scrape
+        rewrite one byte short per line, and the capture would report itself
+        unterminated when it was not.
+        """
+        lines, capture = _collect()
+
+        capture.feed(b"one\ntwo\n")
+
+        assert b"".join(lines) == b"one\ntwo\n"
 
     def test_close_flushes_unterminated_tail(self) -> None:
-        events, capture = _collect()
+        """A child that exits mid-line gets its last words, without a newline.
+
+        The terminator is content, so inventing one here would claim the child
+        ended a line it never ended.
+        """
+        lines, capture = _collect()
+
         capture.feed(b"last words")
-        assert events == []
+        assert lines == []
+
         capture.close()
-        assert _texts(events) == ["last words"]
+        assert lines == [b"last words"]
 
     def test_unterminated_output_does_not_grow_without_bound(self) -> None:
         """Newline-free output must not accumulate memory indefinitely.
 
-        The clamp exists for "a progress bar rewriting itself" -- output
-        that never emits a newline. Clamping only at line-emit time never
-        fires for such a child, so the bound must apply at ingest.
+        The clamp exists for "a progress bar rewriting itself" -- output that
+        never emits a newline. Clamping only at line-emit time never fires for
+        such a child, so the bound must apply at ingest.
         """
         _, capture = _collect()
+
         for _ in range(100):
             capture.feed(b"x" * 10_000)
+
         assert len(capture._buffer) <= 2 * _MAX_LINE_BYTES, (
             "ingest must clamp; a newline-free child grew the buffer to "
             f"{len(capture._buffer)} bytes"
         )
 
     def test_clamped_line_is_emitted_with_marker(self) -> None:
-        events, capture = _collect()
-        capture.feed(b"y" * (_MAX_LINE_BYTES + 100) + b"\n")
-        (text,) = _texts(events)
-        assert "truncated" in text
-        assert len(text) <= _MAX_LINE_BYTES + 64
+        """A truncated line says so rather than silently losing its tail.
 
-    def test_parse_error_skips_line_and_continues(self) -> None:
-        """A raising parser must not propagate into the pump thread.
-
-        ``feed`` runs on the pump's IO path (``_forward``); an escaping
-        exception unwinds ``_pump`` and terminates the whole run. The file
-        drain guards the identical seam (session.py ``_process_chunk``); the
-        stream path owes the same resilience.
+        The marker lands BEFORE the terminator: a clamped line is still one
+        line, and a marker past the newline would split it into two records.
         """
-        events: list[Event] = []
+        lines, capture = _collect()
 
-        def flaky_parse(raw: bytes) -> list[Event]:
+        capture.feed(b"y" * (_MAX_LINE_BYTES + 100) + b"\n")
+
+        (line,) = lines
+        assert b"truncated" in line
+        assert line.endswith(b"... (truncated)\n")
+        assert line.count(b"\n") == 1
+        assert len(line) <= _MAX_LINE_BYTES + 64
+
+    def test_a_consumer_error_skips_the_line_and_continues(self) -> None:
+        """A raising consumer must not propagate into the pump thread.
+
+        ``feed`` runs on the pump's IO path; an escaping exception unwinds the
+        pump and terminates the whole run. The file drain guards the identical
+        seam (``session.py::_process_chunk``); the stream path owes the same
+        resilience.
+        """
+        seen: list[bytes] = []
+
+        def flaky(raw: bytes) -> None:
             if b"bad" in raw:
                 raise ValueError("malformed line")
-            return list(IOStreamAdapter().parse(raw, whole_file=False))
+            seen.append(raw)
 
-        capture = LineCapture(flaky_parse, events.append)
+        capture = LineCapture(flaky)
         capture.feed(b"bad\ngood\n")
-        assert _texts(events) == ["good"]
+
+        assert seen == [b"good\n"]
 
 
 if __name__ == "__main__":  # pragma: no cover -- entry point only.

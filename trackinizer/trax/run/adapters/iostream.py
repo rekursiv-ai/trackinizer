@@ -1,26 +1,32 @@
 """The IO-stream contract: wrap any binary, capture its lines verbatim.
 
 Registry key ``sh``: ``trax run --as alice sh -- CMD [ARGS...]``. The wrapped
-command has no session log to tail, so the process's own PTY stream is the
-source of truth: each completed output line becomes one
-:class:`AssistantMessage` event. Semantic parsing belongs to the wrapped
-script, not trax -- the contract is line-delimited UTF-8 text in both
-directions (stdin lines arrive via the inbound poller's injection; stdout
-lines are captured verbatim).
+command has no session log to tail, so the process's own IO is the source of
+truth: each completed line becomes one record. Semantic parsing belongs to the
+wrapped script, not trax -- the contract is line-delimited UTF-8 text in both
+directions (stdin lines arrive via the inbound poller's injection; output lines
+are captured verbatim).
+
+Piped by default, unlike every other adapter. A pipe run keeps the child's
+three descriptors apart, so a line remembers which stream it crossed -- and
+that distinction is the only structure a scrape has. The cost is the tty:
+``--capture pty`` buys one back (liveness, and a child that wants a terminal)
+at the price of ``Stderr``, which the kernel has already merged into the output
+by the time trax sees a byte. See :data:`Capture`.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
 import logging
 import re
 
-from trackinizer.trax.run.custom_types import Event
-from trackinizer.types.agent_session_events import AssistantMessage
+from trackinizer.trax.run.adapters import scrape
+from trackinizer.trax.run.adapters.custom_types import Capture
+from trackinizer.trax.run.adapters.tail import Tail
 
 
 __all__ = ["IOStreamAdapter", "LineCapture"]
@@ -43,24 +49,25 @@ _MAX_LINE_BYTES: Final = 16_384
 
 
 class IOStreamAdapter:
-    """Wrap an arbitrary binary; the PTY stream is the session source.
+    """Wrap an arbitrary binary; its own IO streams are the session source.
 
     Every file-tailing method is vacuous -- there is no log. The runner
     detects the empty :attr:`cli_binary`, takes the command from the ``--``
-    args, and attaches a :class:`LineCapture` that feeds each completed
-    output line to :meth:`parse`.
+    args, and attaches a :class:`LineCapture` per stream that feeds each
+    completed line to this adapter's normalizer.
 
-    ``parse`` IS the configurable seam: a new stream adapter is this class
-    with a different ``parse`` (say, JSON-lines into richer typed events)
-    and its own ``name`` registered in the runner's adapter table. The
-    framing (chunk buffering, the line-length clamp) stays in
-    :class:`LineCapture`, shared by every stream adapter.
+    The READER is the configurable seam: a new stream dialect (say JSON-lines
+    into richer records) is this class returning a different one, with its own
+    ``name`` in the runner's adapter table. The framing (chunk buffering, the
+    line-length clamp) stays in :class:`LineCapture`, shared by every stream
+    adapter.
     """
 
     name: str = "sh"
     cli_binary: str = ""
     whole_file: bool = False
     stream_source: bool = True
+    capture: Capture = "pipe"
 
     def session_dirs(self) -> Iterable[Path]:
         return ()
@@ -70,41 +77,38 @@ class IOStreamAdapter:
         return False
 
     def session_scope(self) -> Path | None:
-        # The capture source is the PTY stream; no session file to scope.
+        # The capture source is the child's own IO; no session file to scope.
         return None
 
     def session_id_from_path(self, path: Path) -> str | None:
         del path
         return None
 
-    def parse(self, raw: bytes, *, whole_file: bool) -> Iterable[Event]:
-        r"""One completed output line -> events. The verbatim-text contract.
+    def reader(self) -> Tail:
+        """A fresh IR reader for one captured stream.
 
-        Strips terminal escape sequences (CSI/OSC/DCS) and the PTY's ``\r``
-        so the captured text is what the child printed, not how a terminal
-        rendered it. A blank line yields nothing.
+        Every line becomes a stream record: the contract is verbatim
+        line-delimited text, so nothing is parsed and nothing can be
+        misparsed. Semantic structure belongs to the wrapped script; WHICH
+        stream carried the line is the one thing capture knows and the file
+        does not, which is why the runner tags it rather than this reader.
         """
-        del whole_file  # stream framing is always line-oriented.
-        text = _ANSI_ESCAPES.sub(b"", raw).rstrip(b"\r").decode(errors="replace")
-        if not text:
-            return ()
-        return (
-            Event(
-                message=AssistantMessage(text=text),
-                timestamp=datetime.now(UTC),
-            ),
-        )
+        return Tail(scrape.normalize)
 
 
 class LineCapture:
-    r"""Frame PTY output bytes into lines; parse each through the adapter.
+    r"""Frame PTY output bytes into lines and hand each to one consumer.
 
     Fed raw master-fd chunks by the pump (which owns no framing); buffers
-    across chunk boundaries and hands each completed ``\n``-terminated line
-    (clamped to :data:`_MAX_LINE_BYTES`) to ``parse`` -- the stream
-    adapter's :meth:`~IOStreamAdapter.parse` -- emitting every event it
-    yields. ``close`` flushes an unterminated tail so a child that exits
-    mid-line still gets its last words captured.
+    across chunk boundaries and delivers each completed line WITH its ``\n``
+    (clamped to :data:`_MAX_LINE_BYTES`). ``close`` flushes an unterminated
+    tail so a child that exits mid-line still gets its last words captured --
+    without a newline, since there was none.
+
+    The terminator is kept because the reader downstream is total: every line
+    becomes one record and the records concatenate back to the bytes read, so
+    a stripped ``\n`` would make a scrape rewrite one byte short per line and
+    report the capture as unterminated when it was not.
 
     Two hazards this class must contain, because ``feed`` runs on the pump's
     IO thread where an escape terminates the whole run:
@@ -114,17 +118,12 @@ class LineCapture:
       would otherwise grow the buffer without limit while the emit-side
       clamp never fires. Past the cap, bytes are DROPPED until the next
       newline; the truncation is marked on the emitted line.
-    - Exceptions: ``parse``/``emit`` failures are logged and the line
-      skipped, mirroring the file drain's ``_process_chunk`` resilience --
-      one malformed line must not kill a live interactive session.
+    - Exceptions: a consumer failure is logged and the line skipped,
+      mirroring the file drain's ``_process_chunk`` resilience -- one bad
+      line must not kill a live interactive session.
     """
 
-    def __init__(
-        self,
-        parse: Callable[[bytes], Iterable[Event]],
-        emit: Callable[[Event], None],
-    ) -> None:
-        self._parse = parse
+    def __init__(self, emit: Callable[[bytes], None]) -> None:
         self._emit = emit
         self._buffer = bytearray()
         # Bytes discarded from the CURRENT (unterminated) line once the
@@ -132,7 +131,7 @@ class LineCapture:
         self._dropped = 0
 
     def feed(self, chunk: bytes) -> None:
-        """Buffer ``chunk``, parsing and emitting per completed line."""
+        """Buffer ``chunk``, delivering each completed line."""
         self._buffer.extend(chunk)
         while True:
             newline = self._buffer.find(b"\n")
@@ -145,16 +144,20 @@ class LineCapture:
                 break
             line = bytes(self._buffer[:newline])
             del self._buffer[: newline + 1]
-            self._emit_line(line)
+            self._emit_line(line, terminated=True)
 
     def close(self) -> None:
         """Flush a trailing unterminated line, if any."""
         if self._buffer:
-            self._emit_line(bytes(self._buffer))
+            self._emit_line(bytes(self._buffer), terminated=False)
             self._buffer.clear()
 
-    def _emit_line(self, raw: bytes) -> None:
-        """Clamp one framed line and emit whatever the adapter parses from it."""
+    def _emit_line(self, raw: bytes, *, terminated: bool) -> None:
+        """Clamp one framed line and hand it to the consumer.
+
+        The terminator is re-attached AFTER clamping, so a truncation marker
+        never lands past the newline and the line stays one line.
+        """
         truncated = self._dropped > 0
         self._dropped = 0
         if len(raw) > _MAX_LINE_BYTES:
@@ -162,12 +165,13 @@ class LineCapture:
             truncated = True
         if truncated:
             raw += b"... (truncated)"
+        if terminated:
+            raw += b"\n"
         # Guarded like the file drain's ``_process_chunk``: this runs on the
-        # pump's IO thread, so an escaping parse/emit error would unwind the
+        # pump's IO thread, so an escaping consumer error would unwind the
         # pump and terminate the live run over one bad line.
         try:
-            for event in self._parse(raw):
-                self._emit(event)
+            self._emit(raw)
         except Exception:
             logging.getLogger(__name__).warning(
                 "stream capture: dropping unparseable line", exc_info=True

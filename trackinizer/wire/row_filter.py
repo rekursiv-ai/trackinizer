@@ -17,6 +17,13 @@ differently from SQL.
 or a canonical name hits the same column. NULL columns follow SQL
 three-valued logic; other comparisons treat the value as a string unless
 both sides parse cleanly as numbers.
+
+An IR RECORD field (``tool_call``, ``thinking``) names no column on
+``inquiries``: its values live in ``session_records``. The predicate reads it
+like any other list-shaped value, under a row key of the field's own name --
+so a caller that wants one answered here attaches the texts under that key
+(``store/read.py`` does, for the rows it post-filters). An absent key reads as
+NULL, which is exactly what a session holding no such record is.
 """
 
 from __future__ import annotations
