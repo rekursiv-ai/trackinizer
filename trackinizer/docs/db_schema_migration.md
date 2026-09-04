@@ -112,6 +112,69 @@ Steps:
    bootstrap skips it; clear it first so the corrected migration re-runs:
    `DELETE FROM applied_migrations WHERE name = 'schema.NNN.sql'`, then
    restart.
+
+   **A backfill runs BEFORE the restart, not during it.** Migrations apply at
+   server startup, so `redeploy` has already stopped the old process by the
+   time one begins -- and every second the migration takes is downtime that
+   nothing needs. A backfill touches tables only; the running server does not
+   have to be down for it.
+
+   Measured on `schema.020.sql`: 3,081,202 rows / 7907 MB, each computing a
+   `STORED to_tsvector` on insert, plus ~1877 MB of ciphertext. It ran for
+   **11 minutes** with port 8446 closed and every client answering
+   `ECONNREFUSED`. The whole 11 minutes was avoidable.
+
+   So, for any migration whose body is a backfill rather than a DDL flip:
+
+   ```bash
+   # Against the LIVE database, old server still serving.
+   psql -d trackinizer -f trackinizer/server/assets/schema.NNN.sql
+   psql -d trackinizer -c \
+     "INSERT INTO applied_migrations (name) VALUES ('schema.NNN.sql')"
+   redeploy trackinizer   # startup now finds the ledger row and skips it
+   ```
+
+   Downtime falls to the restart itself. The precondition is that the
+   migration is safe against the OLD code -- an additive backfill into a table
+   the old build never reads is; a destructive rewrite of a table it still
+   serves is not, and that one takes the downtime.
+
+   How to tell which you are looking at: read the migration's own header.
+   `schema.020.sql` states its row count, its size, and "its duration is
+   downtime" -- everything needed to make this call, in the file, before it
+   ever runs.
+
+   **A single `INSERT ... SELECT` uses ONE core, whatever the machine has.**
+   Postgres never parallelizes a query whose top node writes rows: the plan is
+   serial in the leader, and the source scan gets no workers either. Measured:
+   `schema.020.sql` held one backend at 100% for 11 minutes on a 128-core host,
+   sustaining ~660 MB/min. `max_parallel_workers_per_gather = 2` and
+   `max_worker_processes = 8` are also low for the hardware, but raising them
+   changes nothing here -- the restriction is the write, not the budget.
+
+   Splitting the work is the only thing that uses the cores. Partition by a
+   key with a usable index (`session_id` range, `created` window) and run the
+   chunks as CONCURRENT CONNECTIONS -- separate sessions, not one statement:
+
+   ```bash
+   # Bounded by what the DISK sustains, not by nproc: every shard writes rows
+   # and computes a STORED to_tsvector, so past a handful they queue on WAL
+   # and shared buffers instead of going faster. `max_connections` (~100) is a
+   # second ceiling, and the server needs headroom under it while serving.
+   shards=$(( $(nproc) < 16 ? $(nproc) : 16 ))
+   for shard in $(seq 0 $((shards - 1))); do
+     psql -d trackinizer -c "INSERT INTO session_records SELECT ...
+       WHERE hashtext(session_id::text) % $shards = $shard" &
+   done; wait
+   ```
+
+   Measure before widening: run 4 shards, then 8, and keep the count where
+   throughput stops improving. A 128-core host does not want 128 writers.
+
+   Two consequences to accept before doing it: each shard commits separately,
+   so a failure leaves a partial backfill (make it idempotent, or record which
+   shards finished), and the shard predicate must be sargable or every shard
+   seq-scans the whole table and it is slower than serial.
 6. **Run the fresh-vs-live catalog diff** (below) -- the same set
    comparison as 4.5, now against live. Any drift = incomplete.
 7. **Smoke-check** the behavior that motivated the migration, end to end.
