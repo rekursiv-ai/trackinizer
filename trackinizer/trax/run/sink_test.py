@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast, override
+from typing import TypeGuard, cast, override
 from uuid import UUID, uuid4
 
+import asyncio
 import contextlib
 import io
 import json
 import threading
 
+import pytest
+
 from trackinizer.client.client import Client
 from trackinizer.lib.agent.types.sessions import AssistantMessage, ToolCall, UserMessage
 from trackinizer.lib.custom_json import DictCodec
+from trackinizer.lib.posix.follow import follow_tree
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter
 from trackinizer.trax.run.adapters.tail import Tail
@@ -103,6 +108,7 @@ class TestFileSink:
         sink = FileSink(buf)
         sink.emit("claude", _event("one"))
         sink.emit("claude", _event("two"))
+        sink.restart(_PART)
         sink.emit("claude", _event("compacted", restart=True))
         sink.emit("claude", _event("after"))
         idxs = [json.loads(line)["idx"] for line in buf.getvalue().splitlines()]
@@ -764,6 +770,11 @@ class _ExplodingSink(Sink):
         del cli_session_id
 
     @override
+    def restart(self, path: Path) -> None:
+        del path
+        raise RuntimeError("server exploded")
+
+    @override
     def emit(self, adapter_name: str, event: Event) -> None:
         del adapter_name, event
         self.emit_attempts += 1
@@ -838,7 +849,7 @@ class TestResilientSink:
     def test_emit_failure_falls_back_to_file_and_warns_once(
         self,
         tmp_path: Path,
-        capsys: object,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         primary = _ExplodingSink()
         fallback_path = tmp_path / "fallback.jsonl"
@@ -854,7 +865,7 @@ class TestResilientSink:
         # Both records landed in the local fallback file as JSONL.
         assert _fallback_texts(fallback_path) == ["one", "two"]
         # The user is warned once, on stderr, not flooded per-record.
-        err = cast(Any, capsys).readouterr().err
+        err = capsys.readouterr().err
         assert err.count("[trax run]") == 1
         assert "falling back to local capture" in err
         assert str(fallback_path) in err
@@ -1135,6 +1146,12 @@ class _BlockingSink(Sink):
             self.log.append((op, phase))
 
     @override
+    def restart(self, path: Path) -> None:
+        del path
+        self._record("restart", "enter")
+        self._record("restart", "exit")
+
+    @override
     def emit(self, adapter_name: str, event: Event) -> None:
         del adapter_name, event
         self._record("emit", "enter")
@@ -1278,6 +1295,265 @@ class TestLockedSink:
         release.set()
         flusher.join(timeout=5.0)
         closer.join(timeout=5.0)
+
+
+@pytest.mark.parametrize("destination", ["file", "server", "locked", "resilient"])
+@pytest.mark.parametrize("batch_size", [1, 2, 50])
+def test_consecutive_restart_chunks(
+    tmp_path: Path, destination: str, batch_size: int
+) -> None:
+    client = _FakeClient()
+    output = io.StringIO()
+    primary = TrackinizerSink(cast(Client, client), "sh", batch_size=batch_size)
+    sink: Sink = FileSink(output) if destination == "file" else primary
+    if destination == "locked":
+        sink = LockedSink(primary)
+    if destination == "resilient":
+        sink = ResilientSink(primary, fallback_path=tmp_path / "fallback.jsonl")
+    readers: list[Tail] = []
+    try:
+        for index in range(3):
+            sink.feed(IOStreamAdapter(), _PART, b"one\n", restart=index > 0)
+            owner = primary if destination == "locked" else sink
+            readers.append(owner.readers[_PART])
+        if destination == "file":
+            positions = [
+                DictCodec.coerce(json.loads(line))["idx"]
+                for line in output.getvalue().splitlines()
+            ]
+        else:
+            sink.close()
+            positions = [b.idx for _, _, bodies, _ in client.appended for b in bodies]
+        assert positions == [0, 1, 2] * 3
+    finally:
+        for reader in readers:
+            reader.close()
+            if reader._reader is not None:
+                reader._reader.join(timeout=2)
+        sink.close()
+
+
+def test_restart_closes_displaced_reader_without_emitting_eof() -> None:
+    output = io.StringIO()
+    sink = FileSink(output)
+    sink.feed(IOStreamAdapter(), _PART, b"unterminated")
+    displaced = sink.readers[_PART]
+    try:
+        sink.feed(IOStreamAdapter(), _PART, b"new\n", restart=True)
+        assert displaced._reader is not None
+        displaced._reader.join(timeout=1)
+        assert not displaced._reader.is_alive()
+        rows = [
+            DictCodec.coerce(json.loads(line))
+            for line in output.getvalue().splitlines()
+        ]
+        assert [row["idx"] for row in rows] == [0, 1, 2] * 2
+        assert [row["kind"] for row in rows] == [
+            "TurnContext",
+            "ContextClear",
+            "Stdout",
+        ] * 2
+    finally:
+        displaced.close()
+        if displaced._reader is not None:
+            displaced._reader.join(timeout=2)
+        for reader in sink.readers.values():
+            reader.close()
+        sink.close()
+
+
+@pytest.mark.parametrize("server", [False, True])
+def test_repeated_claude_replacement_pipeline(tmp_path: Path, *, server: bool) -> None:
+    output = io.StringIO()
+    client = _FakeClient()
+    sink: Sink = (
+        TrackinizerSink(cast(Client, client), "claude", batch_size=1)
+        if server
+        else FileSink(output)
+    )
+    readers: list[Tail] = []
+    try:
+        asyncio.run(_replace_claude(tmp_path, sink, readers))
+        positions = (
+            [b.idx for _, _, bodies, _ in client.appended for b in bodies]
+            if server
+            else [
+                DictCodec.coerce(json.loads(line))["idx"]
+                for line in output.getvalue().splitlines()
+            ]
+        )
+        assert positions == list(range(5)) * 3
+        if server:
+            assert [restart for _, _, _, restart in client.appended] == [False] * 5 + [
+                True
+            ] * 10
+    finally:
+        for reader in readers:
+            reader.close()
+            if reader._reader is not None:
+                reader._reader.join(timeout=2)
+        sink.close()
+
+
+def _is_async_generator[T](
+    value: AsyncIterator[T],
+) -> TypeGuard[AsyncGenerator[T, None]]:
+    return isinstance(value, AsyncGenerator)
+
+
+async def _replace_claude(root: Path, sink: Sink, readers: list[Tail]) -> None:
+    target = root / "log.jsonl"
+    target.write_text('{"type":"user","message":{"role":"user","content":"one"}}\n')
+    lines = follow_tree(root, match=lambda p: p == target, replay=True)
+    assert _is_async_generator(lines)
+    async with contextlib.aclosing(lines):
+        for index, text in enumerate(("one", "two", "six")):
+            if index:
+                staged = root / "replacement"
+                staged.write_text(
+                    json.dumps(
+                        {"type": "user", "message": {"role": "user", "content": text}}
+                    )
+                    + "\n"
+                )
+                staged.replace(target)
+            line = await asyncio.wait_for(anext(lines), 2)
+            assert line.restart == (index > 0)
+            sink.feed(
+                ClaudeAdapter(),
+                line.path,
+                (line.text + "\n").encode(),
+                restart=line.restart,
+            )
+            readers.append(sink.readers[target])
+
+
+def test_restart_flush_failure_preserves_old_positions_in_fallback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = _FlakyFlushClient()
+    primary = TrackinizerSink(cast(Client, client), "sh")
+    fallback = tmp_path / "fallback.jsonl"
+    sink = ResilientSink(primary, fallback_path=fallback)
+    try:
+        sink.feed(IOStreamAdapter(), _PART, b"old\n")
+        sink.feed(IOStreamAdapter(), _PART, b"new\n", restart=True)
+        sink.feed(IOStreamAdapter(), _PART, b"latest\n", restart=True)
+        sink.flush()
+        rows = [
+            DictCodec.coerce(json.loads(line))
+            for line in fallback.read_text().splitlines()
+        ]
+        assert [row["idx"] for row in rows] == [0, 1, 2] * 3
+        assert all(row["adapter"] == "sh" for row in rows)
+    finally:
+        for reader in sink.readers.values():
+            reader.close()
+        sink.close()
+    assert caplog.records == []
+    err = capsys.readouterr().err
+    assert len(err.splitlines()) == 1
+    assert "transient flush failure" in err
+    assert str(fallback) in err
+
+
+@pytest.mark.parametrize("server", [False, True])
+def test_empty_restart_chunk_resets_only_its_part(*, server: bool) -> None:
+    output = io.StringIO()
+    client = _FakeClient()
+    sink: Sink = (
+        TrackinizerSink(cast(Client, client), "sh", batch_size=1)
+        if server
+        else FileSink(output)
+    )
+    try:
+        sink.emit("sh", _event("one"))
+        sink.emit("sh", _event("two"))
+        sink.emit("sh", _event("other", path=_OTHER))
+        assert sink.feed(IOStreamAdapter(), _PART, b"", restart=True) == []
+        sink.emit("sh", _event("new"))
+        sink.emit("sh", _event("other again", path=_OTHER))
+        if server:
+            rows = [
+                (name, body.idx)
+                for _, name, bodies, _ in client.appended
+                for body in bodies
+            ]
+            assert [restart for _, _, _, restart in client.appended] == [
+                False,
+                False,
+                False,
+                True,
+                False,
+            ]
+        else:
+            parsed = [
+                DictCodec.coerce(json.loads(line))
+                for line in output.getvalue().splitlines()
+            ]
+            rows = [(row["part_name"], row["idx"]) for row in parsed]
+        assert rows == [
+            (_PART.name, 0),
+            (_PART.name, 1),
+            (_OTHER.name, 0),
+            (_PART.name, 0),
+            (_OTHER.name, 1),
+        ]
+    finally:
+        for reader in sink.readers.values():
+            reader.close()
+        sink.close()
+
+
+def test_locked_sink_delegates_restart_and_lifecycle() -> None:
+    client = _FakeClient()
+    inner = TrackinizerSink(cast(Client, client), "sh", batch_size=1)
+    sink = LockedSink(inner)
+    sink.open()
+    sink.set_cli_session_id("native-id")
+    sink.emit("sh", _event("old"))
+    sink.restart(_PART)
+    sink.emit("sh", _event("new", restart=True))
+    sink.emit_slash_command(SlashCommand(command="exit"), _AT)
+    assert sink.drain_pending() == []
+    sink.close()
+    assert [body.idx for _, _, bodies, _ in client.appended for body in bodies] == [
+        0,
+        0,
+    ]
+    assert client.end_bodies[0] is not None
+    assert client.end_bodies[0].cli_session_id == "native-id"
+
+
+@pytest.mark.parametrize("batch_size", [1, 2, 50])
+def test_replacement_overwrites_every_reused_position(batch_size: int) -> None:
+    client = _FakeClient()
+    sink = TrackinizerSink(cast(Client, client), "sh", batch_size=batch_size)
+    try:
+        for version, line_count in enumerate((3, 1, 2, 4)):
+            for line in range(line_count):
+                sink.feed(
+                    IOStreamAdapter(),
+                    _PART,
+                    f"version-{version}-line-{line}\n".encode(),
+                    restart=version > 0 and line == 0,
+                )
+        sink.close()
+        seen: set[int] = set()
+        for _, _, bodies, restart in client.appended:
+            for body in bodies:
+                if body.idx in seen:
+                    assert restart, f"position {body.idx} would retain its obsolete row"
+                seen.add(body.idx)
+        assert seen == set(range(6))
+        if batch_size == 1:
+            assert not client.appended[-1][3]
+    finally:
+        for reader in sink.readers.values():
+            reader.close()
+        sink.close()
 
 
 if __name__ == "__main__":

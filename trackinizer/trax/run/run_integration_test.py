@@ -895,6 +895,10 @@ class _StubSessionSink(Sink):
         del cli_session_id
 
     @override
+    def restart(self, path: Path) -> None:
+        del path
+
+    @override
     def emit(self, adapter_name: str, event: Event) -> None:
         del adapter_name, event
 
