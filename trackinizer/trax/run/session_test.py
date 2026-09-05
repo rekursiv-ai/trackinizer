@@ -89,9 +89,11 @@ class _RecordingSink(Sink):
         self.cli_session_ids.append(cli_session_id)
 
     @override
+    def restart(self, path: Path) -> None:
+        self._next_idx[path] = 0
+
+    @override
     def emit(self, adapter_name: str, event: Event) -> None:
-        if event.restart:
-            self._next_idx[event.path] = 0
         idx = self._next_idx.get(event.path, 0)
         self._next_idx[event.path] = idx + 1
         self.events.append((idx, adapter_name, event))

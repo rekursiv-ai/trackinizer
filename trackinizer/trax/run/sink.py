@@ -97,7 +97,19 @@ class Sink(Protocol):
         ...
 
     def emit(self, adapter_name: str, event: Event) -> None:
-        """Record one captured record at its position in its part."""
+        """Record one record; call ``restart`` before a replacement's first record."""
+        ...
+
+    def restart(self, path: Path) -> None:
+        """Reset one part's numbering before normalizing a replacement chunk.
+
+        ``feed`` calls this even when the chunk produces no records. Direct
+        ``emit`` callers must call it once per replacement, not per record.
+
+        Args:
+          path: The source file whose records are being replaced.
+
+        """
         ...
 
     def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
@@ -149,10 +161,11 @@ class Sink(Protocol):
 
         """
         if restart:
-            # The file was rewritten, so the reader's position describes bytes
-            # that no longer exist. A fresh reader re-derives from offset 0 and
-            # each record lands back on the key it already held.
-            _ = self.readers.pop(path, None)
+            self.restart(path)
+            displaced = self.readers.pop(path, None)
+            if displaced is not None:
+                # EOF metadata belongs to the obsolete file, not its replacement.
+                displaced.close()
         reader = self.readers.get(path)
         if reader is None:
             reader = adapter.reader()
@@ -235,10 +248,6 @@ class FileSink(Sink):
         # Positions per FILE, not per run: a session spans several files and
         # each is stored as its own part, numbered from zero.
         self._next_idx: dict[Path, int] = {}
-        # Files whose CURRENT chunk re-derived the part from its start. The
-        # restart flag rides every record of that chunk, and the reset is one
-        # per chunk, so this remembers that it already happened.
-        self._restarted: set[Path] = set()
 
     @property
     @override
@@ -257,16 +266,11 @@ class FileSink(Sink):
         del cli_session_id
 
     @override
+    def restart(self, path: Path) -> None:
+        self._next_idx[path] = 0
+
+    @override
     def emit(self, adapter_name: str, event: Event) -> None:
-        if event.restart and event.path not in self._restarted:
-            # ONCE per rewritten chunk, not once per record. The flag rides
-            # every record the chunk produced -- a restart re-reads the file,
-            # so its first line yields the opening context and clear as well as
-            # its turn -- and resetting on each of them numbered all three 0.
-            self._restarted.add(event.path)
-            self._next_idx[event.path] = 0
-        elif not event.restart:
-            self._restarted.discard(event.path)
         idx = self._next_idx.get(event.path, 0)
         self._next_idx[event.path] = idx + 1
         self._write_record(adapter_name, event.path, _record_body(idx, event))
@@ -381,13 +385,11 @@ class TrackinizerSink(Sink):
         # grouped by path.
         self._slash: list[SlashCommandBody] = []
         self._next_idx: dict[Path, int] = {}
+        # Shrunk tails remain stored; regrowth must overwrite their old positions.
+        self._overwrite_until: dict[Path, int] = {}
         # Files whose current batch re-derived the part from its start, so the
         # append overwrites rather than skipping what is stored.
         self._restarted: set[Path] = set()
-        # Files whose CURRENT chunk already reset its numbering. Separate from
-        # ``_restarted``, which a flush clears: the reset is once per chunk,
-        # and a chunk can span flushes.
-        self._renumbered: set[Path] = set()
         # One IR id per file, minted on first send: the manifest records what
         # the file declared, and a fresh id per BATCH would rewrite it.
         self._ir_ids: dict[Path, UUID] = {}
@@ -411,27 +413,25 @@ class TrackinizerSink(Sink):
     def emit(self, adapter_name: str, event: Event) -> None:
         del adapter_name  # the session already names its CLI
         self._ensure_session()
-        if event.restart:
-            self._restarted.add(event.path)
-        if event.restart and event.path not in self._renumbered:
-            # ONCE per rewritten chunk, not once per record. The flag rides
-            # every record the chunk produced -- a restart re-reads the file,
-            # so its first line yields the opening context and clear as well as
-            # its turn -- and resetting on each of them numbered all three 0.
-            #
-            # Its own set, not ``_restarted``: that one is cleared by a flush,
-            # which a chunk larger than the batch triggers mid-chunk.
-            self._renumbered.add(event.path)
-            self._next_idx[event.path] = 0
-        elif not event.restart:
-            self._renumbered.discard(event.path)
         idx = self._next_idx.get(event.path, 0)
+        if event.restart or idx < self._overwrite_until.get(event.path, 0):
+            self._restarted.add(event.path)
         self._next_idx[event.path] = idx + 1
         if not self._buffer:
             self._oldest_buffered_at = self._clock()
         self._buffer.append((event.path, _record_body(idx, event)))
         if len(self._buffer) >= self._batch_size:
             self._flush()
+
+    @override
+    def restart(self, path: Path) -> None:
+        # Reused positions must never share an ingest request with older versions.
+        self._flush()
+        self._overwrite_until[path] = max(
+            self._overwrite_until.get(path, 0), self._next_idx.get(path, 0)
+        )
+        self._next_idx[path] = 0
+        self._restarted.add(path)
 
     @override
     def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
@@ -682,6 +682,16 @@ class ResilientSink(Sink):
         self._ensure_fallback().emit_slash_command(command, at)
 
     @override
+    def restart(self, path: Path) -> None:
+        if self._primary is not None:
+            try:
+                self._primary.restart(path)
+                return
+            except Exception as err:  # noqa: BLE001 -- any sink failure must degrade, not crash the drain thread.
+                self._degrade(err)
+        self._ensure_fallback().restart(path)
+
+    @override
     def emit(self, adapter_name: str, event: Event) -> None:
         self._adapter_for_fallback = adapter_name
         if self._primary is not None:
@@ -802,6 +812,11 @@ class LockedSink(Sink):
     def set_cli_session_id(self, cli_session_id: str) -> None:
         with self._lock:
             self._inner.set_cli_session_id(cli_session_id)
+
+    @override
+    def restart(self, path: Path) -> None:
+        with self._lock:
+            self._inner.restart(path)
 
     @override
     def emit(self, adapter_name: str, event: Event) -> None:

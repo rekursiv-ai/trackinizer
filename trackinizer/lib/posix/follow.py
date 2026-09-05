@@ -1,23 +1,22 @@
 """Follow a growing file, and the directory watch that wakes it.
 
-``tail -F`` as an async generator, plus the kernel notification underneath.
-A regular file cannot be waited on -- POSIX reports it always ready, so
-``select`` returns instantly at EOF and a naive loop spins -- so
-:func:`follow_file` waits on a change notification for the containing
-DIRECTORY and reads only when there is something to read. That is what a
-reader of an append-only log needs instead of a poll interval.
+Follow complete lines across appends and replacements without polling.
+macOS ``tail -F`` uses kqueue read notifications on its retained read descriptor.
+These cursors reopen paths for each drain, so they use filesystem change
+notifications rather than readiness tied to a persistent file position.
 
-:func:`follow_dir` watches SEVERAL directories and their subtrees. Several,
-because every caller names a list of them and one descriptor holds many
-watches -- a watch-per-directory API would multiply fds against a 128-instance
-kernel ceiling. Subtrees, because neither kernel watches recursively: a new
-subdirectory gets its own watch as it appears, which is the emulation every
-recursive watcher performs.
+:func:`follow_dir` watches several directories and their subtrees. Linux
+inotify holds many directory watches on one descriptor; newly created
+subdirectories get their own watches. macOS uses natively recursive FSEvents.
 
 Linux inotify is reached through ``ctypes``, since CPython ships no inotify
-module and the alternative is a dependency for one syscall. Elsewhere the
-watching is delegated (see :func:`follow_dir`); a platform with neither raises
-rather than falling back to a timer nobody asked for.
+module. Its IN_MODIFY notifications wake readers while writers remain open.
+On macOS, measured FSEvents appends were not reported until writer close;
+the line followers therefore supplement recursive discovery with kqueue vnode
+notifications on selected files. One descriptor per selected file is held
+until deletion or follower cleanup, including pre-existing files even when
+history is skipped. Narrow ``match`` when following a large archive.
+Unsupported platforms raise rather than falling back to a timer.
 
 Four hazards :func:`follow_file` handles, each of which silently loses a line:
 
@@ -38,7 +37,7 @@ named them.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager, closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Final, Protocol, cast
@@ -50,12 +49,19 @@ import errno
 import logging
 import os
 import platform
+import select
 import struct
+import sys
 
 from wrapt import lazy_import
 
 
 __all__ = ["Line", "follow_dir", "follow_file", "follow_tree"]
+
+_logger = logging.getLogger(__name__)
+
+# Bound teardown if watchdog's observer thread does not exit.
+_OBSERVER_JOIN_SEC: Final = 5.0
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -80,22 +86,13 @@ class Line:
     """Whether the file was replaced immediately before this line."""
 
 
-_logger = logging.getLogger(__name__)
-
-# How long to wait for watchdog's observer thread to exit on teardown. Bounded
-# because it is a plain thread, not a daemon: a wedged join would hang the
-# caller's whole process on exit.
-_OBSERVER_JOIN_SEC: Final = 5.0
-
-
 async def follow_file(path: Path, *, replay: bool = False) -> AsyncIterator[str]:
     """Yield each line ``path`` gains, indefinitely.
 
     Args:
       path: File to follow; it need not exist yet.
       replay: Whether to yield the lines already in the file. Off by default,
-        matching ``tail -F``: a follower that replayed would re-deliver a
-        history the caller has usually already seen.
+        skipping all history; native ``tail -F`` instead prints its last ten lines.
 
     Yields:
       line: One line, without its terminator.
@@ -104,13 +101,17 @@ async def follow_file(path: Path, *, replay: bool = False) -> AsyncIterator[str]
       FileNotFoundError: ``path.parent`` does not exist. The FILE may be
         absent -- that is the point -- but its directory is what gets watched.
       NotImplementedError: The platform has no supported watch mechanism.
+      OSError: Reading runs out of descriptors, or a required macOS selected-file
+        watch cannot be registered.
 
     """
     state = _Cursor(path, offset=0 if replay else _size(path))
     # The watch is registered BEFORE the first read. Reading first would lose
     # a write landing in between: the watch reports only what follows it, so
     # that line would wait for an unrelated later change.
-    async with follow_dir(path.parent) as changed:
+    async with _watch_lines(
+        path.parent, match=lambda candidate: candidate == path, existing={path}
+    ) as changed:
         for line in state.drain():
             yield line
         async for paths in changed:
@@ -136,10 +137,10 @@ async def follow_tree(
 
     Args:
       *directories: Roots to watch, with their subtrees.
-      match: Whether a path is a file this caller wants followed.
+      match: Whether a path is a file this caller wants followed. Rejected
+        paths are neither read nor given selected-file watches, including resume.
       replay: Whether to yield what matching files already hold. Off by
-        default: a file present before the follow began belongs to an earlier
-        session, and replaying it would re-capture that session's history.
+        default; future writes to existing matching files are still followed.
       resume: Files that exist but whose history the caller WANTS, read from
         offset 0 like a new file rather than seeded at EOF. ``replay`` is the
         all-or-nothing form of this and answers a different question ("re-read
@@ -161,6 +162,9 @@ async def follow_tree(
     Raises:
       ValueError: No directory was given.
       FileNotFoundError: One of ``directories`` does not exist.
+      NotImplementedError: The platform has no supported watch mechanism.
+      OSError: Reading runs out of descriptors, or a required macOS selected-file
+        watch cannot be registered. The follower closes its watches on failure.
 
     """
     cursors: dict[Path, _Cursor] = {}
@@ -177,33 +181,28 @@ async def follow_tree(
         for path in directory.rglob("*")
         if path.is_file() and match(path)
     } - resume
-    async with follow_dir(*directories) as changed:
+    for path in existing:
+        cursors[path] = _Cursor(path, offset=0 if replay else _size(path))
+    async with _watch_lines(
+        *directories, match=match, existing=existing | resume
+    ) as changed:
         if on_armed is not None:
             on_armed()
-        # A resumed file is drained NOW rather than on its next change: the
-        # process that will append to it has not started yet, so waiting for
-        # an event would withhold the whole transcript until the first new
-        # turn -- and a run that produced none would capture nothing at all.
-        for path in sorted(resume) if not replay else ():
+        for path in resume:
             if path.is_file() and match(path):
                 cursors[path] = _Cursor(path, offset=0)
-                for line in cursors[path].drain():
-                    yield Line(path=path, text=line)
-        if replay:
-            for path in sorted(existing | resume):
-                cursors[path] = _Cursor(path, offset=0)
-            for path in sorted(cursors):
-                for line in cursors[path].drain():
-                    yield Line(path=path, text=line)
+        # An append between the snapshot and registration has no wakeup.
+        for path in sorted(cursors):
+            cursor = cursors[path]
+            for index, line in enumerate(cursor.drain()):
+                yield Line(path=path, text=line, restart=cursor.restarted and not index)
         async for paths in changed:
             for path in sorted(paths):
                 if not match(path):
                     continue
                 cursor = cursors.get(path)
                 if cursor is None:
-                    cursor = _Cursor(
-                        path, offset=_size(path) if path in existing else 0
-                    )
+                    cursor = _Cursor(path, offset=0)
                     cursors[path] = cursor
                 drained = cursor.drain()
                 for index, line in enumerate(drained):
@@ -218,6 +217,124 @@ async def follow_tree(
                     )
 
 
+if sys.platform == "darwin":
+
+    @asynccontextmanager  # pyright: ignore[reportUnreachable] -- Linux-targeted checking omits macOS select types.
+    async def _watch_lines(
+        *directories: Path,
+        match: Callable[[Path], bool],
+        existing: set[Path],
+    ) -> AsyncGenerator[AsyncIterator[set[Path]]]:
+        """Use vnodes because FSEvents can defer appends until writer close."""
+        queue: asyncio.Queue[Path] = asyncio.Queue()
+        with closing(_Vnodes(queue)) as vnodes:
+            async with _watch_fsevents(*directories, queue=queue) as changed:
+                for path in existing:
+                    if match(path):
+                        vnodes.watch(path)
+                async with aclosing(
+                    _vnode_changes(changed, vnodes.watch, match)
+                ) as lines:
+                    yield lines
+
+    class _Vnodes:
+        """Own one descriptor per selected file, not per directory in the tree."""
+
+        def __init__(self, queue: asyncio.Queue[Path]) -> None:
+            self._queue = queue
+            self._kernel = select.kqueue()
+            self._files: dict[Path, int] = {}
+            self._paths: dict[int, Path] = {}
+            self._loop = asyncio.get_running_loop()
+            self._loop.add_reader(self._kernel.fileno(), self._ready)
+
+        def watch(self, path: Path) -> None:
+            """Arm before the caller drains, replacing an obsolete inode watch."""
+            fd = self._files.get(path)
+            try:
+                current = path.stat()
+            except FileNotFoundError:
+                if fd is not None:
+                    self._remove(path, fd)
+                return
+            if fd is not None:
+                previous = os.fstat(fd)
+                if (previous.st_dev, previous.st_ino) == (
+                    current.st_dev,
+                    current.st_ino,
+                ):
+                    return
+                self._remove(path, fd)
+            try:
+                fd = os.open(path, os.O_EVTONLY)
+            except FileNotFoundError:
+                return
+            try:
+                event = select.kevent(
+                    fd,
+                    filter=select.KQ_FILTER_VNODE,
+                    flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                    fflags=select.KQ_NOTE_WRITE
+                    | select.KQ_NOTE_EXTEND
+                    | select.KQ_NOTE_DELETE
+                    | select.KQ_NOTE_RENAME
+                    | select.KQ_NOTE_REVOKE,
+                )
+                self._kernel.control([event], 0, 0)
+            except BaseException:
+                os.close(fd)
+                raise
+            self._files[path] = fd
+            self._paths[fd] = path
+
+        def close(self) -> None:
+            """Remove the loop reader before closing the kernel and file handles."""
+            self._loop.remove_reader(self._kernel.fileno())
+            self._kernel.close()
+            for fd in self._files.values():
+                os.close(fd)
+            self._files.clear()
+            self._paths.clear()
+
+        def _remove(self, path: Path, fd: int) -> None:
+            del self._files[path]
+            del self._paths[fd]
+            os.close(fd)
+
+        def _ready(self) -> None:
+            for event in self._kernel.control(None, 64, 0):
+                path = self._paths.get(event.ident)
+                if path is not None:
+                    self._queue.put_nowait(path)
+
+else:
+
+    @asynccontextmanager
+    async def _watch_lines(
+        *directories: Path,
+        match: Callable[[Path], bool],
+        existing: set[Path],
+    ) -> AsyncGenerator[AsyncIterator[set[Path]]]:
+        """Inotify already reports held-open writes through directory watches."""
+        del match, existing
+        async with follow_dir(*directories) as changed:
+            yield changed
+
+
+async def _vnode_changes(
+    changed: AsyncIterator[set[Path]],
+    watch: Callable[[Path], None],
+    match: Callable[[Path], bool],
+) -> AsyncGenerator[set[Path]]:
+    """Arm discovered files before handing their changes to the reader."""
+    async for paths in changed:
+        selected = {path for path in paths if match(path)}
+        for path in selected:
+            watch(path)
+        if selected:
+            yield selected
+
+
 class _Cursor:
     """Tracks how far into a file has been read, and any partial line.
 
@@ -228,10 +345,11 @@ class _Cursor:
       decodes each read independently, so with ``errors="replace"`` each half
       becomes U+FFFD and the line is silently corrupted. Holding the
       undecodable tail as bytes carries the character across the split.
-    * A rewrite is not always a SHRINK. Deciding "was this replaced?" by
-      length leaves a same-or-larger replacement read from the stale offset,
-      yielding the tail of a line nobody wrote. The bytes immediately before
-      the offset are re-read and compared instead.
+    * A new inode can contain an identical prefix. Device/inode identity comes
+      from the opened read handle, independently of the notification watch.
+    * A same-inode rewrite is not always a SHRINK. The bytes immediately before
+      the offset are re-read and compared, so changed content resets the cursor
+      even when the file has grown.
     * A write landing between measuring and reading is read now; recording
       the measurement rather than the read would deliver it again next time.
     """
@@ -257,7 +375,17 @@ class _Cursor:
         # re-reads to tell an append from a replacement. Seeded here because a
         # cursor may START mid-file (``offset=_size(path)``, the skip-history
         # case) without ever having read them itself.
-        self._seen = _tail(path, offset)
+        self._seen = b""
+        self._identity: tuple[int, int] | None = None
+        try:
+            with path.open("rb") as handle:
+                stat = os.fstat(handle.fileno())
+                self._identity = (stat.st_dev, stat.st_ino)
+                window = min(offset, _REPLACEMENT_WINDOW)
+                handle.seek(offset - window)
+                self._seen = handle.read(window)
+        except OSError:
+            pass
 
     def drain(self) -> list[str]:
         """Return every complete line appended since the last call.
@@ -276,7 +404,11 @@ class _Cursor:
         """
         try:
             with self._path.open("rb") as handle:
-                if self._offset and not self._continues(handle):
+                stat = os.fstat(handle.fileno())
+                identity = (stat.st_dev, stat.st_ino)
+                if (self._identity is not None and identity != self._identity) or (
+                    self._offset and not self._continues(handle)
+                ):
                     # The bytes this cursor already read are gone or changed:
                     # the file was replaced. Its offset and held fragment both
                     # describe bytes that no longer exist.
@@ -284,9 +416,13 @@ class _Cursor:
                     self._partial = b""
                     self._seen = b""
                     self._pending_restart = True
+                self._identity = identity
                 _ = handle.seek(self._offset)
                 chunk = handle.read()
-        except OSError:
+        except OSError as error:
+            # Retained watches can exhaust the descriptors needed for reads.
+            if error.errno in (errno.EMFILE, errno.ENFILE):
+                raise
             return []
         if not chunk:
             return []
@@ -315,23 +451,10 @@ class _Cursor:
 _REPLACEMENT_WINDOW: Final = 4_096
 """How many consumed bytes a cursor keeps to recognise a replacement.
 
-Bounded because a session file reaches megabytes. A window is sufficient
-because a rewrite would have to reproduce this many preceding bytes exactly
-and then diverge to pass as an append, which a session log does not do.
+Bounded because a session file reaches megabytes. A same-inode rewrite that
+reproduces this entire window is indistinguishable from an append. A new inode
+is detected independently, even when its contents are identical.
 """
-
-
-def _tail(path: Path, offset: int) -> bytes:
-    """The bytes just before ``offset``, or empty when unreadable."""
-    if offset <= 0:
-        return b""
-    window = min(offset, _REPLACEMENT_WINDOW)
-    try:
-        with path.open("rb") as handle:
-            _ = handle.seek(offset - window)
-            return handle.read(window)
-    except OSError:
-        return b""
 
 
 def _size(path: Path) -> int:
@@ -380,7 +503,9 @@ async def follow_dir(*directories: Path) -> AsyncGenerator[AsyncIterator[set[Pat
     Each iteration returns every path that changed since the last one, so a
     burst of writes wakes the caller once rather than per event. Each
     directory is watched with its whole subtree, including subdirectories
-    created later.
+    created later. macOS FSEvents can defer content notifications until writer
+    close; use :func:`follow_file` or :func:`follow_tree` for live lines from
+    held-open writers. Paths retain the spelling of the watched root.
 
     Args:
       *directories: Directories to watch. Every one must exist: a watch that
@@ -418,11 +543,12 @@ async def follow_dir(*directories: Path) -> AsyncGenerator[AsyncIterator[set[Pat
 @asynccontextmanager
 async def _watch_fsevents(
     *directories: Path,
+    queue: asyncio.Queue[Path] | None = None,
 ) -> AsyncGenerator[AsyncIterator[set[Path]]]:
     """The macOS backend: one FSEvents stream per tree, natively recursive.
 
-    kqueue is the wrong tool on this platform. It holds an open descriptor per
-    watched directory, so emulating recursion over a few thousand of them
+    kqueue is unsuitable for recursive discovery: it holds an open descriptor
+    per watched entry, so walking a few thousand of them
     exhausts the default file-handle limit -- Apple's guidance is to use
     file-system events for a large hierarchy, which is what watchdog's
     ``fsevents`` observer wraps.
@@ -432,11 +558,13 @@ async def _watch_fsevents(
       NotImplementedError: watchdog's FSEvents backend is unavailable.
 
     """
+    if not directories:
+        raise ValueError("follow requires at least one directory")
     for directory in directories:
         if not directory.is_dir():
             raise FileNotFoundError(errno.ENOENT, "no such directory", str(directory))
     observer = _fsevents_observer()
-    async with _fsevents_events(observer, directories) as changed:
+    async with _fsevents_events(observer, directories, queue=queue) as changed:
         yield changed
 
 
@@ -494,7 +622,10 @@ def _fsevents_observer() -> _Observer:
 
 @asynccontextmanager
 async def _fsevents_events(
-    observer: _Observer, directories: tuple[Path, ...]
+    observer: _Observer,
+    directories: tuple[Path, ...],
+    *,
+    queue: asyncio.Queue[Path] | None = None,
 ) -> AsyncGenerator[AsyncIterator[set[Path]]]:
     """Adapt a watchdog observer to the changed-path iterator this module yields.
 
@@ -505,18 +636,11 @@ async def _fsevents_events(
     miss the new transcript.
     """
     loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[Path] = asyncio.Queue()
+    if queue is None:
+        queue = asyncio.Queue()
 
-    def deliver(event: object) -> None:
-        if getattr(event, "is_directory", False):
-            return
-        for attribute in ("src_path", "dest_path"):
-            raw = getattr(event, attribute, "")
-            if raw:
-                loop.call_soon_threadsafe(queue.put_nowait, Path(os.fsdecode(raw)))
-
-    handler = _FsEventsHandler(deliver)
     for directory in directories:
+        handler = _FsEventsHandler(loop, queue, directory)
         observer.schedule(handler, str(directory), recursive=True)
     observer.start()
     try:
@@ -527,18 +651,37 @@ async def _fsevents_events(
 
 
 class _FsEventsHandler:
-    """Watchdog's handler protocol, narrowed to the one method it calls."""
+    """Map native paths back to the spelling of this watch's root."""
 
-    def __init__(self, deliver: Callable[[object], None]) -> None:
-        self._deliver = deliver
+    def __init__(
+        self, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue[Path], root: Path
+    ) -> None:
+        self._loop = loop
+        self._queue = queue
+        self._root = root
+        self._physical = root.resolve()
 
     def dispatch(self, event: object) -> None:
         """Watchdog's entry point; forwards to :meth:`on_any_event`."""
         self.on_any_event(event)
 
     def on_any_event(self, event: object) -> None:
-        """Hand one filesystem event to the loop."""
-        self._deliver(event)
+        """Hand in-root rename endpoints and file changes to the loop."""
+        if getattr(event, "is_directory", False):
+            return
+        for attribute in ("src_path", "dest_path"):
+            raw = getattr(event, attribute, "")
+            if not raw:
+                continue
+            path = Path(os.fsdecode(raw))
+            prefix = Path(*path.parts[: len(self._physical.parts)])
+            try:
+                if prefix != self._physical and not prefix.samefile(self._physical):
+                    continue
+            except OSError:
+                continue
+            spelled = self._root / path.relative_to(prefix)
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, spelled)
 
 
 async def _drain_queue(queue: asyncio.Queue[Path]) -> AsyncIterator[set[Path]]:
