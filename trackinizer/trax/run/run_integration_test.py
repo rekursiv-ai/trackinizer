@@ -25,11 +25,13 @@ What it proves, per CLI:
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterator
-from contextlib import asynccontextmanager, closing
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, asynccontextmanager, closing, nullcontext, suppress
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Self, TextIO, cast, override
+from unittest.mock import Mock
 
 import enum
 import os
@@ -68,7 +70,7 @@ from trackinizer.trax.run.sink import Sink, TrackinizerSink
 from trackinizer.trax.run.slash import SlashCommand
 from trackinizer.types.session_records import _BY_KIND
 from trackinizer.wire.wire_session_ir import RecordBody
-from trackinizer.wire.wire_sessions import SessionStart
+from trackinizer.wire.wire_sessions import SessionStart, SessionStartResponse
 
 
 # A trivial prompt that forces exactly one model turn and exits fast. The
@@ -238,9 +240,10 @@ class _ServerThread:
         return err
 
     def _stop_thread(self) -> None:
-        """Signal the uvicorn server to exit and join its thread (best effort)."""
+        """Signal the uvicorn server to exit and join its thread."""
         self._server.should_exit = True
         self._thread.join(timeout=10.0)
+        assert not self._thread.is_alive(), "uvicorn server did not stop"
 
     def __exit__(self, *exc: object) -> None:
         del exc
@@ -653,7 +656,9 @@ def test_inbound_injection_reaches_child_end_to_end(server: str) -> None:
     sink = _StubSessionSink(session_id)
     stop = threading.Event()
     poller = threading.Thread(
-        target=lambda: _inbound_poll_loop(client, sink, relay, stop, poll_interval=0.2),
+        target=lambda: _inbound_poll_loop(
+            client, sink, relay, stop, poll_interval=0.2, wait_sec=0.1
+        ),
         daemon=True,
     )
     relay_thread = threading.Thread(target=relay.run, daemon=True)
@@ -678,6 +683,9 @@ def test_inbound_injection_reaches_child_end_to_end(server: str) -> None:
         relay.terminate()
         relay_thread.join(timeout=5.0)
         poller.join(timeout=2.0)
+        assert not relay_thread.is_alive(), "relay did not stop"
+        assert not poller.is_alive(), "inbound poller did not stop"
+        client.close()
 
 
 class _InjectionResult(enum.Enum):
@@ -728,74 +736,178 @@ def _drive_real_cli_injection(
         "token must not appear in the prompt, or the TUI's prompt echo would "
         "match it before any model turn (a false TOKEN_SEEN)"
     )
-    out_r, out_w = os.pipe()
-    real_out, real_in = sys.stdout, sys.stdin
-    sys.stdout = os.fdopen(out_w, "w", buffering=1, errors="replace")
-    stdin_r, _stdin_w = os.pipe()
-    sys.stdin = os.fdopen(stdin_r)
-    captured = bytearray()
+    with ExitStack() as resources:
+        out_r, out_w = os.pipe()
+        resources.callback(os.close, out_r)
+        output = resources.enter_context(
+            os.fdopen(out_w, "w", buffering=1, errors="replace")
+        )
+        stdin_r, stdin_w = os.pipe()
+        resources.callback(os.close, stdin_w)
+        input_stream = resources.enter_context(os.fdopen(stdin_r))
+        real_out, real_in = sys.stdout, sys.stdin
+        resources.callback(setattr, sys, "stdout", real_out)
+        resources.callback(setattr, sys, "stdin", real_in)
+        sys.stdout, sys.stdin = output, input_stream
+        captured = bytearray()
 
-    def drain_out() -> None:
-        while True:
-            try:
-                chunk = os.read(out_r, 65_536)
-            except OSError:
-                return
-            if not chunk:
-                return
-            captured.extend(chunk)
+        def drain_out() -> None:
+            while True:
+                try:
+                    chunk = os.read(out_r, 65_536)
+                except OSError:
+                    return
+                if not chunk:
+                    return
+                captured.extend(chunk)
 
-    client = Client(base_url=server)
-    session_id = client.session_start(SessionStart(cli=cli, actor="tester")).id
-    relay = ThreadedRelay([cli, *argv])
-    sink = _StubSessionSink(session_id)
-    stop = threading.Event()
-    threads = [
-        threading.Thread(target=relay.run, daemon=True),
-        threading.Thread(target=drain_out, daemon=True),
-        threading.Thread(
-            target=lambda: _inbound_poll_loop(
-                client, sink, relay, stop, poll_interval=0.3
+        client = Client(base_url=server)
+        resources.callback(client.close)
+        session_id = client.session_start(SessionStart(cli=cli, actor="tester")).id
+        relay = ThreadedRelay([cli, *argv])
+        sink = _StubSessionSink(session_id)
+        stop = threading.Event()
+        threads = [
+            threading.Thread(target=relay.run, daemon=True),
+            threading.Thread(target=drain_out, daemon=True),
+            threading.Thread(
+                target=lambda: _inbound_poll_loop(
+                    client, sink, relay, stop, poll_interval=0.3, wait_sec=0.1
+                ),
+                daemon=True,
             ),
-            daemon=True,
-        ),
-    ]
-    for t in threads:
-        t.start()
+        ]
+        for t in threads:
+            t.start()
+        try:
+            # Enqueue once the CLI has had a moment to start. The PTY buffers
+            # input, so exact composer-ready timing is not required (verified:
+            # claude accepts injection from t~=0).
+            time.sleep(1.0)
+            client.enqueue_inbound(session_id, prompt)
+            deadline = time.monotonic() + deadline_sec
+            while time.monotonic() < deadline:
+                if token.encode() in captured:
+                    return _InjectionResult.TOKEN_SEEN
+                # Fail fast on a CLI that cannot authenticate, rather than burning
+                # the whole deadline: the model will never reply, so the caller
+                # should skip immediately. Covers both the local-credential banners
+                # ("could not be refreshed" / "please log out") and a server-side
+                # token rejection (a 403 "Bearer Token has expired" / "Failed to
+                # authenticate") that an OAuth token can hit transiently mid-run.
+                low = bytes(captured).lower()
+                if any(
+                    marker in low
+                    for marker in (
+                        b"could not be refreshed",
+                        b"please log out",
+                        b"bearer token has expired",
+                        b"failed to authenticate",
+                    )
+                ):
+                    return _InjectionResult.UNAUTHENTICATED
+                time.sleep(0.3)
+            return _InjectionResult.INCONCLUSIVE
+        finally:
+            stop.set()
+            relay.terminate()
+            threads[0].join(timeout=5.0)
+            threads[2].join(timeout=2.0)
+            sys.stdout, sys.stdin = real_out, real_in
+            output.close()
+            threads[1].join(timeout=2.0)
+            assert not threads[0].is_alive(), "relay did not stop"
+            assert not threads[2].is_alive(), "inbound poller did not stop"
+            assert not threads[1].is_alive(), "output reader did not stop"
+
+
+@pytest.mark.parametrize("failure", ["", "enqueue", "session_start"])
+def test_injection_closes_resources_on_every_exit(
+    monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Release pipe endpoints and workers, including partially completed setup."""
+    client = Mock(spec=Client)
+    client.session_start.return_value = SessionStartResponse(id=uuid.uuid4(), seq=0)
+    client.drain_inbound.return_value = []
+    if failure:
+        method = (
+            client.session_start
+            if failure == "session_start"
+            else client.enqueue_inbound
+        )
+        method.side_effect = RuntimeError(failure)
+    relay = Mock(spec=ThreadedRelay)
+    relay.run.return_value = 0
+
+    def client_for_url(*, base_url: str) -> Mock:
+        del base_url
+        return client
+
+    def relay_for_argv(argv: list[str]) -> Mock:
+        del argv
+        return relay
+
+    def no_sleep(seconds: float) -> None:
+        del seconds
+
+    monkeypatch.setattr(f"{__name__}.Client", client_for_url)
+    monkeypatch.setattr(f"{__name__}.ThreadedRelay", relay_for_argv)
+    ticks = iter((0.0, 1.0))
+    monkeypatch.setattr(
+        f"{__name__}.time",
+        SimpleNamespace(sleep=no_sleep, monotonic=ticks.__next__),
+    )
+    pipes: list[tuple[int, int]] = []
+    real_pipe = os.pipe
+
+    def record_pipe() -> tuple[int, int]:
+        pipes.append(real_pipe())
+        return pipes[-1]
+
+    workers: list[threading.Thread] = []
+    real_thread = threading.Thread
+
+    def record_thread(
+        *, target: Callable[[], object], daemon: bool
+    ) -> threading.Thread:
+        workers.append(real_thread(target=target, daemon=daemon))
+        return workers[-1]
+
+    monkeypatch.setattr(os, "pipe", record_pipe)
+    monkeypatch.setattr(threading, "Thread", record_thread)
+    original_stdout, original_stdin = sys.stdout, sys.stdin
+    descriptors = len(list(Path("/dev/fd").iterdir()))
     try:
-        # Enqueue once the CLI has had a moment to start. The PTY buffers
-        # input, so exact composer-ready timing is not required (verified:
-        # claude accepts injection from t~=0).
-        time.sleep(1.0)
-        client.enqueue_inbound(session_id, prompt)
-        deadline = time.monotonic() + deadline_sec
-        while time.monotonic() < deadline:
-            if token.encode() in captured:
-                return _InjectionResult.TOKEN_SEEN
-            # Fail fast on a CLI that cannot authenticate, rather than burning
-            # the whole deadline: the model will never reply, so the caller
-            # should skip immediately. Covers both the local-credential banners
-            # ("could not be refreshed" / "please log out") and a server-side
-            # token rejection (a 403 "Bearer Token has expired" / "Failed to
-            # authenticate") that an OAuth token can hit transiently mid-run.
-            low = bytes(captured).lower()
-            if any(
-                marker in low
-                for marker in (
-                    b"could not be refreshed",
-                    b"please log out",
-                    b"bearer token has expired",
-                    b"failed to authenticate",
+        with pytest.raises(RuntimeError, match=failure) if failure else nullcontext():
+            assert (
+                _drive_real_cli_injection(
+                    "fake", [], "http://unused", "prompt", "reply", deadline_sec=0.0
                 )
-            ):
-                return _InjectionResult.UNAUTHENTICATED
-            time.sleep(0.3)
-        return _InjectionResult.INCONCLUSIVE
+                is _InjectionResult.INCONCLUSIVE
+            )
+        assert sys.stdout is original_stdout
+        assert sys.stdin is original_stdin
+        assert len(pipes) == 2
+        assert len(list(Path("/dev/fd").iterdir())) == descriptors
+        for pair in pipes:
+            for fd in pair:
+                with pytest.raises(OSError, match="Bad file descriptor"):
+                    os.fstat(fd)
+        assert all(not worker.is_alive() for worker in workers)
+        client.close.assert_called_once_with()
     finally:
-        stop.set()
-        relay.terminate()
-        threads[0].join(timeout=5.0)
-        sys.stdout, sys.stdin = real_out, real_in
+        output, input_stream = sys.stdout, sys.stdin
+        sys.stdout, sys.stdin = original_stdout, original_stdin
+        if output is not original_stdout:
+            output.close()
+        if input_stream is not original_stdin:
+            input_stream.close()
+        for pair in pipes:
+            for fd in pair:
+                with suppress(OSError):
+                    os.close(fd)
+        for worker in workers:
+            worker.join(timeout=2.0)
 
 
 def _assert_injection_or_skip(cli: str, result: _InjectionResult) -> None:
@@ -919,12 +1031,6 @@ class _StubSessionSink(Sink):
         pass
 
 
-if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
-
-    test_main(__file__)
-
-
 @pytest.mark.cli_python_subprocess
 def test_server_fixture_boots(server: str) -> None:
     """Smoke: the PGlite-backed fixture server answers the AgentSession listing.
@@ -937,3 +1043,9 @@ def test_server_fixture_boots(server: str) -> None:
         r = http.get("/api/inquiries", params={"kind": "AgentSession", "limit": 1})
         assert r.status_code == 200
         assert isinstance(r.json(), list)
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.main import test_main
+
+    test_main(__file__)

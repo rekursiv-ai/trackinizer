@@ -153,6 +153,8 @@ class Tail:
         ``_ENDED`` behind its failure, and reusing the queue would hand that
         to the next chunk as its answer.
         """
+        assert self._reader is not None
+        self._reader.join()
         self._reader = None
         self._lines = queue.SimpleQueue()
         self._produced = queue.SimpleQueue()
@@ -164,23 +166,29 @@ class Tail:
         # A DAEMON: a caller that abandons a tail mid-session leaves the reader
         # blocked for a line that never comes, and a non-daemon thread there
         # would hold the whole process open at exit.
-        self._reader = threading.Thread(target=self._read, daemon=True)
+        self._reader = threading.Thread(
+            target=self._read, args=(self._lines, self._produced), daemon=True
+        )
         self._reader.start()
 
-    def _read(self) -> None:
-        """Run the adapter's generator, posting each record as it lands."""
+    def _read(
+        self,
+        lines: queue.SimpleQueue[str | _Signal],
+        produced: queue.SimpleQueue[TraxRecord | _Signal],
+    ) -> None:
+        """Run the adapter's generator using only this reader's queues."""
         try:
-            for record in self._normalize(_Pulled(self._lines, self._produced)):
-                self._produced.put(record)
+            for record in self._normalize(_Pulled(lines, produced)):
+                produced.put(record)
         except Exception as err:  # noqa: BLE001 -- an adapter may raise anything.
             # Handed BACK rather than escaping: this runs on the reader's own
             # thread, where a raise would be swallowed by the interpreter and
             # the caller of the offending chunk would see an empty line instead
             # of the failure. Re-raised in ``_collect``, so the runner's own
             # guard reports it against the chunk that caused it.
-            self._produced.put(_Failed(err))
+            produced.put(_Failed(err))
         finally:
-            self._produced.put(_ENDED)
+            produced.put(_ENDED)
 
     def _collect(self) -> list[TraxRecord]:
         """Take records until the reader asks for another line or finishes.
@@ -208,6 +216,8 @@ class Tail:
                 self._restart()
                 raise item.error
             if item is _ENDED:
+                assert self._reader is not None
+                self._reader.join()
                 self._ended = True
                 return out
             assert not isinstance(item, _Signal)

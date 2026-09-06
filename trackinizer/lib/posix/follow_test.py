@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from functools import partial
 from pathlib import Path
 from typing import TypeGuard
 from unittest.mock import patch
@@ -22,14 +23,34 @@ from trackinizer.lib.posix import follow
 from trackinizer.lib.posix.follow import follow_dir, follow_file
 
 
-def test_yields_appended_lines(tmp_path: Path) -> None:
+@pytest.fixture
+def file_watch_ready(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
+    """Signal real watch registration without changing delivered events."""
+    ready = asyncio.Event()
+    real_watch = follow._watch_lines
+
+    @asynccontextmanager
+    async def armed_watch(
+        *directories: Path,
+        match: Callable[[Path], bool],
+        existing: set[Path],
+    ) -> AsyncGenerator[AsyncIterator[set[Path]]]:
+        async with real_watch(*directories, match=match, existing=existing) as changes:
+            ready.set()
+            yield changes
+
+    monkeypatch.setattr(follow, "_watch_lines", armed_watch)
+    return ready
+
+
+def test_yields_appended_lines(tmp_path: Path, file_watch_ready: asyncio.Event) -> None:
     """A line appended after the follow starts is delivered."""
     target = tmp_path / "log"
     _ = target.write_text("")
 
     async def run() -> list[str]:
         task = asyncio.create_task(_take(target, 1, 5.0))
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(file_watch_ready.wait(), 5.0)
         with target.open("a") as handle:
             _ = handle.write("one\n")
         return await task
@@ -37,14 +58,16 @@ def test_yields_appended_lines(tmp_path: Path) -> None:
     assert asyncio.run(run()) == ["one"]
 
 
-def test_skips_what_was_already_there(tmp_path: Path) -> None:
+def test_skips_what_was_already_there(
+    tmp_path: Path, file_watch_ready: asyncio.Event
+) -> None:
     """Lines present before the follow started are not delivered."""
     target = tmp_path / "log"
     _ = target.write_text("old\n")
 
     async def run() -> list[str]:
         task = asyncio.create_task(_take(target, 1, 5.0))
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(file_watch_ready.wait(), 5.0)
         with target.open("a") as handle:
             _ = handle.write("new\n")
         return await task
@@ -63,14 +86,14 @@ def test_replays_from_the_start_when_asked(tmp_path: Path) -> None:
     assert asyncio.run(run()) == ["old"]
 
 
-def test_holds_a_partial_line(tmp_path: Path) -> None:
+def test_holds_a_partial_line(tmp_path: Path, file_watch_ready: asyncio.Event) -> None:
     """A line split across writes is delivered once, whole."""
     target = tmp_path / "log"
     _ = target.write_text("")
 
     async def run() -> list[str]:
         task = asyncio.create_task(_take(target, 1, 5.0))
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(file_watch_ready.wait(), 5.0)
         with target.open("a") as handle:
             _ = handle.write("split")
             handle.flush()
@@ -81,7 +104,9 @@ def test_holds_a_partial_line(tmp_path: Path) -> None:
     assert asyncio.run(run()) == ["split-line"]
 
 
-def test_restarts_after_a_rewrite(tmp_path: Path) -> None:
+def test_restarts_after_a_rewrite(
+    tmp_path: Path, file_watch_ready: asyncio.Event
+) -> None:
     """A file that shrinks is re-read from its new start.
 
     A rewrite leaves the byte offset past the new end, so a follower that
@@ -93,53 +118,103 @@ def test_restarts_after_a_rewrite(tmp_path: Path) -> None:
 
     async def run() -> list[str]:
         task = asyncio.create_task(_take(target, 1, 5.0))
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(file_watch_ready.wait(), 5.0)
         _ = target.write_text("fresh\n")
         return await task
 
     assert asyncio.run(run()) == ["fresh"]
 
 
-def test_follows_a_file_created_later(tmp_path: Path) -> None:
+def test_follows_a_file_created_later(
+    tmp_path: Path, file_watch_ready: asyncio.Event
+) -> None:
     """The file need not exist when the follow starts."""
     target = tmp_path / "log"
 
     async def run() -> list[str]:
         task = asyncio.create_task(_take(target, 1, 5.0))
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(file_watch_ready.wait(), 5.0)
         _ = target.write_text("late\n")
         return await task
 
     assert asyncio.run(run()) == ["late"]
 
 
-def test_ignores_a_sibling_file(tmp_path: Path) -> None:
-    """A write to another file in the same directory is not delivered."""
+def test_ignores_a_sibling_file(
+    tmp_path: Path, file_watch_ready: asyncio.Event, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sibling is examined but only the requested file supplies a line."""
     target = tmp_path / "log"
+    sibling = tmp_path / "other"
     _ = target.write_text("")
+    examined = asyncio.Event()
+    real_watch = follow._watch_lines
+
+    @asynccontextmanager
+    async def observed_watch(
+        *directories: Path,
+        match: Callable[[Path], bool],
+        existing: set[Path],
+    ) -> AsyncGenerator[AsyncIterator[set[Path]]]:
+        async with real_watch(
+            *directories,
+            match=partial(
+                _matching_observed, match=match, sibling=sibling, examined=examined
+            ),
+            existing=existing,
+        ) as changes:
+            yield _changes_observed(changes, sibling=sibling, examined=examined)
+
+    monkeypatch.setattr(follow, "_watch_lines", observed_watch)
 
     async def run() -> list[str]:
-        task = asyncio.create_task(_take(target, 1, 0.6))
-        await asyncio.sleep(0.1)
-        _ = (tmp_path / "other").write_text("elsewhere\n")
+        task = asyncio.create_task(_take(target, 1, 5.0))
+        await asyncio.wait_for(file_watch_ready.wait(), 5.0)
+        _ = sibling.write_text("elsewhere\n")
+        await asyncio.wait_for(examined.wait(), 5.0)
+        _ = target.write_text("right\n")
         return await task
 
-    assert asyncio.run(run()) == []
+    assert asyncio.run(run()) == ["right"]
 
 
-def test_delivers_a_burst_in_order(tmp_path: Path) -> None:
+def test_delivers_a_burst_in_order(
+    tmp_path: Path, file_watch_ready: asyncio.Event
+) -> None:
     """Several lines written at once arrive in the order written."""
     target = tmp_path / "log"
     _ = target.write_text("")
 
     async def run() -> list[str]:
         task = asyncio.create_task(_take(target, 3, 5.0))
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(file_watch_ready.wait(), 5.0)
         with target.open("a") as handle:
             _ = handle.write("one\ntwo\nthree\n")
         return await task
 
     assert asyncio.run(run()) == ["one", "two", "three"]
+
+
+def _matching_observed(
+    path: Path,
+    *,
+    match: Callable[[Path], bool],
+    sibling: Path,
+    examined: asyncio.Event,
+) -> bool:
+    matched = match(path)
+    if path == sibling:
+        examined.set()
+    return matched
+
+
+async def _changes_observed(
+    changes: AsyncIterator[set[Path]], *, sibling: Path, examined: asyncio.Event
+) -> AsyncIterator[set[Path]]:
+    async for paths in changes:
+        if sibling in paths:
+            examined.set()
+        yield paths
 
 
 async def _take(
@@ -165,12 +240,9 @@ def test_wakes_on_file_creation(tmp_path: Path) -> None:
     """A file appearing in the watched directory wakes the caller."""
 
     async def run() -> set[Path]:
-        task = asyncio.create_task(_await_wake(tmp_path, 5.0))
-        # Let the watch register before the write; otherwise the event
-        # predates the watch and nothing is delivered.
-        await asyncio.sleep(0.1)
-        _ = (tmp_path / "session.jsonl").write_text("{}\n")
-        return await task
+        async with follow_dir(tmp_path) as changed:
+            _ = (tmp_path / "session.jsonl").write_text("{}\n")
+            return await _await_wake(changed, 5.0)
 
     assert asyncio.run(run()) == {tmp_path / "session.jsonl"}
 
@@ -181,11 +253,10 @@ def test_wakes_on_append(tmp_path: Path) -> None:
     _ = target.write_text("{}\n")
 
     async def run() -> set[Path]:
-        task = asyncio.create_task(_await_wake(tmp_path, 5.0))
-        await asyncio.sleep(0.1)
-        with target.open("a") as handle:
-            _ = handle.write("{}\n")
-        return await task
+        async with follow_dir(tmp_path) as changed:
+            with target.open("a") as handle:
+                _ = handle.write("{}\n")
+            return await _await_wake(changed, 5.0)
 
     assert asyncio.run(run()) == {target}
 
@@ -200,10 +271,9 @@ def test_wakes_on_rewrite(tmp_path: Path) -> None:
     _ = target.write_text("aaaa\n")
 
     async def run() -> set[Path]:
-        task = asyncio.create_task(_await_wake(tmp_path, 5.0))
-        await asyncio.sleep(0.1)
-        _ = target.write_text("b\n")
-        return await task
+        async with follow_dir(tmp_path) as changed:
+            _ = target.write_text("b\n")
+            return await _await_wake(changed, 5.0)
 
     assert asyncio.run(run()) == {target}
 
@@ -216,12 +286,12 @@ def test_ignores_other_directories(tmp_path: Path) -> None:
     other.mkdir()
 
     async def run() -> set[Path]:
-        task = asyncio.create_task(_await_wake(watched, 0.5))
-        await asyncio.sleep(0.1)
-        _ = (other / "session.jsonl").write_text("{}\n")
-        return await task
+        async with follow_dir(watched) as changed:
+            _ = (other / "session.jsonl").write_text("{}\n")
+            _ = (watched / "session.jsonl").write_text("{}\n")
+            return await _await_wake(changed, 5.0)
 
-    assert asyncio.run(run()) == set()
+    assert asyncio.run(run()) == {watched / "session.jsonl"}
 
 
 def test_missing_directory_is_an_error(tmp_path: Path) -> None:
@@ -236,12 +306,7 @@ def test_missing_directory_is_an_error(tmp_path: Path) -> None:
 
 
 def test_watch_is_armed_before_entering_the_context(tmp_path: Path) -> None:
-    """A change made in the context body cannot predate the kernel watch.
-
-    Every other test here pauses before writing, so a watch armed lazily --
-    on the first ``anext`` rather than on entry -- would pass them all while
-    silently losing whatever a caller wrote in the window.
-    """
+    """A change made in the context body cannot predate the kernel watch."""
 
     async def run() -> set[Path]:
         target = tmp_path / "session.jsonl"
@@ -270,7 +335,6 @@ class TestSeveralDirectories:
         async def run() -> list[set[Path]]:
             seen: list[set[Path]] = []
             async with follow_dir(first, second) as changed:
-                await asyncio.sleep(0.1)
                 _ = (first / "a.jsonl").write_text("{}\n")
                 _ = (second / "b.jsonl").write_text("{}\n")
                 deadline = asyncio.get_running_loop().time() + 5.0
@@ -301,7 +365,6 @@ class TestSeveralDirectories:
         async def run() -> set[Path]:
             woken: set[Path] = set()
             async with follow_dir(first, second) as changed:
-                await asyncio.sleep(0.1)
                 _ = (first / "session.jsonl").write_text("{}\n")
                 _ = (second / "session.jsonl").write_text("{}\n")
                 deadline = asyncio.get_running_loop().time() + 5.0
@@ -324,7 +387,6 @@ class TestSeveralDirectories:
 
         async def run() -> set[Path]:
             async with follow_dir(tmp_path) as changed:
-                await asyncio.sleep(0.1)
                 _ = (tmp_path / "only.jsonl").write_text("{}\n")
                 return await asyncio.wait_for(anext(changed), 5.0)
 
@@ -373,7 +435,6 @@ class TestSubdirectories:
 
         async def run() -> set[Path]:
             async with follow_dir(tmp_path) as changed:
-                await asyncio.sleep(0.1)
                 _ = (leaf / "rollout.jsonl").write_text("{}\n")
                 return await asyncio.wait_for(anext(changed), 5.0)
 
@@ -387,7 +448,6 @@ class TestSubdirectories:
         async def run() -> set[Path]:
             woken: set[Path] = set()
             async with follow_dir(tmp_path) as changed:
-                await asyncio.sleep(0.1)
                 leaf = tmp_path / "born-later"
                 leaf.mkdir()
                 await asyncio.sleep(0.2)
@@ -421,7 +481,6 @@ class TestSubdirectories:
         async def run() -> set[Path]:
             woken: set[Path] = set()
             async with follow_dir(tmp_path) as changed:
-                await asyncio.sleep(0.1)
                 leaf = tmp_path / "day"
                 leaf.mkdir()
                 # No pause: the write races the walker's watch registration.
@@ -444,7 +503,6 @@ class TestSubdirectories:
         async def run() -> set[Path]:
             woken: set[Path] = set()
             async with follow_dir(tmp_path) as changed:
-                await asyncio.sleep(0.1)
                 leaf = tmp_path / "2026" / "08" / "25"
                 leaf.mkdir(parents=True)
                 _ = (leaf / "rollout.jsonl").write_text("{}\n")
@@ -546,11 +604,13 @@ class TestCursor:
         target = tmp_path / "locked"
         _ = target.write_text("visible\n")
         cursor = follow._Cursor(target, offset=0)
-        target.chmod(0o000)
-        try:
+        with patch.object(
+            Path, "open", side_effect=PermissionError(errno.EACCES, "permission denied")
+        ) as open_file:
             assert cursor.drain() == []
-        finally:
-            target.chmod(0o644)
+        open_file.assert_called_once_with("rb")
+        assert cursor.drain() == ["visible"]
+        assert cursor.drain() == []
 
     @pytest.mark.parametrize("code", [errno.EMFILE, errno.ENFILE])
     def test_read_descriptor_exhaustion_is_reported(
@@ -613,7 +673,6 @@ class TestWatchFailures:
 
         async def run() -> set[Path]:
             async with follow.follow_dir(tmp_path) as changed:
-                await asyncio.sleep(0.1)
                 _ = (tmp_path / "session.jsonl").write_text("{}\n")
                 return await asyncio.wait_for(anext(changed), 5.0)
 
@@ -633,9 +692,6 @@ class TestWatchFailures:
         with pytest.raises(FileNotFoundError):
             asyncio.run(run())
 
-    @pytest.mark.skipif(
-        platform.system() != "Linux", reason="inotify watch limits are Linux-only"
-    )
     def test_a_refused_adoption_is_reported_not_swallowed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -646,29 +702,21 @@ class TestWatchFailures:
         nothing said -- the one failure an operator can actually act on.
         """
         warned: list[str] = []
-        real_tree = follow._watch_tree
-
-        def refusing(
-            libc: ctypes.CDLL, fd: int, directory: Path, watches: dict[int, Path]
-        ) -> None:
-            if directory.name == "born-later":
-                raise OSError(errno.ENOSPC, "watch limit reached", str(directory))
-            real_tree(libc, fd, directory, watches)
-
-        monkeypatch.setattr(follow, "_watch_tree", refusing)
+        directory = tmp_path / "born-later"
+        directory.mkdir()
+        libc = ctypes.CDLL(None)
+        watches: dict[int, Path] = {}
         monkeypatch.setattr(follow._logger, "warning", _recording_warning(warned))
 
-        async def run() -> None:
-            async with follow.follow_dir(tmp_path) as changed:
-                await asyncio.sleep(0.1)
-                (tmp_path / "born-later").mkdir()
-                with contextlib.suppress(TimeoutError):
-                    _ = await asyncio.wait_for(anext(changed), 1.0)
+        with patch.object(
+            follow,
+            "_watch_tree",
+            side_effect=OSError(errno.ENOSPC, "watch limit reached", str(directory)),
+        ) as watch_tree:
+            assert follow._adopt(libc, -1, directory, watches) == set()
 
-        asyncio.run(run())
-        assert any("watch" in w for w in warned), (
-            "a refused watch left the subtree uncovered with nothing logged"
-        )
+        watch_tree.assert_called_once_with(libc, -1, directory, watches)
+        assert warned == [f"inotify refused a watch on {directory}"]
 
     @pytest.mark.skipif(
         platform.system() != "Linux", reason="IN_Q_OVERFLOW is an inotify event"
@@ -702,26 +750,19 @@ class TestWatchFailures:
         Warning on it would make the log useless for the case above.
         """
         warned: list[str] = []
-        real_tree = follow._watch_tree
-
-        def vanished(
-            libc: ctypes.CDLL, fd: int, directory: Path, watches: dict[int, Path]
-        ) -> None:
-            if directory.name == "born-later":
-                raise FileNotFoundError(errno.ENOENT, "gone", str(directory))
-            real_tree(libc, fd, directory, watches)
-
-        monkeypatch.setattr(follow, "_watch_tree", vanished)
+        directory = tmp_path / "born-later"
+        libc = ctypes.CDLL(None)
+        watches: dict[int, Path] = {}
         monkeypatch.setattr(follow._logger, "warning", _recording_warning(warned))
 
-        async def run() -> None:
-            async with follow.follow_dir(tmp_path) as changed:
-                await asyncio.sleep(0.1)
-                (tmp_path / "born-later").mkdir()
-                with contextlib.suppress(TimeoutError):
-                    _ = await asyncio.wait_for(anext(changed), 1.0)
+        with patch.object(
+            follow,
+            "_watch_tree",
+            side_effect=FileNotFoundError(errno.ENOENT, "gone", str(directory)),
+        ) as watch_tree:
+            assert follow._adopt(libc, -1, directory, watches) == set()
 
-        asyncio.run(run())
+        watch_tree.assert_called_once_with(libc, -1, directory, watches)
         assert warned == []
 
 
@@ -736,9 +777,12 @@ class TestFollowTree:
     def test_yields_lines_from_a_file_created_later(self, tmp_path: Path) -> None:
         async def run() -> list[tuple[Path, str]]:
             seen: list[tuple[Path, str]] = []
-            lines = follow.follow_tree(tmp_path, match=lambda p: p.suffix == ".jsonl")
+            armed = asyncio.Event()
+            lines = follow.follow_tree(
+                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+            )
             task = asyncio.create_task(_collect(lines, seen, 1))
-            await asyncio.sleep(0.1)
+            await asyncio.wait_for(armed.wait(), 5.0)
             _ = (tmp_path / "session.jsonl").write_text('{"n":1}\n')
             await asyncio.wait_for(task, 5.0)
             return seen
@@ -748,9 +792,12 @@ class TestFollowTree:
     def test_ignores_a_file_the_predicate_rejects(self, tmp_path: Path) -> None:
         async def run() -> list[tuple[Path, str]]:
             seen: list[tuple[Path, str]] = []
-            lines = follow.follow_tree(tmp_path, match=lambda p: p.suffix == ".jsonl")
+            armed = asyncio.Event()
+            lines = follow.follow_tree(
+                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+            )
             task = asyncio.create_task(_collect(lines, seen, 1))
-            await asyncio.sleep(0.1)
+            await asyncio.wait_for(armed.wait(), 5.0)
             _ = (tmp_path / "notes.txt").write_text("ignored\n")
             _ = (tmp_path / "session.jsonl").write_text('{"n":1}\n')
             await asyncio.wait_for(task, 5.0)
@@ -763,9 +810,12 @@ class TestFollowTree:
 
         async def run() -> set[tuple[Path, str]]:
             seen: list[tuple[Path, str]] = []
-            lines = follow.follow_tree(tmp_path, match=lambda p: p.suffix == ".jsonl")
+            armed = asyncio.Event()
+            lines = follow.follow_tree(
+                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+            )
             task = asyncio.create_task(_collect(lines, seen, 4))
-            await asyncio.sleep(0.1)
+            await asyncio.wait_for(armed.wait(), 5.0)
             first = tmp_path / "a.jsonl"
             second = tmp_path / "b.jsonl"
             _ = first.write_text("a1\n")
@@ -792,9 +842,12 @@ class TestFollowTree:
 
         async def run() -> list[tuple[Path, str]]:
             seen: list[tuple[Path, str]] = []
-            lines = follow.follow_tree(tmp_path, match=lambda p: p.suffix == ".jsonl")
+            armed = asyncio.Event()
+            lines = follow.follow_tree(
+                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+            )
             task = asyncio.create_task(_collect(lines, seen, 1))
-            await asyncio.sleep(0.1)
+            await asyncio.wait_for(armed.wait(), 5.0)
             leaf = tmp_path / "2026" / "08" / "25"
             leaf.mkdir(parents=True)
             _ = (leaf / "rollout.jsonl").write_text('{"n":1}\n')
@@ -820,9 +873,12 @@ class TestFollowTree:
 
         async def run() -> list[follow.Line]:
             seen: list[follow.Line] = []
-            lines = follow.follow_tree(tmp_path, match=lambda p: p.suffix == ".jsonl")
+            armed = asyncio.Event()
+            lines = follow.follow_tree(
+                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+            )
             task = asyncio.create_task(_collect_lines(lines, seen, 2))
-            await asyncio.sleep(0.1)
+            await asyncio.wait_for(armed.wait(), 5.0)
             _ = target.write_text("first\n")
             await asyncio.sleep(0.2)
             _ = target.write_text("rewritten\n")
@@ -890,9 +946,12 @@ class TestFollowTree:
 
         async def run() -> list[follow.Line]:
             seen: list[follow.Line] = []
-            lines = follow.follow_tree(tmp_path, match=lambda p: p.suffix == ".jsonl")
+            armed = asyncio.Event()
+            lines = follow.follow_tree(
+                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+            )
             task = asyncio.create_task(_collect_lines(lines, seen, 2))
-            await asyncio.sleep(0.1)
+            await asyncio.wait_for(armed.wait(), 5.0)
             _ = target.write_text("one\n")
             await asyncio.sleep(0.2)
             with target.open("a") as handle:
@@ -908,9 +967,12 @@ class TestFollowTree:
 
         async def run() -> list[tuple[Path, str]]:
             seen: list[tuple[Path, str]] = []
-            lines = follow.follow_tree(tmp_path, match=lambda p: p.suffix == ".jsonl")
+            armed = asyncio.Event()
+            lines = follow.follow_tree(
+                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+            )
             task = asyncio.create_task(_collect(lines, seen, 1))
-            await asyncio.sleep(0.1)
+            await asyncio.wait_for(armed.wait(), 5.0)
             _ = (tmp_path / "new.jsonl").write_text("fresh\n")
             await asyncio.wait_for(task, 5.0)
             return seen
@@ -922,9 +984,12 @@ class TestFollowTree:
 
         async def run() -> list[tuple[Path, str]]:
             seen: list[tuple[Path, str]] = []
-            lines = follow.follow_tree(tmp_path, match=lambda p: p.suffix == ".jsonl")
+            armed = asyncio.Event()
+            lines = follow.follow_tree(
+                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+            )
             task = asyncio.create_task(_collect(lines, seen, 1))
-            await asyncio.sleep(0.1)
+            await asyncio.wait_for(armed.wait(), 5.0)
             target = tmp_path / "s.jsonl"
             with target.open("a") as handle:
                 _ = handle.write("split")
@@ -1023,7 +1088,6 @@ class TestPlatformDispatch:
 
         async def run() -> set[Path]:
             async with follow.follow_dir(tmp_path) as changed:
-                await asyncio.sleep(0.1)
                 _ = (tmp_path / "native.jsonl").write_text("{}\n")
                 return await asyncio.wait_for(anext(changed), 5.0)
 
@@ -1127,7 +1191,6 @@ def _run_fsevents(fire: Callable[[_StubObserver], object]) -> list[set[Path]]:
         observer = _StubObserver()
         async with follow._fsevents_events(observer, (Path("/watched"),)) as changed:
             collector = asyncio.create_task(_gather(changed, emitted, 1))
-            await asyncio.sleep(0.05)
             _ = fire(observer)
             await asyncio.wait_for(collector, 5.0)
 
@@ -1197,13 +1260,12 @@ class _StubEvent:
         self.is_directory = is_directory
 
 
-async def _await_wake(directory: Path, timeout_sec: float) -> set[Path]:
-    """Collect one wake from ``directory``, or an empty set on timeout."""
-    async with follow_dir(directory) as woken:
-        try:
-            return await asyncio.wait_for(anext(woken), timeout_sec)
-        except TimeoutError:
-            return set()
+async def _await_wake(woken: AsyncIterator[set[Path]], timeout_sec: float) -> set[Path]:
+    """Collect one wake from an armed watch, or an empty set on timeout."""
+    try:
+        return await asyncio.wait_for(anext(woken), timeout_sec)
+    except TimeoutError:
+        return set()
 
 
 @pytest.mark.parametrize("existing", [False, True])

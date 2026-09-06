@@ -13,7 +13,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TextIO, cast, override
 
-import inspect
 import json
 import os
 import shutil
@@ -53,6 +52,12 @@ from trackinizer.trax.run.session import (
 from trackinizer.trax.run.sink import Sink
 from trackinizer.trax.run.slash import SlashCommand
 from trackinizer.wire.wire_session_ir import RecordBody
+
+
+@pytest.fixture(autouse=True)
+def short_queue_drain_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Preserve flush ticks without production-sized queue waits."""
+    monkeypatch.setattr(session_mod, "_QUEUE_DRAIN_SEC", 0.005)
 
 
 class _RecordingSink(Sink):
@@ -251,7 +256,6 @@ def _write(path: Path, lines: int) -> None:
 
 def _drain_once(
     adapter: Adapter,
-    tmp_path: Path,
     write: Callable[[], object],
     *,
     baseline: frozenset[Path] = frozenset(),
@@ -262,10 +266,10 @@ def _drain_once(
     The drain is wake-driven, so a test cannot call one scan and inspect the
     result: it starts the loop, writes, and waits for delivery.
     """
-    del tmp_path
     sink = _RecordingSink()
     stats = _Stats()
     stop = threading.Event()
+    armed = threading.Event()
 
     def _run() -> None:
         _drain_filesystem_loop(
@@ -276,12 +280,13 @@ def _drain_once(
             stop,
             baseline=baseline,
             slash_queue=deque(),
+            armed=armed,
         )
 
     worker = threading.Thread(target=_run, daemon=True)
     worker.start()
     try:
-        time.sleep(0.2)  # let the watch arm
+        assert armed.wait(5.0), "session-log watch did not arm"
         write()
         deadline = time.monotonic() + 3.0
         while len(sink.events) < expected and time.monotonic() < deadline:
@@ -289,6 +294,7 @@ def _drain_once(
     finally:
         stop.set()
         worker.join(timeout=5.0)
+        assert not worker.is_alive(), "session drain did not stop"
     return stats, sink
 
 
@@ -304,7 +310,6 @@ class TestSessionScoping:
 
         stats, sink = _drain_once(
             cast(Adapter, adapter),
-            tmp_path,
             lambda: _write(tmp_path / "new.jsonl", lines=3),
             baseline=baseline,
             expected=3,
@@ -322,7 +327,6 @@ class TestSessionScoping:
 
         stats, sink = _drain_once(
             cast(Adapter, adapter),
-            tmp_path,
             lambda: None,
             baseline=baseline,
             expected=0,
@@ -348,7 +352,6 @@ class TestSessionScoping:
 
         stats, sink = _drain_once(
             cast(Adapter, adapter),
-            tmp_path,
             lambda: None,
             expected=0,
         )
@@ -391,7 +394,7 @@ class TestSessionScoping:
 
         adapter = ClaudeAdapter()
         monkeypatch.setattr(adapter, "session_scope", lambda: mine)
-        _stats, sink = _drain_once(cast(Adapter, adapter), tmp_path, write)
+        _stats, sink = _drain_once(cast(Adapter, adapter), write)
 
         texts = _texts(sink)
         assert texts == ["mine"], f"a concurrent run's file was swept in: {texts}"
@@ -401,7 +404,6 @@ class TestSessionScoping:
         adapter = _FakeAdapter(tmp_path)
         stats, _sink = _drain_once(
             cast(Adapter, adapter),
-            tmp_path,
             lambda: _write(tmp_path / "mine.jsonl", lines=3),
             expected=3,
         )
@@ -425,7 +427,7 @@ class TestAppendedLineDrain:
             time.sleep(0.2)
             log.write_bytes(b"fresh\n")
 
-        _stats, sink = _drain_once(cast(Adapter, adapter), tmp_path, write)
+        _stats, sink = _drain_once(cast(Adapter, adapter), write)
 
         texts = _texts(sink)
         assert texts == ["fresh"]
@@ -481,7 +483,7 @@ class TestProjectDirectoryBornMidRun:
                 + "\n"
             )
 
-        _stats, sink = _drain_once(cast(Adapter, ClaudeAdapter()), tmp_path, write)
+        _stats, sink = _drain_once(cast(Adapter, ClaudeAdapter()), write)
 
         texts = _texts(sink)
         assert texts == ["captured"], "a new project directory captured nothing"
@@ -509,7 +511,7 @@ class TestProjectDirectoryBornMidRun:
                 )
             )
 
-        _stats, sink = _drain_once(cast(Adapter, GeminiAdapter()), tmp_path, write)
+        _stats, sink = _drain_once(cast(Adapter, GeminiAdapter()), write)
 
         texts = _texts(sink)
         assert texts == ["captured"], "a new project directory captured nothing"
@@ -569,7 +571,7 @@ class TestProjectDirectoryBornMidRun:
                 + "\n"
             )
 
-        _stats, sink = _drain_once(cast(Adapter, ClaudeAdapter()), tmp_path, write)
+        _stats, sink = _drain_once(cast(Adapter, ClaudeAdapter()), write)
 
         texts = _texts(sink)
         assert texts == ["captured"], "a first-ever run captured nothing"
@@ -584,7 +586,6 @@ class TestWholeFileDrain:
 
         stats, sink = _drain_once(
             cast(Adapter, adapter),
-            tmp_path,
             lambda: log.write_text(json.dumps({"messages": ["hello"]})),
         )
 
@@ -606,7 +607,7 @@ class TestWholeFileDrain:
             time.sleep(0.3)
             log.write_text(json.dumps({"messages": ["b"]}))
 
-        _stats, sink = _drain_once(cast(Adapter, adapter), tmp_path, write, expected=2)
+        _stats, sink = _drain_once(cast(Adapter, adapter), write, expected=2)
 
         texts = _texts(sink)
         assert texts == ["a", "b"]
@@ -630,7 +631,7 @@ class TestWholeFileDrain:
             log.write_text(body)  # identical bytes: no new turn
             time.sleep(0.3)  # let the drain deliver whatever it captured
 
-        _stats, sink = _drain_once(cast(Adapter, adapter), tmp_path, write)
+        _stats, sink = _drain_once(cast(Adapter, adapter), write)
 
         texts = _texts(sink)
         assert texts == ["b"]
@@ -655,7 +656,7 @@ class TestWholeFileDrain:
                 log.write_text(json.dumps({"messages": [text]}))
                 time.sleep(0.3)
 
-        _stats, sink = _drain_once(cast(Adapter, adapter), tmp_path, write, expected=3)
+        _stats, sink = _drain_once(cast(Adapter, adapter), write, expected=3)
 
         texts = _texts(sink)
         assert texts == ["a", "b", "a"], "a returning body was swallowed"
@@ -694,9 +695,7 @@ class TestGeminiMultiFileDrain:
             _session("session-1.json", "sess-A", ["a-q", "a-r"])
             _session("session-2.json", "sess-B", ["b-q", "b-r"])
 
-        _stats, sink = _drain_once(
-            cast(Adapter, GeminiAdapter()), tmp_path, write, expected=4
-        )
+        _stats, sink = _drain_once(cast(Adapter, GeminiAdapter()), write, expected=4)
 
         texts = sorted(_texts(sink))
         assert texts == ["a-q", "a-r", "b-q", "b-r"]
@@ -711,7 +710,6 @@ class TestDrainSurvivesParseError:
 
         stats, sink = _drain_once(
             cast(Adapter, adapter),
-            tmp_path,
             lambda: log.write_bytes(b"alpha\nboom\nomega\n"),
             expected=2,
         )
@@ -823,36 +821,32 @@ class TestFollowerRearmsAfterAFailure:
         adapter = _FakeAdapter(tmp_path)
         real_follow = follow_tree
         attempts: list[int] = []
+        rearmed = threading.Event()
 
         def flaky(*directories: Path, **kwargs: object) -> object:
             attempts.append(1)
             if len(attempts) == 1:
                 raise OSError("inotify instance limit reached")
+            kwargs["on_armed"] = rearmed.set
             return real_follow(*directories, **cast(Any, kwargs))
 
         monkeypatch.setattr(session_mod, "follow_tree", flaky)
 
-        def write_until_the_rearm_lands() -> None:
-            # Append repeatedly rather than once. The first watch raises, so the
-            # capturing one is the REARM -- and a single write can land in its
-            # arming window (after the existing-files snapshot, before the watch
-            # exists), which no event ever names. Retrying spans that window
-            # instead of guessing how long the rearm takes.
-            for _ in range(5):
-                with log.open("ab") as handle:
-                    _ = handle.write(b"recovered\n")
-                time.sleep(0.2)
+        def write_after_rearm() -> None:
+            # A failure releases the original armed event without registering a watch.
+            assert rearmed.wait(5.0), "the follower was never rearmed"
+            log.write_bytes(b"recovered\n")
 
         _stats, sink = _drain_once(
             cast(Adapter, adapter),
-            tmp_path,
-            write_until_the_rearm_lands,
+            write_after_rearm,
             expected=1,
         )
 
         assert len(attempts) >= 2, "the follower was never rearmed"
-        texts = _texts(sink)
-        assert texts, "capture stayed dead after one transient watch failure"
+        assert _texts(sink) == ["recovered"], (
+            "capture stayed dead after one transient watch failure"
+        )
 
 
 class _FlakyEmitSink(_RecordingSink):
@@ -886,6 +880,7 @@ class TestDrainSurvivesSinkError:
         sink = _FlakyEmitSink()
         stats = _Stats()
         stop = threading.Event()
+        armed = threading.Event()
 
         def _run() -> None:
             _drain_filesystem_loop(
@@ -896,12 +891,13 @@ class TestDrainSurvivesSinkError:
                 stop,
                 baseline=frozenset(),
                 slash_queue=deque(),
+                armed=armed,
             )
 
         worker = threading.Thread(target=_run, daemon=True)
         worker.start()
         try:
-            time.sleep(0.2)  # let the watch arm
+            assert armed.wait(5.0), "session-log watch did not arm"
             log.write_bytes(b"boom\n")
             time.sleep(0.3)
             with log.open("ab") as handle:
@@ -953,14 +949,36 @@ class TestStreamQueueIsBounded:
         # Oldest dropped, newest kept.
         assert queue[-1] == f"{overfill - 1}\n".encode()
 
-    def test_spawn_constructs_a_bounded_queue(self) -> None:
-        """The runner's queue literal must carry the cap, not a bare deque.
+    def test_spawn_constructs_a_bounded_queue(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The queue handed to the drain must carry the production cap."""
+        limits: list[int | None] = []
 
-        Guards the construction site: a bare ``deque()`` reintroduces the
-        unbounded handoff even with the constant still defined.
-        """
-        source = inspect.getsource(session_mod._spawn_and_drain)
-        assert "deque(maxlen=_STREAM_QUEUE_MAX)" in source
+        def observe_queue(
+            *args: object,
+            stream_queue: deque[bytes],
+            armed: threading.Event,
+            **kwargs: object,
+        ) -> None:
+            del args, kwargs
+            limits.append(stream_queue.maxlen)
+            armed.set()
+
+        def missing_binary(cmd: str) -> None:
+            del cmd
+
+        monkeypatch.setattr(session_mod, "_drain_filesystem_loop", observe_queue)
+        monkeypatch.setattr(shutil, "which", missing_binary)
+        with pytest.raises(SystemExit, match="not found in PATH"):
+            session_mod._spawn_and_drain(
+                RunConfig(cli_name="fake"),
+                _FakeAdapter(tmp_path),
+                _RecordingSink(),
+                _Stats(),
+            )
+
+        assert limits == [session_mod._STREAM_QUEUE_MAX]
 
     def test_overflow_is_counted_and_warned(
         self, caplog: pytest.LogCaptureFixture
@@ -1076,6 +1094,7 @@ class TestDrainIsWakeDriven:
         stats = _Stats()
         config = RunConfig(cli_name="fake")
         stop = threading.Event()
+        armed = threading.Event()
 
         drain_thread: list[int] = []
         slept_in_drain: list[float] = []
@@ -1098,6 +1117,7 @@ class TestDrainIsWakeDriven:
                 stop,
                 baseline=frozenset(),
                 slash_queue=deque(),
+                armed=armed,
             )
 
         with pytest.MonkeyPatch.context() as patch:
@@ -1105,7 +1125,7 @@ class TestDrainIsWakeDriven:
             worker = threading.Thread(target=_run, daemon=True)
             worker.start()
             try:
-                real_sleep(0.2)  # let the watch arm before the write
+                assert armed.wait(5.0), "session-log watch did not arm"
                 (tmp_path / "session.jsonl").write_bytes(b"alpha\n")
                 deadline = time.monotonic() + 5.0
                 while not sink.events and time.monotonic() < deadline:
@@ -1730,7 +1750,7 @@ class _BatchClient:
         del session_id, wait_sec
         self.drains += 1
         if self.drains > 1:
-            _busy_wait(0.02)
+            _real_pause(0.02)
             return []
         return [(text, None, None) for text in self._texts]
 
@@ -1765,11 +1785,9 @@ class _PickyRelay(_RecordingRelay):
         super().submit(text)
 
 
-def _busy_wait(seconds: float) -> None:
+def _real_pause(seconds: float) -> None:
     """Block without ``time.sleep``, so a sleep assertion stays meaningful."""
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        pass
+    threading.Event().wait(seconds)
 
 
 class _WaitingClient:
@@ -1787,7 +1805,7 @@ class _WaitingClient:
         # A real hold blocks in the transport, not in ``time.sleep``: a fake
         # that slept here would be indistinguishable from the loop sleeping,
         # which is the very thing the caller asserts about.
-        _busy_wait(self._hold_sec)
+        _real_pause(self._hold_sec)
         return []
 
 
