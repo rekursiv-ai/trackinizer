@@ -10,6 +10,7 @@ tracks the output it produced.
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from io import StringIO
 from typing import TextIO, override
 from weakref import ReferenceType, ref
 
@@ -54,10 +55,9 @@ class _WatchedInput(TextIO):
             raise StopIteration
         line = _TrackedLine(self._lines[self._at])
         self._at += 1
+        self._handed = [found for found in self._handed if found() is not None]
         self._handed.append(ref(line))
-        self.peak_alive = max(
-            self.peak_alive, sum(found() is not None for found in self._handed)
-        )
+        self.peak_alive = max(self.peak_alive, len(self._handed))
         return line
 
 
@@ -70,7 +70,7 @@ class _NullSink(TextIO):
         return len(text)
 
 
-def _claude_lines(count: int) -> list[str]:
+def _claude_lines(count: int, *, text_chars: int) -> list[str]:
     """Return ``count`` distinct claude user lines, none of them degenerate."""
     return [
         json.dumps(
@@ -78,7 +78,10 @@ def _claude_lines(count: int) -> list[str]:
                 "parentUuid": None,
                 "isSidechain": False,
                 "type": "user",
-                "message": {"role": "user", "content": f"line {index} " + "x" * 200},
+                "message": {
+                    "role": "user",
+                    "content": f"line {index} " + "x" * text_chars,
+                },
                 "uuid": f"u{index}",
                 "timestamp": "2026-09-02T00:00:00.000Z",
                 "userType": "external",
@@ -93,7 +96,7 @@ def _claude_lines(count: int) -> list[str]:
     ]
 
 
-def _codex_lines(count: int) -> list[str]:
+def _codex_lines(count: int, *, text_chars: int) -> list[str]:
     """Return a codex launch line followed by ``count`` response items."""
     head = json.dumps(
         {
@@ -116,7 +119,10 @@ def _codex_lines(count: int) -> list[str]:
                     "id": f"u{index}",
                     "role": "user",
                     "content": [
-                        {"type": "input_text", "text": f"line {index} " + "x" * 200}
+                        {
+                            "type": "input_text",
+                            "text": f"line {index} " + "x" * text_chars,
+                        }
                     ],
                 },
             },
@@ -127,9 +133,13 @@ def _codex_lines(count: int) -> list[str]:
     return [f"{line}\n" for line in (head, *items)]
 
 
-def _lines_for(adapter: _Adapter, count: int) -> list[str]:
+def _lines_for(adapter: _Adapter, count: int, *, text_chars: int = 200) -> list[str]:
     """Return ``count`` native lines in the format ``adapter`` reads."""
-    return _claude_lines(count) if adapter is claude else _codex_lines(count)
+    return (
+        _claude_lines(count, text_chars=text_chars)
+        if adapter is claude
+        else _codex_lines(count, text_chars=text_chars)
+    )
 
 
 def _write_cost(
@@ -145,18 +155,31 @@ def _write_cost(
     run reports ~1100), while the floor is stable. Noise only ever inflates the
     cost, so a writer that really buffers still fails: its minimum is
     proportional to the session too.
+
+    Requires exclusive tracemalloc ownership: an outer trace has one global
+    peak that cannot be sampled independently without resetting its recorded peak.
     """
+    if tracemalloc.is_tracing():
+        raise RuntimeError(
+            "Writer allocation measurement requires exclusive tracemalloc ownership"
+        )
     costs: list[int] = []
-    for _ in range(repeats):
-        gc.collect()
-        tracemalloc.start()
-        try:
-            base, _ = tracemalloc.get_traced_memory()
-            adapter.denormalize(records, _NullSink())
-            _, peak = tracemalloc.get_traced_memory()
-        finally:
-            tracemalloc.stop()
-        costs.append(peak - base)
+    gc_enabled = gc.isenabled()
+    # Unrelated cycle finalizers must not inflate the writer's allocation peak.
+    gc.disable()
+    try:
+        for _ in range(repeats):
+            tracemalloc.start()
+            try:
+                base, _ = tracemalloc.get_traced_memory()
+                adapter.denormalize(records, _NullSink())
+                _, peak = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+            costs.append(peak - base)
+    finally:
+        if gc_enabled:
+            gc.enable()
     return min(costs)
 
 
@@ -186,16 +209,45 @@ def test_denormalize_cost_does_not_track_the_output_it_writes(
     # Two sizes rather than one bound: a writer that buffers pays for every
     # line it produced, so doubling the session doubles the cost, while one
     # that streams pays for a bounded window whatever the session's size.
-    small = _lines_for(adapter, 200)
-    large = _lines_for(adapter, 400)
+    # Both populations exceed Claude's 32-line output window.
+    small = _lines_for(adapter, 33, text_chars=2_048)
+    large = _lines_for(adapter, 66, text_chars=2_048)
     grew = sum(len(line.encode("utf-8")) for line in large) - sum(
         len(line.encode("utf-8")) for line in small
     )
     cost = _write_cost(
-        adapter, list(adapter.normalize(_WatchedInput(large)))
-    ) - _write_cost(adapter, list(adapter.normalize(_WatchedInput(small))))
+        adapter, list(adapter.normalize(StringIO("".join(large))))
+    ) - _write_cost(adapter, list(adapter.normalize(StringIO("".join(small)))))
 
     assert cost < grew // 4
+
+
+@pytest.mark.parametrize("gc_enabled", [False, True])
+def test_write_cost_preserves_a_tracer_it_does_not_own(*, gc_enabled: bool) -> None:
+    tracing = tracemalloc.is_tracing()
+    previous_gc = gc.isenabled()
+    try:
+        (gc.enable if gc_enabled else gc.disable)()
+        if not tracing:
+            tracemalloc.start()
+        sentinel = bytearray(256)
+        original_trace = tracemalloc.get_object_traceback(sentinel)
+        assert original_trace is not None
+        peak_buffer = bytearray(1_048_576)
+        del peak_buffer
+        _, original_peak = tracemalloc.get_traced_memory()
+
+        with pytest.raises(RuntimeError, match="exclusive tracemalloc ownership"):
+            _write_cost(claude, [])
+
+        assert tracemalloc.is_tracing()
+        assert tracemalloc.get_object_traceback(sentinel) == original_trace
+        assert tracemalloc.get_traced_memory()[1] >= original_peak
+        assert gc.isenabled() is gc_enabled
+    finally:
+        if not tracing:
+            tracemalloc.stop()
+        (gc.enable if previous_gc else gc.disable)()
 
 
 if __name__ == "__main__":
