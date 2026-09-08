@@ -1338,11 +1338,12 @@ def test_restart_closes_displaced_reader_without_emitting_eof() -> None:
     sink = FileSink(output)
     sink.feed(IOStreamAdapter(), _PART, b"unterminated")
     displaced = sink.readers[_PART]
+    sink.feed(IOStreamAdapter(), _PART, b"new\n", restart=True)
+    assert displaced._reader is not None
+    reader = displaced._reader
     try:
-        sink.feed(IOStreamAdapter(), _PART, b"new\n", restart=True)
-        assert displaced._reader is not None
-        displaced._reader.join(timeout=1)
-        assert not displaced._reader.is_alive()
+        reader.join(timeout=1)
+        assert not reader.is_alive()
         rows = [
             DictCodec.coerce(json.loads(line))
             for line in output.getvalue().splitlines()
@@ -1355,10 +1356,9 @@ def test_restart_closes_displaced_reader_without_emitting_eof() -> None:
         ] * 2
     finally:
         displaced.close()
-        if displaced._reader is not None:
-            displaced._reader.join(timeout=2)
-        for reader in sink.readers.values():
-            reader.close()
+        reader.join(timeout=2)
+        for open_reader in sink.readers.values():
+            open_reader.close()
         sink.close()
 
 

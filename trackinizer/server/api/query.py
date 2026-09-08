@@ -111,7 +111,8 @@ async def lookup_route(
         kinds = await lookup_kinds(conn, ids)
     found = {str(rid): kind for rid, kind in kinds.items()}
     missing = [str(rid) for rid in ids if rid not in kinds]
-    return cast(MutableJSON, {"found": found, "missing": missing})
+    body: MutableJSON = {"found": {**found}, "missing": [*missing]}
+    return body
 
 
 @router.get("/api/inquiries")

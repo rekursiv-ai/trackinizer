@@ -701,12 +701,13 @@ async def _edges_for(
         ),
         target_id,
     )
-    out: dict[str, list[WebView]] = {}
+    groups: dict[str, list[WebView]] = {}
     for row in rows:
         ref = _peer_ref(row, cast(UUID, row[peer_col]))
         _add_edge_annotation(ref, row)
-        out.setdefault(row["edge_kind"], []).append(ref)
-    return cast(WebView, out)
+        groups.setdefault(row["edge_kind"], []).append(ref)
+    out: WebView = {**groups}
+    return out
 
 
 def _add_edge_annotation(ref: WebView, row: asyncpg.Record) -> None:

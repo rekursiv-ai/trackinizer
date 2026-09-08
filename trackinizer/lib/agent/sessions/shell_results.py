@@ -471,9 +471,9 @@ def _matched_row(
     words = [_static_word(part) for part in word_nodes]
     # THE RULE: every word must be literal text. One the shell would expand
     # makes this a dynamic program whose file this reader cannot name.
-    if not words or any(word is None for word in words):
+    argv = [word for word in words if word is not None]
+    if not argv or len(argv) != len(words):
         return None
-    argv = cast(list[str], words)
     utility = _standard_utility(argv[0])
     if utility is None:
         return None
@@ -829,9 +829,9 @@ def _patch_heredoc(
         return None
     words = [part for part in parts if part.kind == "word"]
     argv = [_static_word(part) for part in words]
-    if any(word is None for word in argv) or len(argv) != 2:
+    found = [word for word in argv if word is not None]
+    if len(found) != len(argv) or len(found) != 2:
         return None
-    found = cast(list[str], argv)
     if _standard_utility(found[0]) != "patch" or found[1].startswith("-"):
         return None
     return ("patched", found[1], words[1].pos, body, ())
