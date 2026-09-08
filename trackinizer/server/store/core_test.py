@@ -131,12 +131,13 @@ class TestStoreEmbedders:
 
         The previous sequential ``[await e.embed(...) for ...]`` form
         scaled latency as sum-of-embed-times. The current implementation
-        uses ``asyncio.gather`` -- proven here by gating each embedder
-        on a shared :class:`asyncio.Event` and asserting all stalls
-        materialize before any vector returns.
+        uses ``asyncio.gather`` -- proven here by parking each embedder on a
+        shared :class:`asyncio.Barrier`, which only releases once all three
+        have arrived. A serial implementation deadlocks and the timeout fires.
         """
-        gate = asyncio.Event()
-        stall_counter = {"n": 0}
+        # Three embedders plus this test: the barrier trips only when all
+        # three are parked inside ``embed`` simultaneously.
+        barrier = asyncio.Barrier(4)
 
         class _GatedEmbedder:
             def __init__(self, name: str) -> None:
@@ -145,8 +146,7 @@ class TestStoreEmbedders:
 
             async def embed(self, text: str) -> list[float]:
                 del text
-                stall_counter["n"] += 1
-                await gate.wait()
+                _ = await barrier.wait()
                 return [0.0] * self.dim
 
         engine = FakeEngine()
@@ -155,18 +155,9 @@ class TestStoreEmbedders:
             embed=[_GatedEmbedder("a"), _GatedEmbedder("b"), _GatedEmbedder("c")],
         )
         task = asyncio.create_task(store._embed_all("x"))
-        # Yield until every embedder is stalled inside ``embed``. Under
-        # the old serial form, only one would be stalled at a time.
-        for _ in range(20):
-            await asyncio.sleep(0)
-            if stall_counter["n"] == 3:
-                break
-        assert stall_counter["n"] == 3, (
-            f"expected 3 concurrent stalls, got {stall_counter['n']}; "
-            "_embed_all is not awaiting in parallel"
-        )
-        gate.set()
-        result = await task
+        async with asyncio.timeout(5):
+            _ = await barrier.wait()
+            result = await task
         assert [name for name, _ in result] == ["a", "b", "c"]
 
 

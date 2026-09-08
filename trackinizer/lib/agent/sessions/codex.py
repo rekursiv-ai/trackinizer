@@ -2222,7 +2222,7 @@ def _write_changes(
     for path, entry in stored.items():
         found = json_unfreeze(json_freeze(DictCodec.coerce(entry)))
         owner = by_path.get(path)
-        if isinstance(found, dict) and path in filled and owner is not None:
+        if path in filled and owner is not None:
             # Each entry from the record that owns THAT path: an add states the
             # file's whole bytes, which a write holds outright; an update
             # states a diff, which its splices render.
@@ -2231,11 +2231,10 @@ def _write_changes(
                 if isinstance(owner, FileWriteResult)
                 else render_udiff(owner.edits)
             )
-        if isinstance(found, dict):
-            # This reader's own note about the entry's shape, not a key codex
-            # wrote. ``_ordered`` strips ``$`` keys at the payload's top level;
-            # this one is nested inside ``changes``.
-            found.pop("$filled", None)
+        # This reader's own note about the entry's shape, not a key codex
+        # wrote. ``_ordered`` strips ``$`` keys at the payload's top level;
+        # this one is nested inside ``changes``.
+        found.pop("$filled", None)
         out[path] = found
     return out
 

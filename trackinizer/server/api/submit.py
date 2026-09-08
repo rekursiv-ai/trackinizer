@@ -98,7 +98,8 @@ async def submit_batch_route(
         api_key_id=identity.api_key_id,
         actor=identity.email,
     )
-    return cast(MutableJSON, {"ids": [str(row_id) for row_id in ids]})
+    body: MutableJSON = {"ids": [str(row_id) for row_id in ids]}
+    return body
 
 
 class _SubmitMethod(Protocol):

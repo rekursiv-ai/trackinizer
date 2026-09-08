@@ -105,14 +105,16 @@ async def notify_after_commit() -> AsyncGenerator[None]:
         return
     notifications: list[Notification] = []
     token = NOTIFICATION_BUFFER.set(notifications)
-    ok = False
     try:
         yield
-        ok = True
     finally:
         NOTIFICATION_BUFFER.reset(token)
-    if ok:
-        await _publish_notifications(notifications)
+    # No committed/failed flag: an exception from the body -- including one
+    # thrown into the yield by ``__aexit__``, ``aclose``, or cancellation --
+    # propagates out of the generator rather than resuming after the ``try``,
+    # so this line runs only on the clean-commit path. Adding an ``except``
+    # clause that SUPPRESSES would break that and require a flag again.
+    await _publish_notifications(notifications)
 
 
 async def _publish_notifications(
