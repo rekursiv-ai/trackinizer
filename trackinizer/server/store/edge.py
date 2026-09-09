@@ -90,7 +90,7 @@ class _EdgeMixin(_CascadeAuditMixin):
         # Mirror ``insert_edge``'s "unset is NULL" normalization so the audit
         # Snapshot matches what the ``edges`` row actually stored: a
         # whitespace-only note lands as NULL on both, not raw on one.
-        audit_note = cast("str | None", empty_optional_to_none(note))
+        audit_note = cast(str | None, empty_optional_to_none(note))
         from_kind = await lookup_kind(conn, from_id)
         inserted, to_kind = await insert_edge(
             conn,
@@ -518,17 +518,17 @@ class _EdgeMixin(_CascadeAuditMixin):
             if require_existing:
                 raise NotFoundError("edge not found")
             return None
-        old_priority = cast("Issue.Priority | None", row["priority"])
+        old_priority = cast(Issue.Priority | None, row["priority"])
         new_priority: Issue.Priority | None
         if isinstance(priority, Absent):
             new_priority = old_priority
         else:
             new_priority = priority
         validate_edge_priority(edge_kind, new_priority)
-        old_note = cast("str | None", row["note"])
-        old_valence = cast("float | None", row["valence"])
+        old_note = cast(str | None, row["note"])
+        old_valence = cast(float | None, row["valence"])
         old_labels = cast(
-            "tuple[str, ...] | None",
+            tuple[str, ...] | None,
             (None if row["labels"] is None else tuple(row["labels"] or ())),
         )
         new_note: str | None
@@ -537,7 +537,7 @@ class _EdgeMixin(_CascadeAuditMixin):
         else:
             # Empty / whitespace note is absence: NULL, not '' (one encoding of
             # "unset", matching the inquiry write path).
-            new_note = cast("str | None", empty_optional_to_none(note))
+            new_note = cast(str | None, empty_optional_to_none(note))
         # Normalize an explicitly-supplied valence through the single guard so
         # the annotation-edit path obeys the same invariant as create: a
         # structural edge rejects a valence (clean 4xx, not a DB CHECK 500); a
@@ -574,7 +574,7 @@ class _EdgeMixin(_CascadeAuditMixin):
                 current = [existing for existing in current if existing != label]
             # Removing the last label leaves the empty list -> NULL.
             new_labels = cast(
-                "tuple[str, ...] | None",
+                tuple[str, ...] | None,
                 empty_optional_to_none(canonical_strs(current)),
             )
         elif isinstance(labels, Absent):
@@ -583,7 +583,7 @@ class _EdgeMixin(_CascadeAuditMixin):
             new_labels = None
         else:
             new_labels = cast(
-                "tuple[str, ...] | None",
+                tuple[str, ...] | None,
                 empty_optional_to_none(canonical_strs(labels)),
             )
         if (

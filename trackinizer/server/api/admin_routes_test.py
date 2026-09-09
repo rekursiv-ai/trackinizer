@@ -400,8 +400,8 @@ class TestLastAdminGuard:
     remain at least one.
     """
 
-    @staticmethod
-    def _stub_target_active_admin(engine: FakeEngine, others: int) -> None:
+    @classmethod
+    def _stub_target_active_admin(cls, engine: FakeEngine, others: int) -> None:
         """Mock the guard row: target is an active admin with ``others`` peers."""
         engine.conn.fetchrow = AsyncMock(
             return_value={

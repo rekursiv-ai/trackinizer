@@ -407,8 +407,8 @@ class _MetricsMixin(_StoreShared):
                 )
         return _rowcount(status)
 
-    @staticmethod
-    def _reduction_order(mask: MetricMaskClause) -> str:
+    @classmethod
+    def _reduction_order(cls, mask: MetricMaskClause) -> str:
         """SQL ``DISTINCT ON`` step direction for a ``max`` / ``min`` reduction."""
         if mask.axis != "step":
             raise ConflictError(
@@ -416,8 +416,8 @@ class _MetricsMixin(_StoreShared):
             )
         return "DESC" if mask.op == "max" else "ASC"
 
-    @staticmethod
-    def _mask_predicate(mask: MetricMaskClause, params: list[object]) -> str:
+    @classmethod
+    def _mask_predicate(cls, mask: MetricMaskClause, params: list[object]) -> str:
         """Build one ``<axis> <op> $N::<cast>`` predicate, binding the operand.
 
         Appends the coerced operand to ``params`` and returns the SQL fragment.
@@ -435,8 +435,9 @@ class _MetricsMixin(_StoreShared):
             _AXIS_CAST[mask.axis],
         )
 
-    @staticmethod
+    @classmethod
     async def _upsert_single_cell(
+        cls,
         conn: Conn,
         experiment_id: UUID,
         key_mask: MetricMaskClause,
@@ -456,8 +457,9 @@ class _MetricsMixin(_StoreShared):
             value,
         )
 
-    @staticmethod
+    @classmethod
     async def _update_masked_cells(
+        cls,
         conn: Conn,
         experiment_id: UUID,
         masks: Sequence[MetricMaskClause],

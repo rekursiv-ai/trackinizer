@@ -67,10 +67,10 @@ def test_grammar_rejects_bare_open_range() -> None:
     )
     with pytest.raises(LarkError):
         # lark ships inline (partially-Any) types; the parse result is unused.
-        parser.parse("issue ..")  # pyright: ignore[reportUnknownMemberType]
+        parser.parse("issue ..")
     # A one-bound open range still parses (the legitimate form must survive).
-    parser.parse("issue 222..")  # pyright: ignore[reportUnknownMemberType]
-    parser.parse("issue ..10")  # pyright: ignore[reportUnknownMemberType]
+    parser.parse("issue 222..")
+    parser.parse("issue ..10")
 
 
 if __name__ == "__main__":

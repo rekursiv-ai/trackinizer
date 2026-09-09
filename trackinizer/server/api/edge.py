@@ -217,7 +217,7 @@ def _make_edge_put(route: EdgeFieldRoute) -> Callable[..., Awaitable[MutableJSON
 
     handler.__name__ = f"set_edge_{route.column}_route"
     handler.__qualname__ = handler.__name__
-    handler.__annotations__["body"] = FieldSet[route.value_type]  # ty: ignore[invalid-type-form] -- column type parameterizes the generic body at registration.
+    handler.__annotations__["body"] = FieldSet[route.value_type]  # ty: ignore[invalid-type-form] -- see `api/edit.py::_make_put`: the pydantic subscript is load-bearing
     return handler
 
 
@@ -306,7 +306,7 @@ async def _set_edge_annotation(
             from_id=from_id,
             to_id=to_id,
             edge_kind=edge_kind,
-            priority=cast("Issue.Priority | None", value),
+            priority=cast(Issue.Priority | None, value),
             reason=reason,
             api_key_id=api_key_id,
             actor=actor,
@@ -316,7 +316,7 @@ async def _set_edge_annotation(
             from_id=from_id,
             to_id=to_id,
             edge_kind=edge_kind,
-            note=cast("str | None", value),
+            note=cast(str | None, value),
             reason=reason,
             api_key_id=api_key_id,
             actor=actor,
@@ -326,7 +326,7 @@ async def _set_edge_annotation(
             from_id=from_id,
             to_id=to_id,
             edge_kind=edge_kind,
-            valence=cast("float | None", value),
+            valence=cast(float | None, value),
             reason=reason,
             api_key_id=api_key_id,
             actor=actor,
@@ -336,7 +336,7 @@ async def _set_edge_annotation(
             from_id=from_id,
             to_id=to_id,
             edge_kind=edge_kind,
-            labels=cast("Sequence[str] | None", value),
+            labels=cast(Sequence[str] | None, value),
             reason=reason,
             api_key_id=api_key_id,
             actor=actor,

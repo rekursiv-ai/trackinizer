@@ -90,7 +90,7 @@ def _make_put(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON]]
 
     handler.__name__ = f"set_{route.column}_route"
     handler.__qualname__ = handler.__name__
-    handler.__annotations__["body"] = FieldSet[route.value_type]  # ty: ignore[invalid-type-form] -- runtime column type parameterizes the generic body; FastAPI reads it from __annotations__ at registration.
+    handler.__annotations__["body"] = FieldSet[route.value_type]  # ty: ignore[invalid-type-form] -- a runtime value cannot appear in a type expression, and `types.GenericAlias` is NOT a substitute: `FieldSet` is a pydantic model whose `__class_getitem__` builds a real parametrized model class, which FastAPI requires
     return handler
 
 
@@ -109,7 +109,7 @@ def _make_patch(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON
 
     handler.__name__ = f"patch_{route.column}_route"
     handler.__qualname__ = handler.__name__
-    handler.__annotations__["body"] = FieldOp[route.element_type]  # ty: ignore[invalid-type-form] -- runtime element type parameterizes the generic body; FastAPI reads it from __annotations__ at registration.
+    handler.__annotations__["body"] = FieldOp[route.element_type]  # ty: ignore[invalid-type-form] -- see `_make_put`: the pydantic subscript is load-bearing
     return handler
 
 
@@ -216,8 +216,8 @@ async def _run_compare_and_set(
     if route.column == "owner":
         return await store.transition_owner(
             target_id,
-            expected_from=cast("Inquiry.Actor | None", body.expected),
-            to=cast("Inquiry.Actor | None", body.value),
+            expected_from=cast(Inquiry.Actor | None, body.expected),
+            to=cast(Inquiry.Actor | None, body.value),
             api_key_id=identity.api_key_id,
             actor=actor,
         )
@@ -233,8 +233,8 @@ async def _run_compare_and_set(
     if route.column == "judgement":
         return await store.transition_judgement(
             target_id,
-            expected_from=cast("Belief.Judgement | None", body.expected),
-            to=cast("Belief.Judgement | None", body.value),
+            expected_from=cast(Belief.Judgement | None, body.expected),
+            to=cast(Belief.Judgement | None, body.value),
             api_key_id=identity.api_key_id,
             actor=actor,
             reason=body.reason,

@@ -908,8 +908,8 @@ class TestFeedRoute:
 
 
 class TestRouteBounds:
-    @staticmethod
-    def _client(app: FastAPI) -> TestClient:
+    @classmethod
+    def _client(cls, app: FastAPI) -> TestClient:
         """Wire a viewer-role override so the route reaches its own checks."""
 
         async def _identity() -> AuthIdentity:

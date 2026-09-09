@@ -87,6 +87,8 @@ async def test_pglite_acquire_reopens_dropped_connection(tmp_path: Path) -> None
     dead = _make_conn()
     dead.is_closed = MagicMock(return_value=True)
     fresh = _make_conn()
+    # Quoted: `asyncpg.Connection` is generic to the checkers but NOT
+    # subscriptable at runtime, so the bare form raises TypeError.
     engine._conn = cast("asyncpg.Connection[asyncpg.Record]", dead)
 
     with pytest.MonkeyPatch().context() as monkeypatch:

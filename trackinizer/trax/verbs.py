@@ -828,7 +828,7 @@ class Kind(Command):
         # arg". ``None`` threads the clear through ``add_edge`` to the labels
         # route that writes NULL; ``()`` leaves stored labels untouched
         # (TRAX-CLI-004).
-        labels = cast("Sequence[str] | None", metadata.get("labels"))
+        labels = cast(Sequence[str] | None, metadata.get("labels"))
         edge_labels: Sequence[str] | None
         if "labels" in metadata and not labels:
             edge_labels = None

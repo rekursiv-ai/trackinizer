@@ -30,7 +30,7 @@ class TestSessionStart:
     def test_requires_cli(self) -> None:
         with pytest.raises(ValidationError):
             # Intentionally omit the required ``cli`` to assert the validator.
-            SessionStart()  # ty: ignore[missing-argument]  # pyright: ignore[reportCallIssue]
+            SessionStart()  # ty: ignore[missing-argument]  # pyright: ignore[reportCallIssue] -- negative test: the missing required field IS the input under test
 
     def test_minimal_start(self) -> None:
         body = SessionStart(cli="codex")

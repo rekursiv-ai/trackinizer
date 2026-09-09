@@ -540,7 +540,7 @@ def _parse_metric_mask(tokens: Sequence[str], index: int) -> tuple[MetricMask, i
     head = required_token(tokens, index, "'at' requires a field or key")
     if head.lower() not in frozenset(wire_metrics_query.METRIC_AXES):
         return MetricMask(field="key", op="is", value=head), index + 1
-    field = cast("Literal['key', 'step', 'value']", head.lower())
+    field = cast(Literal["key", "step", "value"], head.lower())
     op = required_token(
         tokens, index + 1, f"expected an operator after {field!r}"
     ).lower()

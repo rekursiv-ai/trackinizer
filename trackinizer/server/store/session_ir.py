@@ -235,9 +235,9 @@ class _SessionIRMixin(_CascadeAuditMixin):
                 self._buffer_notification(session_id)
         return (len(written), len(rows) - len(written), stored)
 
-    @staticmethod
+    @classmethod
     async def _append_slash_commands(
-        conn: Conn, session_id: UUID, commands: Sequence[SlashCommandRow]
+        cls, conn: Conn, session_id: UUID, commands: Sequence[SlashCommandRow]
     ) -> int:
         """Store typed commands, numbering them from the session's own max.
 

@@ -102,8 +102,8 @@ class TestStartSession:
 class TestEndSession:
     """``end_session`` closes a session atomically (one tx, all-or-nothing)."""
 
-    @staticmethod
-    def _live_row(cli: str | None = None) -> dict[str, Any]:
+    @classmethod
+    def _live_row(cls, cli: str | None = None) -> dict[str, Any]:
         """A live ``AgentSession`` field-read row (``ended`` NULL)."""
         return {
             "kind": "AgentSession",

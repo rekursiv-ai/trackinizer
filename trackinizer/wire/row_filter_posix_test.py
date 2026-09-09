@@ -117,8 +117,8 @@ class TestTheWhitespaceClassIsExact:
         | {8232, 8233, 8287, 12_288}
     )
 
-    @staticmethod
-    def scanned() -> tuple[int, ...]:
+    @classmethod
+    def scanned(cls) -> tuple[int, ...]:
         """Every codepoint the live scan covered, surrogates excluded."""
         return (*range(1, 0xD800), *range(0xE000, 0x110000))
 

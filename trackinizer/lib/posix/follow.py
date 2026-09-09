@@ -612,7 +612,7 @@ def _fsevents_observer() -> _Observer:
 
     """
     try:
-        return cast("_Observer", _fsevents.FSEventsObserver())
+        return cast(_Observer, _fsevents.FSEventsObserver())
     except ImportError as err:
         raise NotImplementedError(
             "watchdog's FSEvents backend is unavailable; "

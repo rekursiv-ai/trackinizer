@@ -412,7 +412,7 @@ def main() -> int:
             # ``Lark.parse``'s own signature reads as partially unknown; the
             # return is a concrete ``Tree[Token]``. Stubbing the whole class for
             # this one doc utility is disproportionate.
-            tree = parser.parse(case.tokens)  # pyright: ignore[reportUnknownMemberType]
+            tree = parser.parse(case.tokens)
             count = _ambiguity_count(tree)
         except LarkError as exc:
             if not case.rejects:

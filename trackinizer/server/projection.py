@@ -121,7 +121,7 @@ def _peer(
     return (
         cast(UUID, row[id_col]),
         cast(Inquiry.InquiryKind, row[kind_col]),
-        cast("str | None", row["note"]),
+        cast(str | None, row["note"]),
         None if labels is None else tuple(cast(Sequence[str], labels)),
     )
 
