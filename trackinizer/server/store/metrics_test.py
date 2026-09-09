@@ -329,8 +329,8 @@ class TestQueryMetrics:
 
 
 class TestWriteMetricsMasked:
-    @staticmethod
-    def _pinned(*, key: str = "loss", step: str = "3") -> list[MetricMaskClause]:
+    @classmethod
+    def _pinned(cls, *, key: str = "loss", step: str = "3") -> list[MetricMaskClause]:
         return [
             MetricMaskClause(axis="key", op="is", value=key),
             MetricMaskClause(axis="step", op="is", value=step),

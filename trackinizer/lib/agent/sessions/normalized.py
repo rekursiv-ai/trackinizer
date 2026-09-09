@@ -44,7 +44,7 @@ def normalize(stream: TextIO) -> Iterator[SessionRecord]:
     # than one class named up front.
     decoded = decode(list[SessionRecord], json.loads(stream.read()))
     assert isinstance(decoded, list)
-    yield from cast("list[SessionRecord]", decoded)
+    yield from cast(list[SessionRecord], decoded)
 
 
 def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:

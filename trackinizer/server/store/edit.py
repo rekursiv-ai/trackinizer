@@ -452,9 +452,9 @@ class _EditMixin(_CascadeAuditMixin):
 
         """
         expected_owner = cast(
-            "Inquiry.Actor | None", empty_optional_to_none(expected_from)
+            Inquiry.Actor | None, empty_optional_to_none(expected_from)
         )
-        new_owner = cast("Inquiry.Actor | None", empty_optional_to_none(to))
+        new_owner = cast(Inquiry.Actor | None, empty_optional_to_none(to))
         async with (
             notify_after_commit(),
             self.engine.acquire() as conn,

@@ -361,8 +361,8 @@ def _is_noise_filter(candidate: object) -> bool:
 class TestSuppressZeroTaskCancel:
     """The shutdown-noise filter drops only the spurious zero-task cancel."""
 
-    @staticmethod
-    def _record(message: str, *args: object) -> logging.LogRecord:
+    @classmethod
+    def _record(cls, message: str, *args: object) -> logging.LogRecord:
         return logging.LogRecord(
             name="uvicorn.error",
             level=logging.ERROR,

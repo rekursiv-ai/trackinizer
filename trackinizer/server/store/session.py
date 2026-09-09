@@ -214,8 +214,8 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             f"{max_reserve_attempts} attempts"
         ) from last_error
 
-    @staticmethod
-    async def _next_event_seq(conn: Conn, session_id: UUID) -> int:
+    @classmethod
+    async def _next_event_seq(cls, conn: Conn, session_id: UUID) -> int:
         """Deprecated: always 0, kept because the wire field still exists.
 
         It reported the legacy event log's continuation point, which a resumed

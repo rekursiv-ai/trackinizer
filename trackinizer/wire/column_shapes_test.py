@@ -119,8 +119,8 @@ class TestEveryShapeMatchesTheDeclaredType:
         ColumnShape.TIMESTAMP: frozenset({"TIMESTAMPTZ"}),
     }
 
-    @staticmethod
-    def declared() -> dict[str, str]:
+    @classmethod
+    def declared(cls) -> dict[str, str]:
         """Column -> declared SQL type, from the generated per-kind DDL."""
         out: dict[str, str] = {}
         for line in generate_inquiry_kind_columns().split("\n"):

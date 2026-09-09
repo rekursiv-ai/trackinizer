@@ -110,6 +110,10 @@ class FakeEngine:
     def __init__(self, conn: AsyncMock | None = None) -> None:
         self.conn: AsyncMock = conn or make_conn()
         self.notify_calls: list[tuple[str, str]] = []
+        self.notify_error: BaseException | None = None
+        """When set, ``notify`` raises it -- the post-commit fanout is
+        best-effort, and a test proving that needs a failing notify without
+        rebinding the bound method."""
         self.listen_messages: list[str] = []
         self.entered = False
         self.exited = False
@@ -144,6 +148,8 @@ class FakeEngine:
         return cm()
 
     async def notify(self, channel: str, payload: str) -> None:
+        if self.notify_error is not None:
+            raise self.notify_error
         self.notify_calls.append((channel, payload))
 
     def listen(self, channel: str) -> AsyncIterator[str]:

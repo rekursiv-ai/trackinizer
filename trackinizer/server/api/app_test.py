@@ -207,8 +207,10 @@ class TestRequestLogging:
 class TestAuthDisabledWarning:
     """The lifespan loudly warns when auth is disabled (synthetic-admin mode)."""
 
-    @staticmethod
-    def _run_lifespan(monkeypatch: pytest.MonkeyPatch, *, auth_disabled: bool) -> None:
+    @classmethod
+    def _run_lifespan(
+        cls, monkeypatch: pytest.MonkeyPatch, *, auth_disabled: bool
+    ) -> None:
         """Drive the real ``lifespan`` once with engine/store/embedder stubbed.
 
         The warning fires inside ``lifespan``; the engine, store, and
@@ -248,9 +250,9 @@ class TestAuthDisabledWarning:
             self._run_lifespan(monkeypatch, auth_disabled=False)
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
-    @staticmethod
+    @classmethod
     def _seeded_no_auth_user(
-        monkeypatch: pytest.MonkeyPatch, *, auth_disabled: bool
+        cls, monkeypatch: pytest.MonkeyPatch, *, auth_disabled: bool
     ) -> bool:
         """Drive the lifespan and report whether the no-auth user was seeded."""
         store, engine = make_store()

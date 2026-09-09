@@ -65,16 +65,7 @@ class TestTx:
     async def test_publish_notifications_swallows_engine_errors(self) -> None:
         engine = FakeEngine()
         engine.notify_calls.clear()
-
-        async def boom(channel: str, payload: str) -> None:
-            del channel, payload
-            raise RuntimeError("network down")
-
-        # Test mock attribute patch: replace the bound method with a
-        # function whose signature drops ``self``. The checker can't
-        # narrow this case (and shouldn't -- in production this would
-        # be a bug).
-        engine.notify = boom  # ty: ignore[invalid-assignment]
+        engine.notify_error = RuntimeError("network down")
         # Must not raise -- the transaction has committed; notify failures
         # are best-effort post-commit fanout.
         await _publish_notifications(

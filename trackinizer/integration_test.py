@@ -4601,8 +4601,10 @@ class TestFirstEdgeInfersProduced:
     pre-existing nodes is the same rule. Verified end to end against a real Store.
     """
 
-    @staticmethod
-    async def _set_created(store: Store, target_id: uuid.UUID, when: datetime) -> None:
+    @classmethod
+    async def _set_created(
+        cls, store: Store, target_id: uuid.UUID, when: datetime
+    ) -> None:
         """Pin a row's ``created`` so older/younger ordering is deterministic."""
         async with store.engine.acquire() as conn:
             await conn.execute(

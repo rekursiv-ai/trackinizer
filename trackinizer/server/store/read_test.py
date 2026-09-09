@@ -247,8 +247,8 @@ class TestListKindFilterLowering:
     ``read_lowering_pglite_test``.
     """
 
-    @staticmethod
-    async def sql_for(*filters: Filter, limit: int = 5) -> str:
+    @classmethod
+    async def sql_for(cls, *filters: Filter, limit: int = 5) -> str:
         """The SELECT ``list_kind`` issues for ``filters``."""
         conn = make_conn()
         conn.fetch.side_effect = [[], []]
