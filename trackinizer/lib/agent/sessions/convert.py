@@ -116,6 +116,7 @@ def main(
         want_diff=args.diff,
         fail_fast=args.fail_fast,
         destination=_destination_for(args),
+        parent_poll_sec=args.parent_poll_sec,
     )
     lossy = [r for r in results if r.dropped]
     if lossy and not args.lossy:
@@ -725,6 +726,12 @@ def _add_arguments(
         help="Worker processes; 0 uses every CPU (default: 1).",
     )
     parser.add_argument(
+        "--parent-poll-sec",
+        type=float,
+        default=1.0,
+        help="How often a worker checks that this run is still alive (default: 1).",
+    )
+    parser.add_argument(
         "--format",
         choices=("text", "json"),
         default="text",
@@ -758,6 +765,7 @@ def _convert_all(
     want_diff: bool,
     fail_fast: bool,
     destination: Path | Literal[False] | None = None,
+    parent_poll_sec: float = 1.0,
 ) -> list[FileResult]:
     """Convert every path, in worker processes when more than one is useful."""
     running = _workers(paths=len(paths), workers=workers)
@@ -765,7 +773,7 @@ def _convert_all(
         with ProcessPoolExecutor(
             max_workers=running,
             initializer=_die_with_parent,
-            initargs=(os.getpid(),),
+            initargs=(os.getpid(), parent_poll_sec),
         ) as executor:
             return _collect(
                 executor.map(
@@ -784,7 +792,7 @@ def _convert_all(
     )
 
 
-def _die_with_parent(launcher: int) -> None:
+def _die_with_parent(launcher: int, poll_sec: float) -> None:
     """Exit this worker when the run that started it goes away.
 
     A SIGKILLed parent runs no cleanup, and CPython leaves the pool behind
@@ -801,21 +809,24 @@ def _die_with_parent(launcher: int) -> None:
     before this was written.
 
     Polling, not signalling: ``prctl(PR_SET_PDEATHSIG)`` is Linux-only and this
-    runs on macOS too. The cost is one ``kill(pid, 0)`` per second per worker.
+    runs on macOS too. The cost is one ``kill(pid, 0)`` per ``poll_sec`` per
+    worker.
     """
+    threading.Thread(
+        target=_watch_launcher, args=(launcher, poll_sec), daemon=True
+    ).start()
 
-    def _wait() -> None:
-        while True:
-            time.sleep(1.0)
-            try:
-                os.kill(launcher, 0)
-            except OSError:
-                # Gone, or no longer ours to signal. Either way this worker
-                # has no one to report to.
-                os._exit(1)
 
-    thread = threading.Thread(target=_wait, daemon=True)
-    thread.start()
+def _watch_launcher(launcher: int, poll_sec: float) -> None:
+    """Poll ``launcher`` every ``poll_sec`` and exit the process once it is gone."""
+    while True:
+        time.sleep(poll_sec)
+        try:
+            os.kill(launcher, 0)
+        except OSError:
+            # Gone, or no longer ours to signal. Either way this worker has no
+            # one to report to.
+            os._exit(1)
 
 
 def _workers(*, paths: int, workers: int) -> int:

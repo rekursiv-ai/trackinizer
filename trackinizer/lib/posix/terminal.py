@@ -30,10 +30,10 @@ import asyncio
 import contextlib
 import fcntl
 import os
-import pty
 import shutil
 import signal
 import struct
+import subprocess
 import termios
 
 
@@ -216,6 +216,7 @@ class Terminal:
         self._bracketed_paste = bracketed_paste
         self._master_fd = -1
         self._pid = -1
+        self._proc: subprocess.Popen[bytes] | None = None
         self._status: int | None = None
         self._submitted = 0
         # Two locks, not one. ``_submit_lock`` spans a whole submission (paste,
@@ -259,7 +260,7 @@ class Terminal:
     async def start(self) -> None:
         """Spawn the child on a fresh pty.
 
-        Resolves the binary before forking: a failed ``execvp`` after the fork
+        Resolves the binary before spawning: a failed ``exec`` in the child
         cannot become an exception in the parent, so it would surface as a
         mystery exit code instead of naming the missing command.
 
@@ -270,35 +271,65 @@ class Terminal:
         binary = shutil.which(self._argv[0])
         if binary is None:
             raise FileNotFoundError(self._argv[0])
-        self._pid, self._master_fd = pty.fork()
-        if self._pid == 0:
-            if self._clean_env:
-                kept = {
-                    name: os.environ[name]
-                    for name in ESSENTIAL_ENV
-                    if name in os.environ
-                }
-                os.environ.clear()
-                os.environ.update(kept)
-            # A TUI on a pty needs ``TERM``; a non-tty parent environment may
-            # lack it, which degrades rendering and input handling.
-            os.environ.setdefault("TERM", "xterm-256color")
-            os.environ.update(self._env)
-            try:
-                if self._cwd is not None:
-                    # An actual chdir, not just ``PWD``: a program that asks
-                    # the kernel where it is -- as an agent CLI does to file
-                    # its session -- gets this, never the environment variable.
-                    os.chdir(self._cwd)
-                os.execv(binary, self._argv)  # noqa: S606 -- the point of this class.
-            except OSError:
-                # Never fall through into the parent's code: two processes
-                # would then share the master fd.
-                os._exit(127)
+        bash = shutil.which("bash")
+        assert bash is not None
+        self._master_fd, slave_fd = os.openpty()
+        # Geometry and line discipline are set on the pty before the child
+        # exists, so its first ``ioctl`` already sees them.
         self.set_winsize(*self._winsize)
         if not self._bracketed_paste:
             self.silence_line_discipline()
+        try:
+            # ``subprocess`` rather than ``pty.fork``: a fork copies the page
+            # tables of the whole parent, which under a multi-GB interpreter
+            # (torch loaded) measured at ~60ms per spawn versus ~1ms for
+            # vfork+exec. ``start_new_session`` puts the child in its own
+            # session before ``Popen`` returns, so ``pgid == pid`` holds from
+            # the first line of the parent onward. A new session has no
+            # controlling terminal and inheriting the slave as stdin does not
+            # grant one; the bash trampoline re-opens the tty, which as session
+            # leader makes it the controlling terminal (SIGWINCH, SIGHUP,
+            # ``/dev/tty``), then execs the real command. A ``preexec_fn``
+            # doing the ``TIOCSCTTY`` ioctl would be simpler but forces the
+            # fork path, and costs the full ~60ms again.
+            # ``execfail`` keeps the shell alive when exec fails so it can
+            # report 127 uniformly; without it bash exits 126 for a file that
+            # exists but is not a program.
+            trampoline = (
+                "shopt -s execfail;"
+                f' exec 0<>"{os.ttyname(slave_fd)}" 1>&0 2>&0;'
+                ' exec "$@" || exit 127'
+            )
+            self._proc = subprocess.Popen(  # noqa: ASYNC220, S603 -- the point of this class; vfork+exec does not block.
+                [bash, "-c", trampoline, bash, binary, *self._argv[1:]],
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                cwd=self._cwd,
+                env=self._child_env(),
+                start_new_session=True,
+            )
+        except OSError:
+            os.close(slave_fd)
+            await self.close()
+            raise
+        os.close(slave_fd)
+        self._pid = self._proc.pid
         os.set_blocking(self._master_fd, False)
+
+    def _child_env(self) -> dict[str, str]:
+        """The environment the child starts with; see ``clean_env``."""
+        if self._clean_env:
+            env = {
+                name: os.environ[name] for name in ESSENTIAL_ENV if name in os.environ
+            }
+        else:
+            env = dict(os.environ)
+        # A TUI on a pty needs ``TERM``; a non-tty parent environment may lack
+        # it, which degrades rendering and input handling.
+        _ = env.setdefault("TERM", "xterm-256color")
+        env.update(self._env)
+        return env
 
     def silence_line_discipline(self) -> None:
         """Clear ``ECHO`` and ``ICANON`` on the pty; tolerate a dead master.
@@ -454,7 +485,9 @@ class Terminal:
         while loop.time() < deadline:
             if self._exited():
                 break
-            await asyncio.sleep(0.01)
+            # A cooperative child is gone within a millisecond of TERM; the
+            # tick is the floor on every teardown.
+            await asyncio.sleep(0.001)
         # The whole group received TERM; once its leader is gone, the rest are
         # stragglers with no reason to outlive it.
         if self._signal(signal.SIGKILL):
@@ -484,13 +517,13 @@ class Terminal:
         concurrent :meth:`wait` can reap the child and clear it mid-grace, and
         ``killpg(-1, ...)`` signals every process the user owns.
 
-        ESRCH from ``killpg`` does NOT mean the child is gone. ``pty.fork``
-        returns in the parent before the child finishes ``setsid``, so for a
-        moment no group has ``pgid == child_pid`` and the call fails on a
-        perfectly healthy child -- measured at ~25% of spawns. Treated as
-        death, that abandons the child and the caller's ``wait`` blocks
-        forever. In that window the child is still in OUR group and has not
-        yet exec'd, so it has no descendants and ``kill`` reaches exactly it.
+        ESRCH from ``killpg`` still falls back to ``kill`` on the pid. The
+        group is guaranteed to exist once :meth:`start` returns -- ``Popen``
+        completes ``setsid`` before returning -- but the fallback is what a
+        spawner that lost that guarantee would need (``pty.fork`` had a
+        ~25%-of-spawns window before the child's ``setsid``, and treating it as
+        death abandoned a healthy child), so it stays as the regression guard
+        the lifecycle tests pin.
         """
         pid = self._pid
         if pid <= 0:
@@ -533,12 +566,18 @@ class Terminal:
         try:
             _, status = os.waitpid(self._pid, 0)
         except ChildProcessError:
-            self._pid = -1
-            return 0
+            status = 0
         self._pid = -1
         if os.WIFSIGNALED(status):
-            return 128 + os.WTERMSIG(status)
-        return os.WEXITSTATUS(status)
+            code = 128 + os.WTERMSIG(status)
+        else:
+            code = os.WEXITSTATUS(status)
+        # ``Popen.__del__`` polls a child whose ``returncode`` is unset, and its
+        # ``waitpid`` would either steal the status we just took or fault on a
+        # recycled pid; recording it here is what tells it the child is gone.
+        assert self._proc is not None
+        self._proc.returncode = code
+        return code
 
     async def _write(self, data: bytes) -> bool:
         """Write every byte to the master; False once the child is gone.

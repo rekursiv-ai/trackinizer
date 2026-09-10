@@ -288,6 +288,8 @@ class ThreadedRelay:
       cwd: Directory to run the child in; the caller's when None.
       env: Extra environment for the child.
       enter_delay_sec: Gap between a submitted paste and its Enter.
+      terminate_grace_sec: How long the child gets to honor TERM before its
+        process group is killed; see :class:`~trackinizer.lib.posix.terminal.Terminal`.
       bracketed_paste: Which submission protocol the child reads; see
         :class:`~trackinizer.lib.posix.terminal.Terminal`.
       on_input: Observer of the human's raw keystrokes; see :class:`Relay`.
@@ -302,6 +304,7 @@ class ThreadedRelay:
         cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
         enter_delay_sec: float = 0.15,
+        terminate_grace_sec: float = 1.0,
         bracketed_paste: bool = True,
         on_input: Callable[[bytes], None] | None = None,
         on_output: Callable[[bytes], None] | None = None,
@@ -311,6 +314,7 @@ class ThreadedRelay:
             cwd=cwd,
             env=env,
             enter_delay_sec=enter_delay_sec,
+            terminate_grace_sec=terminate_grace_sec,
             bracketed_paste=bracketed_paste,
         )
         self._relay = Relay(self._terminal, on_input=on_input, on_output=on_output)

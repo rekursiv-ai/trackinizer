@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from io import StringIO
 from pathlib import Path
+from typing import Final
 
 import pytest
 
@@ -21,7 +22,7 @@ from trackinizer.lib.agent.types.sessions import (
 from trackinizer.lib.custom_json import DictCodec, StrCodec
 
 
-_TESTDATA = Path(__file__).resolve().parent / "testdata"
+_CWD: Final = Path(__file__).resolve().parent
 
 
 def _unfused(records: Iterable[SessionRecord]) -> list[list[SessionRecord]]:
@@ -161,7 +162,9 @@ def test_captured_sessions_survive_a_fuse_and_unfuse(
 ) -> None:
     # The invariant the whole module rests on: joining is a view, not a merge,
     # so every part comes back as the bytes it was read from.
-    native = [(_TESTDATA / name).read_text(encoding="utf-8") for name in fixtures]
+    native = [
+        (_CWD / "testdata" / name).read_text(encoding="utf-8") for name in fixtures
+    ]
     parts = [list(adapter.normalize(StringIO(text))) for text in native]
 
     back = _unfused(fuse.fuse(parts))

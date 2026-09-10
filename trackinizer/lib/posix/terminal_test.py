@@ -261,7 +261,7 @@ class TestSubmit:
         """
 
         async def run() -> bytes:
-            async with Terminal(["cat"]) as term:
+            async with _cat() as term:
                 _ = await term.submit("hello")
                 return await _read_until(term, b"hello", 5.0)
 
@@ -278,7 +278,7 @@ class TestSubmit:
         """
 
         async def run() -> bytes:
-            async with Terminal(["cat"]) as term:
+            async with _cat() as term:
                 _ = await term.submit("a\x1b[201~b")
                 return await _read_until(term, b"ab", 5.0)
 
@@ -288,7 +288,7 @@ class TestSubmit:
         """A long line arrives whole, across however many writes it takes."""
 
         async def run() -> bytes:
-            async with Terminal(["cat"]) as term:
+            async with _cat() as term:
                 _ = await term.submit("x" * 200_000)
                 return await _read_until(term, b"x" * 1_000, 10.0)
 
@@ -371,7 +371,7 @@ class TestSubmit:
 
     def test_submitted_counts_each_message(self) -> None:
         async def run() -> int:
-            async with Terminal(["cat"]) as term:
+            async with _cat() as term:
                 _ = await term.submit("one")
                 _ = await term.submit("two")
                 return term.submitted
@@ -411,7 +411,7 @@ class TestOutput:
 
     def test_output_streams_before_exit(self) -> None:
         async def run() -> bytes:
-            async with Terminal(["cat"]) as term:
+            async with _cat() as term:
                 _ = await term.submit("streamed")
                 return await _read_until(term, b"streamed", 5.0)
 
@@ -454,8 +454,8 @@ class TestLifecycle:
     def test_a_binary_that_cannot_exec_exits_127(self, tmp_path: Path) -> None:
         """An executable file that is not a program fails as a shell would.
 
-        ``execv`` runs in the forked child, so its failure cannot become an
-        exception here -- it arrives as a status the parent reads.
+        The exec runs in the child, so its failure cannot become an exception
+        here -- it arrives as a status the parent reads.
         """
         fake = tmp_path / "not-a-program"
         _ = fake.write_bytes(b"\x00\x01\x02\x03")
@@ -474,19 +474,20 @@ class TestLifecycle:
         dies with its group. Without the escalation the caller would block for
         the sleep's full duration on work it already abandoned.
         """
+        # The child announces its handler: a TERM landing before it is installed
+        # kills it for 143 and proves nothing about the escalation.
         deaf = (
-            "import signal,time; "
+            "import signal,sys,time; "
             "signal.signal(signal.SIGTERM, lambda *_: None); "
+            "sys.stdout.write('DEAF\\n'); sys.stdout.flush(); "
             "time.sleep(5)"
         )
 
         async def run() -> tuple[int, bool]:
             async with Terminal(
-                [sys.executable, "-c", deaf], terminate_grace_sec=0.2
+                [sys.executable, "-c", deaf], terminate_grace_sec=0.05
             ) as term:
-                # Give the child time to install the handler; killing before it
-                # does would prove nothing about the escalation.
-                await asyncio.sleep(0.3)
+                assert b"DEAF" in await _read_until(term, b"DEAF", 5.0)
                 await term.terminate()
                 alive = _still_running(term._pid)
                 return await term.wait(), alive
@@ -498,8 +499,9 @@ class TestLifecycle:
     def test_terminate_escalation_is_bounded_by_the_grace(self) -> None:
         """The KILL lands after the grace, not after the child's own lifetime."""
         deaf = (
-            "import signal,time; "
+            "import signal,sys,time; "
             "signal.signal(signal.SIGTERM, lambda *_: None); "
+            "sys.stdout.write('DEAF\\n'); sys.stdout.flush(); "
             "time.sleep(30)"
         )
 
@@ -507,7 +509,7 @@ class TestLifecycle:
             async with Terminal(
                 [sys.executable, "-c", deaf], terminate_grace_sec=0.1
             ) as term:
-                await asyncio.sleep(0.3)
+                assert b"DEAF" in await _read_until(term, b"DEAF", 5.0)
                 loop = asyncio.get_running_loop()
                 started = loop.time()
                 await term.terminate()
@@ -518,13 +520,14 @@ class TestLifecycle:
         assert elapsed < 2.0
 
     def test_terminate_kills_a_child_not_yet_in_its_own_group(self) -> None:
-        """A child signalled before ``setsid`` must still die.
+        """A child whose group ``killpg`` cannot find must still die.
 
-        ``pty.fork`` returns in the parent before the child has finished
-        calling ``setsid``, so for a moment no process group has ``pgid ==
-        child_pid`` and ``killpg`` raises ESRCH. Read as "already gone", that
+        ``pty.fork`` returned in the parent before the child had finished
+        calling ``setsid``, so for a moment no process group had ``pgid ==
+        child_pid`` and ``killpg`` raised ESRCH. Read as "already gone", that
         aborts the teardown and leaves a healthy child running, which the
-        caller then waits on forever.
+        caller then waits on forever. ``Popen(start_new_session=True)`` closes
+        that window, but the fallback stays and this pins it.
 
         The window is forced here rather than raced for: the first ``killpg``
         raises, and the assertion checks the window actually fired so a
@@ -562,8 +565,8 @@ class TestLifecycle:
     def test_repeated_spawns_never_orphan_a_child(self) -> None:
         """The same race, unpatched, across enough spawns to be certain.
 
-        Measured at ~25% of spawns on this host, so 25 trials miss a
-        regression with probability under 1e-5.
+        Measured at ~25% of ``pty.fork`` spawns on this host, so 25 trials
+        miss a regression with probability under 1e-5.
         """
 
         async def run() -> int:
@@ -678,6 +681,30 @@ class TestLifecycle:
         assert "columns=120" in out.read_text()
         assert "lines=40" in out.read_text()
 
+    def test_pty_is_the_child_controlling_terminal(self, tmp_path: Path) -> None:
+        """The child can open ``/dev/tty``: the pty is its controlling terminal.
+
+        A new session starts with no controlling terminal, and inheriting the
+        slave as stdin does not grant one. Without it the child never receives
+        SIGWINCH on resize or SIGHUP on close, and a TUI that opens
+        ``/dev/tty`` to bypass redirected stdio fails to start.
+        """
+        out = tmp_path / "ctty.txt"
+        # Without a controlling terminal the open fails with ENXIO, so the
+        # child exits nonzero and the file is never written.
+        child = (
+            "import os,pathlib;"
+            "os.close(os.open('/dev/tty', os.O_RDWR));"
+            f"pathlib.Path({str(out)!r}).write_text(os.ttyname(0))"
+        )
+
+        async def run() -> int:
+            async with Terminal([sys.executable, "-c", child]) as term:
+                return await term.wait()
+
+        assert asyncio.run(run()) == 0
+        assert out.read_text().startswith("/dev/pts/")
+
     def test_set_winsize_on_a_released_terminal_is_harmless(self) -> None:
         Terminal(["cat"]).set_winsize(40, 120)
 
@@ -778,6 +805,15 @@ class TestWriteFailures:
 
         assert asyncio.run(run()) is True
         assert len(attempts) == 3
+
+
+def _cat() -> Terminal:
+    """``cat`` on a pty with no paste-Enter gap.
+
+    The default gap outwaits codex's paste-Enter suppression; ``cat`` has none,
+    so only the two tests that assert ON the gap set it.
+    """
+    return Terminal(["cat"], enter_delay_sec=0.0)
 
 
 def _still_running(pid: int) -> bool:

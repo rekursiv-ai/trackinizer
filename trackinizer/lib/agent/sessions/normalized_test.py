@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
+from typing import Final
 
 import json
 
@@ -32,7 +33,7 @@ from trackinizer.lib.agent.types.sessions import (
 from trackinizer.lib.custom_json import ListCodec, StrCodec
 
 
-_TESTDATA = Path(__file__).resolve().parent / "testdata"
+_CWD: Final = Path(__file__).resolve().parent
 
 
 def test_session_json_round_trips_every_record_type() -> None:
@@ -136,7 +137,7 @@ def test_a_captured_session_survives_the_json_round_trip(
 ) -> None:
     # The conversion path the CLI exposes, over bytes a real CLI wrote:
     # native -> records -> JSON -> records -> native.
-    native = (_TESTDATA / fixture).read_text(encoding="utf-8")
+    native = (_CWD / "testdata" / fixture).read_text(encoding="utf-8")
     as_json = StringIO()
     normalized.denormalize(adapter.normalize(StringIO(native)), as_json)
     as_json.seek(0)
