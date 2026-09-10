@@ -28,7 +28,7 @@ from trackinizer.lib.posix.relay import (
     real_fd,
     terminal_size,
 )
-from trackinizer.lib.posix.terminal import Terminal
+from trackinizer.lib.posix.terminal import PASTE_START, Terminal
 
 
 class TestRealFd:
@@ -112,6 +112,8 @@ class TestRelayRoundTrip:
             "    sys.stdout.write('ECHO:' + line); sys.stdout.flush()\n"
         )
         observed: list[bytes] = []
+        captured = bytearray()
+        spliced = b"ECHO:" + PASTE_START + b"spliced text"
 
         async def run() -> None:
             stdin_r, stdin_w = os.pipe()
@@ -124,20 +126,28 @@ class TestRelayRoundTrip:
                 on_input=observed.append,
             )
             serving = asyncio.create_task(relay.serve())
+            reading = asyncio.create_task(_drain(out_r, captured))
             try:
                 _ = os.write(stdin_w, b"/exit\n")
                 await _wait_for(lambda: b"/exit" in b"".join(observed), 5.0)
                 _ = await terminal.submit("spliced text")
-                await asyncio.sleep(0.2)
+                # The child's own echo of the paste (not the line discipline's,
+                # which prints ESC as ``^[``) proves the splice completed its
+                # whole path before the negative assertion is made.
+                await _wait_for(lambda: spliced in bytes(captured), 5.0)
             finally:
                 await terminal.terminate()
                 with contextlib.suppress(asyncio.TimeoutError):
                     _ = await asyncio.wait_for(serving, 5.0)
+                _ = reading.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await reading
                 for fd in (stdin_w, out_r):
                     with contextlib.suppress(OSError):
                         os.close(fd)
 
         asyncio.run(run())
+        assert spliced in bytes(captured)
         joined = b"".join(observed)
         assert b"/exit" in joined
         assert b"spliced text" not in joined
@@ -165,7 +175,8 @@ class TestRelayRoundTrip:
             serving = asyncio.create_task(relay.serve())
             reading = asyncio.create_task(_drain(out_r, captured))
             try:
-                await asyncio.sleep(0.5)
+                # A submission before the master exists is dropped, not queued.
+                await _wait_for(lambda: terminal.master_fd >= 0, 5.0)
                 _ = await terminal.submit("run it")
                 await _wait_for(lambda: b"run it" in bytes(captured), 10.0)
             finally:
@@ -429,16 +440,24 @@ class TestSignalHandling:
         have, rather than the status of a child it killed itself.
         """
         deaf = (
-            "import signal,time; "
+            "import signal,sys,time; "
             "signal.signal(signal.SIGTERM, lambda *_: None); "
+            "sys.stdout.write('DEAF\\n'); sys.stdout.flush(); "
             "time.sleep(30)"
         )
+        captured = bytearray()
 
         async def run() -> int:
-            terminal = Terminal([sys.executable, "-c", deaf], terminate_grace_sec=0.2)
-            relay = Relay(terminal, stdin=_NoFileno(), stdout=_NoFileno())
+            terminal = Terminal([sys.executable, "-c", deaf], terminate_grace_sec=0.05)
+            relay = Relay(
+                terminal,
+                stdin=_NoFileno(),
+                stdout=_NoFileno(),
+                on_output=captured.extend,
+            )
             serving = asyncio.create_task(relay.serve())
-            await asyncio.sleep(0.3)
+            await _wait_for(lambda: b"DEAF" in bytes(captured), 5.0)
+            assert b"DEAF" in bytes(captured)
             relay._interrupt(signal.SIGTERM)
             return await asyncio.wait_for(serving, 10.0)
 
@@ -535,7 +554,11 @@ class TestThreadedRelay:
             "time.sleep(30)"
         )
         captured = bytearray()
-        relay = ThreadedRelay([sys.executable, "-c", deaf], on_output=captured.extend)
+        relay = ThreadedRelay(
+            [sys.executable, "-c", deaf],
+            terminate_grace_sec=0.05,
+            on_output=captured.extend,
+        )
         status: list[int] = []
 
         def drive() -> None:

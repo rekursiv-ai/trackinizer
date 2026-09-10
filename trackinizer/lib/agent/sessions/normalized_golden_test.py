@@ -29,13 +29,13 @@ from trackinizer.lib.agent.sessions.convert import _Adapter
 from trackinizer.lib.agent.types.sessions import SessionRecord
 
 
-_TESTDATA: Final = Path(__file__).resolve().parent / "testdata"
+_CWD: Final = Path(__file__).resolve().parent
 _ENV_REGENERATE: Final = "SESSIONS_REGENERATE_GOLDEN"
 
 
 def fixtures() -> list[Path]:
     """Return every captured session fixture."""
-    return sorted(_TESTDATA.glob("*.jsonl"))
+    return sorted((_CWD / "testdata").glob("*.jsonl"))
 
 
 def golden_path(fixture: Path) -> Path:

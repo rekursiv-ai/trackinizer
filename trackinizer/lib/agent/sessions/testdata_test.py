@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from io import StringIO
 from pathlib import Path
+from typing import Final
 
 import pytest
 
@@ -25,12 +26,12 @@ from trackinizer.lib.agent.sessions.testdata.capture import (
 from trackinizer.lib.agent.types.sessions import SessionRecord, UncategorizedRecord
 
 
-_TESTDATA = Path(__file__).resolve().parent / "testdata"
+_CWD: Final = Path(__file__).resolve().parent
 
 
 def _fixtures() -> list[Path]:
     """Return every captured session fixture, newest layout first."""
-    return sorted(_TESTDATA.glob("*.jsonl"))
+    return sorted((_CWD / "testdata").glob("*.jsonl"))
 
 
 def _adapter_for(path: Path) -> _Adapter:
@@ -101,7 +102,7 @@ def _unmapped(records: Iterable[SessionRecord]) -> list[str]:
 def test_the_fixture_directory_is_populated() -> None:
     # Without this, deleting testdata/ would silently turn every
     # parametrized test above into a no-op that reports success.
-    assert _fixtures(), f"no session fixtures in {_TESTDATA}"
+    assert _fixtures(), f"no session fixtures in {_CWD / 'testdata'}"
 
 
 @pytest.mark.parametrize("path", _fixtures(), ids=lambda p: p.stem)

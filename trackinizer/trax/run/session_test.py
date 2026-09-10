@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, TextIO, cast, override
 
@@ -56,8 +57,9 @@ from trackinizer.wire.wire_session_ir import RecordBody
 
 @pytest.fixture(autouse=True)
 def short_queue_drain_interval(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Preserve flush ticks without production-sized queue waits."""
+    """Preserve flush ticks and rearm backoff without production-sized waits."""
     monkeypatch.setattr(session_mod, "_QUEUE_DRAIN_SEC", 0.005)
+    monkeypatch.setattr(session_mod, "_WATCH_REARM_SEC", 0.01)
 
 
 class _RecordingSink(Sink):
@@ -254,19 +256,34 @@ def _write(path: Path, lines: int) -> None:
     path.write_text("".join(json.dumps({"n": i}) + "\n" for i in range(lines)))
 
 
+def _wait_for_events(sink: _RecordingSink, count: int) -> None:
+    """Block until ``sink`` holds ``count`` events, or give up after 3s.
+
+    Delivery is the handshake between a test's writes: a second write issued
+    once the first's turn has been EMITTED cannot be folded into the same wake,
+    which no fixed pause can promise. Returns rather than asserts on timeout so
+    the caller's own assertion names what is missing.
+    """
+    deadline = time.monotonic() + 3.0
+    while len(sink.events) < count and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+
 def _drain_once(
     adapter: Adapter,
     write: Callable[[], object],
     *,
     baseline: frozenset[Path] = frozenset(),
     expected: int = 1,
+    sink: _RecordingSink | None = None,
 ) -> tuple[_Stats, _RecordingSink]:
     """Run the real drain, perform ``write``, and collect what it captured.
 
     The drain is wake-driven, so a test cannot call one scan and inspect the
-    result: it starts the loop, writes, and waits for delivery.
+    result: it starts the loop, writes, and waits for delivery. A ``write``
+    that handshakes on delivery mid-way passes the ``sink`` it will watch.
     """
-    sink = _RecordingSink()
+    sink = sink or _RecordingSink()
     stats = _Stats()
     stop = threading.Event()
     armed = threading.Event()
@@ -288,14 +305,44 @@ def _drain_once(
     try:
         assert armed.wait(5.0), "session-log watch did not arm"
         write()
-        deadline = time.monotonic() + 3.0
-        while len(sink.events) < expected and time.monotonic() < deadline:
-            time.sleep(0.01)
+        _wait_for_events(sink, expected)
     finally:
         stop.set()
         worker.join(timeout=5.0)
         assert not worker.is_alive(), "session drain did not stop"
     return stats, sink
+
+
+def _rewrite_identically(log: Path, body: str, sink: _RecordingSink) -> None:
+    """Write ``body``, wait for its turn to land, then write the same bytes.
+
+    The trailing pause is a settle window, not a spawn guess: the test proves
+    NOTHING arrives after the identical rewrite, and absence has no event to
+    wait on. Ten drain intervals is ample for a duplicate to have been emitted.
+    """
+    log.write_text(body)
+    _wait_for_events(sink, 1)
+    log.write_text(body)
+    time.sleep(10 * session_mod._QUEUE_DRAIN_SEC)
+
+
+class _RecordingStop(threading.Event):
+    """A stop event that records each timed wait's timeout and shortens it.
+
+    A loop under test paces itself by waiting on this event, so the timeouts
+    it asks for ARE its poll interval or backoff; paying them in full would
+    only make the test slow.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.timeouts: list[float] = []
+
+    @override
+    def wait(self, timeout: float | None = None) -> bool:
+        if timeout is not None:
+            self.timeouts.append(timeout)
+        return super().wait(None if timeout is None else min(timeout, 0.001))
 
 
 class TestSessionScoping:
@@ -418,19 +465,24 @@ class TestAppendedLineDrain:
 
         A held fragment would prepend dead bytes to the first line of the
         replacement, corrupting a turn that parsed fine on disk.
+
+        The fragment rides behind a complete line: that line's delivery is the
+        proof the follower READ the fragment before the rewrite, which is the
+        only way the held-buffer hazard is exercised rather than skipped.
         """
         log = tmp_path / "session.jsonl"
         adapter = _FakeAdapter(tmp_path)
+        sink = _RecordingSink()
 
         def write() -> None:
-            log.write_bytes(b"stale-partial")
-            time.sleep(0.2)
+            log.write_bytes(b"first\nstale-partial")
+            _wait_for_events(sink, 1)
             log.write_bytes(b"fresh\n")
 
-        _stats, sink = _drain_once(cast(Adapter, adapter), write)
+        _drain_once(cast(Adapter, adapter), write, expected=2, sink=sink)
 
         texts = _texts(sink)
-        assert texts == ["fresh"]
+        assert texts == ["first", "fresh"]
 
 
 class TestProjectDirectoryBornMidRun:
@@ -601,13 +653,14 @@ class TestWholeFileDrain:
         """
         adapter = _WholeFileAdapter(tmp_path)
         log = tmp_path / "session-x.json"
+        sink = _RecordingSink()
 
         def write() -> None:
             log.write_text(json.dumps({"messages": ["a"]}))
-            time.sleep(0.3)
+            _wait_for_events(sink, 1)
             log.write_text(json.dumps({"messages": ["b"]}))
 
-        _stats, sink = _drain_once(cast(Adapter, adapter), write, expected=2)
+        _drain_once(cast(Adapter, adapter), write, expected=2, sink=sink)
 
         texts = _texts(sink)
         assert texts == ["a", "b"]
@@ -624,14 +677,13 @@ class TestWholeFileDrain:
         adapter = _WholeFileAdapter(tmp_path)
         log = tmp_path / "session-x.json"
         body = json.dumps({"messages": ["b"]})
+        sink = _RecordingSink()
 
-        def write() -> None:
-            log.write_text(body)
-            time.sleep(0.3)
-            log.write_text(body)  # identical bytes: no new turn
-            time.sleep(0.3)  # let the drain deliver whatever it captured
-
-        _stats, sink = _drain_once(cast(Adapter, adapter), write)
+        _drain_once(
+            cast(Adapter, adapter),
+            partial(_rewrite_identically, log, body, sink),
+            sink=sink,
+        )
 
         texts = _texts(sink)
         assert texts == ["b"]
@@ -650,13 +702,14 @@ class TestWholeFileDrain:
         """
         adapter = _WholeFileAdapter(tmp_path)
         log = tmp_path / "session-x.json"
+        sink = _RecordingSink()
 
         def write() -> None:
-            for text in ("a", "b", "a"):
+            for count, text in enumerate(("a", "b", "a"), start=1):
                 log.write_text(json.dumps({"messages": [text]}))
-                time.sleep(0.3)
+                _wait_for_events(sink, count)
 
-        _stats, sink = _drain_once(cast(Adapter, adapter), write, expected=3)
+        _drain_once(cast(Adapter, adapter), write, expected=3, sink=sink)
 
         texts = _texts(sink)
         assert texts == ["a", "b", "a"], "a returning body was swallowed"
@@ -754,9 +807,9 @@ class TestTheWatchIsArmedBeforeTheChildSpawns:
     ``drain_thread.start()`` returns once the thread is SCHEDULED, and the
     relay forks the CLI on the next statement. Between those two the watch is
     not armed, and a CLI that writes its first record immediately -- codex's
-    ``session_meta`` lands at launch -- loses it with nothing said. Every test
-    here papers over the gap with ``time.sleep(0.2)``; the runner has no such
-    pause.
+    ``session_meta`` lands at launch -- loses it with nothing said. Every other
+    test here waits on ``armed`` before writing; the runner must hold the spawn
+    the same way.
     """
 
     def test_a_write_racing_the_spawn_is_still_captured(
@@ -786,15 +839,16 @@ class TestTheWatchIsArmedBeforeTheChildSpawns:
                     )
                     + "\n"
                 )
-                # Stay alive briefly so the drain has every chance to see it.
-                time.sleep(0.5)
                 return 0
 
         monkeypatch.setattr(session_mod, "ThreadedRelay", _WritingRelay)
         monkeypatch.setattr(shutil, "which", _always_found)
 
+        # Not 0.0: the relay exits the instant it writes, so the quiesce is the
+        # only window the drain gets before ``stop``; ten drain intervals, with
+        # the loop's final pass as the backstop.
         rc = session_mod._spawn_and_drain(
-            RunConfig(cli_name="claude", quiesce_seconds=0.5),
+            RunConfig(cli_name="claude", quiesce_seconds=0.05),
             ClaudeAdapter(),
             cast(Any, sink),
             _Stats(),
@@ -899,12 +953,14 @@ class TestDrainSurvivesSinkError:
         try:
             assert armed.wait(5.0), "session-log watch did not arm"
             log.write_bytes(b"boom\n")
-            time.sleep(0.3)
+            # The failed emit records no event; its attempt is the handshake
+            # that the next line is a LATER write, not the same batch.
+            deadline = time.monotonic() + 3.0
+            while sink.attempts < 1 and time.monotonic() < deadline:
+                time.sleep(0.005)
             with log.open("ab") as handle:
                 _ = handle.write(b"survived\n")
-            deadline = time.monotonic() + 3.0
-            while not sink.events and time.monotonic() < deadline:
-                time.sleep(0.01)
+            _wait_for_events(sink, 1)
         finally:
             stop.set()
             worker.join(timeout=5.0)
@@ -1013,18 +1069,9 @@ class TestDrainLoopSurvivesTransientError:
         sink = _FlakyFlushSink(fail_times=1)
         stats = _Stats()
         config = RunConfig(cli_name="fake")
-
-        class _FastPollingStop(threading.Event):
-            """Preserve poll boundaries without paying the production interval."""
-
-            @override
-            def wait(self, timeout: float | None = None) -> bool:
-                return super().wait(
-                    None if timeout is None else min(timeout, 0.001),
-                )
-
-        stop = _FastPollingStop()
+        stop = _RecordingStop()
         slash_queue: deque[tuple[SlashCommand, datetime]] = deque()
+        armed = threading.Event()
 
         # Written AFTER the drain arms its watch, as a real session file is:
         # the runner starts watching before it spawns the CLI, and a file that
@@ -1040,36 +1087,27 @@ class TestDrainLoopSurvivesTransientError:
                 stop,
                 baseline=frozenset(),
                 slash_queue=slash_queue,
+                armed=armed,
             )
 
         worker = threading.Thread(target=_run, daemon=True)
         worker.start()
-        # Each retry APPENDS rather than rewriting: a repeated identical
-        # rewrite leaves the byte length unchanged, so the follower's cursor
-        # correctly reports nothing new and the line would never arrive.
-        deadline = time.monotonic() + 5.0
-        while not sink.events and time.monotonic() < deadline:
-            with log.open("ab") as handle:
-                _ = handle.write(b"alpha\n")
-            time.sleep(0.05)
+        assert armed.wait(5.0), "session-log watch did not arm"
+        with log.open("ab") as handle:
+            _ = handle.write(b"alpha\n")
+        _wait_for_events(sink, 1)
         assert sink.events, "the first line never reached the sink"
         assert sink.flush_attempts > 0, "the failing flush never fired"
-        before = len(sink.events)
 
         with log.open("ab") as handle:
             _ = handle.write(b"omega\n")
-        deadline = time.monotonic() + 5.0
-        while len(sink.events) <= before and time.monotonic() < deadline:
-            time.sleep(0.005)
+        _wait_for_events(sink, 2)
         stop.set()
         worker.join(timeout=5.0)
 
         assert not worker.is_alive(), "drain thread died on the transient flush error"
         texts = _texts(sink)
-        # A retry may have appended ``alpha`` more than once; what the flush
-        # failure must not do is stop the line written after it.
-        assert texts[0] == "alpha"
-        assert texts[-1] == "omega", (
+        assert texts == ["alpha", "omega"], (
             "a transient flush error stopped capture instead of continuing"
         )
 
@@ -1159,6 +1197,7 @@ class TestDrainIsWakeDriven:
         monkeypatch.setattr(adapter, "session_dirs", counting_dirs)
         sink = _RecordingSink()
         stop = threading.Event()
+        armed = threading.Event()
 
         def _run() -> None:
             _drain_filesystem_loop(
@@ -1169,36 +1208,26 @@ class TestDrainIsWakeDriven:
                 stop,
                 baseline=frozenset(),
                 slash_queue=deque(),
+                armed=armed,
             )
 
         worker = threading.Thread(target=_run, daemon=True)
         worker.start()
         try:
+            assert armed.wait(5.0), "session-log watch did not arm"
             log = tmp_path / "session.jsonl"
             # APPEND, never rewrite: an identical rewrite leaves the byte
             # length unchanged, so the cursor rightly reports nothing new.
-            # Retry the first line until it lands, rather than guessing how
-            # long arming the watch takes.
-            deadline = time.monotonic() + 5.0
-            while not sink.events and time.monotonic() < deadline:
-                with log.open("ab") as handle:
-                    _ = handle.write(b"one\n")
-                time.sleep(0.05)
-            assert sink.events, "the first line never reached the sink"
-            delivered = len(sink.events)
-            for text in (b"two\n", b"three\n"):
+            for count, text in enumerate((b"one\n", b"two\n", b"three\n"), start=1):
                 with log.open("ab") as handle:
                     _ = handle.write(text)
-                deadline = time.monotonic() + 3.0
-                while len(sink.events) <= delivered and time.monotonic() < deadline:
-                    time.sleep(0.01)
-                delivered = len(sink.events)
+                _wait_for_events(sink, count)
         finally:
             stop.set()
             worker.join(timeout=5.0)
 
         texts = _texts(sink)
-        assert texts[-2:] == ["two", "three"], "not every line was captured"
+        assert texts == ["one", "two", "three"], "not every line was captured"
         # One walk to arm the watch. The old loop walked once per 0.2s tick --
         # measured at 24 walks for these three lines.
         assert len(walks) <= 2, f"walked the session dirs {len(walks)} times"
@@ -1217,6 +1246,7 @@ class TestWholeFileAdapterIsDrainedWhole:
         adapter = _WholeFileAdapter(tmp_path)
         sink = _RecordingSink()
         stop = threading.Event()
+        armed = threading.Event()
         log = tmp_path / "session-x.json"
 
         def _run() -> None:
@@ -1228,18 +1258,17 @@ class TestWholeFileAdapterIsDrainedWhole:
                 stop,
                 baseline=frozenset(),
                 slash_queue=deque(),
+                armed=armed,
             )
 
         worker = threading.Thread(target=_run, daemon=True)
         worker.start()
         try:
+            assert armed.wait(5.0), "session-log watch did not arm"
             # Pretty-printed across several lines, as gemini writes it: no
             # single line is valid JSON on its own.
-            body = json.dumps({"messages": ["hello"]}, indent=2)
-            deadline = time.monotonic() + 5.0
-            while not sink.events and time.monotonic() < deadline:
-                log.write_text(body + "\n")
-                time.sleep(0.05)
+            log.write_text(json.dumps({"messages": ["hello"]}, indent=2) + "\n")
+            _wait_for_events(sink, 1)
         finally:
             stop.set()
             worker.join(timeout=5.0)
@@ -1267,6 +1296,7 @@ class TestCompactionReDerivesPositions:
         adapter = _UuidAdapter(tmp_path)
         sink = _RecordingSink()
         stop = threading.Event()
+        armed = threading.Event()
         log = tmp_path / "session.jsonl"
 
         def _run() -> None:
@@ -1278,29 +1308,25 @@ class TestCompactionReDerivesPositions:
                 stop,
                 baseline=frozenset(),
                 slash_queue=deque(),
+                armed=armed,
             )
 
         worker = threading.Thread(target=_run, daemon=True)
         worker.start()
         try:
-            deadline = time.monotonic() + 5.0
-            while not sink.events and time.monotonic() < deadline:
-                with log.open("ab") as handle:
-                    _ = handle.write(_uuid_line("a"))
-                time.sleep(0.05)
+            assert armed.wait(5.0), "session-log watch did not arm"
+            with log.open("ab") as handle:
+                _ = handle.write(_uuid_line("a"))
+            _wait_for_events(sink, 1)
             assert sink.events, "the first line never reached the sink"
             with log.open("ab") as handle:
                 _ = handle.write(_uuid_line("b") + _uuid_line("c"))
-            deadline = time.monotonic() + 3.0
-            while len(sink.events) < 3 and time.monotonic() < deadline:
-                time.sleep(0.01)
+            _wait_for_events(sink, 3)
             captured = len(sink.events)
 
             # Compaction: the file is REPLACED, smaller, and keeps ``c``.
             log.write_bytes(_uuid_line("c") + _uuid_line("d"))
-            deadline = time.monotonic() + 3.0
-            while len(sink.events) <= captured and time.monotonic() < deadline:
-                time.sleep(0.01)
+            _wait_for_events(sink, captured + 1)
         finally:
             stop.set()
             worker.join(timeout=5.0)
@@ -1674,9 +1700,15 @@ class TestInboundIsWaitDriven:
         assert slept == [], f"slept between waits: {slept}"
 
     def test_a_failure_backs_off_before_re_arming(self) -> None:
-        """A persistent outage must not become a hot retry loop."""
+        """A persistent outage must not become a hot retry loop.
+
+        Asserted on the wait the loop ASKS for, not on how many attempts fit
+        in a wall-clock window: the stop event records each timed wait and
+        shortens it, so a removed backoff shows as attempts with no wait
+        between them rather than as a count that depends on the host's load.
+        """
         client = _FailingClient()
-        stop = threading.Event()
+        stop = _RecordingStop()
 
         worker = threading.Thread(
             target=lambda: _inbound_poll_loop(
@@ -1690,13 +1722,20 @@ class TestInboundIsWaitDriven:
         )
         worker.start()
         try:
-            time.sleep(0.3)
+            deadline = time.monotonic() + 3.0
+            while client.attempts < 3 and time.monotonic() < deadline:
+                time.sleep(0.005)
         finally:
             stop.set()
             worker.join(timeout=5.0)
 
-        # Bounded by the backoff, not spinning: ~6 at 0.05s, not hundreds.
-        assert 1 <= client.attempts <= 30, f"retried {client.attempts} times in 0.3s"
+        assert client.attempts >= 3, "never re-armed after a failure"
+        # One backoff per failure; only the last may be missing, cut off by
+        # ``stop`` before the loop reached it.
+        assert len(stop.timeouts) >= client.attempts - 1, (
+            f"retried {client.attempts} times with {len(stop.timeouts)} backoffs"
+        )
+        assert set(stop.timeouts) == {0.05}, f"backed off by {stop.timeouts}"
 
 
 class TestInboundBatchSurvivesOneBadMessage:

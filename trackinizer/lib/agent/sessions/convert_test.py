@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 
+import functools
 import json
 import signal
 import subprocess
@@ -30,26 +31,55 @@ from trackinizer.lib.agent.sessions.convert import (
     detect_format,
     main,
 )
-from trackinizer.lib.custom_json import ListCodec, StrCodec
+from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec
 
 
-_TESTDATA = Path(__file__).resolve().parent / "testdata"
-CLAUDE_SESSION = (_TESTDATA / "claude_sidechain.jsonl").read_text(encoding="utf-8")
-CODEX_SESSION = (_TESTDATA / "codex_main.jsonl").read_text(encoding="utf-8")
+_CWD: Final = Path(__file__).resolve().parent
 
 
-@pytest.mark.parametrize(
-    ("native", "source"),
-    # Named, because pytest builds an id from the VALUE otherwise -- and the
-    # value here is a whole fixture session, which printed an 80KB test id.
-    [
-        pytest.param(CLAUDE_SESSION, "claude", id="claude"),
-        pytest.param(CODEX_SESSION, "codex", id="codex"),
-    ],
-)
+@functools.cache
+def _claude_session() -> str:
+    return (_CWD / "testdata" / "claude_sidechain.jsonl").read_text(encoding="utf-8")
+
+
+@functools.cache
+def _codex_session() -> str:
+    return _first_turn(
+        (_CWD / "testdata" / "codex_main.jsonl").read_text(encoding="utf-8")
+    )
+
+
+def _first_turn(rollout: str) -> str:
+    """Return a codex rollout's launch line plus its first turn's first act.
+
+    The launch line, then everything from the first ``turn_context`` through
+    the first tool output: one user turn, one reasoning, one reply, one tool
+    call and its result. The pre-turn preamble -- skills, plugins, world
+    state, 25 KB of it -- and the later turns say nothing to a CLI test that
+    the first act does not, and the whole 80 KB capture cost 270 ms per round
+    trip against 60 ms for this slice. Selected by kind, not by line number,
+    so a recapture that reorders the preamble still yields the same shape.
+    """
+    kept = [rollout.splitlines(keepends=True)[0]]
+    started = False
+    for line in rollout.splitlines(keepends=True)[1:]:
+        record = DictCodec.coerce(json.loads(line))
+        started = started or record.get("type") == "turn_context"
+        if not started:
+            continue
+        kept.append(line)
+        if StrCodec.coerce(
+            DictCodec.coerce(record.get("payload")).get("type")
+        ).endswith("tool_call_output"):
+            return "".join(kept)
+    raise AssertionError("the capture has no tool output to slice at")
+
+
+@pytest.mark.parametrize("source", ["claude", "codex"])
 def test_convert_to_json_and_back_recovers_the_native_bytes(
-    tmp_path: Path, native: str, source: str
+    tmp_path: Path, source: str
 ) -> None:
+    native = _claude_session() if source == "claude" else _codex_session()
     path = tmp_path / "session.jsonl"
     path.write_text(native)
     as_json = tmp_path / "session.json"
@@ -66,7 +96,7 @@ def test_convert_writes_stdout_and_out_dir(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "session.jsonl"
-    path.write_text(CODEX_SESSION)
+    path.write_text(_codex_session())
     out_dir = tmp_path / "out"
 
     assert main(["convert", str(path), "--to", "json"]) == 0
@@ -83,11 +113,13 @@ def test_verify_reports_exactness(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     good = tmp_path / "good.jsonl"
-    good.write_text(CLAUDE_SESSION)
+    good.write_text(_claude_session())
     bad = tmp_path / "bad.jsonl"
     # Respaced, not rewritten: the record still parses to the same object, so
     # only a BYTE comparison can tell the two files apart.
-    bad.write_text(CLAUDE_SESSION.replace('"parentUuid":null', '"parentUuid" : null'))
+    bad.write_text(
+        _claude_session().replace('"parentUuid":null', '"parentUuid" : null')
+    )
 
     assert main(["verify", str(good), "-v"]) == 0
     assert "1/1 exact" in capsys.readouterr().err
@@ -107,7 +139,7 @@ def test_verify_does_not_truncate_the_file_named_by_output(tmp_path: Path) -> No
     never claimed to touch.
     """
     path = tmp_path / "s.jsonl"
-    path.write_text(CLAUDE_SESSION)
+    path.write_text(_claude_session())
     output = tmp_path / "out.txt"
     output.write_text("PREEXISTING")
 
@@ -121,9 +153,9 @@ def test_verify_runs_a_directory_in_parallel(
 ) -> None:
     # Two SESSIONS, each its own directory: files sharing a directory are one
     # session, since that is how a ``/clear`` continuation is recognized.
-    _ = _session(tmp_path / "one" / "a.jsonl", CLAUDE_SESSION)
-    _ = _session(tmp_path / "two" / "b.jsonl", CODEX_SESSION)
-    _ = _session(tmp_path / "one" / "._a.jsonl", CLAUDE_SESSION)
+    _ = _session(tmp_path / "one" / "a.jsonl", _claude_session())
+    _ = _session(tmp_path / "two" / "b.jsonl", _codex_session())
+    _ = _session(tmp_path / "one" / "._a.jsonl", _claude_session())
 
     assert main(["verify", str(tmp_path), "--workers", "2"]) == 0
     assert "2/2 exact" in capsys.readouterr().err
@@ -136,7 +168,7 @@ def test_workers_run_in_separate_processes(
     # "2/2 exact" cannot fail on a pool that silently ran serial, which is the
     # regression ``_workers`` exists to prevent -- so the pids are counted.
     for name in ("one", "two", "three", "four"):
-        _ = _session(tmp_path / name / "s.jsonl", CLAUDE_SESSION)
+        _ = _session(tmp_path / name / "s.jsonl", _claude_session())
 
     assert main(["verify", str(tmp_path), "--workers", "4", "--format", "json"]) == 0
     report = json.loads(capsys.readouterr().err)
@@ -152,7 +184,7 @@ def test_verify_reports_the_wire_size_against_the_source(
     # nothing: an empty output compares unequal, but so does a one-byte
     # respacing, and only the SIZE distinguishes them.
     path = tmp_path / "s.jsonl"
-    path.write_text(CLAUDE_SESSION)
+    path.write_text(_claude_session())
 
     assert main(["verify", str(path), "--format", "json"]) == 0
     report = json.loads(capsys.readouterr().err)["results"][0]
@@ -168,7 +200,9 @@ def test_verify_reports_a_size_gap_on_a_shortened_rewrite(
     # A key no field holds and no residual keeps would vanish on rewrite. The
     # respacing here keeps every byte's MEANING and changes only its width, so
     # the output is smaller by exactly the spaces added.
-    path.write_text(CLAUDE_SESSION.replace('"parentUuid":null', '"parentUuid" : null'))
+    path.write_text(
+        _claude_session().replace('"parentUuid":null', '"parentUuid" : null')
+    )
 
     assert main(["verify", str(path), "--format", "json"]) == 1
     report = json.loads(capsys.readouterr().err)["results"][0]
@@ -180,14 +214,14 @@ def test_verify_reports_a_size_gap_on_a_shortened_rewrite(
 
 def test_detect_format_reads_each_shape(tmp_path: Path) -> None:
     path = tmp_path / "s.json"
-    path.write_text(CODEX_SESSION)
+    path.write_text(_codex_session())
     converted = convert_file(path, "codex", "json", False)
 
     assert detect_format(converted.text) == "json"
-    assert detect_format(CLAUDE_SESSION) == "claude"
-    assert detect_format(CODEX_SESSION) == "codex"
+    assert detect_format(_claude_session()) == "claude"
+    assert detect_format(_codex_session()) == "codex"
     assert detect_format("not json\n{}\n") == ""
-    assert detect_format("\n\n" + CLAUDE_SESSION) == "claude"
+    assert detect_format("\n\n" + _claude_session()) == "claude"
 
 
 def test_convert_reports_unreadable_and_unknown_inputs(tmp_path: Path) -> None:
@@ -217,12 +251,12 @@ def test_json_report_and_usage_errors(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "s.jsonl"
-    path.write_text(CLAUDE_SESSION)
+    path.write_text(_claude_session())
 
     assert main(["verify", str(path), "--format", "json"]) == 0
     assert json.loads(capsys.readouterr().err)["ok"] == 1
 
-    _ = _session(tmp_path / "other" / "s2.jsonl", CODEX_SESSION)
+    _ = _session(tmp_path / "other" / "s2.jsonl", _codex_session())
     for argv in (
         ["convert", str(path)],
         ["verify", str(tmp_path / "missing")],
@@ -246,7 +280,7 @@ def test_fail_fast_stops_at_the_first_failure(tmp_path: Path) -> None:
     bad = tmp_path / "a_bad.jsonl"
     bad.write_text('{"kind":"other"}\n')
     good = tmp_path / "b_good.jsonl"
-    good.write_text(CLAUDE_SESSION)
+    good.write_text(_claude_session())
 
     assert main(["verify", str(bad), str(good), "--fail-fast", "-q"]) == 1
 
@@ -258,7 +292,7 @@ def test_a_lossy_conversion_is_refused_then_reported(
     # records. It must say so, and must not proceed unquestioned.
     path = tmp_path / "s.jsonl"
     path.write_text(
-        CODEX_SESSION
+        _codex_session()
         + '{"type":"event_msg","payload":{"type":"token_count","info":{}}}\n'
     )
     out = tmp_path / "out.jsonl"
@@ -278,7 +312,7 @@ def test_a_lossy_conversion_is_refused_then_reported(
 
 def test_a_lossless_conversion_needs_no_flag(tmp_path: Path) -> None:
     path = tmp_path / "s.jsonl"
-    path.write_text(CODEX_SESSION)
+    path.write_text(_codex_session())
     out = tmp_path / "out.json"
 
     assert main(["convert", str(path), "--to", "json", "-o", str(out)]) == 0
@@ -286,7 +320,7 @@ def test_a_lossless_conversion_needs_no_flag(tmp_path: Path) -> None:
 
 
 def test_dropped_detects_semantic_changes_but_ignores_provider_metadata() -> None:
-    records = list(claude.normalize(StringIO(CLAUDE_SESSION)))
+    records = list(claude.normalize(StringIO(_claude_session())))
     output = StringIO()
     normalized.denormalize(records, output)
     text = output.getvalue()
@@ -333,7 +367,7 @@ def test_status_and_diff_helpers(tmp_path: Path) -> None:
 
 def test_module_entry_point_runs(tmp_path: Path) -> None:
     path = tmp_path / "session.jsonl"
-    path.write_text(CODEX_SESSION)
+    path.write_text(_codex_session())
 
     completed = subprocess.run(  # noqa: S603 -- fixed argv, tmp_path input.
         [sys.executable, "-m", "trackinizer.lib.agent.sessions", "verify", str(path)],
@@ -349,10 +383,10 @@ def test_module_entry_point_runs(tmp_path: Path) -> None:
     )
 
 
-def _session(path: Path, text: str = CLAUDE_SESSION) -> Path:
+def _session(path: Path, text: str = "") -> Path:
     """Write one transcript at ``path``, parents included."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_text(text, encoding="utf-8")
+    _ = path.write_text(text or _claude_session(), encoding="utf-8")
     return path
 
 
@@ -385,8 +419,8 @@ def test_a_multi_file_session_is_joined_then_split_back_byte_for_byte(
     # fused into ONE session, so a seam that lost or reordered a record shows
     # up only when the fused object is split back into the files it came from.
     project = tmp_path / "project"
-    before = _session(project / "before-clear.jsonl", CLAUDE_SESSION)
-    after = _session(project / "after-clear.jsonl", CLAUDE_SESSION)
+    before = _session(project / "before-clear.jsonl", _claude_session())
+    after = _session(project / "after-clear.jsonl", _claude_session())
 
     result = convert_file(project, "auto", None, False)
 
@@ -418,7 +452,7 @@ def test_killing_the_run_takes_its_workers_with_it(tmp_path: Path) -> None:
     # the obvious pattern left 11 orphans holding 14 GB. The kernel has to be
     # the one that reaps them.
     for index in range(6):
-        _ = _session(tmp_path / f"s{index}" / "s.jsonl", CLAUDE_SESSION * 40)
+        _ = _session(tmp_path / f"s{index}" / "s.jsonl", _claude_session() * 40)
     started = subprocess.Popen(  # noqa: S603 -- fixed argv, tmp_path input.
         [
             sys.executable,
@@ -432,6 +466,8 @@ def test_killing_the_run_takes_its_workers_with_it(tmp_path: Path) -> None:
             str(tmp_path / "out"),
             "--workers",
             "3",
+            "--parent-poll-sec",
+            "0.05",
         ],
     )
     children: list[psutil.Process] = []
@@ -465,7 +501,7 @@ def test_converting_to_a_directory_writes_as_it_goes(tmp_path: Path) -> None:
     # reached disk until the last one finished. When the destination is known
     # per session, the text belongs on disk rather than in a list.
     for name in ("one", "two", "three", "four"):
-        _ = _session(tmp_path / name / "s.jsonl", CLAUDE_SESSION)
+        _ = _session(tmp_path / name / "s.jsonl", _claude_session())
     out_dir = tmp_path / "out"
 
     assert (
@@ -498,7 +534,7 @@ def test_converting_a_session_does_not_hold_many_copies_of_it(
     # Measured, not assumed: a 273 MB session peaked at 4.3 GB, because the
     # source text, the parsed records, and the rewritten text were all held at
     # once. A whole corpus of them took 21 GB and thrashed the machine.
-    session = _session(tmp_path / "big" / "s.jsonl", CLAUDE_SESSION * 200)
+    session = _session(tmp_path / "big" / "s.jsonl", _claude_session() * 50)
     size = session.stat().st_size
     tracemalloc.start()
     try:
