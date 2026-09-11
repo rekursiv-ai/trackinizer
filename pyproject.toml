@@ -180,6 +180,7 @@ filterwarnings = [
     "error",
     "ignore::pytest.PytestUnraisableExceptionWarning",  # async subprocess cleanup after event loop closes
     "ignore:Using .httpx. with .starlette.testclient. is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning",
 ]
 norecursedirs = [
     "*.egg-info",
