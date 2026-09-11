@@ -274,8 +274,8 @@ def test_cache_key_tracks_vendored_lockfile_content() -> None:
     key = substrate._cache_key()
 
     assert len(key) == 16
-    assert substrate._PGLITE_PACKAGE_JSON.exists()
-    assert substrate._PGLITE_PACKAGE_LOCK.exists()
+    assert (substrate._CWD / "pglite-package.json").exists()
+    assert (substrate._CWD / "pglite-package-lock.json").exists()
 
 
 def test_install_lock_reclaimed_when_stale(tmp_path: Path) -> None:

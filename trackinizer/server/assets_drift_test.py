@@ -18,6 +18,7 @@ its prefix ``base`` is still covered via the bare edge literal.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Final
 
 import re
 
@@ -28,15 +29,16 @@ from trackinizer.server.api.app import app
 from trackinizer.server.route_iter import iter_routes
 
 
-_ASSETS = Path(__file__).resolve().parent / "assets"
-_INDEX_HTML = _ASSETS / "index.html"
-_CONSOLE_HTML = _ASSETS / "console.html"
-_ADMIN_HTML = _ASSETS / "admin.html"
-_ME_HTML = _ASSETS / "me.html"
-_GRAPH_HTML = _ASSETS / "graph.html"
+_CWD: Final = Path(__file__).resolve().parent
 # Every SPA page that issues ``/api/...`` literals must be drift-checked, not
 # just index.html -- console / admin / me are each consumers of the contract.
-_SPA_PAGES = (_INDEX_HTML, _CONSOLE_HTML, _ADMIN_HTML, _ME_HTML, _GRAPH_HTML)
+_SPA_PAGE_NAMES: Final = (
+    "index.html",
+    "console.html",
+    "admin.html",
+    "me.html",
+    "graph.html",
+)
 
 # ``api(`/api/...`)`` and bare ``fetch("/api/...")`` / ``new EventSource(
 # "/api/...")`` calls. Capture the path literal up to the first query (?),
@@ -82,7 +84,8 @@ def _spa_api_paths() -> set[str]:
     limitation already documented for the edge-field ``${base}/${field}``).
     """
     raw: set[str] = set()
-    for page in _SPA_PAGES:
+    for name in _SPA_PAGE_NAMES:
+        page = _CWD / "assets" / name
         if page.is_file():
             raw |= {m.group(1) for m in _API_PATH_RE.finditer(page.read_text())}
     paths = {_template_to_route(p.rstrip("/")) for p in raw if p != "/api/"}
@@ -125,7 +128,8 @@ def _spa_api_path_methods() -> set[tuple[str, str]]:
     path-only test. ``{param}`` bases (concatenated fragments) are excluded.
     """
     pairs: set[tuple[str, str]] = set()
-    for page in _SPA_PAGES:
+    for name in _SPA_PAGE_NAMES:
+        page = _CWD / "assets" / name
         if not page.is_file():
             continue
         for m in _API_PATH_METHOD_RE.finditer(page.read_text()):
@@ -184,7 +188,7 @@ def test_spa_edge_display_names_derive_from_topology() -> None:
     Guard that the function derives from ``EDGE_TOPOLOGY`` and carries no
     reintroduced hardcoded ``names`` map.
     """
-    html = _INDEX_HTML.read_text()
+    html = (_CWD / "assets" / "index.html").read_text()
     block = html[
         html.index("function edgeDisplayName") : html.index(
             "}", html.index("function edgeDisplayName")
@@ -203,7 +207,7 @@ def test_spa_edge_display_names_derive_from_topology() -> None:
 
 def test_graph_live_adds_are_seeded_before_reheat() -> None:
     """Live graph inserts should seed new nodes before force relaxation."""
-    html = _GRAPH_HTML.read_text()
+    html = (_CWD / "assets" / "graph.html").read_text()
     commit = html[html.index("function commit()") : html.index("function fitView()")]
     ordered_steps = [
         "flushPendingEdges();",
@@ -225,7 +229,7 @@ def test_graph_live_adds_are_seeded_before_reheat() -> None:
 
 def test_search_box_routes_exact_refs_before_text_search() -> None:
     """The existing search control doubles as the exact-reference control."""
-    html = _INDEX_HTML.read_text()
+    html = (_CWD / "assets" / "index.html").read_text()
     assert 'placeholder="search title/description or enter Kind#seq..."' in html
     assert 'id="exact-seq"' not in html
 
@@ -254,7 +258,7 @@ def test_search_box_routes_exact_refs_before_text_search() -> None:
 
 def _render_turn_block() -> str:
     """The body of ``renderTurn``, up to the next top-level function."""
-    html = _INDEX_HTML.read_text()
+    html = (_CWD / "assets" / "index.html").read_text()
     start = html.index("function renderTurn(ev)")
     return html[start : html.index("\nfunction ", start + 1)]
 
@@ -268,7 +272,7 @@ def test_every_turn_shows_its_structure_and_its_raw_record() -> None:
     every arm, so it cannot be skipped by adding a twenty-second ``else if``.
     """
     block = _render_turn_block()
-    assert "function rawRecord(" in _INDEX_HTML.read_text()
+    assert "function rawRecord(" in (_CWD / "assets" / "index.html").read_text()
     assert block.count("rawRecord(ev)") == 1, (
         "the raw record must be appended exactly once, from outside the "
         "per-kind dispatch"
@@ -285,7 +289,7 @@ def test_the_raw_record_omits_ciphertext() -> None:
     the transcript read also asks the route for plaintext only, which is what
     ``read_session_records_route`` documents a viewer wants.
     """
-    html = _INDEX_HTML.read_text()
+    html = (_CWD / "assets" / "index.html").read_text()
     start = html.index("function rawRecord(")
     block = html[start : html.index("\nfunction ", start + 1)]
     assert "ciphertext" in block, "rawRecord must drop the ciphertext key"

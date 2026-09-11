@@ -13,8 +13,9 @@ other layers and are tested elsewhere.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, cast, get_args
+from typing import Any, Final, cast, get_args
 
+import functools
 import re
 import shlex
 
@@ -44,7 +45,7 @@ from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
 from trackinizer.wire.filters import FILTER_OPS
 
 
-_GRAMMAR_PATH = Path(__file__).resolve().parent / "docs" / "GRAMMAR.md"
+_CWD: Final = Path(__file__).resolve().parent
 
 _EXAMPLE_PATTERN = re.compile(
     r"^```trax\n(.*?)^```$",
@@ -61,7 +62,7 @@ _COUNTEREXAMPLE_PATTERN = re.compile(
 
 
 def test_run_inbound_poll_interval_is_internal() -> None:
-    grammar = " ".join(_GRAMMAR_PATH.read_text().split())
+    grammar = " ".join((_CWD / "docs" / "GRAMMAR.md").read_text().split())
 
     assert "--inbound-poll-interval" not in grammar
 
@@ -76,9 +77,10 @@ def _split_command(body: str, *, line_no: int) -> list[str]:
     return tokens[1:]
 
 
+@functools.cache
 def _examples() -> list[tuple[int, list[str]]]:
     out: list[tuple[int, list[str]]] = []
-    text = _GRAMMAR_PATH.read_text(encoding="utf-8")
+    text = (_CWD / "docs" / "GRAMMAR.md").read_text(encoding="utf-8")
     for match in _EXAMPLE_PATTERN.finditer(text):
         block_line = text[: match.start()].count("\n") + 1
         for offset, line in enumerate(match.group(1).splitlines()):
@@ -94,9 +96,10 @@ def _examples() -> list[tuple[int, list[str]]]:
     return out
 
 
+@functools.cache
 def _counterexamples() -> list[tuple[int, str, list[str]]]:
     out: list[tuple[int, str, list[str]]] = []
-    text = _GRAMMAR_PATH.read_text(encoding="utf-8")
+    text = (_CWD / "docs" / "GRAMMAR.md").read_text(encoding="utf-8")
     for match in _COUNTEREXAMPLE_PATTERN.finditer(text):
         block_line = text[: match.start()].count("\n") + 1
         code = match.group(1)
@@ -114,6 +117,7 @@ def _counterexamples() -> list[tuple[int, str, list[str]]]:
     return out
 
 
+@functools.cache
 def _sequences() -> list[tuple[int, list[list[str]]]]:
     """Extract ``trax-seq`` blocks: every line runs in order with shared state.
 
@@ -122,7 +126,7 @@ def _sequences() -> list[tuple[int, list[list[str]]]]:
     sequence is asserted to parse and execute without error.
     """
     out: list[tuple[int, list[list[str]]]] = []
-    text = _GRAMMAR_PATH.read_text(encoding="utf-8")
+    text = (_CWD / "docs" / "GRAMMAR.md").read_text(encoding="utf-8")
     for match in _SEQUENCE_PATTERN.finditer(text):
         block_line = text[: match.start()].count("\n") + 1
         commands: list[list[str]] = []
@@ -134,11 +138,6 @@ def _sequences() -> list[tuple[int, list[list[str]]]]:
         if commands:
             out.append((block_line, commands))
     return out
-
-
-_EXAMPLES = _examples()
-_SEQUENCES = _sequences()
-_COUNTEREXAMPLES = _counterexamples()
 
 
 # Examples that ship in GRAMMAR.md ahead of their parser/runtime support.
@@ -156,7 +155,7 @@ def _xfail_mark(reason: str) -> pytest.MarkDecorator:
 
 def _example_params() -> list[Any]:
     out: list[Any] = []
-    for line_no, argv in _EXAMPLES:
+    for line_no, argv in _examples():
         key = " ".join(argv)
         if key in _KNOWN_FAILING_EXAMPLES:
             out.append(
@@ -173,7 +172,7 @@ def _example_params() -> list[Any]:
 
 def _counterexample_params() -> list[Any]:
     out: list[Any] = []
-    for line_no, code, argv in _COUNTEREXAMPLES:
+    for line_no, code, argv in _counterexamples():
         key = " ".join(argv)
         if key in _KNOWN_FAILING_COUNTEREXAMPLES:
             out.append(
@@ -192,7 +191,7 @@ def _counterexample_params() -> list[Any]:
 @pytest.mark.parametrize(
     ("line_no", "argv"),
     _example_params(),
-    ids=[f"L{line_no}:{' '.join(argv) or '(bare)'}" for line_no, argv in _EXAMPLES],
+    ids=[f"L{line_no}:{' '.join(argv) or '(bare)'}" for line_no, argv in _examples()],
 )
 def test_grammar_example_parses(line_no: int, argv: list[str]) -> None:
     """Every fenced ``trax`` example in GRAMMAR.md parses and runs."""
@@ -205,8 +204,8 @@ def test_grammar_example_parses(line_no: int, argv: list[str]) -> None:
 
 @pytest.mark.parametrize(
     ("line_no", "commands"),
-    _SEQUENCES,
-    ids=[f"L{line_no}:{len(cmds)}cmds" for line_no, cmds in _SEQUENCES],
+    _sequences(),
+    ids=[f"L{line_no}:{len(cmds)}cmds" for line_no, cmds in _sequences()],
 )
 def test_grammar_sequence_parses(line_no: int, commands: list[list[str]]) -> None:
     """A ``trax-seq`` block parses and executes every command in order.
@@ -230,7 +229,7 @@ def test_grammar_sequence_parses(line_no: int, commands: list[list[str]]) -> Non
     _counterexample_params(),
     ids=[
         f"L{line_no}:{code}:{' '.join(argv)}"
-        for line_no, code, argv in _COUNTEREXAMPLES
+        for line_no, code, argv in _counterexamples()
     ],
 )
 def test_grammar_counterexample_rejects(
@@ -370,7 +369,7 @@ def _section_9_tokens(heading: str) -> set[str]:
     under its heading; any rationale prose follows a blank line and is
     excluded. Used to pin the hand-maintained §9 tables to ``grammar.py``.
     """
-    text = _GRAMMAR_PATH.read_text(encoding="utf-8")
+    text = (_CWD / "docs" / "GRAMMAR.md").read_text(encoding="utf-8")
     start = text.index(f"### {heading}")
     body = text[start:].split("\n", 1)[1]
     paragraph = body.split("\n\n", 1)[0]

@@ -30,7 +30,7 @@ from trackinizer.server.store.core import Store, StubEmbedder
 from trackinizer.types.session_records import SessionRecordRow
 
 
-_MIGRATION: Final = Path(__file__).resolve().parent / "assets" / "schema.020.sql"
+_CWD: Final = Path(__file__).resolve().parent
 
 # The table as it stood before 021 dropped it, trimmed to the columns 020
 # reads. Not imported from the baseline schema (which no longer has it) and
@@ -107,7 +107,9 @@ async def _legacy_session(store: Store) -> UUID:
 async def _run_backfill(store: Store) -> None:
     """Execute 020 exactly as ``_bootstrap_once`` would."""
     async with store.engine.acquire() as conn:
-        await conn.execute(_MIGRATION.read_text(encoding="utf-8"))
+        await conn.execute(
+            (_CWD / "assets" / "schema.020.sql").read_text(encoding="utf-8")
+        )
 
 
 @pytest.mark.db_pglite
@@ -170,7 +172,9 @@ def test_the_dotted_tag_matches_what_the_codec_emits() -> None:
         emitted["py/object"]
         == "trackinizer.lib.agent.types.sessions.UncategorizedRecord"
     )
-    assert str(emitted["py/object"]) in _MIGRATION.read_text(encoding="utf-8")
+    assert str(emitted["py/object"]) in (_CWD / "assets" / "schema.020.sql").read_text(
+        encoding="utf-8"
+    )
 
 
 @pytest.mark.db_pglite
