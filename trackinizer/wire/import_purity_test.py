@@ -13,12 +13,13 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Final
 
 import ast
 import pkgutil
 
 
-_PKG_ROOT = Path(__file__).resolve().parent.parent
+_CWD: Final = Path(__file__).resolve().parent
 _BASE = "trackinizer"
 
 # Top-level packages a publishable client must never pull in.
@@ -48,7 +49,7 @@ _CLIENT_PACKAGES: tuple[str, ...] = ("types", "wire", "client")
 
 
 def _module_files(package: str) -> Iterator[Path]:
-    pkg_dir = _PKG_ROOT / package
+    pkg_dir = _CWD.parent / package
     # ``walk_packages`` yields submodules but never the package ``__init__.py``
     # itself, so a forbidden import there would evade the boundary guard. Yield
     # every ``__init__.py`` under the package (the package root and any
@@ -96,7 +97,7 @@ def test_module_files_includes_package_init() -> None:
     among the files the boundary check walks.
     """
     for package in _CLIENT_PACKAGES:
-        init = _PKG_ROOT / package / "__init__.py"
+        init = _CWD.parent / package / "__init__.py"
         assert init.is_file(), f"{package} has no __init__.py"
         assert init in set(_module_files(package)), (
             f"{package}/__init__.py is not walked by the purity guard"
@@ -105,7 +106,7 @@ def test_module_files_includes_package_init() -> None:
 
 def test_client_packages_do_not_import_server_or_cli() -> None:
     violations: list[str] = [
-        f"{path.relative_to(_PKG_ROOT)} imports {hit}"
+        f"{path.relative_to(_CWD.parent)} imports {hit}"
         for package in _CLIENT_PACKAGES
         for path in _module_files(package)
         for imported in _imported_roots(path)

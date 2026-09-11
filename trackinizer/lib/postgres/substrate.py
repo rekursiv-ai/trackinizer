@@ -44,6 +44,8 @@ import asyncpg.pool
 from trackinizer.lib.userdirs import cache_dir
 
 
+_CWD: Final = Path(__file__).resolve().parent
+
 type Conn = PoolConnectionProxy[Record] | Connection[Record]
 
 
@@ -632,17 +634,6 @@ def _drain_node_stdout(manager: PGliteManager) -> None:
     threading.Thread(target=_consume, daemon=True).start()
 
 
-# Vendored ``package.json`` + ``package-lock.json`` pin the exact dependency
-# tree py-pglite's Node script ``require``s. We install from the lockfile with
-# ``npm ci`` so every machine and run resolves byte-identical versions -- core
-# infra (web app, trackinizer server) must boot deterministically, not whatever
-# the registry served the day the cache first warmed. All extensions (pgvector,
-# pg_trgm, ...) ship as subpaths of the base pglite package, so this one tree
-# serves every ``extensions`` combination. Bumping a version = edit both files;
-# the lockfile hash changes, minting a fresh cache key (see ``_cache_key``).
-_PGLITE_PACKAGE_JSON = Path(__file__).parent / "pglite-package.json"
-_PGLITE_PACKAGE_LOCK = Path(__file__).parent / "pglite-package-lock.json"
-
 # A crashed/killed installer cannot remove its ``.lock`` directory; treat one
 # older than this (comfortably past the install timeout) as abandoned and
 # reclaim it so a single ``kill -9`` never wedges every future engine start.
@@ -661,13 +652,22 @@ if _INSTALL_LOCK_STALE_SECONDS <= _INSTALL_TIMEOUT_SECONDS:
 def _cache_key() -> str:
     """Content-address the cache by the vendored lockfile + package manifest.
 
+    The vendored ``pglite-package.json`` + ``pglite-package-lock.json`` pin the
+    exact dependency tree py-pglite's Node script ``require``s. We install from
+    the lockfile with ``npm ci`` so every machine and run resolves
+    byte-identical versions -- core infra (web app, trackinizer server) must
+    boot deterministically, not whatever the registry served the day the cache
+    first warmed. All extensions (pgvector, pg_trgm, ...) ship as subpaths of
+    the base pglite package, so this one tree serves every ``extensions``
+    combination. Bumping a version = edit both files.
+
     Keying on file *content* (not a hand-maintained version string) means any
     edit to either vendored file automatically mints a new cache directory, so
     a dependency bump can never be served a stale tree from an old key.
     """
     digest = hashlib.sha256()
-    digest.update(_PGLITE_PACKAGE_JSON.read_bytes())
-    digest.update(_PGLITE_PACKAGE_LOCK.read_bytes())
+    digest.update((_CWD / "pglite-package.json").read_bytes())
+    digest.update((_CWD / "pglite-package-lock.json").read_bytes())
     return digest.hexdigest()[:16]
 
 
@@ -742,8 +742,10 @@ def _run_npm_ci(root: Path) -> None:
     the manifest and lockfile disagree, so the resolved tree is reproducible
     rather than whatever ``npm install`` would resolve caret ranges to today.
     """
-    (root / "package.json").write_bytes(_PGLITE_PACKAGE_JSON.read_bytes())
-    (root / "package-lock.json").write_bytes(_PGLITE_PACKAGE_LOCK.read_bytes())
+    (root / "package.json").write_bytes((_CWD / "pglite-package.json").read_bytes())
+    (root / "package-lock.json").write_bytes(
+        (_CWD / "pglite-package-lock.json").read_bytes()
+    )
     subprocess.run(
         ["npm", "ci", "--no-audit", "--no-fund"],  # noqa: S607 -- fixed args, no shell
         cwd=root,
