@@ -378,7 +378,7 @@ class TestAddCostFloor:
         # presence probe in a single snapshot.
         conn.fetchval.return_value = "Issue"
 
-        async def fetchrow(sql: str, *args: Any) -> Any:
+        async def fetchrow(sql: str, *args: Any) -> Any:  # noqa: ANN401 -- forwarded to an upstream Any.
             if "marginal_cost_agent_usd" in sql and "RETURNING" in sql:
                 # Mirror Postgres: the modifying CTE's WHERE rejects
                 # rows whose new total would be negative; the outer
@@ -423,7 +423,7 @@ class TestAddCostFloor:
         conn = make_conn()
         conn.fetchval.return_value = "Issue"
 
-        async def fetchrow(sql: str, *args: Any) -> Any:
+        async def fetchrow(sql: str, *args: Any) -> Any:  # noqa: ANN401 -- forwarded to an upstream Any.
             if "marginal_cost_agent_usd" in sql and "RETURNING" in sql:
                 agent = float(args[0])
                 resource = float(args[1])

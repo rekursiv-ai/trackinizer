@@ -51,7 +51,7 @@ class CodexAdapter:
         # is where codex itself keeps its config root -- hermetic launchers
         # point it at a throwaway dir -- so honor it, else ``~/.codex``.
         home = os.environ.get("CODEX_HOME")
-        return (Path(home) if home else Path.home() / ".codex") / "sessions"
+        return (Path(home) if home else Path.home() / ".codex") / "sessions"  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-lint: ignore[xdg-literal] -- vendor CLI's fixed home path, not ours (AGENTS.md rule 3)
 
     def session_dirs(self) -> Iterable[Path]:
         """Return the directories this CLI writes sessions under."""

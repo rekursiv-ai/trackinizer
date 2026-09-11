@@ -19,7 +19,7 @@ class TestClaudeSessionId:
     """Claude's own session id is the ``<session-id>.jsonl`` filename stem."""
 
     def test_session_id_from_path_is_filename_stem(self) -> None:
-        path = Path.home() / ".claude" / "projects" / "hash" / "abc-123-def.jsonl"
+        path = Path.home() / ".claude" / "projects" / "hash" / "abc-123-def.jsonl"  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)
         assert adapter.session_id_from_path(path) == "abc-123-def"
 
     def test_session_id_from_non_jsonl_path_is_none(self, tmp_path: Path) -> None:
