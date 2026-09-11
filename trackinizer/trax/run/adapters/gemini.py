@@ -32,9 +32,7 @@ class GeminiAdapter:
     """
 
     name: str = "gemini"
-
     cli_binary: str = "gemini"
-
     whole_file: bool = True
 
     @property
@@ -43,12 +41,7 @@ class GeminiAdapter:
         return Path.home() / ".gemini" / "tmp"
 
     def session_dirs(self) -> Iterable[Path]:
-        """Return the directories this CLI writes sessions under.
-
-        Returns:
-          result: The Iterable[Path].
-
-        """
+        """Return the directories this CLI writes sessions under."""
         # Returned whether or not it exists yet: the runner MINTS these before
         # arming its watch (see ClaudeAdapter for why withholding an absent
         # root silently disables capture on a first-ever run).
@@ -63,15 +56,7 @@ class GeminiAdapter:
         return (self._tmp_dir,)
 
     def matches_session_file(self, path: Path) -> bool:
-        """Return whether ``path`` is one of this CLI's session files.
-
-        Args:
-          path: Path.
-
-        Returns:
-          result: The bool.
-
-        """
+        """Return whether ``path`` is one of this CLI's session files."""
         return (
             path.suffix == ".json"
             and path.parent.name == "chats"
@@ -98,10 +83,10 @@ class GeminiAdapter:
         """Return the session id encoded in ``path``.
 
         Args:
-          path: Path.
+          path: File path (typically a gemini session-<id>.json).
 
         Returns:
-          result: The str | None.
+          result: Session id string, or None if resume is not supported.
 
         """
         # Gemini's ``session-<id>.json`` stem carries an id, but resume
@@ -118,7 +103,7 @@ class GeminiAdapter:
         held instead of being appended a second time.
 
         Returns:
-          result: The Tail.
+          result: Tail IR reader configured for whole-file gemini format.
 
         """
         return Tail(gemini.normalize, whole_file=True)

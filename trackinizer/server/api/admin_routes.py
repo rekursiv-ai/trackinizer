@@ -68,7 +68,6 @@ class AllowlistAddBody(BaseModel):
     """
 
     email_or_pattern: str = Field(min_length=1, max_length=320)
-
     role: RoleLiteral
 
 
@@ -80,11 +79,12 @@ async def admin_list_users_route(
     """List every user row for the admin table.
 
     Args:
-      request: Request.
-      identity: Identity.
+      request: FastAPI Request object containing app state with db engine.
+      identity: Admin identity from authentication dependency.
 
     Returns:
-      result: The MutableJSON.
+      users: List of user records with id, email, name, role, status,
+        created_at, last_login.
 
     """
     del identity
@@ -107,13 +107,13 @@ async def admin_set_user_role_route(
     """Update one user's role; 404 when the id matches no row.
 
     Args:
-      user_id: User id.
-      body: Body.
-      request: Request.
-      identity: Identity.
+      user_id: UUID of the user to update.
+      body: Request body with new role assignment.
+      request: FastAPI Request object containing app state with db engine.
+      identity: Admin identity from authentication dependency.
 
     Returns:
-      result: The MutableJSON.
+      confirmation: Success flag and updated role.
 
     """
     if user_id == identity.user_id and body.role != "admin":
@@ -151,12 +151,12 @@ async def admin_disable_user_route(
     failed revoke can't leave a disabled user holding live tokens.
 
     Args:
-      user_id: User id.
-      request: Request.
-      identity: Identity.
+      user_id: UUID of the user to disable.
+      request: FastAPI Request object containing app state with db engine.
+      identity: Admin identity from authentication dependency.
 
     Returns:
-      result: The MutableJSON.
+      confirmation: Success flag and new status 'disabled'.
 
     """
     if user_id == identity.user_id:
@@ -197,12 +197,12 @@ async def admin_enable_user_route(
     matching the rotate-on-suspicion stance across the auth surface.
 
     Args:
-      user_id: User id.
-      request: Request.
-      identity: Identity.
+      user_id: UUID of the user to enable.
+      request: FastAPI Request object containing app state with db engine.
+      identity: Admin identity from authentication dependency.
 
     Returns:
-      result: The MutableJSON.
+      confirmation: Success flag and new status 'active'.
 
     """
     del identity
@@ -235,12 +235,12 @@ async def admin_remove_user_route(
     admin delete the other.
 
     Args:
-      user_id: User id.
-      request: Request.
-      identity: Identity.
+      user_id: UUID of the user to delete.
+      request: FastAPI Request object containing app state with db engine.
+      identity: Admin identity from authentication dependency.
 
     Returns:
-      result: The Response.
+      empty: 204 response with no content.
 
     """
     if user_id == identity.user_id:
@@ -269,11 +269,12 @@ async def admin_list_allowlist_route(
     """List allowlist entries for the admin page.
 
     Args:
-      request: Request.
-      identity: Identity.
+      request: FastAPI Request object containing app state with db engine.
+      identity: Admin identity from authentication dependency.
 
     Returns:
-      result: The MutableJSON.
+      entries: List of allowlist records with email_or_pattern, role,
+        added_by, added_at.
 
     """
     del identity
@@ -298,12 +299,12 @@ async def admin_add_allowlist_route(
     ``api.app``, so this route needs no try/except of its own.
 
     Args:
-      body: Body.
-      request: Request.
-      identity: Identity.
+      body: Request body with email_or_pattern and role to add.
+      request: FastAPI Request object containing app state with db engine.
+      identity: Admin identity from authentication dependency.
 
     Returns:
-      result: The MutableJSON.
+      confirmation: Success flag, canonical email_or_pattern, and role.
 
     """
     email_or_pattern = _canonical_allowlist_entry(body.email_or_pattern)
@@ -337,13 +338,13 @@ async def admin_set_allowlist_role_route(
     FastAPI hands the path param back already decoded.
 
     Args:
-      email_or_pattern: Email or pattern.
-      body: Body.
-      request: Request.
-      identity: Identity.
+      email_or_pattern: Email address or domain wildcard pattern to match.
+      body: Request body with new role assignment.
+      request: FastAPI Request object containing app state with db engine.
+      identity: Admin identity from authentication dependency.
 
     Returns:
-      result: The MutableJSON.
+      confirmation: Success flag and updated role.
 
     """
     del identity
@@ -372,12 +373,12 @@ async def admin_remove_allowlist_route(
     so the value matches the stored row as-is.
 
     Args:
-      email_or_pattern: Email or pattern.
-      request: Request.
-      identity: Identity.
+      email_or_pattern: Email address or domain wildcard pattern to delete.
+      request: FastAPI Request object containing app state with db engine.
+      identity: Admin identity from authentication dependency.
 
     Returns:
-      result: The MutableJSON.
+      confirmation: Success flag only.
 
     """
     del identity

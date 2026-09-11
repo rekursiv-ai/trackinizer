@@ -57,12 +57,7 @@ else:
 
 
 def connect_flags(parser: argparse.ArgumentParser) -> None:
-    """Register ``--profile``, ``--host``, and ``--port``.
-
-    Args:
-      parser: Parser.
-
-    """
+    """Register ``--profile``, ``--host``, and ``--port``."""
     parser.add_argument("--profile", default=None)
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=None)
@@ -87,10 +82,10 @@ def connect(args: argparse.Namespace) -> Client:
     exists to provide -- and accumulate sockets for the daemon's whole life.
 
     Args:
-      args: Args.
+      args: Parsed top-level flags (--profile, --host, --port).
 
     Returns:
-      result: The Client.
+      client: Shared cached Client for the resolved target identity.
 
     """
     return _shared_client(_resolve_target(args))
@@ -136,7 +131,6 @@ class Help(Command):
     """Print top-level help or per-verb help."""
 
     names = ("help",)
-
     help = HelpPage(
         usage="trax COMMAND [ARGS] [OPTIONS]",
         summary="Subjects:\n  issue artifact experiment paper belief codechange webresult websearch agentsession",
@@ -214,8 +208,8 @@ def parse_and_run(
     connection flags go unused.
 
     Args:
-      argv: Argv.
-      client_factory: Client factory.
+      argv: Command-line tokens to parse (verb and arguments).
+      client_factory: Optional factory; uses profile if None.
 
     """
     top, leftover = _peel_top_flags(list(argv))
@@ -264,10 +258,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the program; return the process exit code.
 
     Args:
-      argv: Argv.
+      argv: Command-line arguments; None for sys.argv[1:].
 
     Returns:
-      result: The int.
+      exit_code: 0 on success, 2 on ClientError.
 
     """
     # Drain pooled sockets at exit; httpx2 warns if a Client is garbage

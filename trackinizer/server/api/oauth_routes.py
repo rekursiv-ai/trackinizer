@@ -84,11 +84,11 @@ async def auth_login_route(request: Request, next: str = "/") -> RedirectRespons
     with ``/`` so this can't act as an open redirector.
 
     Args:
-      request: Request.
-      next: Next.
+      request: HTTP request object with server config.
+      next: Same-origin path to redirect to after successful login.
 
     Returns:
-      response: The RedirectResponse.
+      response: 302 redirect to Google's OAuth authorization endpoint.
 
     """
     settings = _resolve_oauth_settings(request)
@@ -134,12 +134,12 @@ async def auth_callback_route(
     authenticated email isn't on the allowlist.
 
     Args:
-      request: Request.
-      code: Code.
-      state: State.
+      request: HTTP request from Google's OAuth callback (code + state params).
+      code: Google's authorization code from the callback.
+      state: State nonce echoed by Google (must match cookie value).
 
     Returns:
-      response: The Response.
+      response: 302 redirect to stashed post-login URL with session cookie set.
 
     """
     settings = _resolve_oauth_settings(request)
@@ -206,10 +206,10 @@ async def auth_logout_route(request: Request) -> RedirectResponse:
     non-browser client such as the CLI) has no CSRF vector and is allowed.
 
     Args:
-      request: Request.
+      request: HTTP request with Origin/Referer for CSRF validation.
 
     Returns:
-      response: The RedirectResponse.
+      response: 302 redirect to '/' with session cookie cleared.
 
     """
     if not _request_is_same_origin(request):
@@ -224,13 +224,9 @@ class _OAuthSettings:
     """Resolved OAuth deployment settings."""
 
     client_id: str
-
     client_secret: str
-
     redirect_uri: str
-
     session_secret: str
-
     session_max_age_seconds: int
 
 

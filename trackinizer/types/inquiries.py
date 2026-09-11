@@ -435,10 +435,12 @@ class Inquiry:
         ``KIND_TO_CLASS``.
 
         Args:
-          row: Row.
+          row: inquiries table row as a mapping (dict or asyncpg.Record).
 
         Returns:
-          result: The Self.
+          instance: Instantiated Issue, Belief, CodeChange, Experiment,
+            WebResult, WebSearch, or AgentSession; raises ValueError if kind
+            mismatch or missing base columns.
 
         """
         if cls is not Inquiry and "kind" in row:
@@ -810,10 +812,10 @@ def is_valid_source(value: str) -> bool:
     non-empty remainder. See :data:`_SOURCE_SCHEME_RE`.
 
     Args:
-      value: Value.
+      value: Source string (e.g., "doi: 10.1234/example", "arxiv: 2312.00000").
 
     Returns:
-      result: The bool.
+      valid: True if value matches ``<scheme>:<non-empty-rest>`` pattern.
 
     """
     return _SOURCE_SCHEME_RE.match(value) is not None

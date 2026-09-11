@@ -120,7 +120,7 @@ class Tail:
         what a byte-exact rewrite needs. Idempotent.
 
         Returns:
-          result: The list[TraxRecord].
+          result: Final records from the reader (e.g., incomplete line buffer).
 
         """
         if self._whole_file or self._reader is None or self._ended:

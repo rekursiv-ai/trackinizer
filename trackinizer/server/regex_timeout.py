@@ -56,7 +56,7 @@ async def apply_regex_statement_timeout(conn: Conn) -> None:
     bound is a server constant, never client input, so it interpolates safely.
 
     Args:
-      conn: Conn.
+      conn: Open database connection with active transaction (SET LOCAL scope).
 
     """
     await conn.execute(f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}")

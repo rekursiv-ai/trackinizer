@@ -46,7 +46,7 @@ def main() -> int:
     factory.
 
     Returns:
-      result: The int.
+      code: 0 on clean exit, 1 on initialization error.
 
     """
     parser = argparse.ArgumentParser(

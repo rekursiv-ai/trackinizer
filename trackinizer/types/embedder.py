@@ -16,17 +16,8 @@ class Embedder(Protocol):
     """
 
     name: str
-
     dim: int
 
     async def embed(self, text: str) -> list[float]:
-        """Return ``text`` as a unit vector of length :attr:`dim`.
-
-        Args:
-          text: Text.
-
-        Returns:
-          result: The list[float].
-
-        """
+        """Return ``text`` as a unit vector of length :attr:`dim`."""
         ...

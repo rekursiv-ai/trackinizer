@@ -110,10 +110,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Capture sessions and return the process exit code.
 
     Args:
-      argv: Argv.
+      argv: Command-line arguments; if None, parsed from sys.argv.
 
     Returns:
-      result: The int.
+      result: Process exit code (0 on success).
 
     """
     parser = argparse.ArgumentParser(

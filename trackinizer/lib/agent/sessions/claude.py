@@ -409,9 +409,9 @@ class _Emitter:
         open several, so each is registered by its own id.
 
         Args:
-          line: Line.
-          record: Record.
-          calls: Calls.
+          line: Claude JSONL-line dict or text repr; None for line-less records.
+          record: SessionRecord if this line produced one (shell edit context).
+          calls: ToolCall invocations the line opened (by id).
 
         """
         if line is None:
@@ -1599,10 +1599,10 @@ class _Reader:
         """Consume one native line; yield the records it produced.
 
         Args:
-          line: Line.
+          line: One line from a claude.jsonl session file.
 
         Returns:
-          result: The Iterator[SessionRecord].
+          result: Iterator of SessionRecord objects parsed from the line.
 
         """
         emitted = len(self._records)

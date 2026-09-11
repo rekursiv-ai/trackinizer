@@ -88,11 +88,8 @@ class SessionStart(BaseModel):
     ``end`` if the CLI only reveals it later."""
 
     title: str | None = None
-
     started: datetime | None = None
-
     actor: str | None = None
-
     account: str | None = None
     """The active user the session row is attributed to. ``None`` defaults to
     the authenticated creator; a non-``None`` value must be a live active user
@@ -132,14 +129,12 @@ class SessionStartResponse(BaseModel):
     """The server-minted identity of a freshly opened (or resumed) session."""
 
     id: uuid.UUID
-
     seq: int
     """The event log's continuation seq: 0 for a fresh session, ``max(seq)+1``
     for a resumed one. The client seeds its sequence from this so a resumed run
     appends to the existing log instead of colliding at seq 0."""
 
     cli_session_id: str | None = None
-
     actor: str | None = None
     """The granted routing name. Equals the requested ``--as`` actor unless it
     collided with a live session, in which case the server appended a suffix
@@ -159,12 +154,10 @@ class FeedEvent(BaseModel):
     """
 
     session_id: uuid.UUID
-
     actor: str
     """The session's routing name (``owner``); the feed's per-agent label."""
 
     rooms: list[str] = Field(default_factory=list)
-
     cli: str | None = None
     """The session's wrapped CLI; carried for a future per-CLI console badge,
     not yet rendered."""
@@ -190,9 +183,7 @@ class FeedEvent(BaseModel):
     """Server write clock -- the feed's cross-session order key."""
 
     timestamp: datetime | None = None
-
     model: str | None = None
-
     message: JSON = Field(default_factory=dict)
     """The record's payload, under the legacy field name so the console's
     renderer needs no rewrite for the shape it already reads."""
@@ -212,9 +203,7 @@ class FeedCursor(BaseModel):
     """
 
     created: datetime
-
     session_id: uuid.UUID
-
     part: int = 0
     """Part of the order key, so a boundary inside one session's records does
     not skip the rest."""
@@ -234,7 +223,6 @@ class FeedResponse(BaseModel):
     """
 
     events: list[FeedEvent]
-
     next_after: FeedCursor | None = None
 
 
@@ -268,9 +256,7 @@ class InboundDrainItem(BaseModel):
     """
 
     text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
-
     source: str | None = None
-
     room: str | None = None
     """The room a routed message was scoped to, for the ``[room] sender:``
     injection prefix; ``None`` for a direct (session-id) enqueue."""
@@ -336,7 +322,6 @@ class SessionEnd(BaseModel):
     """Mark a session closed, optionally backfilling late-known fields."""
 
     ended: datetime | None = None
-
     cli_session_id: str | None = Field(default=None, min_length=1)
     """Set when the CLI only revealed its session id mid-run."""
 
@@ -351,7 +336,6 @@ class SessionEndResponse(BaseModel):
     """Confirmation that a session was closed."""
 
     id: uuid.UUID
-
     ended: datetime | None = None
 
 
@@ -385,39 +369,15 @@ SESSION_API_PATHS: tuple[str, ...] = (
 
 
 def session_records_path(session_id: uuid.UUID) -> str:
-    """Return the record append/read path for one session.
-
-    Args:
-      session_id: Session id.
-
-    Returns:
-      result: The str.
-
-    """
+    """Return the record append/read path for one session."""
     return SESSION_RECORDS_PATH.format(session_id=session_id)
 
 
 def session_end_path(session_id: uuid.UUID) -> str:
-    """Return the end path for one session.
-
-    Args:
-      session_id: Session id.
-
-    Returns:
-      result: The str.
-
-    """
+    """Return the end path for one session."""
     return SESSION_END_PATH.format(session_id=session_id)
 
 
 def session_inbound_path(session_id: uuid.UUID) -> str:
-    """Return the inbound-message path for one session (POST enqueue, GET drain).
-
-    Args:
-      session_id: Session id.
-
-    Returns:
-      result: The str.
-
-    """
+    """Return the inbound-message path for one session (POST enqueue, GET drain)."""
     return SESSION_INBOUND_PATH.format(session_id=session_id)

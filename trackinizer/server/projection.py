@@ -40,8 +40,8 @@ async def fetch_edges(
     """Return the outbound and inbound edge rows touching ``subject_id``.
 
     Args:
-      conn: Conn.
-      subject_id: Subject id.
+      conn: Database connection.
+      subject_id: Row id to fetch edges for.
 
     Returns:
       outbound: Rows where ``subject_id`` is the ``from`` side, each carrying
@@ -77,8 +77,8 @@ async def fetch_edges_bulk(
     buckets has the same shape as the corresponding ``fetch_edges`` list.
 
     Args:
-      conn: Conn.
-      subject_ids: Subject ids.
+      conn: Database connection.
+      subject_ids: Row ids to fetch edges for (bulk).
 
     Returns:
       outbound: ``subject_id -> outbound edge rows`` (the subject is the
@@ -123,12 +123,12 @@ def materialize(
     silently truncated fields on bulk responses.
 
     Args:
-      row: Row.
-      outbound_buckets: Outbound buckets.
-      inbound_buckets: Inbound buckets.
+      row: Database row to materialize.
+      outbound_buckets: Pre-fetched edges where this id is the source.
+      inbound_buckets: Pre-fetched edges where this id is the target.
 
     Returns:
-      result: The Inquiry.
+      result: Fully-projected inquiry with relationships filled.
 
     """
     cls = KIND_TO_CLASS[row["kind"]]
@@ -151,12 +151,12 @@ def project_relationships(
     fields read its INBOUND ``from`` endpoints.
 
     Args:
-      base: Base.
-      outbound: Outbound.
-      inbound: Inbound.
+      base: Row-resident inquiry without edges.
+      outbound: Edges where the base is the source.
+      inbound: Edges where the base is the target.
 
     Returns:
-      base: The Inquiry.
+      base: Updated inquiry with all relationship fields populated.
 
     """
     base = replace(

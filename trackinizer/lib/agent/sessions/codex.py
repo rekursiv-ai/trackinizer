@@ -1139,10 +1139,10 @@ class _Reader:
         fully described.
 
         Args:
-          line: Line.
+          line: Raw rollout line to parse (Settings, LaunchOrInitialize, Turn, etc).
 
         Returns:
-          result: The Iterator[SessionRecord].
+          result: Records parsed from this line; axiom 11 applies once yielded.
 
         """
         emitted = len(self._records)
@@ -1183,7 +1183,7 @@ class _Reader:
         """Yield what only the END of the stream could say.
 
         Yields:
-          item: Each yielded value.
+          record: Final records if stream lacked a final newline or opening unclosed.
 
         """
         if self._opening is not None:

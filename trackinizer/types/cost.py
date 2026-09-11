@@ -95,11 +95,11 @@ class Cost:
         zero on that axis.
 
         Args:
-          row: Row.
-          prefix: Prefix.
+          row: Database row with marginal_cost_*_usd columns.
+          prefix: Column name prefix ("", "old_", or "new_").
 
         Returns:
-          result: The Self.
+          result: Cost instance with agent and resource axes.
 
         """
         agent_col = prefix + "marginal_cost_agent_usd"

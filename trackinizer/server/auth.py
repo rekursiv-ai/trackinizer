@@ -158,11 +158,11 @@ def effective_role(user_role: Role, key_role: Role) -> Role:
     key, so that path just passes the user role through.
 
     Args:
-      user_role: User role.
-      key_role: Key role.
+      user_role: User's persistent role (viewer/writer/admin).
+      key_role: API key's role ceiling (may differ from user's role).
 
     Returns:
-      result: The Role.
+      result: Minimum of the two roles per ROLE_ORDER (most restrictive).
 
     """
     return ROLE_ORDER[min(ROLE_ORDER.index(user_role), ROLE_ORDER.index(key_role))]
@@ -189,11 +189,8 @@ class AuthIdentity:
     """
 
     user_id: uuid.UUID
-
     api_key_id: uuid.UUID | None
-
     email: str
-
     role: Role
 
 
@@ -205,10 +202,10 @@ def hash_secret(secret: str) -> str:
     without invalidating old hashes; :func:`verify_secret` reads them back.
 
     Args:
-      secret: Secret.
+      secret: Plaintext API key secret or password to hash.
 
     Returns:
-      result: The str.
+      result: Self-describing scrypt hash with embedded parameters and salt.
 
     """
     salt = secrets.token_bytes(_SCRYPT_SALT_BYTES)
@@ -234,11 +231,11 @@ def verify_secret(secret: str, encoded: str) -> bool:
     raising, so a corrupted row can't crash the auth middleware.
 
     Args:
-      secret: Secret.
-      encoded: Encoded.
+      secret: Plaintext secret to verify.
+      encoded: Hash from :func:`hash_secret` (format: ``scrypt$...$...``).
 
     Returns:
-      result: The bool.
+      result: True if the secret matches; False if malformed or mismatched.
 
     """
     parts = encoded.split("$")
@@ -284,7 +281,7 @@ def generate_token() -> tuple[str, str]:
     :data:`TOKEN_PREFIX_LEN` chars, persisted for display and lookup scoping.
 
     Returns:
-      result: The tuple[str, str].
+      result: Tuple of (full_secret, prefix_for_storage); secret shown once.
 
     """
     secret = _TOKEN_LABEL + secrets.token_urlsafe(_TOKEN_BYTES)
@@ -306,10 +303,10 @@ async def current_user(request: Request) -> AuthIdentity:
     user.
 
     Args:
-      request: Request.
+      request: FastAPI request (contains headers, cookies, app.state).
 
     Returns:
-      identity: The AuthIdentity.
+      identity: Resolved AuthIdentity with user_id, role, email, and key_id.
 
     """
     # ``--no-auth`` collapses the resolver to a synthetic admin -- demo mode
@@ -353,10 +350,10 @@ def require_role(min_role: Role) -> Callable[..., Awaitable[AuthIdentity]]:
     user management.
 
     Args:
-      min_role: Min role.
+      min_role: Minimum required role (viewer/writer/admin).
 
     Returns:
-      result: The Callable[..., Awaitable[AuthIdentity]].
+      result: Dependency callable that validates role and returns identity.
 
     """
     return _RoleRequirement(min_role=min_role)
@@ -392,7 +389,7 @@ async def create_api_key(
 
 
     Returns:
-      result: The tuple[uuid.UUID, str, str, Role].
+      result: Tuple of (key_id, secret, prefix, role) for the new key.
 
     Raises:
       RoleCeilingError: ``role`` is stronger than the effective ceiling.
@@ -457,7 +454,7 @@ async def set_api_key_role(
 
 
     Returns:
-      result: The bool.
+      result: True if one live key was updated; False if unknown/revoked/foreign.
 
     Raises:
       RoleCeilingError: ``role`` exceeds the effective ceiling for an owned,
@@ -500,11 +497,11 @@ async def list_api_keys(conn: Conn, *, user_id: uuid.UUID) -> list[dict[str, obj
     the wire.
 
     Args:
-      conn: Conn.
-      user_id: User id.
+      conn: Open database connection.
+      user_id: Owning user's UUID for scope and authorization.
 
     Returns:
-      result: The list[dict[str, object]].
+      result: List of key dicts (id, name, prefix, role, timestamps, status).
 
     """
     rows = await conn.fetch(
@@ -525,12 +522,12 @@ async def revoke_api_key(conn: Conn, *, key_id: uuid.UUID, user_id: uuid.UUID) -
     attacker can't distinguish the cases.
 
     Args:
-      conn: Conn.
-      key_id: Key id.
-      user_id: User id.
+      conn: Open database connection.
+      key_id: API key UUID to revoke.
+      user_id: Owning user's UUID for scope and authorization.
 
     Returns:
-      result: The bool.
+      result: True if one live key was revoked; False if not found/revoked.
 
     """
     result = await conn.execute(
@@ -553,11 +550,11 @@ async def allowlist_match(conn: Conn, *, email: str) -> Role | None:
     Matching is case-insensitive.
 
     Args:
-      conn: Conn.
-      email: Email.
+      conn: Open database connection.
+      email: User email to check against the allowlist.
 
     Returns:
-      result: The Role | None.
+      result: Granted role (viewer/writer/admin) or None if not allowed.
 
     """
     literal = await conn.fetchval(
@@ -595,11 +592,11 @@ async def lookup_user_by_id(
     so a stolen-cookie attacker learns nothing.
 
     Args:
-      conn: Conn.
-      user_id: User id.
+      conn: Open database connection.
+      user_id: User UUID to look up.
 
     Returns:
-      result: The AuthIdentity | None.
+      result: AuthIdentity if active; None if not found or disabled.
 
     """
     row = await conn.fetchrow(
@@ -632,8 +629,8 @@ async def assert_account_active(engine: DatabaseEngine, account: str) -> None:
     account: a user disabled after being stamped is not swept.
 
     Args:
-      engine: Engine.
-      account: Account.
+      engine: Database engine for connection acquisition.
+      account: User email to validate against active users.
 
     Raises:
       HTTPException: ``account`` has no ``active`` row in ``users`` (422).
@@ -670,7 +667,7 @@ async def bootstrap_admin(conn: Conn) -> None:
     failure leaves no live secret at the final path, only an orphan ``.tmp``).
 
     Args:
-      conn: Conn.
+      conn: Open database connection within a transaction context.
 
     """
     # Lowercase to match the admin-UI canonical form and the read path; the
@@ -734,7 +731,7 @@ async def seed_no_auth_user(conn: Conn) -> None:
     active account. Idempotent via ``ON CONFLICT``.
 
     Args:
-      conn: Conn.
+      conn: Open database connection for INSERT.
 
     """
     await conn.execute(

@@ -134,9 +134,7 @@ class _Captured:
     """
 
     path: Path
-
     raw: bytes
-
     restart: bool = False
 
 
@@ -151,12 +149,7 @@ class _Stats:
     counts: dict[str, int] = field(default_factory=dict)
 
     def record(self, kind: str) -> None:
-        """Tally one event of ``kind`` for the end-of-run summary.
-
-        Args:
-          kind: Kind.
-
-        """
+        """Tally one event of ``kind`` for the end-of-run summary."""
         self.counts[kind] = self.counts.get(kind, 0) + 1
 
     def render(self) -> str:
@@ -252,10 +245,10 @@ def run(config: RunConfig) -> int:
     Blocks until the CLI exits; dry-run blocks until SIGINT and returns 0.
 
     Args:
-      config: Config.
+      config: Trax run configuration with CLI name, paths, and options.
 
     Returns:
-      rc: The int.
+      rc: Exit code from the wrapped CLI or 0 for dry-run.
 
     """
     factory = _ADAPTERS.get(config.cli_name)
@@ -283,7 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Argument parser for ``trax run``.
 
     Returns:
-      parser: The argparse.ArgumentParser.
+      parser: Configured ArgumentParser with all subcommands.
 
     """
     parser = argparse.ArgumentParser(
@@ -1035,10 +1028,10 @@ async def _follow_session_files(
         mine"; adapters that cannot tell return ``None`` and this stays off.
 
         Args:
-          path: Path.
+          path: Filesystem path to test for ownership.
 
         Returns:
-          result: The bool.
+          owned: True if the run should capture this path.
 
         """
         if path in baseline or not adapter.matches_session_file(path):

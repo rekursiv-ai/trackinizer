@@ -70,7 +70,7 @@ class Adapter(Protocol):
         means the adapter has no filesystem capture source.
 
         Returns:
-          result: The Iterable[Path].
+          result: Iterable of directories where session files may appear.
 
         """
         ...
@@ -81,10 +81,10 @@ class Adapter(Protocol):
         Usually a check on the suffix (``*.jsonl``) and maybe the parent dir.
 
         Args:
-          path: Path.
+          path: File path to check.
 
         Returns:
-          result: The bool.
+          result: True if this adapter can parse the file.
 
         """
         ...
@@ -119,10 +119,10 @@ class Adapter(Protocol):
         not resumable via correlation).
 
         Args:
-          path: Path.
+          path: Session file path.
 
         Returns:
-          result: The str | None.
+          result: Stable session id if extractable; None if unsupported.
 
         """
         ...
@@ -141,7 +141,7 @@ class Adapter(Protocol):
         dialect fix lands in both.
 
         Returns:
-          result: The Tail.
+          result: Fresh reader for parsing session lines from a file.
 
         """
         ...

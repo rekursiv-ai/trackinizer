@@ -146,7 +146,8 @@ def column_specs(cls: type[DataclassInstance]) -> dict[str, ColumnSpec]:
     instead; see :func:`storage_name` / :func:`storage_column_specs`.
 
     Returns:
-      out: The dict[str, ColumnSpec].
+      specs: Dict mapping field name to its ColumnSpec, empty for fields
+        without one.
 
     """
     out: dict[str, ColumnSpec] = {}
@@ -169,11 +170,13 @@ def storage_name(field: str, spec: ColumnSpec) -> str:
     kind is no longer in scope.
 
     Args:
-      field: Field.
-      spec: Spec.
+      field: Bare field name (e.g., "priority", "paper_source").
+      spec: Field's ColumnSpec carrying applies_to_inquiry_kinds.
 
     Returns:
-      field: The str.
+      name: Bare field name if applies to all kinds or multiple kinds;
+        ``<owner>_<field>`` if owned by a single kind (e.g.,
+        "issue_priority").
 
     """
     owners = spec.applies_to_inquiry_kinds
@@ -193,7 +196,8 @@ def storage_column_specs(cls: type[DataclassInstance]) -> dict[str, ColumnSpec]:
     the physical ``inquiries`` column and the emitted ``Change.Kind``.
 
     Returns:
-      result: The dict[str, ColumnSpec].
+      specs: Dict mapping storage column name (e.g., "issue_priority") to
+        its ColumnSpec.
 
     """
     return {storage_name(name, spec): spec for name, spec in column_specs(cls).items()}
@@ -223,7 +227,8 @@ def flat_column_specs(cls: type[DataclassInstance]) -> dict[str, FlatColumn]:
     out the flattened ``marginal_cost_*`` names by hand.
 
     Returns:
-      out: The dict[str, FlatColumn].
+      specs: Dict mapping scalar column name (e.g., "marginal_cost_agent_usd")
+        to its FlatColumn (spec + value type).
 
     """
     annotations = _resolved_annotations(cls)

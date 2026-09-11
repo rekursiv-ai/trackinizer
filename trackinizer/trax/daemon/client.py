@@ -82,10 +82,10 @@ def should_delegate(argv: Sequence[str]) -> bool:
     still gets the daemon.
 
     Args:
-      argv: Argv.
+      argv: Command-line arguments.
 
     Returns:
-      result: The bool.
+      result: True if safe to delegate (no stdin, terminal, or serve flag).
 
     """
     if SERVE_FLAG in argv:

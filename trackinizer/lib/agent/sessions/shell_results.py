@@ -150,17 +150,11 @@ class _BashNode(Protocol):
     """Expose the bashlex AST fields this classifier reads."""
 
     kind: str
-
     parts: list[_BashNode]
-
     word: str
-
     type: str
-
     op: str
-
     input: int | None
-
     output: _BashNode
 
     heredoc: _BashNode | None

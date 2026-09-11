@@ -80,11 +80,11 @@ async def push_changes_to_live_subscribers(
     queue's bounded receipt window).
 
     Args:
-      store: Store.
-      inbound: Inbound.
-      page_size: Page size.
-      sweep_interval_sec: Sweep interval sec.
-      max_backoff_sec: Max backoff sec.
+      store: Store instance with change_log access.
+      inbound: InboundQueue to enqueue change notifications to.
+      page_size: Rows to fetch per change_log query (short pages prevent stalling).
+      sweep_interval_sec: Sleep interval between sweeps in seconds.
+      max_backoff_sec: Max backoff on query failure; doubles per failure capped here.
 
     """
     since = datetime.now(UTC)

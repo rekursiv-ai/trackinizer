@@ -89,10 +89,10 @@ def snake_case(name: str) -> str:
     ``web_search_results`` and an acronym run stays together.
 
     Args:
-      name: Name.
+      name: CamelCase identifier to convert.
 
     Returns:
-      result: The str.
+      result: Converted snake_case string.
 
     """
     return _CAMEL_BOUNDARY.sub("_", name).lower()
@@ -110,10 +110,10 @@ def record_kind_for(column: str) -> str | None:
     """Return the record kind ``column`` filters on, or ``None`` if it is not one.
 
     Args:
-      column: Column.
+      column: Snake_case field name (e.g., 'tool_call', 'web_search').
 
     Returns:
-      result: The str | None.
+      result: CamelCase record kind if it matches a text-bearing record; None.
 
     """
     return SESSION_RECORD_FIELDS.get(column)

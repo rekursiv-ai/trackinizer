@@ -54,7 +54,7 @@ def set_client_change_id(value: UUID | None) -> None:
     shared by reference precisely so all siblings observe one another's drains).
 
     Args:
-      value: Value.
+      value: UUID to store (or None to clear and notify siblings).
 
     """
     if value is not None:

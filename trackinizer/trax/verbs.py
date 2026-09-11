@@ -169,13 +169,11 @@ class Kind(Command):
     """
 
     names = tuple(KIND_LOWER)
-
     field_help: ClassVar[HelpPage] = HelpPage(
         usage="trax <kind> <seq> FIELD [to VALUE]",
         summary="Bare FIELD projects it; FIELD to VALUE replaces it.",
         examples=("trax issue 7 title", "trax issue 7 title to 'New title'"),
     )
-
     field_set_help: ClassVar[HelpPage] = HelpPage(
         usage="trax <kind> <seq> FIELD to VALUE [FIELD to VALUE ...]",
         summary="Mutates the selected field or fields.",
@@ -295,12 +293,12 @@ class Kind(Command):
         """Run relation.
 
         Args:
-          ref: Ref.
-          relation: Relation.
-          tokens: Tokens.
-          args: Args.
-          client_factory: Client factory.
-          against: Against.
+          ref: Row identifier.
+          relation: Edge kind and inbound flag (reverse direction).
+          tokens: Row-specific suffix (edge index if any).
+          args: CLI namespace (sort, format, width).
+          client_factory: Callable that creates a client.
+          against: Flip the edge direction for display.
 
         """
         if len(tokens) > 1:
@@ -340,10 +338,10 @@ class Kind(Command):
             cross-experiment masked read/rank (the leaderboard surface).
 
         Args:
-          before: Before.
-          tail: Tail.
-          args: Args.
-          client_factory: Client factory.
+          before: Query selecting experiment(s) or create fields.
+          tail: Mask/write/read options.
+          args: CLI namespace.
+          client_factory: Callable that creates a client.
 
         """
         action = parse_metric_action(tail)
@@ -375,10 +373,10 @@ class Kind(Command):
         ``session.main(["claude", "--as", "bob", "--", "--model", "opus"])``.
 
         Args:
-          before: Before.
-          tail: Tail.
-          args: Args.
-          client_factory: Client factory.
+          before: Session identifier.
+          tail: Target CLI followed by runner args.
+          args: CLI namespace (lossy conversion flag).
+          client_factory: Callable that creates a client.
 
         """
         if not tail:
@@ -782,12 +780,12 @@ class Kind(Command):
         """Run relation add edge.
 
         Args:
-          subject: Subject.
-          relation: Relation.
-          source: Source.
-          target: Target.
-          args: Args.
-          client_factory: Client factory.
+          subject: The subject row (displays related edge afterward).
+          relation: Edge kind and direction.
+          source: Source row for the edge.
+          target: Target row for the edge.
+          args: CLI namespace (actor).
+          client_factory: Callable that creates a client.
 
         """
         client = client_factory()
@@ -833,12 +831,12 @@ class Kind(Command):
         "annotated") from the returned :class:`EdgeWrite`.
 
         Args:
-          source: Source.
-          edge_kind: Edge kind.
-          target: Target.
-          metadata: Metadata.
-          args: Args.
-          client_factory: Client factory.
+          source: Source row for the edge.
+          edge_kind: Edge type (produced_by, cites, etc.).
+          target: Target row for the edge.
+          metadata: Priority, note, valence, labels.
+          args: CLI namespace (actor).
+          client_factory: Callable that creates a client.
 
         """
         client = client_factory()
@@ -890,13 +888,13 @@ class Kind(Command):
         could shadow.
 
         Args:
-          kind: Kind.
-          actions: Actions.
-          args: Args.
-          client_factory: Client factory.
+          kind: Inquiry type (issue, experiment, etc.).
+          actions: Create fields and edge subtree.
+          args: CLI namespace (actor, reason).
+          client_factory: Callable that creates a client.
 
         Returns:
-          result: The uuid.UUID.
+          result: Server-minted UUID of the root row.
 
         """
         client = client_factory()
@@ -1166,9 +1164,9 @@ class Kind(Command):
         """Run purge.
 
         Args:
-          ref: Ref.
-          args: Args.
-          client_factory: Client factory.
+          ref: Row identifier.
+          args: CLI namespace (actor, reason).
+          client_factory: Callable that creates a client.
 
         """
         client = client_factory()
@@ -1192,11 +1190,11 @@ class Kind(Command):
         """Run remove edge.
 
         Args:
-          source: Source.
-          edge_kind: Edge kind.
-          target: Target.
-          args: Args.
-          client_factory: Client factory.
+          source: Source row for the edge.
+          edge_kind: Edge type.
+          target: Target row for the edge.
+          args: CLI namespace (actor).
+          client_factory: Callable that creates a client.
 
         """
         client = client_factory()
@@ -1218,10 +1216,10 @@ class Kind(Command):
         """Run edge action.
 
         Args:
-          ref: Ref.
-          action: Action.
-          args: Args.
-          client_factory: Client factory.
+          ref: Row identifier (the subject for inline-create edges).
+          action: Edge to add or remove (with optional inline target).
+          args: CLI namespace (actor, reason).
+          client_factory: Callable that creates a client.
 
         """
         # Any inline-create target -- flat (fields only) or a deep/wide subtree
@@ -1365,10 +1363,10 @@ class Kind(Command):
         """Run list mutation.
 
         Args:
-          ref: Ref.
-          action: Action.
-          args: Args.
-          client_factory: Client factory.
+          ref: Row identifier.
+          action: AddList or RemoveList (field and value).
+          args: CLI namespace (actor).
+          client_factory: Callable that creates a client.
 
         """
         spec = FIELDS_BY_NAME.get(action.field)
@@ -1412,11 +1410,11 @@ def resolve_actor(actor: str, client: Client) -> Inquiry.Actor:
     request last touched the process environment onto this audit row.
 
     Args:
-      actor: Actor.
-      client: Client.
+      actor: Caller-specified actor override, or empty to resolve from context.
+      client: Daemon context for reading the invoking user.
 
     Returns:
-      result: The Inquiry.Actor.
+      result: The audit actor (--as flag, profile, $USER, or "user").
 
     """
     return actor or client.author or env("USER") or env("USERNAME") or "user"
@@ -1426,11 +1424,11 @@ def kind_help_for(kind: Inquiry.InquiryKind, tokens: Sequence[str]) -> str:
     """Help for one kind, narrowing to a row or field as the tokens get longer.
 
     Args:
-      kind: Kind.
-      tokens: Tokens.
+      kind: Inquiry type (issue, experiment, paper, etc.).
+      tokens: Parsed command tail (row id, field name, etc.).
 
     Returns:
-      result: The str.
+      result: Formatted help text with usage examples.
 
     """
     prefix = kind.lower()
@@ -1451,11 +1449,11 @@ def inquiry_help_text(prefix: str, *, seq: str = "SEQ") -> str:
     """Return the full usage page for one inquiry kind.
 
     Args:
-      prefix: Prefix.
-      seq: Seq.
+      prefix: Query subcommand (issue, experiment, etc.).
+      seq: Placeholder for row index (defaults to "SEQ").
 
     Returns:
-      result: The str.
+      result: Full multiline usage page.
 
     """
     return f"""\
@@ -1525,9 +1523,9 @@ def run_list_query(
     recency window.
 
     Args:
-      query: Query.
-      args: Args.
-      client_factory: Client factory.
+      query: Parsed query with kinds, ranges, and filters.
+      args: CLI namespace (limit, format, width).
+      client_factory: Callable that creates a client.
 
     """
     print_rows(
@@ -1592,9 +1590,9 @@ def run_show(
     """Show one inquiry row.
 
     Args:
-      ref: Ref.
-      args: Args.
-      client_factory: Client factory.
+      ref: Row identifier (seq or UUID).
+      args: CLI namespace (format, changes).
+      client_factory: Callable that creates a client.
 
     """
     client = client_factory()
@@ -1617,10 +1615,10 @@ def run_field(
     """Print one field from one inquiry row.
 
     Args:
-      ref: Ref.
-      field: Field.
-      args: Args.
-      client_factory: Client factory.
+      ref: Row identifier.
+      field: Column name to read.
+      args: CLI namespace.
+      client_factory: Callable that creates a client.
 
     """
     del args
@@ -1641,10 +1639,10 @@ def run_cost_field(
     """Print one computed cost field for one inquiry row.
 
     Args:
-      ref: Ref.
-      field: Field.
-      args: Args.
-      client_factory: Client factory.
+      ref: Row identifier.
+      field: Computed cost axis (agent_usd, resource_usd, etc.).
+      args: CLI namespace.
+      client_factory: Callable that creates a client.
 
     """
     del args
@@ -1667,11 +1665,11 @@ def run_add_cost(
     """Apply one signed cost delta to one inquiry row.
 
     Args:
-      ref: Ref.
-      field: Field.
-      value: Value.
-      args: Args.
-      client_factory: Client factory.
+      ref: Row identifier.
+      field: Cost axis name.
+      value: Signed amount (positive adds, negative subtracts).
+      args: CLI namespace (actor, reason).
+      client_factory: Callable that creates a client.
 
     """
     client = client_factory()
@@ -1702,11 +1700,11 @@ def run_actions(
     committed. Up-front validation keeps the multi-field write atomic.
 
     Args:
-      ref: Ref.
-      actions: Actions.
-      args: Args.
-      client_factory: Client factory.
-      kind: Kind.
+      ref: Row identifier.
+      actions: Sequence of field edits to apply.
+      args: CLI namespace.
+      client_factory: Callable that creates a client.
+      kind: Inquiry type (validates write fields before any action).
 
     """
     write_fields = tuple(
@@ -1732,10 +1730,10 @@ def run_action(
     silently falling through to something like a purge.
 
     Args:
-      ref: Ref.
-      action: Action.
-      args: Args.
-      client_factory: Client factory.
+      ref: Row identifier.
+      action: Parsed action (read, set, add cost, edge, etc.).
+      args: CLI namespace.
+      client_factory: Callable that creates a client.
 
     """
     if isinstance(action, ReadField):
@@ -1775,10 +1773,10 @@ def run_set_field(
     """Set one scalar field on one inquiry row.
 
     Args:
-      ref: Ref.
-      action: Action.
-      args: Args.
-      client_factory: Client factory.
+      ref: Row identifier.
+      action: SetField with the field name and value.
+      args: CLI namespace (actor, reason).
+      client_factory: Callable that creates a client.
 
     """
     client = client_factory()
@@ -1798,7 +1796,6 @@ class Recent(Command):
     """Recent audit-log entries."""
 
     names = ("recent",)
-
     help = HelpPage(
         usage="trax recent [OPTIONS]",
         summary="Show recent audit-log entries.",
@@ -1852,7 +1849,6 @@ class Id(Command):
     """
 
     names = ("id",)
-
     help = """\
 Usage: trax id <uuid> [OPTIONS]
 
@@ -1906,7 +1902,6 @@ class Next(Command):
     """Show the next unblocked active issue."""
 
     names = ("next",)
-
     help = """\
 Usage: trax next [OPTIONS]
 
@@ -1951,7 +1946,6 @@ class Blocked(Command):
     """List active issues that have at least one active prerequisite."""
 
     names = ("blocked",)
-
     help = """\
 Usage: trax blocked
 
@@ -1982,7 +1976,7 @@ Examples:
         """Render rows for the terminal.
 
         Args:
-          rows: Rows.
+          rows: Issue rows with active/blocked status and requirements.
 
         """
         status_by_id = {
@@ -2037,7 +2031,6 @@ class Graph(Command):
     """Print the issue dependency tree along ``requires`` edges."""
 
     names = ("graph",)
-
     help = """\
 Usage: trax graph [OPTIONS]
 
@@ -2078,7 +2071,7 @@ Options:
         """Render rows for the terminal.
 
         Args:
-          rows: Rows.
+          rows: Issue rows with dependency edges.
 
         """
         if not rows:
@@ -2172,7 +2165,6 @@ class Board(Command):
     """List issues grouped by status."""
 
     names = ("board",)
-
     help = """\
 Usage: trax board [OPTIONS]
 
@@ -2215,8 +2207,8 @@ Options:
         """Render rows for the terminal.
 
         Args:
-          rows: Rows.
-          width: Width.
+          rows: Issue rows grouped by status.
+          width: Terminal width for formatting.
 
         """
         if not rows:
@@ -2251,7 +2243,6 @@ class Cost(Command):
     """Show the agent and resource cost of one row, optionally over its subtree."""
 
     names = ("cost",)
-
     help = """\
 Usage: trax cost KIND SEQ [OPTIONS]
 
@@ -2308,7 +2299,6 @@ class Send(Command):
     """Send a message into a live agent session by routing name."""
 
     names = ("send",)
-
     help = """\
 Usage: trax send @ACTOR[:ROOM] TEXT...
 
@@ -2353,7 +2343,6 @@ class Version(Command):
     """Show the running server's build SHA, for stale-deploy detection."""
 
     names = ("version",)
-
     help = """\
 Usage: trax version
 

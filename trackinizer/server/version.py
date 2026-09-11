@@ -38,7 +38,7 @@ def build_sha() -> str:
     the at-most-one ``git`` subprocess happen on the first call only.
 
     Returns:
-      env: The str.
+      sha: 40-char hex SHA of HEAD, or "unknown" if unavailable.
 
     """
     # Strip before the truthiness test: a whitespace-only value is truthy

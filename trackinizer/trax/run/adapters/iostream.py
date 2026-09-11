@@ -64,34 +64,17 @@ class IOStreamAdapter:
     """
 
     name: str = "sh"
-
     cli_binary: str = ""
-
     whole_file: bool = False
-
     stream_source: bool = True
-
     capture: Capture = "pipe"
 
     def session_dirs(self) -> Iterable[Path]:
-        """Return the directories this CLI writes sessions under.
-
-        Returns:
-          result: The Iterable[Path].
-
-        """
+        """Return the directories this CLI writes sessions under."""
         return ()
 
     def matches_session_file(self, path: Path) -> bool:
-        """Return whether ``path`` is one of this CLI's session files.
-
-        Args:
-          path: Path.
-
-        Returns:
-          result: The bool.
-
-        """
+        """Return whether ``path`` is one of this CLI's session files."""
         del path
         return False
 
@@ -109,10 +92,10 @@ class IOStreamAdapter:
         """Return the session id encoded in ``path``.
 
         Args:
-          path: Path.
+          path: File path to extract session ID from.
 
         Returns:
-          result: The str | None.
+          result: Session ID string, or None if not present in this adapter.
 
         """
         del path
@@ -128,7 +111,7 @@ class IOStreamAdapter:
         does not, which is why the runner tags it rather than this reader.
 
         Returns:
-          result: The Tail.
+          result: Tail reader consuming line-delimited plaintext.
 
         """
         return Tail(scrape.normalize)
@@ -172,7 +155,7 @@ class LineCapture:
         """Buffer ``chunk``, delivering each completed line.
 
         Args:
-          chunk: Chunk.
+          chunk: Bytes to append to buffer (delivers complete lines).
 
         """
         self._buffer.extend(chunk)

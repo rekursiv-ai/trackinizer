@@ -77,29 +77,17 @@ class Config:
     """
 
     engine: Literal["pglite", "pg"] = "pglite"
-
     datadir: Path | None = None
-
     ephemeral: bool = False
-
     pglite_tcp: bool = False
-
     dsn: str = ""
-
     embedder: str = "stub"
-
     web: bool = False
-
     oauth_google_client_id: str | None = None
-
     oauth_google_client_secret: str | None = None
-
     oauth_redirect_uri: str | None = None
-
     session_secret: str | None = None
-
     session_max_age_seconds: int = _DEFAULT_SESSION_MAX_AGE_SECONDS
-
     auth_disabled: bool = False
 
     @classmethod
@@ -107,7 +95,7 @@ class Config:
         """Build from environment variables.
 
         Returns:
-          result: The Self.
+          result: Config with settings from TRACKINIZER_* env vars.
 
         """
         return cls(
@@ -137,10 +125,10 @@ class Config:
         """Build from parsed CLI flags.
 
         Args:
-          args: Args.
+          args: Parsed arguments with engine, datadir, ephemeral, etc. fields.
 
         Returns:
-          result: The Self.
+          result: Config with settings from args; OAuth secrets from environment only.
 
         """
         return cls(
@@ -174,7 +162,7 @@ def session_max_age_from_env() -> int:
     session instantly.
 
     Returns:
-      result: The int.
+      result: Session TTL in seconds; always > 0 or raises ConfigError.
 
     Raises:
         ConfigError: The value is set but is not a positive integer. Callers
@@ -198,15 +186,7 @@ def session_max_age_from_env() -> int:
 
 
 def parse_engine(value: str) -> Literal["pglite", "pg"]:
-    """Parse the engine name.
-
-    Args:
-      value: Value.
-
-    Returns:
-      result: The Literal['pglite', 'pg'].
-
-    """
+    """Parse the engine name."""
     if value == "pglite":
         return "pglite"
     if value == "pg":
@@ -218,10 +198,10 @@ def build_engine(config: Config | None = None) -> DatabaseEngine:
     """Build the database engine.
 
     Args:
-      config: Config.
+      config: Config object; if None, loads from environment via Config.from_env().
 
     Returns:
-      result: The DatabaseEngine.
+      result: SQLAlchemy engine configured per the Config settings.
 
     """
     if config is None:
@@ -251,15 +231,7 @@ def build_engine(config: Config | None = None) -> DatabaseEngine:
 
 
 def build_embedder(name: str) -> Embedder:
-    """Build the embedder backend.
-
-    Args:
-      name: Name.
-
-    Returns:
-      result: The Embedder.
-
-    """
+    """Build the embedder backend."""
     if name == "stub":
         return StubEmbedder()
     raise ConfigError(f"unknown embedder {name!r}")

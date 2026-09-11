@@ -39,7 +39,7 @@ def regex_failures_as_400() -> Generator[None]:
     relabelled as the caller's mistake.
 
     Yields:
-      item: Each yielded value.
+      control: Yields once to begin, then resumes after context body.
 
     """
     try:

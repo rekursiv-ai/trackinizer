@@ -48,7 +48,6 @@ _TEST_IDENTITY = AuthIdentity(
 @dataclass(slots=True, kw_only=True)
 class _State:
     store: object
-
     engine: object
 
 
@@ -997,7 +996,6 @@ class _SessionStub:
     """Minimal stand-in for ``Config`` -- exposes the two attrs web.py reads."""
 
     session_secret: str | None = "test-secret"  # noqa: S105 -- test fixture.
-
     session_max_age_seconds: int = 600
 
 

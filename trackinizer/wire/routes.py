@@ -107,7 +107,7 @@ def inquiry_field_routes() -> tuple[InquiryFieldRoute, ...]:
     are defined.
 
     Returns:
-      result: The tuple[InquiryFieldRoute, ...].
+      result: Tuple of routes, one per editable inquiry field (excludes non-routable).
 
     """
     seen: dict[str, InquiryFieldRoute] = {}
@@ -130,7 +130,7 @@ def field_owner_kind() -> dict[str, str]:
     field URL from the field name alone, with no parallel table.
 
     Returns:
-      result: The dict[str, str].
+      result: Dict from field name to inquiry kind name (e.g. "paper" -> "paper").
 
     """
     return {
@@ -149,10 +149,10 @@ def inquiry_field_path(field: str) -> str:
     the Python ``paper.source`` and CLI ``trax paper`` structure.
 
     Args:
-      field: Field.
+      field: Inquiry field name to look up.
 
     Returns:
-      result: The str.
+      result: Path template with {target_id} placeholder; ready to format.
 
     """
     owner = field_owner_kind().get(field)
@@ -193,7 +193,7 @@ def edge_field_routes() -> tuple[EdgeFieldRoute, ...]:
     columns, so the flat view equals the raw column set.
 
     Returns:
-      result: The tuple[EdgeFieldRoute, ...].
+      result: Tuple of routes for each edge annotation field.
 
     """
     return tuple(
@@ -209,15 +209,7 @@ def edge_field_routes() -> tuple[EdgeFieldRoute, ...]:
 
 
 def edge_field_path(field: str) -> str:
-    """Return the edge annotation path template for ``field``.
-
-    Args:
-      field: Field.
-
-    Returns:
-      result: The str.
-
-    """
+    """Return the edge annotation path template for ``field``."""
     return f"/api/edges/{{from_id}}/{{edge_kind}}/{{to_id}}/{field}"
 
 

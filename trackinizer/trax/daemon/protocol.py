@@ -131,7 +131,7 @@ class Request:
         """Serialize to a JSON-compatible mapping.
 
         Returns:
-          result: The bytes.
+          result: UTF-8 encoded JSON bytes.
 
         """
         return json.dumps(
@@ -152,10 +152,10 @@ class Request:
         """Parse one request frame.
 
         Args:
-          raw: Raw.
+          raw: JSON bytes (not length-prefixed; frame already unwrapped).
 
         Returns:
-          result: The Self.
+          request: Parsed request object.
 
         Raises:
           ProtocolVersionError: The peer speaks a different frame shape. A
@@ -213,7 +213,7 @@ class Response:
         """Serialize to a JSON-compatible mapping.
 
         Returns:
-          result: The bytes.
+          frame: UTF-8 JSON bytes, length-prefixed in wire protocol.
 
         """
         return json.dumps(
@@ -235,10 +235,10 @@ class Response:
         exit status proceeds as though the command worked.
 
         Args:
-          raw: Raw.
+          raw: JSON bytes (not length-prefixed; frame already unwrapped).
 
         Returns:
-          result: The Self.
+          response: Parsed response object.
 
         Raises:
           ValueError: The frame is not a well-formed response.
@@ -257,13 +257,7 @@ class ProtocolVersionError(ValueError):
 
 
 def write_frame(conn: socket.socket, payload: bytes) -> None:
-    """Send one length-prefixed frame.
-
-    Args:
-      conn: Conn.
-      payload: Payload.
-
-    """
+    """Send one length-prefixed frame."""
     conn.sendall(len(payload).to_bytes(_LENGTH_BYTES, "big") + payload)
 
 
@@ -271,10 +265,10 @@ def read_frame(conn: socket.socket) -> bytes:
     """Read exactly one length-prefixed frame.
 
     Args:
-      conn: Conn.
+      conn: Connected socket.
 
     Returns:
-      result: The bytes.
+      frame: Message bytes following length prefix.
 
     Raises:
       ConnectionError: The peer closed before the frame completed.
@@ -301,7 +295,7 @@ def socket_path() -> Path:
     whoever spawned it.
 
     Returns:
-      result: The Path.
+      path: AF_UNIX socket path (may be symlink to shortened location).
 
     """
     digest = hashlib.blake2b(str(config_dir()).encode(), digest_size=8).hexdigest()
@@ -342,7 +336,7 @@ def package_root() -> Path:
     or a wire contract -- output that looks correct and is not.
 
     Returns:
-      result: The Path.
+      root: Parent of the distribution's top-level package directory.
 
     """
     return _CWD.parents[1]
@@ -358,10 +352,10 @@ def source_version(root: Path) -> str:
     sub-millisecond) and without importing anything.
 
     Args:
-      root: Root.
+      root: Package root directory.
 
     Returns:
-      result: The str.
+      version: Hex digest of blake2b hash over all .py files.
 
     """
     digest = hashlib.blake2b(digest_size=16)

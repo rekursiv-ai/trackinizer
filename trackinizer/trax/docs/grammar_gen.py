@@ -266,27 +266,22 @@ def render_grammar() -> str:
     file self-sufficient.
 
     Returns:
-      result: The str.
+      result: Complete Lark grammar text (header + terminals + rules).
 
     """
     return f"{_STRUCTURE}\n{_terminal_block()}\n\n{_semantics_block()}\n"
 
 
 def grammar_path() -> Path:
-    """Return the committed grammar.lark, alongside this generator in trax/docs/.
-
-    Returns:
-      result: The Path.
-
-    """
-    return _CWD / ("grammar.lark")
+    """Return the committed grammar.lark, alongside this generator in trax/docs/."""
+    return _CWD / "grammar.lark"
 
 
 def main() -> int:
     """Regenerate grammar.lark in place; report whether it changed.
 
     Returns:
-      result: The int.
+      result: 0 on success (regenerated or already current).
 
     """
     path = grammar_path()

@@ -103,10 +103,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Open the engine, build the ``Store``, and apply the schema for the app's lifetime.
 
     Args:
-      app: App.
+      app: FastAPI application instance.
 
     Yields:
-      item: Each yielded value.
+      nothing: Yields control after startup, resumes on shutdown.
 
     """
     config = cast(Config, getattr(app.state, "config", None)) or Config.from_env()
@@ -198,19 +198,12 @@ def _request_id_from_scope(scope: Scope) -> str:
 @dataclass(slots=True, kw_only=True)
 class _RequestLogSpan:
     downstream: Send
-
     request_id: str
-
     method: str
-
     path: str
-
     started: float
-
     status_code: int = 0
-
     response_start_sec: float = 0.0
-
     logged: bool = False
 
     @classmethod
@@ -288,16 +281,7 @@ app = _build_app()
 
 @app.exception_handler(ConflictError)
 async def conflict_handler(request: Request, exc: ConflictError) -> JSONResponse:
-    """Translate a ``ConflictError`` into HTTP 409.
-
-    Args:
-      request: Request.
-      exc: Exc.
-
-    Returns:
-      result: The JSONResponse.
-
-    """
+    """Translate a ``ConflictError`` into HTTP 409."""
     del request
     return JSONResponse(
         status_code=409,
@@ -313,11 +297,11 @@ async def validation_handler(request: Request, exc: ValidationError) -> JSONResp
     422) -- distinct from a ``ConflictError`` (409) clash with existing state.
 
     Args:
-      request: Request.
-      exc: Exc.
+      request: FastAPI Request object (unused).
+      exc: ValidationError with detail and code fields.
 
     Returns:
-      result: The JSONResponse.
+      response: JSON response with 422 status, detail, and code.
 
     """
     del request
@@ -337,11 +321,11 @@ async def schema_handler(request: Request, exc: SchemaError) -> JSONResponse:
     ``ValueError`` -- which matched no handler and so surfaced as a 500.
 
     Args:
-      request: Request.
-      exc: Exc.
+      request: FastAPI Request object (unused).
+      exc: SchemaError from codec validation.
 
     Returns:
-      result: The JSONResponse.
+      response: JSON response with 422 status, detail, and code='schema'.
 
     """
     del request
@@ -360,11 +344,11 @@ async def not_found_handler(request: Request, exc: NotFoundError) -> JSONRespons
     while a genuine state clash still falls through to 409.
 
     Args:
-      request: Request.
-      exc: Exc.
+      request: FastAPI Request object (unused).
+      exc: NotFoundError with detail and code fields.
 
     Returns:
-      result: The JSONResponse.
+      response: JSON response with 404 status, detail, and code.
 
     """
     del request
@@ -389,11 +373,11 @@ async def fk_violation_handler(
     caller to know the reference was bad.
 
     Args:
-      request: Request.
-      exc: Exc.
+      request: FastAPI Request object (unused).
+      exc: ForeignKeyViolationError from asyncpg (unused).
 
     Returns:
-      result: The JSONResponse.
+      response: JSON response with 409 status and generic detail message.
 
     """
     del request, exc
@@ -417,11 +401,11 @@ async def check_violation_handler(
     internal schema detail the client must not see (REV-OPUS-03).
 
     Args:
-      request: Request.
-      exc: Exc.
+      request: FastAPI Request object (unused).
+      exc: CheckViolationError from asyncpg (unused).
 
     Returns:
-      result: The JSONResponse.
+      response: JSON response with 409 status and generic detail message.
 
     """
     del request, exc
@@ -442,11 +426,11 @@ async def unique_violation_handler(
     values, internal detail the client must not see (REV-OPUS-03).
 
     Args:
-      request: Request.
-      exc: Exc.
+      request: FastAPI Request object (unused).
+      exc: UniqueViolationError from asyncpg (unused).
 
     Returns:
-      result: The JSONResponse.
+      response: JSON response with 409 status and generic detail message.
 
     """
     del request, exc

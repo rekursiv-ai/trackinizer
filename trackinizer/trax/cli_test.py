@@ -54,7 +54,7 @@ def test_cli_import_does_not_load_metric_wire_modules() -> None:
 @pytest.mark.cli_python_subprocess
 def test_module_entrypoint_is_directly_executable() -> None:
     result = subprocess.run(  # noqa: S603 -- test executes a fixed local entrypoint.
-        [str(_CWD / ("__main__.py")), "help"],
+        [str(_CWD / "__main__.py"), "help"],
         check=False,
         capture_output=True,
         text=True,

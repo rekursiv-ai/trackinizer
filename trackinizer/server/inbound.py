@@ -38,9 +38,7 @@ class Inbound:
     """One queued inbound message: text, attested sender, and routed room."""
 
     text: str
-
     source: str | None = None
-
     room: str | None = None
     """The room a routed send was scoped to; threads into the ``[room]
     sender:`` injection prefix. ``None`` for a direct (session-id) enqueue."""
@@ -51,7 +49,6 @@ class _Waiter:
     """One caller awaiting a message, with the loop that must wake it."""
 
     loop: asyncio.AbstractEventLoop
-
     event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
@@ -66,22 +63,17 @@ class InboundQueue:
     """
 
     max_per_session: int = 256
-
     max_seen_keys: int = 4_096
-
     _queues: dict[UUID, deque[Inbound]] = field(
         default_factory=lambda: defaultdict(deque)
     )
-
     _seen_sends: OrderedDict[UUID, list[UUID]] = field(default_factory=OrderedDict)
-
     # Callers blocked in ``await_messages``, by session. A list, not one event
     # per session: two waiters must both wake, or the second hangs to its
     # timeout because the first consumed the only wakeup.
     _waiters: dict[UUID, list[_Waiter]] = field(
         default_factory=lambda: defaultdict(list)
     )
-
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def send_once(
@@ -106,8 +98,8 @@ class InboundQueue:
         instead of replaying an empty receipt.
 
         Args:
-          key: Key.
-          targets: Targets.
+          key: Idempotency key (UUID or None).
+          targets: (session_id, message) pairs to enqueue.
 
         Returns:
           delivered: the session ids enqueued to (or the original receipt on
@@ -136,11 +128,11 @@ class InboundQueue:
         unattended session cannot leak memory.
 
         Args:
-          session_id: Session id.
-          message: Message.
+          session_id: Session to queue on.
+          message: Inbound message (ServerMessage or similar).
 
         Returns:
-          result: The int.
+          result: Pending message count for this session.
 
         """
         with self._lock:
@@ -164,15 +156,7 @@ class InboundQueue:
             )
 
     def drain(self, session_id: UUID) -> list[Inbound]:
-        """Remove and return all pending messages for ``session_id``, oldest first.
-
-        Args:
-          session_id: Session id.
-
-        Returns:
-          result: The list[Inbound].
-
-        """
+        """Remove and return all pending messages for ``session_id``, oldest first."""
         with self._lock:
             queue = self._queues.pop(session_id, None)
             return list(queue) if queue else []
@@ -236,15 +220,7 @@ class InboundQueue:
                 waiter.loop.call_soon_threadsafe(waiter.event.set)
 
     def pending(self, session_id: UUID) -> int:
-        """How many messages are queued for ``session_id`` (test/inspection).
-
-        Args:
-          session_id: Session id.
-
-        Returns:
-          result: The int.
-
-        """
+        """How many messages are queued for ``session_id`` (test/inspection)."""
         with self._lock:
             queue = self._queues.get(session_id)
             return len(queue) if queue else 0

@@ -171,10 +171,10 @@ def validate_clause(field: str, op: str, value: str) -> str | None:
     Args:
       field: The filter field, canonical or a CLI alias.
       op: A ``FilterOp`` spelling, or anything a structural filter carried.
-      value: The operand.
+      value: The filter operand to validate.
 
     Returns:
-      message: Why the clause is refused, or ``None`` when it is admissible.
+      message: Rejection reason if the clause is invalid, else None.
 
     """
     if op not in FILTER_OPS:
@@ -198,15 +198,7 @@ def validate_clause(field: str, op: str, value: str) -> str | None:
 
 
 def is_nan(value: str) -> bool:
-    """Whether ``value`` parses as a NaN, whatever its spelling.
-
-    Args:
-      value: Value.
-
-    Returns:
-      result: The bool.
-
-    """
+    """Whether ``value`` parses as a NaN, whatever its spelling."""
     parsed = as_numeric(value)
     return parsed is not None and parsed.is_nan()
 
@@ -261,10 +253,10 @@ def validate_regex_dialect(pattern: str) -> str | None:
     always agreed.
 
     Args:
-      pattern: Pattern.
+      pattern: Regex pattern to check for dialect disagreements.
 
     Returns:
-      result: The str | None.
+      result: Rejection reason if pattern has ambiguous escapes, else None.
 
     """
     for escape in escapes(pattern):
@@ -338,11 +330,11 @@ def validate_presence_op(field: str, op: FilterOp) -> str | None:
     ``None`` when the pairing is valid.
 
     Args:
-      field: Field.
-      op: Op.
+      field: Canonical SQL column name.
+      op: Filter operator (isnull/notnull for presence tests).
 
     Returns:
-      result: The str | None.
+      result: Error message if op is invalid for field, else None.
 
     """
     if op in VALUELESS_FILTER_OPS and field in NON_NULLABLE_COLUMNS:
@@ -398,10 +390,10 @@ def canonical_filter_field(field: str) -> str:
     genuinely-unknown fields with a precise error.
 
     Args:
-      field: Field.
+      field: Filter field name or CLI alias.
 
     Returns:
-      result: The str.
+      result: Canonical SQL column name from FILTER_FIELD_ALIASES.
 
     """
     return FILTER_FIELD_ALIASES.get(field, field)
@@ -417,9 +409,7 @@ class Filter:
     """
 
     field: str
-
     op: FilterOp
-
     value: str
 
     def __post_init__(self) -> None:
@@ -428,15 +418,7 @@ class Filter:
 
 
 def folds_case(pattern: str) -> bool:
-    """Whether ``pattern`` turns on case-insensitive matching.
-
-    Args:
-      pattern: Pattern.
-
-    Returns:
-      result: The bool.
-
-    """
+    """Whether ``pattern`` turns on case-insensitive matching."""
     return any(
         is_flag_run(found.body, scoped=found.scoped, flag="i")
         for found in paren_extensions(pattern)

@@ -260,21 +260,25 @@ class _EdgeMixin(_CascadeAuditMixin):
         validates) changes.
 
         Args:
-          conn: Conn.
-          subject_id: Subject id.
-          subject_kind: Subject kind.
-          to_id: To id.
-          edge_kind: Edge kind.
-          api_key_id: Api key id.
-          actor: Actor.
-          caused_by: Caused by.
-          priority: Priority.
-          valence: Valence.
-          require_to_kind: Require to kind.
-          cite_peer_as_from: Cite peer as from.
+          conn: Database connection for this operation.
+          subject_id: UUID of the originating Inquiry (Belief, WebResult, etc).
+          subject_kind: Kind type of the subject (Belief, WebResult, etc).
+          to_id: UUID of the cited peer Inquiry (the target of the edge).
+          edge_kind: Type of edge (proves, favors, decomposes, etc).
+          api_key_id: API key authorizing this change, if any.
+          actor: Who initiated this change (human, agent, system).
+          caused_by: Event UUID that triggered this audit.
+          priority: Sequencing rank for structural edges; None leaves column
+            NULL.
+          valence: Citation weight for proves/favors edges; None leaves column
+            NULL.
+          require_to_kind: If supplied, verify the cited peer's actual kind
+            matches before inserting.
+          cite_peer_as_from: Store the edge as peer -> subject instead of
+            subject -> peer.
 
         Returns:
-          result: The bool.
+          inserted: True iff the edge was newly created.
 
         """
         # ``to_id`` is always the cited peer regardless of stored direction;
@@ -405,20 +409,22 @@ class _EdgeMixin(_CascadeAuditMixin):
         new rows). The caller then owns ``tx`` / ``notify_after_commit``.
 
         Args:
-          from_id: From id.
-          to_id: To id.
-          edge_kind: Edge kind.
-          priority: Priority.
-          note: Note.
-          valence: Valence.
-          labels: Labels.
-          reason: Reason.
-          api_key_id: Api key id.
-          actor: Actor.
-          conn: Conn.
+          from_id: UUID of the edge origin.
+          to_id: UUID of the edge target.
+          edge_kind: Type of edge (proves, favors, decomposes, etc).
+          priority: Rank for structural edges; None means unset/leave unchanged.
+          note: Freetext annotation; empty string means unset/leave unchanged.
+          valence: Citation weight for weighted edges; None means unset/leave
+            unchanged.
+          labels: Tags on this edge; empty means unset/leave unchanged.
+          reason: Justification for this change.
+          api_key_id: API key authorizing this change, if any.
+          actor: Who initiated this change (human, agent, system).
+          conn: Existing transaction to join; None means own transaction.
 
         Returns:
-          result: The tuple[UUID | None, bool].
+          change_id: Event UUID of the change, or None if no-op.
+          created: True iff this is a new edge.
 
         """
         if conn is not None:
@@ -485,20 +491,24 @@ class _EdgeMixin(_CascadeAuditMixin):
         whole-list ``labels`` overwrite.
 
         Args:
-          from_id: From id.
-          to_id: To id.
-          edge_kind: Edge kind.
-          priority: Priority.
-          note: Note.
-          valence: Valence.
-          labels: Labels.
-          labels_delta: Labels delta.
-          reason: Reason.
-          api_key_id: Api key id.
-          actor: Actor.
+          from_id: UUID of the edge origin.
+          to_id: UUID of the edge target.
+          edge_kind: Type of edge (proves, favors, decomposes, etc).
+          priority: New rank for structural edges, None to clear, or ABSENT to
+            leave unchanged.
+          note: New freetext, None to clear, or ABSENT to leave unchanged.
+          valence: New citation weight, None to clear, or ABSENT to leave
+            unchanged.
+          labels: Wholesale label replacement, None to clear, or ABSENT to leave
+            unchanged.
+          labels_delta: Single label to add (True) or remove (False), exclusive
+            with labels.
+          reason: Justification for this change.
+          api_key_id: API key authorizing this change, if any.
+          actor: Who initiated this change (human, agent, system).
 
         Returns:
-          result: The UUID | None.
+          change_id: Event UUID of the change, or None if no-op.
 
         """
         async with (
@@ -721,12 +731,12 @@ class _EdgeMixin(_CascadeAuditMixin):
         ``GET /api/edges/<from>/<kind>/<to>`` (``docs/api.md`` 1.8).
 
         Args:
-          from_id: From id.
-          to_id: To id.
-          edge_kind: Edge kind.
+          from_id: UUID of the edge origin.
+          to_id: UUID of the edge target.
+          edge_kind: Type of edge (proves, favors, decomposes, etc).
 
         Returns:
-          result: The Edge | None.
+          edge: The edge, or None if not found.
 
         """
         async with self.engine.acquire() as conn:
@@ -754,16 +764,16 @@ class _EdgeMixin(_CascadeAuditMixin):
         """Add ``label`` to an edge's labels; idempotent (no-op if present).
 
         Args:
-          from_id: From id.
-          to_id: To id.
-          edge_kind: Edge kind.
-          label: Label.
-          reason: Reason.
-          api_key_id: Api key id.
-          actor: Actor.
+          from_id: UUID of the edge origin.
+          to_id: UUID of the edge target.
+          edge_kind: Type of edge (proves, favors, decomposes, etc).
+          label: Tag to add to this edge's label set.
+          reason: Justification for this change.
+          api_key_id: API key authorizing this change, if any.
+          actor: Who initiated this change (human, agent, system).
 
         Returns:
-          result: The UUID | None.
+          change_id: Event UUID of the change, or None if no-op.
 
         """
         return await self._mutate_edge_label(
@@ -791,16 +801,16 @@ class _EdgeMixin(_CascadeAuditMixin):
         """Remove ``label`` from an edge's labels; idempotent (no-op if absent).
 
         Args:
-          from_id: From id.
-          to_id: To id.
-          edge_kind: Edge kind.
-          label: Label.
-          reason: Reason.
-          api_key_id: Api key id.
-          actor: Actor.
+          from_id: UUID of the edge origin.
+          to_id: UUID of the edge target.
+          edge_kind: Type of edge (proves, favors, decomposes, etc).
+          label: Tag to remove from this edge's label set.
+          reason: Justification for this change.
+          api_key_id: API key authorizing this change, if any.
+          actor: Who initiated this change (human, agent, system).
 
         Returns:
-          result: The UUID | None.
+          change_id: Event UUID of the change, or None if no-op.
 
         """
         return await self._mutate_edge_label(

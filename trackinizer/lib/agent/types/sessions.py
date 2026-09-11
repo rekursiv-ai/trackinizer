@@ -116,19 +116,12 @@ class TurnContext:
     """
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     permission: str | None = None
-
     model: str | None = None
-
     effort: ThinkingEffort | None = None
-
     summary_kind: SummaryKind | None = None
-
     encoding: JSON = field(default_factory=dict[str, JSONValue])
-
     extra: JSON = field(default_factory=dict[str, JSONValue])
 
 
@@ -137,7 +130,6 @@ class Attachment:
     """Carry one binary message attachment and its media type."""
 
     mime_descriptor: str
-
     data: bytes
 
 
@@ -146,13 +138,9 @@ class UserMessage:
     """Represent prose and attachments supplied by the user."""
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     content: str | None = None
-
     attachments: tuple[Attachment, ...] = ()
-
     extra: JSON = field(default_factory=dict[str, JSONValue])
 
 
@@ -161,13 +149,9 @@ class AssistantMessage:
     """Represent prose and attachments emitted by the assistant."""
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     content: str | None = None
-
     attachments: tuple[Attachment, ...] = ()
-
     extra: JSON = field(default_factory=dict[str, JSONValue])
 
 
@@ -176,15 +160,10 @@ class Thinking:
     """Represent readable, sealed, or summarized model reasoning."""
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     content: str | None = None
-
     encrypted: str | None = None
-
     summary: str | None = None
-
     extra: JSON = field(default_factory=dict[str, JSONValue])
 
 
@@ -193,15 +172,10 @@ class ToolCall:
     """Represent one invocation requested by the model."""
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     call_id: str
-
     name: str
-
     arguments: JSON = field(default_factory=dict[str, JSONValue])
-
     extra: JSON = field(default_factory=dict[str, JSONValue])
 
 
@@ -210,11 +184,8 @@ class ToolResult:
     """Identify the tool call answered by an observation."""
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     call_id: str
-
     extra: JSON = field(default_factory=dict[str, JSONValue])
 
 
@@ -223,7 +194,6 @@ class UncategorizedToolResult(ToolResult):
     """Hold a tool observation whose operation is not represented."""
 
     content: str | None = None
-
     attachments: tuple[Attachment, ...] = ()
 
 
@@ -232,11 +202,8 @@ class ShellCommandResult(ToolResult):
     """Report a completed shell command."""
 
     command: tuple[str, ...] | None = None
-
     stdout: str = ""
-
     stderr: str = ""
-
     exit_code: int | None = None
 
 
@@ -264,9 +231,7 @@ class FileReadResult(ToolResult):
     """
 
     path: str | None = None
-
     content: str | None = None
-
     ranges: tuple[tuple[int | None, int | None], ...] = ()
 
 
@@ -275,7 +240,6 @@ class FileWriteResult(ToolResult):
     """Report content written to a file."""
 
     path: str | None = None
-
     content: str | None = None
 
 
@@ -321,17 +285,11 @@ class Splice:
     """
 
     before: str | None = None
-
     after: str | None = None
-
     lead: str | None = None
-
     trail: str | None = None
-
     start: int | None = None
-
     count: int | None = None
-
     bare: frozenset[str] = frozenset()
 
 
@@ -363,9 +321,7 @@ class WebSearchResult:
     """Represent one result row from a web search."""
 
     url: str | None = None
-
     title: str | None = None
-
     snippet: str | None = None
 
 
@@ -374,9 +330,7 @@ class WebSearchResults(ToolResult):
     """Report the rows returned by a web search."""
 
     query: str | None = None
-
     duration_sec: float | None = None
-
     content: tuple[WebSearchResult, ...] = ()
 
 
@@ -385,13 +339,9 @@ class WebFetchResult(ToolResult):
     """Report content fetched from the web."""
 
     url: str | None = None
-
     content: str | None = None
-
     code: int | None = None
-
     duration_sec: float | None = None
-
     size: int | None = None
 
 
@@ -400,23 +350,14 @@ class AgentStatusResult(ToolResult):
     """Report the state or final output of a delegated agent."""
 
     agent_id: str | None = None
-
     agent_kind: str | None = None
-
     prompt: str | None = None
-
     content: str | None = None
-
     model: str | None = None
-
     state: str | None = None
-
     tokens: int | None = None
-
     duration_sec: float | None = None
-
     tool_calls: int | None = None
-
     output_file: str | None = None
 
 
@@ -425,15 +366,10 @@ class SystemMessage:
     """Represent instructions or status emitted by the harness."""
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     content: str | None = None
-
     attachments: tuple[Attachment, ...] = ()
-
     subtype: str | None = None
-
     extra: JSON = field(default_factory=dict[str, JSONValue])
 
 
@@ -442,13 +378,9 @@ class TokenUsage:
     """Report provider token accounting and rate limits."""
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     info: JSON = field(default_factory=dict[str, JSONValue])
-
     rate_limits: JSON = field(default_factory=dict[str, JSONValue])
-
     extra: JSON = field(default_factory=dict[str, JSONValue])
 
 
@@ -457,13 +389,9 @@ class ContextState:
     """Represent context injected into the model-visible state."""
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     kind: str = ""
-
     content: str | None = None
-
     extra: JSON = field(default_factory=dict[str, JSONValue])
 
 
@@ -501,11 +429,8 @@ class ContextCompaction:
     """
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     summary: str | None = None
-
     extra: JSON = field(default_factory=dict[str, JSONValue])
 
 
@@ -541,17 +466,11 @@ class ContextClear:
     """
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     cleared_session_id: str | None = None
-
     system_prompt: str | None = None
-
     summary: str | None = None
-
     history: tuple[SessionRecord, ...] = ()
-
     extra: JSON = field(default_factory=dict[str, JSONValue])
 
 
@@ -560,17 +479,11 @@ class AgentToAgentMessage:
     """Represent a message exchanged between delegated agents."""
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     content: str | None = None
-
     attachments: tuple[Attachment, ...] = ()
-
     sender: str | None = None
-
     recipient: str | None = None
-
     extra: JSON = field(default_factory=dict[str, JSONValue])
 
 
@@ -579,11 +492,8 @@ class UncategorizedRecord:
     """Preserve a provider record with no neutral representation."""
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     kind: str
-
     payload: JSON = field(default_factory=dict[str, JSONValue])
 
 

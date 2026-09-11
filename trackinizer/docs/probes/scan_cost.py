@@ -35,7 +35,7 @@ def scan_once(adapter: Adapter) -> tuple[int, int]:
     """One full discovery sweep, mirroring ``_scan_and_read``'s walk.
 
     Args:
-      adapter: Adapter.
+      adapter: Session adapter with dirs() and matches_session_file().
 
     Returns:
       dirs: How many session directories the adapter offered.
@@ -62,8 +62,8 @@ def report(*, tick_sec: float, repeats: int) -> None:
     NOT a CPU-utilization figure.
 
     Args:
-      tick_sec: Tick sec.
-      repeats: Repeats.
+      tick_sec: Drain poll interval in seconds for occupancy calculation.
+      repeats: Number of iterations per adapter to measure.
 
     """
     print(f"{'adapter':8} {'dirs':>6} {'matched':>8} {'median':>10} {'occupancy':>10}")
@@ -84,9 +84,8 @@ def report(*, tick_sec: float, repeats: int) -> None:
 def main() -> int:
     """Run the program; return the process exit code.
 
-
     Returns:
-      result: The int.
+      result: Process exit code (0 on success).
 
     """
     parser = argparse.ArgumentParser(

@@ -33,10 +33,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run one ``trax`` invocation, using the daemon when it can.
 
     Args:
-      argv: Argv.
+      argv: Command-line arguments (or sys.argv[1:] if None).
 
     Returns:
-      exit_code: The process exit status.
+      exit_code: Process exit status.
 
     """
     args = list(sys.argv[1:] if argv is None else argv)
