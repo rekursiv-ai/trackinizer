@@ -37,7 +37,7 @@ from trackinizer.wire.wire_sessions import SessionStart
 # test asserts on the request that arrives in the handler.
 def _install_mock_transport(
     client: Client,
-    handler: Any,
+    handler: Any,  # noqa: ANN401 -- forwarded to an upstream Any.
 ) -> None:
     """Replace the client's transport with one that calls ``handler``."""
     client._http.close()

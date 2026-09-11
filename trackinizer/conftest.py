@@ -63,7 +63,7 @@ def make_conn() -> AsyncMock:
     field_default: list[Any] = [None]
     field_queue: list[Any] = []
 
-    async def fetchrow(sql: str, *args: Any) -> Any:
+    async def fetchrow(sql: str, *args: Any) -> Any:  # noqa: ANN401 -- forwarded to an upstream Any.
         if "marginal_cost_agent_usd" in sql and "RETURNING" in sql:
             agent = float(args[0]) if args else 0.0
             resource = float(args[1]) if len(args) > 1 else 0.0

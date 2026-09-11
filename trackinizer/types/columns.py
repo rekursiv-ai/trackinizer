@@ -26,12 +26,12 @@ class Row(Protocol):
     satisfy this, so the row mappers never care which one they got.
     """
 
-    def __getitem__(self, key: str, /) -> Any: ...
+    def __getitem__(self, key: str, /) -> Any: ...  # noqa: ANN401 -- mirrors asyncpg.Record, whose column values are untyped.
     def __contains__(self, x: object, /) -> bool: ...
     @overload
-    def get(self, key: str) -> Any | None: ...
+    def get(self, key: str) -> Any | None: ...  # noqa: ANN401 -- mirrors asyncpg.Record, whose column values are untyped.
     @overload
-    def get(self, key: str, default: Any) -> Any: ...
+    def get(self, key: str, default: Any) -> Any: ...  # noqa: ANN401 -- mirrors asyncpg.Record, whose column values are untyped.
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

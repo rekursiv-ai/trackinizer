@@ -38,7 +38,7 @@ class GeminiAdapter:
     @property
     def _tmp_dir(self) -> Path:
         # Resolve ``$HOME`` per call, not at import (see ClaudeAdapter).
-        return Path.home() / ".gemini" / "tmp"
+        return Path.home() / ".gemini" / "tmp"  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-lint: ignore[xdg-literal] -- vendor CLI's fixed home path, not ours (AGENTS.md rule 3)
 
     def session_dirs(self) -> Iterable[Path]:
         """Return the directories this CLI writes sessions under."""

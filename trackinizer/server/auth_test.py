@@ -159,7 +159,7 @@ def _request_with(
     cookies: dict[str, str] | None = None,
     config: Config | None = None,
     store: Store | None = None,
-) -> Any:
+) -> Any:  # noqa: ANN401 -- forwards an upstream Any.
     """Build a fake :class:`fastapi.Request` carrying one header + the engine."""
     request = MagicMock()
     headers: dict[str, str] = {}
@@ -1055,7 +1055,7 @@ class TestBootstrapAdmin:
         conn = make_conn()
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin"])
 
-        async def boom(*args: object, **kwargs: object) -> Any:
+        async def boom(*args: object, **kwargs: object) -> Any:  # noqa: ANN401 -- forwards an upstream Any.
             del args, kwargs
             raise RuntimeError("simulated api_key insert failure")
 

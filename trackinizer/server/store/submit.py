@@ -76,7 +76,7 @@ class _SubmitOnConn(Protocol):
 
     def __call__(
         self,
-        req: Any,
+        req: Any,  # noqa: ANN401 -- see the class docstring: a Protocol parameter is contravariant.
         *,
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
