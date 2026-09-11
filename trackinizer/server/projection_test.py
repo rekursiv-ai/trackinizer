@@ -38,8 +38,8 @@ def _edge(
     valence: float | None = None,
     note: str | None = None,
     labels: tuple[str, ...] | None = None,
-) -> Any:
-    """A full edge row (every selected column present), as the projection sees."""
+) -> object:
+    """Return a full edge row, every selected column present, as the projection sees."""
     return {
         "edge_kind": edge_kind,
         "from_id": from_id,
@@ -54,8 +54,9 @@ def _edge(
 
 
 class TestProjection:
-    """Every edge is stored child -> parent; forward fields read OUTBOUND
-    (to-side), inverse fields read INBOUND (from-side).
+    """Every edge is stored child -> parent.
+
+    Forward fields read OUTBOUND (to-side), inverse fields read INBOUND (from-side).
     """
 
     def test_provenance_both_directions(self) -> None:
@@ -152,8 +153,9 @@ class TestProjection:
         )
 
     def test_claim_cited_by_inbound(self) -> None:
-        """A Belief/Experiment reads its citing artifacts from INBOUND edges,
-        carrying the signed valence; a NULL stored valence reads as 0.5.
+        """A Belief/Experiment reads its citing artifacts from INBOUND edges.
+
+        Carrying the signed valence; a NULL stored valence reads as 0.5.
         """
         prover_id, favorer_id = new_uuid(), new_uuid()
         belief = project_relationships(
@@ -278,7 +280,7 @@ class TestProjection:
         assert "valence" in inbound_sql
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

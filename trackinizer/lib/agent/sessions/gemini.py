@@ -62,45 +62,6 @@ def normalize(stream: TextIO) -> Iterator[SessionRecord]:
     yield from _read(stream.read())
 
 
-def _read(text: str) -> list[SessionRecord]:
-    """The records one whole document holds."""
-    # Settings before the acts they govern, then the context the window opens
-    # from. Gemini declares neither a prompt nor an escaping convention, so
-    # both state only what the format itself fixes.
-    out: list[SessionRecord] = [
-        TurnContext(encoding=json_freeze({"newline_terminated": True})),
-        ContextClear(extra=json_freeze({"$opens": True})),
-    ]
-    if not text.strip():
-        return out
-    try:
-        decoded: object = json.loads(text)
-    except json.JSONDecodeError:
-        return [*out, IncompleteRecord(text=text)]
-    # A document that is not an object carries no session: an array or a bare
-    # scalar is kept verbatim rather than read as an empty one, which would
-    # silently discard whatever the file did hold.
-    document: dict[str, object] = DictCodec.coerce(decoded)
-    if not document:
-        return [*out, IncompleteRecord(text=text)]
-    messages = ListCodec.coerce(document.get("messages"))
-    # Everything outside ``messages`` is the file's own declaration, which is
-    # settings: it rides the opening context rather than a record of its own.
-    extra = dict(json_unfreeze(residual(document, ("messages",))))
-    # Whether the file separates compactly, decided by re-encoding the parsed
-    # document that way and seeing whether it reproduces the input. Both
-    # spellings occur, and guessing one rewrites the other's bytes.
-    extra["$compact"] = (
-        json.dumps(decoded, ensure_ascii=False, separators=(",", ":")) == text
-    )
-    out[0] = TurnContext(
-        encoding=json_freeze({"newline_terminated": True}), extra=json_freeze(extra)
-    )
-    for message in messages:
-        out.extend(_read_message(DictCodec.coerce(message)))
-    return out
-
-
 def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
     """Denormalize records as a Gemini session document.
 
@@ -157,12 +118,10 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
     )
 
 
+# A ``gemini`` turn carries prose AND any calls it made, which axiom 3 keeps as sibling
+# records rather than one nested blob.
 def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
-    """Normalize one gemini message into its acts.
-
-    A ``gemini`` turn carries prose AND any calls it made, which axiom 3 keeps
-    as sibling records rather than one nested blob.
-    """
+    """Normalize one gemini message into its acts."""
     kind = StrCodec.coerce(message.get("type"))
     if kind == "user":
         return [
@@ -293,3 +252,42 @@ _GEMINI_NAMESPACE = UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
 The DNS namespace constant, used as an arbitrary fixed seed: what matters is
 that the derivation is stable across processes, not which namespace it names.
 """
+
+
+def _read(text: str) -> list[SessionRecord]:
+    """Return the records one whole document holds."""
+    # Settings before the acts they govern, then the context the window opens
+    # from. Gemini declares neither a prompt nor an escaping convention, so
+    # both state only what the format itself fixes.
+    out: list[SessionRecord] = [
+        TurnContext(encoding=json_freeze({"newline_terminated": True})),
+        ContextClear(extra=json_freeze({"$opens": True})),
+    ]
+    if not text.strip():
+        return out
+    try:
+        decoded: object = json.loads(text)
+    except json.JSONDecodeError:
+        return [*out, IncompleteRecord(text=text)]
+    # A document that is not an object carries no session: an array or a bare
+    # scalar is kept verbatim rather than read as an empty one, which would
+    # silently discard whatever the file did hold.
+    document: dict[str, object] = DictCodec.coerce(decoded)
+    if not document:
+        return [*out, IncompleteRecord(text=text)]
+    messages = ListCodec.coerce(document.get("messages"))
+    # Everything outside ``messages`` is the file's own declaration, which is
+    # settings: it rides the opening context rather than a record of its own.
+    extra = dict(json_unfreeze(residual(document, ("messages",))))
+    # Whether the file separates compactly, decided by re-encoding the parsed
+    # document that way and seeing whether it reproduces the input. Both
+    # spellings occur, and guessing one rewrites the other's bytes.
+    extra["$compact"] = (
+        json.dumps(decoded, ensure_ascii=False, separators=(",", ":")) == text
+    )
+    out[0] = TurnContext(
+        encoding=json_freeze({"newline_terminated": True}), extra=json_freeze(extra)
+    )
+    for message in messages:
+        out.extend(_read_message(DictCodec.coerce(message)))
+    return out

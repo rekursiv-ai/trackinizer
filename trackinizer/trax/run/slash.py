@@ -105,11 +105,16 @@ class SlashCommandDetector:
         self._clock = clock
         self._line = bytearray()
         self._in_escape = False
-        self._escape = bytearray()  # bytes of the in-progress escape, post-ESC
+        self._escape = bytearray()  # bytes of the in-progress escape, post-ESC.
         self._in_paste = False  # inside a bracketed paste (newlines stay literal)
 
     def feed(self, data: bytes) -> None:
-        """Consume one chunk of raw keystroke bytes, emitting on each Enter."""
+        """Consume one chunk of raw keystroke bytes, emitting on each Enter.
+
+        Args:
+          data: Data.
+
+        """
         for byte in data:
             self._consume(byte)
 
@@ -119,7 +124,7 @@ class SlashCommandDetector:
             return
         if byte == _ESC:
             self._in_escape = True
-            self._escape = bytearray()  # accumulate the sequence to classify it
+            self._escape = bytearray()  # accumulate the sequence to classify it.
         elif byte in _ENTER:
             # A newline inside a bracketed paste is literal content, not a
             # submit: a multi-line paste is one line of input, so treating an
@@ -136,18 +141,16 @@ class SlashCommandDetector:
             self._line.clear()
         elif byte == _WORD_ERASE:
             self._erase_word()
-        elif byte >= 0x20:  # printable; other low control bytes are ignored
+        elif byte >= 0x20:  # printable; other low control bytes are ignored.
             self._line.append(byte)
 
+    # A CSI/SS3 sequence (``ESC [`` / ``ESC O``) ends on a byte in 0x40-0x7E; a bare
+    # two-byte ``ESC x`` (no ``[``/``O`` introducer) ends on its second byte. On
+    # completion the sequence is classified: the bracketed-paste markers ``ESC [ 2 0 0
+    # ~`` / ``ESC [ 2 0 1 ~`` toggle :attr:`_in_paste` (so embedded newlines stay
+    # literal); everything else is discarded.
     def _consume_escape(self, byte: int) -> None:
-        """Accumulate an in-progress ANSI escape sequence until its final byte.
-
-        A CSI/SS3 sequence (``ESC [`` / ``ESC O``) ends on a byte in 0x40-0x7E;
-        a bare two-byte ``ESC x`` (no ``[``/``O`` introducer) ends on its second
-        byte. On completion the sequence is classified: the bracketed-paste
-        markers ``ESC [ 2 0 0 ~`` / ``ESC [ 2 0 1 ~`` toggle :attr:`_in_paste`
-        (so embedded newlines stay literal); everything else is discarded.
-        """
+        """Accumulate an in-progress ANSI escape sequence until its final byte."""
         self._escape.append(byte)
         if len(self._escape) == 1:
             # First byte after ESC: a CSI/SS3 introducer continues; otherwise
@@ -169,20 +172,17 @@ class SlashCommandDetector:
 
     def _erase_word(self) -> None:
         """Drop the trailing whitespace run plus the word before it (Ctrl-W)."""
-        while self._line and self._line[-1] == 0x20:  # space
+        while self._line and self._line[-1] == 0x20:  # space.
             self._line.pop()
         while self._line and self._line[-1] != 0x20:
             self._line.pop()
 
+    # The leading byte must be ``/`` with no preceding whitespace: a CLI treats a line
+    # as a slash-command only when ``/`` is the first prompt character, so a line like
+    # `` /exit`` (leading space) is ordinary model-visible text, not a command, and must
+    # not mint a false provenance row.
     def _submit(self) -> None:
-        """Flush the current line, emitting a command when it starts with ``/``.
-
-        The leading byte must be ``/`` with no preceding whitespace: a CLI
-        treats a line as a slash-command only when ``/`` is the first prompt
-        character, so a line like `` /exit`` (leading space) is ordinary
-        model-visible text, not a command, and must not mint a false
-        provenance row.
-        """
+        """Flush the current line, emitting a command when it starts with ``/``."""
         line = bytes(self._line).decode(errors="replace")
         self._line.clear()
         if not line.startswith("/"):

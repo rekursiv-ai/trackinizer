@@ -48,7 +48,7 @@ class TestInsertInquiryGuards:
                 values={
                     "title": "p",
                     "account": "a@b.c",
-                    "paper_soruce": "doi:10.1/x",  # codespell:ignore -- deliberate typo
+                    "paper_soruce": "doi:10.1/x",  # codespell:ignore -- deliberate typo.
                 },
             )
         conn.execute.assert_not_called()
@@ -112,8 +112,9 @@ class TestPureFunctions:
 
     @pytest.mark.asyncio
     async def test_validate_codechanges_rejects_wrong_kind(self) -> None:
-        """Bare-UUID list elements (no declared kind) work identically:
-        the metadata-driven validator dispatches on element shape.
+        """Bare-UUID list elements (no declared kind) work identically.
+
+        The metadata-driven validator dispatches on element shape.
         """
         good_id = new_uuid()
         bad_id = new_uuid()
@@ -134,10 +135,11 @@ class TestPureFunctions:
 
     @pytest.mark.asyncio
     async def test_validate_locks_referenced_rows_for_share(self) -> None:
-        """The validator's ``lookup_kinds`` call uses ``FOR SHARE`` so
-        the referenced rows cannot be purged between the kind check and
-        the UPDATE that commits the new list. This is the write-time
-        substitute for an FK on JSONB / ``UUID[]`` columns.
+        """The validator's ``lookup_kinds`` call uses ``FOR SHARE`` so the.
+
+        Referenced rows cannot be purged between the kind check and the UPDATE that
+        commits the new list. This is the write-time substitute for an FK on JSONB /
+        ``UUID[]`` columns.
         """
         rid = new_uuid()
         conn = make_conn()
@@ -255,7 +257,7 @@ class TestCoverageStoreReadsAndEdits:
         assert to_kind == "Issue"
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

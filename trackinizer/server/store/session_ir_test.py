@@ -34,14 +34,14 @@ _CIPHERTEXT = "gAAAAABqPBiCY9-vjMraAiiOTNS8xKmaodTJ4D2l6XR2pMszVFyz"
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """A bootstrapped store on the shared integration database."""
+    """Return a bootstrapped store on the shared integration database."""
     built = Store(integ_engine, embed=StubEmbedder())
     await built.bootstrap()
     yield built
 
 
 async def _session(store: Store) -> UUID:
-    """An AgentSession row the records can hang off."""
+    """Return an AgentSession row the records can hang off."""
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
@@ -63,6 +63,10 @@ def _rows(
     ]
 
 
+# Records are readable only up to their manifest's ``records`` (the live prefix bound),
+# and production never writes one without the other -- the append body rejects records
+# that name no file, and the route upserts the manifest first. A fixture that stored
+# records alone would exercise a state the wire cannot produce, and read back nothing.
 async def _bounded(
     store: Store,
     session_id: UUID,
@@ -71,14 +75,7 @@ async def _bounded(
     part: int = 0,
     name: str = "s.jsonl",
 ) -> list[SessionRecordRow]:
-    """Rows for ``records``, with the manifest that bounds their part.
-
-    Records are readable only up to their manifest's ``records`` (the live
-    prefix bound), and production never writes one without the other -- the
-    append body rejects records that name no file, and the route upserts the
-    manifest first. A fixture that stored records alone would exercise a
-    state the wire cannot produce, and read back nothing.
-    """
+    """Rows for ``records``, with the manifest that bounds their part."""
     _ = await store.upsert_session_manifest(
         session_id,
         name=name,
@@ -676,7 +673,7 @@ async def test_a_slash_command_consumes_no_record_position(store: Store) -> None
     assert [row.idx for row in read] == [0, 1]
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

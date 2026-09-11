@@ -20,13 +20,11 @@ from trackinizer.trax.run.adapters import scrape
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 
 
+# The last, not the first: whether the capture ended on a newline is knowable only at
+# the end, so the reader restates it there rather than mutating a record it already
+# yielded.
 def _encoding(records: list[TraxRecord]) -> dict[str, object]:
-    """How the file spells its bytes, as the LAST context to state it says.
-
-    The last, not the first: whether the capture ended on a newline is knowable
-    only at the end, so the reader restates it there rather than mutating a
-    record it already yielded.
-    """
+    """How the file spells its bytes, as the LAST context to state it says."""
     stated = [
         record.encoding
         for record in records

@@ -157,6 +157,27 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             conn=conn,
         )
 
+    # Order: idempotency probe -> ``pre_insert`` (kind-specific reference validation,
+    # run before any write so a bad ref wastes no embed work and writes no row) -> row
+    # -> ``created`` change -> ``post_insert`` (kind-specific edges: Issue decomposition
+    # / blockers or Belief citations), which receives ``cause`` so its own edge audits
+    # chain to the same ``created`` event.
+    #
+    # When ``req.idempotency_key`` is set, the server uses that UUID as the
+    # ``change_log.id`` of the ``created`` audit row. A repeat submit with the same key
+    # short-circuits via a probe before any write; a concurrent racer that beats the
+    # probe but loses the change_log PK race is recovered inside the txn the same way.
+    # Either path returns the *original* inquiry's server-minted id.
+    #
+    # The inquiry's ``id`` is always server-minted: clients have no way to predict it
+    # before the response. This closes the targeted-UUID race vector that a client-
+    # minted inquiries.id would expose. See ``docs/design_idempotency.md``.
+    #
+    # When ``conn`` is ``None`` this submit owns its transaction (the normal single-
+    # submit path: ``acquire`` + ``tx`` + buffered notify). When a connection is
+    # supplied, the insert joins the caller's open transaction -- :meth:`submit_batch`
+    # passes one shared connection so every item commits or rolls back together, and the
+    # caller then owns ``tx`` and ``notify_after_commit``.
     async def _submit_generic(
         self,
         req: SubmitBase,
@@ -169,34 +190,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         post_insert: PostInsert | None = None,
         conn: Conn | None = None,
     ) -> UUID:
-        """Single insert path for every submit_X.
-
-        Order: idempotency probe -> ``pre_insert`` (kind-specific
-        reference validation, run before any write so a bad ref wastes no
-        embed work and writes no row) -> row -> ``created`` change ->
-        ``post_insert`` (kind-specific edges: Issue decomposition /
-        blockers or Belief citations), which receives ``cause`` so its
-        own edge audits chain to the same ``created`` event.
-
-        When ``req.idempotency_key`` is set, the server uses that UUID
-        as the ``change_log.id`` of the ``created`` audit row. A repeat
-        submit with the same key short-circuits via a probe before any
-        write; a concurrent racer that beats the probe but loses the
-        change_log PK race is recovered inside the txn the same way.
-        Either path returns the *original* inquiry's server-minted id.
-
-        The inquiry's ``id`` is always server-minted: clients have no
-        way to predict it before the response. This closes the
-        targeted-UUID race vector that a client-minted inquiries.id
-        would expose. See ``docs/design_idempotency.md``.
-
-        When ``conn`` is ``None`` this submit owns its transaction (the
-        normal single-submit path: ``acquire`` + ``tx`` + buffered
-        notify). When a connection is supplied, the insert joins the
-        caller's open transaction -- :meth:`submit_batch` passes one
-        shared connection so every item commits or rolls back together,
-        and the caller then owns ``tx`` and ``notify_after_commit``.
-        """
+        """Single insert path for every submit_X."""
         if conn is not None:
             return await self._submit_on_conn(
                 conn,
@@ -263,6 +257,20 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 raise
             return existing
 
+    # Pure transaction body for :meth:`_submit_generic`: it assumes the caller has begun
+    # the transaction on ``conn`` and will commit or roll back. The idempotency probe
+    # reads on ``conn`` (not a fresh acquire) because the single PGlite connection is
+    # already held.
+    #
+    # A ``change_log`` PK collision propagates: the caller's ``tx`` rolls back, and the
+    # single-submit path re-probes for the winner once the connection is released. In a
+    # batch the same propagation rolls every item back together.
+    #
+    # ``embeddings`` carries pre-computed ``(model, vector)`` pairs for ``req.title``:
+    # the single-submit path embeds before opening its tx (so the embedder round-trip
+    # doesn't pin the connection) and passes the result here, while the
+    # :meth:`submit_batch` path leaves it ``None`` and embeds inline -- its per-item
+    # embed is unavoidably inside the shared tx.
     async def _submit_on_conn(
         self,
         conn: Conn,
@@ -276,25 +284,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         post_insert: PostInsert | None,
         embeddings: list[tuple[str, list[float]]] | None = None,
     ) -> UUID:
-        """Probe + insert one inquiry on an already-open transaction.
-
-        Pure transaction body for :meth:`_submit_generic`: it assumes the
-        caller has begun the transaction on ``conn`` and will commit or
-        roll back. The idempotency probe reads on ``conn`` (not a fresh
-        acquire) because the single PGlite connection is already held.
-
-        A ``change_log`` PK collision propagates: the caller's ``tx``
-        rolls back, and the single-submit path re-probes for the winner
-        once the connection is released. In a batch the same propagation
-        rolls every item back together.
-
-        ``embeddings`` carries pre-computed ``(model, vector)`` pairs for
-        ``req.title``: the single-submit path embeds before opening its tx
-        (so the embedder round-trip doesn't pin the connection) and passes
-        the result here, while the :meth:`submit_batch` path leaves it
-        ``None`` and embeds inline -- its per-item embed is unavoidably
-        inside the shared tx.
-        """
+        """Probe + insert one inquiry on an already-open transaction."""
         # The effective idempotency key is the body field if present, else the
         # slot the route layer set from an ``Idempotency-Key`` header. Both
         # land as the ``created`` event's ``change_log.id``, so both must
@@ -398,24 +388,21 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             set_client_change_id(None)
         return row_id
 
+    # Probes ``change_log`` (where the client-supplied key lives) for the ``created``
+    # event and reads its denormalized ``subject_kind`` to verify the result is a row of
+    # the requested kind. A key reused for a different kind raises so the caller
+    # surfaces 409.
+    #
+    # Reads on the caller-supplied ``conn``: the probe runs while the submit already
+    # holds the single PGlite connection, so acquiring a second one would deadlock. A
+    # SELECT inside the open transaction is safe and sees the same snapshot.
     async def _lookup_existing_by_change(
         self,
         idempotency_key: UUID,
         kind: Inquiry.InquiryKind,
         conn: Conn,
     ) -> UUID | None:
-        """Return the original inquiry id iff this idempotency key was used.
-
-        Probes ``change_log`` (where the client-supplied key lives) for
-        the ``created`` event and reads its denormalized ``subject_kind``
-        to verify the result is a row of the requested kind. A key reused
-        for a different kind raises so the caller surfaces 409.
-
-        Reads on the caller-supplied ``conn``: the probe runs while the
-        submit already holds the single PGlite connection, so acquiring a
-        second one would deadlock. A SELECT inside the open transaction is
-        safe and sees the same snapshot.
-        """
+        """Return the original inquiry id iff this idempotency key was used."""
         row = await conn.fetchrow(
             "SELECT c.subject_id, c.kind AS change_kind, c.subject_kind "
             "FROM change_log c WHERE c.id = $1",

@@ -28,14 +28,11 @@ from trackinizer.lib.postgres import Conn
 __all__ = ["STATEMENT_TIMEOUT_MS", "apply_regex_statement_timeout"]
 
 
+# ``TRACKINIZER_SEARCH_TIMEOUT_MS`` overrides the 5000ms default; a non-positive or non-
+# integer value is an operator typo and raises rather than silently disabling the guard
+# (``0`` means "no timeout" in Postgres, which is exactly the DoS this closes).
 def _statement_timeout_ms() -> int:
-    """Per-query timeout in milliseconds (default 5s, env-overridable).
-
-    ``TRACKINIZER_SEARCH_TIMEOUT_MS`` overrides the 5000ms default; a
-    non-positive or non-integer value is an operator typo and raises rather
-    than silently disabling the guard (``0`` means "no timeout" in Postgres,
-    which is exactly the DoS this closes).
-    """
+    """Per-query timeout in milliseconds (default 5s, env-overridable)."""
     raw = os.environ.get("TRACKINIZER_SEARCH_TIMEOUT_MS", "").strip()
     if not raw:
         return 5_000
@@ -57,5 +54,9 @@ async def apply_regex_statement_timeout(conn: Conn) -> None:
     ``SET LOCAL`` is transaction-scoped, so the caller must already be in one;
     outside a transaction Postgres warns and the setting does not stick. The
     bound is a server constant, never client input, so it interpolates safely.
+
+    Args:
+      conn: Conn.
+
     """
     await conn.execute(f"SET LOCAL statement_timeout = {STATEMENT_TIMEOUT_MS}")

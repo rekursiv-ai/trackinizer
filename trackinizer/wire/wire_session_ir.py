@@ -66,6 +66,7 @@ class RecordBody(BaseModel):
     itself."""
 
     timestamp: datetime | None = None
+
     model: str | None = None
 
     payload: JSON = Field(default_factory=dict)
@@ -84,7 +85,15 @@ class RecordBody(BaseModel):
 
     @classmethod
     def of(cls, row: SessionRecordRow) -> RecordBody:
-        """Build a wire body from a stored row."""
+        """Build a wire body from a stored row.
+
+        Args:
+          row: Row.
+
+        Returns:
+          result: The RecordBody.
+
+        """
         return cls(
             idx=row.idx,
             kind=row.kind,
@@ -97,7 +106,16 @@ class RecordBody(BaseModel):
         )
 
     def row(self, session_id: UUID, part: int) -> SessionRecordRow:
-        """Rebuild the storable row for ``session_id`` and ``part``."""
+        """Rebuild the storable row for ``session_id`` and ``part``.
+
+        Args:
+          session_id: Session id.
+          part: Part.
+
+        Returns:
+          result: The SessionRecordRow.
+
+        """
         return SessionRecordRow(
             session_id=session_id,
             part=part,
@@ -143,8 +161,11 @@ class PartBody(BaseModel):
     """One part of a session, as ``GET .../parts`` lists it."""
 
     part: int = Field(ge=0)
+
     name: str
+
     format: str
+
     records: int = Field(ge=0)
 
     metadata: JSON = Field(default_factory=dict)
@@ -207,7 +228,7 @@ class AppendRecordsRequest(BaseModel):
 
     @model_validator(mode="after")
     def _records_name_a_file(self) -> AppendRecordsRequest:
-        """Records need a part; a part needs a named file and its manifest."""
+        """Require a part for records, and a named file plus manifest for a part."""
         if self.records and not (self.name and self.manifest):
             raise ValueError("records require 'name' and 'manifest'")
         if bool(self.name) != (self.manifest is not None):
@@ -245,7 +266,9 @@ class AppendRecordsResponse(BaseModel):
     no file (a slash-command-only append)."""
 
     written: int = Field(ge=0)
+
     skipped: int = Field(ge=0)
+
     slash_commands: int = Field(default=0, ge=0)
     """How many slash commands this request stored."""
 
@@ -260,14 +283,31 @@ class ReadRecordsResponse(BaseModel):
     """One page of a part's records, in ``idx`` order."""
 
     part: int = Field(ge=0)
+
     records: list[RecordBody] = Field(default_factory=list)
 
 
 def session_records_path(session_id: UUID) -> str:
-    """The append/read path for one session's IR records."""
+    """Return the append/read path for one session's IR records.
+
+    Args:
+      session_id: Session id.
+
+    Returns:
+      result: The str.
+
+    """
     return f"/api/sessions/{session_id}/records"
 
 
 def session_parts_path(session_id: UUID) -> str:
-    """The path listing one session's parts."""
+    """Return the path listing one session's parts.
+
+    Args:
+      session_id: Session id.
+
+    Returns:
+      result: The str.
+
+    """
     return f"/api/sessions/{session_id}/parts"

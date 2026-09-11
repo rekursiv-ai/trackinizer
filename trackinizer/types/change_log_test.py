@@ -145,7 +145,7 @@ class TestRowConverters:
         assert Change.from_row(row).caused_by is None
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

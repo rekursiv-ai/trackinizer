@@ -25,7 +25,7 @@ from typing import Final
 import os
 import re
 
-from trackinizer.lib.agent.sessions import claude as claude_ir
+from trackinizer.lib.agent.sessions import claude
 from trackinizer.trax.run.adapters.tail import Tail
 
 
@@ -39,7 +39,9 @@ class ClaudeAdapter:
     """Reads the ``claude`` CLI's per-project session JSONL files."""
 
     name: str = "claude"
+
     cli_binary: str = "claude"
+
     whole_file: bool = False
 
     @property
@@ -53,6 +55,12 @@ class ClaudeAdapter:
         return (Path(root) if root else Path.home() / ".claude") / "projects"
 
     def session_dirs(self) -> Iterable[Path]:
+        """Return the directories this CLI writes sessions under.
+
+        Returns:
+          result: The Iterable[Path].
+
+        """
         # Returned whether or not it exists yet: the runner MINTS these before
         # arming its watch (``_prepare_session_dirs``), so an adapter that
         # withheld an absent root would leave the runner nothing to create --
@@ -71,16 +79,29 @@ class ClaudeAdapter:
         return (self._projects_dir,)
 
     def matches_session_file(self, path: Path) -> bool:
+        """Return whether ``path`` is one of this CLI's session files.
+
+        Args:
+          path: Path.
+
+        Returns:
+          result: The bool.
+
+        """
         return path.suffix == ".jsonl" and path.parent.parent == self._projects_dir
 
     def session_scope(self) -> Path | None:
-        """The one project directory this run's cwd maps to.
+        """Return the one project directory this run's cwd maps to.
 
         Claude names it after the working directory, replacing every character
         outside ``[A-Za-z0-9-]`` with a dash. Encoding the RESOLVED path is
         load-bearing: the CLI encodes what it resolved at startup, so a
         symlinked or relative cwd would name a directory that never receives a
         write, and the run would capture nothing.
+
+        Returns:
+          result: The Path | None.
+
         """
         return self._projects_dir / _NOT_KEPT.sub("-", str(Path.cwd().resolve()))
 
@@ -90,11 +111,23 @@ class ClaudeAdapter:
         Used to correlate a resumed run to its prior AgentSession (the same id
         names the same claude session across ``--resume``). Returns ``None`` for
         a path that is not one of this adapter's session files.
+
+        Args:
+          path: Path.
+
+        Returns:
+          result: The str | None.
+
         """
         if path.suffix != ".jsonl":
             return None
         return path.stem or None
 
     def reader(self) -> Tail:
-        """A fresh IR reader for one claude session file."""
-        return Tail(claude_ir.normalize)
+        """Return a fresh IR reader for one claude session file.
+
+        Returns:
+          result: The Tail.
+
+        """
+        return Tail(claude.normalize)

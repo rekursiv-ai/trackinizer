@@ -237,7 +237,7 @@ def test_codex_keeps_the_spacing_of_a_nested_argument_string(arguments: str) -> 
 def test_the_normalized_json_form_preserves_every_native_byte(
     adapter: _Adapter, native: str
 ) -> None:
-    # native -> records -> JSON -> records -> native, the conversion path the
+    # Native -> records -> JSON -> records -> native, the conversion path the
     # CLI exposes. Whatever the native adapters keep, JSON must keep too.
     records = list(adapter.normalize(StringIO(native)))
     as_json = StringIO()
@@ -251,7 +251,7 @@ def test_the_normalized_json_form_preserves_every_native_byte(
 
 @pytest.mark.parametrize(
     "text",
-    ["2017\\u20132022", "2017–2022", "caf\\u00e9", "café"],  # codespell:ignore caf
+    ["2017\\u20132022", "2017–2022", "caf\\u00e9", "café"],  # codespell:ignore caf.
 )
 def test_the_claude_ascii_escaping_convention_survives(text: str) -> None:
     # Claude writes either convention, and a file escaped at all is escaped
@@ -264,7 +264,7 @@ def test_the_claude_ascii_escaping_convention_survives(text: str) -> None:
 
 @pytest.mark.parametrize(
     "text",
-    ["2017–2022", "café"],  # codespell:ignore caf
+    ["2017–2022", "café"],  # codespell:ignore caf.
 )
 def test_codex_writes_raw_utf8(text: str) -> None:
     # Codex has ONE convention, unlike claude: all 13138 captured non-ASCII

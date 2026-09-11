@@ -23,7 +23,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.agent.types.sessions import UserMessage as IRUserMessage
+from trackinizer.lib.agent.types.sessions import UserMessage
 from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.store.core import Store, StubEmbedder
@@ -33,7 +33,7 @@ from trackinizer.wire.bodies import SubmitAgentSession, SubmitIssue
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """A bootstrapped Store over the session's shared PGlite engine."""
+    """Return a bootstrapped Store over the session's shared PGlite engine."""
     await reset_schema(pglite_engine)
     store = Store(pglite_engine, embed=StubEmbedder())
     await store.bootstrap()
@@ -100,7 +100,7 @@ async def test_agentsession_lifecycle_writes_succeed(store: Store) -> None:
                 session_id=session_id,
                 part=0,
                 idx=0,
-                record=IRUserMessage(content="hi"),
+                record=UserMessage(content="hi"),
             )
         ],
     )

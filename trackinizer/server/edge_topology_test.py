@@ -30,13 +30,11 @@ from trackinizer.types.edges import (
 )
 
 
+# Each arm is ``(edge_kind = 'X' OR edge_kind IN (...)) AND from_kind ... AND to_kind
+# ...``; this recovers the admitted kind sets per edge_kind so the test can set-compare
+# them against :func:`edge_topology`.
 def _schema_edge_arms() -> dict[str, tuple[frozenset[str], frozenset[str]]]:
-    """Parse ``edge_kind -> (from_kinds, to_kinds)`` from the schema edge CHECK.
-
-    Each arm is ``(edge_kind = 'X' OR edge_kind IN (...)) AND from_kind ...
-    AND to_kind ...``; this recovers the admitted kind sets per edge_kind so the
-    test can set-compare them against :func:`edge_topology`.
-    """
+    """Parse ``edge_kind -> (from_kinds, to_kinds)`` from the schema edge CHECK."""
     sql = substitute_schema_placeholders(load_sql("schema"))
     # The edges table body, up to the next CREATE. The edge-validity CHECK (the
     # from/to-kind arms) sits AFTER the PRIMARY KEY line, so the block must span
@@ -207,7 +205,7 @@ def test_only_produced_by_is_suppressed_for_idempotency() -> None:
     assert {"produced_by"} == PRODUCED_INFERENCE_SUPPRESSED
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

@@ -52,6 +52,10 @@ def set_client_change_id(value: UUID | None) -> None:
     sees the drain too. Without that, a no-op/replay path that clears the slot in
     one task would leave the stale key visible to siblings (the consume cursor is
     shared by reference precisely so all siblings observe one another's drains).
+
+    Args:
+      value: Value.
+
     """
     if value is not None:
         _CLIENT_CHANGE_ID.set(_ChangeIdSlot(value=value))
@@ -63,12 +67,10 @@ def set_client_change_id(value: UUID | None) -> None:
         _CLIENT_CHANGE_ID.set(None)
 
 
+# Clearing on read makes second and later calls (cascade rows, gather siblings) fall
+# back to fresh server-minted ids.
 def _consume_client_change_id() -> UUID | None:
-    """Return and clear the client-supplied change UUID, if any.
-
-    Clearing on read makes second and later calls (cascade rows, gather
-    siblings) fall back to fresh server-minted ids.
-    """
+    """Return and clear the client-supplied change UUID, if any."""
     slot = _CLIENT_CHANGE_ID.get()
     if slot is None:
         return None
@@ -77,12 +79,10 @@ def _consume_client_change_id() -> UUID | None:
     return value
 
 
+# Used by the submit path to read the header-set idempotency key for the replay probe
+# and the collision-recovery probe, while leaving the slot intact so ``emit_change``
+# still consumes it on the first write.
 def _peek_client_change_id() -> UUID | None:
-    """Return the client-supplied change UUID without consuming it.
-
-    Used by the submit path to read the header-set idempotency key for the
-    replay probe and the collision-recovery probe, while leaving the slot
-    intact so ``emit_change`` still consumes it on the first write.
-    """
+    """Return the client-supplied change UUID without consuming it."""
     slot = _CLIENT_CHANGE_ID.get()
     return slot.value if slot is not None else None

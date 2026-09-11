@@ -1,11 +1,13 @@
-"""Tests for the unauthenticated meta routes: ``/api/version``,
-``/api/meta/enums``, ``/api/meta/edges``, and the SPA-vs-server drift guards.
+"""Tests for the unauthenticated meta routes.
+
+``/api/version``, ``/api/meta/enums``, ``/api/meta/edges``, and the SPA-vs-server drift
+guards.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import get_args
+from typing import Final, get_args
 
 import re
 import subprocess
@@ -24,6 +26,9 @@ from trackinizer.types.edges import (
 )
 from trackinizer.types.inquiries import Belief, Inquiry, Issue, Paper
 from trackinizer.wire.routes import field_owner_kind
+
+
+_CWD: Final = Path(__file__).resolve().parent
 
 
 @pytest.fixture
@@ -129,7 +134,7 @@ def test_spa_does_not_hardcode_enum_lists() -> None:
     (a ``switch`` case, an equality guard, a button action) are fine and do not
     desync a dropdown, so they are not flagged.
     """
-    html = (Path(__file__).resolve().parents[1] / "assets" / "index.html").read_text()
+    html = (_CWD.parents[0] / "assets" / "index.html").read_text()
     arrays = (
         "STATUS_VALUES",
         "JUDGEMENT_VALUES",
@@ -174,7 +179,7 @@ def test_spa_derives_edge_topology_from_route() -> None:
     and fills it from the route; a non-empty literal is a re-pasted copy that
     could drift again.
     """
-    html = (Path(__file__).resolve().parents[1] / "assets" / "index.html").read_text()
+    html = (_CWD.parents[0] / "assets" / "index.html").read_text()
     match = re.search(r"\bEDGE_TOPOLOGY\s*=\s*(\{.*?\})", html, re.DOTALL)
     assert match is not None, "EDGE_TOPOLOGY declaration not found in index.html"
     assert match.group(1).strip() == "{}", (
@@ -191,7 +196,7 @@ def test_spa_drops_removed_websearch_results_wiring() -> None:
     detail view, edit/submit branches), so the WebSearch form 422'd. This pins
     that none of those references return.
     """
-    html = (Path(__file__).resolve().parents[1] / "assets" / "index.html").read_text()
+    html = (_CWD.parents[0] / "assets" / "index.html").read_text()
     for leaked in ('"typed-results"', 'results: "websearch"', 'field === "results"'):
         assert leaked not in html, (
             f"{leaked} is stale WebSearch.results wiring in index.html; "

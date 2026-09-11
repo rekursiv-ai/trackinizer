@@ -67,6 +67,9 @@ from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.wire_sessions import FeedCursor, FeedResponse
 
 
+_CWD: Final = Path(__file__).resolve().parent
+
+
 type WebView = dict[str, object]
 
 
@@ -74,6 +77,15 @@ router = APIRouter()
 
 
 def get_store(request: Request) -> Store:
+    """Return the process-wide store.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The Store.
+
+    """
     return cast(Store, request.app.state.store)
 
 
@@ -88,9 +100,21 @@ async def web_search(
     kind: Inquiry.InquiryKind | None = None,
     limit: int = 50,
 ) -> list[WebView]:
-    """Cross-kind search. Grammar: every bare token must match across
-    ``title``/``description``; ``title:re`` / ``description:re`` =
-    field-scoped regex.
+    """Cross-kind search.
+
+    Grammar: every bare token must match across ``title``/``description``; ``title:re``
+    / ``description:re`` = field-scoped regex.
+
+    Args:
+      request: Request.
+      q: Q.
+      identity: Identity.
+      kind: Kind.
+      limit: Limit.
+
+    Returns:
+      result: The list[WebView].
+
     """
     del identity
     if limit < 1 or limit > 1000:
@@ -147,7 +171,17 @@ async def web_recent_changes(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     limit: int = 50,
 ) -> list[WebView]:
-    """Most-recent ``change_log`` rows, snapshot deltas flattened."""
+    """Most-recent ``change_log`` rows, snapshot deltas flattened.
+
+    Args:
+      request: Request.
+      identity: Identity.
+      limit: Limit.
+
+    Returns:
+      result: The list[WebView].
+
+    """
     del identity
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be in [1, 1000]")
@@ -165,7 +199,17 @@ async def web_lookup(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> WebView:
-    """Resolve a UUID to its kind; 404 when not found."""
+    """Resolve a UUID to its kind; 404 when not found.
+
+    Args:
+      target_id: Target id.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The WebView.
+
+    """
     del identity
     async with get_store(request).engine.acquire() as conn:
         kind = await conn.fetchval(
@@ -182,7 +226,17 @@ async def web_get(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> WebView:
-    """Single inquiry + edges + backlinks + recent changes, for the SPA."""
+    """Single inquiry + edges + backlinks + recent changes, for the SPA.
+
+    Args:
+      target_id: Target id.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The WebView.
+
+    """
     del identity
     store = get_store(request)
     async with store.engine.acquire() as conn:
@@ -218,7 +272,7 @@ async def web_graph(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     limit: int = 1000,
 ) -> WebView:
-    """The inquiry graph as typed nodes + directed edges, for the SPA.
+    """Return the inquiry graph as typed nodes + directed edges, for the SPA.
 
     ``limit`` caps the graph to the most-recently-created ``limit`` nodes, then
     EDGE-CLOSES that set: any older node referenced by an edge to a recent node
@@ -232,6 +286,15 @@ async def web_graph(
     animation adds them in authoring order; edges carry ``from_id`` -> ``to_id``,
     ``edge_kind``, and ``valence`` when present. The detail view
     (:func:`web_get`) serves the full per-kind fields for one node on demand.
+
+    Args:
+      request: Request.
+      identity: Identity.
+      limit: Limit.
+
+    Returns:
+      result: The WebView.
+
     """
     del identity
     if limit < 0 or limit > 50_000:
@@ -299,6 +362,14 @@ async def web_subscribe(
     decides what to fetch. Per-subscriber server-side filtering is a
     future refinement, not a security boundary -- authz already gates
     who may open the stream at all.
+
+    Args:
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The StreamingResponse.
+
     """
     del identity
     engine = cast(DatabaseEngine, request.app.state.engine)
@@ -336,6 +407,24 @@ async def web_feed(
     replay from the beginning. The response carries ``next_after`` (a composite
     cursor) for the next poll; an empty page echoes the supplied cursor so the
     tail does not rewind.
+
+    Args:
+      request: Request.
+      identity: Identity.
+      after_created: After created.
+      after_session: After session.
+      after_part: After part.
+      after_seq: After seq.
+      since: Since.
+      until: Until.
+      room: Room.
+      actor: Actor.
+      limit: Limit.
+      tail: Tail.
+
+    Returns:
+      result: The FeedResponse.
+
     """
     del identity
     if limit < 1 or limit > 1000:
@@ -367,22 +456,238 @@ async def web_feed(
     return FeedResponse(events=events, next_after=next_after)
 
 
+def graph_legend() -> dict[str, list[str]]:
+    """Return the node-kind and edge-kind sets the graph view colors by.
+
+    The single source the SPA reads to build its color legend, derived from the
+    domain enums so it cannot drift: a new ``Inquiry`` subclass or ``Edge.Kind``
+    appears here automatically (pinned by ``web_test.py``).
+
+    Returns:
+      result: The dict[str, list[str]].
+
+    """
+    return {
+        "node_kinds": list(get_args(Inquiry.InquiryKind.__value__)),
+        "edge_kinds": list(get_args(Edge.Kind.__value__)),
+    }
+
+
+# -- Search query parsing ----------------------------------------------------
+
+
+# -- JSON serialization ------------------------------------------------------
+
+
+_SNAPSHOT_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(Snapshot))
+
+_CHANGE_SELECT: Final = (
+    "SELECT c.*, COALESCE(k_user.email, actor_user.email) AS principal "
+    "FROM change_log c "
+    "LEFT JOIN api_keys k ON k.id = c.api_key_id "
+    "LEFT JOIN users k_user ON k_user.id = k.user_id "
+    "LEFT JOIN users actor_user ON actor_user.email = c.actor AND c.api_key_id IS NULL"
+)
+
+
+_PEER_COLUMNS: Final = (
+    "t.kind AS peer_kind, t.seq AS peer_seq, t.title AS peer_title, "
+    "t.status AS peer_status, t.belief_judgement AS peer_judgement"
+)
+"""SELECT fragment for the joined inquiry on the far end of an edge."""
+
+
+async def optional_identity(request: Request) -> AuthIdentity | None:
+    """Resolve the request's principal without raising on missing credentials.
+
+    Wraps :func:`auth.current_user` so the HTML page routes can branch
+    on "is the caller signed in?" without the 401 the bearer/session
+    dependency raises when no credential is present. Used as a
+    FastAPI dependency so tests can override it via
+    ``app.dependency_overrides[optional_identity] = ...`` instead of
+    monkey-patching the real auth lookup.
+
+    Returns ``None`` when ``app.state.engine`` is missing (the FastAPI
+    test apps in ``web_test.py`` mount the router without booting the
+    real lifespan) so the page handlers degrade gracefully instead of
+    raising ``AttributeError``.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The AuthIdentity | None.
+
+    """
+    if not hasattr(request.app.state, "engine"):
+        return None
+    try:
+        return await current_user(request)
+    except HTTPException as exc:
+        if exc.status_code != 401:
+            raise
+        return None
+
+
+def attach(
+    app: FastAPI,
+    *,
+    assets_dir: Path | None = None,
+    static_dir: Path | None = None,
+) -> None:
+    """Mount the read-API router, the SPA at ``/``, and ``/static/*``.
+
+    ``/static`` is served from ``static_dir`` when given, else from the SPA's
+    own ``assets/static`` -- the runtime override lets an operator serve files
+    written after deploy (e.g. a generated report) without copying them into
+    the source tree, while the default keeps the SPA's bundled assets working.
+
+    Idempotent: a second call is a no-op. ``server.py`` attaches the
+    module-global app at import, so a re-import or test reuse must not stack
+    duplicate routes (TRK-SRV-002).
+
+    Args:
+      app: App.
+      assets_dir: Assets dir.
+      static_dir: Static dir.
+
+    """
+    if getattr(app.state, "web_attached", False):
+        return
+    app.state.web_attached = True
+    assets = assets_dir or (_CWD / "assets")
+    app.include_router(router, prefix="/api/web")
+
+    static = static_dir or (assets / "static")
+    if static.is_dir():
+        app.mount("/static", StaticFiles(directory=str(static)), name="static")
+
+    _add_page_route(app, "/", assets / "index.html")
+    _add_page_route(app, "/graph", assets / "graph.html")
+    _add_page_route(app, "/console", assets / "console.html")
+    _add_page_route(app, "/me", assets / "me.html")
+    _add_page_route(app, "/admin", assets / "admin.html", admin_only=True)
+    _add_login_route(app, assets / "login.html")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _PageRoute:
+    page_path: Path
+
+    admin_only: bool = False
+
+    async def __call__(
+        self,
+        request: Request,
+        identity: Annotated[AuthIdentity | None, Depends(optional_identity)],
+    ) -> Response:
+        if self.admin_only:
+            return _serve_admin_page(request, identity, self.page_path)
+        return _serve_if_authed(request, identity, self.page_path)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _LoginPageRoute:
+    page_path: Path
+
+    async def __call__(self) -> FileResponse:
+        return FileResponse(self.page_path)
+
+
+def _add_page_route(
+    app: FastAPI,
+    path: str,
+    page_path: Path,
+    *,
+    admin_only: bool = False,
+) -> None:
+    """Mount one HTML page when its asset exists."""
+    if page_path.is_file():
+        app.add_api_route(
+            path,
+            _PageRoute(page_path=page_path, admin_only=admin_only),
+            methods=["GET"],
+            include_in_schema=False,
+        )
+
+
+def _add_login_route(app: FastAPI, page_path: Path) -> None:
+    """Mount the login page when its asset exists."""
+    if page_path.is_file():
+        app.add_api_route(
+            "/auth/login_page",
+            _LoginPageRoute(page_path=page_path),
+            methods=["GET"],
+            include_in_schema=False,
+        )
+
+
+def _serve_admin_page(
+    request: Request,
+    identity: AuthIdentity | None,
+    page_path: Path,
+) -> Response:
+    """Return the admin page for admins; redirect/403 otherwise."""
+    redirect = _redirect_when_unauthed(request, identity)
+    if redirect is not None:
+        return redirect
+    if identity is None or identity.role != "admin":
+        raise HTTPException(status_code=403, detail="admin role required")
+    return FileResponse(page_path)
+
+
+# When session auth is unconfigured (no ``session_secret`` on ``app.state.config``) the
+# redirect is suppressed -- the deployment isn't running OAuth and gating the SPA behind
+# a login that doesn't exist would lock everyone out.
+def _serve_if_authed(
+    request: Request,
+    identity: AuthIdentity | None,
+    page_path: Path,
+) -> Response:
+    """Return ``page_path`` when signed in, else a 302 to the login page."""
+    redirect = _redirect_when_unauthed(request, identity)
+    if redirect is not None:
+        return redirect
+    return FileResponse(page_path)
+
+
+# Returns ``None`` when the caller is authed *or* when session auth is not configured on
+# this deployment (in which case there is no login page to redirect to and
+# ``current_user`` couldn't have resolved a session cookie anyway).
+def _redirect_when_unauthed(
+    request: Request,
+    identity: AuthIdentity | None,
+) -> RedirectResponse | None:
+    """Return a 302 to ``/auth/login_page`` when the request is unauthed."""
+    if identity is not None:
+        return None
+    config = getattr(request.app.state, "config", None)
+    session_secret = getattr(config, "session_secret", None) if config else None
+    if not session_secret:
+        return None
+    next_url = request.url.path
+    if request.url.query:
+        next_url = f"{next_url}?{request.url.query}"
+    return RedirectResponse(
+        url=f"/auth/login_page?next={quote(next_url, safe='')}",
+        status_code=302,
+    )
+
+
+# Every component must be present together: a partial cursor cannot resume the
+# ``(created, session_id, part, idx)`` order and is a client error.
+#
+# ``part`` is the one exception -- it defaults to 0 when the rest are given, so a client
+# written against the pre-IR three-part cursor still resumes rather than 400ing. It
+# cannot skip rows: 0 is the lowest real part, and a legacy backfill sits at -1, which
+# such a client never asked about.
 def _feed_cursor(
     created: datetime | None,
     session_id: UUID | None,
     part: int | None,
     seq: int | None,
 ) -> tuple[datetime, UUID, int, int] | None:
-    """Assemble the composite feed cursor, or ``None`` when unset.
-
-    Every component must be present together: a partial cursor cannot resume
-    the ``(created, session_id, part, idx)`` order and is a client error.
-
-    ``part`` is the one exception -- it defaults to 0 when the rest are given,
-    so a client written against the pre-IR three-part cursor still resumes
-    rather than 400ing. It cannot skip rows: 0 is the lowest real part, and a
-    legacy backfill sits at -1, which such a client never asked about.
-    """
+    """Assemble the composite feed cursor, or ``None`` when unset."""
     required = (created, session_id, seq)
     if all(p is None for p in required) and part is None:
         return None
@@ -399,27 +704,9 @@ def _feed_cursor(
     )
 
 
-def graph_legend() -> dict[str, list[str]]:
-    """The node-kind and edge-kind sets the graph view colors by.
-
-    The single source the SPA reads to build its color legend, derived from the
-    domain enums so it cannot drift: a new ``Inquiry`` subclass or ``Edge.Kind``
-    appears here automatically (pinned by ``web_test.py``).
-    """
-    return {
-        "node_kinds": list(get_args(Inquiry.InquiryKind.__value__)),
-        "edge_kinds": list(get_args(Edge.Kind.__value__)),
-    }
-
-
-# -- Search query parsing ----------------------------------------------------
-
-
+# Fields: ``title``, ``description``. Bare tokens search both.
 def _parse_query(q: str) -> list[tuple[str | None, str]]:
-    """Tokenize a search query into ``(field, pattern)`` terms.
-
-    Fields: ``title``, ``description``. Bare tokens search both.
-    """
+    """Tokenize a search query into ``(field, pattern)`` terms."""
     tokens = shlex.split(q)
     out: list[tuple[str | None, str]] = []
     for tok in tokens:
@@ -436,17 +723,14 @@ def _parse_query(q: str) -> list[tuple[str | None, str]]:
     return out
 
 
+# Multiple bare tokens (``foo bar``) intersect: a row must match every token. Field-
+# qualified tokens (``title:^x$``) compose with the same AND semantics. Field-qualified
+# regexes are validated client- side via :func:`re.compile` so a malformed pattern
+# surfaces as a :class:`ValueError` -- the route turns that into 400, not 500.
 def _build_term_clause(
     terms: Sequence[tuple[str | None, str]],
 ) -> tuple[str, list[object]]:
-    """Render ``terms`` as a SQL AND clause + bind params.
-
-    Multiple bare tokens (``foo bar``) intersect: a row must match every
-    token. Field-qualified tokens (``title:^x$``) compose with the
-    same AND semantics. Field-qualified regexes are validated client-
-    side via :func:`re.compile` so a malformed pattern surfaces as a
-    :class:`ValueError` -- the route turns that into 400, not 500.
-    """
+    """Render ``terms`` as a SQL AND clause + bind params."""
     params: list[object] = []
     clauses: list[str] = []
     for query_field, pattern in terms:
@@ -475,18 +759,12 @@ def _build_term_clause(
     return " AND ".join(clauses), params
 
 
-# -- JSON serialization ------------------------------------------------------
-
-
+# Carries id, kind, seq, title, status (so the view can dim retired ``abandoned`` /
+# ``invalid`` nodes), created (the replay order key), and -- for Beliefs -- judgement +
+# confidence so the view can encode a claim's verdict and certainty. The two belief
+# fields are emitted only when present, so a non-Belief row stays clean.
 def _graph_node(row: asyncpg.Record) -> WebView:
-    """Light node projection for the graph view.
-
-    Carries id, kind, seq, title, status (so the view can dim retired
-    ``abandoned`` / ``invalid`` nodes), created (the replay order key), and --
-    for Beliefs -- judgement + confidence so the view can encode a claim's
-    verdict and certainty. The two belief fields are emitted only when present,
-    so a non-Belief row stays clean.
-    """
+    """Light node projection for the graph view."""
     out: WebView = {
         "id": str(row["id"]),
         "kind": row["kind"],
@@ -502,13 +780,10 @@ def _graph_node(row: asyncpg.Record) -> WebView:
     return out
 
 
+# ``valence`` is present only on ``proves`` / ``favors`` citations (NULL on structural
+# edges); the key is omitted when absent so the SPA never has to special-case a null.
 def _graph_edge(row: asyncpg.Record) -> WebView:
-    """Typed directed link for the graph view.
-
-    ``valence`` is present only on ``proves`` / ``favors`` citations (NULL on
-    structural edges); the key is omitted when absent so the SPA never has to
-    special-case a null.
-    """
+    """Typed directed link for the graph view."""
     out: WebView = {
         "from_id": str(row["from_id"]),
         "to_id": str(row["to_id"]),
@@ -519,13 +794,10 @@ def _graph_edge(row: asyncpg.Record) -> WebView:
     return out
 
 
+# Kind-specific columns surface only when populated on this row; NULL columns are
+# omitted so the JSON doesn't carry irrelevant nulls per kind.
 def _row_to_dict(row: asyncpg.Record) -> WebView:
-    """Flatten an ``inquiries`` row to JSON for the SPA.
-
-    Kind-specific columns surface only when populated on this row;
-    NULL columns are omitted so the JSON doesn't carry irrelevant
-    nulls per kind.
-    """
+    """Flatten an ``inquiries`` row to JSON for the SPA."""
     out: WebView = {
         "id": str(row["id"]),
         "kind": row["kind"],
@@ -593,24 +865,10 @@ def _row_to_dict(row: asyncpg.Record) -> WebView:
     return out
 
 
-_SNAPSHOT_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(Snapshot))
-
-_CHANGE_SELECT: Final = (
-    "SELECT c.*, COALESCE(k_user.email, actor_user.email) AS principal "
-    "FROM change_log c "
-    "LEFT JOIN api_keys k ON k.id = c.api_key_id "
-    "LEFT JOIN users k_user ON k_user.id = k.user_id "
-    "LEFT JOIN users actor_user ON actor_user.email = c.actor AND c.api_key_id IS NULL"
-)
-
-
+# Identity columns surface at top level; the flat ``old_*`` / ``new_*`` snapshot columns
+# gather into nested ``old`` / ``new`` objects with only-populated keys present.
 def _change_to_dict(row: asyncpg.Record) -> WebView:
-    """Flatten a ``change_log`` row to JSON.
-
-    Identity columns surface at top level; the flat ``old_*`` / ``new_*``
-    snapshot columns gather into nested ``old`` / ``new`` objects with
-    only-populated keys present.
-    """
+    """Flatten a ``change_log`` row to JSON."""
     api_key_id = row.get("api_key_id")
     out: WebView = {
         "id": str(row["id"]),
@@ -654,13 +912,6 @@ def _snapshot_to_dict(row: asyncpg.Record, *, prefix: str) -> WebView:
         else:
             out[column] = value
     return out
-
-
-_PEER_COLUMNS: Final = (
-    "t.kind AS peer_kind, t.seq AS peer_seq, t.title AS peer_title, "
-    "t.status AS peer_status, t.belief_judgement AS peer_judgement"
-)
-"""SELECT fragment for the joined inquiry on the far end of an edge."""
 
 
 def _peer_ref(row: asyncpg.Record, peer_id: UUID) -> WebView:
@@ -725,172 +976,3 @@ def _add_edge_annotation(ref: WebView, row: asyncpg.Record) -> None:
 def _isoformat(value: object) -> str:
     """ISO-format a datetime; fall back to ``str()`` for non-datetimes."""
     return value.isoformat() if isinstance(value, datetime) else str(value)
-
-
-async def optional_identity(request: Request) -> AuthIdentity | None:
-    """Resolve the request's principal without raising on missing credentials.
-
-    Wraps :func:`auth.current_user` so the HTML page routes can branch
-    on "is the caller signed in?" without the 401 the bearer/session
-    dependency raises when no credential is present. Used as a
-    FastAPI dependency so tests can override it via
-    ``app.dependency_overrides[optional_identity] = ...`` instead of
-    monkey-patching the real auth lookup.
-
-    Returns ``None`` when ``app.state.engine`` is missing (the FastAPI
-    test apps in ``web_test.py`` mount the router without booting the
-    real lifespan) so the page handlers degrade gracefully instead of
-    raising ``AttributeError``.
-    """
-    if not hasattr(request.app.state, "engine"):
-        return None
-    try:
-        return await current_user(request)
-    except HTTPException as exc:
-        if exc.status_code != 401:
-            raise
-        return None
-
-
-def attach(
-    app: FastAPI,
-    *,
-    assets_dir: Path | None = None,
-    static_dir: Path | None = None,
-) -> None:
-    """Mount the read-API router, the SPA at ``/``, and ``/static/*``.
-
-    ``/static`` is served from ``static_dir`` when given, else from the SPA's
-    own ``assets/static`` -- the runtime override lets an operator serve files
-    written after deploy (e.g. a generated report) without copying them into
-    the source tree, while the default keeps the SPA's bundled assets working.
-
-    Idempotent: a second call is a no-op. ``server.py`` attaches the
-    module-global app at import, so a re-import or test reuse must not stack
-    duplicate routes (TRK-SRV-002).
-    """
-    if getattr(app.state, "web_attached", False):
-        return
-    app.state.web_attached = True
-    assets = assets_dir or (Path(__file__).parent / "assets")
-    app.include_router(router, prefix="/api/web")
-
-    static = static_dir or (assets / "static")
-    if static.is_dir():
-        app.mount("/static", StaticFiles(directory=str(static)), name="static")
-
-    _add_page_route(app, "/", assets / "index.html")
-    _add_page_route(app, "/graph", assets / "graph.html")
-    _add_page_route(app, "/console", assets / "console.html")
-    _add_page_route(app, "/me", assets / "me.html")
-    _add_page_route(app, "/admin", assets / "admin.html", admin_only=True)
-    _add_login_route(app, assets / "login.html")
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class _PageRoute:
-    page_path: Path
-    admin_only: bool = False
-
-    async def __call__(
-        self,
-        request: Request,
-        identity: Annotated[AuthIdentity | None, Depends(optional_identity)],
-    ) -> Response:
-        if self.admin_only:
-            return _serve_admin_page(request, identity, self.page_path)
-        return _serve_if_authed(request, identity, self.page_path)
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class _LoginPageRoute:
-    page_path: Path
-
-    async def __call__(self) -> FileResponse:
-        return FileResponse(self.page_path)
-
-
-def _add_page_route(
-    app: FastAPI,
-    path: str,
-    page_path: Path,
-    *,
-    admin_only: bool = False,
-) -> None:
-    """Mount one HTML page when its asset exists."""
-    if page_path.is_file():
-        app.add_api_route(
-            path,
-            _PageRoute(page_path=page_path, admin_only=admin_only),
-            methods=["GET"],
-            include_in_schema=False,
-        )
-
-
-def _add_login_route(app: FastAPI, page_path: Path) -> None:
-    """Mount the login page when its asset exists."""
-    if page_path.is_file():
-        app.add_api_route(
-            "/auth/login_page",
-            _LoginPageRoute(page_path=page_path),
-            methods=["GET"],
-            include_in_schema=False,
-        )
-
-
-def _serve_admin_page(
-    request: Request,
-    identity: AuthIdentity | None,
-    page_path: Path,
-) -> Response:
-    """Return the admin page for admins; redirect/403 otherwise."""
-    redirect = _redirect_when_unauthed(request, identity)
-    if redirect is not None:
-        return redirect
-    if identity is None or identity.role != "admin":
-        raise HTTPException(status_code=403, detail="admin role required")
-    return FileResponse(page_path)
-
-
-def _serve_if_authed(
-    request: Request,
-    identity: AuthIdentity | None,
-    page_path: Path,
-) -> Response:
-    """Return ``page_path`` when signed in, else a 302 to the login page.
-
-    When session auth is unconfigured (no ``session_secret`` on
-    ``app.state.config``) the redirect is suppressed -- the deployment
-    isn't running OAuth and gating the SPA behind a login that doesn't
-    exist would lock everyone out.
-    """
-    redirect = _redirect_when_unauthed(request, identity)
-    if redirect is not None:
-        return redirect
-    return FileResponse(page_path)
-
-
-def _redirect_when_unauthed(
-    request: Request,
-    identity: AuthIdentity | None,
-) -> RedirectResponse | None:
-    """Return a 302 to ``/auth/login_page`` when the request is unauthed.
-
-    Returns ``None`` when the caller is authed *or* when session auth
-    is not configured on this deployment (in which case there is no
-    login page to redirect to and ``current_user`` couldn't have
-    resolved a session cookie anyway).
-    """
-    if identity is not None:
-        return None
-    config = getattr(request.app.state, "config", None)
-    session_secret = getattr(config, "session_secret", None) if config else None
-    if not session_secret:
-        return None
-    next_url = request.url.path
-    if request.url.query:
-        next_url = f"{next_url}?{request.url.query}"
-    return RedirectResponse(
-        url=f"/auth/login_page?next={quote(next_url, safe='')}",
-        status_code=302,
-    )

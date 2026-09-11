@@ -58,6 +58,9 @@ if TYPE_CHECKING:
     from trackinizer.server.store.core import Store
 
 
+# Mirrors the column set selected by ``get_edge`` and the ``FOR UPDATE`` SELECT in
+# ``set_edge_annotation`` / ``remove_edge``; the union of those two column sets is a
+# superset, so one shape serves every edge read the mock has to satisfy.
 def _edge_row(
     *,
     from_id: uuid.UUID,
@@ -67,13 +70,7 @@ def _edge_row(
     valence: float | None = None,
     labels: list[str] | None = None,
 ) -> dict[str, object]:
-    """One ``edges`` row as ``conn.fetchrow`` would return it.
-
-    Mirrors the column set selected by ``get_edge`` and the
-    ``FOR UPDATE`` SELECT in ``set_edge_annotation`` / ``remove_edge``;
-    the union of those two column sets is a superset, so one shape
-    serves every edge read the mock has to satisfy.
-    """
+    """One ``edges`` row as ``conn.fetchrow`` would return it."""
     return {
         "from_id": from_id,
         "from_kind": "Issue",
@@ -247,11 +244,11 @@ class TestBatch:
             "Issue",
             "Issue",
             False,
-            new_uuid(),  # first edge
+            new_uuid(),  # first edge.
             "Issue",
             "Issue",
             False,
-            new_uuid(),  # second edge
+            new_uuid(),  # second edge.
         ]
         r = client.post(
             "/api/edges/batch",
@@ -603,3 +600,9 @@ class TestCoverageRoutesAndCli:
             ).status_code
             == 200
         )
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.main import test_main
+
+    test_main(__file__)

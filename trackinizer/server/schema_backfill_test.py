@@ -55,19 +55,17 @@ _SIGNATURE: Final = "c2lnbmF0dXJl"
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """A bootstrapped store on the shared integration database."""
+    """Return a bootstrapped store on the shared integration database."""
     built = Store(integ_engine, embed=StubEmbedder())
     await built.bootstrap()
     yield built
 
 
+# Written directly, because the append path this exercises is the one phase 7 deletes:
+# the point is what the migration does with rows that already exist in a deployed
+# database.
 async def _legacy_session(store: Store) -> UUID:
-    """A session holding legacy ``agent_session_events`` rows only.
-
-    Written directly, because the append path this exercises is the one phase
-    7 deletes: the point is what the migration does with rows that already
-    exist in a deployed database.
-    """
+    """Return a session holding legacy ``agent_session_events`` rows only."""
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         # RECREATE the retired table. 021 drops it and the baseline no longer
@@ -127,7 +125,7 @@ async def test_a_fresh_install_has_no_table_to_convert(store: Store) -> None:
     async with store.engine.acquire() as conn:
         await conn.execute("DROP TABLE IF EXISTS agent_session_events")
 
-    await _run_backfill(store)  # must not raise
+    await _run_backfill(store)  # must not raise.
 
 
 @pytest.mark.db_pglite
@@ -337,7 +335,7 @@ async def test_a_mixed_session_keeps_its_parts_separate(store: Store) -> None:
     assert [row.text for row in native] == ["native turn"]
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

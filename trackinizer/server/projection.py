@@ -39,6 +39,10 @@ async def fetch_edges(
 ) -> tuple[list[asyncpg.Record], list[asyncpg.Record]]:
     """Return the outbound and inbound edge rows touching ``subject_id``.
 
+    Args:
+      conn: Conn.
+      subject_id: Subject id.
+
     Returns:
       outbound: Rows where ``subject_id`` is the ``from`` side, each carrying
         the ``to`` endpoint and the edge annotations.
@@ -72,6 +76,10 @@ async def fetch_edges_bulk(
     ``list_kind`` / ``proves_belief``. Each row in the returned
     buckets has the same shape as the corresponding ``fetch_edges`` list.
 
+    Args:
+      conn: Conn.
+      subject_ids: Subject ids.
+
     Returns:
       outbound: ``subject_id -> outbound edge rows`` (the subject is the
         ``from`` side), one bucket per requested id (empty when none).
@@ -103,93 +111,6 @@ async def fetch_edges_bulk(
     return outbound, inbound
 
 
-def _matching(
-    rows: Sequence[asyncpg.Record], edge_kind: Edge.Kind
-) -> list[asyncpg.Record]:
-    """Edge rows of one kind, in fetch order."""
-    return [r for r in rows if r["edge_kind"] == edge_kind]
-
-
-def _peer(
-    row: asyncpg.Record,
-    *,
-    id_col: Literal["from_id", "to_id"],
-    kind_col: Literal["from_kind", "to_kind"],
-) -> tuple[UUID, Inquiry.InquiryKind, str | None, tuple[str, ...] | None]:
-    """The peer id/kind and the branch-agnostic ``note`` / ``labels``."""
-    labels = row["labels"]
-    return (
-        cast(UUID, row[id_col]),
-        cast(Inquiry.InquiryKind, row[kind_col]),
-        cast(str | None, row["note"]),
-        None if labels is None else tuple(cast(Sequence[str], labels)),
-    )
-
-
-def _inquiry_edges(
-    rows: Sequence[asyncpg.Record],
-    *,
-    edge_kind: Edge.Kind,
-    id_col: Literal["from_id", "to_id"],
-    kind_col: Literal["from_kind", "to_kind"],
-) -> tuple[InquiryEdge, ...]:
-    """:class:`InquiryEdge` refs (note/labels only) for one edge kind."""
-    return tuple(
-        InquiryEdge(id=pid, kind=pkind, note=note, labels=labels)
-        for r in _matching(rows, edge_kind)
-        for pid, pkind, note, labels in (_peer(r, id_col=id_col, kind_col=kind_col),)
-    )
-
-
-def _issue_edges(
-    rows: Sequence[asyncpg.Record],
-    *,
-    edge_kind: Edge.Kind,
-    id_col: Literal["from_id", "to_id"],
-    kind_col: Literal["from_kind", "to_kind"],
-) -> tuple[IssueEdge, ...]:
-    """:class:`IssueEdge` refs (carry contextual ``priority``) for one edge kind."""
-    return tuple(
-        IssueEdge(
-            id=pid,
-            kind=pkind,
-            note=note,
-            labels=labels,
-            priority=r["priority"],
-        )
-        for r in _matching(rows, edge_kind)
-        for pid, pkind, note, labels in (_peer(r, id_col=id_col, kind_col=kind_col),)
-    )
-
-
-def _artifact_edges(
-    rows: Sequence[asyncpg.Record],
-    *,
-    edge_kind: Edge.Kind,
-    id_col: Literal["from_id", "to_id"],
-    kind_col: Literal["from_kind", "to_kind"],
-) -> tuple[ArtifactEdge, ...]:
-    """:class:`ArtifactEdge` refs (carry signed ``valence``) for one edge kind.
-
-    A NULL stored valence (a legacy citation row written before the column was
-    populated) reads as :data:`CITATION_VALENCE_DEFAULT`; a citation written
-    through the current paths always carries a concrete value.
-    """
-    return tuple(
-        ArtifactEdge(
-            id=pid,
-            kind=pkind,
-            note=note,
-            labels=labels,
-            valence=(
-                CITATION_VALENCE_DEFAULT if r["valence"] is None else r["valence"]
-            ),
-        )
-        for r in _matching(rows, edge_kind)
-        for pid, pkind, note, labels in (_peer(r, id_col=id_col, kind_col=kind_col),)
-    )
-
-
 def materialize(
     row: asyncpg.Record,
     outbound_buckets: dict[UUID, list[asyncpg.Record]],
@@ -200,6 +121,15 @@ def materialize(
     Used by every list / lookup path so the projection-aware view that
     ``get_inquiry`` returns is the only view callers ever see -- no
     silently truncated fields on bulk responses.
+
+    Args:
+      row: Row.
+      outbound_buckets: Outbound buckets.
+      inbound_buckets: Inbound buckets.
+
+    Returns:
+      result: The Inquiry.
+
     """
     cls = KIND_TO_CLASS[row["kind"]]
     base = cls.from_row(row)
@@ -219,10 +149,19 @@ def project_relationships(
     Every edge stores child -> parent, so a vertex's parent-pointing (forward)
     fields read its OUTBOUND ``to`` endpoints and its child-pointing (inverse)
     fields read its INBOUND ``from`` endpoints.
+
+    Args:
+      base: Base.
+      outbound: Outbound.
+      inbound: Inbound.
+
+    Returns:
+      base: The Inquiry.
+
     """
     base = replace(
         base,
-        # supersedes stored successor(child) -> predecessor(parent).
+        # Supersedes stored successor(child) -> predecessor(parent).
         supersedes=_inquiry_edges(
             outbound, edge_kind="supersedes", id_col="to_id", kind_col="to_kind"
         ),
@@ -242,7 +181,7 @@ def project_relationships(
     if isinstance(base, Issue):
         base = replace(
             base,
-            # narrows stored narrower(child) -> broader(parent): the forward
+            # Narrows stored narrower(child) -> broader(parent): the forward
             # ``narrows`` lists the broader parents this issue narrows (outbound
             # to-side); the inverse ``narrowed_by`` lists its narrower children
             # (inbound from-side).
@@ -252,7 +191,7 @@ def project_relationships(
             narrowed_by=_issue_edges(
                 inbound, edge_kind="narrows", id_col="from_id", kind_col="from_kind"
             ),
-            # requires stored requirer(child) -> prerequisite(parent).
+            # Requires stored requirer(child) -> prerequisite(parent).
             requires=_issue_edges(
                 outbound, edge_kind="requires", id_col="to_id", kind_col="to_kind"
             ),
@@ -300,3 +239,88 @@ def project_relationships(
             ),
         )
     return base
+
+
+def _matching(
+    rows: Sequence[asyncpg.Record], edge_kind: Edge.Kind
+) -> list[asyncpg.Record]:
+    """Edge rows of one kind, in fetch order."""
+    return [r for r in rows if r["edge_kind"] == edge_kind]
+
+
+def _peer(
+    row: asyncpg.Record,
+    *,
+    id_col: Literal["from_id", "to_id"],
+    kind_col: Literal["from_kind", "to_kind"],
+) -> tuple[UUID, Inquiry.InquiryKind, str | None, tuple[str, ...] | None]:
+    """Return the peer id/kind and the branch-agnostic ``note`` / ``labels``."""
+    labels = row["labels"]
+    return (
+        cast(UUID, row[id_col]),
+        cast(Inquiry.InquiryKind, row[kind_col]),
+        cast(str | None, row["note"]),
+        None if labels is None else tuple(cast(Sequence[str], labels)),
+    )
+
+
+def _inquiry_edges(
+    rows: Sequence[asyncpg.Record],
+    *,
+    edge_kind: Edge.Kind,
+    id_col: Literal["from_id", "to_id"],
+    kind_col: Literal["from_kind", "to_kind"],
+) -> tuple[InquiryEdge, ...]:
+    """:class:`InquiryEdge` refs (note/labels only) for one edge kind."""
+    return tuple(
+        InquiryEdge(id=pid, kind=pkind, note=note, labels=labels)
+        for r in _matching(rows, edge_kind)
+        for pid, pkind, note, labels in (_peer(r, id_col=id_col, kind_col=kind_col),)
+    )
+
+
+def _issue_edges(
+    rows: Sequence[asyncpg.Record],
+    *,
+    edge_kind: Edge.Kind,
+    id_col: Literal["from_id", "to_id"],
+    kind_col: Literal["from_kind", "to_kind"],
+) -> tuple[IssueEdge, ...]:
+    """:class:`IssueEdge` refs (carry contextual ``priority``) for one edge kind."""
+    return tuple(
+        IssueEdge(
+            id=pid,
+            kind=pkind,
+            note=note,
+            labels=labels,
+            priority=r["priority"],
+        )
+        for r in _matching(rows, edge_kind)
+        for pid, pkind, note, labels in (_peer(r, id_col=id_col, kind_col=kind_col),)
+    )
+
+
+# A NULL stored valence (a legacy citation row written before the column was populated)
+# reads as :data:`CITATION_VALENCE_DEFAULT`; a citation written through the current
+# paths always carries a concrete value.
+def _artifact_edges(
+    rows: Sequence[asyncpg.Record],
+    *,
+    edge_kind: Edge.Kind,
+    id_col: Literal["from_id", "to_id"],
+    kind_col: Literal["from_kind", "to_kind"],
+) -> tuple[ArtifactEdge, ...]:
+    """:class:`ArtifactEdge` refs (carry signed ``valence``) for one edge kind."""
+    return tuple(
+        ArtifactEdge(
+            id=pid,
+            kind=pkind,
+            note=note,
+            labels=labels,
+            valence=(
+                CITATION_VALENCE_DEFAULT if r["valence"] is None else r["valence"]
+            ),
+        )
+        for r in _matching(rows, edge_kind)
+        for pid, pkind, note, labels in (_peer(r, id_col=id_col, kind_col=kind_col),)
+    )

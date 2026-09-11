@@ -109,8 +109,8 @@ def parse_list_query(
         return None
     kinds: list[Inquiry.InquiryKind] = [] if kind is None else [kind]
     ranges: dict[Inquiry.InquiryKind, tuple[SeqRange, ...]] = {}
-    cli_filters: list[tuple[str, FilterOp, str]] = []  # CLI names, not yet canonical
-    committed = False  # a range or filter has fixed this as a query, not a create
+    cli_filters: list[tuple[str, FilterOp, str]] = []  # CLI names, not yet canonical.
+    committed = False  # a range or filter has fixed this as a query, not a create.
     for clause in _scan_clauses(tokens):
         if isinstance(clause, _KindClause):
             kinds.append(clause.kind)
@@ -183,7 +183,9 @@ class _FilterClause:
     """A ``field op value`` predicate in raw CLI spelling."""
 
     field: str
+
     op: FilterOp
+
     value: str
 
 
@@ -199,6 +201,20 @@ class _MutationClause:
     tokens: tuple[str, ...]
 
 
+def token(tokens: Sequence[str], index: int) -> str | None:
+    """``tokens[index]`` if in range, else ``None``.
+
+    Args:
+      tokens: Tokens.
+      index: Index.
+
+    Returns:
+      result: The str | None.
+
+    """
+    return tokens[index] if index < len(tokens) else None
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class _UnknownClause:
     """A token that opens none of the above (edge, relation, create field).
@@ -211,97 +227,11 @@ class _UnknownClause:
     """
 
     token: str
+
     bad_filter_op: str | None = None
 
 
 _Clause = _KindClause | _RangeClause | _FilterClause | _MutationClause | _UnknownClause
-
-
-def _is_mutation_head(field: str, op: str | None) -> bool:
-    """Whether ``field op`` opens a bulk-apply mutation triple.
-
-    A scalar field takes ``to``; a list field takes ``to``, ``add``, or
-    ``del``. Anything else (edges, relations, costs) is not a field mutation
-    and is rejected once a selector has committed to the bulk-apply form.
-    """
-    if field in EDITABLE_FIELDS:
-        return op == "to"
-    if field in LIST_FIELDS:
-        return op in ("to", "add", "del")
-    return False
-
-
-def _mutation_span(tokens: Sequence[str], index: int) -> int:
-    """Token width of the mutation at ``index``: ``field op value(s)``.
-
-    Three for a scalar or plain-list mutation; ``2 + consumed`` for a ref-list
-    field whose value is a typed ``kind seq`` ref (``codechange add 7``), so
-    the ref survives the bulk-apply scan intact (trax #419).
-    """
-    spec = FIELDS_BY_NAME.get(tokens[index].lower())
-    if spec is None or spec.ref_kind is None:
-        return 3
-    _, consumed = consume_ref(tokens, index + 2, kind_hint=spec.ref_kind)
-    return 2 + consumed
-
-
-def _scan_clauses(tokens: Sequence[str]) -> Iterator[_Clause]:
-    """Tokenize a row tail into the clause grammar shared by query forms.
-
-    One walk of the ``kind | range | filter | mutation`` grammar, emitting a
-    typed clause per step and leaving the keep/reject policy to each consumer.
-    The only lexical error raised here is a missing filter value, which is
-    unambiguous regardless of context. A known filter field with a garbage
-    operator (``owner not ...``) is flagged on its :class:`_UnknownClause` via
-    ``bad_filter_op`` rather than raised, because whether it is an error
-    depends on context: an error inside a committed filter context, but a
-    plain create field where no query has been established.
-    """
-    index = 0
-    while index < len(tokens):
-        token_text = tokens[index].lower()
-        op_next = token(tokens, index + 1)
-        op_next_lower = op_next.lower() if op_next is not None else None
-        if token_text in KIND_LOWER and not _is_mutation_head(
-            token_text, op_next_lower
-        ):
-            # A token that is both a kind keyword and a list field (only
-            # ``codechange``) is a bare kind ONLY when no mutation operator
-            # follows: ``trax issue belief`` widens, but ``codechange add 7`` is
-            # a field mutation. A bare kind is never followed by to/add/del, so
-            # the next token disambiguates without ambiguity.
-            yield _KindClause(kind=KIND_LOWER[token_text])
-            index += 1
-        elif ranges := _parse_range(token_text):
-            yield _RangeClause(ranges=ranges)
-            index += 1
-        elif op_next_lower in FILTER_OPS:
-            op_value = op_next_lower
-            if op_value in VALUELESS_FILTER_OPS:
-                # ``isnull`` / ``notnull`` carry no operand: two tokens, no value.
-                yield _FilterClause(field=token_text, op=op_value, value="")
-                index += 2
-            else:
-                if index + 2 >= len(tokens):
-                    raise ClientError(
-                        f"expected value for filter field {tokens[index]!r}"
-                    )
-                yield _FilterClause(
-                    field=token_text, op=op_value, value=tokens[index + 2]
-                )
-                index += 3
-        elif _is_mutation_head(token_text, op_next_lower):
-            span = _mutation_span(tokens, index)
-            yield _MutationClause(tokens=tuple(tokens[index : index + span]))
-            index += span
-        else:
-            bad_op = (
-                op_next
-                if token_text in _ALL_FILTER_FIELDS and op_next_lower is not None
-                else None
-            )
-            yield _UnknownClause(token=tokens[index], bad_filter_op=bad_op)
-            index += 1
 
 
 def parse_bulk_apply(
@@ -388,38 +318,19 @@ def parse_bulk_apply(
     return BulkApply(query=query, actions=actions)
 
 
-def _range_text(ranges: tuple[SeqRange, ...]) -> str:
-    """Render parsed ranges back to their comma-separated selector token.
-
-    The inverse of :func:`_parse_range` for re-parsing purposes: the
-    bulk-apply selector half is re-emitted as one token that
-    :func:`parse_list_query` re-parses. Each interval uses the wire spelling
-    (a single-row interval renders ``n..n``), which :func:`_parse_interval`
-    accepts identically to the bare ``n`` the user may have typed.
-    """
-    return ",".join(format_interval(interval) for interval in ranges)
-
-
-def _as_bulk_action(action: Action) -> SetField | AddList | RemoveList:
-    """Narrow a parsed action to a field mutation, raising on anything else.
-
-    ``_is_mutation_head`` already gates the mutation tokens to scalar and list
-    fields, so this never fires in practice; it is the tripwire that keeps the
-    two in lockstep if either changes.
-    """
-    if isinstance(action, SetField | AddList | RemoveList):
-        return action
-    raise ClientError(
-        "bulk apply supports only field mutations (FIELD to/add/del VALUE)"
-    )
-
-
 def parse_actions(tokens: Sequence[str]) -> list[Action]:
     """Parse row-local action tokens.
 
     Keywords match case-insensitively (GRAMMAR.md §1); values are kept
     verbatim. ``del`` is terminal, so any token after it is rejected. A
     scalar field may be set only once per command.
+
+    Args:
+      tokens: Tokens.
+
+    Returns:
+      actions: The list[Action].
+
     """
     actions: list[Action] = []
     set_fields: set[str] = set()
@@ -524,76 +435,31 @@ def parse_metric_action(tokens: Sequence[str]) -> MetricAction:
     return MetricAction(masks=tuple(masks), write=write, sort=sort, limit=limit)
 
 
-def _parse_metric_mask(tokens: Sequence[str], index: int) -> tuple[MetricMask, int]:
-    """Parse one ``at`` clause starting at ``index`` (past the ``at``).
-
-    Returns the mask and the index just past it. A bareword (a token not in
-    ``key``/``step``/``value``) is the ``at key is <bareword>`` shorthand.
-
-    The axis, comparator, and reduction sets are read from the wire constants
-    (the ONE definition), so the CLI parser cannot drift from the wire model or
-    the store: adding a metric op in one place is a type error until the wire
-    ``Literal`` gains it too. This is the fix for the class of bug where the
-    parser gated on the broad inquiry ``FILTER_OPS`` and admitted ops (``re`` /
-    ``isnull``) the grid does not support.
-    """
-    head = required_token(tokens, index, "'at' requires a field or key")
-    if head.lower() not in frozenset(wire_metrics_query.METRIC_AXES):
-        return MetricMask(field="key", op="is", value=head), index + 1
-    field = cast(Literal["key", "step", "value"], head.lower())
-    op = required_token(
-        tokens, index + 1, f"expected an operator after {field!r}"
-    ).lower()
-    # Step-axis reductions: highest/lowest step per key ("final"/"first"). They
-    # take no value and apply only to the ``step`` axis (metric-grammar.md
-    # Grammar summary).
-    if op in frozenset(get_args(wire_metrics_query.MetricReduce.__value__)):
-        if field != "step":
-            raise ClientError(f"{op} applies to step only, not {field!r}")
-        return MetricMask(field=field, op=op, value=""), index + 2
-    # Gate on the narrow metric comparator set, NOT the broad inquiry
-    # ``FILTER_OPS``: the grid has no text-regex or presence ops, so ``re`` /
-    # ``nre`` / ``isnull`` / ``notnull`` are unknown here. A presence op thus
-    # falls into this branch instead of being treated as a valued comparator,
-    # so it can never consume the following clause's token as a spurious value.
-    if op not in frozenset(wire_metrics_query.METRIC_COMPARE_OPS):
-        raise ClientError(f"unknown metric operator {op!r} after {field!r}")
-    value = required_token(tokens, index + 2, f"expected a value after {field} {op}")
-    return MetricMask(field=field, op=op, value=value), index + 3
-
-
-def _parse_metric_sort(direction: str) -> Literal["asc", "desc"]:
-    """Parse a ``sort`` operand into a direction literal, raising otherwise."""
-    lowered = direction.lower()
-    if lowered == "asc":
-        return "asc"
-    if lowered == "desc":
-        return "desc"
-    raise ClientError(f"'sort' takes asc or desc, got {direction!r}")
-
-
-def _parse_metric_limit(token_text: str) -> int:
-    """Parse a ``limit`` operand into a positive int, raising otherwise."""
-    try:
-        limit = int(token_text)
-    except ValueError:
-        raise ClientError(
-            f"limit must be a positive integer, got {token_text!r}"
-        ) from None
-    if limit <= 0:
-        raise ClientError(f"limit must be a positive integer, got {token_text!r}")
-    return limit
-
-
 def ref_text(ref: Ref) -> str:
-    """CLI spelling for ``ref``: seq number or UUID."""
+    """CLI spelling for ``ref``: seq number or UUID.
+
+    Args:
+      ref: Ref.
+
+    Returns:
+      result: The str.
+
+    """
     if isinstance(ref, SeqRef):
         return str(ref.seq)
     return str(ref.uuid)
 
 
 def starts_with_ref(tokens: Sequence[str]) -> bool:
-    """Whether the first token is a seq number or UUID."""
+    """Whether the first token is a seq number or UUID.
+
+    Args:
+      tokens: Tokens.
+
+    Returns:
+      result: The bool.
+
+    """
     return bool(tokens) and (
         tokens[0].isdigit() or UUID_RE.match(tokens[0]) is not None
     )
@@ -607,6 +473,14 @@ def parse_subject_list(
     Accepts bare seqs (under the leading or most recently named kind),
     explicit ``kind seq`` pairs, and UUIDs. Returns ``None`` if any token
     is a tail keyword (field, edge, op) or a trailing kind has no seq.
+
+    Args:
+      tokens: Tokens.
+      default_kind: Default kind.
+
+    Returns:
+      result: The list[Ref] | None.
+
     """
     subjects: list[Ref] = []
     current_kind = default_kind
@@ -666,6 +540,14 @@ def edge_metadata(
     where metadata is unambiguous -- there is no row yet for them to mean. After
     a target they stay marker-required (a bare collision word is a vertex field
     that rolls up to the subject).
+
+    Args:
+      tokens: Tokens.
+      allow_bare_collision: Allow bare collision.
+
+    Returns:
+      result: The tuple[Mapping[str, object], int].
+
     """
     metadata: dict[str, object] = {}
     index = 0
@@ -735,109 +617,26 @@ def edge_metadata(
                 removed = frozenset(resolve_labels((value,)))
                 labels = [label for label in labels if label not in removed]
             metadata["labels"] = labels
-        # field + op + value (3), plus the ``edge`` marker when present.
+        # Field + op + value (3), plus the ``edge`` marker when present.
         index += 4 if marked else 3
     return metadata, index
 
 
-def token(tokens: Sequence[str], index: int) -> str | None:
-    """``tokens[index]`` if in range, else ``None``."""
-    return tokens[index] if index < len(tokens) else None
-
-
 def required_token(tokens: Sequence[str], index: int, message: str) -> str:
-    """``tokens[index]`` if in range, else raise ``ClientError(message)``."""
+    """``tokens[index]`` if in range, else raise ``ClientError(message)``.
+
+    Args:
+      tokens: Tokens.
+      index: Index.
+      message: Message.
+
+    Returns:
+      result: The str.
+
+    """
     if index >= len(tokens):
         raise ClientError(message)
     return tokens[index]
-
-
-def _parse_range(token_text: str) -> tuple[SeqRange, ...]:
-    """Parse a range token into one or more intervals, or ``()`` if not a range.
-
-    A token is a range token when it carries ``..`` or a comma. A comma
-    unions disjoint elements in a single token (``..10,222..225,227,228..``);
-    each comma-separated element is either a ``start..stop`` interval or a
-    bare seq, which is the degenerate interval ``n..n``. The empty tuple
-    signals "not a range token" so the scanner falls through to the next
-    clause kind, leaving a lone seq (``227``) to parse as a ref.
-    """
-    if ".." not in token_text and "," not in token_text:
-        return ()
-    return tuple(_parse_interval(part) for part in token_text.split(","))
-
-
-def _parse_interval(part: str) -> SeqRange:
-    """Parse one range element -- an interval or a bare seq -- raising if malformed.
-
-    A bare seq ``n`` (no ``..``) is the single-row interval ``n..n``, the
-    CLI-only ergonomic the wire never sees; an element with ``..`` defers to
-    the shared wire :func:`parse_interval` so the CLI and the server agree on
-    one interval grammar. An empty element (a stray comma) is an error.
-    """
-    if ".." not in part:
-        if not part.isdigit():
-            raise ClientError(f"invalid range element {part!r}")
-        return SeqRange(start=int(part), stop=int(part))
-    try:
-        return parse_interval(part)
-    except ValueError as err:
-        raise ClientError(str(err)) from err
-
-
-def _validate_cli_filters(
-    kinds: Sequence[Inquiry.InquiryKind],
-    filters: Sequence[tuple[str, FilterOp, str]],
-) -> None:
-    """Reject filters whose CLI field isn't valid for every listed kind.
-
-    Runs before canonicalization, so the error names the spelling the user
-    typed (``kind``) rather than the server-canonical ``issue_kind``.
-    """
-    for field, _op, _value in filters:
-        missing = [k for k in kinds if field not in FILTER_FIELDS_CLI[k]]
-        if not missing:
-            continue
-        raise ClientError(f"unknown filter field {field!r} for {', '.join(missing)}")
-
-
-def _kinds_owning(
-    filters: Sequence[tuple[str, FilterOp, str]],
-) -> tuple[Inquiry.InquiryKind, ...]:
-    """The kinds every filtered field is valid for, for a kindless query.
-
-    A query that named no kind means "every kind", but a kind-specific field
-    narrows that set rather than failing against the kinds that lack it:
-    ``trax judgement is proven`` is a Belief query because Belief is the only
-    kind owning ``judgement``. Validating instead (the named-kind path) would
-    reject it against the other eight.
-
-    Args:
-      filters: The query's CLI-spelled filter triples.
-
-    Returns:
-      kinds: Every kind owning all filtered fields, in declaration order.
-
-    Raises:
-      ClientError: No kind owns some field, so the token is a typo rather
-        than a narrowing; or the fields are individually valid but share no
-        kind, which no row could satisfy.
-
-    """
-    for field, _op, _value in filters:
-        if not any(field in FILTER_FIELDS_CLI[k] for k in VALID_KINDS):
-            raise ClientError(f"unknown filter field {field!r}")
-    kinds: tuple[Inquiry.InquiryKind, ...] = tuple(
-        k
-        for k in VALID_KINDS
-        if all(field in FILTER_FIELDS_CLI[k] for field, _op, _value in filters)
-    )
-    if not kinds:
-        raise ClientError(
-            "no kind carries every filtered field: "
-            + ", ".join(repr(field) for field, _op, _value in filters)
-        )
-    return kinds
 
 
 def consume_ref(
@@ -846,7 +645,17 @@ def consume_ref(
     *,
     kind_hint: Inquiry.InquiryKind | None = None,
 ) -> tuple[Ref, int]:
-    """Consume a reference at ``args[pos]``; return it and how many tokens it used."""
+    """Consume a reference at ``args[pos]``; return it and how many tokens it used.
+
+    Args:
+      args: Args.
+      pos: Pos.
+      kind_hint: Kind hint.
+
+    Returns:
+      result: The tuple[Ref, int].
+
+    """
     if pos >= len(args):
         raise ClientError("expected reference")
     head = args[pos]
@@ -871,176 +680,6 @@ def consume_ref(
     raise ClientError(f"cannot parse reference at {head!r}")
 
 
-def _parse_scalar_action(
-    tokens: Sequence[str], index: int, field: str
-) -> tuple[Action, int]:
-    op = token(tokens, index + 1)
-    op_lower = op.lower() if op is not None else None
-    if op_lower != "to":
-        return ReadField(field=field), 1
-    value = required_token(tokens, index + 2, f"expected value for {field}")
-    # No lookahead past the value: a trailing ``del`` is the terminal row
-    # delete, reached by ``parse_actions``'s outer loop, not a field delete.
-    # The old ``index+3`` peek misread a chained set's terminal ``del`` (e.g.
-    # ``title to x description to y del``) as a delete of this field (BUG-001).
-    return SetField(field=field, value=field_value(field, value)), 3
-
-
-def _parse_cost_action(
-    tokens: Sequence[str], index: int, field: str
-) -> tuple[Action, int]:
-    op = token(tokens, index + 1)
-    if op is None:
-        return ReadField(field=field), 1
-    if op.lower() != "add":
-        raise ClientError("cost fields use add with a signed USD delta")
-    value = required_token(tokens, index + 2, f"expected value for {field}")
-    try:
-        delta = float(value)
-    except ValueError:
-        # A non-numeric cost must surface as a clean ClientError, not a raw
-        # ValueError leaking a Python traceback to the CLI (mirrors the edge
-        # valence guard).
-        raise ClientError(f"cost {field!r} must be a number, got {value!r}") from None
-    return AddCost(field=field, value=delta), 3
-
-
-def _parse_list_action(
-    tokens: Sequence[str], index: int, field: str
-) -> tuple[Action, int]:
-    op = token(tokens, index + 1)
-    op_lower = op.lower() if op is not None else None
-    if op_lower is None:
-        return ReadField(field=list_payload_field(field)), 1
-    if op_lower not in ("to", "add", "del"):
-        raise ClientError(f"list field {field} uses to, add, or del")
-    if op_lower == "del" and token(tokens, index + 2) is None:
-        raise ClientError(f"del requires a value for list field {field!r}")
-    # Ref-list fields (codechange(s) -> CodeChange) take a typed `kind seq` ref
-    # (one or two tokens); the parsed Ref rides on the action so the verb layer
-    # resolves it once (trax #419). Plain list fields (label, subscriber) take
-    # one free-string token.
-    spec = FIELDS_BY_NAME.get(field)
-    if spec is not None and spec.ref_kind is not None:
-        ref, consumed = consume_ref(tokens, index + 2, kind_hint=spec.ref_kind)
-        if op_lower == "to":
-            return SetField(field=list_payload_field(field), value=(ref,)), consumed + 2
-        if op_lower == "add":
-            return AddList(field=field, value=ref_text(ref), ref=ref), consumed + 2
-        return RemoveList(field=field, value=ref_text(ref), ref=ref), consumed + 2
-    value = required_token(tokens, index + 2, f"expected value for {field}")
-    if op_lower == "to":
-        return SetField(field=list_payload_field(field), value=(value,)), 3
-    if op_lower == "add":
-        return AddList(field=field, value=value), 3
-    return RemoveList(field=field, value=value), 3
-
-
-def _parse_relation_or_edge(
-    tokens: Sequence[str],
-    index: int,
-    word: str,
-    relation: tuple[str, bool],
-) -> tuple[Action, int]:
-    """Decide between a relation projection and an edge mutation.
-
-    A digit, UUID, or no-token tail means "list rows in this relation" (or
-    select one by index). Anything else looks like a ref, so dispatch to
-    ``_parse_edge_action`` if the keyword is also an edge alias. A
-    relation-only alias followed by a ref is a grammar error, not a KeyError.
-    """
-    value = token(tokens, index + 1)
-    if value is None or value.isdigit():
-        return RelationAction(
-            relation=relation,
-            index=value or "",
-            against=word in AGAINST_RELATION_SPELLINGS,
-        ), 2 if value else 1
-    edge = EDGE_ALIASES.get(word)
-    if edge is None:
-        raise ClientError(
-            f"{word!r} is a relation, not an edge; it does not accept a ref"
-        )
-    return _parse_edge_action(tokens, index, edge)
-
-
-def _parse_edge_action(
-    tokens: Sequence[str],
-    index: int,
-    edge: Edge,
-) -> tuple[Action, int]:
-    # PRE-target metadata: words between the edge keyword and its target annotate
-    # the edge unambiguously (no target yet for them to mean), so even the
-    # collision words are accepted bare here. ``narrows priority to high issue 3``
-    # == ``narrows issue 3 edge priority to high``.
-    pre_meta, pre_consumed = edge_metadata(
-        tokens[index + 1 :], allow_bare_collision=True
-    )
-    target_start = index + 1 + pre_consumed
-    target, consumed = consume_edge_target(tokens, target_start)
-    offset = target_start + consumed
-    terminator = token(tokens, offset)
-    if terminator is not None and terminator.lower() == "del":
-        if isinstance(target, InlineCreate):
-            raise ClientError("cannot 'del' an inline-create edge target")
-        if pre_meta:
-            raise ClientError("cannot combine edge metadata with 'del'")
-        return EdgeAction(
-            edge=edge, target=target, metadata={}, remove=True
-        ), pre_consumed + consumed + 2
-    # An inline-create target captures metadata written right after its fields as
-    # THIS edge's annotation (the edge that produced the node -- the deepest edge so
-    # far). Trailing metadata after the target works too and merges in; the inline
-    # form is what lets a verdict note sit beside the node it describes without a
-    # `begin ... end` wrapper.
-    inbound = dict(target.inbound_meta) if isinstance(target, InlineCreate) else {}
-    # POST-target metadata: a bare collision word here is a vertex field (maximal
-    # munch rolls it up to the subject), so ``edge_metadata`` stops at it; only an
-    # ``edge``-marked or edge-only word is consumed. Merge precedence on a same-key
-    # tie is last-write-wins: inbound (an inline target's own meta), then pre-target,
-    # then post-target -- so post-target overrides pre. Setting the same key twice
-    # is malformed input either way; the order just makes it deterministic.
-    metadata, consumed_metadata = edge_metadata(tokens[offset:])
-    merged = _apply_valence_alias(edge, {**inbound, **dict(pre_meta), **metadata})
-    return EdgeAction(
-        edge=edge,
-        target=target,
-        metadata=merged,
-        annotate=bool(merged),
-    ), pre_consumed + consumed + 1 + consumed_metadata
-
-
-def _apply_valence_alias(edge: Edge, metadata: dict[str, object]) -> dict[str, object]:
-    """Resolve a citation alias's valence convention into a concrete ``valence``.
-
-    A plain ``proves`` / ``favors`` defaults to ``+0.5``; a ``dis*`` spelling
-    defaults to ``-0.5``. Either way the polarity is the SPELLING and the value
-    is the magnitude, so a user-supplied valence must be non-negative on BOTH
-    branches: the positive spelling stores it as-is, the ``dis*`` spelling
-    negates it. For a non-citation alias (``valence_default`` unset) the
-    metadata passes through.
-    """
-    if edge.valence_default is None:
-        return metadata
-    given = metadata.get("valence")
-    if given is None:
-        metadata["valence"] = edge.valence_default
-        return metadata
-    value = FloatCodec.coerce(given)
-    if value < 0:
-        # The magnitude is non-negative; the for/against polarity is carried by
-        # the spelling (plain vs ``dis*``), not by a negative value. A positive
-        # spelling accepting a negative valence would store an against-citation
-        # under a for-spelling (BUG-002).
-        polarity = "'dis...'" if edge.valence_negate else "a citation"
-        raise ClientError(
-            f"{polarity} edge takes a non-negative valence "
-            f"(the spelling sets the for/against polarity); got {value}"
-        )
-    metadata["valence"] = -value if edge.valence_negate else value
-    return metadata
-
-
 def consume_edge_target(args: Sequence[str], pos: int = 0) -> tuple[EdgeTarget, int]:
     """Consume a ref or an inline-create as an edge-action target.
 
@@ -1057,6 +696,14 @@ def consume_edge_target(args: Sequence[str], pos: int = 0) -> tuple[EdgeTarget, 
     ``begin`` / ``end`` are bare words, not punctuation, so they stay inert in
     bash and fish; their literal spelling is the whole vocabulary, so they
     read better inline than behind a constant.
+
+    Args:
+      args: Args.
+      pos: Pos.
+
+    Returns:
+      result: The tuple[EdgeTarget, int].
+
     """
     if pos >= len(args):
         raise ClientError("expected reference")
@@ -1066,7 +713,7 @@ def consume_edge_target(args: Sequence[str], pos: int = 0) -> tuple[EdgeTarget, 
         end = token(args, pos + 1 + consumed)
         if end is None or end.lower() != "end":
             raise ClientError("'begin' group must be closed by 'end'")
-        return inline, consumed + 2  # +begin +end
+        return inline, consumed + 2  # +begin +end.
     if UUID_RE.match(head):
         return UuidRef(uuid=uuid.UUID(head)), 1
     if head.lower() in KIND_LOWER:
@@ -1088,28 +735,25 @@ def consume_edge_target(args: Sequence[str], pos: int = 0) -> tuple[EdgeTarget, 
     return consume_ref(args, pos)
 
 
+# The create must LEAD with a field (the dispatch in ``consume_edge_target`` recognizes
+# an inline create by a field token right after the kind). After that, three classes
+# interleave in any order before the node's first outgoing edge: create FIELDS, ``agent-
+# cost``/``resource-cost`` deltas, and the UNAMBIGUOUS producer-edge metadata
+# ``note``/``valence`` (edge-only words). The COLLISION words
+# ``priority``/``label``/``labels`` are ALSO row fields, so inside the body they are ROW
+# fields; their edge-annotation meaning needs the ``edge`` marker (``edge priority to
+# high``). The one hard boundary is the node's first OUTGOING edge: after it, metadata
+# binds to that CHILD (hoisted by ``_parse_edge_action``) and a stray field has no home
+# (the node is closed), which raises rather than silently rebinding to the caller. Each
+# edge's inline target recurses, so ``produced ws note to v agent-cost add N produced
+# paper favors belief`` lands the note+cost on ws and nests paper under ws. Any
+# non-{field,cost,metadata,edge} token ends the node and rebinds to the caller's anchor.
+# When ``grouped`` (inside ``begin ... end``) it also stops at ``end`` so the parent can
+# fan out. At least one field is required.
 def _consume_inline_create(
     args: Sequence[str], pos: int, *, grouped: bool = False
 ) -> tuple[InlineCreate, int]:
-    """Consume ``kind`` then the node's fields, costs, metadata, and edges.
-
-    The create must LEAD with a field (the dispatch in ``consume_edge_target``
-    recognizes an inline create by a field token right after the kind). After
-    that, three classes interleave in any order before the node's first outgoing
-    edge: create FIELDS, ``agent-cost``/``resource-cost`` deltas, and the
-    UNAMBIGUOUS producer-edge metadata ``note``/``valence`` (edge-only words).
-    The COLLISION words ``priority``/``label``/``labels`` are ALSO row fields, so
-    inside the body they are ROW fields; their edge-annotation meaning needs the
-    ``edge`` marker (``edge priority to high``). The one hard boundary is the
-    node's first OUTGOING edge: after it, metadata binds to that CHILD (hoisted
-    by ``_parse_edge_action``) and a stray field has no home (the node is
-    closed), which raises rather than silently rebinding to the caller. Each
-    edge's inline target recurses, so ``produced ws note to v agent-cost add N
-    produced paper favors belief`` lands the note+cost on ws and nests paper
-    under ws. Any non-{field,cost,metadata,edge} token ends the node and rebinds
-    to the caller's anchor. When ``grouped`` (inside ``begin ... end``) it also
-    stops at ``end`` so the parent can fan out. At least one field is required.
-    """
+    """Consume ``kind`` then the node's fields, costs, metadata, and edges."""
     # Bounds + kind validity: reached via ``begin <kind> ...`` and the inline
     # dispatch. A missing or non-kind token here (e.g. ``begin`` at end of input,
     # or ``begin 3``) must be a clean ClientError, not a raw IndexError / the
@@ -1199,17 +843,14 @@ def _consume_inline_create(
     ), cursor - pos
 
 
+# Mutates ``fields`` in place. A scalar takes ``to VALUE`` once; a list field seeds with
+# ``to`` and extends with ``add`` (an ordered byline); a ref-list field consumes a typed
+# ``kind seq`` ref. A scalar re-set, or a list re-seeded with ``to`` after it holds
+# values, is the author clobbering their own input and raises.
 def _consume_inline_field(
     args: Sequence[str], cursor: int, fields: list[SetField]
 ) -> int:
-    """Consume one inline-create field at ``cursor``; return the new cursor.
-
-    Mutates ``fields`` in place. A scalar takes ``to VALUE`` once; a list field
-    seeds with ``to`` and extends with ``add`` (an ordered byline); a ref-list
-    field consumes a typed ``kind seq`` ref. A scalar re-set, or a list re-seeded
-    with ``to`` after it holds values, is the author clobbering their own input
-    and raises.
-    """
+    """Consume one inline-create field at ``cursor``; return the new cursor."""
     field = args[cursor].lower()
     is_list_field = field in LIST_FIELDS
     op = token(args, cursor + 1)
@@ -1240,18 +881,16 @@ def _consume_inline_field(
     return cursor + 3
 
 
+# A list field is stored as a single :class:`SetField` whose ``value`` is the byline
+# tuple; seeding with ``to`` creates it and each ``add`` extends it. The frozen
+# ``SetField`` is replaced in place to preserve declaration order.
 def _append_inline_list_value(
     fields: list[SetField],
     parsed_field: str,
     value: object,
     existing: SetField | None,
 ) -> list[SetField]:
-    """Append one value to an inline-create list field's ordered tuple.
-
-    A list field is stored as a single :class:`SetField` whose ``value`` is the
-    byline tuple; seeding with ``to`` creates it and each ``add`` extends it. The
-    frozen ``SetField`` is replaced in place to preserve declaration order.
-    """
+    """Append one value to an inline-create list field's ordered tuple."""
     if existing is None:
         fields.append(SetField(field=parsed_field, value=(value,)))
         return fields
@@ -1260,3 +899,393 @@ def _append_inline_list_value(
         SetField(field=parsed_field, value=extended) if f is existing else f
         for f in fields
     ]
+
+
+# A scalar field takes ``to``; a list field takes ``to``, ``add``, or ``del``. Anything
+# else (edges, relations, costs) is not a field mutation and is rejected once a selector
+# has committed to the bulk-apply form.
+def _is_mutation_head(field: str, op: str | None) -> bool:
+    """Whether ``field op`` opens a bulk-apply mutation triple."""
+    if field in EDITABLE_FIELDS:
+        return op == "to"
+    if field in LIST_FIELDS:
+        return op in ("to", "add", "del")
+    return False
+
+
+# Three for a scalar or plain-list mutation; ``2 + consumed`` for a ref-list field whose
+# value is a typed ``kind seq`` ref (``codechange add 7``), so the ref survives the
+# bulk-apply scan intact (trax #419).
+def _mutation_span(tokens: Sequence[str], index: int) -> int:
+    """Token width of the mutation at ``index``: ``field op value(s)``."""
+    spec = FIELDS_BY_NAME.get(tokens[index].lower())
+    if spec is None or spec.ref_kind is None:
+        return 3
+    _, consumed = consume_ref(tokens, index + 2, kind_hint=spec.ref_kind)
+    return 2 + consumed
+
+
+# One walk of the ``kind | range | filter | mutation`` grammar, emitting a typed clause
+# per step and leaving the keep/reject policy to each consumer. The only lexical error
+# raised here is a missing filter value, which is unambiguous regardless of context. A
+# known filter field with a garbage operator (``owner not ...``) is flagged on its
+# :class:`_UnknownClause` via ``bad_filter_op`` rather than raised, because whether it
+# is an error depends on context: an error inside a committed filter context, but a
+# plain create field where no query has been established.
+def _scan_clauses(tokens: Sequence[str]) -> Iterator[_Clause]:
+    """Tokenize a row tail into the clause grammar shared by query forms."""
+    index = 0
+    while index < len(tokens):
+        token_text = tokens[index].lower()
+        op_next = token(tokens, index + 1)
+        op_next_lower = op_next.lower() if op_next is not None else None
+        if token_text in KIND_LOWER and not _is_mutation_head(
+            token_text, op_next_lower
+        ):
+            # A token that is both a kind keyword and a list field (only
+            # ``codechange``) is a bare kind ONLY when no mutation operator
+            # follows: ``trax issue belief`` widens, but ``codechange add 7`` is
+            # a field mutation. A bare kind is never followed by to/add/del, so
+            # the next token disambiguates without ambiguity.
+            yield _KindClause(kind=KIND_LOWER[token_text])
+            index += 1
+        elif ranges := _parse_range(token_text):
+            yield _RangeClause(ranges=ranges)
+            index += 1
+        elif op_next_lower in FILTER_OPS:
+            op_value = op_next_lower
+            if op_value in VALUELESS_FILTER_OPS:
+                # ``isnull`` / ``notnull`` carry no operand: two tokens, no value.
+                yield _FilterClause(field=token_text, op=op_value, value="")
+                index += 2
+            else:
+                if index + 2 >= len(tokens):
+                    raise ClientError(
+                        f"expected value for filter field {tokens[index]!r}"
+                    )
+                yield _FilterClause(
+                    field=token_text, op=op_value, value=tokens[index + 2]
+                )
+                index += 3
+        elif _is_mutation_head(token_text, op_next_lower):
+            span = _mutation_span(tokens, index)
+            yield _MutationClause(tokens=tuple(tokens[index : index + span]))
+            index += span
+        else:
+            bad_op = (
+                op_next
+                if token_text in _ALL_FILTER_FIELDS and op_next_lower is not None
+                else None
+            )
+            yield _UnknownClause(token=tokens[index], bad_filter_op=bad_op)
+            index += 1
+
+
+# The inverse of :func:`_parse_range` for re-parsing purposes: the bulk-apply selector
+# half is re-emitted as one token that :func:`parse_list_query` re-parses. Each interval
+# uses the wire spelling (a single-row interval renders ``n..n``), which
+# :func:`_parse_interval` accepts identically to the bare ``n`` the user may have typed.
+def _range_text(ranges: tuple[SeqRange, ...]) -> str:
+    """Render parsed ranges back to their comma-separated selector token."""
+    return ",".join(format_interval(interval) for interval in ranges)
+
+
+# ``_is_mutation_head`` already gates the mutation tokens to scalar and list fields, so
+# this never fires in practice; it is the tripwire that keeps the two in lockstep if
+# either changes.
+def _as_bulk_action(action: Action) -> SetField | AddList | RemoveList:
+    """Narrow a parsed action to a field mutation, raising on anything else."""
+    if isinstance(action, SetField | AddList | RemoveList):
+        return action
+    raise ClientError(
+        "bulk apply supports only field mutations (FIELD to/add/del VALUE)"
+    )
+
+
+# Returns the mask and the index just past it. A bareword (a token not in
+# ``key``/``step``/``value``) is the ``at key is <bareword>`` shorthand.
+#
+# The axis, comparator, and reduction sets are read from the wire constants (the ONE
+# definition), so the CLI parser cannot drift from the wire model or the store: adding a
+# metric op in one place is a type error until the wire ``Literal`` gains it too. This
+# is the fix for the class of bug where the parser gated on the broad inquiry
+# ``FILTER_OPS`` and admitted ops (``re`` / ``isnull``) the grid does not support.
+def _parse_metric_mask(tokens: Sequence[str], index: int) -> tuple[MetricMask, int]:
+    """Parse one ``at`` clause starting at ``index`` (past the ``at``)."""
+    head = required_token(tokens, index, "'at' requires a field or key")
+    if head.lower() not in frozenset(wire_metrics_query.METRIC_AXES):
+        return MetricMask(field="key", op="is", value=head), index + 1
+    field = cast(Literal["key", "step", "value"], head.lower())
+    op = required_token(
+        tokens, index + 1, f"expected an operator after {field!r}"
+    ).lower()
+    # Step-axis reductions: highest/lowest step per key ("final"/"first"). They
+    # take no value and apply only to the ``step`` axis (metric-grammar.md
+    # Grammar summary).
+    if op in frozenset(get_args(wire_metrics_query.MetricReduce.__value__)):
+        if field != "step":
+            raise ClientError(f"{op} applies to step only, not {field!r}")
+        return MetricMask(field=field, op=op, value=""), index + 2
+    # Gate on the narrow metric comparator set, NOT the broad inquiry
+    # ``FILTER_OPS``: the grid has no text-regex or presence ops, so ``re`` /
+    # ``nre`` / ``isnull`` / ``notnull`` are unknown here. A presence op thus
+    # falls into this branch instead of being treated as a valued comparator,
+    # so it can never consume the following clause's token as a spurious value.
+    if op not in frozenset(wire_metrics_query.METRIC_COMPARE_OPS):
+        raise ClientError(f"unknown metric operator {op!r} after {field!r}")
+    value = required_token(tokens, index + 2, f"expected a value after {field} {op}")
+    return MetricMask(field=field, op=op, value=value), index + 3
+
+
+def _parse_metric_sort(direction: str) -> Literal["asc", "desc"]:
+    """Parse a ``sort`` operand into a direction literal, raising otherwise."""
+    lowered = direction.lower()
+    if lowered == "asc":
+        return "asc"
+    if lowered == "desc":
+        return "desc"
+    raise ClientError(f"'sort' takes asc or desc, got {direction!r}")
+
+
+def _parse_metric_limit(token_text: str) -> int:
+    """Parse a ``limit`` operand into a positive int, raising otherwise."""
+    try:
+        limit = int(token_text)
+    except ValueError:
+        raise ClientError(
+            f"limit must be a positive integer, got {token_text!r}"
+        ) from None
+    if limit <= 0:
+        raise ClientError(f"limit must be a positive integer, got {token_text!r}")
+    return limit
+
+
+# A token is a range token when it carries ``..`` or a comma. A comma unions disjoint
+# elements in a single token (``..10,222..225,227,228..``); each comma-separated element
+# is either a ``start..stop`` interval or a bare seq, which is the degenerate interval
+# ``n..n``. The empty tuple signals "not a range token" so the scanner falls through to
+# the next clause kind, leaving a lone seq (``227``) to parse as a ref.
+def _parse_range(token_text: str) -> tuple[SeqRange, ...]:
+    """Parse a range token into one or more intervals, or ``()`` if not a range."""
+    if ".." not in token_text and "," not in token_text:
+        return ()
+    return tuple(_parse_interval(part) for part in token_text.split(","))
+
+
+# A bare seq ``n`` (no ``..``) is the single-row interval ``n..n``, the CLI-only
+# ergonomic the wire never sees; an element with ``..`` defers to the shared wire
+# :func:`parse_interval` so the CLI and the server agree on one interval grammar. An
+# empty element (a stray comma) is an error.
+def _parse_interval(part: str) -> SeqRange:
+    """Parse one range element -- an interval or a bare seq -- raising if malformed."""
+    if ".." not in part:
+        if not part.isdigit():
+            raise ClientError(f"invalid range element {part!r}")
+        return SeqRange(start=int(part), stop=int(part))
+    try:
+        return parse_interval(part)
+    except ValueError as err:
+        raise ClientError(str(err)) from err
+
+
+# Runs before canonicalization, so the error names the spelling the user typed
+# (``kind``) rather than the server-canonical ``issue_kind``.
+def _validate_cli_filters(
+    kinds: Sequence[Inquiry.InquiryKind],
+    filters: Sequence[tuple[str, FilterOp, str]],
+) -> None:
+    """Reject filters whose CLI field isn't valid for every listed kind."""
+    for field, _op, _value in filters:
+        missing = [k for k in kinds if field not in FILTER_FIELDS_CLI[k]]
+        if not missing:
+            continue
+        raise ClientError(f"unknown filter field {field!r} for {', '.join(missing)}")
+
+
+# A query that named no kind means "every kind", but a kind-specific field narrows that
+# set rather than failing against the kinds that lack it: ``trax judgement is proven``
+# is a Belief query because Belief is the only kind owning ``judgement``. Validating
+# instead (the named-kind path) would reject it against the other eight.
+def _kinds_owning(
+    filters: Sequence[tuple[str, FilterOp, str]],
+) -> tuple[Inquiry.InquiryKind, ...]:
+    """Return the kinds every filtered field is valid for, for a kindless query."""
+    for field, _op, _value in filters:
+        if not any(field in FILTER_FIELDS_CLI[k] for k in VALID_KINDS):
+            raise ClientError(f"unknown filter field {field!r}")
+    kinds: tuple[Inquiry.InquiryKind, ...] = tuple(
+        k
+        for k in VALID_KINDS
+        if all(field in FILTER_FIELDS_CLI[k] for field, _op, _value in filters)
+    )
+    if not kinds:
+        raise ClientError(
+            "no kind carries every filtered field: "
+            + ", ".join(repr(field) for field, _op, _value in filters)
+        )
+    return kinds
+
+
+def _parse_scalar_action(
+    tokens: Sequence[str], index: int, field: str
+) -> tuple[Action, int]:
+    op = token(tokens, index + 1)
+    op_lower = op.lower() if op is not None else None
+    if op_lower != "to":
+        return ReadField(field=field), 1
+    value = required_token(tokens, index + 2, f"expected value for {field}")
+    # No lookahead past the value: a trailing ``del`` is the terminal row
+    # delete, reached by ``parse_actions``'s outer loop, not a field delete.
+    # The old ``index+3`` peek misread a chained set's terminal ``del`` (e.g.
+    # ``title to x description to y del``) as a delete of this field (BUG-001).
+    return SetField(field=field, value=field_value(field, value)), 3
+
+
+def _parse_cost_action(
+    tokens: Sequence[str], index: int, field: str
+) -> tuple[Action, int]:
+    op = token(tokens, index + 1)
+    if op is None:
+        return ReadField(field=field), 1
+    if op.lower() != "add":
+        raise ClientError("cost fields use add with a signed USD delta")
+    value = required_token(tokens, index + 2, f"expected value for {field}")
+    try:
+        delta = float(value)
+    except ValueError:
+        # A non-numeric cost must surface as a clean ClientError, not a raw
+        # ValueError leaking a Python traceback to the CLI (mirrors the edge
+        # valence guard).
+        raise ClientError(f"cost {field!r} must be a number, got {value!r}") from None
+    return AddCost(field=field, value=delta), 3
+
+
+def _parse_list_action(
+    tokens: Sequence[str], index: int, field: str
+) -> tuple[Action, int]:
+    op = token(tokens, index + 1)
+    op_lower = op.lower() if op is not None else None
+    if op_lower is None:
+        return ReadField(field=list_payload_field(field)), 1
+    if op_lower not in ("to", "add", "del"):
+        raise ClientError(f"list field {field} uses to, add, or del")
+    if op_lower == "del" and token(tokens, index + 2) is None:
+        raise ClientError(f"del requires a value for list field {field!r}")
+    # Ref-list fields (codechange(s) -> CodeChange) take a typed `kind seq` ref
+    # (one or two tokens); the parsed Ref rides on the action so the verb layer
+    # resolves it once (trax #419). Plain list fields (label, subscriber) take
+    # one free-string token.
+    spec = FIELDS_BY_NAME.get(field)
+    if spec is not None and spec.ref_kind is not None:
+        ref, consumed = consume_ref(tokens, index + 2, kind_hint=spec.ref_kind)
+        if op_lower == "to":
+            return SetField(field=list_payload_field(field), value=(ref,)), consumed + 2
+        if op_lower == "add":
+            return AddList(field=field, value=ref_text(ref), ref=ref), consumed + 2
+        return RemoveList(field=field, value=ref_text(ref), ref=ref), consumed + 2
+    value = required_token(tokens, index + 2, f"expected value for {field}")
+    if op_lower == "to":
+        return SetField(field=list_payload_field(field), value=(value,)), 3
+    if op_lower == "add":
+        return AddList(field=field, value=value), 3
+    return RemoveList(field=field, value=value), 3
+
+
+# A digit, UUID, or no-token tail means "list rows in this relation" (or select one by
+# index). Anything else looks like a ref, so dispatch to ``_parse_edge_action`` if the
+# keyword is also an edge alias. A relation-only alias followed by a ref is a grammar
+# error, not a KeyError.
+def _parse_relation_or_edge(
+    tokens: Sequence[str],
+    index: int,
+    word: str,
+    relation: tuple[str, bool],
+) -> tuple[Action, int]:
+    """Decide between a relation projection and an edge mutation."""
+    value = token(tokens, index + 1)
+    if value is None or value.isdigit():
+        return RelationAction(
+            relation=relation,
+            index=value or "",
+            against=word in AGAINST_RELATION_SPELLINGS,
+        ), 2 if value else 1
+    edge = EDGE_ALIASES.get(word)
+    if edge is None:
+        raise ClientError(
+            f"{word!r} is a relation, not an edge; it does not accept a ref"
+        )
+    return _parse_edge_action(tokens, index, edge)
+
+
+def _parse_edge_action(
+    tokens: Sequence[str],
+    index: int,
+    edge: Edge,
+) -> tuple[Action, int]:
+    # PRE-target metadata: words between the edge keyword and its target annotate
+    # the edge unambiguously (no target yet for them to mean), so even the
+    # collision words are accepted bare here. ``narrows priority to high issue 3``
+    # == ``narrows issue 3 edge priority to high``.
+    pre_meta, pre_consumed = edge_metadata(
+        tokens[index + 1 :], allow_bare_collision=True
+    )
+    target_start = index + 1 + pre_consumed
+    target, consumed = consume_edge_target(tokens, target_start)
+    offset = target_start + consumed
+    terminator = token(tokens, offset)
+    if terminator is not None and terminator.lower() == "del":
+        if isinstance(target, InlineCreate):
+            raise ClientError("cannot 'del' an inline-create edge target")
+        if pre_meta:
+            raise ClientError("cannot combine edge metadata with 'del'")
+        return EdgeAction(
+            edge=edge, target=target, metadata={}, remove=True
+        ), pre_consumed + consumed + 2
+    # An inline-create target captures metadata written right after its fields as
+    # THIS edge's annotation (the edge that produced the node -- the deepest edge so
+    # far). Trailing metadata after the target works too and merges in; the inline
+    # form is what lets a verdict note sit beside the node it describes without a
+    # `begin ... end` wrapper.
+    inbound = dict(target.inbound_meta) if isinstance(target, InlineCreate) else {}
+    # POST-target metadata: a bare collision word here is a vertex field (maximal
+    # munch rolls it up to the subject), so ``edge_metadata`` stops at it; only an
+    # ``edge``-marked or edge-only word is consumed. Merge precedence on a same-key
+    # tie is last-write-wins: inbound (an inline target's own meta), then pre-target,
+    # then post-target -- so post-target overrides pre. Setting the same key twice
+    # is malformed input either way; the order just makes it deterministic.
+    metadata, consumed_metadata = edge_metadata(tokens[offset:])
+    merged = _apply_valence_alias(edge, {**inbound, **dict(pre_meta), **metadata})
+    return EdgeAction(
+        edge=edge,
+        target=target,
+        metadata=merged,
+        annotate=bool(merged),
+    ), pre_consumed + consumed + 1 + consumed_metadata
+
+
+# A plain ``proves`` / ``favors`` defaults to ``+0.5``; a ``dis*`` spelling defaults to
+# ``-0.5``. Either way the polarity is the SPELLING and the value is the magnitude, so a
+# user-supplied valence must be non-negative on BOTH branches: the positive spelling
+# stores it as-is, the ``dis*`` spelling negates it. For a non-citation alias
+# (``valence_default`` unset) the metadata passes through.
+def _apply_valence_alias(edge: Edge, metadata: dict[str, object]) -> dict[str, object]:
+    """Resolve a citation alias's valence convention into a concrete ``valence``."""
+    if edge.valence_default is None:
+        return metadata
+    given = metadata.get("valence")
+    if given is None:
+        metadata["valence"] = edge.valence_default
+        return metadata
+    value = FloatCodec.coerce(given)
+    if value < 0:
+        # The magnitude is non-negative; the for/against polarity is carried by
+        # the spelling (plain vs ``dis*``), not by a negative value. A positive
+        # spelling accepting a negative valence would store an against-citation
+        # under a for-spelling (BUG-002).
+        polarity = "'dis...'" if edge.valence_negate else "a citation"
+        raise ClientError(
+            f"{polarity} edge takes a non-negative valence "
+            f"(the spelling sets the for/against polarity); got {value}"
+        )
+    metadata["valence"] = -value if edge.valence_negate else value
+    return metadata

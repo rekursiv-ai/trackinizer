@@ -33,17 +33,14 @@ _MAX_MESSAGE_CHARS: Final = 16_384
 keystrokes for its duration) and the memory a process-local queue holds."""
 
 
+# Every textual identity/scope field on these bodies (``cli``, ``actor``,
+# ``cli_session_id``, ``room``) is matched or stored verbatim, so a whitespace-only
+# value can never match and is almost certainly a client bug; reject it at the boundary
+# rather than silently never-deliver or store junk. ``Field(min_length=1)`` alone admits
+# ``" "``, so each such field binds this validator. The one rule for every scalar string
+# field, mirroring the list-element ``_reject_blank_strings`` rule in ``bodies.py``.
 def _reject_blank(value: str | None) -> str | None:
-    """Reject an empty-or-whitespace scalar string; pass ``None`` through.
-
-    Every textual identity/scope field on these bodies (``cli``, ``actor``,
-    ``cli_session_id``, ``room``) is matched or stored verbatim, so a
-    whitespace-only value can never match and is almost certainly a client bug;
-    reject it at the boundary rather than silently never-deliver or store junk.
-    ``Field(min_length=1)`` alone admits ``"   "``, so each such field binds
-    this validator. The one rule for every scalar string field, mirroring the
-    list-element ``_reject_blank_strings`` rule in ``bodies.py``.
-    """
+    """Reject an empty-or-whitespace scalar string; pass ``None`` through."""
     if value is not None and not value.strip():
         raise ValueError("value must be non-empty")
     return value
@@ -91,15 +88,20 @@ class SessionStart(BaseModel):
     ``end`` if the CLI only reveals it later."""
 
     title: str | None = None
+
     started: datetime | None = None
+
     actor: str | None = None
+
     account: str | None = None
     """The active user the session row is attributed to. ``None`` defaults to
     the authenticated creator; a non-``None`` value must be a live active user
     (validated server-side). See :attr:`Inquiry.account`."""
+
     rooms: list[str] | None = None
     """Initial room membership (``trax run --room``); namespaces the session
     can be addressed within. See :attr:`AgentSession.rooms`."""
+
     idempotency_key: uuid.UUID | None = None
     """Optional client-supplied key; a repeat ``start`` with the same key
     returns the original session id without minting a duplicate."""
@@ -108,17 +110,15 @@ class SessionStart(BaseModel):
         "cli", "cli_session_id", "actor", "account", mode="after"
     )(staticmethod(_reject_blank))
 
+    # A room name must be a single clean token: non-blank (matched verbatim against
+    # ``agentsession_rooms``) and comma-free (``trax run`` exports rooms comma-joined
+    # into ``TRAX_ROOMS``, so a room ``'a,b'`` is indistinguishable from two rooms
+    # ``'a'`` and ``'b'``). Mirrors the ``SubmitAgentSession.rooms`` rule so both create
+    # paths agree.
     @field_validator("rooms", mode="after")
     @classmethod
     def _validate_rooms(cls, value: list[str] | None) -> list[str] | None:
-        """Reject blank or comma-bearing room names.
-
-        A room name must be a single clean token: non-blank (matched verbatim
-        against ``agentsession_rooms``) and comma-free (``trax run`` exports
-        rooms comma-joined into ``TRAX_ROOMS``, so a room ``'a,b'`` is
-        indistinguishable from two rooms ``'a'`` and ``'b'``). Mirrors the
-        ``SubmitAgentSession.rooms`` rule so both create paths agree.
-        """
+        """Reject blank or comma-bearing room names."""
         if value is not None:
             for room in value:
                 if not room.strip():
@@ -132,11 +132,14 @@ class SessionStartResponse(BaseModel):
     """The server-minted identity of a freshly opened (or resumed) session."""
 
     id: uuid.UUID
+
     seq: int
     """The event log's continuation seq: 0 for a fresh session, ``max(seq)+1``
     for a resumed one. The client seeds its sequence from this so a resumed run
     appends to the existing log instead of colliding at seq 0."""
+
     cli_session_id: str | None = None
+
     actor: str | None = None
     """The granted routing name. Equals the requested ``--as`` actor unless it
     collided with a live session, in which case the server appended a suffix
@@ -156,12 +159,16 @@ class FeedEvent(BaseModel):
     """
 
     session_id: uuid.UUID
+
     actor: str
     """The session's routing name (``owner``); the feed's per-agent label."""
+
     rooms: list[str] = Field(default_factory=list)
+
     cli: str | None = None
     """The session's wrapped CLI; carried for a future per-CLI console badge,
     not yet rendered."""
+
     part: int = 0
     """Which source FILE the record came from.
 
@@ -169,27 +176,33 @@ class FeedEvent(BaseModel):
     ``seq`` restarts within each -- so the pair is what identifies a record.
     Legacy turns backfilled from ``agent_session_events`` carry ``-1``, a
     reserved namespace that cannot collide with a real part."""
+
     seq: int = Field(ge=0)
     """Position within ``part``. Named ``seq`` rather than ``idx`` because the
     console's cursor protocol is public; it IS the record's ``idx``."""
+
     kind: str = Field(min_length=1)
     """The record class's name. Widened from the closed 8-member legacy
     Literal: the IR has 21 concrete kinds and a console that rejected an
     unknown one would break on every new record type."""
+
     created: datetime
     """Server write clock -- the feed's cross-session order key."""
+
     timestamp: datetime | None = None
+
     model: str | None = None
+
     message: JSON = Field(default_factory=dict)
     """The record's payload, under the legacy field name so the console's
     renderer needs no rewrite for the shape it already reads."""
+
     text: str = ""
     """The record's searchable prose, which the console renders directly."""
 
 
 class FeedCursor(BaseModel):
-    """A keyset cursor into the feed's ``(created, session_id, part, seq)``
-    order.
+    """A keyset cursor into the feed's ``(created, session_id, part, seq)`` order.
 
     The cursor must carry EVERY order-key component, not just ``created``: a
     page boundary can fall inside a group of rows sharing a ``created``
@@ -199,10 +212,13 @@ class FeedCursor(BaseModel):
     """
 
     created: datetime
+
     session_id: uuid.UUID
+
     part: int = 0
     """Part of the order key, so a boundary inside one session's records does
     not skip the rest."""
+
     seq: int = Field(ge=0)
 
 
@@ -218,6 +234,7 @@ class FeedResponse(BaseModel):
     """
 
     events: list[FeedEvent]
+
     next_after: FeedCursor | None = None
 
 
@@ -251,7 +268,9 @@ class InboundDrainItem(BaseModel):
     """
 
     text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
+
     source: str | None = None
+
     room: str | None = None
     """The room a routed message was scoped to, for the ``[room] sender:``
     injection prefix; ``None`` for a direct (session-id) enqueue."""
@@ -317,6 +336,7 @@ class SessionEnd(BaseModel):
     """Mark a session closed, optionally backfilling late-known fields."""
 
     ended: datetime | None = None
+
     cli_session_id: str | None = Field(default=None, min_length=1)
     """Set when the CLI only revealed its session id mid-run."""
 
@@ -331,6 +351,7 @@ class SessionEndResponse(BaseModel):
     """Confirmation that a session was closed."""
 
     id: uuid.UUID
+
     ended: datetime | None = None
 
 
@@ -364,15 +385,39 @@ SESSION_API_PATHS: tuple[str, ...] = (
 
 
 def session_records_path(session_id: uuid.UUID) -> str:
-    """The record append/read path for one session."""
+    """Return the record append/read path for one session.
+
+    Args:
+      session_id: Session id.
+
+    Returns:
+      result: The str.
+
+    """
     return SESSION_RECORDS_PATH.format(session_id=session_id)
 
 
 def session_end_path(session_id: uuid.UUID) -> str:
-    """The end path for one session."""
+    """Return the end path for one session.
+
+    Args:
+      session_id: Session id.
+
+    Returns:
+      result: The str.
+
+    """
     return SESSION_END_PATH.format(session_id=session_id)
 
 
 def session_inbound_path(session_id: uuid.UUID) -> str:
-    """The inbound-message path for one session (POST enqueue, GET drain)."""
+    """Return the inbound-message path for one session (POST enqueue, GET drain).
+
+    Args:
+      session_id: Session id.
+
+    Returns:
+      result: The str.
+
+    """
     return SESSION_INBOUND_PATH.format(session_id=session_id)

@@ -79,6 +79,15 @@ async def submit_batch_route(
     response is ``{"ids": [...]}`` with the server-minted ids in input
     order. A failure propagates as the same HTTP error a single submit of
     that item would raise (e.g. 409 on a conflict, 422 on bad input).
+
+    Args:
+      req: Req.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      body: The MutableJSON.
+
     """
     store = get_store(request)
     # Resolve each item's account, then validate the DISTINCT set before the
@@ -91,7 +100,7 @@ async def submit_batch_route(
     ]
     for account in {str(item.account) for item in items}:
         await assert_account_active(store.engine, account)
-    # Gate every edge endpoint that names an EXISTING row by UUID on
+    # Gate every edge endpoint that names an EXISTING row by UUID on.
     ids = await store.submit_batch(
         items,
         edges=req.edges,
@@ -100,46 +109,6 @@ async def submit_batch_route(
     )
     body: MutableJSON = {"ids": [str(row_id) for row_id in ids]}
     return body
-
-
-class _SubmitMethod(Protocol):
-    def __call__(
-        self,
-        req: SubmitBase,
-        *,
-        api_key_id: UUID | None,
-        actor: str,
-    ) -> Awaitable[UUID]: ...
-
-
-def _resolve_actor(req: SubmitBase, identity: AuthIdentity) -> str:
-    """Pick the audit actor: the request override, else the caller's email."""
-    return req.actor or identity.email
-
-
-def _resolve_account(req: SubmitBase, identity: AuthIdentity) -> str:
-    """Pick the attributed account: the body override, else the creator.
-
-    The default is the authenticated ``identity.email`` -- never the
-    spoofable ``actor`` override -- so an unspecified account always
-    attributes the row to the real submitter.
-    """
-    return req.account or identity.email
-
-
-async def _submit_one(
-    store: Store,
-    req: SubmitBase,
-    identity: AuthIdentity,
-) -> UUID:
-    account = _resolve_account(req, identity)
-    await assert_account_active(store.engine, account)
-    method = cast(_SubmitMethod, getattr(store, SUBMIT_METHOD[type(req)]))
-    return await method(
-        req.model_copy(update={"account": account}),
-        api_key_id=identity.api_key_id,
-        actor=_resolve_actor(req, identity),
-    )
 
 
 @router.post("/api/inquiries/{kind}", status_code=201)
@@ -155,6 +124,16 @@ async def submit_route(
     ``kind`` discriminator is injected from the URL token, so callers
     never restate it and a mismatching body ``kind`` can't smuggle in a
     different model.
+
+    Args:
+      kind: Kind.
+      payload: Payload.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
     """
     body_cls = SUBMIT_BODY.get(kind)
     if body_cls is None:
@@ -172,3 +151,40 @@ async def submit_route(
             status_code=422, detail=err.errors(include_context=False)
         ) from err
     return {"id": str(await _submit_one(get_store(request), req, identity))}
+
+
+class _SubmitMethod(Protocol):
+    def __call__(
+        self,
+        req: SubmitBase,
+        *,
+        api_key_id: UUID | None,
+        actor: str,
+    ) -> Awaitable[UUID]: ...
+
+
+def _resolve_actor(req: SubmitBase, identity: AuthIdentity) -> str:
+    """Pick the audit actor: the request override, else the caller's email."""
+    return req.actor or identity.email
+
+
+# The default is the authenticated ``identity.email`` -- never the spoofable ``actor``
+# override -- so an unspecified account always attributes the row to the real submitter.
+def _resolve_account(req: SubmitBase, identity: AuthIdentity) -> str:
+    """Pick the attributed account: the body override, else the creator."""
+    return req.account or identity.email
+
+
+async def _submit_one(
+    store: Store,
+    req: SubmitBase,
+    identity: AuthIdentity,
+) -> UUID:
+    account = _resolve_account(req, identity)
+    await assert_account_active(store.engine, account)
+    method = cast(_SubmitMethod, getattr(store, SUBMIT_METHOD[type(req)]))
+    return await method(
+        req.model_copy(update={"account": account}),
+        api_key_id=identity.api_key_id,
+        actor=_resolve_actor(req, identity),
+    )

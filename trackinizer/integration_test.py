@@ -20,13 +20,13 @@ import httpx2
 import pytest
 
 from trackinizer.conftest import new_uuid
-from trackinizer.lib.agent.types.sessions import UserMessage as IRUserMessage
+from trackinizer.lib.agent.types.sessions import UserMessage
 from trackinizer.lib.custom_json import json_freeze
 from trackinizer.server import web
 from trackinizer.server.api import (
     edit,
     metrics_routes,
-    query as query_module,
+    query,
     sessions_routes,
 )
 from trackinizer.server.api.conftest import (
@@ -82,14 +82,12 @@ from trackinizer.wire.filters import Filter
 from trackinizer.wire.wire_metrics import MetricPoint
 
 
+# The session-start route resolves the request's ``account`` from the authenticated
+# identity's email and rejects (422) any email that is not an active user. Route tests
+# inject an identity but truncate the ``users`` table per test, so each must seed its
+# own principal first.
 async def _seed_active_user(store: Store, email: str) -> None:
-    """Seed ``email`` as an ACTIVE ``users`` row so session routes accept it.
-
-    The session-start route resolves the request's ``account`` from the
-    authenticated identity's email and rejects (422) any email that is not an
-    active user. Route tests inject an identity but truncate the ``users``
-    table per test, so each must seed its own principal first.
-    """
+    """Seed ``email`` as an ACTIVE ``users`` row so session routes accept it."""
     async with store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
@@ -100,18 +98,16 @@ async def _seed_active_user(store: Store, email: str) -> None:
         )
 
 
+# The replacement for the legacy per-turn append these tests used: a record's key is its
+# POSITION in its source file, so the caller states the ``idx`` rather than relying on a
+# server-side counter.
+#
+# The MANIFEST is written too, because a read is bounded by it: it declares the part's
+# live prefix, and a part without one reads as empty rather than unbounded -- rows with
+# no manifest are a torn write. Appending alone left every row invisible to
+# ``read_session_records``.
 async def _record(store: Store, session_id: UUID, *, idx: int, text: str) -> None:
-    """Append one IR record to a session's part 0.
-
-    The replacement for the legacy per-turn append these tests used: a
-    record's key is its POSITION in its source file, so the caller states the
-    ``idx`` rather than relying on a server-side counter.
-
-    The MANIFEST is written too, because a read is bounded by it: it declares
-    the part's live prefix, and a part without one reads as empty rather than
-    unbounded -- rows with no manifest are a torn write. Appending alone left
-    every row invisible to ``read_session_records``.
-    """
+    """Append one IR record to a session's part 0."""
     _ = await store.upsert_session_manifest(
         session_id,
         name="part0.jsonl",
@@ -127,7 +123,7 @@ async def _record(store: Store, session_id: UUID, *, idx: int, text: str) -> Non
                 session_id=session_id,
                 part=0,
                 idx=idx,
-                record=IRUserMessage(content=text),
+                record=UserMessage(content=text),
             )
         ],
     )
@@ -259,9 +255,9 @@ class TestIntegrationEndToEnd:
             integ_store.log_metrics(eid, b),
         )
         back = await integ_store.read_metrics(eid, limit=10_000)
-        assert len(back) == 150  # union 0..149: no loss, no duplicate
-        assert la + lb == 150  # total newly-written == distinct rows
-        assert (la + sa, lb + sb) == (100, 100)  # each call accounts for its batch
+        assert len(back) == 150  # union 0..149: no loss, no duplicate.
+        assert la + lb == 150  # total newly-written == distinct rows.
+        assert (la + sa, lb + sb) == (100, 100)  # each call accounts for its batch.
 
     async def test_log_metrics_large_batch_at_cap(self, integ_store: Store) -> None:
         """A max-size batch inserts and reads back in order at scale."""
@@ -574,7 +570,7 @@ class TestIntegrationEndToEnd:
             requested_actor="bob",
             api_key_id=bob_key,
         )
-        assert b_sid != a_sid  # Bob got a fresh session, not Alice's
+        assert b_sid != a_sid  # Bob got a fresh session, not Alice's.
 
         # Alice resuming her OWN session re-attaches it.
         a_resume, _, _ = await integ_store.start_session(
@@ -619,7 +615,7 @@ class TestIntegrationEndToEnd:
             requested_actor="scientist",
             api_key_id=None,
         )
-        assert resumed == sid  # re-attached, not a fresh session
+        assert resumed == sid  # re-attached, not a fresh session.
 
     async def test_resume_applies_rooms_on_live_session(
         self, integ_store: Store
@@ -1094,7 +1090,7 @@ class TestIntegrationEndToEnd:
                 )
                 assert over_resp.status_code == 422, over_resp.text
                 still = await http.get(f"/api/experiments/{eid}/metrics")
-                assert len(still.json()["points"]) == 3  # unchanged
+                assert len(still.json()["points"]) == 3  # unchanged.
         finally:
             app.dependency_overrides.pop(current_user, None)
             app.dependency_overrides.pop(web.optional_identity, None)
@@ -1969,7 +1965,7 @@ class TestIntegrationEndToEnd:
         belief_id = await integ_store.submit_belief(
             SubmitBelief(account="tester@example.com", title="a belief")
         )
-        # Issue produced_by -> Belief
+        # Issue produced_by -> Belief.
         await integ_store.add_edge(
             from_id=issue_id,
             to_id=belief_id,
@@ -2220,7 +2216,7 @@ class TestIntegrationEndToEnd:
         blocker_id = await integ_store.submit_issue(
             SubmitIssue(account="tester@example.com", title="blocker")
         )
-        # requires is stored from=requirer, to=prerequisite: the blocked issue
+        # Requires is stored from=requirer, to=prerequisite: the blocked issue
         # requires the blocker (prerequisite).
         await integ_store.add_edge(
             from_id=blocked_id,
@@ -2406,11 +2402,11 @@ class TestIntegrationEndToEnd:
                 authors=["Smith", "Jones", "Smith"],
             ),
         )
-        # add of an already-present author appends a second entry.
+        # Add of an already-present author appends a second entry.
         await integ_store.add_author(paper_id, "Smith", actor="u")
         added = cast(Paper, await integ_store.get_inquiry(paper_id))
         assert added.authors == ("Smith", "Jones", "Smith", "Smith")
-        # remove drops only the first occurrence.
+        # Remove drops only the first occurrence.
         await integ_store.remove_author(paper_id, "Smith", actor="u")
         removed = cast(Paper, await integ_store.get_inquiry(paper_id))
         assert removed.authors == ("Jones", "Smith", "Smith")
@@ -2609,7 +2605,7 @@ class TestIntegrationEndToEnd:
             ),
         )
         assert first == second
-        assert first != key  # server-minted
+        assert first != key  # server-minted.
         async with integ_store.engine.acquire() as conn:
             inquiry_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM inquiries WHERE id = $1", first
@@ -2914,10 +2910,11 @@ class TestIntegrationEndToEnd:
         self,
         integ_store: Store,
     ) -> None:
-        """The non-empty invariant on ``Issue.issue_kind`` lives in the
-        DB CHECK (``array_length(issue_kind, 1) >= 1``) and propagates
-        from :class:`ColumnSpec.min_items`. Removing the last kind
-        surfaces as ``ConflictError``, not as a silent empty array.
+        """The non-empty invariant on ``Issue.issue_kind`` lives in the DB CHECK.
+
+        ``array_length(issue_kind, 1) >= 1``) and propagates from
+        :class:`ColumnSpec.min_items`. Removing the last kind surfaces as
+        ``ConflictError``, not as a silent empty array.
         """
         issue_id = await integ_store.submit_issue(
             SubmitIssue(account="tester@example.com", title="i", issue_kind=["bug"])
@@ -3061,21 +3058,21 @@ class TestIntegrationEndToEnd:
                     account="tester@example.com",
                     title="bet",
                     idempotency_key=new_uuid(),
-                ),  # 0
+                ),  # 0.
                 SubmitWebSearch(
                     account="tester@example.com",
                     title="check",
                     query="q",
                     idempotency_key=new_uuid(),
-                ),  # 1
+                ),  # 1.
                 SubmitPaper(
                     account="tester@example.com",
                     title="hit",
                     idempotency_key=new_uuid(),
-                ),  # 2
+                ),  # 2.
             ],
             edges=[
-                # search produced_by belief; paper produced_by search.
+                # Search produced_by belief; paper produced_by search.
                 BatchEdge(from_index=1, to_index=0, edge_kind="produced_by"),
                 BatchEdge(from_index=2, to_index=1, edge_kind="produced_by"),
             ],
@@ -3200,7 +3197,7 @@ class TestIntegrationEndToEnd:
             priority=3,
             actor="user",
         )
-        assert ann_created is False  # existing edge, not a fresh create
+        assert ann_created is False  # existing edge, not a fresh create.
         assert ann_change is not None  # but a change WAS emitted (annotated)
         edge = await integ_store.get_edge(from_id=a, to_id=b, edge_kind="requires")
         assert edge is not None
@@ -3676,7 +3673,7 @@ class TestIntegrationEndToEnd:
         assert row["description"] is None
         assert row["owner"] is None
 
-        # isnull now matches the cleared row on every column.
+        # ``isnull`` now matches the cleared row on every column.
         for field in ("labels", "description", "owner"):
             rows = await integ_store.list_kind(
                 "Issue", filters=(Filter(field=field, op="isnull", value=""),)
@@ -3988,7 +3985,7 @@ class TestIntegrationEndToEnd:
         app = FastAPI()
         app.state.engine = integ_store.engine
         app.state.store = integ_store
-        app.include_router(query_module.router)
+        app.include_router(query.router)
         identity = make_test_identity()
 
         async def _identity_override() -> object:
@@ -4159,7 +4156,7 @@ class TestIntegrationEndToEnd:
                 source="arXiv:2501.00001",
             ),
         )
-        # proves is stored Artifact(citer) -> claim: the Paper proves the Belief.
+        # Proves is stored Artifact(citer) -> claim: the Paper proves the Belief.
         await integ_store.add_edge(
             from_id=paper_id, to_id=belief_id, edge_kind="proves", actor="u"
         )
@@ -4577,7 +4574,7 @@ class TestClientChangeIdReplay:
             SubmitIssue(account="tester@example.com", title="header-only")
         )
         assert first == second
-        assert first != key  # server-minted
+        assert first != key  # server-minted.
         async with integ_store.engine.acquire() as conn:
             inquiry_count = await conn.fetchval(
                 "SELECT COUNT(*) FROM inquiries WHERE id = $1", first
@@ -4962,7 +4959,7 @@ class TestFirstEdgeInfersProduced:
         )
         await self._set_created(integ_store, belief, datetime(2020, 1, 1, tzinfo=UTC))
         await self._set_created(integ_store, search, datetime(2020, 1, 2, tzinfo=UTC))
-        # proves stores Artifact -> {Belief, Experiment}: the WebSearch (citing
+        # Proves stores Artifact -> {Belief, Experiment}: the WebSearch (citing
         # artifact) points up to the older Belief it bears on.
         await integ_store.add_edge(
             from_id=search, to_id=belief, edge_kind="proves", actor="alice"
@@ -4972,7 +4969,7 @@ class TestFirstEdgeInfersProduced:
         assert belief_row.produced_by == ()
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

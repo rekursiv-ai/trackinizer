@@ -82,6 +82,14 @@ async def auth_login_route(request: Request, next: str = "/") -> RedirectRespons
 
     ``next`` is the same-origin path to land on after login; it must start
     with ``/`` so this can't act as an open redirector.
+
+    Args:
+      request: Request.
+      next: Next.
+
+    Returns:
+      response: The RedirectResponse.
+
     """
     settings = _resolve_oauth_settings(request)
     safe_next = next if _same_origin_path(next) else _DEFAULT_NEXT_URL
@@ -124,6 +132,15 @@ async def auth_callback_route(
     Raises 503 when OAuth is unconfigured, 400 when the state cookie is
     missing or mismatched or the code is absent, and 403 when the
     authenticated email isn't on the allowlist.
+
+    Args:
+      request: Request.
+      code: Code.
+      state: State.
+
+    Returns:
+      response: The Response.
+
     """
     settings = _resolve_oauth_settings(request)
     if not code:
@@ -177,47 +194,6 @@ async def auth_callback_route(
     return response
 
 
-def _same_origin_path(value: str) -> bool:
-    """Whether ``value`` is a safe same-origin redirect target.
-
-    Must start with a single ``/`` (so it can't become an absolute or
-    protocol-relative URL) and carry no C0 control or DEL character. A
-    ``next`` reaches the ``Location`` header and the signed state cookie,
-    so an embedded CR/LF would enable header injection / response
-    splitting; rejecting the whole control range closes that off.
-    """
-    if not value.startswith("/") or value.startswith(("//", "/\\")):
-        return False
-    return all(ch >= " " and ch != "\x7f" for ch in value)
-
-
-def _request_is_same_origin(request: Request) -> bool:
-    """Whether a state-changing request originates from this server's origin.
-
-    Browsers attach ``Origin`` to cross-origin (and most same-origin) POSTs and
-    ``Referer`` to navigations. A request is same-origin when the first such
-    header present has the same HOST (``netloc``) as the request's own ``Host``
-    header; a request carrying neither (a non-browser client) has no CSRF vector
-    and is treated as same-origin.
-
-    Compared on host only, NOT ``scheme://host``: behind a TLS-terminating proxy
-    the app sees ``request.url.scheme == "http"`` while the browser's ``Origin``
-    is ``https://...``, so a scheme-sensitive compare would 403 a legitimate
-    same-origin logout (the same proxy hazard that makes the OAuth flow require
-    an explicit ``redirect_uri`` rather than ``request.url_for``). Host identity
-    is the load-bearing CSRF check; a same-host scheme mismatch is not a
-    cross-site forgery.
-    """
-    expected_host = request.headers.get("host", "")
-    origin = request.headers.get("origin")
-    if origin is not None:
-        return urlsplit(origin).netloc == expected_host
-    referer = request.headers.get("referer")
-    if referer is not None:
-        return urlsplit(referer).netloc == expected_host
-    return True
-
-
 @router.post("/auth/logout")
 async def auth_logout_route(request: Request) -> RedirectResponse:
     """Clear the session cookie and redirect the user back to ``/``.
@@ -228,6 +204,13 @@ async def auth_logout_route(request: Request) -> RedirectResponse:
     Reject a request whose ``Origin`` (or, as a fallback, ``Referer``) names a
     different origin than this server's; a request with neither header (a
     non-browser client such as the CLI) has no CSRF vector and is allowed.
+
+    Args:
+      request: Request.
+
+    Returns:
+      response: The RedirectResponse.
+
     """
     if not _request_is_same_origin(request):
         raise HTTPException(status_code=403, detail="cross-origin logout rejected")
@@ -241,20 +224,21 @@ class _OAuthSettings:
     """Resolved OAuth deployment settings."""
 
     client_id: str
+
     client_secret: str
+
     redirect_uri: str
+
     session_secret: str
+
     session_max_age_seconds: int
 
 
+# Consolidating the "OAuth not configured" check here keeps each route from enumerating
+# every setting. The 503 names the missing env var rather than a generic "service
+# unavailable", since the likely cause is a deployer who forgot one secret.
 def _resolve_oauth_settings(request: Request) -> _OAuthSettings:
-    """Pull the OAuth settings off app state; raise 503 if any are missing.
-
-    Consolidating the "OAuth not configured" check here keeps each route
-    from enumerating every setting. The 503 names the missing env var
-    rather than a generic "service unavailable", since the likely cause
-    is a deployer who forgot one secret.
-    """
+    """Pull the OAuth settings off app state; raise 503 if any are missing."""
     config = cast(Config | None, getattr(request.app.state, "config", None))
     if config is None:
         raise HTTPException(
@@ -364,18 +348,14 @@ def _parse_google_json(response: httpx2.Response, *, op: str) -> object:
         ) from exc
 
 
+# The raw body is never logged: Google's OAuth error bodies can echo back the client id,
+# redirect uri, access token, or scopes, and logs are retained longer and shared more
+# widely than HTTP responses. What gets logged is the operation name, endpoint, status
+# code, and, when the body is JSON with a string ``error`` field, the short opaque error
+# code (such as ``invalid_grant``). The free-form ``error_description`` is dropped
+# because it can carry the same sensitive material as the raw body.
 def _log_google_failure(op: str, *, endpoint: str, response: httpx2.Response) -> None:
-    """Log a non-2xx Google response with only safe metadata.
-
-    The raw body is never logged: Google's OAuth error bodies can echo
-    back the client id, redirect uri, access token, or scopes, and logs
-    are retained longer and shared more widely than HTTP responses. What
-    gets logged is the operation name, endpoint, status code, and, when
-    the body is JSON with a string ``error`` field, the short opaque
-    error code (such as ``invalid_grant``). The free-form
-    ``error_description`` is dropped because it can carry the same
-    sensitive material as the raw body.
-    """
+    """Log a non-2xx Google response with only safe metadata."""
     error_code = "unparsed"
     try:
         payload: object = response.json()
@@ -394,17 +374,28 @@ def _log_google_failure(op: str, *, endpoint: str, response: httpx2.Response) ->
     )
 
 
+# Tests monkey-patch this module-level helper to inject an ``httpx2.MockTransport`` so
+# the suite never hits Google. Routing both call sites through one helper lets a single
+# patch cover them without threading a client argument into each route.
 def _http_client(*, timeout_seconds: float = 10.0) -> httpx2.AsyncClient:
-    """Build the httpx2 client used for both Google round-trips.
-
-    Tests monkey-patch this module-level helper to inject an
-    ``httpx2.MockTransport`` so the suite never hits Google. Routing both
-    call sites through one helper lets a single patch cover them without
-    threading a client argument into each route.
-    """
+    """Build the httpx2 client used for both Google round-trips."""
     return httpx2.AsyncClient(timeout=timeout_seconds)
 
 
+# A first-login email creates a new row with ``role`` from the allowlist. Subsequent
+# logins keep the existing role and status, so an admin who later flipped someone to
+# ``viewer`` won't see them silently re-elevated just because they stayed on the admin
+# allowlist. The display ``name`` is refreshed from ``EXCLUDED.name`` on every login so
+# a Google profile rename propagates (it carries no authorization weight).
+#
+# ``last_login`` is only bumped when the existing row is active. Bumping it on a
+# disabled account would advertise a denied callback as a real session and confuse the
+# admin page, so the conflict path leaves the column unchanged when the status isn't
+# active. That's done with a ``CASE`` rather than a ``WHERE`` so the row still appears
+# in ``RETURNING`` and the callback can read the post-upsert status to answer 403 before
+# issuing a session cookie.
+#
+# Returns the resolved ``users.id`` and the post-upsert status.
 async def _upsert_user_on_login(
     conn: Conn,
     *,
@@ -412,25 +403,7 @@ async def _upsert_user_on_login(
     name: str,
     role: Role,
 ) -> tuple[uuid.UUID, str]:
-    """Insert or update the ``users`` row for one OAuth callback.
-
-    A first-login email creates a new row with ``role`` from the
-    allowlist. Subsequent logins keep the existing role and status, so an
-    admin who later flipped someone to ``viewer`` won't see them silently
-    re-elevated just because they stayed on the admin allowlist. The
-    display ``name`` is refreshed from ``EXCLUDED.name`` on every login so a
-    Google profile rename propagates (it carries no authorization weight).
-
-    ``last_login`` is only bumped when the existing row is active.
-    Bumping it on a disabled account would advertise a denied callback as
-    a real session and confuse the admin page, so the conflict path
-    leaves the column unchanged when the status isn't active. That's done
-    with a ``CASE`` rather than a ``WHERE`` so the row still appears in
-    ``RETURNING`` and the callback can read the post-upsert status to
-    answer 403 before issuing a session cookie.
-
-    Returns the resolved ``users.id`` and the post-upsert status.
-    """
+    """Insert or update the ``users`` row for one OAuth callback."""
     row = await conn.fetchrow(
         "INSERT INTO users (id, email, name, role, status, last_login) "
         "VALUES ($1, $2, $3, $4, 'active', clock_timestamp()) "
@@ -449,13 +422,11 @@ async def _upsert_user_on_login(
     return cast(uuid.UUID, row["id"]), str(row["status"])
 
 
+# Google's ``name`` is optional and free-form; a non-string or absent value yields the
+# empty string so the caller falls back to the email rather than casting a non-string
+# into the ``users.name`` column.
 def _optional_name(payload: dict[str, object]) -> str:
-    """Return the userinfo ``name`` if it's a non-empty string, else ``""``.
-
-    Google's ``name`` is optional and free-form; a non-string or absent
-    value yields the empty string so the caller falls back to the email
-    rather than casting a non-string into the ``users.name`` column.
-    """
+    """Return the userinfo ``name`` if it's a non-empty string, else ``""``."""
     value = payload.get("name")
     return value if isinstance(value, str) else ""
 
@@ -475,3 +446,38 @@ def _require_bool(payload: dict[str, object], key: str) -> bool:
     """Pull a boolean field from the userinfo payload, defaulting to ``False``."""
     value = payload.get(key, False)
     return value if isinstance(value, bool) else False
+
+
+# Must start with a single ``/`` (so it can't become an absolute or protocol-relative
+# URL) and carry no C0 control or DEL character. A ``next`` reaches the ``Location``
+# header and the signed state cookie, so an embedded CR/LF would enable header injection
+# / response splitting; rejecting the whole control range closes that off.
+def _same_origin_path(value: str) -> bool:
+    """Whether ``value`` is a safe same-origin redirect target."""
+    if not value.startswith("/") or value.startswith(("//", "/\\")):
+        return False
+    return all(ch >= " " and ch != "\x7f" for ch in value)
+
+
+# Browsers attach ``Origin`` to cross-origin (and most same-origin) POSTs and
+# ``Referer`` to navigations. A request is same-origin when the first such header
+# present has the same HOST (``netloc``) as the request's own ``Host`` header; a request
+# carrying neither (a non-browser client) has no CSRF vector and is treated as same-
+# origin.
+#
+# Compared on host only, NOT ``scheme://host``: behind a TLS-terminating proxy the app
+# sees ``request.url.scheme == "http"`` while the browser's ``Origin`` is
+# ``https://...``, so a scheme-sensitive compare would 403 a legitimate same-origin
+# logout (the same proxy hazard that makes the OAuth flow require an explicit
+# ``redirect_uri`` rather than ``request.url_for``). Host identity is the load-bearing
+# CSRF check; a same-host scheme mismatch is not a cross-site forgery.
+def _request_is_same_origin(request: Request) -> bool:
+    """Whether a state-changing request originates from this server's origin."""
+    expected_host = request.headers.get("host", "")
+    origin = request.headers.get("origin")
+    if origin is not None:
+        return urlsplit(origin).netloc == expected_host
+    referer = request.headers.get("referer")
+    if referer is not None:
+        return urlsplit(referer).netloc == expected_host
+    return True

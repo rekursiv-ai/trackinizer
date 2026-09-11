@@ -21,7 +21,7 @@ from typing import Final
 import os
 import re
 
-from trackinizer.lib.agent.sessions import codex as codex_ir
+from trackinizer.lib.agent.sessions import codex
 from trackinizer.lib.custom_json import StrCodec
 from trackinizer.trax.run.adapters.tail import Tail
 
@@ -42,7 +42,9 @@ class CodexAdapter:
     """
 
     name: str = "codex"
+
     cli_binary: str = "codex"
+
     whole_file: bool = False
 
     @property
@@ -54,11 +56,26 @@ class CodexAdapter:
         return (Path(home) if home else Path.home() / ".codex") / "sessions"
 
     def session_dirs(self) -> Iterable[Path]:
+        """Return the directories this CLI writes sessions under.
+
+        Returns:
+          result: The Iterable[Path].
+
+        """
         # Codex shards by Y/M/D; returning the root lets the runner glob
         # recursively, so older days still get captured if they keep growing.
         return (self._sessions_dir,)
 
     def matches_session_file(self, path: Path) -> bool:
+        """Return whether ``path`` is one of this CLI's session files.
+
+        Args:
+          path: Path.
+
+        Returns:
+          result: The bool.
+
+        """
         return (
             path.suffix == ".jsonl"
             and path.name.startswith("rollout-")
@@ -66,6 +83,12 @@ class CodexAdapter:
         )
 
     def session_scope(self) -> Path | None:
+        """Return the scope key a session file is filed under.
+
+        Returns:
+          result: The Path | None.
+
+        """
         # Codex shards by DATE, not by workspace, so every concurrent run
         # writes into the same ``<Y>/<M>/<D>/`` directory. There is nothing in
         # the layout that distinguishes this run's rollout from a sibling's,
@@ -73,7 +96,7 @@ class CodexAdapter:
         return None
 
     def session_id_from_path(self, path: Path) -> str | None:
-        """The uuid ``codex resume`` takes, read off the rollout's name.
+        """Return the uuid ``codex resume`` takes, read off the rollout's name.
 
         ``rollout-<ISO>-<uuid>.jsonl``, and the launch line repeats that uuid
         as ``payload.id`` -- so the name is authoritative, not a guess. The
@@ -97,5 +120,10 @@ class CodexAdapter:
         return StrCodec.coerce(found["session_id"])
 
     def reader(self) -> Tail:
-        """A fresh IR reader for one codex rollout file."""
-        return Tail(codex_ir.normalize)
+        """Return a fresh IR reader for one codex rollout file.
+
+        Returns:
+          result: The Tail.
+
+        """
+        return Tail(codex.normalize)

@@ -235,20 +235,18 @@ class _SessionIRMixin(_CascadeAuditMixin):
                 self._buffer_notification(session_id)
         return (len(written), len(rows) - len(written), stored)
 
+    # Server-assigned rather than client-counted: a resumed run's sink restarts at 0, so
+    # a client-supplied ``seq`` would collide with the earlier run's and the PK would
+    # silently drop every command.
+    #
+    # Runs on the caller's connection so it shares the record transaction -- a command
+    # sits BETWEEN the turns around it, and storing one half of that is a transcript
+    # that never happened.
     @classmethod
     async def _append_slash_commands(
         cls, conn: Conn, session_id: UUID, commands: Sequence[SlashCommandRow]
     ) -> int:
-        """Store typed commands, numbering them from the session's own max.
-
-        Server-assigned rather than client-counted: a resumed run's sink
-        restarts at 0, so a client-supplied ``seq`` would collide with the
-        earlier run's and the PK would silently drop every command.
-
-        Runs on the caller's connection so it shares the record transaction --
-        a command sits BETWEEN the turns around it, and storing one half of
-        that is a transcript that never happened.
-        """
+        """Store typed commands, numbering them from the session's own max."""
         if not commands:
             return 0
         # ``generate_series`` off one ``max(seq)`` read INSIDE the transaction:
@@ -275,7 +273,15 @@ class _SessionIRMixin(_CascadeAuditMixin):
     async def read_session_slash_commands(
         self, session_id: UUID
     ) -> list[SlashCommandRow]:
-        """Every command typed into one session, in ``seq`` order."""
+        """Every command typed into one session, in ``seq`` order.
+
+        Args:
+          session_id: Session id.
+
+        Returns:
+          result: The list[SlashCommandRow].
+
+        """
         async with self.engine.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT timestamp, command, args FROM session_slash_commands "
@@ -465,7 +471,15 @@ class _SessionIRMixin(_CascadeAuditMixin):
         return part
 
     async def read_session_manifests(self, session_id: UUID) -> list[SessionManifest]:
-        """Every part of one session, in ``part`` order."""
+        """Every part of one session, in ``part`` order.
+
+        Args:
+          session_id: Session id.
+
+        Returns:
+          result: The list[SessionManifest].
+
+        """
         async with self.engine.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT part, name, metadata, ir_id, format, records "
@@ -485,30 +499,25 @@ class _SessionIRMixin(_CascadeAuditMixin):
         ]
 
 
+# Serialized HERE rather than handed to asyncpg as a mapping: the column is ``json``
+# (not ``jsonb``) precisely to keep the provider's key order, and the driver's own codec
+# would round-trip it through a dict whose ordering is no longer the file's.
+# ``separators`` drops the whitespace ``json.dumps`` adds by default -- the text is
+# stored verbatim, so the padding would be too.
 def _encoded_payload(payload: JSON) -> str:
-    """One record's payload as JSON text, key order intact.
-
-    Serialized HERE rather than handed to asyncpg as a mapping: the column is
-    ``json`` (not ``jsonb``) precisely to keep the provider's key order, and
-    the driver's own codec would round-trip it through a dict whose ordering
-    is no longer the file's. ``separators`` drops the whitespace ``json.dumps``
-    adds by default -- the text is stored verbatim, so the padding would be
-    too.
-    """
+    """One record's payload as JSON text, key order intact."""
     return json.dumps(json_unfreeze(payload), separators=(",", ":"))
 
 
 def _decoded_payload(raw: str) -> JSON:
-    """The stored payload text back as frozen JSON, key order intact."""
+    """Return the stored payload text back as frozen JSON, key order intact."""
     return json_freeze(DictCodec.coerce(json.loads(raw)))
 
 
+# Claude writes standard base64 and codex base64url, so one decode/encode pair cannot
+# round-trip both -- the text is kept exactly as the provider wrote it and re-emitted
+# unchanged.
 def _encoded(ciphertext: str | None) -> bytes:
-    """The base64 ASCII as bytes, stored verbatim rather than decoded.
-
-    Claude writes standard base64 and codex base64url, so one decode/encode
-    pair cannot round-trip both -- the text is kept exactly as the provider
-    wrote it and re-emitted unchanged.
-    """
+    """Return the base64 ASCII as bytes, stored verbatim rather than decoded."""
     assert ciphertext is not None
     return ciphertext.encode()

@@ -58,16 +58,14 @@ def _resolve(annotation: object) -> object:
     return annotation
 
 
+# Derived from the annotation rather than hand-written per kind. A field added to any
+# Inquiry is populated -- and so serialized, and so compared against the oracle -- with
+# no edit here, PROVIDED its type already has an arm below. A type with no arm raises
+# rather than silently substituting something else, so the failure names the missing
+# case instead of hiding it; extending this function is then the deliberate act it
+# should be.
 def _sample(annotation: object) -> object:
-    """One non-``None`` value satisfying an annotation.
-
-    Derived from the annotation rather than hand-written per kind. A field
-    added to any Inquiry is populated -- and so serialized, and so compared
-    against the oracle -- with no edit here, PROVIDED its type already has an
-    arm below. A type with no arm raises rather than silently substituting
-    something else, so the failure names the missing case instead of hiding
-    it; extending this function is then the deliberate act it should be.
-    """
+    """One non-``None`` value satisfying an annotation."""
     annotation = _resolve(annotation)
     origin = typing.get_origin(annotation)
     if origin is types.UnionType:
@@ -126,13 +124,11 @@ def _sample(annotation: object) -> object:
     raise AssertionError(f"no sample value for annotation {annotation!r}")
 
 
+# The kwargs are built from the annotations, so their static type is ``object`` and no
+# checker can match them to each field. The construction is verified at RUNTIME instead,
+# by ``test_every_field_is_populated``.
 def _populated[T: Inquiry](subclass: type[T]) -> T:
-    """One instance of ``subclass`` with every field set to a real value.
-
-    The kwargs are built from the annotations, so their static type is
-    ``object`` and no checker can match them to each field. The construction
-    is verified at RUNTIME instead, by ``test_every_field_is_populated``.
-    """
+    """One instance of ``subclass`` with every field set to a real value."""
     hints = typing.get_type_hints(subclass, _INQUIRIES_NS)
     return subclass(
         **cast(

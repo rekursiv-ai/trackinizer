@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import argparse
 import subprocess
@@ -14,6 +14,9 @@ from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli, profile
 from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.profile import Profile
+
+
+_CWD: Final = Path(__file__).resolve().parent
 
 
 @pytest.mark.cli_python_subprocess
@@ -51,7 +54,7 @@ def test_cli_import_does_not_load_metric_wire_modules() -> None:
 @pytest.mark.cli_python_subprocess
 def test_module_entrypoint_is_directly_executable() -> None:
     result = subprocess.run(  # noqa: S603 -- test executes a fixed local entrypoint.
-        [str(Path(__file__).with_name("__main__.py")), "help"],
+        [str(_CWD / ("__main__.py")), "help"],
         check=False,
         capture_output=True,
         text=True,
@@ -60,7 +63,7 @@ def test_module_entrypoint_is_directly_executable() -> None:
     assert result.returncode == 0
     assert "Usage: trax COMMAND [ARGS] [OPTIONS]" in result.stdout
     assert "field is" not in result.stdout
-    assert "field to value" in Path(__file__).with_name("__main__.py").read_text()
+    assert "field to value" in (_CWD / "__main__.py").read_text()
     assert not result.stderr
 
 
@@ -178,9 +181,7 @@ def test_main_formats_client_error(
         raise ClientError("offline")
 
     monkeypatch.setattr(cli, "parse_and_run", raise_err)
-    with pytest.raises(SystemExit) as err:
-        cli.main(["profile"])
-    assert err.value.code == 2
+    assert cli.main(["profile"]) == 2
     assert "offline" in capsys.readouterr().err
 
 
@@ -401,14 +402,12 @@ def test_main_handles_client_error_with_exit_2(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``cli.main`` traps ``ClientError`` and exits with code 2."""
+    """``cli.main`` traps ``ClientError`` and returns exit code 2."""
     monkeypatch.setattr(
         "sys.argv",
         ["trax", "issue", "notakindorseq"],
     )
-    with pytest.raises(SystemExit) as exc:
-        cli.main()
-    assert exc.value.code == 2
+    assert cli.main() == 2
     err = capsys.readouterr().err
     assert err.startswith("trax: ")
 
@@ -481,7 +480,7 @@ def test_run_shim_resolves_client_from_active_profile(
         resolved.close()
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

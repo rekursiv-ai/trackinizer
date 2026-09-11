@@ -75,70 +75,6 @@ class _CostFields(BaseModel):
     """USD spend attributed to this action (agent + resource axes)."""
 
 
-def _reject_blank_strings(value: list[str], *, noun: str) -> list[str]:
-    """Reject empty or whitespace-only entries; ``noun`` names them in errors.
-
-    Shared by every list-of-string submit field so the "no blank entries"
-    rule lives in one place.
-    """
-    for entry in value:
-        if not entry.strip():
-            raise ValueError(f"{noun} must be non-empty")
-    return value
-
-
-def _validate_room_names(value: list[str]) -> list[str]:
-    """Reject blank or comma-bearing room names.
-
-    A room name must be a single clean token: non-blank (it is matched
-    verbatim against ``agentsession_rooms``) and free of ``,`` (``trax run``
-    exports rooms comma-joined into ``TRAX_ROOMS``, so a room ``'a,b'`` is
-    indistinguishable from two rooms ``'a'`` and ``'b'`` to an agent inside the
-    session). The rule lives here so ``SubmitAgentSession.rooms`` -- and its
-    ``SessionStart.rooms`` mirror in ``wire_sessions`` -- agree.
-    """
-    _reject_blank_strings(value, noun="rooms")
-    for room in value:
-        if "," in room:
-            raise ValueError(f"room name must not contain a comma: {room!r}")
-    return value
-
-
-def _blank_scalar_to_none(value: str | None) -> str | None:
-    """Collapse a whitespace-only optional scalar to ``None`` (unset is NULL).
-
-    Shared by every optional free-text / identifier submit scalar
-    (``sha``, ``url``, ``query``, ``provider``, ``venue``, ``subvenue``,
-    ``abstract``). A blank is "unset", so it clears to ``None`` -- the same
-    "unset is one encoding: SQL NULL" rule the edit path
-    (``Store._set_field`` -> ``empty_optional_to_none``) and the Paper insert
-    already follow, and that :meth:`SubmitPaper._validate_source` applies to
-    ``source``. Folding it here makes one rule hold across submit and edit
-    instead of submit passing blanks raw to storage.
-    """
-    return None if value is None or not value.strip() else value
-
-
-def _dedupe_preserving_order[T](
-    value: list[T], *, key: Callable[[T], object]
-) -> list[T]:
-    """Drop later duplicates by ``key``, keeping the first occurrence's order.
-
-    Shared by the submit fields whose duplicate entries would drive an
-    insert-then-upsert phantom audit (``requires`` ids, ``proved_by`` /
-    ``favored_by`` citations). One edge per parent is the stored truth, so a
-    repeated reference is a client redundancy to collapse, not an error.
-    """
-    seen: set[object] = set()
-    deduped: list[T] = []
-    for entry in value:
-        marker = key(entry)
-        if marker not in seen:
-            seen.add(marker)
-            deduped.append(entry)
-    return deduped
-
-
 class SubmitBase(_CostFields):
     """Inquiry-base fields every submit body carries.
 
@@ -160,6 +96,7 @@ class SubmitBase(_CostFields):
         return value
 
     description: str | None = None
+
     status: Inquiry.Status | None = None
     """Optional lifecycle status at creation. ``None`` is born ``active`` (the
     server default); an explicit value (e.g. ``complete``) is honored so a
@@ -167,7 +104,9 @@ class SubmitBase(_CostFields):
     complete instead of needing a follow-up edit. The DB CHECK validates it,
     and kind-specific lifecycle CHECKs still apply (an ``AgentSession`` cannot
     be born ``complete`` without ``ended``)."""
+
     owner: Inquiry.Actor | None = None
+
     account: Inquiry.Actor | None = None
     """The active user this row is attributed to. ``None`` lets the server
     default to the creator's authenticated email; a non-``None`` value must
@@ -175,16 +114,14 @@ class SubmitBase(_CostFields):
     default. Distinct from ``owner`` (responsibility) -- this is the auth
     identity the row is held under, and every stored row carries one."""
 
+    # A provided account must name a user; ``""`` / ``" "`` is malformed and is rejected
+    # here (422) so it never reaches the active-user probe, whose "not an active user"
+    # message would misdescribe the cause. ``None`` (unset, server defaults to the
+    # creator) stays valid.
     @field_validator("account", mode="after")
     @classmethod
     def _validate_account(cls, value: str | None) -> str | None:
-        """Reject a blank (whitespace-only) account as malformed input.
-
-        A provided account must name a user; ``""`` / ``"  "`` is malformed
-        and is rejected here (422) so it never reaches the active-user probe,
-        whose "not an active user" message would misdescribe the cause.
-        ``None`` (unset, server defaults to the creator) stays valid.
-        """
+        """Reject a blank (whitespace-only) account as malformed input."""
         if value is not None and not value.strip():
             raise ValueError("account must be non-empty")
         return value
@@ -193,16 +130,14 @@ class SubmitBase(_CostFields):
     """Audit actor recorded on the ``created`` change. ``None`` lets the
     server default from the authenticated principal's email."""
 
+    # ``submit_batch`` does ``item.actor or actor``, so a whitespace-only ``actor``
+    # would silently fall through to the batch actor -- the same malformed-input hazard
+    # ``_validate_account`` guards against. ``None`` (server defaults from the
+    # principal) stays valid.
     @field_validator("actor", mode="after")
     @classmethod
     def _validate_actor(cls, value: str | None) -> str | None:
-        """Reject a blank (whitespace-only) actor as malformed input.
-
-        ``submit_batch`` does ``item.actor or actor``, so a whitespace-only
-        ``actor`` would silently fall through to the batch actor -- the same
-        malformed-input hazard ``_validate_account`` guards against. ``None``
-        (server defaults from the principal) stays valid.
-        """
+        """Reject a blank (whitespace-only) actor as malformed input."""
         if value is not None and not value.strip():
             raise ValueError("actor must be non-empty")
         return value
@@ -221,6 +156,7 @@ class SubmitBase(_CostFields):
     """
 
     labels: list[str] | None = None
+
     subscribers: list[Inquiry.Actor] | None = None
 
     @field_validator("subscribers", mode="after")
@@ -231,13 +167,27 @@ class SubmitBase(_CostFields):
         )
 
 
+# Shared by every list-of-string submit field so the "no blank entries" rule lives in
+# one place.
+def _reject_blank_strings(value: list[str], *, noun: str) -> list[str]:
+    """Reject empty or whitespace-only entries; ``noun`` names them in errors."""
+    for entry in value:
+        if not entry.strip():
+            raise ValueError(f"{noun} must be non-empty")
+    return value
+
+
 class SubmitIssue(SubmitBase):
     """Submit body for a new Issue."""
 
     kind: Literal["Issue"] = "Issue"
+
     issue_kind: list[Issue.Kind] | None = Field(default=None, min_length=1)
+
     validation: str | None = None
+
     priority: Issue.Priority | None = Field(default=None, ge=0)
+
     narrows: list[tuple[uuid.UUID, Annotated[Issue.Priority, Field(ge=0)] | None]] = (
         Field(default_factory=list)
     )
@@ -246,6 +196,7 @@ class SubmitIssue(SubmitBase):
     priority carries the same nonnegative bound as :attr:`priority` and the
     edges ``CHECK``, so a negative value is a clean 422 at the wire rather than
     a mid-transaction DB violation."""
+
     requires: list[uuid.UUID] = Field(default_factory=list)
     """Prerequisite Issues this one requires done first (its do-time parents)."""
 
@@ -265,6 +216,7 @@ class SubmitExperiment(SubmitBase):
     """Submit body for a new Experiment."""
 
     kind: Literal["Experiment"] = "Experiment"
+
     codechanges: list[uuid.UUID] | None = None
     """:class:`CodeChange` ids of the code states this experiment ran at."""
 
@@ -279,14 +231,23 @@ class SubmitPaper(SubmitBase):
     """Submit body for a new Paper."""
 
     kind: Literal["Paper"] = "Paper"
+
     abstract: str | None = None
+
     authors: list[str] | None = None
+
     publication_type: Paper.PublicationType | None = None
+
     venue: str | None = None
+
     subvenue: str | None = None
+
     publish_date: datetime | None = None
+
     source: str | None = None
+
     google_scholar_cluster_id: str | None = None
+
     google_scholar_cites_id: str | None = None
 
     @field_validator(
@@ -354,12 +315,16 @@ class SubmitBelief(SubmitBase):
     """Submit body for a new Belief."""
 
     kind: Literal["Belief"] = "Belief"
+
     judgement: Belief.Judgement | None = None
+
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
     proved_by: list[Citation] = Field(default_factory=list)
     """Load-bearing citations: each Artifact citing this belief as proof. Stamps
     an Artifact -> Belief ``proves`` edge carrying the signed valence (positive
     proves, negative disproves)."""
+
     favored_by: list[Citation] = Field(default_factory=list)
     """Context citations: each Artifact citing this belief as context. Stamps an
     Artifact -> Belief ``favors`` edge carrying the signed valence (positive
@@ -377,6 +342,7 @@ class SubmitCodeChange(SubmitBase):
     """Submit body for a new CodeChange."""
 
     kind: Literal["CodeChange"] = "CodeChange"
+
     sha: str | None = None
     """Git SHA."""
 
@@ -390,6 +356,7 @@ class SubmitWebResult(SubmitBase):
     """Submit body for a new WebResult."""
 
     kind: Literal["WebResult"] = "WebResult"
+
     url: str | None = None
     """Page URL."""
 
@@ -403,7 +370,9 @@ class SubmitWebSearch(SubmitBase):
     """Submit body for a new WebSearch."""
 
     kind: Literal["WebSearch"] = "WebSearch"
+
     query: str | None = None
+
     provider: str | None = None
 
     @field_validator("query", "provider", mode="after")
@@ -416,6 +385,7 @@ class SubmitAgentSession(SubmitBase):
     """Submit body for a new AgentSession (a captured ``trax run`` session)."""
 
     kind: Literal["AgentSession"] = "AgentSession"
+
     cli: str | None = Field(default=None, min_length=1)
     """Wrapped CLI: ``claude`` / ``gemini`` / ``codex`` / ``cursor``."""
 
@@ -423,6 +393,7 @@ class SubmitAgentSession(SubmitBase):
     """The CLI's own session id, for correlation with vendor records."""
 
     started: datetime | None = None
+
     # No ``ended`` at create: a session is born live (``ended IS NULL``).
     # ``ended`` is stamped only by ``POST /api/sessions/{id}/end``, which sets
     # it together with ``status = 'complete'`` -- the lifecycle CHECK on
@@ -433,15 +404,13 @@ class SubmitAgentSession(SubmitBase):
     """Initial room membership (``--room``); namespaces the session can be
     addressed within. See :attr:`AgentSession.rooms`."""
 
+    # ``min_length=1`` alone admits ``" "``; both are matched/stored verbatim, so a
+    # whitespace value is a client bug (mirrors the rooms and wire_sessions blank-
+    # rejection rule).
     @field_validator("cli", "cli_session_id", mode="after")
     @classmethod
     def _reject_blank_scalars(cls, value: str | None) -> str | None:
-        """Reject a whitespace-only ``cli`` / ``cli_session_id``.
-
-        ``min_length=1`` alone admits ``"   "``; both are matched/stored
-        verbatim, so a whitespace value is a client bug (mirrors the rooms and
-        wire_sessions blank-rejection rule).
-        """
+        """Reject a whitespace-only ``cli`` / ``cli_session_id``."""
         if value is not None and not value.strip():
             raise ValueError("value must be non-empty")
         return value
@@ -450,6 +419,51 @@ class SubmitAgentSession(SubmitBase):
     @classmethod
     def _validate_rooms(cls, value: list[str] | None) -> list[str] | None:
         return None if value is None else _validate_room_names(value)
+
+
+# A room name must be a single clean token: non-blank (it is matched verbatim against
+# ``agentsession_rooms``) and free of ``,`` (``trax run`` exports rooms comma-joined
+# into ``TRAX_ROOMS``, so a room ``'a,b'`` is indistinguishable from two rooms ``'a'``
+# and ``'b'`` to an agent inside the session). The rule lives here so
+# ``SubmitAgentSession.rooms`` -- and its ``SessionStart.rooms`` mirror in
+# ``wire_sessions`` -- agree.
+def _validate_room_names(value: list[str]) -> list[str]:
+    """Reject blank or comma-bearing room names."""
+    _reject_blank_strings(value, noun="rooms")
+    for room in value:
+        if "," in room:
+            raise ValueError(f"room name must not contain a comma: {room!r}")
+    return value
+
+
+# Shared by the submit fields whose duplicate entries would drive an insert-then-upsert
+# phantom audit (``requires`` ids, ``proved_by`` / ``favored_by`` citations). One edge
+# per parent is the stored truth, so a repeated reference is a client redundancy to
+# collapse, not an error.
+def _dedupe_preserving_order[T](
+    value: list[T], *, key: Callable[[T], object]
+) -> list[T]:
+    """Drop later duplicates by ``key``, keeping the first occurrence's order."""
+    seen: set[object] = set()
+    deduped: list[T] = []
+    for entry in value:
+        marker = key(entry)
+        if marker not in seen:
+            seen.add(marker)
+            deduped.append(entry)
+    return deduped
+
+
+# Shared by every optional free-text / identifier submit scalar (``sha``, ``url``,
+# ``query``, ``provider``, ``venue``, ``subvenue``, ``abstract``). A blank is "unset",
+# so it clears to ``None`` -- the same "unset is one encoding: SQL NULL" rule the edit
+# path (``Store._set_field`` -> ``empty_optional_to_none``) and the Paper insert already
+# follow, and that :meth:`SubmitPaper._validate_source` applies to ``source``. Folding
+# it here makes one rule hold across submit and edit instead of submit passing blanks
+# raw to storage.
+def _blank_scalar_to_none(value: str | None) -> str | None:
+    """Collapse a whitespace-only optional scalar to ``None`` (unset is NULL)."""
+    return None if value is None or not value.strip() else value
 
 
 # Discriminated union over every concrete ``SubmitX`` body, keyed on the
@@ -480,13 +494,21 @@ class BatchEdge(BaseModel):
     """
 
     from_index: int | None = Field(default=None, ge=0)
+
     from_id: uuid.UUID | None = None
+
     to_index: int | None = Field(default=None, ge=0)
+
     to_id: uuid.UUID | None = None
+
     edge_kind: Edge.Kind
+
     priority: Issue.Priority | None = Field(default=None, ge=0)
+
     note: str = ""
+
     valence: float | None = Field(default=None, ge=-1.0, le=1.0)
+
     labels: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -514,6 +536,7 @@ class SubmitBatch(BaseModel):
     """
 
     items: list[SubmitItem] = Field(min_length=1, max_length=BATCH_MAX_ITEMS)
+
     edges: list[BatchEdge] = Field(default_factory=list, max_length=BATCH_MAX_ITEMS)
 
     @field_validator("items", mode="after")
@@ -527,20 +550,17 @@ class SubmitBatch(BaseModel):
             )
         return value
 
+    # ``submit_batch`` runs items on one transaction; a later item with a key an earlier
+    # item already wrote pre-probes, finds that earlier item's ``created`` change_log
+    # row, and returns its id -- collapsing two items into one row and mis-targeting any
+    # edges that reference the later item by index. Rejecting the collision here keeps
+    # it a clean 422 instead of a silent collapse.
     @field_validator("items", mode="after")
     @classmethod
     def _reject_duplicate_idempotency_keys(
         cls, value: list[SubmitItem]
     ) -> list[SubmitItem]:
-        """Reject items sharing one idempotency_key, naming the dup indexes.
-
-        ``submit_batch`` runs items on one transaction; a later item with a
-        key an earlier item already wrote pre-probes, finds that earlier
-        item's ``created`` change_log row, and returns its id -- collapsing
-        two items into one row and mis-targeting any edges that reference the
-        later item by index. Rejecting the collision here keeps it a clean
-        422 instead of a silent collapse.
-        """
+        """Reject items sharing one idempotency_key, naming the dup indexes."""
         seen: dict[uuid.UUID, int] = {}
         duplicates: list[int] = []
         for i, item in enumerate(value):
@@ -573,17 +593,14 @@ class SubmitBatch(BaseModel):
             self._check_new_row_endpoint_kinds(i, edge)
         return self
 
+    # Only new-row endpoints (named by ``from_index`` / ``to_index``) carry a kind the
+    # wire can see -- ``items[idx].kind``. An incompatible ``(from_kind, to_kind,
+    # edge_kind)`` triple would otherwise pass the wire and surface as a mid-transaction
+    # DB ``CHECK`` 500; rejecting it here keeps it a clean 422. ``from_id`` / ``to_id``
+    # endpoints reference already-stored rows whose kind the wire cannot resolve, so
+    # they are left to the Store's reference validation.
     def _check_new_row_endpoint_kinds(self, i: int, edge: BatchEdge) -> None:
-        """Validate an index-endpoint edge's kinds against its edge policy.
-
-        Only new-row endpoints (named by ``from_index`` / ``to_index``) carry a
-        kind the wire can see -- ``items[idx].kind``. An incompatible
-        ``(from_kind, to_kind, edge_kind)`` triple would otherwise pass the wire
-        and surface as a mid-transaction DB ``CHECK`` 500; rejecting it here
-        keeps it a clean 422. ``from_id`` / ``to_id`` endpoints reference
-        already-stored rows whose kind the wire cannot resolve, so they are left
-        to the Store's reference validation.
-        """
+        """Validate an index-endpoint edge's kinds against its edge policy."""
         policy = EDGE_POLICIES[edge.edge_kind]
         self._check_endpoint_kind(i, edge, "from", edge.from_index, policy.from_kinds)
         self._check_endpoint_kind(i, edge, "to", edge.to_index, policy.to_kinds)
@@ -671,7 +688,9 @@ class FieldSet[T](FieldMutation):
     model_config = ConfigDict(extra="forbid")
 
     value: T
+
     expected: T | None = None
+
     mode: Literal["set", "cas"] = "set"
 
     @model_validator(mode="after")
@@ -698,4 +717,5 @@ class FieldOp[T](FieldMutation):
     """
 
     op: Literal["add", "sub"]
+
     value: T

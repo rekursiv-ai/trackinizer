@@ -17,7 +17,7 @@ import uuid
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.custom_json import IntCodec
-from trackinizer.trax import render as fmt
+from trackinizer.trax import render
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import cwd, env
 from trackinizer.trax.grammar import (
@@ -87,8 +87,8 @@ from trackinizer.wire.routes import (
 
 
 if TYPE_CHECKING:
+    from trackinizer.trax.run import session
     from trackinizer.trax.run.resume import prepare_resume
-    from trackinizer.trax.run.session import main as run_main
 else:
     from wrapt import lazy_import
 
@@ -96,7 +96,7 @@ else:
     # (importing ``trax.run.session`` costs ~324ms), so the WORK is bound
     # lazily -- mirroring ``cli.py``, which does the same for ``run``.
     prepare_resume = lazy_import("trackinizer.trax.run.resume", "prepare_resume")
-    run_main = lazy_import("trackinizer.trax.run.session", "main")
+    session = lazy_import("trackinizer.trax.run.session")
 
 if TYPE_CHECKING:
     from trackinizer.wire.wire_metrics import MetricPoint
@@ -153,29 +153,6 @@ _NEGATIVE_CITATION_LABELS: Final[Mapping[Edge.Kind, tuple[str, str]]] = {
 }
 
 
-def _is_against_citation(edge_kind: str, valence: object) -> bool:
-    """Whether a citation edge carries a negative (against) valence."""
-    return (
-        edge_kind in _NEGATIVE_CITATION_TITLE
-        and isinstance(valence, (int, float))
-        and not isinstance(valence, bool)
-        and valence < 0
-    )
-
-
-def _positive_int(value: str) -> int:
-    """Argparse ``type`` for ``--limit``: an integer ``>= 1``.
-
-    A zero or negative limit silently returned no rows; reject it at the
-    parser so every ``--limit`` site shares one rule and the user gets a
-    clear error instead of an empty result.
-    """
-    parsed = int(value)
-    if parsed < 1:
-        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value!r}")
-    return parsed
-
-
 class Kind(Command):
     """The 8 inquiry-kind names, each acting as a verb.
 
@@ -192,11 +169,13 @@ class Kind(Command):
     """
 
     names = tuple(KIND_LOWER)
+
     field_help: ClassVar[HelpPage] = HelpPage(
         usage="trax <kind> <seq> FIELD [to VALUE]",
         summary="Bare FIELD projects it; FIELD to VALUE replaces it.",
         examples=("trax issue 7 title", "trax issue 7 title to 'New title'"),
     )
+
     field_set_help: ClassVar[HelpPage] = HelpPage(
         usage="trax <kind> <seq> FIELD to VALUE [FIELD to VALUE ...]",
         summary="Mutates the selected field or fields.",
@@ -313,6 +292,17 @@ class Kind(Command):
         *,
         against: bool = False,
     ) -> None:
+        """Run relation.
+
+        Args:
+          ref: Ref.
+          relation: Relation.
+          tokens: Tokens.
+          args: Args.
+          client_factory: Client factory.
+          against: Against.
+
+        """
         if len(tokens) > 1:
             raise ClientError(
                 f"unexpected positional after relation index: {tokens[1:]!r}"
@@ -348,6 +338,13 @@ class Kind(Command):
             Experiment, then log the metric writes into it (create+log fusion);
           * empty or a list query (``experiment [label ml] metric ...``) -> a
             cross-experiment masked read/rank (the leaderboard surface).
+
+        Args:
+          before: Before.
+          tail: Tail.
+          args: Args.
+          client_factory: Client factory.
+
         """
         action = parse_metric_action(tail)
         if starts_with_ref(before):
@@ -375,7 +372,14 @@ class Kind(Command):
         The tail takes its own ``--lossy`` (it gates the CONVERSION, which
         happens before any runner exists) and passes everything else through:
         ``run claude --as bob -- --model opus`` re-emits as
-        ``run_main(["claude", "--as", "bob", "--", "--model", "opus"])``.
+        ``session.main(["claude", "--as", "bob", "--", "--model", "opus"])``.
+
+        Args:
+          before: Before.
+          tail: Tail.
+          args: Args.
+          client_factory: Client factory.
+
         """
         if not tail:
             raise ClientError("run needs a target CLI: trax agentsession 42 run claude")
@@ -410,7 +414,7 @@ class Kind(Command):
             ) from err
         del args
         echo(f"resuming {ref} as {target} from {written.path}")
-        run_main(
+        session.main(
             [target, *forwarded],
             client_factory=client_factory,
             resume_path=written.path,
@@ -498,6 +502,10 @@ class Kind(Command):
         written = cls._write_masked(client, exp_id, action, bulk_ok=args.makeitso)
         echo(f"written: {written}")
 
+    # The ``to`` value is a finite float; ``step`` must be masked (a metric point has no
+    # default step). A mask that resolves to more than one cell is a bulk write and
+    # requires ``--makeitso`` -- the count is discovered by a dry read first, mirroring
+    # the inquiry bulk-edit guard.
     @classmethod
     def _write_masked(
         cls,
@@ -507,13 +515,7 @@ class Kind(Command):
         *,
         bulk_ok: bool,
     ) -> int:
-        """Coerce and apply a masked ``to`` write, guarding a bulk blast radius.
-
-        The ``to`` value is a finite float; ``step`` must be masked (a metric
-        point has no default step). A mask that resolves to more than one cell is
-        a bulk write and requires ``--makeitso`` -- the count is discovered by a
-        dry read first, mirroring the inquiry bulk-edit guard.
-        """
+        """Coerce and apply a masked ``to`` write, guarding a bulk blast radius."""
         assert action.write is not None
         value = _finite_float(action.write)
         masks = _mask_clauses(action.masks)
@@ -536,7 +538,10 @@ class Kind(Command):
     ) -> None:
         """Print masked cells in ``(key, step)`` order, or JSON."""
         if args.format_ == "json":
-            echo(fmt.format_json([p.model_dump(mode="json") for p in points]), nl=False)
+            echo(
+                render.format_json([p.model_dump(mode="json") for p in points]),
+                nl=False,
+            )
             return
         if not points:
             echo("(no metrics)")
@@ -554,7 +559,7 @@ class Kind(Command):
         """Print a cross-experiment read: each cell tagged with its experiment."""
         if args.format_ == "json":
             echo(
-                fmt.format_json(
+                render.format_json(
                     [
                         {
                             "experiment_id": str(r.experiment_id),
@@ -621,10 +626,10 @@ class Kind(Command):
             subject_payload, peer_payload, peer_row, relation
         )
         if args.format_ == "json":
-            echo(fmt.format_json(edge_payload), nl=False)
+            echo(render.format_json(edge_payload), nl=False)
         else:
             echo(
-                fmt.format_edge(edge_payload, changes=args.changes),
+                render.format_edge(edge_payload, changes=args.changes),
                 nl=False,
             )
 
@@ -774,6 +779,17 @@ class Kind(Command):
         *,
         client_factory: Callable[[], Client],
     ) -> None:
+        """Run relation add edge.
+
+        Args:
+          subject: Subject.
+          relation: Relation.
+          source: Source.
+          target: Target.
+          args: Args.
+          client_factory: Client factory.
+
+        """
         client = client_factory()
         _source_kind, src_id = client.resolve_id(source)
         _target_kind, tgt_id = client.resolve_id(target)
@@ -815,6 +831,15 @@ class Kind(Command):
         existing edge has it applied -- the server does both in
         :meth:`Client.add_edge`. The echo distinguishes the two ("added" vs
         "annotated") from the returned :class:`EdgeWrite`.
+
+        Args:
+          source: Source.
+          edge_kind: Edge kind.
+          target: Target.
+          metadata: Metadata.
+          args: Args.
+          client_factory: Client factory.
+
         """
         client = client_factory()
         _, src_id = client.resolve_id(source)
@@ -863,6 +888,16 @@ class Kind(Command):
         on the just-created row (the ``metric`` create+log fusion) targets that
         exact row rather than re-reading "the newest", which a concurrent create
         could shadow.
+
+        Args:
+          kind: Kind.
+          actions: Actions.
+          args: Args.
+          client_factory: Client factory.
+
+        Returns:
+          result: The uuid.UUID.
+
         """
         client = client_factory()
         actor = resolve_actor(args.actor, client)
@@ -959,6 +994,11 @@ class Kind(Command):
             echo(f"added: {source} {action.edge.name} {target}")
         return ids[0]
 
+    # The SOURCE node is named by EITHER ``from_index`` (a batch item -- the deep
+    # cursor, the node this edge hangs off) OR ``from_id`` (an existing row, e.g. the
+    # leading subject of a row-local edit). The TARGET likewise by ``to_index`` (a new
+    # inline item) or ``to_id`` (an existing row). ``action.edge.reverse`` flips which
+    # endpoint is the source: a reverse edge stores ``target -> source``.
     @classmethod
     def _batch_edge(
         cls,
@@ -969,15 +1009,7 @@ class Kind(Command):
         to_index: int | None = None,
         to_id: uuid.UUID | None = None,
     ) -> dict[str, object]:
-        """Map one create edge action to a ``BatchEdge`` payload dict.
-
-        The SOURCE node is named by EITHER ``from_index`` (a batch item -- the
-        deep cursor, the node this edge hangs off) OR ``from_id`` (an existing
-        row, e.g. the leading subject of a row-local edit). The TARGET likewise
-        by ``to_index`` (a new inline item) or ``to_id`` (an existing row).
-        ``action.edge.reverse`` flips which endpoint is the source: a reverse
-        edge stores ``target -> source``.
-        """
+        """Map one create edge action to a ``BatchEdge`` payload dict."""
         src: dict[str, object] = (
             {"from_index": from_index}
             if from_index is not None
@@ -1006,14 +1038,7 @@ class Kind(Command):
         Sequence[EdgeAction],
         Sequence[AddCost],
     ]:
-        """Partition create actions into body, edge, and cost groups.
-
-        Returns:
-          body_actions: Field/list mutations forming the create body.
-          edge_actions: Non-remove edge links (each may inline-create a target).
-          cost_actions: Signed cost deltas applied after the row is created.
-
-        """
+        """Partition create actions into body, edge, and cost groups."""
         body_actions: list[SetField | AddList | RemoveList] = []
         edge_actions: list[EdgeAction] = []
         cost_actions: list[AddCost] = []
@@ -1030,16 +1055,14 @@ class Kind(Command):
                 )
         return body_actions, edge_actions, cost_actions
 
+    # An inline-create target mints a new row, so only non-inline targets need
+    # resolving; collecting them all up front lets the caller resolve the whole tree in
+    # one ``resolve_ids`` batch instead of N sequential round-trips (F14). The order
+    # matches :meth:`_flatten_inline_tree`'s walk, so the resolved ids zip back
+    # positionally.
     @classmethod
     def _collect_existing_refs(cls, actions: Sequence[EdgeAction]) -> list[Ref]:
-        """Every existing-ref edge target in the subtree, in flatten (DFS) order.
-
-        An inline-create target mints a new row, so only non-inline targets need
-        resolving; collecting them all up front lets the caller resolve the whole
-        tree in one ``resolve_ids`` batch instead of N sequential round-trips
-        (F14). The order matches :meth:`_flatten_inline_tree`'s walk, so the
-        resolved ids zip back positionally.
-        """
+        """Every existing-ref edge target in the subtree, in flatten (DFS) order."""
         refs: list[Ref] = []
         for action in actions:
             if isinstance(action.target, InlineCreate):
@@ -1048,6 +1071,15 @@ class Kind(Command):
                 refs.append(action.target)
         return refs
 
+    # Shared by :meth:`run_create` (root-anchored at batch item 0) and
+    # :meth:`_run_anchored_inline_subtree` (anchored at an existing row by id): both
+    # descend the DEEP cursor identically, appending each inline target as a new item
+    # that becomes the cursor for its own nested edges, so the whole subtree lands in
+    # one ``submit_batch`` (F8). Existing-ref targets pull their pre-resolved uuid from
+    # ``resolved`` (the batch from :meth:`_collect_existing_refs`) rather than a per-
+    # edge round-trip (F14). ``flat_edges`` records ``(action, source_index,
+    # existing_ref_or_None)`` in creation order so the caller can echo a directional
+    # triple per edge.
     @classmethod
     def _flatten_inline_tree(
         cls,
@@ -1062,18 +1094,7 @@ class Kind(Command):
         flat_edges: list[tuple[EdgeAction, int, Ref | None]],
         resolved: Iterator[uuid.UUID],
     ) -> None:
-        """Flatten an inline-create edge tree into batch ``items`` and ``edges``.
-
-        Shared by :meth:`run_create` (root-anchored at batch item 0) and
-        :meth:`_run_anchored_inline_subtree` (anchored at an existing row by id):
-        both descend the DEEP cursor identically, appending each inline target as
-        a new item that becomes the cursor for its own nested edges, so the whole
-        subtree lands in one ``submit_batch`` (F8). Existing-ref targets pull
-        their pre-resolved uuid from ``resolved`` (the batch from
-        :meth:`_collect_existing_refs`) rather than a per-edge round-trip (F14).
-        ``flat_edges`` records ``(action, source_index, existing_ref_or_None)``
-        in creation order so the caller can echo a directional triple per edge.
-        """
+        """Flatten an inline-create edge tree into batch ``items`` and ``edges``."""
         for action in actions:
             if isinstance(action.target, InlineCreate):
                 target = action.target
@@ -1142,6 +1163,14 @@ class Kind(Command):
         args: argparse.Namespace,
         client_factory: Callable[[], Client],
     ) -> None:
+        """Run purge.
+
+        Args:
+          ref: Ref.
+          args: Args.
+          client_factory: Client factory.
+
+        """
         client = client_factory()
         kind, target_id = client.resolve_id(ref)
         client.purge(
@@ -1160,6 +1189,16 @@ class Kind(Command):
         args: argparse.Namespace,
         client_factory: Callable[[], Client],
     ) -> None:
+        """Run remove edge.
+
+        Args:
+          source: Source.
+          edge_kind: Edge kind.
+          target: Target.
+          args: Args.
+          client_factory: Client factory.
+
+        """
         client = client_factory()
         _, src_id = client.resolve_id(source)
         _, tgt_id = client.resolve_id(target)
@@ -1176,6 +1215,15 @@ class Kind(Command):
         args: argparse.Namespace,
         client_factory: Callable[[], Client],
     ) -> None:
+        """Run edge action.
+
+        Args:
+          ref: Ref.
+          action: Action.
+          args: Args.
+          client_factory: Client factory.
+
+        """
         # Any inline-create target -- flat (fields only) or a deep/wide subtree
         # (its own nested edges or costs) -- is built as one atomic batch
         # anchored at the existing leading subject, so the new row and its
@@ -1210,6 +1258,11 @@ class Kind(Command):
             client_factory=client_factory,
         )
 
+    # The mirror of :meth:`run_create` for the row-local edit path: the leading subject
+    # ``ref`` already exists, so the anchor edge sources it by ``id`` and the inline
+    # target plus its whole nested subtree are flattened into one ``submit_batch``.
+    # Without this the edit path created only the immediate inline target and silently
+    # dropped its nested edges (TRAX-425-007).
     @classmethod
     def _run_anchored_inline_subtree(
         cls,
@@ -1218,14 +1271,7 @@ class Kind(Command):
         args: argparse.Namespace,
         client_factory: Callable[[], Client],
     ) -> None:
-        """Build a deep/wide inline-create subtree anchored at an existing row.
-
-        The mirror of :meth:`run_create` for the row-local edit path: the leading
-        subject ``ref`` already exists, so the anchor edge sources it by ``id``
-        and the inline target plus its whole nested subtree are flattened into one
-        ``submit_batch``. Without this the edit path created only the immediate
-        inline target and silently dropped its nested edges (TRAX-425-007).
-        """
+        """Build a deep/wide inline-create subtree anchored at an existing row."""
         target = cast(InlineCreate, action.target)
         client = client_factory()
         actor = resolve_actor(args.actor, client)
@@ -1316,6 +1362,15 @@ class Kind(Command):
         args: argparse.Namespace,
         client_factory: Callable[[], Client],
     ) -> None:
+        """Run list mutation.
+
+        Args:
+          ref: Ref.
+          action: Action.
+          args: Args.
+          client_factory: Client factory.
+
+        """
         spec = FIELDS_BY_NAME.get(action.field)
         if spec is None or spec.shape != "list":
             raise ClientError(f"unknown list field {action.field!r}")
@@ -1349,197 +1404,35 @@ class Kind(Command):
         return kind_help_for(KIND_LOWER[verb], prefix)
 
 
-def _swap_edge_endpoints(
-    src: Mapping[str, object], peer: Mapping[str, object]
-) -> tuple[dict[str, object], dict[str, object]]:
-    """Swap a ``from_*``/``to_*`` endpoint pair for a reverse-alias edge.
-
-    A reverse alias stores ``peer -> source``, so the ``from_index``/``from_id``
-    key on ``src`` becomes a ``to_*`` key and the ``to_*`` key on ``peer`` a
-    ``from_*`` key, preserving whichever (index vs id) form each carried.
-    """
-    rename = {
-        "from_index": "to_index",
-        "from_id": "to_id",
-        "to_index": "from_index",
-        "to_id": "from_id",
-    }
-    new_src = {rename[k]: v for k, v in peer.items()}
-    new_peer = {rename[k]: v for k, v in src.items()}
-    return new_src, new_peer
-
-
-def _resolve_stdin_actions(actions: Sequence[Action]) -> tuple[Action, ...]:
-    """Resolve ``-`` (stdin) and ``@path`` value sentinels across all actions.
-
-    Stdin may be consumed only once, so the flag threads through every action.
-    """
-    used_stdin = False
-    resolved: list[Action] = []
-    for action in actions:
-        if isinstance(action, SetField):
-            field, used = _resolve_field_value(action, used_stdin=used_stdin)
-            used_stdin = used_stdin or used
-            resolved.append(field)
-        elif isinstance(action, EdgeAction) and isinstance(action.target, InlineCreate):
-            target, used = _resolve_inline_create_values(
-                action.target,
-                used_stdin=used_stdin,
-            )
-            used_stdin = used_stdin or used
-            resolved.append(
-                EdgeAction(
-                    edge=action.edge,
-                    target=target,
-                    metadata=action.metadata,
-                    remove=action.remove,
-                    annotate=action.annotate,
-                )
-            )
-        else:
-            resolved.append(action)
-    return tuple(resolved)
-
-
-def _resolve_inline_create_values(
-    target: InlineCreate,
-    *,
-    used_stdin: bool,
-) -> tuple[InlineCreate, bool]:
-    """Resolve ``-`` and ``@path`` value sentinels inside one inline-create.
-
-    Recurses into the node's nested ``edges`` (Issue#425 item 6) so a deep chain
-    or a ``begin ... end`` group's field values are resolved too, and -- crucially
-    -- the nested edge structure AND the node's ``costs`` are PRESERVED (rebuilding
-    without them would silently drop the whole subtree or its cost deltas).
-    """
-    fields: list[SetField] = []
-    used = False
-    for field in target.fields:
-        resolved, field_used = _resolve_field_value(
-            field,
-            used_stdin=used_stdin or used,
-        )
-        fields.append(resolved)
-        used = used or field_used
-    nested: list[EdgeAction] = []
-    for action in target.edges:
-        if isinstance(action.target, InlineCreate):
-            inner, inner_used = _resolve_inline_create_values(
-                action.target, used_stdin=used_stdin or used
-            )
-            used = used or inner_used
-            nested.append(
-                EdgeAction(
-                    edge=action.edge,
-                    target=inner,
-                    metadata=action.metadata,
-                    remove=action.remove,
-                    annotate=action.annotate,
-                )
-            )
-        else:
-            nested.append(action)
-    return (
-        InlineCreate(
-            kind=target.kind,
-            fields=tuple(fields),
-            edges=tuple(nested),
-            costs=target.costs,
-            inbound_meta=target.inbound_meta,
-        ),
-        used,
-    )
-
-
-def _resolve_field_value(field: SetField, *, used_stdin: bool) -> tuple[SetField, bool]:
-    """Resolve one field value: ``-`` reads stdin, ``@path`` reads a file, else verbatim.
-
-    The read text is re-coerced through :func:`field_value`: parse-time
-    coercion saw only the sentinel token, so a typed field (``config``)
-    coerces here instead. Identity-coerced fields are unaffected.
-    """
-    if not isinstance(field.value, str):
-        return field, False
-    if field.value == "-":
-        if used_stdin:
-            raise ClientError("stdin value can only be used once per command")
-        return SetField(
-            field=field.field, value=field_value(field.field, sys.stdin.read())
-        ), True
-    if field.value.startswith("@"):
-        path = field.value[1:]
-        if not path:
-            raise ClientError("@ value requires a path")
-        try:
-            # Resolved against the CALLER's directory: under the daemon the
-            # process cwd belongs to whichever shell spawned it.
-            text = (cwd() / path).read_text()
-        except OSError as err:
-            raise ClientError(f"cannot read @{path}: {err}") from err
-        return SetField(field=field.field, value=field_value(field.field, text)), False
-    return field, False
-
-
-def _inline_create_body(
-    target: InlineCreate, actor: Inquiry.Actor, client: Client
-) -> dict[str, object]:
-    """Build an inline-create row body, resolving ref-list fields and defaults."""
-    body: dict[str, object] = {"owner": actor}
-    for field in target.fields:
-        body[field.field] = _resolve_set_value(field, client)
-    _apply_create_defaults(target.kind, body)
-    return body
-
-
-def _priority_or_default(priority: object, *, default: int = 20) -> int:
-    """Issue priority for sorting/display, defaulting only absent/None to 20.
-
-    An explicit priority ``0`` (P0) is preserved -- the falsy-``or`` idiom would
-    mis-map it to the medium default and sort/show a critical row as ordinary
-    (F33).
-    """
-    return default if priority is None else IntCodec.coerce(priority, 0)
-
-
-def _apply_create_defaults(kind: Inquiry.InquiryKind, body: dict[str, object]) -> None:
-    """Apply the CLI's per-kind ergonomic create defaults.
-
-    These are convenience defaults so a bare ``trax issue title to X`` lands a
-    usable row, not server requirements -- ``priority`` / ``judgement`` /
-    ``confidence`` are all nullable columns.
-    """
-    if kind == "Issue":
-        body.setdefault("priority", 20)
-    elif kind == "Belief":
-        body.setdefault("judgement", "unproven")
-        body.setdefault("confidence", 0.5)
-
-
-def _submitted_ref(target_id: uuid.UUID, client: Client) -> Ref:
-    """Look up a just-created UUID's user-facing ``Kind#seq`` ref."""
-    kind, _target_id, view = client.get_inquiry(UuidRef(uuid=target_id))
-    self_view = cast(Mapping[str, object], view["self"])
-    return SeqRef(kind=kind, seq=IntCodec.coerce(self_view["seq"], 0))
-
-
-def _created_line(ref: Ref, new_id: uuid.UUID) -> str:
-    """Format the ``created:`` echo line, appending the UUID only under ``--show-ids``."""
-    return f"created: {ref} {new_id}" if show_ids() else f"created: {ref}"
-
-
 def resolve_actor(actor: str, client: Client) -> Inquiry.Actor:
     """Pick the audit actor: ``--as`` flag, profile, ``$USER``/``$USERNAME``, else ``user``.
 
     Read through :mod:`~trax.context`, which resolves the INVOKING user under
     the daemon. Reading ``os.environ`` here would stamp whichever concurrent
     request last touched the process environment onto this audit row.
+
+    Args:
+      actor: Actor.
+      client: Client.
+
+    Returns:
+      result: The Inquiry.Actor.
+
     """
     return actor or client.author or env("USER") or env("USERNAME") or "user"
 
 
 def kind_help_for(kind: Inquiry.InquiryKind, tokens: Sequence[str]) -> str:
-    """Help for one kind, narrowing to a row or field as the tokens get longer."""
+    """Help for one kind, narrowing to a row or field as the tokens get longer.
+
+    Args:
+      kind: Kind.
+      tokens: Tokens.
+
+    Returns:
+      result: The str.
+
+    """
     prefix = kind.lower()
     if not tokens:
         return inquiry_help_text(prefix)
@@ -1554,31 +1447,17 @@ def kind_help_for(kind: Inquiry.InquiryKind, tokens: Sequence[str]) -> str:
     return Kind.field_set_help.with_usage(f"trax {field_prefix} to VALUE").render()
 
 
-def _metrics_help(prefix: str, seq: str) -> str:
-    """The Experiment-only ``metric`` grid section; empty for other kinds."""
-    if prefix != "experiment":
-        return ""
-    return f"""
-METRIC (experiment only) -- the (key, step) -> value grid, masked like numpy:
-  trax {prefix} {seq} metric [at FIELD OP VALUE ...] [to VALUE] [sort ASC|DESC] [limit INT]
-
-  at FIELD OP VALUE  masks a grid axis; clauses AND together
-    FIELD: key | step | value       OP: is|ne|lt|le|gt|ge (and step max|min)
-    at KEY  (bareword) is shorthand for  at key is KEY
-  to VALUE           writes VALUE to every masked cell (step must be masked;
-                     a multi-cell write needs --makeitso)
-  no `to`            reads the masked cells, in (key, step) order
-
-  trax {prefix} {seq} metric at key is loss at step is 3 to 0.5   one cell
-  trax {prefix} {seq} metric at loss at step gt 3                 loss cells, step>3
-  trax {prefix} {seq} metric at key is loss sort desc limit 5     loss's 5 largest
-  trax {prefix} title to "run" metric at step is 3 at loss to 0.5 create + log
-  trax {prefix} metric at loss at step is 100 sort desc limit 5   rank across experiments
-"""
-
-
 def inquiry_help_text(prefix: str, *, seq: str = "SEQ") -> str:
-    """The full usage page for one inquiry kind."""
+    """Return the full usage page for one inquiry kind.
+
+    Args:
+      prefix: Prefix.
+      seq: Seq.
+
+    Returns:
+      result: The str.
+
+    """
     return f"""\
 Usage:
   trax {prefix} [--format FORMAT] [--limit INT]
@@ -1633,45 +1512,6 @@ Options:
 """
 
 
-def _field_legend(*shapes: str) -> str:
-    """Legend rows for the given field shapes: name, value shape, help."""
-    fields = [
-        spec for spec in FIELDS_BY_NAME.values() if spec.shape in shapes and spec.help
-    ]
-    name_width = max(len(spec.cli_name) for spec in fields)
-    shape_label = {spec.cli_name: _value_shape(spec) for spec in fields}
-    shape_width = max(len(label) for label in shape_label.values())
-    return "\n".join(
-        f"  {spec.cli_name.ljust(name_width)}  "
-        f"{shape_label[spec.cli_name].ljust(shape_width)}  {spec.help}"
-        for spec in fields
-    )
-
-
-def _value_shape(spec: Field) -> str:
-    """The VALUE shape shown in the legend: ``<SEQ>`` for ref fields, else ``<VALUE>``."""
-    if spec.ref_kind is not None:
-        return "<SEQ>"
-    return "<VALUE>"
-
-
-def _relation_legend() -> str:
-    """Relation keywords, each listed once per canonical relation."""
-    seen: dict[str, str] = {}
-    for key, (edge_kind, reverse) in RELATION_ALIASES.items():
-        canonical = (edge_kind, reverse)
-        seen.setdefault(f"{canonical[0]}{'.r' if canonical[1] else ''}", key)
-    width = max(len(name) for name in seen.values())
-    return "\n".join(f"  {name.ljust(width)}" for name in sorted(seen.values()))
-
-
-def _edge_legend() -> str:
-    """Edge keywords, one per line, sorted."""
-    keys = sorted(EDGE_ALIASES)
-    width = max(len(k) for k in keys)
-    return "\n".join(f"  {k.ljust(width)}" for k in keys)
-
-
 def run_list_query(
     query: ListQuery,
     args: argparse.Namespace,
@@ -1683,42 +1523,18 @@ def run_list_query(
     result is every match within ``limit`` regardless of DB size. Filtering
     locally after a limited fetch would silently drop matches past the
     recency window.
+
+    Args:
+      query: Query.
+      args: Args.
+      client_factory: Client factory.
+
     """
     print_rows(
         _query_rows(query, client_factory(), limit=args.limit),
         args.format_,
         width=args.width,
     )
-
-
-def _query_rows(
-    query: ListQuery,
-    client: Client,
-    *,
-    limit: int,
-) -> list[dict[str, object]]:
-    """Fetch matching rows across the query's kinds, ranges, and filters.
-
-    ``limit`` bounds the total returned set, not each kind: the budget is
-    spent across kinds in order, so a multi-kind query never exceeds it and a
-    caller can treat ``len(rows) == limit`` as a reliable truncation signal.
-    """
-    rows: list[dict[str, object]] = []
-    for kind in query.kinds:
-        if (remaining := limit - len(rows)) <= 0:
-            break
-        # The whole comma-separated union rides one ``list_kind`` call: the
-        # server unions the intervals in a single indexed query and dedups
-        # overlaps, so the CLI no longer fans out per interval.
-        rows.extend(
-            client.list_kind(
-                kind,
-                limit=remaining,
-                seq_ranges=query.ranges.get(kind, ()),
-                filters=query.filters,
-            )
-        )
-    return rows
 
 
 def run_bulk_apply(
@@ -1773,14 +1589,21 @@ def run_show(
     args: argparse.Namespace,
     client_factory: Callable[[], Client],
 ) -> None:
-    """Show one inquiry row."""
+    """Show one inquiry row.
+
+    Args:
+      ref: Ref.
+      args: Args.
+      client_factory: Client factory.
+
+    """
     client = client_factory()
     _kind, _target_id, payload = client.get_inquiry(ref)
     if args.format_ == "json":
-        echo(fmt.format_json(payload), nl=False)
+        echo(render.format_json(payload), nl=False)
     else:
         echo(
-            fmt.format_show(payload, changes=args.changes, include_id=show_ids()),
+            render.format_show(payload, changes=args.changes, include_id=show_ids()),
             nl=False,
         )
 
@@ -1791,7 +1614,15 @@ def run_field(
     args: argparse.Namespace,
     client_factory: Callable[[], Client],
 ) -> None:
-    """Print one field from one inquiry row."""
+    """Print one field from one inquiry row.
+
+    Args:
+      ref: Ref.
+      field: Field.
+      args: Args.
+      client_factory: Client factory.
+
+    """
     del args
     client = client_factory()
     _kind, _target_id, payload = client.get_inquiry(ref)
@@ -1807,7 +1638,15 @@ def run_cost_field(
     args: argparse.Namespace,
     client_factory: Callable[[], Client],
 ) -> None:
-    """Print one computed cost field for one inquiry row."""
+    """Print one computed cost field for one inquiry row.
+
+    Args:
+      ref: Ref.
+      field: Field.
+      args: Args.
+      client_factory: Client factory.
+
+    """
     del args
     client = client_factory()
     _kind, target_id = client.resolve_id(ref)
@@ -1818,70 +1657,6 @@ def run_cost_field(
     echo(f"{payload.get(axis, 0):.6f}")
 
 
-def _split_metric_tail(
-    rest: Sequence[str],
-) -> tuple[Sequence[str], Sequence[str]] | None:
-    """Split ``rest`` at the first ``metric`` keyword into ``(before, tail)``.
-
-    ``metric`` is not a kind/field/edge/relation word, so its first appearance
-    is unambiguously the grid-tail marker. Returns ``None`` when ``rest`` carries
-    no ``metric`` word (an ordinary list/create/edit command).
-    """
-    for index, token_text in enumerate(rest):
-        if token_text.lower() == "metric":
-            return rest[:index], rest[index + 1 :]
-    return None
-
-
-def _split_run_tail(
-    rest: Sequence[str],
-) -> tuple[Sequence[str], Sequence[str]] | None:
-    """Split ``rest`` at the ``run`` keyword into ``(subject, tail)``.
-
-    ``run`` is not a field, kind, edge, or relation word on an AgentSession, so
-    its first appearance is unambiguously the resume marker. Returns ``None``
-    for an ordinary list/show command.
-    """
-    for index, token_text in enumerate(rest):
-        if token_text.lower() == "run":
-            return rest[:index], rest[index + 1 :]
-    return None
-
-
-def _mask_clauses(masks: Sequence[MetricMask]) -> list[MetricMaskClause]:
-    """Translate parsed :class:`MetricMask`es into wire :class:`MetricMaskClause`es.
-
-    A structural 1:1 map. The parser already narrows ``op`` to the metric op
-    set, and the wire model's ``op`` type (:data:`MetricCompareOp` /
-    :data:`MetricReduce`) re-validates it, so a bad op is rejected there -- the
-    two share :data:`METRIC_COMPARE_OPS`, so they cannot disagree.
-    """
-    return [
-        MetricMaskClause(
-            axis=mask.field,
-            op=cast("MetricCompareOp | MetricReduce", mask.op),
-            value=mask.value,
-        )
-        for mask in masks
-    ]
-
-
-def _finite_float(raw: str) -> float:
-    """Coerce a ``to`` value to a finite float, with a clean CLI error.
-
-    ``float("nan")`` / ``float("inf")`` parse fine but are not valid JSON numbers
-    and violate the DB CHECK; reject them here rather than leaking a deeper wire
-    ValidationError (mirrors the old log-value guard).
-    """
-    try:
-        value = float(raw)
-    except ValueError as exc:
-        raise ClientError(f"metric value must be a number, got {raw!r}") from exc
-    if not math.isfinite(value):
-        raise ClientError(f"metric value must be finite, got {raw!r}")
-    return value
-
-
 def run_add_cost(
     ref: Ref,
     field: str,
@@ -1889,7 +1664,16 @@ def run_add_cost(
     args: argparse.Namespace,
     client_factory: Callable[[], Client],
 ) -> None:
-    """Apply one signed cost delta to one inquiry row."""
+    """Apply one signed cost delta to one inquiry row.
+
+    Args:
+      ref: Ref.
+      field: Field.
+      value: Value.
+      args: Args.
+      client_factory: Client factory.
+
+    """
     client = client_factory()
     _kind, target_id = client.resolve_id(ref)
     client.add_cost(
@@ -1916,6 +1700,14 @@ def run_actions(
     each field is its own request and transaction, so a kind-invalid field
     found mid-loop would otherwise 409 only after earlier fields had already
     committed. Up-front validation keeps the multi-field write atomic.
+
+    Args:
+      ref: Ref.
+      actions: Actions.
+      args: Args.
+      client_factory: Client factory.
+      kind: Kind.
+
     """
     write_fields = tuple(
         action.field
@@ -1938,6 +1730,13 @@ def run_action(
     The ladder is exhaustive over ``grammar.Action``; a new variant that
     skips this site hits the explicit ``else`` and raises, rather than
     silently falling through to something like a purge.
+
+    Args:
+      ref: Ref.
+      action: Action.
+      args: Args.
+      client_factory: Client factory.
+
     """
     if isinstance(action, ReadField):
         if action.field in COST_FIELDS:
@@ -1973,7 +1772,15 @@ def run_set_field(
     args: argparse.Namespace,
     client_factory: Callable[[], Client],
 ) -> None:
-    """Set one scalar field on one inquiry row."""
+    """Set one scalar field on one inquiry row.
+
+    Args:
+      ref: Ref.
+      action: Action.
+      args: Args.
+      client_factory: Client factory.
+
+    """
     client = client_factory()
     _, target_id = client.resolve_id(ref)
     value = _resolve_set_value(action, client)
@@ -1987,33 +1794,11 @@ def run_set_field(
     echo(f"set: {ref} {action.field} = {_set_field_echo(action)}")
 
 
-def _set_field_echo(action: SetField) -> object:
-    """User-facing spelling of a set value: ref CLI form for ref-lists."""
-    if action.field in REF_FIELD_BY_PAYLOAD and isinstance(action.value, tuple):
-        return ", ".join(str(ref) for ref in cast(tuple[Ref, ...], action.value))
-    return action.value
-
-
-def _resolve_set_value(action: SetField, client: Client) -> object:
-    """Resolve a ref-list `... to KIND SEQ ...` value to its wire shape.
-
-    For a ref-list field (``payload_key`` in :data:`REF_FIELD_BY_PAYLOAD`) the
-    parser delivers ``action.value`` as a tuple of parsed :class:`Ref`s; each is
-    resolved to a bare id (trax #419). The sole ref-list field (``codechanges``)
-    is monomorphic, so the server stores bare ids. Plain ``SetField`` values pass
-    through unchanged.
-    """
-    if action.field not in REF_FIELD_BY_PAYLOAD or not isinstance(action.value, tuple):
-        return action.value
-    return [
-        str(client.resolve_id(ref)[1]) for ref in cast(tuple[Ref, ...], action.value)
-    ]
-
-
 class Recent(Command):
     """Recent audit-log entries."""
 
     names = ("recent",)
+
     help = HelpPage(
         usage="trax recent [OPTIONS]",
         summary="Show recent audit-log entries.",
@@ -2052,9 +1837,9 @@ class Recent(Command):
         del verb
         rows = client_factory().recent_changes(limit=args.limit)
         if args.format_ == "json":
-            echo(fmt.format_json(list(rows)), nl=False)
+            echo(render.format_json(list(rows)), nl=False)
         else:
-            echo(fmt.format_changes(list(rows)), nl=False)
+            echo(render.format_changes(list(rows)), nl=False)
 
 
 class Id(Command):
@@ -2067,6 +1852,7 @@ class Id(Command):
     """
 
     names = ("id",)
+
     help = """\
 Usage: trax id <uuid> [OPTIONS]
 
@@ -2120,6 +1906,7 @@ class Next(Command):
     """Show the next unblocked active issue."""
 
     names = ("next",)
+
     help = """\
 Usage: trax next [OPTIONS]
 
@@ -2164,6 +1951,7 @@ class Blocked(Command):
     """List active issues that have at least one active prerequisite."""
 
     names = ("blocked",)
+
     help = """\
 Usage: trax blocked
 
@@ -2191,6 +1979,12 @@ Examples:
 
     @classmethod
     def render(cls, rows: Sequence[Mapping[str, object]]) -> None:
+        """Render rows for the terminal.
+
+        Args:
+          rows: Rows.
+
+        """
         status_by_id = {
             str(row.get("id")): str(row.get("status") or "")
             for row in rows
@@ -2239,19 +2033,11 @@ Examples:
             )
 
 
-def _ref_ids(refs: object) -> list[str]:
-    """Peer ids from a relationship projection (a list of IssueEdge ref dicts)."""
-    return [
-        pid
-        for ref in cast(Sequence[Mapping[str, object]], refs or ())
-        if (pid := str(ref.get("id")))
-    ]
-
-
 class Graph(Command):
     """Print the issue dependency tree along ``requires`` edges."""
 
     names = ("graph",)
+
     help = """\
 Usage: trax graph [OPTIONS]
 
@@ -2289,6 +2075,12 @@ Options:
 
     @classmethod
     def render(cls, rows: Sequence[Mapping[str, object]]) -> None:
+        """Render rows for the terminal.
+
+        Args:
+          rows: Rows.
+
+        """
         if not rows:
             echo("(no issues)")
             return
@@ -2321,6 +2113,14 @@ Options:
             echo("(cycle: no issue below is free of prerequisites)")
             cls._render_tree(row, rows_by_id, set(), rendered, shown, depth=0)
 
+    # Three sets, deliberately different in scope:
+    #
+    # * ``ancestors`` -- the path from the entry point, so a node requiring one of its
+    # own ancestors is a real cycle and says so. * ``rendered`` -- forest-wide, so a
+    # node reachable by several paths is expanded once and referenced thereafter;
+    # without it a diamond costs one traversal per path. * ``shown`` -- forest-wide,
+    # naming every row that reached the output, so the caller can find components the
+    # root walk never entered.
     @classmethod
     def _render_tree(
         cls,
@@ -2332,18 +2132,7 @@ Options:
         *,
         depth: int,
     ) -> None:
-        """Print one subtree.
-
-        Three sets, deliberately different in scope:
-
-        * ``ancestors`` -- the path from the entry point, so a node requiring
-          one of its own ancestors is a real cycle and says so.
-        * ``rendered`` -- forest-wide, so a node reachable by several paths is
-          expanded once and referenced thereafter; without it a diamond costs
-          one traversal per path.
-        * ``shown`` -- forest-wide, naming every row that reached the output,
-          so the caller can find components the root walk never entered.
-        """
+        """Print one subtree."""
         row_id = str(row.get("id"))
         seq = row.get("seq", "?")
         if row_id in ancestors:
@@ -2383,6 +2172,7 @@ class Board(Command):
     """List issues grouped by status."""
 
     names = ("board",)
+
     help = """\
 Usage: trax board [OPTIONS]
 
@@ -2422,6 +2212,13 @@ Options:
     def render(
         cls, rows: Sequence[Mapping[str, object]], *, width: int | None = None
     ) -> None:
+        """Render rows for the terminal.
+
+        Args:
+          rows: Rows.
+          width: Width.
+
+        """
         if not rows:
             echo("(no issues)")
             return
@@ -2454,6 +2251,7 @@ class Cost(Command):
     """Show the agent and resource cost of one row, optionally over its subtree."""
 
     names = ("cost",)
+
     help = """\
 Usage: trax cost KIND SEQ [OPTIONS]
 
@@ -2498,7 +2296,7 @@ Options:
         _, target_id = client.resolve_id(ref)
         payload = client.cost_for(target_id, deep=args.deep)
         if args.format_ == "json":
-            echo(fmt.format_json(payload), nl=False)
+            echo(render.format_json(payload), nl=False)
             return
         scope = "subtree" if args.deep else "self"
         echo(f"scope:    {scope}")
@@ -2510,6 +2308,7 @@ class Send(Command):
     """Send a message into a live agent session by routing name."""
 
     names = ("send",)
+
     help = """\
 Usage: trax send @ACTOR[:ROOM] TEXT...
 
@@ -2554,6 +2353,7 @@ class Version(Command):
     """Show the running server's build SHA, for stale-deploy detection."""
 
     names = ("version",)
+
     help = """\
 Usage: trax version
 
@@ -2583,11 +2383,9 @@ Notes:
         echo(client_factory().version())
 
 
+# The leading ``@`` is optional; a single ``:`` separates an optional room.
 def _parse_target(target: str) -> tuple[str, str | None]:
-    """Split a ``@actor[:room]`` target into ``(actor, room)``.
-
-    The leading ``@`` is optional; a single ``:`` separates an optional room.
-    """
+    """Split a ``@actor[:room]`` target into ``(actor, room)``."""
     spec = target.removeprefix("@")
     actor, sep, room = spec.partition(":")
     if not actor:
@@ -2598,3 +2396,365 @@ def _parse_target(target: str) -> tuple[str, str | None]:
             "drop the ':' or name a room (e.g. @scientist:sear)"
         )
     return actor, (room or None)
+
+
+def _is_against_citation(edge_kind: str, valence: object) -> bool:
+    """Whether a citation edge carries a negative (against) valence."""
+    return (
+        edge_kind in _NEGATIVE_CITATION_TITLE
+        and isinstance(valence, (int, float))
+        and not isinstance(valence, bool)
+        and valence < 0
+    )
+
+
+# A zero or negative limit silently returned no rows; reject it at the parser so every
+# ``--limit`` site shares one rule and the user gets a clear error instead of an empty
+# result.
+def _positive_int(value: str) -> int:
+    """Argparse ``type`` for ``--limit``: an integer ``>= 1``."""
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value!r}")
+    return parsed
+
+
+# A reverse alias stores ``peer -> source``, so the ``from_index``/``from_id`` key on
+# ``src`` becomes a ``to_*`` key and the ``to_*`` key on ``peer`` a ``from_*`` key,
+# preserving whichever (index vs id) form each carried.
+def _swap_edge_endpoints(
+    src: Mapping[str, object], peer: Mapping[str, object]
+) -> tuple[dict[str, object], dict[str, object]]:
+    """Swap a ``from_*``/``to_*`` endpoint pair for a reverse-alias edge."""
+    rename = {
+        "from_index": "to_index",
+        "from_id": "to_id",
+        "to_index": "from_index",
+        "to_id": "from_id",
+    }
+    new_src = {rename[k]: v for k, v in peer.items()}
+    new_peer = {rename[k]: v for k, v in src.items()}
+    return new_src, new_peer
+
+
+# Stdin may be consumed only once, so the flag threads through every action.
+def _resolve_stdin_actions(actions: Sequence[Action]) -> tuple[Action, ...]:
+    """Resolve ``-`` (stdin) and ``@path`` value sentinels across all actions."""
+    used_stdin = False
+    resolved: list[Action] = []
+    for action in actions:
+        if isinstance(action, SetField):
+            field, used = _resolve_field_value(action, used_stdin=used_stdin)
+            used_stdin = used_stdin or used
+            resolved.append(field)
+        elif isinstance(action, EdgeAction) and isinstance(action.target, InlineCreate):
+            target, used = _resolve_inline_create_values(
+                action.target,
+                used_stdin=used_stdin,
+            )
+            used_stdin = used_stdin or used
+            resolved.append(
+                EdgeAction(
+                    edge=action.edge,
+                    target=target,
+                    metadata=action.metadata,
+                    remove=action.remove,
+                    annotate=action.annotate,
+                )
+            )
+        else:
+            resolved.append(action)
+    return tuple(resolved)
+
+
+# Recurses into the node's nested ``edges`` (Issue#425 item 6) so a deep chain or a
+# ``begin ... end`` group's field values are resolved too, and -- crucially -- the
+# nested edge structure AND the node's ``costs`` are PRESERVED (rebuilding without them
+# would silently drop the whole subtree or its cost deltas).
+def _resolve_inline_create_values(
+    target: InlineCreate,
+    *,
+    used_stdin: bool,
+) -> tuple[InlineCreate, bool]:
+    """Resolve ``-`` and ``@path`` value sentinels inside one inline-create."""
+    fields: list[SetField] = []
+    used = False
+    for field in target.fields:
+        resolved, field_used = _resolve_field_value(
+            field,
+            used_stdin=used_stdin or used,
+        )
+        fields.append(resolved)
+        used = used or field_used
+    nested: list[EdgeAction] = []
+    for action in target.edges:
+        if isinstance(action.target, InlineCreate):
+            inner, inner_used = _resolve_inline_create_values(
+                action.target, used_stdin=used_stdin or used
+            )
+            used = used or inner_used
+            nested.append(
+                EdgeAction(
+                    edge=action.edge,
+                    target=inner,
+                    metadata=action.metadata,
+                    remove=action.remove,
+                    annotate=action.annotate,
+                )
+            )
+        else:
+            nested.append(action)
+    return (
+        InlineCreate(
+            kind=target.kind,
+            fields=tuple(fields),
+            edges=tuple(nested),
+            costs=target.costs,
+            inbound_meta=target.inbound_meta,
+        ),
+        used,
+    )
+
+
+# The read text is re-coerced through :func:`field_value`: parse-time coercion saw only
+# the sentinel token, so a typed field (``config``) coerces here instead. Identity-
+# coerced fields are unaffected.
+def _resolve_field_value(field: SetField, *, used_stdin: bool) -> tuple[SetField, bool]:
+    """Resolve one field value: ``-`` is stdin, ``@path`` a file, else verbatim."""
+    if not isinstance(field.value, str):
+        return field, False
+    if field.value == "-":
+        if used_stdin:
+            raise ClientError("stdin value can only be used once per command")
+        return SetField(
+            field=field.field, value=field_value(field.field, sys.stdin.read())
+        ), True
+    if field.value.startswith("@"):
+        path = field.value[1:]
+        if not path:
+            raise ClientError("@ value requires a path")
+        try:
+            # Resolved against the CALLER's directory: under the daemon the
+            # process cwd belongs to whichever shell spawned it.
+            text = (cwd() / path).read_text()
+        except OSError as err:
+            raise ClientError(f"cannot read @{path}: {err}") from err
+        return SetField(field=field.field, value=field_value(field.field, text)), False
+    return field, False
+
+
+def _inline_create_body(
+    target: InlineCreate, actor: Inquiry.Actor, client: Client
+) -> dict[str, object]:
+    """Build an inline-create row body, resolving ref-list fields and defaults."""
+    body: dict[str, object] = {"owner": actor}
+    for field in target.fields:
+        body[field.field] = _resolve_set_value(field, client)
+    _apply_create_defaults(target.kind, body)
+    return body
+
+
+# An explicit priority ``0`` (P0) is preserved -- the falsy-``or`` idiom would mis-map
+# it to the medium default and sort/show a critical row as ordinary (F33).
+def _priority_or_default(priority: object, *, default: int = 20) -> int:
+    """Issue priority for sorting/display, defaulting only absent/None to 20."""
+    return default if priority is None else IntCodec.coerce(priority, 0)
+
+
+# These are convenience defaults so a bare ``trax issue title to X`` lands a usable row,
+# not server requirements -- ``priority`` / ``judgement`` / ``confidence`` are all
+# nullable columns.
+def _apply_create_defaults(kind: Inquiry.InquiryKind, body: dict[str, object]) -> None:
+    """Apply the CLI's per-kind ergonomic create defaults."""
+    if kind == "Issue":
+        body.setdefault("priority", 20)
+    elif kind == "Belief":
+        body.setdefault("judgement", "unproven")
+        body.setdefault("confidence", 0.5)
+
+
+def _submitted_ref(target_id: uuid.UUID, client: Client) -> Ref:
+    """Look up a just-created UUID's user-facing ``Kind#seq`` ref."""
+    kind, _target_id, view = client.get_inquiry(UuidRef(uuid=target_id))
+    self_view = cast(Mapping[str, object], view["self"])
+    return SeqRef(kind=kind, seq=IntCodec.coerce(self_view["seq"], 0))
+
+
+def _created_line(ref: Ref, new_id: uuid.UUID) -> str:
+    """Format the ``created:`` echo line, appending the UUID only under ``--show-ids``."""
+    return f"created: {ref} {new_id}" if show_ids() else f"created: {ref}"
+
+
+def _metrics_help(prefix: str, seq: str) -> str:
+    """Return the Experiment-only ``metric`` grid section; empty for other kinds."""
+    if prefix != "experiment":
+        return ""
+    return f"""
+METRIC (experiment only) -- the (key, step) -> value grid, masked like numpy:
+  trax {prefix} {seq} metric [at FIELD OP VALUE ...] [to VALUE] [sort ASC|DESC] [limit INT]
+
+  at FIELD OP VALUE  masks a grid axis; clauses AND together
+    FIELD: key | step | value       OP: is|ne|lt|le|gt|ge (and step max|min)
+    at KEY  (bareword) is shorthand for  at key is KEY
+  to VALUE           writes VALUE to every masked cell (step must be masked;
+                     a multi-cell write needs --makeitso)
+  no `to`            reads the masked cells, in (key, step) order
+
+  trax {prefix} {seq} metric at key is loss at step is 3 to 0.5   one cell
+  trax {prefix} {seq} metric at loss at step gt 3                 loss cells, step>3
+  trax {prefix} {seq} metric at key is loss sort desc limit 5     loss's 5 largest
+  trax {prefix} title to "run" metric at step is 3 at loss to 0.5 create + log
+  trax {prefix} metric at loss at step is 100 sort desc limit 5   rank across experiments
+"""
+
+
+def _field_legend(*shapes: str) -> str:
+    """Legend rows for the given field shapes: name, value shape, help."""
+    fields = [
+        spec for spec in FIELDS_BY_NAME.values() if spec.shape in shapes and spec.help
+    ]
+    name_width = max(len(spec.cli_name) for spec in fields)
+    shape_label = {spec.cli_name: _value_shape(spec) for spec in fields}
+    shape_width = max(len(label) for label in shape_label.values())
+    return "\n".join(
+        f"  {spec.cli_name.ljust(name_width)}  "
+        f"{shape_label[spec.cli_name].ljust(shape_width)}  {spec.help}"
+        for spec in fields
+    )
+
+
+def _value_shape(spec: Field) -> str:
+    """Return the VALUE shape shown in the legend: ``<SEQ>`` for ref fields, else ``<VALUE>``."""
+    if spec.ref_kind is not None:
+        return "<SEQ>"
+    return "<VALUE>"
+
+
+def _relation_legend() -> str:
+    """Relation keywords, each listed once per canonical relation."""
+    seen: dict[str, str] = {}
+    for key, (edge_kind, reverse) in RELATION_ALIASES.items():
+        canonical = (edge_kind, reverse)
+        seen.setdefault(f"{canonical[0]}{'.r' if canonical[1] else ''}", key)
+    width = max(len(name) for name in seen.values())
+    return "\n".join(f"  {name.ljust(width)}" for name in sorted(seen.values()))
+
+
+def _edge_legend() -> str:
+    """Edge keywords, one per line, sorted."""
+    keys = sorted(EDGE_ALIASES)
+    width = max(len(k) for k in keys)
+    return "\n".join(f"  {k.ljust(width)}" for k in keys)
+
+
+# ``limit`` bounds the total returned set, not each kind: the budget is spent across
+# kinds in order, so a multi-kind query never exceeds it and a caller can treat
+# ``len(rows) == limit`` as a reliable truncation signal.
+def _query_rows(
+    query: ListQuery,
+    client: Client,
+    *,
+    limit: int,
+) -> list[dict[str, object]]:
+    """Fetch matching rows across the query's kinds, ranges, and filters."""
+    rows: list[dict[str, object]] = []
+    for kind in query.kinds:
+        if (remaining := limit - len(rows)) <= 0:
+            break
+        # The whole comma-separated union rides one ``list_kind`` call: the
+        # server unions the intervals in a single indexed query and dedups
+        # overlaps, so the CLI no longer fans out per interval.
+        rows.extend(
+            client.list_kind(
+                kind,
+                limit=remaining,
+                seq_ranges=query.ranges.get(kind, ()),
+                filters=query.filters,
+            )
+        )
+    return rows
+
+
+# ``metric`` is not a kind/field/edge/relation word, so its first appearance is
+# unambiguously the grid-tail marker. Returns ``None`` when ``rest`` carries no
+# ``metric`` word (an ordinary list/create/edit command).
+def _split_metric_tail(
+    rest: Sequence[str],
+) -> tuple[Sequence[str], Sequence[str]] | None:
+    """Split ``rest`` at the first ``metric`` keyword into ``(before, tail)``."""
+    for index, token_text in enumerate(rest):
+        if token_text.lower() == "metric":
+            return rest[:index], rest[index + 1 :]
+    return None
+
+
+# ``run`` is not a field, kind, edge, or relation word on an AgentSession, so its first
+# appearance is unambiguously the resume marker. Returns ``None`` for an ordinary
+# list/show command.
+def _split_run_tail(
+    rest: Sequence[str],
+) -> tuple[Sequence[str], Sequence[str]] | None:
+    """Split ``rest`` at the ``run`` keyword into ``(subject, tail)``."""
+    for index, token_text in enumerate(rest):
+        if token_text.lower() == "run":
+            return rest[:index], rest[index + 1 :]
+    return None
+
+
+# A structural 1:1 map. The parser already narrows ``op`` to the metric op set, and the
+# wire model's ``op`` type (:data:`MetricCompareOp` / :data:`MetricReduce`) re-validates
+# it, so a bad op is rejected there -- the two share :data:`METRIC_COMPARE_OPS`, so they
+# cannot disagree.
+def _mask_clauses(masks: Sequence[MetricMask]) -> list[MetricMaskClause]:
+    """Translate parsed :class:`MetricMask`es into wire :class:`MetricMaskClause`es."""
+    return [
+        MetricMaskClause(
+            axis=mask.field,
+            op=cast("MetricCompareOp | MetricReduce", mask.op),
+            value=mask.value,
+        )
+        for mask in masks
+    ]
+
+
+# ``float("nan")`` / ``float("inf")`` parse fine but are not valid JSON numbers and
+# violate the DB CHECK; reject them here rather than leaking a deeper wire
+# ValidationError (mirrors the old log-value guard).
+def _finite_float(raw: str) -> float:
+    """Coerce a ``to`` value to a finite float, with a clean CLI error."""
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ClientError(f"metric value must be a number, got {raw!r}") from exc
+    if not math.isfinite(value):
+        raise ClientError(f"metric value must be finite, got {raw!r}")
+    return value
+
+
+def _set_field_echo(action: SetField) -> object:
+    """User-facing spelling of a set value: ref CLI form for ref-lists."""
+    if action.field in REF_FIELD_BY_PAYLOAD and isinstance(action.value, tuple):
+        return ", ".join(str(ref) for ref in cast(tuple[Ref, ...], action.value))
+    return action.value
+
+
+# For a ref-list field (``payload_key`` in :data:`REF_FIELD_BY_PAYLOAD`) the parser
+# delivers ``action.value`` as a tuple of parsed :class:`Ref`s; each is resolved to a
+# bare id (trax #419). The sole ref-list field (``codechanges``) is monomorphic, so the
+# server stores bare ids. Plain ``SetField`` values pass through unchanged.
+def _resolve_set_value(action: SetField, client: Client) -> object:
+    """Resolve a ref-list `... to KIND SEQ ...` value to its wire shape."""
+    if action.field not in REF_FIELD_BY_PAYLOAD or not isinstance(action.value, tuple):
+        return action.value
+    return [
+        str(client.resolve_id(ref)[1]) for ref in cast(tuple[Ref, ...], action.value)
+    ]
+
+
+def _ref_ids(refs: object) -> list[str]:
+    """Peer ids from a relationship projection (a list of IssueEdge ref dicts)."""
+    return [
+        pid
+        for ref in cast(Sequence[Mapping[str, object]], refs or ())
+        if (pid := str(ref.get("id")))
+    ]

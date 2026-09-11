@@ -96,19 +96,6 @@ def fuse(
         yield from stream
 
 
-def _named(
-    part: Iterator[SessionRecord], name: str, *, seam: str
-) -> Iterator[SessionRecord]:
-    """Yield a part with its file name on the settings it opens with."""
-    for index, record in enumerate(part):
-        if index or not isinstance(record, TurnContext):
-            yield record
-            continue
-        extra = dict(json_unfreeze(record.extra))
-        extra[seam] = name
-        yield _restated(record, extra)
-
-
 def unfuse(
     records: Iterable[SessionRecord], *, seam: str = "$seam"
 ) -> Iterator[Iterator[SessionRecord]]:
@@ -148,103 +135,6 @@ def unfuse(
         ended = not pending
         pending.clear()
         root = False
-
-
-def _until_seam(
-    stream: Iterator[SessionRecord],
-    pending: list[SessionRecord],
-    *,
-    seam: str,
-    root: bool,
-) -> Iterator[SessionRecord]:
-    """Yield one part's records, stopping at the boundary that ends it."""
-    for record in stream:
-        if isinstance(record, ContextClear) and seam in record.extra:
-            # Kept, so the loop above can tell "a seam followed" from "the
-            # stream ended" -- one more part exists in the first case only.
-            pending.append(record)
-            return
-        yield _unnamed(record, seam=seam) if root else record
-
-
-def _unnamed(record: SessionRecord, *, seam: str) -> SessionRecord:
-    """Return the root's opening settings without the name fusing added."""
-    if not isinstance(record, TurnContext) or seam not in record.extra:
-        return record
-    return _restated(
-        record,
-        {
-            key: value
-            for key, value in dict(json_unfreeze(record.extra)).items()
-            if key != seam
-        },
-    )
-
-
-def _restated(record: TurnContext, extra: Mapping[str, object]) -> TurnContext:
-    """Return one context with a different residual and nothing else moved."""
-    return TurnContext(
-        context_id=record.context_id,
-        timestamp=record.timestamp,
-        permission=record.permission,
-        model=record.model,
-        effort=record.effort,
-        summary_kind=record.summary_kind,
-        encoding=record.encoding,
-        extra=json_freeze(dict(extra)),
-    )
-
-
-def _boundary(
-    part: Iterator[SessionRecord],
-    name: str,
-    *,
-    seam: str,
-    forked_from: str = "forked_from_id",
-    summary: str = "isCompactSummary",
-) -> tuple[list[SessionRecord], SessionRecord]:
-    """Return the prefix read and the record naming what ``part`` resumed.
-
-    A window opens either way, so the boundary IS a clear -- carrying the
-    summary when one crossed the seam. It stores nothing else: the part keeps
-    its OWN opening records, so unfusing drops the boundary and the file
-    reassembles from what it already had.
-
-    BOUNDED, though it reads ahead: claude compacts by writing the earlier
-    conversation's summary as the file's FIRST user turn, flagged as such, so
-    the first turn settles the question and everything before it is the state
-    the file opens with. Measured on the captured fixtures, the deepest that
-    ran was 11 records of a 137-record file. The prefix comes back rather than
-    being re-read, so the part is walked once.
-
-    Args:
-      part: The records of the file that resumed another.
-      name: What that file was called on disk.
-      seam: Residual key marking a boundary this module inserted.
-      forked_from: Residual key codex writes on a rollout's launch settings.
-      summary: Residual key claude writes on a carried-over summary turn.
-
-    Returns:
-      prefix: The records read to decide, to be emitted after the boundary.
-      boundary: The clear that opens the resumed file's window.
-
-    """
-    prefix: list[SessionRecord] = []
-    opened: str | None = None
-    carried: str | None = None
-    for record in part:
-        prefix.append(record)
-        if isinstance(record, TurnContext) and opened is None:
-            opened = record.timestamp or ""
-        if isinstance(record, UserMessage):
-            if forked_from in record.extra or summary in record.extra:
-                carried = record.content
-            break
-    return prefix, ContextClear(
-        timestamp=opened or None,
-        summary=carried,
-        extra=json_freeze({seam: name}),
-    )
 
 
 def names_of(records: Iterable[SessionRecord], *, seam: str = "$seam") -> list[str]:
@@ -338,3 +228,97 @@ def _declared(part: Sequence[SessionRecord]) -> dict[str, object]:
         if isinstance(record, TurnContext):
             return DictCodec.coerce(dict(json_unfreeze(record.extra)).get("payload"))
     return {}
+
+
+def _named(
+    part: Iterator[SessionRecord], name: str, *, seam: str
+) -> Iterator[SessionRecord]:
+    """Yield a part with its file name on the settings it opens with."""
+    for index, record in enumerate(part):
+        if index or not isinstance(record, TurnContext):
+            yield record
+            continue
+        extra = dict(json_unfreeze(record.extra))
+        extra[seam] = name
+        yield _restated(record, extra)
+
+
+def _until_seam(
+    stream: Iterator[SessionRecord],
+    pending: list[SessionRecord],
+    *,
+    seam: str,
+    root: bool,
+) -> Iterator[SessionRecord]:
+    """Yield one part's records, stopping at the boundary that ends it."""
+    for record in stream:
+        if isinstance(record, ContextClear) and seam in record.extra:
+            # Kept, so the loop above can tell "a seam followed" from "the
+            # stream ended" -- one more part exists in the first case only.
+            pending.append(record)
+            return
+        yield _unnamed(record, seam=seam) if root else record
+
+
+def _unnamed(record: SessionRecord, *, seam: str) -> SessionRecord:
+    """Return the root's opening settings without the name fusing added."""
+    if not isinstance(record, TurnContext) or seam not in record.extra:
+        return record
+    return _restated(
+        record,
+        {
+            key: value
+            for key, value in dict(json_unfreeze(record.extra)).items()
+            if key != seam
+        },
+    )
+
+
+def _restated(record: TurnContext, extra: Mapping[str, object]) -> TurnContext:
+    """Return one context with a different residual and nothing else moved."""
+    return TurnContext(
+        context_id=record.context_id,
+        timestamp=record.timestamp,
+        permission=record.permission,
+        model=record.model,
+        effort=record.effort,
+        summary_kind=record.summary_kind,
+        encoding=record.encoding,
+        extra=json_freeze(dict(extra)),
+    )
+
+
+# A window opens either way, so the boundary IS a clear -- carrying the summary when one
+# crossed the seam. It stores nothing else: the part keeps its OWN opening records, so
+# unfusing drops the boundary and the file reassembles from what it already had.
+#
+# BOUNDED, though it reads ahead: claude compacts by writing the earlier conversation's
+# summary as the file's FIRST user turn, flagged as such, so the first turn settles the
+# question and everything before it is the state the file opens with. Measured on the
+# captured fixtures, the deepest that ran was 11 records of a 137-record file. The
+# prefix comes back rather than being re-read, so the part is walked once.
+def _boundary(
+    part: Iterator[SessionRecord],
+    name: str,
+    *,
+    seam: str,
+    forked_from: str = "forked_from_id",
+    summary: str = "isCompactSummary",
+) -> tuple[list[SessionRecord], SessionRecord]:
+    """Return the prefix read and the record naming what ``part`` resumed."""
+    prefix: list[SessionRecord] = []
+    opened: str | None = None
+    carried: str | None = None
+    for record in part:
+        prefix.append(record)
+        if isinstance(record, TurnContext) and opened is None:
+            opened = record.timestamp or ""
+        if isinstance(record, UserMessage):
+            if forked_from in record.extra or summary in record.extra:
+                carried = record.content
+            break
+    return prefix, ContextClear(
+        timestamp=opened or None,
+        summary=carried,
+        extra=json_freeze({seam: name}),
+    )

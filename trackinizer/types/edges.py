@@ -209,6 +209,13 @@ class Edge:
         The identity columns (``from_id``, ``to_id``, and the kinds) are
         always present. The four annotation columns may or may not be
         selected, so for them a missing column reads the same as NULL.
+
+        Args:
+          row: Row.
+
+        Returns:
+          result: The Self.
+
         """
         return cls(
             from_id=row["from_id"],
@@ -246,11 +253,18 @@ at. ``paper`` is the ``Paper``-only endpoint set both sides of a
 
 
 def kind_group_members(group: KindGroup) -> tuple[Inquiry.InquiryKind, ...]:
-    """The concrete inquiry kinds a :data:`KindGroup` admits.
+    """Return the concrete inquiry kinds a :data:`KindGroup` admits.
 
     The single resolver behind both the schema CHECK (``{inquiry_kinds}`` /
     ``{artifact_kinds}``) and ``/api/meta/edges``, so the edge topology has one
     source of truth instead of a hand-typed copy in the SPA.
+
+    Args:
+      group: Group.
+
+    Returns:
+      result: The tuple[Inquiry.InquiryKind, ...].
+
     """
     inquiry: tuple[Inquiry.InquiryKind, ...] = cast(
         tuple[Inquiry.InquiryKind, ...], get_args(Inquiry.InquiryKind.__value__)
@@ -522,6 +536,10 @@ def edge_topology() -> dict[str, dict[str, list[str]]]:
     instead of hard-coding directions; pinned against the schema CHECK by a
     drift test so the two cannot diverge (a citation-direction change must
     update this one place, not a stale hand-typed SPA copy).
+
+    Returns:
+      result: The dict[str, dict[str, list[str]]].
+
     """
     return {
         kind: {
@@ -540,6 +558,10 @@ def edge_labels() -> dict[str, dict[str, str]]:
     Served at ``/api/meta/edges`` alongside the topology so the SPA's
     ``edgeDisplayName`` derives its labels here instead of a hand-typed copy --
     the same single-source rule the topology already follows.
+
+    Returns:
+      result: The dict[str, dict[str, str]].
+
     """
     return {
         kind: {"forward": policy.forward_label, "inverse": policy.inverse_label}

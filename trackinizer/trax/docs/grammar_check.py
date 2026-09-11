@@ -1,5 +1,9 @@
-#!/usr/bin/env python
-"""Verify grammar.lark is current and accepts the true trax command language.
+#!/bin/sh
+# ruff: noqa: EXE003, D300 -- Polyglot shell/Python script.
+# fmt: off
+'''' 2>/dev/null #
+exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
+Verify grammar.lark is current and accepts the true trax command language.
 
 grammar.lark represents the language the manual parser at trax/parser.py
 ACCEPTS -- it is truth, not a narrowed definition. Its terminals are CONCRETE
@@ -63,7 +67,8 @@ Run:  uv --quiet run --frozen python trax/docs/grammar_check.py
 Exit 0 + "grammar.lark: current, accepts the corpus, no unexpected ambiguity."
 on success; non-zero with the offending command (or a stale-file notice) on
 failure.
-"""
+'''
+# fmt: on
 
 from __future__ import annotations
 
@@ -88,19 +93,23 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Case:
-    """One corpus command: a label, its CONCRETE token stream, and either the
-    expected ambiguity or, for a negative case, that it must be REJECTED.
+    """One corpus command: a label, its CONCRETE token stream.
 
-    ``rejects=True`` marks a SYNTACTIC rejection: the grammar itself refuses the
-    token stream. Many trax errors are instead SEMANTIC (a field invalid on a
-    kind, ``del`` not terminal, ``isnull`` on a NOT-NULL column) -- the grammar
-    accepts those and the parser rejects them, so they are NOT in this corpus;
-    they are covered by ``trax/grammar_test.py``'s parser-execution tests.
+    And either the expected ambiguity or, for a negative case, that it must be REJECTED.
+
+        ``rejects=True`` marks a SYNTACTIC rejection: the grammar itself refuses the
+        token stream. Many trax errors are instead SEMANTIC (a field invalid on a
+        kind, ``del`` not terminal, ``isnull`` on a NOT-NULL column) -- the grammar
+        accepts those and the parser rejects them, so they are NOT in this corpus;
+        they are covered by ``trax/grammar_test.py``'s parser-execution tests.
     """
 
     label: str
+
     tokens: str
+
     ambiguous: bool = False
+
     rejects: bool = False
 
 
@@ -374,14 +383,14 @@ CORPUS: tuple[Case, ...] = (
 )
 
 
-def _ambiguity_count(tree: Tree[Token]) -> int:
-    """Number of ``_ambig`` nodes Earley emitted for a parse (0 = unambiguous)."""
-    # ``iter_subtrees`` yields only ``Tree`` nodes (terminals are not walked), so
-    # every node carries ``.data``; Earley tags each ambiguous fork ``_ambig``.
-    return sum(1 for node in tree.iter_subtrees() if node.data == "_ambig")
-
-
 def main() -> int:
+    """Run the program; return the process exit code.
+
+
+    Returns:
+      result: The int.
+
+    """
     path = grammar_path()
     expected = render_grammar()
     actual = path.read_text() if path.exists() else ""
@@ -408,7 +417,7 @@ def main() -> int:
     failures: list[str] = []
     for case in CORPUS:
         try:
-            # lark ships inline (partially-Any) types and no separate stub, so
+            # ``lark`` ships inline (partially-Any) types and no separate stub, so
             # ``Lark.parse``'s own signature reads as partially unknown; the
             # return is a concrete ``Tree[Token]``. Stubbing the whole class for
             # this one doc utility is disproportionate.
@@ -446,5 +455,13 @@ def main() -> int:
     return 0
 
 
+def _ambiguity_count(tree: Tree[Token]) -> int:
+    """Count the ``_ambig`` nodes Earley emitted for a parse (0 = unambiguous)."""
+    # ``iter_subtrees`` yields only ``Tree`` nodes (terminals are not walked), so
+    # every node carries ``.data``; Earley tags each ambiguous fork ``_ambig``.
+    return sum(1 for node in tree.iter_subtrees() if node.data == "_ambig")
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
+# vim: ft=python

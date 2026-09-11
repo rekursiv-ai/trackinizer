@@ -19,12 +19,28 @@ if TYPE_CHECKING:
 
 
 def get_store(request: Request) -> Store:
-    """Return the Store held on the FastAPI app state."""
+    """Return the Store held on the FastAPI app state.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The Store.
+
+    """
     return cast(Store, request.app.state.store)
 
 
 def get_inbound(request: Request) -> InboundQueue:
-    """Return the inbound-message queue held on the FastAPI app state."""
+    """Return the inbound-message queue held on the FastAPI app state.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The InboundQueue.
+
+    """
     return cast(InboundQueue, request.app.state.inbound)
 
 
@@ -35,6 +51,13 @@ def tag_row(inquiry: Inquiry) -> MutableJSON:
     through :func:`tag_kind` and then filter its ``None`` back out -- a guard
     for a case the type already excluded, kept alive only because the
     signature was wider than any caller needed.
+
+    Args:
+      inquiry: Inquiry.
+
+    Returns:
+      payload: The MutableJSON.
+
     """
     payload = cast(MutableJSON, _jsonable(inquiry))
     payload["kind"] = type(inquiry).__name__
@@ -62,6 +85,13 @@ def tag_kind(inquiry: Inquiry | None) -> MutableJSON | None:
     NEW type fails the fixture loudly, naming the type, rather than being
     skipped. An earlier version passed only the base kwargs, comparing nine
     all-``None`` payloads and proving nothing about the fields it named.
+
+    Args:
+      inquiry: Inquiry.
+
+    Returns:
+      result: The MutableJSON | None.
+
     """
     if inquiry is None:
         return None

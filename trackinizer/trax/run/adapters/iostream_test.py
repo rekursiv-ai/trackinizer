@@ -18,7 +18,7 @@ from trackinizer.trax.run.adapters.iostream import (
 
 
 def _collect() -> tuple[list[bytes], LineCapture]:
-    """A capture writing framed lines into a list."""
+    """Return a capture writing framed lines into a list."""
     lines: list[bytes] = []
     return lines, LineCapture(lines.append)
 
@@ -137,7 +137,7 @@ class TestLineCapture:
         assert seen == [b"good\n"]
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

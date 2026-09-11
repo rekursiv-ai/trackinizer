@@ -14,8 +14,12 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Final
 
 import functools
+
+
+_CWD: Final = Path(__file__).resolve().parent
 
 
 @functools.cache
@@ -29,9 +33,7 @@ def load_sql(name: str) -> str:
       sql: File contents as a UTF-8 string.
 
     """
-    return (Path(__file__).parent / "assets" / f"{name}.sql").read_text(
-        encoding="utf-8"
-    )
+    return (_CWD / "assets" / f"{name}.sql").read_text(encoding="utf-8")
 
 
 def schema_migrations() -> Iterator[tuple[str, str]]:
@@ -52,7 +54,7 @@ def schema_migrations() -> Iterator[tuple[str, str]]:
         ``schema.NNN.sql`` in lexical order.
 
     """
-    assets = Path(__file__).parent / "assets"
+    assets = _CWD / "assets"
     baseline = assets / "schema.sql"
     yield baseline.name, baseline.read_text(encoding="utf-8")
     for path in sorted(assets.glob("schema.*.sql")):

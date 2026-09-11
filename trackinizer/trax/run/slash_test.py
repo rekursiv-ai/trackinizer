@@ -113,11 +113,12 @@ class TestSlashCommandDetector:
 
     def test_sink_exception_does_not_propagate(self) -> None:
         # A raising sink must not crash the pump's I/O loop (R-017).
-        def _boom(_command: SlashCommand, _at: object) -> None:
+        def _boom(command: SlashCommand, at: object) -> None:
+            del command, at
             raise ZeroDivisionError("boom")
 
         detector = SlashCommandDetector(_boom)
-        detector.feed(b"/exit\r")  # must not raise
+        detector.feed(b"/exit\r")  # must not raise.
 
     def test_command_carries_submit_timestamp(self) -> None:
         # The detector stamps each command with the submit-time clock (R-019).

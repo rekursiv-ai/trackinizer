@@ -78,6 +78,14 @@ async def push_changes_to_live_subscribers(
     Deliveries are deduped by a deterministic per-``(change, subscriber)``
     key, so a replayed read does not double-inject (within the inbound
     queue's bounded receipt window).
+
+    Args:
+      store: Store.
+      inbound: Inbound.
+      page_size: Page size.
+      sweep_interval_sec: Sweep interval sec.
+      max_backoff_sec: Max backoff sec.
+
     """
     since = datetime.now(UTC)
     after_id: UUID | None = None
@@ -107,6 +115,14 @@ async def push_changes_to_live_subscribers(
         await asyncio.sleep(delay)
 
 
+# Pages until a short page. The cursor advances past EVERY change, delivered or not
+# (failing rows are logged and skipped; the durable row remains readable via polling). A
+# failing query returns the cursor unchanged and ``ok=False`` -- the caller backs off
+# and retries.
+#
+# ``failures`` is the caller's consecutive-failure count, used only to decide whether
+# this failure is the first of an outage (stack included) or a repeat (one line, no
+# stack).
 async def _drain_pending_changes(
     store: Store,
     inbound: InboundQueue,
@@ -116,17 +132,7 @@ async def _drain_pending_changes(
     page_size: int,
     failures: int = 0,
 ) -> tuple[datetime, UUID | None, bool]:
-    """Deliver every change past the cursor; return the advanced cursor.
-
-    Pages until a short page. The cursor advances past EVERY change,
-    delivered or not (failing rows are logged and skipped; the durable row
-    remains readable via polling). A failing query returns the cursor
-    unchanged and ``ok=False`` -- the caller backs off and retries.
-
-    ``failures`` is the caller's consecutive-failure count, used only to
-    decide whether this failure is the first of an outage (stack included)
-    or a repeat (one line, no stack).
-    """
+    """Deliver every change past the cursor; return the advanced cursor."""
     while True:
         try:
             changes = await store.what_changed_for_anyone(
@@ -163,19 +169,17 @@ async def _drain_pending_changes(
             return since, after_id, True
 
 
+# One INFO per subscriber delivery and one DEBUG per no-live-session skip: a "subscriber
+# never got the event" report bisects on these -- present means the server half worked
+# (look at the client poller); absent means the sweep never delivered (look at the
+# cursor / subscription).
 async def _deliver_change(
     store: Store,
     inbound: InboundQueue,
     change: Change,
     subject_seq: int | None,
 ) -> None:
-    """Enqueue one change to every snapshot subscriber's live sessions.
-
-    One INFO per subscriber delivery and one DEBUG per no-live-session skip:
-    a "subscriber never got the event" report bisects on these -- present
-    means the server half worked (look at the client poller); absent means
-    the sweep never delivered (look at the cursor / subscription).
-    """
+    """Enqueue one change to every snapshot subscriber's live sessions."""
     payload = _change_payload(change, subject_seq)
     for subscriber in change.subscribers_snapshot:
         sessions = await store.resolve_live_sessions(subscriber)
@@ -201,22 +205,19 @@ async def _deliver_change(
             )
 
 
+# The push is a notification; the durable row is the record. Only the envelope ships --
+# no ``old``/``new`` delta, so unbounded text fields (descriptions, abstracts) never
+# ride the injected line, and no ``subscribers_snapshot``, so recipients do not learn
+# the roster.
+#
+# ``agent_message`` leads: the one line a model-CLI session receives (the ``trax run``
+# poller injects only it there, keeping the model's context clean; IO-stream sessions
+# get this whole envelope and parse it themselves). It addresses the row the way every
+# trax verb does -- the short ``issue 42`` ref, not a 36-char UUID (a token-waste for
+# the model reading it). The seq is resolved by the sweep's JOIN; a purged subject (no
+# inquiries row) falls back to the UUID, which stays correct forever.
 def _change_payload(change: Change, subject_seq: int | None) -> str:
-    """One change as a compact JSON envelope: metadata, not the record.
-
-    The push is a notification; the durable row is the record. Only the
-    envelope ships -- no ``old``/``new`` delta, so unbounded text fields
-    (descriptions, abstracts) never ride the injected line, and no
-    ``subscribers_snapshot``, so recipients do not learn the roster.
-
-    ``agent_message`` leads: the one line a model-CLI session receives
-    (the ``trax run`` poller injects only it there, keeping the model's
-    context clean; IO-stream sessions get this whole envelope and parse it
-    themselves). It addresses the row the way every trax verb does -- the
-    short ``issue 42`` ref, not a 36-char UUID (a token-waste for the model
-    reading it). The seq is resolved by the sweep's JOIN; a purged subject
-    (no inquiries row) falls back to the UUID, which stays correct forever.
-    """
+    """One change as a compact JSON envelope: metadata, not the record."""
     subject_ref = (
         f"{(change.subject_kind or 'inquiry').lower()} "
         f"{subject_seq if subject_seq is not None else change.subject_id}"
@@ -251,12 +252,9 @@ def _change_payload(change: Change, subject_seq: int | None) -> str:
     )
 
 
+# ``uuid5`` with the change id as the namespace: unconventional (the slot usually holds
+# a ``NAMESPACE_*`` constant) but any UUID is a valid namespace, and (change_id,
+# subscriber) -> UUID is exactly the deterministic keyed hash the dedup needs.
 def _delivery_key(change_id: UUID, subscriber: str) -> UUID:
-    """Deterministic dedup key: one delivery per (change, subscriber).
-
-    ``uuid5`` with the change id as the namespace: unconventional (the slot
-    usually holds a ``NAMESPACE_*`` constant) but any UUID is a valid
-    namespace, and (change_id, subscriber) -> UUID is exactly the
-    deterministic keyed hash the dedup needs.
-    """
+    """Deterministic dedup key: one delivery per (change, subscriber)."""
     return uuid5(change_id, subscriber)

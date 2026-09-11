@@ -19,7 +19,7 @@ import hashlib
 import asyncpg
 
 from trackinizer.lib.postgres import Conn
-from trackinizer.server import auth as _auth
+from trackinizer.server import auth
 from trackinizer.server.auth import bootstrap_admin
 from trackinizer.server.notify import tx
 from trackinizer.server.primitives import upsert_embedding
@@ -29,11 +29,7 @@ from trackinizer.server.schema_gen import (
 )
 from trackinizer.server.sql import schema_migrations
 from trackinizer.server.store.cascade import _CascadeAuditMixin
-from trackinizer.server.store.change_id_slot import (
-    set_client_change_id,
-)
 from trackinizer.server.store.edge import (
-    INFERRED_PROVENANCE_REASON,
     _EdgeMixin,
 )
 from trackinizer.server.store.edit import _EditMixin
@@ -46,24 +42,18 @@ from trackinizer.server.store.shared import (
     _StoreShared,
 )
 from trackinizer.server.store.submit import (
-    SUBMIT_METHOD,
     _SubmitMixin,
 )
 from trackinizer.server.values import vetted_sql
 
 
 __all__ = [
-    "EMBEDDING_DIM",
-    "INFERRED_PROVENANCE_REASON",
-    "SUBMIT_METHOD",
     "Store",
     "StubEmbedder",
     "_xorshift_floats",
-    "schema_migrations",
-    "set_client_change_id",
 ]
 
-# asyncpg raises a plain ``InterfaceError('connection is closed')`` (and a
+# ``asyncpg`` raises a plain ``InterfaceError('connection is closed')`` (and a
 # mid-operation ``ConnectionDoesNotExistError`` whose message mentions "closed
 # in the middle") when the PGlite Node drops the socket -- the transient case
 # bootstrap retries. Every *other* ``InterfaceError`` is API misuse (codec
@@ -74,12 +64,6 @@ _TRANSIENT_FAULT_MARKERS: Final = (
     "connection is closed",
     "closed in the middle",
 )
-
-
-def _is_transient_pglite_fault(err: BaseException) -> bool:
-    """Whether ``err`` is a connection-closed fault (retry) vs API misuse (raise)."""
-    text = str(err).lower()
-    return any(marker in text for marker in _TRANSIENT_FAULT_MARKERS)
 
 
 class _LifecycleMixin(_StoreShared):
@@ -98,16 +82,23 @@ class _LifecycleMixin(_StoreShared):
         Records the bump time on True. Evicts the oldest entry once the cache
         exceeds :data:`auth.LAST_USED_BUMPED_AT_MAX_ENTRIES` so a flood of
         distinct keys cannot pin unbounded memory.
+
+        Args:
+          key_id: Key id.
+
+        Returns:
+          result: The bool.
+
         """
         # Read clock and interval through the module so test monkeypatching
         # of ``auth.monotonic_clock`` is observed.
-        now = _auth.monotonic_clock()
+        now = auth.monotonic_clock()
         last = self._last_used_bumped_at.get(key_id)
-        if last is not None and now - last < _auth.LAST_USED_BUMP_INTERVAL_SEC:
+        if last is not None and now - last < auth.LAST_USED_BUMP_INTERVAL_SEC:
             return False
         if (
             last is None
-            and len(self._last_used_bumped_at) >= _auth.LAST_USED_BUMPED_AT_MAX_ENTRIES
+            and len(self._last_used_bumped_at) >= auth.LAST_USED_BUMPED_AT_MAX_ENTRIES
         ):
             oldest_id = min(
                 self._last_used_bumped_at,
@@ -117,24 +108,31 @@ class _LifecycleMixin(_StoreShared):
         self._last_used_bumped_at[key_id] = now
         return True
 
-    def cached_bearer_identity(self, secret: str) -> _auth.AuthIdentity | None:
+    def cached_bearer_identity(self, secret: str) -> auth.AuthIdentity | None:
         """Return the cached identity for ``secret``, or ``None`` to verify it.
 
         An expired entry is dropped on read rather than swept, so a key that
         stops being presented costs nothing until its slot is reused.
+
+        Args:
+          secret: Secret.
+
+        Returns:
+          identity: The auth.AuthIdentity | None.
+
         """
         digest = hashlib.sha256(secret.encode("utf-8")).digest()
         entry = self._verified_bearers.get(digest)
         if entry is None:
             return None
         identity, expires_at = entry
-        if _auth.monotonic_clock() >= expires_at:
+        if auth.monotonic_clock() >= expires_at:
             del self._verified_bearers[digest]
             return None
         return identity
 
     def remember_bearer_identity(
-        self, secret: str, identity: _auth.AuthIdentity
+        self, secret: str, identity: auth.AuthIdentity
     ) -> None:
         """Cache one verified bearer result for :data:`auth.VERIFIED_BEARER_TTL_SEC`.
 
@@ -143,11 +141,16 @@ class _LifecycleMixin(_StoreShared):
         cost every time and no negative entry can be poisoned into place.
         Evicts the soonest-expiring entry when full, bounding memory under a
         flood of distinct keys.
+
+        Args:
+          secret: Secret.
+          identity: Identity.
+
         """
         digest = hashlib.sha256(secret.encode("utf-8")).digest()
         if (
             digest not in self._verified_bearers
-            and len(self._verified_bearers) >= _auth.VERIFIED_BEARER_MAX_ENTRIES
+            and len(self._verified_bearers) >= auth.VERIFIED_BEARER_MAX_ENTRIES
         ):
             del self._verified_bearers[
                 min(
@@ -157,7 +160,7 @@ class _LifecycleMixin(_StoreShared):
             ]
         self._verified_bearers[digest] = (
             identity,
-            _auth.monotonic_clock() + _auth.VERIFIED_BEARER_TTL_SEC,
+            auth.monotonic_clock() + auth.VERIFIED_BEARER_TTL_SEC,
         )
 
     def forget_bearer_identities(self, user_id: UUID) -> None:
@@ -172,6 +175,10 @@ class _LifecycleMixin(_StoreShared):
         same database keeps serving its own entries until expiry -- a
         redeploy overlap, or a second host on one Postgres -- which is what
         bounds :data:`auth.VERIFIED_BEARER_TTL_SEC`.
+
+        Args:
+          user_id: User id.
+
         """
         self._forget_bearers_where(lambda identity: identity.user_id == user_id)
 
@@ -181,11 +188,15 @@ class _LifecycleMixin(_StoreShared):
         For a change scoped to a single credential -- revoke or re-tier. The
         key, not the caller, identifies what changed: an admin revoking
         someone else's key must evict the victim's entry, not their own.
+
+        Args:
+          key_id: Key id.
+
         """
         self._forget_bearers_where(lambda identity: identity.api_key_id == key_id)
 
     def _forget_bearers_where(
-        self, predicate: Callable[[_auth.AuthIdentity], bool]
+        self, predicate: Callable[[auth.AuthIdentity], bool]
     ) -> None:
         """Drop every cached bearer entry whose identity satisfies ``predicate``."""
         for digest in [
@@ -195,20 +206,17 @@ class _LifecycleMixin(_StoreShared):
         ]:
             del self._verified_bearers[digest]
 
+    # A datadir rebuild or dump reload that copies ``inquiries`` but not
+    # ``inquiry_embeddings`` leaves semantic search blind to those rows. Idempotent via
+    # the ``(inquiry_id, model)`` PK: an inquiry already embedded by every embedder is
+    # skipped, and a freshly added embedder backfills only its own missing rows.
+    #
+    # Safe to run synchronously at boot only because every production embedder is the
+    # deterministic hash :class:`StubEmbedder` (no model, no network). A future
+    # network/model embedder must move this off the startup path -- N blocking ``embed``
+    # calls would stall boot.
     async def _backfill_embeddings(self, conn: Conn) -> None:
-        """Embed any inquiry missing a row for a registered embedder.
-
-        A datadir rebuild or dump reload that copies ``inquiries`` but not
-        ``inquiry_embeddings`` leaves semantic search blind to those rows.
-        Idempotent via the ``(inquiry_id, model)`` PK: an inquiry already
-        embedded by every embedder is skipped, and a freshly added embedder
-        backfills only its own missing rows.
-
-        Safe to run synchronously at boot only because every production
-        embedder is the deterministic hash :class:`StubEmbedder` (no model,
-        no network). A future network/model embedder must move this off the
-        startup path -- N blocking ``embed`` calls would stall boot.
-        """
+        """Embed any inquiry missing a row for a registered embedder."""
         for embedder in self.embedders:
             rows = await conn.fetch(
                 "SELECT id, title FROM inquiries i WHERE NOT EXISTS ("
@@ -255,6 +263,10 @@ class _LifecycleMixin(_StoreShared):
         progress), which is a deterministic bug that must surface on the first
         pass rather than burn the retry budget. A missing schema asset
         (``FileNotFoundError``) likewise surfaces immediately.
+
+        Args:
+          attempts: Attempts.
+
         """
         for attempt in range(attempts):
             try:
@@ -266,33 +278,29 @@ class _LifecycleMixin(_StoreShared):
                 await asyncio.sleep(0.25 * (attempt + 1))
             except asyncpg.InterfaceError as err:
                 if not _is_transient_pglite_fault(err):
-                    raise  # asyncpg API misuse -- deterministic, do not retry
+                    raise  # asyncpg API misuse -- deterministic, do not retry.
                 if attempt == attempts - 1:
                     raise
                 await asyncio.sleep(0.25 * (attempt + 1))
 
+    # The ``applied_migrations`` table records the schema asset name so repeated boots
+    # do not re-run DDL. The schema executes inside a transaction; a failure leaves the
+    # database at the prior version.
+    #
+    # Concurrent bootstrap calls (two processes starting against the same Postgres
+    # database) serialize through a session-level advisory lock so neither races on
+    # ``INSERT INTO applied_migrations`` -- the loser would otherwise crash on a unique-
+    # constraint violation.
+    #
+    # After migrations, every per-kind ref sequence is reconciled up to the maximum
+    # ``seq`` already present. A datadir rebuild or dump reload that bulk-loads rows
+    # with literal ``seq`` values leaves the freshly created sequence at its start, so
+    # the next ``nextval`` would re-mint a live ref; the reconcile closes that gap and
+    # is a monotonic no-op once aligned. The same rebuild can drop
+    # ``inquiry_embeddings`` rows, so every inquiry missing an embedding is re-embedded
+    # here as well.
     async def _bootstrap_once(self) -> None:
-        """One idempotent bootstrap pass; see :meth:`bootstrap`.
-
-        The ``applied_migrations`` table records the schema asset name so
-        repeated boots do not re-run DDL. The schema executes inside a
-        transaction; a failure leaves the database at the prior version.
-
-        Concurrent bootstrap calls (two processes starting against the
-        same Postgres database) serialize through a session-level
-        advisory lock so neither races on ``INSERT INTO
-        applied_migrations`` -- the loser would otherwise crash on a
-        unique-constraint violation.
-
-        After migrations, every per-kind ref sequence is reconciled up to
-        the maximum ``seq`` already present. A datadir rebuild or dump
-        reload that bulk-loads rows with literal ``seq`` values leaves the
-        freshly created sequence at its start, so the next ``nextval``
-        would re-mint a live ref; the reconcile closes that gap and is a
-        monotonic no-op once aligned. The same rebuild can drop
-        ``inquiry_embeddings`` rows, so every inquiry missing an embedding
-        is re-embedded here as well.
-        """
+        """One idempotent bootstrap pass; see :meth:`bootstrap`."""
         async with self.engine.acquire() as conn:
             await conn.execute(
                 "SELECT pg_advisory_lock(hashtext('trackinizer.bootstrap'))"
@@ -373,6 +381,39 @@ class _LifecycleMixin(_StoreShared):
                     )
 
 
+# Monotonic and idempotent: a kind with no rows is skipped (its sequence keeps minting
+# from the start), and a sequence already at or beyond the table maximum is left
+# untouched. Only a sequence lagging its data -- the signature of a datadir rebuild or
+# dump reload that wrote literal ``seq`` values without replaying ``setval`` -- is
+# bumped, so the next ``nextval`` cannot re-mint an existing ref.
+async def _reconcile_sequences(conn: Conn) -> None:
+    """Advance each per-kind ref sequence to the maximum ``seq`` in rows."""
+    for kind, seq_name in SEQ_FOR_KIND.items():
+        max_seq = await conn.fetchval(
+            "SELECT MAX(seq) FROM inquiries WHERE kind = $1", kind
+        )
+        if max_seq is None:
+            continue
+        # ``GREATEST`` guard never lowers a healthy sequence; ``setval``'s
+        # implicit ``is_called=true`` makes the next value ``max_seq + 1``.
+        await conn.execute(
+            vetted_sql(
+                "SELECT setval('",
+                seq_name,
+                "', GREATEST((SELECT last_value FROM ",
+                seq_name,
+                "), $1))",
+            ),
+            max_seq,
+        )
+
+
+def _is_transient_pglite_fault(err: BaseException) -> bool:
+    """Whether ``err`` is a connection-closed fault (retry) vs API misuse (raise)."""
+    text = str(err).lower()
+    return any(marker in text for marker in _TRANSIENT_FAULT_MARKERS)
+
+
 class Store(
     _LifecycleMixin,
     _ReadMixin,
@@ -404,43 +445,23 @@ class Store(
     """
 
 
-async def _reconcile_sequences(conn: Conn) -> None:
-    """Advance each per-kind ref sequence to the maximum ``seq`` in rows.
-
-    Monotonic and idempotent: a kind with no rows is skipped (its sequence
-    keeps minting from the start), and a sequence already at or beyond the
-    table maximum is left untouched. Only a sequence lagging its data --
-    the signature of a datadir rebuild or dump reload that wrote literal
-    ``seq`` values without replaying ``setval`` -- is bumped, so the next
-    ``nextval`` cannot re-mint an existing ref.
-    """
-    for kind, seq_name in SEQ_FOR_KIND.items():
-        max_seq = await conn.fetchval(
-            "SELECT MAX(seq) FROM inquiries WHERE kind = $1", kind
-        )
-        if max_seq is None:
-            continue
-        # ``GREATEST`` guard never lowers a healthy sequence; ``setval``'s
-        # implicit ``is_called=true`` makes the next value ``max_seq + 1``.
-        await conn.execute(
-            vetted_sql(
-                "SELECT setval('",
-                seq_name,
-                "', GREATEST((SELECT last_value FROM ",
-                seq_name,
-                "), $1))",
-            ),
-            max_seq,
-        )
-
-
 class StubEmbedder:
     """Deterministic hash-based embedder for tests and offline bootstrap."""
 
     name = "stub"
+
     dim = EMBEDDING_DIM
 
     async def embed(self, text: str) -> list[float]:
+        """Embed ``text`` into a vector.
+
+        Args:
+          text: Text.
+
+        Returns:
+          result: The list[float].
+
+        """
         seed = hashlib.sha256(text.encode("utf-8")).digest()
         rng = _xorshift_floats(int.from_bytes(seed[:8], "little") or 1)
         vec = [next(rng) for _ in range(self.dim)]
@@ -448,16 +469,10 @@ class StubEmbedder:
         return [v / norm for v in vec]
 
 
+# Used by :class:`StubEmbedder` to produce stable per-text vectors without depending on
+# numpy / random's global state.
 def _xorshift_floats(seed: int) -> Iterator[float]:
-    """Deterministic ``uint64 -> float64 in [-1, 1)`` generator.
-
-    Used by :class:`StubEmbedder` to produce stable per-text vectors
-    without depending on numpy / random's global state.
-
-    Yields:
-      value: The next pseudo-random float in ``[-1, 1)``.
-
-    """
+    """Deterministic ``uint64 -> float64 in [-1, 1)`` generator."""
     state = seed & ((1 << 64) - 1) or 1
     while True:
         state ^= (state << 13) & ((1 << 64) - 1)

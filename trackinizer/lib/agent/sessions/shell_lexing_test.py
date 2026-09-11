@@ -182,7 +182,7 @@ def test_an_edit_row_lifts(script: str, path: str, udiff: str | None) -> None:
         'sed -n "${line}p" a.txt',
         "echo $HOME > a.txt",
         "cat > a.txt << EOF\n$HOME\nEOF\n",
-        # printf interprets its own format, so the transcript's bytes are not
+        # ``printf`` interprets its own format, so the transcript's bytes are not
         # the file's bytes.
         "printf '%s' body > a.txt",
         "printf 'a\\nb' > a.txt",

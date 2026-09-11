@@ -1,6 +1,6 @@
 """Shared Postgres substrate implementations.
 
-The ``DatabaseEngine`` Protocol defines a small surface — async context manager
+The ``DatabaseEngine`` Protocol defines a small surface -- async context manager
 yielding a connection-pool ``acquire()`` + LISTEN/NOTIFY pub/sub. Two
 concrete implementations satisfy it:
 
@@ -96,6 +96,10 @@ class DatabaseEngine(Protocol):
         Args:
           channel: Channel name; matches a string passed to ``notify``.
 
+
+        Returns:
+          result: The AsyncGenerator[str, None].
+
         Yields:
           payload: One message body per ``notify`` call, in publish order.
 
@@ -107,6 +111,55 @@ PGLITE_DATA_DIRNAME: Final = "pglite-data"
 """Directory name (relative to ``workdir``) where persistent PGlite stores its
 backing data when ``persist=True``. Surviving restarts simply means this
 directory keeps its contents between Node process lifetimes."""
+
+
+def _lock_owner(lock: asyncio.Lock) -> asyncio.Task[object] | None:
+    """Return the task that currently holds ``lock`` via a guard, if any."""
+    owner = getattr(lock, _LOCK_OWNER_ATTR, None)
+    assert owner is None or isinstance(owner, asyncio.Task)
+    return owner
+
+
+def _set_lock_owner(lock: asyncio.Lock, task: asyncio.Task[object] | None) -> None:
+    """Record (or clear) the task holding ``lock`` for reentrancy detection."""
+    setattr(lock, _LOCK_OWNER_ATTR, task)
+
+
+class _ConnGuard:
+    """Async context manager yielding a single persistent connection under a lock.
+
+    Mimics the surface of ``Pool.acquire()`` for the PGlite case where
+    a real pool's release-time reset would hang the WASM Postgres
+    implementation.
+    """
+
+    def __init__(
+        self,
+        get_conn: Callable[[], Awaitable[asyncpg.Connection[asyncpg.Record]]],
+        lock: asyncio.Lock,
+    ) -> None:
+        self._get_conn = get_conn
+        self._lock = lock
+
+    async def __aenter__(self) -> asyncpg.Connection[asyncpg.Record]:
+        if self._lock.locked() and _lock_owner(self._lock) is asyncio.current_task():
+            raise RuntimeError(
+                "Reentrant acquire on the single PGlite connection would "
+                "deadlock: the current task already holds the connection lock."
+            )
+        await self._lock.acquire()
+        _set_lock_owner(self._lock, asyncio.current_task())
+        try:
+            return await self._get_conn()
+        except BaseException:
+            _set_lock_owner(self._lock, None)
+            self._lock.release()
+            raise
+
+    async def __aexit__(self, *exc: object) -> None:
+        del exc
+        _set_lock_owner(self._lock, None)
+        self._lock.release()
 
 
 class PGliteEngine:
@@ -166,18 +219,15 @@ class PGliteEngine:
         await self._start_with_retries()
         return self
 
+    # The PGlite listener is a per-engine Unix socket (unique path), so there is no port
+    # to race -- the old EADDRINUSE collision is gone. What remains is PGlite's WASM
+    # Postgres occasionally trapping during the boot DDL under heavy concurrent load
+    # (``RuntimeError: PGlite process died during startup``); each trap is independently
+    # recoverable, so retry the whole start a few times. The same retry applies when
+    # ``_live_conn`` rebuilds the substrate after a Node crash. A deterministic failure
+    # (bad extension, unwritable workdir) re-raises on the last attempt.
     async def _start_with_retries(self) -> None:
-        """Spawn Node + open the asyncpg connection, retrying transient boot faults.
-
-        The PGlite listener is a per-engine Unix socket (unique path), so there
-        is no port to race -- the old EADDRINUSE collision is gone. What remains
-        is PGlite's WASM Postgres occasionally trapping during the boot DDL
-        under heavy concurrent load (``RuntimeError: PGlite process died during
-        startup``); each trap is independently recoverable, so retry the whole
-        start a few times. The same retry applies when ``_live_conn`` rebuilds
-        the substrate after a Node crash. A deterministic failure (bad
-        extension, unwritable workdir) re-raises on the last attempt.
-        """
+        """Spawn Node + open the asyncpg connection, retrying transient boot faults."""
         workdir = self._workdir
         await asyncio.to_thread(workdir.mkdir, parents=True, exist_ok=True)
         # Warm the shared node_modules *before* taking a boot slot. The first
@@ -211,16 +261,13 @@ class PGliteEngine:
                 await asyncio.to_thread(_release_boot_slot, slot)
         raise RuntimeError("PGlite failed to start after 5 attempts") from last_error
 
+    # Concurrency: ``pglite_manager.js`` is rewritten in place under ``workdir``; each
+    # engine must own its own ``workdir`` (not guarded with a lock). In Unix-socket mode
+    # (default) the listener path is unique per engine (py-pglite bakes PID+UUID in), so
+    # two engines never contend. In TCP mode the port is picked free per attempt and the
+    # boot retry covers a lost ephemeral-port race.
     async def _start_once(self, workdir: Path) -> None:
-        """One PGlite start attempt; raises on startup or connect failure.
-
-        Concurrency: ``pglite_manager.js`` is rewritten in place under
-        ``workdir``; each engine must own its own ``workdir`` (not guarded with
-        a lock). In Unix-socket mode (default) the listener path is unique per
-        engine (py-pglite bakes PID+UUID in), so two engines never contend. In
-        TCP mode the port is picked free per attempt and the boot retry covers
-        a lost ephemeral-port race.
-        """
+        """One PGlite start attempt; raises on startup or connect failure."""
         # py-pglite's ``_setup_work_dir`` only writes ``pglite_manager.js`` when
         # missing, so a stale file from a prior run pins the old listener address
         # and makes the new run's readiness probe time out. Remove it each start.
@@ -274,14 +321,12 @@ class PGliteEngine:
         """Best-effort cleanup of partial state between retry attempts."""
         await self._shutdown()
 
+    # PGlite's Node does not acknowledge asyncpg's graceful close handshake, so waiting
+    # for ``close()`` burns the full timeout on every engine exit. Terminating the
+    # client socket is the correct boundary here: the Node process is stopped
+    # immediately afterwards and owns durable flushes.
     async def _shutdown(self) -> None:
-        """Terminate the asyncpg connection then stop the Node subprocess.
-
-        PGlite's Node does not acknowledge asyncpg's graceful close handshake,
-        so waiting for ``close()`` burns the full timeout on every engine exit.
-        Terminating the client socket is the correct boundary here: the Node
-        process is stopped immediately afterwards and owns durable flushes.
-        """
+        """Terminate the asyncpg connection then stop the Node subprocess."""
         if self._conn is not None:
             self._conn.terminate()
             self._conn = None
@@ -314,38 +359,28 @@ class PGliteEngine:
 
         The lock is non-reentrant: a nested ``acquire`` from the same task
         would deadlock, so the guard raises instead.
+
+        Returns:
+          result: The _ConnGuard.
+
         """
         assert self._manager is not None, "engine not entered"
         return _ConnGuard(self._live_conn, self._lock)
 
+    # ``pglite-socket`` 0.2's ``server.start()`` resolves before the WASM Postgres is
+    # actually accepting wire traffic, so the first connect after a fresh boot can land
+    # in that window and be dropped mid-handshake (``ConnectionDoesNotExistError`` /
+    # ``ConnectionRefusedError``). The server IS up -- only the readiness signal is
+    # eager -- so a short bounded connect-retry against the already-running Node closes
+    # the gap. This is distinct from the cold-start ``_start_with_retries`` loop, which
+    # re-spawns Node; here the process is healthy and only the connection needs a beat.
     async def _open_conn(
         self,
         *,
         attempts: int = 12,
         backoff_seconds: float = 0.25,
     ) -> asyncpg.Connection[asyncpg.Record]:
-        """Open one configured asyncpg connection to the running PGlite.
-
-        ``pglite-socket`` 0.2's ``server.start()`` resolves before the WASM
-        Postgres is actually accepting wire traffic, so the first connect after a
-        fresh boot can land in that window and be dropped mid-handshake
-        (``ConnectionDoesNotExistError`` / ``ConnectionRefusedError``). The
-        server IS up -- only the readiness signal is eager -- so a short bounded
-        connect-retry against the already-running Node closes the gap. This is
-        distinct from the cold-start ``_start_with_retries`` loop, which re-spawns
-        Node; here the process is healthy and only the connection needs a beat.
-
-        Args:
-          attempts: asyncpg connect attempts against the healthy Node. The
-            window widens under heavy CPU contention (``pytest -n`` booting many
-            Node children), so ``attempts`` and ``backoff_seconds`` together
-            budget ~20s -- generous against saturation, yet fast to give up on a
-            server that never accepts (each failed connect returns promptly).
-          backoff_seconds: Linear backoff base between attempts (attempt ``k``
-            waits ``k * backoff_seconds``), so the total wait grows to a few
-            seconds.
-
-        """
+        """Open one configured asyncpg connection to the running PGlite."""
         assert self._manager is not None, "engine not entered"
         last_error: BaseException | None = None
         for attempt in range(attempts):
@@ -366,17 +401,14 @@ class PGliteEngine:
         assert last_error is not None
         raise last_error
 
+    # The asyncpg socket and the PGlite Node child fail independently: Node can crash
+    # while ``_conn.is_closed()`` still reports False (the kernel hasn't surfaced the
+    # RST yet), or both can die together. If the manager is dead we rebuild the whole
+    # substrate before reopening the connection -- otherwise ``_open_conn``'s
+    # ``get_asyncpg_uri()`` raises ``RuntimeError`` and every caller gets a 500 until
+    # the process restarts.
     async def _live_conn(self) -> asyncpg.Connection[asyncpg.Record]:
-        """Return the persistent connection; restart Node + reconnect on death.
-
-        The asyncpg socket and the PGlite Node child fail independently:
-        Node can crash while ``_conn.is_closed()`` still reports False
-        (the kernel hasn't surfaced the RST yet), or both can die
-        together. If the manager is dead we rebuild the whole substrate
-        before reopening the connection -- otherwise ``_open_conn``'s
-        ``get_asyncpg_uri()`` raises ``RuntimeError`` and every caller
-        gets a 500 until the process restarts.
-        """
+        """Return the persistent connection; restart Node + reconnect on death."""
         if self._manager is None or not self._manager.is_running():
             await self._shutdown()
             await self._start_with_retries()
@@ -387,11 +419,25 @@ class PGliteEngine:
         return self._conn
 
     async def notify(self, channel: str, payload: str) -> None:
-        """Publish via the in-process bus (PGlite has no cross-conn NOTIFY)."""
+        """Publish via the in-process bus (PGlite has no cross-conn NOTIFY).
+
+        Args:
+          channel: Channel.
+          payload: Payload.
+
+        """
         self._bus.publish(channel, payload)
 
     def listen(self, channel: str) -> AsyncGenerator[str, None]:
-        """Yield messages published to ``channel``."""
+        """Yield messages published to ``channel``.
+
+        Args:
+          channel: Channel.
+
+        Returns:
+          result: The AsyncGenerator[str, None].
+
+        """
         return self._bus.subscribe(channel)
 
 
@@ -446,14 +492,15 @@ class PostgresEngine:
 
     def _on_notify(
         self,
-        _c: asyncpg.Connection[asyncpg.Record]
+        c: asyncpg.Connection[asyncpg.Record]
         | asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
-        _p: int,
-        _ch: str,
+        p: int,
+        ch: str,
         payload: object,
     ) -> None:
         """Forward a native NOTIFY payload onto the in-process bus."""
-        self._bus.publish(_ch, str(payload))
+        del c, p
+        self._bus.publish(ch, str(payload))
 
     async def __aexit__(self, *exc: object) -> None:
         """Close listener and pool."""
@@ -465,17 +512,36 @@ class PostgresEngine:
         await self._pool.close()
 
     def acquire(self) -> asyncpg.pool.PoolAcquireContext[asyncpg.Record]:
-        """Acquire a connection from the pool."""
+        """Acquire a connection from the pool.
+
+        Returns:
+          result: The asyncpg.pool.PoolAcquireContext[asyncpg.Record].
+
+        """
         assert self._pool is not None, "engine not entered"
         return self._pool.acquire()
 
     async def notify(self, channel: str, payload: str) -> None:
-        """Send a NOTIFY via ``pg_notify`` (parameterised; ``NOTIFY`` syntax cannot)."""
+        """Send a NOTIFY via ``pg_notify`` (parameterised; ``NOTIFY`` syntax cannot).
+
+        Args:
+          channel: Channel.
+          payload: Payload.
+
+        """
         async with self.acquire() as conn:
             await conn.execute("SELECT pg_notify($1, $2)", channel, payload)
 
     def listen(self, channel: str) -> AsyncGenerator[str, None]:
-        """Yield messages forwarded from the dedicated listener connection."""
+        """Yield messages forwarded from the dedicated listener connection.
+
+        Args:
+          channel: Channel.
+
+        Returns:
+          result: The AsyncGenerator[str, None].
+
+        """
         return self._bus.subscribe(channel)
 
 
@@ -495,7 +561,13 @@ class _LocalBus:
         self._subscribers: dict[str, set[asyncio.Queue[str]]] = {}
 
     def publish(self, channel: str, payload: str) -> None:
-        """Push ``payload`` onto every subscriber queue; drop oldest on overflow."""
+        """Push ``payload`` onto every subscriber queue; drop oldest on overflow.
+
+        Args:
+          channel: Channel.
+          payload: Payload.
+
+        """
         for q in self._subscribers.get(channel, ()):
             try:
                 q.put_nowait(payload)
@@ -514,6 +586,9 @@ class _LocalBus:
           queue_maxsize: Bound on this subscriber's queue; oldest payloads drop
             past this depth.
 
+        Yields:
+          item: Each yielded value.
+
         """
         q: asyncio.Queue[str] = asyncio.Queue(maxsize=queue_maxsize)
         self._subscribers.setdefault(channel, set()).add(q)
@@ -524,74 +599,22 @@ class _LocalBus:
             self._subscribers[channel].discard(q)
 
 
-class _ConnGuard:
-    """Async context manager yielding a single persistent connection under a lock.
-
-    Mimics the surface of ``Pool.acquire()`` for the PGlite case where
-    a real pool's release-time reset would hang the WASM Postgres
-    implementation.
-    """
-
-    def __init__(
-        self,
-        get_conn: Callable[[], Awaitable[asyncpg.Connection[asyncpg.Record]]],
-        lock: asyncio.Lock,
-    ) -> None:
-        self._get_conn = get_conn
-        self._lock = lock
-
-    async def __aenter__(self) -> asyncpg.Connection[asyncpg.Record]:
-        if self._lock.locked() and _lock_owner(self._lock) is asyncio.current_task():
-            raise RuntimeError(
-                "Reentrant acquire on the single PGlite connection would "
-                "deadlock: the current task already holds the connection lock."
-            )
-        await self._lock.acquire()
-        _set_lock_owner(self._lock, asyncio.current_task())
-        try:
-            return await self._get_conn()
-        except BaseException:
-            _set_lock_owner(self._lock, None)
-            self._lock.release()
-            raise
-
-    async def __aexit__(self, *exc: object) -> None:
-        del exc
-        _set_lock_owner(self._lock, None)
-        self._lock.release()
-
-
 _LOCK_OWNER_ATTR: Final = "_loop_conn_guard_owner"
 
 
-def _lock_owner(lock: asyncio.Lock) -> asyncio.Task[object] | None:
-    """Return the task that currently holds ``lock`` via a guard, if any."""
-    owner = getattr(lock, _LOCK_OWNER_ATTR, None)
-    assert owner is None or isinstance(owner, asyncio.Task)
-    return owner
-
-
-def _set_lock_owner(lock: asyncio.Lock, task: asyncio.Task[object] | None) -> None:
-    """Record (or clear) the task holding ``lock`` for reentrancy detection."""
-    setattr(lock, _LOCK_OWNER_ATTR, task)
-
-
+# Without the NUMERIC codec, asyncpg returns ``decimal.Decimal`` for ``NUMERIC`` columns
+# -- mixing ``Decimal`` with the ``float`` typed cost fields on
+# ``Change``/``Trackinoid`` would break downstream arithmetic. Cost precision is sub-
+# cent and the agreed type is ``float`` (per project decision); the codec maps end-to-
+# end.
+#
+# The NUMERIC decoder is ``float``, so values with more than ~15 significant digits lose
+# precision. This is acceptable only because the schema uses ``NUMERIC`` for sub-cent
+# cost fields that fit a double; do not reuse this codec for high-precision columns.
+#
+# Vectors pass through as ``::vector`` text casts (no codec needed).
 async def _init_connection(conn: Connection[Record]) -> None:
-    """Per-connection setup: JSONB and NUMERIC codecs.
-
-    Without the NUMERIC codec, asyncpg returns ``decimal.Decimal`` for
-    ``NUMERIC`` columns -- mixing ``Decimal`` with the ``float`` typed
-    cost fields on ``Change``/``Trackinoid`` would break downstream
-    arithmetic. Cost precision is sub-cent and the agreed type is
-    ``float`` (per project decision); the codec maps end-to-end.
-
-    The NUMERIC decoder is ``float``, so values with more than ~15
-    significant digits lose precision. This is acceptable only because the
-    schema uses ``NUMERIC`` for sub-cent cost fields that fit a double; do
-    not reuse this codec for high-precision columns.
-
-    Vectors pass through as ``::vector`` text casts (no codec needed).
-    """
+    """Per-connection setup: JSONB and NUMERIC codecs."""
     await conn.set_type_codec(
         "jsonb",
         encoder=json.dumps,
@@ -607,18 +630,16 @@ async def _init_connection(conn: Connection[Record]) -> None:
     )
 
 
+# ``py-pglite`` spawns Node with ``stdout=PIPE`` and never reads it; under sustained
+# traffic the ~64KB OS pipe buffer fills, Node blocks on ``write()``, and the postgres
+# protocol hangs. We start a daemon thread that reads and discards until the process
+# exits.
+#
+# The thread is single-shot per Node lifetime: it exits when ``readline`` hits EOF on
+# process death, so a fresh thread per restart is bounded by the number of restarts, not
+# a leak.
 def _drain_node_stdout(manager: PGliteManager) -> None:
-    """Drain Node's stdout pipe in a daemon thread.
-
-    ``py-pglite`` spawns Node with ``stdout=PIPE`` and never reads it; under
-    sustained traffic the ~64KB OS pipe buffer fills, Node blocks on
-    ``write()``, and the postgres protocol hangs. We start a daemon thread
-    that reads and discards until the process exits.
-
-    The thread is single-shot per Node lifetime: it exits when ``readline``
-    hits EOF on process death, so a fresh thread per restart is bounded by the
-    number of restarts, not a leak.
-    """
+    """Drain Node's stdout pipe in a daemon thread."""
     proc = manager.process
     if proc is None or proc.stdout is None:
         return
@@ -649,51 +670,45 @@ if _INSTALL_LOCK_STALE_SECONDS <= _INSTALL_TIMEOUT_SECONDS:
     )
 
 
+# The vendored ``pglite-package.json`` + ``pglite-package-lock.json`` pin the exact
+# dependency tree py-pglite's Node script ``require``s. We install from the lockfile
+# with ``npm ci`` so every machine and run resolves byte-identical versions -- core
+# infra (web app, trackinizer server) must boot deterministically, not whatever the
+# registry served the day the cache first warmed. All extensions (pgvector, pg_trgm,
+# ...) ship as subpaths of the base pglite package, so this one tree serves every
+# ``extensions`` combination. Bumping a version = edit both files.
+#
+# Keying on file *content* (not a hand-maintained version string) means any edit to
+# either vendored file automatically mints a new cache directory, so a dependency bump
+# can never be served a stale tree from an old key.
 def _cache_key() -> str:
-    """Content-address the cache by the vendored lockfile + package manifest.
-
-    The vendored ``pglite-package.json`` + ``pglite-package-lock.json`` pin the
-    exact dependency tree py-pglite's Node script ``require``s. We install from
-    the lockfile with ``npm ci`` so every machine and run resolves
-    byte-identical versions -- core infra (web app, trackinizer server) must
-    boot deterministically, not whatever the registry served the day the cache
-    first warmed. All extensions (pgvector, pg_trgm, ...) ship as subpaths of
-    the base pglite package, so this one tree serves every ``extensions``
-    combination. Bumping a version = edit both files.
-
-    Keying on file *content* (not a hand-maintained version string) means any
-    edit to either vendored file automatically mints a new cache directory, so
-    a dependency bump can never be served a stale tree from an old key.
-    """
+    """Content-address the cache by the vendored lockfile + package manifest."""
     digest = hashlib.sha256()
     digest.update((_CWD / "pglite-package.json").read_bytes())
     digest.update((_CWD / "pglite-package-lock.json").read_bytes())
     return digest.hexdigest()[:16]
 
 
+# py-pglite runs ``npm install`` into *every* ``work_dir`` whose ``node_modules`` is
+# missing. With a fresh ``tmp_path`` per test that is a full ~20 MB install per test,
+# and N concurrent installs under ``pytest -n`` thrash disk and the npm registry hard
+# enough to blow the per-test timeout.
+#
+# Installing once into a content-addressed cache and symlinking each
+# ``work_dir/node_modules`` at it (see :meth:`PGliteEngine._start_once`) collapses that
+# to a single install shared across all engines and processes.
+#
+# Cross-process safe: a sibling ``.lock`` directory (atomic ``mkdir``) and a ``.ready``
+# marker serialise the install so concurrent pytest workers don't race a half-written
+# tree. The marker is only written after ``npm ci`` succeeds, so a crashed install never
+# looks complete; a lock left behind by a killed installer is reclaimed once it ages
+# past ``_INSTALL_LOCK_STALE_SECONDS``.
+#
+# Superseded keys are intentionally not pruned here. Existing Node children can still
+# resolve modules through an older tree, and this cache has no reader leases that would
+# make automatic deletion safe.
 def _ensure_shared_node_modules() -> Path:
-    """Install the PGlite npm deps once into a shared cache; return that dir.
-
-    py-pglite runs ``npm install`` into *every* ``work_dir`` whose
-    ``node_modules`` is missing. With a fresh ``tmp_path`` per test that is a
-    full ~20 MB install per test, and N concurrent installs under ``pytest -n``
-    thrash disk and the npm registry hard enough to blow the per-test timeout.
-
-    Installing once into a content-addressed cache and symlinking each
-    ``work_dir/node_modules`` at it (see :meth:`PGliteEngine._start_once`)
-    collapses that to a single install shared across all engines and processes.
-
-    Cross-process safe: a sibling ``.lock`` directory (atomic ``mkdir``) and a
-    ``.ready`` marker serialise the install so concurrent pytest workers don't
-    race a half-written tree. The marker is only written after ``npm ci``
-    succeeds, so a crashed install never looks complete; a lock left behind by
-    a killed installer is reclaimed once it ages past
-    ``_INSTALL_LOCK_STALE_SECONDS``.
-
-    Superseded keys are intentionally not pruned here. Existing Node children
-    can still resolve modules through an older tree, and this cache has no
-    reader leases that would make automatic deletion safe.
-    """
+    """Install the PGlite npm deps once into a shared cache; return that dir."""
     root = cache_dir() / "rekursiv-ai" / "pglite" / "node-modules" / _cache_key()
     node_modules = root / "node_modules"
     ready = root / ".ready"
@@ -715,15 +730,13 @@ def _ensure_shared_node_modules() -> Path:
     return node_modules
 
 
+# ``mkdir`` is the atomic primitive. If it loses the race, a lock older than
+# ``_INSTALL_LOCK_STALE_SECONDS`` is assumed orphaned by a killed installer and removed
+# so the next attempt can claim it. The age check tolerates the held-lock case: a live
+# installer refreshes nothing, but its window is bounded by the install timeout, far
+# below the stale threshold.
 def _try_acquire_install_lock(lock: Path) -> bool:
-    """Atomically claim the install lock, reclaiming a stale one if abandoned.
-
-    ``mkdir`` is the atomic primitive. If it loses the race, a lock older than
-    ``_INSTALL_LOCK_STALE_SECONDS`` is assumed orphaned by a killed installer
-    and removed so the next attempt can claim it. The age check tolerates the
-    held-lock case: a live installer refreshes nothing, but its window is
-    bounded by the install timeout, far below the stale threshold.
-    """
+    """Atomically claim the install lock, reclaiming a stale one if abandoned."""
     try:
         lock.mkdir()
         return True
@@ -735,13 +748,11 @@ def _try_acquire_install_lock(lock: Path) -> bool:
         return False
 
 
+# ``npm ci`` installs strictly from the lockfile and refuses to proceed if the manifest
+# and lockfile disagree, so the resolved tree is reproducible rather than whatever ``npm
+# install`` would resolve caret ranges to today.
 def _run_npm_ci(root: Path) -> None:
-    """Copy the vendored manifest + lockfile into ``root`` and ``npm ci``.
-
-    ``npm ci`` installs strictly from the lockfile and refuses to proceed if
-    the manifest and lockfile disagree, so the resolved tree is reproducible
-    rather than whatever ``npm install`` would resolve caret ranges to today.
-    """
+    """Copy the vendored manifest + lockfile into ``root`` and ``npm ci``."""
     (root / "package.json").write_bytes((_CWD / "pglite-package.json").read_bytes())
     (root / "package-lock.json").write_bytes(
         (_CWD / "pglite-package-lock.json").read_bytes()
@@ -755,14 +766,12 @@ def _run_npm_ci(root: Path) -> None:
     )
 
 
+# A pre-existing ``node_modules`` (e.g. a persisted ``work_dir`` from a prior run) is
+# left untouched. Otherwise we symlink the shared tree, which both satisfies py-pglite's
+# ``node_modules.exists()`` install-skip check and lets its ``find_pglite_modules``
+# parent-walk resolve ``NODE_PATH``.
 def _link_shared_node_modules(work_dir: Path) -> None:
-    """Point ``work_dir/node_modules`` at the shared install if it isn't present.
-
-    A pre-existing ``node_modules`` (e.g. a persisted ``work_dir`` from a prior
-    run) is left untouched. Otherwise we symlink the shared tree, which both
-    satisfies py-pglite's ``node_modules.exists()`` install-skip check and lets
-    its ``find_pglite_modules`` parent-walk resolve ``NODE_PATH``.
-    """
+    """Point ``work_dir/node_modules`` at the shared install if it isn't present."""
     target = work_dir / "node_modules"
     if target.exists() or target.is_symlink():
         return
@@ -804,25 +813,20 @@ WASM boot + first connect, ~10s under load) so a live boot is never evicted,
 while still freeing a crashed booter's slot promptly."""
 
 
+# Scaled off the host CPU count but held low: starvation appears well before the cores
+# are saturated (each Node is single-threaded and the boot is a burst of contention), so
+# a small ceiling keeps boots fast without re-introducing the race. Always at least 2 so
+# a single multi-engine test still overlaps. Tests pin it by patching this function.
 def _max_concurrent_boots() -> int:
-    """Cap on simultaneous PGlite cold starts across all processes.
-
-    Scaled off the host CPU count but held low: starvation appears well before
-    the cores are saturated (each Node is single-threaded and the boot is a
-    burst of contention), so a small ceiling keeps boots fast without
-    re-introducing the race. Always at least 2 so a single multi-engine test
-    still overlaps. Tests pin it by patching this function.
-    """
+    """Cap on simultaneous PGlite cold starts across all processes."""
     return max(2, min(8, (os.cpu_count() or 4) // 8))
 
 
+# Shares the XDG cache base with the node-modules install, but scopes slots by host. The
+# cache may be network-mounted across nodes, while the CPU contention this semaphore
+# controls is host-local.
 def _boot_slots_root() -> Path:
-    """Directory holding the cold-start semaphore's slot dirs.
-
-    Shares the XDG cache base with the node-modules install, but scopes slots
-    by host. The cache may be network-mounted across nodes, while the CPU
-    contention this semaphore controls is host-local.
-    """
+    """Directory holding the cold-start semaphore's slot dirs."""
     host_key = hashlib.sha256(socket.gethostname().encode()).hexdigest()[:16]
     return cache_dir() / "rekursiv-ai" / "pglite" / "boot-slots" / host_key
 
@@ -839,6 +843,7 @@ class _BootSlot:
     """
 
     path: Path
+
     token: str
 
     @property
@@ -855,19 +860,15 @@ def _boot_owner_path(slot: _BootSlot) -> Path:
     return slot.path / f"{_BOOT_OWNER_PREFIX}{slot.token}"
 
 
+# Polls the fixed pool of ``slot-<i>`` dirs, claiming the first via atomic ``mkdir``
+# (the same primitive as the install lock) and stamping a unique owner token inside it.
+# A slot whose mtime is older than ``_BOOT_SLOT_STALE_SECONDS`` is reclaimed (whole dir
+# removed) -- a booter killed mid-start cannot remove its own dir, so without this a
+# single ``kill -9`` would permanently shrink the semaphore. Because reclaim mints a
+# fresh dir under the same name, ownership is tracked by the token, not the path, so a
+# slow original booter's later release cannot delete a sibling's live slot.
 def _acquire_boot_slot() -> _BootSlot:
-    """Block until a cold-start slot is free; return the claimed slot + token.
-
-    Polls the fixed pool of ``slot-<i>`` dirs, claiming the first via atomic
-    ``mkdir`` (the same primitive as the install lock) and stamping a unique
-    owner token inside it. A slot whose mtime is older than
-    ``_BOOT_SLOT_STALE_SECONDS`` is reclaimed (whole dir removed) -- a booter
-    killed mid-start cannot remove its own dir, so without this a single
-    ``kill -9`` would permanently shrink the semaphore. Because reclaim mints a
-    fresh dir under the same name, ownership is tracked by the token, not the
-    path, so a slow original booter's later release cannot delete a sibling's
-    live slot.
-    """
+    """Block until a cold-start slot is free; return the claimed slot + token."""
     root = _boot_slots_root()
     root.mkdir(parents=True, exist_ok=True)
     limit = _max_concurrent_boots()
@@ -913,17 +914,14 @@ the extension from the same, correct module.
 """
 
 
+# py-pglite 0.5.3 still maps pgvector to the pre-0.5 core subpath ``@electric-
+# sql/pglite/vector``, which the bumped ``pglite`` no longer exports. The non-persistent
+# manager generates its ``pglite_manager.js`` from
+# ``py_pglite.extensions.SUPPORTED_EXTENSIONS``, so left unpatched it would ``require``
+# a missing module and the Node boot fails with ``ERR_PACKAGE_PATH_NOT_EXPORTED``.
+# Reconcile the two tables here, keeping :data:`_EXTENSION_JS` the single authority.
 def _align_pyglite_extension_modules() -> None:
-    """Override py-pglite's extension module paths with :data:`_EXTENSION_JS`.
-
-    py-pglite 0.5.3 still maps pgvector to the pre-0.5 core subpath
-    ``@electric-sql/pglite/vector``, which the bumped ``pglite`` no longer
-    exports. The non-persistent manager generates its ``pglite_manager.js`` from
-    ``py_pglite.extensions.SUPPORTED_EXTENSIONS``, so left unpatched it would
-    ``require`` a missing module and the Node boot fails with
-    ``ERR_PACKAGE_PATH_NOT_EXPORTED``. Reconcile the two tables here, keeping
-    :data:`_EXTENSION_JS` the single authority.
-    """
+    """Override py-pglite's extension module paths with :data:`_EXTENSION_JS`."""
     for name, (symbol, module) in _EXTENSION_JS.items():
         SUPPORTED_EXTENSIONS[name] = {"name": symbol, "module": module}
 
@@ -931,14 +929,12 @@ def _align_pyglite_extension_modules() -> None:
 _align_pyglite_extension_modules()
 
 
+# Best-effort: the socket is closed before PGlite's Node rebinds the port, so a
+# concurrent booter can steal it in the gap (a TOCTOU window). Used only when
+# ``PGliteEngine(use_tcp=True)``; the boot retry in ``_start_with_retries`` re-picks on
+# the resulting EADDRINUSE.
 def _pick_free_port() -> int:
-    """Return an ephemeral TCP port the OS just assigned us (TCP mode only).
-
-    Best-effort: the socket is closed before PGlite's Node rebinds the port, so
-    a concurrent booter can steal it in the gap (a TOCTOU window). Used only
-    when ``PGliteEngine(use_tcp=True)``; the boot retry in
-    ``_start_with_retries`` re-picks on the resulting EADDRINUSE.
-    """
+    """Return an ephemeral TCP port the OS just assigned us (TCP mode only)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -946,13 +942,11 @@ def _pick_free_port() -> int:
         return port
 
 
+# Shared by the Unix- and TCP-socket persist templates: each validates the extension
+# names against :data:`_EXTENSION_JS` and emits the ``require()`` lines plus the
+# ``{name: symbol, ...}`` object literal PGlite expects.
 def _persist_js_extension_parts(extensions: Sequence[str]) -> tuple[str, str]:
-    """Return ``(require_lines, extensions_object)`` JS fragments for a manager.
-
-    Shared by the Unix- and TCP-socket persist templates: each validates the
-    extension names against :data:`_EXTENSION_JS` and emits the ``require()``
-    lines plus the ``{name: symbol, ...}`` object literal PGlite expects.
-    """
+    """Return ``(require_lines, extensions_object)`` JS fragments for a manager."""
     ext_requires: list[str] = []
     ext_configs: list[str] = []
     for name in extensions:
@@ -969,21 +963,18 @@ def _persist_js_extension_parts(extensions: Sequence[str]) -> tuple[str, str]:
     return ext_requires_str, extensions_obj
 
 
+# Matches py-pglite's Unix-socket template -- ``path:``-mode ``PGLiteSocketServer``,
+# stale-socket cleanup, SIGINT/SIGTERM handlers -- with ``new PGlite({dataDir,
+# extensions})`` added. The data dir is absolute (under ``workdir``) so it survives Node
+# cwd changes. Listens on the unique ``socket_path`` py-pglite minted, so there is no
+# port to race. Not idempotent: the caller unlinks any stale file first.
 def _write_persistent_manager_js_unix(
     workdir: Path,
     *,
     socket_path: str,
     extensions: Sequence[str],
 ) -> None:
-    """Write a Unix-socket ``pglite_manager.js`` opening a persistent ``dataDir``.
-
-    Matches py-pglite's Unix-socket template -- ``path:``-mode
-    ``PGLiteSocketServer``, stale-socket cleanup, SIGINT/SIGTERM handlers -- with
-    ``new PGlite({dataDir, extensions})`` added. The data dir is absolute (under
-    ``workdir``) so it survives Node cwd changes. Listens on the unique
-    ``socket_path`` py-pglite minted, so there is no port to race. Not
-    idempotent: the caller unlinks any stale file first.
-    """
+    """Write a Unix-socket ``pglite_manager.js`` opening a persistent ``dataDir``."""
     data_dir = workdir / PGLITE_DATA_DIRNAME
     ext_requires_str, extensions_obj = _persist_js_extension_parts(extensions)
     script = f"""\
@@ -1033,19 +1024,17 @@ startServer();
     (workdir / "pglite_manager.js").write_text(script)
 
 
+# The TCP counterpart of :func:`_write_persistent_manager_js_unix`: a
+# ``host``/``port``-mode ``PGLiteSocketServer`` on ``127.0.0.1:{port}``. Only used when
+# the engine is opened with ``use_tcp=True``; ``port`` is baked into the script, so the
+# caller unlinks any stale file before each start.
 def _write_persistent_manager_js_tcp(
     workdir: Path,
     *,
     port: int,
     extensions: Sequence[str],
 ) -> None:
-    """Write a TCP ``pglite_manager.js`` opening a persistent ``dataDir``.
-
-    The TCP counterpart of :func:`_write_persistent_manager_js_unix`: a
-    ``host``/``port``-mode ``PGLiteSocketServer`` on ``127.0.0.1:{port}``. Only
-    used when the engine is opened with ``use_tcp=True``; ``port`` is baked into
-    the script, so the caller unlinks any stale file before each start.
-    """
+    """Write a TCP ``pglite_manager.js`` opening a persistent ``dataDir``."""
     data_dir = workdir / PGLITE_DATA_DIRNAME
     ext_requires_str, extensions_obj = _persist_js_extension_parts(extensions)
     script = f"""\

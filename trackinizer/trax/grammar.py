@@ -93,23 +93,27 @@ KIND_LOWER: Mapping[str, Inquiry.InquiryKind] = {k.lower(): k for k in VALID_KIN
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class Edge:
-    """Parsed edge alias: the canonical stored kind plus how this CLI spelling
-    maps onto it.
+    """Parsed edge alias: the canonical stored kind plus how this CLI spelling maps.
 
-    ``reverse`` stores the edge with endpoints swapped (a ``*_by`` spelling
-    addresses the same stored edge from the opposite vertex).
+    Onto it.
 
-    ``valence_default`` / ``valence_negate`` carry the citation-polarity
-    convention into the alias layer (the stored edge never sees it): a ``dis*``
-    spelling (``disproves`` / ``disfavors``) resolves to the same ``proves`` /
-    ``favors`` kind with ``valence_negate=True`` and a negative default, so a
-    user-given positive valence is negated and an omitted one defaults to
-    ``-0.5``. A plain ``proves`` / ``favors`` defaults to ``+0.5``.
+        ``reverse`` stores the edge with endpoints swapped (a ``*_by`` spelling
+        addresses the same stored edge from the opposite vertex).
+
+        ``valence_default`` / ``valence_negate`` carry the citation-polarity
+        convention into the alias layer (the stored edge never sees it): a ``dis*``
+        spelling (``disproves`` / ``disfavors``) resolves to the same ``proves`` /
+        ``favors`` kind with ``valence_negate=True`` and a negative default, so a
+        user-given positive valence is negated and an omitted one defaults to
+        ``-0.5``. A plain ``proves`` / ``favors`` defaults to ``+0.5``.
     """
 
     name: str
+
     reverse: bool = False
+
     valence_default: float | None = None
+
     valence_negate: bool = False
 
 
@@ -133,6 +137,7 @@ class SetField:
     """
 
     field: str
+
     value: object
 
 
@@ -145,7 +150,9 @@ class AddList:
     """
 
     field: str
+
     value: str
+
     ref: Ref | None = None
 
 
@@ -158,7 +165,9 @@ class RemoveList:
     """
 
     field: str
+
     value: str
+
     ref: Ref | None = None
 
 
@@ -167,6 +176,7 @@ class AddCost:
     """Parsed signed cost delta."""
 
     field: str
+
     value: float
 
 
@@ -180,7 +190,9 @@ class RelationAction:
     """
 
     relation: tuple[str, bool]
+
     index: str = ""
+
     against: bool = False
 
 
@@ -200,7 +212,9 @@ class MetricMask:
     """
 
     field: Literal["key", "step", "value"]
+
     op: str
+
     value: str
 
 
@@ -215,9 +229,27 @@ class MetricAction:
     """
 
     masks: tuple[MetricMask, ...]
+
     write: str | None = None
+
     sort: Literal["asc", "desc"] | None = None
+
     limit: int | None = None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class EdgeAction:
+    """Parsed edge mutation or selection action."""
+
+    edge: Edge
+
+    target: EdgeTarget
+
+    metadata: Mapping[str, object]
+
+    remove: bool = False
+
+    annotate: bool = False
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -244,26 +276,19 @@ class InlineCreate:
     """
 
     kind: Inquiry.InquiryKind
+
     fields: tuple[SetField, ...]
+
     edges: tuple[EdgeAction, ...] = ()
+
     costs: tuple[AddCost, ...] = ()
+
     inbound_meta: Mapping[str, object] = dataclass_field(
         default_factory=lambda: cast(dict[str, object], {})
     )
 
 
 EdgeTarget = Ref | InlineCreate
-
-
-@dataclass(frozen=True, kw_only=True, slots=True)
-class EdgeAction:
-    """Parsed edge mutation or selection action."""
-
-    edge: Edge
-    target: EdgeTarget
-    metadata: Mapping[str, object]
-    remove: bool = False
-    annotate: bool = False
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -281,7 +306,9 @@ class ListQuery:
     """
 
     kinds: tuple[Inquiry.InquiryKind, ...]
+
     ranges: Mapping[Inquiry.InquiryKind, tuple[SeqRange, ...]]
+
     filters: tuple[Filter, ...]
 
 
@@ -297,6 +324,7 @@ class BulkApply:
     """
 
     query: ListQuery
+
     actions: tuple[SetField | AddList | RemoveList, ...]
 
     def __post_init__(self) -> None:
@@ -329,7 +357,7 @@ EDGE_ALIASES: Mapping[str, Edge] = {
     "broadened_by": Edge(name="narrows"),
     "narrowed_by": Edge(name="narrows", reverse=True),
     "broadens": Edge(name="narrows", reverse=True),
-    # requires: stored requirer(child) -> prerequisite(parent). ``A requires B``
+    # Requires: stored requirer(child) -> prerequisite(parent). ``A requires B``
     # means B must be done first. ``blocks`` is the parent's voice (B blocks A).
     "requires": Edge(name="requires"),
     "blocked_by": Edge(name="requires"),
@@ -370,7 +398,7 @@ EDGE_ALIASES: Mapping[str, Edge] = {
         valence_default=-CITATION_VALENCE_DEFAULT,
         valence_negate=True,
     ),
-    # supersedes: stored successor(child) -> predecessor(parent).
+    # Supersedes: stored successor(child) -> predecessor(parent).
     "supersedes": Edge(name="supersedes"),
     "superseded_by": Edge(name="supersedes", reverse=True),
     # cites_paper: stored citing(child) -> cited(parent), Paper -> Paper. A
@@ -466,21 +494,32 @@ class Field:
     """
 
     cli_name: str
+
     payload_key: str
+
     shape: Literal["scalar", "list", "cost"]
+
     help: str = ""
+
     list_add: str = ""
+
     list_remove: str = ""
+
     filterable: bool = True
+
     ref_kind: Inquiry.InquiryKind | None = None
 
     def coerce(self, value: str) -> object:
-        """Coerce a string token to its wire value."""
+        """Coerce a string token to its wire value.
+
+        Args:
+          value: Value.
+
+        Returns:
+          result: The object.
+
+        """
         return _COERCE.get(self.cli_name, _coerce_identity)(value)
-
-
-def _coerce_identity(value: str) -> object:
-    return value
 
 
 def _coerce_priority(value: str) -> int:
@@ -523,13 +562,11 @@ def _coerce_publication_type(value: str) -> str:
     return value
 
 
+# The ``-`` (stdin) and ``@path`` (file) sentinels pass through untouched: they are
+# resolved at the verb layer, which re-coerces the read text through
+# :func:`field_value`.
 def _coerce_config(value: str) -> object:
-    """Parse a ``config`` token to its JSON-object wire value.
-
-    The ``-`` (stdin) and ``@path`` (file) sentinels pass through untouched:
-    they are resolved at the verb layer, which re-coerces the read text
-    through :func:`field_value`.
-    """
+    """Parse a ``config`` token to its JSON-object wire value."""
     if value == "-" or value.startswith("@"):
         return value
     try:
@@ -564,6 +601,10 @@ _COERCE: Mapping[str, Callable[[str], object]] = {
     "publication_type": _coerce_publication_type,
     "config": _coerce_config,
 }
+
+
+def _coerce_identity(value: str) -> object:
+    return value
 
 
 # The one place every CLI field is declared.
@@ -845,22 +886,6 @@ _IDENTITY_FILTER_COLUMNS: frozenset[str] = frozenset(
 )
 
 
-def _filterable_columns(kind: Inquiry.InquiryKind) -> frozenset[str]:
-    """Canonical SQL columns a filter may target for ``kind``.
-
-    Derived from the column specs honoring ``applies_to_inquiry_kinds``,
-    matching the server's rule in ``query.py::_filter_columns_for`` so the
-    CLI doesn't over-reject base columns (labels, cost) the server accepts.
-    """
-    cls = KIND_TO_CLASS[kind]
-    columns = set(_IDENTITY_FILTER_COLUMNS)
-    for column, flat in flat_column_specs(cls).items():
-        applies = flat.spec.applies_to_inquiry_kinds
-        if applies is None or kind in applies:
-            columns.add(column)
-    return frozenset(columns)
-
-
 def _filter_fields_cli(kind: Inquiry.InquiryKind) -> tuple[str, ...]:
     """Every CLI filter name (canonical column plus aliases) for ``kind``."""
     canonical = _filterable_columns(kind)
@@ -881,6 +906,20 @@ def _filter_fields_cli(kind: Inquiry.InquiryKind) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
+# Derived from the column specs honoring ``applies_to_inquiry_kinds``, matching the
+# server's rule in ``query.py::_filter_columns_for`` so the CLI doesn't over-reject base
+# columns (labels, cost) the server accepts.
+def _filterable_columns(kind: Inquiry.InquiryKind) -> frozenset[str]:
+    """Canonical SQL columns a filter may target for ``kind``."""
+    cls = KIND_TO_CLASS[kind]
+    columns = set(_IDENTITY_FILTER_COLUMNS)
+    for column, flat in flat_column_specs(cls).items():
+        applies = flat.spec.applies_to_inquiry_kinds
+        if applies is None or kind in applies:
+            columns.add(column)
+    return frozenset(columns)
+
+
 # Per-kind CLI filter-field whitelist, derived from the column specs so it
 # can't drift from the server's. A hand-listed table once omitted labels and
 # cost on kinds the server accepts; deriving it removes that whole class of bug.
@@ -889,14 +928,12 @@ FILTER_FIELDS_CLI: Mapping[Inquiry.InquiryKind, tuple[str, ...]] = {
 }
 
 
+# Derived from the same ``applies_to_inquiry_kinds`` specs the server gates on, so the
+# CLI can reject a kind-invalid field before sending any request. A scalar/list field is
+# writable when its storage column applies to ``kind``; cost fields are base columns
+# valid on every kind.
 def _writable_fields_cli(kind: Inquiry.InquiryKind) -> frozenset[str]:
-    """Every CLI write-field name (scalar/list/cost) editable on ``kind``.
-
-    Derived from the same ``applies_to_inquiry_kinds`` specs the server
-    gates on, so the CLI can reject a kind-invalid field before sending any
-    request. A scalar/list field is writable when its storage column
-    applies to ``kind``; cost fields are base columns valid on every kind.
-    """
+    """Every CLI write-field name (scalar/list/cost) editable on ``kind``."""
     cls = KIND_TO_CLASS[kind]
     flat = flat_column_specs(cls)
     names: set[str] = set()
@@ -944,7 +981,15 @@ def validate_writable_fields(
 
 
 def is_issue_kind(token: str) -> TypeGuard[Issue.Kind]:
-    """Whether ``token`` is an issue-kind literal."""
+    """Whether ``token`` is an issue-kind literal.
+
+    Args:
+      token: Token.
+
+    Returns:
+      result: The TypeGuard[Issue.Kind].
+
+    """
     return token in ISSUE_KINDS
 
 
@@ -952,7 +997,15 @@ _KIND_HASH_RE = re.compile(r"^([A-Za-z]+)#(\d+)$")
 
 
 def parse_ref(value: str) -> Ref:
-    """Parse a UUID or ``Kind#seq`` reference; raise ``ValueError`` otherwise."""
+    """Parse a UUID or ``Kind#seq`` reference; raise ``ValueError`` otherwise.
+
+    Args:
+      value: Value.
+
+    Returns:
+      result: The Ref.
+
+    """
     value = value.strip()
     if not value:
         raise ValueError("empty reference")
@@ -967,7 +1020,15 @@ def parse_ref(value: str) -> Ref:
 
 
 def parse_kind(value: str) -> Inquiry.InquiryKind:
-    """Parse a kind name, case-insensitively and accepting a trailing ``s``."""
+    """Parse a kind name, case-insensitively and accepting a trailing ``s``.
+
+    Args:
+      value: Value.
+
+    Returns:
+      result: The Inquiry.InquiryKind.
+
+    """
     name = value.strip().lower()
     if name in KIND_LOWER:
         return KIND_LOWER[name]
@@ -977,7 +1038,15 @@ def parse_kind(value: str) -> Inquiry.InquiryKind:
 
 
 def cost_key(field: str) -> str:
-    """Canonical SQL column for a CLI cost field."""
+    """Canonical SQL column for a CLI cost field.
+
+    Args:
+      field: Field.
+
+    Returns:
+      result: The str.
+
+    """
     spec = FIELDS_BY_NAME.get(field)
     if spec is None or spec.shape != "cost":
         raise ClientError(f"unknown cost field {field!r}")
@@ -985,7 +1054,16 @@ def cost_key(field: str) -> str:
 
 
 def field_value(field: str, value: str) -> object:
-    """Coerce one scalar field token to its wire value, mapping errors to ClientError."""
+    """Coerce one scalar field token to its wire value, mapping errors to ClientError.
+
+    Args:
+      field: Field.
+      value: Value.
+
+    Returns:
+      value: The object.
+
+    """
     spec = FIELDS_BY_NAME.get(field)
     if spec is None:
         return value
@@ -996,6 +1074,14 @@ def field_value(field: str, value: str) -> object:
 
 
 def list_payload_field(field: str) -> str:
-    """Canonical SQL column for a CLI list field."""
+    """Canonical SQL column for a CLI list field.
+
+    Args:
+      field: Field.
+
+    Returns:
+      result: The str.
+
+    """
     spec = FIELDS_BY_NAME.get(field)
     return field if spec is None else spec.payload_key

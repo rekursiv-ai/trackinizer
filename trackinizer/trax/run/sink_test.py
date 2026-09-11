@@ -326,7 +326,7 @@ class TestTrackinizerSink:
         surface it via ``granted_actor`` so the routing handle is correct.
         """
         client = _FakeClient()
-        client.granted_actor = "scientist#2"  # server renegotiated
+        client.granted_actor = "scientist#2"  # server renegotiated.
         sink = TrackinizerSink(cast(Client, client), "claude", actor="scientist")
         sink.emit("claude", _event("hi"))
         assert client.started[0].actor == "scientist"
@@ -348,7 +348,7 @@ class TestTrackinizerSink:
         sink = TrackinizerSink(cast(Client, client), "claude", actor="scientist")
         granted = sink.open()
         assert granted == "scientist#2"
-        assert len(client.started) == 1  # opened without a record
+        assert len(client.started) == 1  # opened without a record.
         assert sink.granted_actor == "scientist#2"
 
     def test_a_resumed_session_re_derives_its_positions(self) -> None:
@@ -360,7 +360,7 @@ class TestTrackinizerSink:
         event log required) would offset every one of them.
         """
         client = _FakeClient()
-        client.start_seq = 5  # legacy continuation point; must be ignored
+        client.start_seq = 5  # legacy continuation point; must be ignored.
         sink = TrackinizerSink(cast(Client, client), "claude")
         sink.open()
         sink.emit("claude", _event("resumed"))
@@ -390,7 +390,7 @@ class TestTrackinizerSink:
     def test_set_cli_session_id_is_noop_on_file_sink(self) -> None:
         """A local FileSink has no server session id to backfill."""
         sink = FileSink(io.StringIO())
-        sink.set_cli_session_id("x")  # must not raise
+        sink.set_cli_session_id("x")  # must not raise.
 
     def test_flush_holds_until_interval_then_sends(self) -> None:
         """A partial buffer streams once it ages past ``flush_interval_sec``.
@@ -835,7 +835,7 @@ class _FailingSessionIdPrimary(_FailingOpenPrimary):
 
 
 def _fallback_texts(path: Path) -> list[str]:
-    """The ``text`` of each record row the fallback file holds."""
+    """Return the ``text`` of each record row the fallback file holds."""
     return [
         json.loads(line)["text"]
         for line in path.read_text(encoding="utf-8").splitlines()
@@ -878,7 +878,7 @@ class TestResilientSink:
         already-buffered records were stranded -- only the current one reached
         the fallback. They must be replayed to the local file.
         """
-        client = _FlakyFlushClient()  # first append_records raises
+        client = _FlakyFlushClient()  # first append_records raises.
         primary = TrackinizerSink(cast(Client, client), "claude", batch_size=50)
         fallback_path = tmp_path / "fallback.jsonl"
         sink = ResilientSink(primary, fallback_path=fallback_path)
@@ -887,7 +887,7 @@ class TestResilientSink:
         sink.emit("claude", _event("one"))
         sink.emit("claude", _event("two"))
         sink.emit("claude", _event("three"))
-        assert not fallback_path.exists()  # all still buffered server-side
+        assert not fallback_path.exists()  # all still buffered server-side.
 
         # A flush triggers the (failing) append; the wrapper degrades. All
         # three buffered records must end up in the fallback, not just later.
@@ -953,7 +953,7 @@ class TestResilientSink:
         it -- and then ``emit`` falls through and writes it again under a fresh
         position. Two rows for one turn.
         """
-        client = _FlakyFlushClient()  # the first append_records raises
+        client = _FlakyFlushClient()  # the first append_records raises.
         primary = TrackinizerSink(cast(Client, client), "claude", batch_size=1)
         fallback_path = tmp_path / "fallback.jsonl"
         sink = ResilientSink(primary, fallback_path=fallback_path)
@@ -991,7 +991,7 @@ class TestResilientSink:
         fallback_path = tmp_path / "fallback.jsonl"
         sink = ResilientSink(primary, fallback_path=fallback_path)
 
-        sink.emit_slash_command(SlashCommand(command="exit"), _AT)  # must not raise
+        sink.emit_slash_command(SlashCommand(command="exit"), _AT)  # must not raise.
         sink.close()
 
         rows = [
@@ -1011,7 +1011,7 @@ class TestResilientSink:
         fallback_path = tmp_path / "fallback.jsonl"
         sink = ResilientSink(primary, fallback_path=fallback_path)
 
-        sink.set_cli_session_id("claude-abc-123")  # must not raise
+        sink.set_cli_session_id("claude-abc-123")  # must not raise.
 
         # Degraded: the primary is abandoned and capture continues locally.
         sink.emit("claude", _event("after"))

@@ -57,18 +57,15 @@ _OAUTH_CONFIG = Config(
 )
 
 
+# ``state.store`` is required because :func:`auth.current_user` reads it on every auth-
+# gated request; an OAuth test that runs before an auth-gated test on the same module-
+# global ``app`` would otherwise leave the store unwired and the next request would 500
+# on AttributeError instead of resolving (or rejecting) the bearer.
 def _install_oauth_state(
     *,
     config: Config | None = None,
 ) -> FakeEngine:
-    """Wire app.state.engine / .config / .store; pop the identity override.
-
-    ``state.store`` is required because :func:`auth.current_user` reads
-    it on every auth-gated request; an OAuth test that runs before an
-    auth-gated test on the same module-global ``app`` would otherwise
-    leave the store unwired and the next request would 500 on
-    AttributeError instead of resolving (or rejecting) the bearer.
-    """
+    """Wire app.state.engine / .config / .store; pop the identity override."""
     store, engine = make_store()
     app.state.engine = engine
     app.state.store = store
@@ -93,12 +90,13 @@ def _install_http_mock(
 
 
 class _CookieCarrier:
-    """Stand-in for :class:`fastapi.Response` satisfying the
+    """Stand-in for :class:`fastapi.Response` satisfying the.
+
     :class:`session._SetsCookies` Protocol -- captures set cookies.
 
-    Tests that need to *forge* a cookie (e.g. the logout test pre-loading
-    a session cookie) instantiate one of these, hand it to a session
-    helper, and read the resulting cookie back off ``cookies``.
+        Tests that need to *forge* a cookie (e.g. the logout test pre-loading
+        a session cookie) instantiate one of these, hand it to a session
+        helper, and read the resulting cookie back off ``cookies``.
     """
 
     def __init__(self) -> None:
@@ -279,13 +277,11 @@ class TestAuthLogin:
 # ---- /auth/callback -------------------------------------------------------
 
 
+# The login response sets the OAuth state cookie directly on the :class:`TestClient`
+# cookie jar, so the subsequent callback request sends it automatically without per-
+# request cookie wiring.
 def _start_login(client: TestClient, *, next_query: str = "/") -> str:
-    """Hit ``/auth/login`` and return the issued ``state`` nonce.
-
-    The login response sets the OAuth state cookie directly on the
-    :class:`TestClient` cookie jar, so the subsequent callback request
-    sends it automatically without per-request cookie wiring.
-    """
+    """Hit ``/auth/login`` and return the issued ``state`` nonce."""
     response = client.get(f"/auth/login?next={next_query}")
     assert response.status_code == 302
     parsed = urlparse(response.headers["location"])
@@ -896,7 +892,7 @@ class TestInstallOAuthStateWiresStore:
         assert response.status_code in {200, 401, 404}, response.text
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

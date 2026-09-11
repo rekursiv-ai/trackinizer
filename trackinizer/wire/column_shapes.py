@@ -245,7 +245,7 @@ _SQL_BY_SHAPE: Final[dict[ColumnShape, dict[str, str]]] = {
 
 
 def sql_template(column: str, op: str) -> str | None:
-    """SQL for ``(column, op)``, or ``None`` when the pair cannot lower.
+    """Return SQL for ``(column, op)``, or ``None`` when the pair cannot lower.
 
     ``column`` must already be canonical. ``{col}`` and ``{p}`` are the
     caller's to format: the column name (drawn from the closed set this module
@@ -286,6 +286,14 @@ def compares_as_float(column: str, op: str) -> bool:
     Read off the TEMPLATE, like every other question about lowering: the REAL
     shape casts ``{col}::float8`` to match the codec that decodes NUMERIC to a
     Python float, and that cast is also a range ceiling the operand must clear.
+
+    Args:
+      column: Column.
+      op: Op.
+
+    Returns:
+      result: The bool.
+
     """
     template = sql_template(column, op)
     return template is not None and "::float8" in template
@@ -299,22 +307,37 @@ def requires_numeric_operand(column: str, op: str) -> bool:
     (``invalid input syntax for type numeric``) where Python falls back to a
     string compare. The distinction is the TEMPLATE's, so it is read off the
     template rather than inferred from the op.
+
+    Args:
+      column: Column.
+      op: Op.
+
+    Returns:
+      result: The bool.
+
     """
     template = sql_template(column, op)
     return template is not None and "::numeric" in template
 
 
 def lowers_into_sql(column: str, op: str) -> bool:
-    """Whether ``(column, op)`` has a SQL form, so both evaluators agree."""
+    """Whether ``(column, op)`` has a SQL form, so both evaluators agree.
+
+    Args:
+      column: Column.
+      op: Op.
+
+    Returns:
+      result: The bool.
+
+    """
     return sql_template(column, op) is not None
 
 
+# Derived rather than hand-listed so a new column is classified without an edit here,
+# and a type change reclassifies it automatically.
 def _column_shapes() -> dict[str, ColumnShape]:
-    """Classify every filterable column, derived from the specs.
-
-    Derived rather than hand-listed so a new column is classified without an
-    edit here, and a type change reclassifies it automatically.
-    """
+    """Classify every filterable column, derived from the specs."""
     # Identity/housekeeping columns the schema declares directly. They carry
     # no ColumnSpec, so the spec walk below cannot see them -- and they are
     # among the most filtered (``created``, ``seq``). Mirrors
@@ -340,14 +363,12 @@ def _column_shapes() -> dict[str, ColumnShape]:
     return out
 
 
+# A SUPERSET of :data:`COLUMN_SHAPES`, which holds only what has SQL: the JSONB payload
+# is filterable and has no shape, so classifying is the wrong question to ask about a
+# field's EXISTENCE. Deriving both from one walk is what keeps them from disagreeing
+# about which columns are real.
 def _filterable_columns() -> frozenset[str]:
-    """Every column a filter may name, whether or not it lowers.
-
-    A SUPERSET of :data:`COLUMN_SHAPES`, which holds only what has SQL: the
-    JSONB payload is filterable and has no shape, so classifying is the wrong
-    question to ask about a field's EXISTENCE. Deriving both from one walk is
-    what keeps them from disagreeing about which columns are real.
-    """
+    """Every column a filter may name, whether or not it lowers."""
     return frozenset(COLUMN_SHAPES) | {
         storage_name(name, flat.spec)
         for source in INQUIRY_CLASSES
@@ -355,13 +376,11 @@ def _filterable_columns() -> frozenset[str]:
     }
 
 
+# A flattened axis (the ``marginal_cost_*`` pair) carries the COMPOSITE's empty
+# ``sql_type``, so the declared type says nothing; its Python annotation does, and both
+# axes are floats.
 def _classify(flat: FlatColumn) -> ColumnShape | None:
-    """Shape for one column, or ``None`` when it cannot lower.
-
-    A flattened axis (the ``marginal_cost_*`` pair) carries the COMPOSITE's
-    empty ``sql_type``, so the declared type says nothing; its Python
-    annotation does, and both axes are floats.
-    """
+    """Shape for one column, or ``None`` when it cannot lower."""
     sql_type = flat.spec.sql_type
     if sql_type == "TEXT[]":
         return ColumnShape.TEXT_ARRAY
@@ -384,23 +403,20 @@ def _classify(flat: FlatColumn) -> ColumnShape | None:
     return None
 
 
+# Keeps multi-word spellings intact (``DOUBLE PRECISION``), which the sets below match
+# verbatim.
+# one.
 def _sql_head(sql_type: str) -> str:
-    """A declared type minus any precision, so ``NUMERIC(14, 6)`` reads as one.
-
-    Keeps multi-word spellings intact (``DOUBLE PRECISION``), which the sets
-    below match verbatim.
-    """
+    """Return a declared type minus any precision, so ``NUMERIC(14, 6)`` reads as."""
     return sql_type.split("(", maxsplit=1)[0].strip().upper()
 
 
+# Postgres' whole vocabulary for the type, not the subset declared today: ``INT`` /
+# ``INT4`` name the SAME type, and an unlisted spelling gets no shape at all -- silently
+# dropping the column's order ops and sending its regex to Python, a wrong answer rather
+# than a missing feature.
 def _is_integer_sql(sql_type: str) -> bool:
-    """Whether a declared type holds whole numbers.
-
-    Postgres' whole vocabulary for the type, not the subset declared today:
-    ``INT`` / ``INT4`` name the SAME type, and an unlisted spelling gets no
-    shape at all -- silently dropping the column's order ops and sending its
-    regex to Python, a wrong answer rather than a missing feature.
-    """
+    """Whether a declared type holds whole numbers."""
     return _sql_head(sql_type) in {
         "INTEGER",
         "INT",
@@ -412,12 +428,10 @@ def _is_integer_sql(sql_type: str) -> bool:
     }
 
 
+# The full vocabulary, like :func:`_is_integer_sql`: ``FLOAT8`` and ``FLOAT`` name the
+# same type as ``DOUBLE PRECISION``.
 def _is_real_sql(sql_type: str) -> bool:
-    """Whether a declared type holds fractional numbers.
-
-    The full vocabulary, like :func:`_is_integer_sql`: ``FLOAT8`` and ``FLOAT``
-    name the same type as ``DOUBLE PRECISION``.
-    """
+    """Whether a declared type holds fractional numbers."""
     return _sql_head(sql_type) in {
         "NUMERIC",
         "DECIMAL",
@@ -430,18 +444,15 @@ def _is_real_sql(sql_type: str) -> bool:
     }
 
 
+# Unwraps the two indirections the model uses: a ``type X = ...`` alias (``Actor``,
+# ``Status``) hides its real type behind ``__value__``, and a nullable column is ``X |
+# None``. An identity comparison misses both, and a flattened axis has ONLY its
+# annotation, its spec carrying the composite's empty ``sql_type``.
+#
+# ``bool`` never counts as ``int``: it is a subclass, but comparing a flag as a number
+# is not what any filter means.
 def _is_valued(annotation: object, target: type) -> bool:
-    """Whether every value a column can hold is a ``target``.
-
-    Unwraps the two indirections the model uses: a ``type X = ...`` alias
-    (``Actor``, ``Status``) hides its real type behind ``__value__``, and a
-    nullable column is ``X | None``. An identity comparison misses both, and a
-    flattened axis has ONLY its annotation, its spec carrying the composite's
-    empty ``sql_type``.
-
-    ``bool`` never counts as ``int``: it is a subclass, but comparing a flag
-    as a number is not what any filter means.
-    """
+    """Whether every value a column can hold is a ``target``."""
     if annotation is bool:
         return False
     if annotation is target:

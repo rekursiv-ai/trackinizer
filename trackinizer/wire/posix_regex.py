@@ -162,18 +162,32 @@ def has_posix_bracket_construct(pattern: str) -> bool:
     Detected STRUCTURALLY, not by the ``FutureWarning`` Python emits: CPython
     serves a CACHED pattern before parsing, so one earlier compile silences
     the warning for the process and the check stops working.
+
+    Args:
+      pattern: Pattern.
+
+    Returns:
+      result: The bool.
+
     """
     return any(isinstance(found, PosixClass) for found in _scan(pattern))
 
 
 def live_indices(pattern: str) -> frozenset[int]:
-    r"""Indices that are pattern SYNTAX, not class members or comment prose.
+    r"""Return indices that are pattern SYNTAX, not class members or comment prose.
 
     A position is inert when it is a class member, a ``(?#...)`` comment body,
     or either half of an escape pair -- live PG16 runs ``[*+]``, ``(?#*+)a``
     and ``a\*+``, none of which carries a possessive quantifier. Any rule
     about a bare character needs that distinction, because the character
     itself looks identical either way.
+
+    Args:
+      pattern: Pattern.
+
+    Returns:
+      result: The frozenset[int].
+
     """
     inert: set[int] = set()
     for found in _scan(pattern):
@@ -183,7 +197,7 @@ def live_indices(pattern: str) -> frozenset[int]:
 
 
 def matchable_indices(pattern: str) -> frozenset[int]:
-    r"""Indices that take part in MATCHING: everything but comment prose.
+    r"""Return indices that take part in MATCHING: everything but comment prose.
 
     A different question from :func:`live_indices`. A class member is not
     syntax -- ``[*+]`` carries no possessive quantifier -- but it is text the
@@ -193,6 +207,13 @@ def matchable_indices(pattern: str) -> frozenset[int]:
 
     Only a ``(?#...)`` body is excluded, being prose that never matches
     anything -- live PG16 runs ``(?i)(?#\u00e9)a``.
+
+    Args:
+      pattern: Pattern.
+
+    Returns:
+      result: The frozenset[int].
+
     """
     inert: set[int] = set()
     for found in _scan(pattern):
@@ -208,6 +229,13 @@ def paren_extensions(pattern: str) -> Iterator[ParenExtension]:
     and the ``(?a`` in ``(?#(?a)a`` is comment text -- live PG16 runs both, so
     refusing either would refuse a working pattern. A comment body ends at the
     FIRST ``)``, which is why that example carries no closing paren of its own.
+
+    Args:
+      pattern: Pattern.
+
+    Returns:
+      result: The Iterator[ParenExtension].
+
     """
     return (found for found in _scan(pattern) if isinstance(found, ParenExtension))
 
@@ -219,12 +247,27 @@ def has_python_named_group(pattern: str) -> bool:
     pattern carrying one means different things to the two evaluators. Inert
     spellings are not one: ``[(?P<]x`` and ``[](?P<]x`` are class members and
     match ``'Px'`` in BOTH engines.
+
+    Args:
+      pattern: Pattern.
+
+    Returns:
+      result: The bool.
+
     """
     return any(isinstance(found, NamedGroup) for found in _scan(pattern))
 
 
 def escapes(pattern: str) -> Iterator[Escape]:
-    """Yield only the escapes from the shared scan."""
+    """Yield only the escapes from the shared scan.
+
+    Args:
+      pattern: Pattern.
+
+    Returns:
+      result: The Iterator[Escape].
+
+    """
     return (found for found in _scan(pattern) if isinstance(found, Escape))
 
 
@@ -237,6 +280,15 @@ def is_flag_run(body: str, *, scoped: bool, flag: str) -> bool:
     anchor fix; another ignored ``scoped``, so ``(?i:a)`` claimed to fold a
     pattern Postgres refuses outright. The body must be flag letters ONLY, and
     a colon-terminated group scopes its flags to its own body.
+
+    Args:
+      body: Body.
+      scoped: Scoped.
+      flag: Flag.
+
+    Returns:
+      result: The bool.
+
     """
     return flag in body and not scoped and set(body) <= FLAG_LETTERS
 
@@ -251,6 +303,13 @@ def posix_pattern(pattern: str) -> str:
 
     The rewrites are collected by index and applied in ONE ordered pass, so
     two rules cannot rewrite the same span twice.
+
+    Args:
+      pattern: Pattern.
+
+    Returns:
+      result: The str.
+
     """
     # ``.`` matches a newline in Postgres and not in Python: live PG16 says
     # ``E'a\nb' ~ 'a.b'`` is TRUE. Neither engine errors, so nothing catches
@@ -287,19 +346,16 @@ def posix_pattern(pattern: str) -> str:
     return "".join(out)
 
 
+# A backslash consumes the character after it, so a doubled backslash yields ONE escape
+# (of ``\``) and leaves the next character ordinary. Bracket expressions are tracked
+# with the POSIX rules that a ``]`` immediately after ``[`` or ``[^`` is a literal
+# member rather than the terminator (live: ``']' ~ '[]a]'`` is true), and that a
+# ``[:name:]`` character class inside does not close the enclosing bracket. A
+# ``(?#...)`` comment is skipped whole, since its body is prose to both engines.
 def _scan(
     pattern: str,
 ) -> Iterator[Escape | PosixClass | NamedGroup | ParenExtension | Inert | Comment]:
-    r"""Yield each escape, bracket form, named group, and ``(?...)`` in order.
-
-    A backslash consumes the character after it, so a doubled backslash yields
-    ONE escape (of ``\``) and leaves the next character ordinary. Bracket
-    expressions are tracked with the POSIX rules that a ``]`` immediately after
-    ``[`` or ``[^`` is a literal member rather than the terminator (live:
-    ``']' ~ '[]a]'`` is true), and that a ``[:name:]`` character class inside
-    does not close the enclosing bracket. A ``(?#...)`` comment is skipped
-    whole, since its body is prose to both engines.
-    """
+    r"""Yield each escape, bracket form, named group, and ``(?...)`` in order."""
     index = 0
     in_bracket = False
     bracket_start = -1

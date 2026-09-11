@@ -60,6 +60,15 @@ async def log_metrics_route(
     Idempotent on ``(experiment_id, key, step)``: a retried batch reports
     ``logged=0``. ``Store.log_metrics`` rejects a non-Experiment id (409) or a
     missing one (404).
+
+    Args:
+      experiment_id: Experiment id.
+      body: Body.
+      request: Request.
+
+    Returns:
+      result: The LogMetricsResponse.
+
     """
     store = get_store(request)
     logged, skipped = await store.log_metrics(experiment_id, body.points)
@@ -81,6 +90,17 @@ async def read_metrics_route(
 
     Paginated so a caller never pulls a whole large run at once; ``key``
     narrows to one metric.
+
+    Args:
+      experiment_id: Experiment id.
+      request: Request.
+      limit: Limit.
+      offset: Offset.
+      key: Key.
+
+    Returns:
+      result: The ReadMetricsResponse.
+
     """
     if limit < 1 or limit > MAX_LIST_LIMIT:
         raise HTTPException(
@@ -104,7 +124,17 @@ async def query_metrics_route(
     body: MetricQueryRequest,
     request: Request,
 ) -> MetricQueryResponse:
-    """Read one experiment's masked metric cells (the mask-query surface)."""
+    """Read one experiment's masked metric cells (the mask-query surface).
+
+    Args:
+      experiment_id: Experiment id.
+      body: Body.
+      request: Request.
+
+    Returns:
+      result: The MetricQueryResponse.
+
+    """
     store = get_store(request)
     rows = await store.query_metrics(
         [experiment_id], masks=body.masks, sort=body.sort, limit=body.limit
@@ -121,7 +151,17 @@ async def write_metrics_route(
     body: MetricQueryRequest,
     request: Request,
 ) -> MetricWriteResponse:
-    """Assign ``body.write`` to every cell the mask selects (bulk upsert)."""
+    """Assign ``body.write`` to every cell the mask selects (bulk upsert).
+
+    Args:
+      experiment_id: Experiment id.
+      body: Body.
+      request: Request.
+
+    Returns:
+      result: The MetricWriteResponse.
+
+    """
     if body.write is None:
         raise HTTPException(status_code=400, detail="write requires a 'to' value")
     store = get_store(request)
@@ -139,7 +179,16 @@ async def rank_metrics_route(
     body: MetricRankRequest,
     request: Request,
 ) -> MetricRankResponse:
-    """Cross-experiment masked read/rank over the given experiments."""
+    """Cross-experiment masked read/rank over the given experiments.
+
+    Args:
+      body: Body.
+      request: Request.
+
+    Returns:
+      result: The MetricRankResponse.
+
+    """
     store = get_store(request)
     rows = await store.query_metrics(
         body.experiment_ids,

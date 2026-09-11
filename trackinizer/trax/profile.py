@@ -20,11 +20,25 @@ from trackinizer.trax.context import env
 from trackinizer.trax.render import echo
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class Profile:
+    """A saved server identity: URL, audit actor, and bearer token."""
+
+    url: str
+
+    author: str = ""
+
+    api_key: str = ""
+    """Sent as ``Authorization: Bearer <api_key>``."""
+
+
 class Profiles(Command):
     """Show and mutate saved server profiles, subject-first like the rest of trax."""
 
     names = ("profile",)
+
     fields: ClassVar[tuple[str, ...]] = ("url", "actor", "token", "current")
+
     help = """\
 Usage: trax profile [NAME] [ACTION]
 
@@ -40,11 +54,13 @@ Examples:
 
 Fields: url actor token
 """
+
     field_help: ClassVar[HelpPage] = HelpPage(
         usage="trax profile [NAME] FIELD [to VALUE]",
         summary="No VALUE projects the field; 'to VALUE' mutates it.",
         examples=("trax profile url", "trax profile foo token to trax__..."),
     )
+
     field_set_help: ClassVar[HelpPage] = HelpPage(
         usage="trax profile [NAME] FIELD to VALUE",
         summary="Mutates the selected profile field (one field per command).",
@@ -98,6 +114,15 @@ Fields: url actor token
 
     @classmethod
     def help_for(cls, tokens: Sequence[str]) -> str:
+        """Help for.
+
+        Args:
+          tokens: Tokens.
+
+        Returns:
+          result: The str.
+
+        """
         if not tokens:
             return cls.help_text()
         if tokens[0] in cls.fields:
@@ -117,6 +142,7 @@ Fields: url actor token
 
     @classmethod
     def run_list(cls) -> None:
+        """Run list."""
         rows = list_profiles()
         if not rows:
             echo("(no profiles)")
@@ -130,6 +156,12 @@ Fields: url actor token
 
     @classmethod
     def run_show(cls, name: str) -> None:
+        """Run show.
+
+        Args:
+          name: Name.
+
+        """
         profile = load_profile() if name == current_profile() else read_profile(name)
         echo(f"profile: {name}")
         echo(f"url:     {profile.url}")
@@ -141,6 +173,13 @@ Fields: url actor token
 
     @classmethod
     def run_field_or_set(cls, name: str, tokens: Sequence[str]) -> None:
+        """Run field or set.
+
+        Args:
+          name: Name.
+          tokens: Tokens.
+
+        """
         if not tokens:
             cls.run_show(name)
             return
@@ -158,6 +197,13 @@ Fields: url actor token
 
     @classmethod
     def run_field(cls, name: str, field: str) -> None:
+        """Run field.
+
+        Args:
+          name: Name.
+          field: Field.
+
+        """
         if field not in cls.fields or field == "current":
             raise ClientError(f"unknown profile field {field!r}")
         profile = load_profile() if name == current_profile() else read_profile(name)
@@ -177,6 +223,14 @@ Fields: url actor token
 
     @classmethod
     def run_set(cls, name: str, *, field: str, value: str) -> None:
+        """Run set.
+
+        Args:
+          name: Name.
+          field: Field.
+          value: Value.
+
+        """
         if field not in cls.fields or field == "current":
             raise ClientError(f"unknown profile field {field!r}")
         profile = cls._profile_for_write(name)
@@ -192,6 +246,12 @@ Fields: url actor token
 
     @classmethod
     def run_current(cls, tokens: Sequence[str]) -> None:
+        """Run current.
+
+        Args:
+          tokens: Tokens.
+
+        """
         if len(tokens) != 1:
             raise ClientError("expected profile name after current")
         read_profile(tokens[0])
@@ -200,19 +260,23 @@ Fields: url actor token
 
     @classmethod
     def run_del(cls, tokens: Sequence[str]) -> None:
+        """Run del.
+
+        Args:
+          tokens: Tokens.
+
+        """
         if len(tokens) != 1:
             raise ClientError("expected profile name before del")
         if not del_profile(tokens[0]):
             raise ClientError(f"profile {tokens[0]!r} not found")
         echo(f"deleted: profile {tokens[0]}")
 
+    # Before a profile exists, the first field-set bootstraps it; the URL defaults to
+    # the localhost fallback until the user sets one.
     @classmethod
     def _profile_for_write(cls, name: str) -> Profile:
-        """The existing profile, or a localhost-URL template on first write.
-
-        Before a profile exists, the first field-set bootstraps it; the URL
-        defaults to the localhost fallback until the user sets one.
-        """
+        """Return the existing profile, or a localhost-URL template on first write."""
         try:
             return read_profile(name)
         except ClientError:
@@ -222,18 +286,15 @@ Fields: url actor token
 LOCALHOST_FALLBACK_URL: Final = "http://127.0.0.1:8765"
 
 
-@dataclass(frozen=True, kw_only=True, slots=True)
-class Profile:
-    """A saved server identity: URL, audit actor, and bearer token."""
-
-    url: str
-    author: str = ""
-    api_key: str = ""
-    """Sent as ``Authorization: Bearer <api_key>``."""
-
-
 def load_profile() -> Profile:
-    """The profile for the active name, or the localhost fallback if none is pinned."""
+    """Return the profile for the active name, or the localhost fallback if none is.
+
+    pinned.
+
+    Returns:
+      result: The Profile.
+
+    """
     name = current_profile()
     if (config_dir() / "rekursiv-ai" / "trax" / "profiles" / name).exists():
         return read_profile(name)
@@ -243,7 +304,12 @@ def load_profile() -> Profile:
 
 
 def current_profile() -> str:
-    """Name of the active profile, defaulting to ``default``."""
+    """Name of the active profile, defaulting to ``default``.
+
+    Returns:
+      result: The str.
+
+    """
     return _explicit_profile() or "default"
 
 
@@ -253,6 +319,11 @@ def save_profile(name: str, profile: Profile) -> None:
     The URL is validated up front so bad input fails on write instead of
     on the next read. The file is created ``0o600`` before any bytes land,
     so the token never has a world-readable window.
+
+    Args:
+      name: Name.
+      profile: Profile.
+
     """
     _validate_profile_name(name)
     url = server_url(profile.url, f"profile {name!r}")
@@ -272,19 +343,13 @@ def save_profile(name: str, profile: Profile) -> None:
     _invalidate_clients()
 
 
-def _invalidate_clients() -> None:
-    """Drop cached clients after a profile write.
-
-    Imported at call time: ``cli`` imports this module, so a module-scope
-    import would be a cycle.
-    """
-    from trackinizer.trax.cli import close_clients  # noqa: PLC0415
-
-    close_clients()
-
-
 def switch_profile(name: str) -> None:
-    """Pin ``name`` as the active profile for future invocations."""
+    """Pin ``name`` as the active profile for future invocations.
+
+    Args:
+      name: Name.
+
+    """
     _validate_profile_name(name)
     _write_atomic(
         config_dir() / "rekursiv-ai" / "trax" / "current", name + "\n", mode=0o600
@@ -292,14 +357,27 @@ def switch_profile(name: str) -> None:
 
 
 def list_profiles() -> list[tuple[str, Profile]]:
-    """Every saved ``(name, profile)`` pair, sorted by name."""
+    """Every saved ``(name, profile)`` pair, sorted by name.
+
+    Returns:
+      result: The list[tuple[str, Profile]].
+
+    """
     if not (config_dir() / "rekursiv-ai" / "trax" / "profiles").exists():
         return []
     return sorted(_iter_profiles())
 
 
 def del_profile(name: str) -> bool:
-    """Delete profile ``name``; return whether it existed."""
+    """Delete profile ``name``; return whether it existed.
+
+    Args:
+      name: Name.
+
+    Returns:
+      result: The bool.
+
+    """
     _validate_profile_name(name)
     if name == _explicit_profile():
         raise ClientError(f"cannot delete active profile {name!r}; switch first")
@@ -316,6 +394,12 @@ def read_profile(name: str) -> Profile:
 
     A missing or unparseable ``url`` line is a hard error; substituting
     localhost would mask typos and torn writes.
+
+    Args:
+      name: Name.
+
+    Returns:
+      result: The Profile.
 
     Raises:
       ClientError: If the file is absent or has no ``url=`` line.
@@ -344,13 +428,10 @@ def read_profile(name: str) -> Profile:
     )
 
 
+# A single malformed profile must not block bare ``trax profile`` (the listing), so
+# callers see the survivors and find out about the bad one on its next read.
 def _iter_profiles() -> Iterator[tuple[str, Profile]]:
-    """Yield ``(name, profile)`` for each saved profile, skipping unreadable ones.
-
-    A single malformed profile must not block bare ``trax profile`` (the
-    listing), so callers see the survivors and find out about the bad one on
-    its next read.
-    """
+    """Yield ``(name, profile)`` for each saved profile, skipping unreadable ones."""
     for path in (config_dir() / "rekursiv-ai" / "trax" / "profiles").iterdir():
         if not path.is_file():
             continue
@@ -360,14 +441,12 @@ def _iter_profiles() -> Iterator[tuple[str, Profile]]:
             continue
 
 
+# Writes a temp file in the same directory (chmod'd to ``mode`` before any content
+# lands), fsyncs it, then renames it over the destination. The rename is atomic on POSIX
+# within one filesystem, so an observer sees either the old file or the new one, never a
+# half-written one.
 def _write_atomic(path: Path, content: str, *, mode: int) -> None:
-    """Atomically write ``content`` to ``path`` with ``mode`` permissions.
-
-    Writes a temp file in the same directory (chmod'd to ``mode`` before any
-    content lands), fsyncs it, then renames it over the destination. The
-    rename is atomic on POSIX within one filesystem, so an observer sees
-    either the old file or the new one, never a half-written one.
-    """
+    """Atomically write ``content`` to ``path`` with ``mode`` permissions."""
     path.parent.mkdir(parents=True, exist_ok=True)
     # A unique temp file per write (not a fixed ``.{name}.tmp``): two concurrent
     # writers of the same profile must not share -- and clobber -- one temp file
@@ -402,14 +481,12 @@ def _write_atomic(path: Path, content: str, *, mode: int) -> None:
 _PROFILE_NAME_RE = re.compile(r"\A[A-Za-z0-9._-]+\Z")
 
 
+# A name is a single path segment, so anything outside ``[A-Za-z0-9._-]`` (path
+# separators, ``..`` traversal) is refused before it reaches ``config_dir() / "rekursiv-
+# ai" / "trax" / "profiles" / name``. ``.`` and ``..`` match the character class but are
+# still directory references, so they are rejected explicitly.
 def _validate_profile_name(name: str) -> None:
-    """Reject a profile name that could escape the profiles directory.
-
-    A name is a single path segment, so anything outside ``[A-Za-z0-9._-]``
-    (path separators, ``..`` traversal) is refused before it reaches
-    ``config_dir() / "rekursiv-ai" / "trax" / "profiles" / name``. ``.`` and ``..`` match the character class but
-    are still directory references, so they are rejected explicitly.
-    """
+    """Reject a profile name that could escape the profiles directory."""
     if name in {".", ".."} or not _PROFILE_NAME_RE.match(name):
         raise ClientError(f"invalid profile name {name!r}")
 
@@ -423,3 +500,12 @@ def _explicit_profile() -> str | None:
     except FileNotFoundError:
         return None
     return text or None
+
+
+# Imported at call time: ``cli`` imports this module, so a module-scope import would be
+# a cycle.
+def _invalidate_clients() -> None:
+    """Drop cached clients after a profile write."""
+    from trackinizer.trax.cli import close_clients  # noqa: PLC0415
+
+    close_clients()

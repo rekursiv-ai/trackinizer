@@ -631,7 +631,7 @@ class TestCursor:
 
 
 def _recording_warning(into: list[str]) -> Callable[..., None]:
-    """A ``logger.warning`` stand-in that captures the formatted message."""
+    """Return a ``logger.warning`` stand-in that captures the formatted message."""
 
     def warning(msg: str, *args: object, **kwargs: object) -> None:
         del kwargs  # ``exc_info`` and friends; only the text is asserted on.
@@ -912,10 +912,10 @@ class TestFollowTree:
         assert cursor.drain() == ["first"]
         assert not cursor.restarted
 
-        _ = target.write_text("")  # the truncate half of a replacement
+        _ = target.write_text("")  # the truncate half of a replacement.
         assert cursor.drain() == []
 
-        _ = target.write_text("rewritten\n")  # the write half
+        _ = target.write_text("rewritten\n")  # the write half.
         assert cursor.drain() == ["rewritten"]
         assert cursor.restarted, "the restart was lost before any line carried it"
 
@@ -1160,7 +1160,7 @@ class TestFsEventsAdapter:
 def _recording_watch(
     into: list[tuple[Path, ...]],
 ) -> Callable[..., AbstractAsyncContextManager[AsyncIterator[set[Path]]]]:
-    """A ``follow_dir`` backend that records its directories and yields nothing."""
+    """Return a ``follow_dir`` stub that records its directories, yielding nothing."""
 
     @asynccontextmanager
     async def watch(*directories: Path) -> AsyncGenerator[AsyncIterator[set[Path]]]:
@@ -1171,7 +1171,7 @@ def _recording_watch(
 
 
 async def _no_events() -> AsyncIterator[set[Path]]:
-    """An iterator that ends immediately, standing in for a quiet watch."""
+    """Return an iterator that ends immediately, standing in for a quiet watch."""
     for never in ():
         yield never
 
@@ -1183,29 +1183,15 @@ async def _open_and_close(directory: Path) -> None:
             _ = await anext(changed)
 
 
-def _run_fsevents(fire: Callable[[_StubObserver], object]) -> list[set[Path]]:
-    """Drive the FSEvents adapter with ``fire``; return what it emitted."""
-    emitted: list[set[Path]] = []
+class _StubEvent:
+    """The three attributes the adapter reads off a watchdog event."""
 
-    async def run() -> None:
-        observer = _StubObserver()
-        async with follow._fsevents_events(observer, (Path("/watched"),)) as changed:
-            collector = asyncio.create_task(_gather(changed, emitted, 1))
-            _ = fire(observer)
-            await asyncio.wait_for(collector, 5.0)
-
-    asyncio.run(run())
-    return emitted
-
-
-async def _gather(
-    changed: AsyncIterator[set[Path]], into: list[set[Path]], count: int
-) -> None:
-    """Collect ``count`` wakes from ``changed``."""
-    async for paths in changed:
-        into.append(paths)
-        if len(into) >= count:
-            return
+    def __init__(
+        self, *, src_path: str, dest_path: str = "", is_directory: bool = False
+    ) -> None:
+        self.src_path = src_path
+        self.dest_path = dest_path
+        self.is_directory = is_directory
 
 
 class _StubObserver:
@@ -1249,15 +1235,29 @@ class _StubObserver:
             handler.on_any_event(event)
 
 
-class _StubEvent:
-    """The three attributes the adapter reads off a watchdog event."""
+def _run_fsevents(fire: Callable[[_StubObserver], object]) -> list[set[Path]]:
+    """Drive the FSEvents adapter with ``fire``; return what it emitted."""
+    emitted: list[set[Path]] = []
 
-    def __init__(
-        self, *, src_path: str, dest_path: str = "", is_directory: bool = False
-    ) -> None:
-        self.src_path = src_path
-        self.dest_path = dest_path
-        self.is_directory = is_directory
+    async def run() -> None:
+        observer = _StubObserver()
+        async with follow._fsevents_events(observer, (Path("/watched"),)) as changed:
+            collector = asyncio.create_task(_gather(changed, emitted, 1))
+            _ = fire(observer)
+            await asyncio.wait_for(collector, 5.0)
+
+    asyncio.run(run())
+    return emitted
+
+
+async def _gather(
+    changed: AsyncIterator[set[Path]], into: list[set[Path]], count: int
+) -> None:
+    """Collect ``count`` wakes from ``changed``."""
+    async for paths in changed:
+        into.append(paths)
+        if len(into) >= count:
+            return
 
 
 async def _await_wake(woken: AsyncIterator[set[Path]], timeout_sec: float) -> set[Path]:

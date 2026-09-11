@@ -75,11 +75,19 @@ class RowFilter(Protocol):
     """
 
     @property
-    def field(self) -> str: ...
+    def field(self) -> str:
+        """Field."""
+        ...
+
     @property
-    def op(self) -> FilterOp: ...
+    def op(self) -> FilterOp:
+        """Op."""
+        ...
+
     @property
-    def value(self) -> str: ...
+    def value(self) -> str:
+        """Value."""
+        ...
 
 
 class _Row(Protocol):
@@ -133,6 +141,9 @@ def reject_inadmissible(filt: RowFilter) -> None:
     ``column_shapes`` table rather than re-deriving lowerability from a
     declared ``sql_type``, which the alias ``config`` and the spelling
     ``"jsonb"`` both defeat.
+
+    Args:
+      filt: Filt.
 
     Raises:
       ValidationError: The filter cannot be evaluated here faithfully.
@@ -198,20 +209,6 @@ def reject_inadmissible(filt: RowFilter) -> None:
         )
 
 
-def _overflows_float(parsed: Decimal) -> bool:
-    """Whether ``parsed`` is a ``numeric`` no ``float8`` can represent.
-
-    Both ends: a magnitude past the ceiling becomes ``inf`` and one past the
-    floor becomes ``0.0``, and Postgres raises 22003 for either rather than
-    rounding. A non-finite operand is exempt -- ``'inf'::float8`` is
-    representable, so both engines answer it.
-    """
-    if not parsed.is_finite():
-        return False
-    rendered = float(parsed)
-    return not math.isfinite(rendered) or (rendered == 0.0 and parsed != 0)
-
-
 def match_filter(row: _Row, filt: RowFilter) -> bool:
     """Return whether ``row`` satisfies ``filt``.
 
@@ -229,6 +226,14 @@ def match_filter(row: _Row, filt: RowFilter) -> bool:
     -- otherwise the string fallback in :func:`_matches_order` would make
     ``"None" > "5"`` true (``'N' > '5'`` in ASCII). ``isnull`` / ``notnull``
     test presence directly and ignore ``filt.value``.
+
+    Args:
+      row: Row.
+      filt: Filt.
+
+    Returns:
+      result: The bool.
+
     """
     reject_inadmissible(filt)
     if filt.op in ("isnull", "notnull"):
@@ -240,13 +245,11 @@ def match_filter(row: _Row, filt: RowFilter) -> bool:
     return _matches_affirmative(row, filt.op, filt)
 
 
+# A NULL value is absent and satisfies no affirmative predicate, so this returns
+# ``False`` for it across the board; the negated ops in :func:`match_filter` invert that
+# into ``True``.
 def _matches_affirmative(row: _Row, op: FilterOp, filt: RowFilter) -> bool:
-    """Evaluate one *affirmative* op (never ``ne`` / ``nre``).
-
-    A NULL value is absent and satisfies no affirmative predicate, so this
-    returns ``False`` for it across the board; the negated ops in
-    :func:`match_filter` invert that into ``True``.
-    """
+    """Evaluate one *affirmative* op (never ``ne`` / ``nre``)."""
     value = row.get(canonical_filter_field(filt.field))
     if value is None:
         return False
@@ -257,20 +260,12 @@ def _matches_affirmative(row: _Row, op: FilterOp, filt: RowFilter) -> bool:
     return _matches_order(value, op, filt.value)
 
 
+# The wire type gates on the pattern, which is all it can see; the other half of the
+# divergence needs the ROW. Live PG16 says ``'İ' ~ '(?i)i'`` is FALSE where Python says
+# true, with an ASCII pattern -- the two fold Unicode differently and both ANSWER, so
+# nothing downstream catches it.
 def _reject_non_ascii_fold(value: object, pattern: str) -> None:
-    """Refuse a case-insensitive match against a non-ASCII value.
-
-    The wire type gates on the pattern, which is all it can see; the other
-    half of the divergence needs the ROW. Live PG16 says
-    ``'\u0130' ~ '(?i)i'`` is FALSE where Python says true, with an ASCII
-    pattern -- the two fold Unicode differently and both ANSWER, so nothing
-    downstream catches it.
-
-    Raises:
-      ValidationError: The value carries non-ASCII text and the pattern folds
-        case.
-
-    """
+    """Refuse a case-insensitive match against a non-ASCII value."""
     if not folds_case(pattern):
         return
     for item in _candidate_items(value):
@@ -283,15 +278,13 @@ def _reject_non_ascii_fold(value: object, pattern: str) -> None:
             )
 
 
+# The server lowers ``re`` / ``nre`` into Postgres' ``~`` operator, so this predicate --
+# which the CLI's test fake runs to mirror route semantics -- must read the pattern the
+# same way or the two disagree on real input. Postgres uses POSIX ARE; the differences
+# are translated by :func:`posix_pattern` and refused by
+# :func:`filters.validate_clause`.
 def _matches_regex(value: object, pattern: str) -> bool:
-    """Search each candidate item, in the dialect the STORE evaluates.
-
-    The server lowers ``re`` / ``nre`` into Postgres' ``~`` operator, so this
-    predicate -- which the CLI's test fake runs to mirror route semantics --
-    must read the pattern the same way or the two disagree on real input.
-    Postgres uses POSIX ARE; the differences are translated by
-    :func:`posix_pattern` and refused by :func:`filters.validate_clause`.
-    """
+    """Search each candidate item, in the dialect the STORE evaluates."""
     _reject_non_ascii_fold(value, pattern)
     compiled = _compiled(pattern)
     return any(
@@ -302,20 +295,17 @@ def _matches_regex(value: object, pattern: str) -> bool:
 # BOUNDED because the key is a caller's operand, and sized above the route's
 # per-request filter cap so one request cannot evict its own entries -- which
 # is how ``re``'s own 512-entry cache fails here.
+# ``match_filter`` runs per ROW, so the same operand is otherwise recompiled for every
+# row of a page: measured with 600 distinct operands over 200 rows, every ``re``-cache
+# lookup missed and evaluation cost 9.34us against 1.00us here.
+#
+# The warning suppression is not redundant with the validator's: ``[[]`` is a valid
+# pattern Python only warns about, and under this repo's ``filterwarnings = ["error"]``
+# that warning is an exception. Relying on the validator having warmed ``re``'s cache
+# first would only hide it.
 @lru_cache(maxsize=2 * MAX_LIST_LIMIT)
 def _compiled(pattern: str) -> re.Pattern[str]:
-    """Translate and compile ``pattern`` once per distinct operand.
-
-    ``match_filter`` runs per ROW, so the same operand is otherwise recompiled
-    for every row of a page: measured with 600 distinct operands over 200
-    rows, every ``re``-cache lookup missed and evaluation cost 9.34us against
-    1.00us here.
-
-    The warning suppression is not redundant with the validator's: ``[[]`` is
-    a valid pattern Python only warns about, and under this repo's
-    ``filterwarnings = ["error"]`` that warning is an exception. Relying on
-    the validator having warmed ``re``'s cache first would only hide it.
-    """
+    """Translate and compile ``pattern`` once per distinct operand."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
         return re.compile(posix_pattern(pattern))
@@ -325,13 +315,11 @@ def _matches_eq(value: object, expected: str) -> bool:
     return any(str(item) == expected for item in _candidate_items(value))
 
 
+# A scalar stands alone. A flat list (``labels``, ``subscribers``, ``codechanges``)
+# exposes every element, so ``label is <x>`` matches any element rather than the whole-
+# list repr.
 def _candidate_items(value: object) -> tuple[object, ...]:
-    """Yield the comparable items from a single row value.
-
-    A scalar stands alone. A flat list (``labels``, ``subscribers``,
-    ``codechanges``) exposes every element, so ``label is <x>`` matches any
-    element rather than the whole-list repr.
-    """
+    """Yield the comparable items from a single row value."""
     if value is None:
         return ()
     if isinstance(value, str) or not isinstance(value, Sequence):
@@ -339,21 +327,18 @@ def _candidate_items(value: object) -> tuple[object, ...]:
     return tuple(value)
 
 
+# Which arithmetic is not a detail. Postgres resolves ``col < $1::numeric`` by the
+# COLUMN's type: an ``integer`` or ``numeric`` column compares as ``numeric`` and keeps
+# every digit, while a ``double precision`` column casts the operand DOWN to float8 and
+# loses them -- live PG16 says ``1::int < '1.00000000000000001'::numeric`` is TRUE and
+# ``1::float8 < '1.00000000000000001'::numeric`` is FALSE. Comparing everything as
+# ``float`` reproduces only the second.
+#
+# The row value arrives typed (asyncpg hands back ``int`` for INTEGER, ``Decimal`` for
+# NUMERIC, ``float`` for DOUBLE PRECISION), so its type picks the arithmetic without
+# anything here having to know the schema.
 def _matches_order(value: object, op: str, expected: str) -> bool:
-    """Compare in the arithmetic the row's own SQL type selects.
-
-    Which arithmetic is not a detail. Postgres resolves ``col < $1::numeric``
-    by the COLUMN's type: an ``integer`` or ``numeric`` column compares as
-    ``numeric`` and keeps every digit, while a ``double precision`` column
-    casts the operand DOWN to float8 and loses them -- live PG16 says
-    ``1::int < '1.00000000000000001'::numeric`` is TRUE and
-    ``1::float8 < '1.00000000000000001'::numeric`` is FALSE. Comparing
-    everything as ``float`` reproduces only the second.
-
-    The row value arrives typed (asyncpg hands back ``int`` for INTEGER,
-    ``Decimal`` for NUMERIC, ``float`` for DOUBLE PRECISION), so its type
-    picks the arithmetic without anything here having to know the schema.
-    """
+    """Compare in the arithmetic the row's own SQL type selects."""
     parsed = as_numeric(expected)
     if parsed is None:
         return _ordered(str(value), op, str(expected))
@@ -364,14 +349,12 @@ def _matches_order(value: object, op: str, expected: str) -> bool:
     return _ordered(str(value), op, str(expected))
 
 
+# An assert rather than a trailing ``return left >= right``: that fallthrough would make
+# an unrecognized op MEAN ``ge`` and return a boolean the caller cannot tell from a real
+# answer. ``reject_inadmissible`` refuses an unknown op upstream, so reaching here with
+# one is a broken invariant.
 def _ordered[T: (float, Decimal, str)](left: T, op: str, right: T) -> bool:
-    """Apply one order op, asserting the op is one.
-
-    An assert rather than a trailing ``return left >= right``: that
-    fallthrough would make an unrecognized op MEAN ``ge`` and return a boolean
-    the caller cannot tell from a real answer. ``reject_inadmissible`` refuses
-    an unknown op upstream, so reaching here with one is a broken invariant.
-    """
+    """Apply one order op, asserting the op is one."""
     if op == "lt":
         return left < right
     if op == "le":
@@ -380,3 +363,14 @@ def _ordered[T: (float, Decimal, str)](left: T, op: str, right: T) -> bool:
         return left > right
     assert op == "ge", f"unreachable order op {op!r}"
     return left >= right
+
+
+# Both ends: a magnitude past the ceiling becomes ``inf`` and one past the floor becomes
+# ``0.0``, and Postgres raises 22003 for either rather than rounding. A non-finite
+# operand is exempt -- ``'inf'::float8`` is representable, so both engines answer it.
+def _overflows_float(parsed: Decimal) -> bool:
+    """Whether ``parsed`` is a ``numeric`` no ``float8`` can represent."""
+    if not parsed.is_finite():
+        return False
+    rendered = float(parsed)
+    return not math.isfinite(rendered) or (rendered == 0.0 and parsed != 0)

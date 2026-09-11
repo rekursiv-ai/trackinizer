@@ -42,7 +42,7 @@ from trackinizer.wire.wire_metrics_query import (
 
 
 def _batch_items(client: FakeClient) -> list[tuple[str, dict[str, object]]]:
-    """The (kind, body) items from the single ``submit_batch`` call."""
+    """Return the (kind, body) items from the single ``submit_batch`` call."""
     calls = [c for c in client.calls if c[0] == "submit_batch"]
     assert len(calls) == 1, f"expected one submit_batch, got {len(calls)}"
     items = cast(list[tuple[str, dict[str, object]]], calls[0][1][0])
@@ -50,7 +50,7 @@ def _batch_items(client: FakeClient) -> list[tuple[str, dict[str, object]]]:
 
 
 def _batch_edges(client: FakeClient) -> list[dict[str, object]]:
-    """The edge payloads from the single ``submit_batch`` call."""
+    """Return the edge payloads from the single ``submit_batch`` call."""
     calls = [c for c in client.calls if c[0] == "submit_batch"]
     assert len(calls) == 1, f"expected one submit_batch, got {len(calls)}"
     edges = cast(list[dict[str, object]], calls[0][2]["edges"])
@@ -87,7 +87,7 @@ def test_id_verb_shows_row_kind_agnostically(client: FakeClient) -> None:
     assert show_calls, "trax id <uuid> must fetch the row"
     ref = cast(UuidRef, show_calls[0][1][0])
     assert str(ref.uuid) == target
-    assert ref.expected_kind is None  # kind-agnostic, no guard
+    assert ref.expected_kind is None  # kind-agnostic, no guard.
 
 
 def test_id_verb_rejects_non_uuid(client: FakeClient) -> None:
@@ -533,7 +533,8 @@ def test_kind_verb_svo_edge_add_forward(
     paper_id = uuid.uuid4()
     belief_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         assert isinstance(ref, SeqRef)
         if ref.kind == "Paper":
             return "Paper", paper_id
@@ -560,7 +561,8 @@ def test_kind_verb_svo_edge_reverse_alias_swaps_endpoints(
     paper_id = uuid.uuid4()
     belief_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         assert isinstance(ref, SeqRef)
         if ref.kind == "Paper":
             return "Paper", paper_id
@@ -584,18 +586,20 @@ def test_kind_verb_svo_edge_reverse_alias_swaps_endpoints(
 def test_favors_both_anchorings_store_artifact_to_belief(
     argv: list[str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Both ``paper P favors belief B`` and ``belief B favored_by paper P``
-    store the SAME edge: from=Paper, to=Belief.
+    """Both ``paper P favors belief B`` and ``belief B favored_by paper P`` store.
 
-    A belief is favored BY evidence, so the active reading is ``paper favors
-    belief`` -- the Paper (evidence) is the subject/from-side. The CLI keeps
-    both anchorings stable: the leading-subject form and the ``*_by`` reverse
-    form must collapse to one stored edge with the Artifact on the from-side.
+    The SAME edge: from=Paper, to=Belief.
+
+        A belief is favored BY evidence, so the active reading is ``paper favors
+        belief`` -- the Paper (evidence) is the subject/from-side. The CLI keeps
+        both anchorings stable: the leading-subject form and the ``*_by`` reverse
+        form must collapse to one stored edge with the Artifact on the from-side.
     """
     paper_id = uuid.uuid4()
     belief_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         assert isinstance(ref, SeqRef)
         if ref.kind == "Paper":
             return "Paper", paper_id
@@ -612,13 +616,15 @@ def test_favors_both_anchorings_store_artifact_to_belief(
 def test_disfavors_both_anchorings_store_artifact_to_belief(
     client: FakeClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``paper P disfavors belief B`` and ``belief B disfavored_by paper P``
-    both store from=Paper, to=Belief under the ``disfavors`` kind.
+    """``paper P disfavors belief B`` and ``belief B disfavored_by paper P`` both.
+
+    Store from=Paper, to=Belief under the ``disfavors`` kind.
     """
     paper_id = uuid.uuid4()
     belief_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         assert isinstance(ref, SeqRef)
         if ref.kind == "Paper":
             return "Paper", paper_id
@@ -970,7 +976,8 @@ def test_create_with_ref_list_resolves_typed_ref(
     """
     cc_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         if isinstance(ref, SeqRef) and ref.kind == "CodeChange":
             return "CodeChange", cc_id
         return "Issue", client.target_id
@@ -1195,7 +1202,8 @@ def test_kind_create_resolves_edge_target_before_submit(
     client: FakeClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         if isinstance(ref, SeqRef):
             if ref.kind == "Belief" and ref.seq == 404:
                 raise StopIteration
@@ -1224,11 +1232,12 @@ def test_create_inline_cost_lands_on_the_inline_node_not_root(
     websearch_id = uuid.uuid4()
 
     def _batch(
-        _self: FakeClient,
+        self: FakeClient,
         items: object,
         *,
         edges: object = (),
     ) -> list[uuid.UUID]:
+        del self
         del edges
         # Deterministic ids: item 0 = root belief, item 1 = inline websearch.
         return [root_id, websearch_id][: len(cast(list[object], items))]
@@ -1380,7 +1389,7 @@ def test_kind_create_format_ids_lists_inline_targets(
     out = capsys.readouterr().out
     lines = out.splitlines()
     assert lines[0] == str(client.target_id)
-    assert len(lines) == 2  # root + one inline target
+    assert len(lines) == 2  # root + one inline target.
     assert "created:" not in out
     assert "added:" not in out
 
@@ -1497,7 +1506,8 @@ def test_row_local_inline_create_builds_nested_subtree(
     """
     belief_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         if isinstance(ref, SeqRef) and ref.kind == "Belief":
             return "Belief", belief_id
         return "Belief", belief_id
@@ -1563,7 +1573,8 @@ def test_blocks_alias_is_reverse_of_requires(
     blocker_id = uuid.uuid4()
     blocked_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         assert isinstance(ref, SeqRef)
         if ref.seq == 9:
             return ref.kind, blocker_id
@@ -1625,7 +1636,8 @@ def test_set_codechanges_replace_sends_bare_uuid(
     """
     codechange_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         if isinstance(ref, SeqRef) and ref.kind == "CodeChange":
             return "CodeChange", codechange_id
         return "Experiment", client.target_id
@@ -1645,7 +1657,8 @@ def test_create_with_codechange_ref_list_sends_bare_uuid(
     """Creating an Experiment with `codechange to N` resolves to a bare UUID."""
     codechange_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         if isinstance(ref, SeqRef) and ref.kind == "CodeChange":
             return "CodeChange", codechange_id
         return "Experiment", client.target_id
@@ -1668,7 +1681,8 @@ def test_inline_create_resolves_ref_list_to_wire_shape(
     """
     codechange_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         if isinstance(ref, SeqRef) and ref.kind == "CodeChange":
             return "CodeChange", codechange_id
         return "Issue", client.target_id
@@ -1704,7 +1718,8 @@ def test_del_codechange_resolves_typed_ref(
     """`codechange del N` resolves the typed ref to a bare id (trax #419)."""
     cc_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         if isinstance(ref, SeqRef) and ref.kind == "CodeChange":
             return "CodeChange", cc_id
         return "Experiment", client.target_id
@@ -1731,7 +1746,8 @@ def test_del_edge_removes_edge(
     paper_id = uuid.uuid4()
     belief_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         assert isinstance(ref, SeqRef)
         if ref.kind == "Paper":
             return "Paper", paper_id
@@ -1972,8 +1988,9 @@ def test_create_file_value_missing_path_raises_client_error(client: FakeClient) 
 def test_render_tree_does_not_share_visited_across_roots(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """If two roots both reach the same descendant, both must render it
-    (with whatever depth is appropriate), not flag one as 'cycle'.
+    """If two roots both reach the same descendant, both must render it.
+
+    With whatever depth is appropriate), not flag one as 'cycle'.
     """
     root_a: dict[str, object] = {
         "id": "id-a",
@@ -2110,8 +2127,9 @@ def test_render_tree_does_not_blow_up_on_a_deep_diamond(
 
 
 def test_run_action_rejects_unknown_action_variant() -> None:
-    """``run_action`` must reject any unknown ``Action`` subtype rather than
-    silently dispatching to ``Kind.run_purge``.
+    """``run_action`` must reject any unknown ``Action`` subtype rather than.
+
+    Silently dispatching to ``Kind.run_purge``.
     """
 
     class _UnknownAction:
@@ -2214,7 +2232,8 @@ def test_bulk_apply_ref_list_add_resolves_typed_ref_per_row(
     ]
     cc_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         if isinstance(ref, SeqRef) and ref.kind == "CodeChange":
             return "CodeChange", cc_id
         return "Experiment", client.target_id
@@ -2245,7 +2264,8 @@ def test_set_ref_list_echoes_user_spelling(
 ) -> None:
     """`codechange to N` echoes the ref CLI form, not the resolved wire value."""
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         if isinstance(ref, SeqRef) and ref.kind == "CodeChange":
             return "CodeChange", uuid.uuid4()
         return "Experiment", client.target_id
@@ -2330,7 +2350,7 @@ def test_send_undelivered_when_no_match(
 ) -> None:
     def _send(actor: str, text: str, *, room: str | None = None) -> list[uuid.UUID]:
         del actor, text, room
-        return []  # no live session matched
+        return []  # no live session matched.
 
     monkeypatch.setattr(client, "send_message", _send)
     run(["send", "@ghost", "hi"], client)
@@ -2370,7 +2390,8 @@ def test_flat_inline_create_edge_uses_single_submit_batch(
     """
     issue_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         del ref
         return "Issue", issue_id
 
@@ -2400,7 +2421,8 @@ def test_paper_author_add_routes_to_client_add_author(
     """
     paper_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         del ref
         return "Paper", paper_id
 
@@ -2417,7 +2439,8 @@ def test_paper_author_del_routes_to_client_remove_author(
     """``paper N author del X`` dispatches to ``Client.remove_author``."""
     paper_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         del ref
         return "Paper", paper_id
 
@@ -2604,7 +2627,8 @@ def test_anchored_inline_subtree_emits_added_echo(
     """
     belief_id = uuid.uuid4()
 
-    def _resolve(_self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         del ref
         return "Belief", belief_id
 
@@ -2629,8 +2653,9 @@ def test_create_flatten_batches_existing_ref_resolution(
     """
 
     def _resolve_one(
-        _self: FakeClient, ref: Ref
+        self: FakeClient, ref: Ref
     ) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
         del ref
         return "Issue", uuid.uuid4()
 
@@ -2689,14 +2714,14 @@ def test_help_flag_after_positional_shows_help_page(
 
 
 def _metric_call(client: FakeClient, name: str) -> dict[str, object]:
-    """The kwargs of the single recorded ``name`` call (query/write/rank)."""
+    """Return the kwargs of the single recorded ``name`` call (query/write/rank)."""
     calls = [c for c in client.calls if c[0] == name]
     assert len(calls) == 1, f"expected one {name} call, got {calls}"
     return calls[0][2]
 
 
 def _exp_id(client: FakeClient) -> uuid.UUID:
-    """The id of the Experiment at seq 2 (``experiment 2``)."""
+    """Return the id of the Experiment at seq 2 (``experiment 2``)."""
     row = next(
         r for r in client.rows if r.get("kind") == "Experiment" and r.get("seq") == 2
     )
@@ -3006,7 +3031,7 @@ def test_metric_read_renders_points(
 def test_metric_read_empty_placeholder(
     client: FakeClient, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    run(["experiment", "2", "metric"], client)  # FakeClient returns []
+    run(["experiment", "2", "metric"], client)  # FakeClient returns [].
     assert "(no metrics)" in capsys.readouterr().out
 
 
@@ -3286,13 +3311,11 @@ def test_a_caught_exception_is_a_class_not_a_lazy_proxy(name: str) -> None:
     assert _declines(getattr(verbs, name)), f"{name} is a proxy, not a class"
 
 
+# The operation itself, because wrapt forwards ``__class__``: a proxy passes
+# ``isinstance``/``issubclass`` and only a real ``except`` tells the two apart, raising
+# ``TypeError`` rather than declining.
 def _declines(caught: type[BaseException]) -> bool:
-    """Whether ``caught`` works in an ``except`` and lets a stranger through.
-
-    The operation itself, because wrapt forwards ``__class__``: a proxy passes
-    ``isinstance``/``issubclass`` and only a real ``except`` tells the two
-    apart, raising ``TypeError`` rather than declining.
-    """
+    """Whether ``caught`` works in an ``except`` and lets a stranger through."""
     try:
         _ = int("not a number")
     except caught:
@@ -3327,8 +3350,9 @@ def test_the_lossy_flag_reaches_the_conversion(
     seen: list[bool] = []
 
     def _prepare(
-        _client: object, _session_id: object, _target: str, *, lossy: bool = False
+        client: object, session_id: object, target: str, *, lossy: bool = False
     ) -> object:
+        del client, session_id, target
         seen.append(lossy)
         raise NotResumableError("stop here; the flag is what this asserts")
 

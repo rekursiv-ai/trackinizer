@@ -169,3 +169,9 @@ def test_detail_order_key_uses_source_created_then_id() -> None:
         "ffffffff-ffff-ffff-ffff-ffffffffffff",
         "11111111-1111-1111-1111-111111111111",
     ]
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.main import test_main
+
+    test_main(__file__)

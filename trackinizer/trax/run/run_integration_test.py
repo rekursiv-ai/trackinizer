@@ -108,14 +108,11 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+# The engine is constructed *inside* the lifespan so it lives on uvicorn's own event
+# loop (PGlite holds one asyncpg connection bound to its loop). Auth is overridden to a
+# static writer principal because the capture ``Client`` sends no credentials.
 def _build_app(workdir: Path) -> FastAPI:
-    """An ASGI app whose lifespan owns a PGlite engine + bootstrapped store.
-
-    The engine is constructed *inside* the lifespan so it lives on uvicorn's
-    own event loop (PGlite holds one asyncpg connection bound to its loop).
-    Auth is overridden to a static writer principal because the capture
-    ``Client`` sends no credentials.
-    """
+    """Return an ASGI app whose lifespan owns a PGlite engine + bootstrapped store."""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -219,16 +216,13 @@ class _ServerThread:
             raise self._startup_error("uvicorn server did not start in time") from None
         return self
 
+    # ``__exit__`` does not run when ``__enter__`` raises, so the daemon uvicorn thread
+    # would otherwise keep booting past the failed setup -- stop it here. The returned
+    # error carries the lifespan's stashed cause via ``__cause__`` when one exists;
+    # absent that, no cause is attached so the default ``__context__`` chain is
+    # preserved (``raise ... from None`` would suppress it).
     def _startup_error(self, message: str) -> RuntimeError:
-        """Stop the server thread; return a ``RuntimeError`` chained to the cause.
-
-        ``__exit__`` does not run when ``__enter__`` raises, so the daemon
-        uvicorn thread would otherwise keep booting past the failed setup -- stop
-        it here. The returned error carries the lifespan's stashed cause via
-        ``__cause__`` when one exists; absent that, no cause is attached so the
-        default ``__context__`` chain is preserved (``raise ... from None`` would
-        suppress it).
-        """
+        """Stop the server thread; return a ``RuntimeError`` chained to the cause."""
         self._stop_thread()
         err = RuntimeError(message)
         cause = getattr(self._app.state, "startup_error", None)
@@ -267,6 +261,7 @@ def test_server_thread_stops_thread_on_startup_timeout(
 
     class _FakeServer:
         started = False
+
         should_exit = False
 
     fake = _FakeServer()
@@ -299,7 +294,7 @@ class _StateApp:
 
 @pytest.fixture(scope="module")
 def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
-    """A live trackinizer server on PGlite; yields its base URL.
+    """Return a live trackinizer server on PGlite; yields its base URL.
 
     Module-scoped: PGlite's cold start is ~2.5s while bootstrap is ~0.2s, so a
     fresh engine per test dominated the suite's wall time. Every test asserts on
@@ -313,16 +308,14 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
         yield srv.base_url
 
 
+# With a module-scoped server the DB accumulates sibling tests' sessions, so ``cli``
+# scopes the lookup to the rows a given test minted (its CLI name is unique per test:
+# ``fakeline`` / ``claude`` / ``codex``), keeping "latest" unambiguous instead of
+# picking up another test's session.
 def _latest_session_row(
     base_url: str, *, cli: str | None = None
 ) -> dict[str, object] | None:
-    """The most recently created AgentSession inquiry row, or ``None``.
-
-    With a module-scoped server the DB accumulates sibling tests' sessions, so
-    ``cli`` scopes the lookup to the rows a given test minted (its CLI name is
-    unique per test: ``fakeline`` / ``claude`` / ``codex``), keeping "latest"
-    unambiguous instead of picking up another test's session.
-    """
+    """Return the most recently created AgentSession inquiry row, or ``None``."""
     with httpx2.Client(base_url=base_url, timeout=30.0) as http:
         # ``kind`` is the PascalCase InquiryKind Literal, not the URL token. Pull
         # a small page (not limit=1) so the client-side ``cli`` filter has rows
@@ -337,20 +330,18 @@ def _latest_session_row(
         return rows[0] if rows else None
 
 
+# The capture mints exactly one AgentSession per run; this finds it via the inquiry list
+# (scoped to ``cli`` when given, so a sibling test's session is not picked up), then
+# pages EVERY part -- a session spans several files (claude splits on compaction, codex
+# forks) and each is stored separately, so reading part 0 alone would silently miss a
+# compacted run's later turns.
+#
+# Returns the raw record bodies so the caller asserts on ``kind`` / ``text`` without a
+# domain import.
 def _latest_session_records(
     base_url: str, *, cli: str | None = None
 ) -> list[dict[str, object]]:
-    """Read the most recently created session's IR records back over HTTP.
-
-    The capture mints exactly one AgentSession per run; this finds it via the
-    inquiry list (scoped to ``cli`` when given, so a sibling test's session is
-    not picked up), then pages EVERY part -- a session spans several files
-    (claude splits on compaction, codex forks) and each is stored separately,
-    so reading part 0 alone would silently miss a compacted run's later turns.
-
-    Returns the raw record bodies so the caller asserts on ``kind`` / ``text``
-    without a domain import.
-    """
+    """Read the most recently created session's IR records back over HTTP."""
     row = _latest_session_row(base_url, cli=cli)
     if row is None:
         return []
@@ -377,16 +368,13 @@ def _latest_session_records(
     return found
 
 
+# ``run`` blocks on the wrapped CLI and spawns the real binary; the timeout guards
+# against a hung or credential-prompting CLI so the suite never wedges. Returns the
+# wrapped CLI's exit status (``run``'s return value), so a caller can distinguish a
+# clean turn from a CLI that bailed -- an unauthenticated CLI exits non-zero before any
+# model turn, which the caller treats as a skip rather than a spurious red.
 def _run_capture(cli_name: str, cli_args: tuple[str, ...], server_url: str) -> int:
-    """Drive ``trax run <cli> --sync`` in a thread, bounded by a timeout.
-
-    ``run`` blocks on the wrapped CLI and spawns the real binary; the timeout
-    guards against a hung or credential-prompting CLI so the suite never
-    wedges. Returns the wrapped CLI's exit status (``run``'s return value), so
-    a caller can distinguish a clean turn from a CLI that bailed -- an
-    unauthenticated CLI exits non-zero before any model turn, which the caller
-    treats as a skip rather than a spurious red.
-    """
+    """Drive ``trax run <cli> --sync`` in a thread, bounded by a timeout."""
     config = RunConfig(
         cli_name=cli_name,
         cli_args=cli_args,
@@ -420,7 +408,7 @@ def _run_capture(cli_name: str, cli_args: tuple[str, ...], server_url: str) -> i
 
 
 def _assert_transcript_synced(base_url: str, *, cli: str) -> None:
-    """The run produced a non-empty, typed transcript with a model turn."""
+    """Return the run produced a non-empty, typed transcript with a model turn."""
     records = _latest_session_records(base_url, cli=cli)
     assert records, "no records synced to the server"
     kinds = {str(r["kind"]) for r in records}
@@ -489,20 +477,18 @@ def test_trax_run_codex_syncs_session(server: str) -> None:
     _assert_transcript_synced(server, cli="codex")
 
 
+# A logged-in CLI replies and exits 0, so its synced transcript carries an
+# ``AssistantMessage``. An unauthenticated CLI exits non-zero before any turn (codex:
+# revoked token; claude: ``please log out``), syncing only the launch ``SystemMessage``
+# and the prompt ``UserMessage``. That is an environment gap, not a capture regression,
+# so it skips -- mirroring ``_drive_real_cli_injection``'s auth-failure skip on the
+# injection tests.
+#
+# Gated on *both* a non-zero exit *and* a missing model turn so a real capture
+# regression (CLI replied, exit 0, but ``AssistantMessage`` never reached the DB) still
+# fails loudly instead of being skipped away.
 def _skip_if_cli_unauthenticated(cli: str, rc: int, base_url: str) -> None:
-    """Skip when the CLI bailed before any model turn (the auth-failure shape).
-
-    A logged-in CLI replies and exits 0, so its synced transcript carries an
-    ``AssistantMessage``. An unauthenticated CLI exits non-zero before any turn
-    (codex: revoked token; claude: ``please log out``), syncing only the
-    launch ``SystemMessage`` and the prompt ``UserMessage``. That is an
-    environment gap, not a capture regression, so it skips -- mirroring
-    ``_drive_real_cli_injection``'s auth-failure skip on the injection tests.
-
-    Gated on *both* a non-zero exit *and* a missing model turn so a real
-    capture regression (CLI replied, exit 0, but ``AssistantMessage`` never
-    reached the DB) still fails loudly instead of being skipped away.
-    """
+    """Skip when the CLI bailed before any model turn (the auth-failure shape)."""
     if rc == 0:
         return
     kinds = {str(r["kind"]) for r in _latest_session_records(base_url, cli=cli)}
@@ -528,7 +514,9 @@ class _LineAdapter:
     """
 
     name: str = "fakeline"
+
     cli_binary: str = "fakeline"
+
     whole_file: bool = False
 
     def __init__(self, root: Path) -> None:
@@ -665,7 +653,7 @@ def test_inbound_injection_reaches_child_end_to_end(server: str) -> None:
     relay_thread.start()
     poller.start()
     try:
-        time.sleep(0.5)  # let the child start
+        time.sleep(0.5)  # let the child start.
         queued = client.enqueue_inbound(session_id, "run it")
         assert queued >= 1
         # The poller should drain it and the relay type it; the child echoes.
@@ -701,10 +689,26 @@ class _InjectionResult(enum.Enum):
     """
 
     TOKEN_SEEN = enum.auto()
+
     UNAUTHENTICATED = enum.auto()
+
     INCONCLUSIVE = enum.auto()
 
 
+# Drives a real interactive CLI under the relay, captures the master output via a
+# redirected ``sys.stdout`` pipe, opens a session, enqueues ``prompt`` over HTTP, and
+# lets the real poller drain + inject it. Returns which of the three
+# :class:`_InjectionResult` outcomes the rendered output showed: ``TOKEN_SEEN`` (model
+# replied with ``token``), ``UNAUTHENTICATED`` (an auth banner appeared, so the model
+# can never reply), or ``INCONCLUSIVE`` (the deadline passed with neither -- a slow or
+# unavailable model the caller skips on, since it is not distinguishable from a wiring
+# miss).
+#
+# ``token`` is the model's *answer*, which must NOT occur in ``prompt``: the TUI echoes
+# the injected prompt into its composer, so a token lifted from the prompt text matches
+# that echo at ~``_ENTER_DELAY_SEC`` and reports ``TOKEN_SEEN`` whether or not a model
+# turn ever happened (a false pass). Keeping the answer out of the prompt makes the
+# token's appearance prove a real reply, not the echo.
 def _drive_real_cli_injection(
     cli: str,
     argv: list[str],
@@ -714,24 +718,7 @@ def _drive_real_cli_injection(
     *,
     deadline_sec: float = 45.0,
 ) -> _InjectionResult:
-    """Full chain: HTTP enqueue -> poller -> relay -> real CLI; classify the run.
-
-    Drives a real interactive CLI under the relay, captures the master output
-    via a redirected ``sys.stdout`` pipe, opens a session, enqueues ``prompt``
-    over HTTP, and lets the real poller drain + inject it. Returns which of the
-    three :class:`_InjectionResult` outcomes the rendered output showed:
-    ``TOKEN_SEEN`` (model replied with ``token``), ``UNAUTHENTICATED`` (an auth
-    banner appeared, so the model can never reply), or ``INCONCLUSIVE`` (the
-    deadline passed with neither -- a slow or unavailable model the caller
-    skips on, since it is not distinguishable from a wiring miss).
-
-    ``token`` is the model's *answer*, which must NOT occur in ``prompt``: the
-    TUI echoes the injected prompt into its composer, so a token lifted from
-    the prompt text matches that echo at ~``_ENTER_DELAY_SEC`` and reports
-    ``TOKEN_SEEN`` whether or not a model turn ever happened (a false pass).
-    Keeping the answer out of the prompt makes the token's appearance prove a
-    real reply, not the echo.
-    """
+    """Full chain: HTTP enqueue -> poller -> relay -> real CLI; classify the run."""
     assert token.lower() not in prompt.lower(), (
         "token must not appear in the prompt, or the TUI's prompt echo would "
         "match it before any model turn (a false TOKEN_SEEN)"
@@ -910,15 +897,13 @@ def test_injection_closes_resources_on_every_exit(
             worker.join(timeout=2.0)
 
 
+# ``TOKEN_SEEN`` passes -- it positively proves the injected message reached a live
+# model. ``UNAUTHENTICATED`` and ``INCONCLUSIVE`` both skip: an auth gap and a slow-or-
+# unavailable model are environment conditions, not wiring regressions, and a real-CLI
+# deadline elapse cannot be told apart from a model that simply did not finish a turn in
+# time.
 def _assert_injection_or_skip(cli: str, result: _InjectionResult) -> None:
-    """Translate an injection outcome into a pass or skip.
-
-    ``TOKEN_SEEN`` passes -- it positively proves the injected message reached a
-    live model. ``UNAUTHENTICATED`` and ``INCONCLUSIVE`` both skip: an auth gap
-    and a slow-or-unavailable model are environment conditions, not wiring
-    regressions, and a real-CLI deadline elapse cannot be told apart from a
-    model that simply did not finish a turn in time.
-    """
+    """Translate an injection outcome into a pass or skip."""
     if result is _InjectionResult.TOKEN_SEEN:
         return
     if result is _InjectionResult.UNAUTHENTICATED:

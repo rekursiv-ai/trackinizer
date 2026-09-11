@@ -94,12 +94,12 @@ def make_conn() -> AsyncMock:
     return conn
 
 
-def set_field_row(conn: AsyncMock, row: Any | None) -> None:
+def set_field_row(conn: AsyncMock, row: object | None) -> None:
     """Set the default field-read row returned by ``conn.fetchrow``."""
     cast(list[Any], conn.field_default)[0] = row
 
 
-def queue_field_rows(conn: AsyncMock, *rows: Any) -> None:
+def queue_field_rows(conn: AsyncMock, *rows: object) -> None:
     """Queue field-read rows; ``conn.fetchrow`` pops one per call."""
     cast(list[Any], conn.field_queue).extend(rows)
 
@@ -127,7 +127,7 @@ class FakeEngine:
         del exc
         self.exited = True
 
-    def acquire(self) -> Any:
+    def acquire(self) -> object:
         # Model the real single-connection substrate: a nested acquire while
         # one is already held would deadlock on PGlite, so it must raise here
         # too -- otherwise reentrancy bugs pass under the mock and only blow

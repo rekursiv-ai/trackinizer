@@ -52,14 +52,14 @@ _TESTDATA: Final = Path(claude.__file__).resolve().parent / "testdata"
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """A bootstrapped store on the shared integration database."""
+    """Return a bootstrapped store on the shared integration database."""
     built = Store(integ_engine, embed=StubEmbedder())
     await built.bootstrap()
     yield built
 
 
 async def _session_row(store: Store) -> UUID:
-    """An AgentSession row the records can hang off."""
+    """Return an AgentSession row the records can hang off."""
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
@@ -72,17 +72,15 @@ async def _session_row(store: Store) -> UUID:
 
 
 def _adapter_for(name: str) -> _Adapter:
-    """The IR module whose dialect ``name`` is in."""
+    """Return the IR module whose dialect ``name`` is in."""
     return codex if name.startswith("codex") else claude
 
 
+# Feeds the file one line at a time through the same ``Tail`` the runner uses, so what
+# reaches the database is what a live ``trax run`` would have stored -- not a whole-file
+# drain the tailer never performs.
 async def _ingest(store: Store, path: Path, session_id: UUID) -> int:
-    """Drive the real capture path over ``path``; return the part it landed in.
-
-    Feeds the file one line at a time through the same ``Tail`` the runner
-    uses, so what reaches the database is what a live ``trax run`` would have
-    stored -- not a whole-file drain the tailer never performs.
-    """
+    """Drive the real capture path over ``path``; return the part it landed in."""
     reader = Tail(_adapter_for(path.name).normalize)
     records: list[TraxRecord] = []
     with path.open(encoding="utf-8") as handle:
@@ -116,13 +114,11 @@ async def _ingest(store: Store, path: Path, session_id: UUID) -> int:
     return part
 
 
+# Ciphertext is spliced at materialization, which is the whole reason it can live in a
+# separate table: the record stores ``encrypted=""`` and the bytes rejoin on
+# ``(session_id, part, idx)`` exactly here.
 async def _materialize(store: Store, session_id: UUID, part: int) -> str:
-    """Read one part back and write it out in its native format.
-
-    Ciphertext is spliced at materialization, which is the whole reason it can
-    live in a separate table: the record stores ``encrypted=""`` and the bytes
-    rejoin on ``(session_id, part, idx)`` exactly here.
-    """
+    """Read one part back and write it out in its native format."""
     manifest = next(
         m for m in await store.read_session_manifests(session_id) if m.part == part
     )
@@ -299,7 +295,7 @@ async def test_the_manifest_metadata_survives_storage(store: Store) -> None:
     assert manifest.metadata == expected
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

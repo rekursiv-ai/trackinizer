@@ -815,7 +815,7 @@ def test_list_endpoint_never_500s_on_bad_params(
             app.state.store = prev_store
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

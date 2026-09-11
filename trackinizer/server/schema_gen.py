@@ -23,22 +23,6 @@ from trackinizer.types.edges import Edge, kind_group_members
 from trackinizer.types.inquiries import Artifact, Inquiry
 
 
-def _bare_field(col: str, spec: ColumnSpec) -> str:
-    """Recover the bare field name from a storage column name.
-
-    Inverse of :func:`storage_name`: strips the ``<kind>_`` prefix a
-    kind-specific column carries, so a ``sql_check`` authored against
-    the bare field (``source_kind IN (...)``) can be rewritten to the
-    storage column (``paper_source_kind``).
-    """
-    owners = spec.applies_to_inquiry_kinds
-    if owners is None or len(owners) != 1:
-        return col
-    (owner,) = owners
-    prefix = f"{owner.lower()}_"
-    return col.removeprefix(prefix)
-
-
 def column_check_body(col: str, spec: ColumnSpec) -> str:
     """Compose the full ``CHECK`` predicate body for one column.
 
@@ -56,6 +40,14 @@ def column_check_body(col: str, spec: ColumnSpec) -> str:
     ``"source_kind IN (...)"``); when the storage ``col`` carries a kind
     prefix, the bare token is rewritten to ``col`` by word boundary so
     unrelated tokens stay intact.
+
+    Args:
+      col: Col.
+      spec: Spec.
+
+    Returns:
+      result: The str.
+
     """
     parts: list[str] = []
     if spec.sql_check:
@@ -125,9 +117,6 @@ _EDGE_METADATA_COLUMN_ORDER: Final[tuple[str, ...]] = (
     "labels",
 )
 
-_EDGE_METADATA_SPECS: dict[str, ColumnSpec] = column_specs(Edge)
-
-
 INQUIRY_KIND_ORDER: Final[tuple[Inquiry.InquiryKind, ...]] = (
     "Issue",
     "Artifact",
@@ -149,13 +138,21 @@ updating the order is caught early.
 
 
 def substitute_schema_placeholders(body: str) -> str:
-    """Replace generated-block placeholders in a migration body with the
-    matching SQL generated from :data:`COLUMN_SPECS` metadata.
+    """Replace generated-block placeholders in a migration body with the matching.
 
-    Migration files keep a single ``{name}`` token per generated section
-    so the metadata-driven blocks live exactly once in Python. New
-    placeholders are added here when the schema grows new generated
-    sections.
+    SQL generated from :data:`COLUMN_SPECS` metadata.
+
+        Migration files keep a single ``{name}`` token per generated section
+        so the metadata-driven blocks live exactly once in Python. New
+        placeholders are added here when the schema grows new generated
+        sections.
+
+    Args:
+      body: Body.
+
+    Returns:
+      result: The str.
+
     """
     return (
         body.replace("{change_log_mirror}", generate_change_log_mirror())
@@ -190,10 +187,6 @@ def substitute_schema_placeholders(body: str) -> str:
     )
 
 
-def _quote_values(values: frozenset[str]) -> str:
-    return ", ".join(f"'{v}'" for v in sorted(values))
-
-
 def quote_literal(literal_alias: object) -> str:
     """Render a ``Literal[...]`` type alias's members as a SQL ``IN (...)`` body.
 
@@ -206,6 +199,13 @@ def quote_literal(literal_alias: object) -> str:
     Raises ``AssertionError`` for a non-Literal target -- bootstrap
     would otherwise emit ``CHECK (... IN ())`` and Postgres would
     syntax-error with no pointer back to the wrong type alias.
+
+    Args:
+      literal_alias: Literal alias.
+
+    Returns:
+      result: The str.
+
     """
     target = getattr(literal_alias, "__value__", literal_alias)
     args = get_args(target)
@@ -235,6 +235,10 @@ def generate_inquiry_kind_columns() -> str:
     Substituted into ``schema.sql``'s ``{inquiry_kind_columns}`` slot
     at bootstrap; this body was previously ~100 lines of mechanical
     CASE-WHEN duplication.
+
+    Returns:
+      result: The str.
+
     """
     # Sanity-check: the order tuple must cover every concrete kind so
     # adding a new Inquiry subclass doesn't silently KeyError below.
@@ -289,16 +293,19 @@ def generate_inquiry_kind_columns() -> str:
     # CREATE TABLE column list. The caller (schema.sql) handles the
     # adjacent comma/no-comma context via placement.
     if sections and sections[-1].endswith("),"):
-        sections[-1] = sections[-1][:-1]  # drop the comma
+        sections[-1] = sections[-1][:-1]  # drop the comma.
     return "\n".join(sections)
 
 
 def generate_per_kind_sequences() -> str:
-    """Render ``CREATE SEQUENCE`` statements for every kind in
-    :data:`SEQ_FOR_KIND`.
+    """Render ``CREATE SEQUENCE`` statements for every kind in :data:`SEQ_FOR_KIND`.
 
     Adding a new Inquiry subclass automatically gets a sequence -- no
     schema edit needed.
+
+    Returns:
+      result: The str.
+
     """
     return "\n".join(
         f"CREATE SEQUENCE IF NOT EXISTS {name};" for name in SEQ_FOR_KIND.values()
@@ -312,6 +319,10 @@ def generate_change_log_kind_matrix() -> str:
     emit ``CHECK (kind <> '<change_kind>' OR subject_kind = '<kind>')``.
     The Store's dispatch rejects direct-SQL kind mismatches at write
     time; this is the schema-level backstop.
+
+    Returns:
+      result: The str.
+
     """
     lines: list[str] = []
     for col in CHANGE_LOG_COLUMN_ORDER:
@@ -330,29 +341,18 @@ def generate_change_log_kind_matrix() -> str:
     return "\n".join(lines)
 
 
-def _edge_column_check_body(
-    col: str,
-    spec: ColumnSpec,
-    *,
-    edge_kind_col: str,
-) -> str:
-    body = column_check_body(col, spec)
-    if spec.applies_to_edge_kinds is None:
-        return body
-    edge_kind_check = (
-        f"{edge_kind_col} IN ({_quote_values(spec.applies_to_edge_kinds)})"
-    )
-    if not body:
-        return edge_kind_check
-    return f"{body} AND {edge_kind_check}"
-
-
 def generate_edge_metadata_columns() -> str:
-    """Render edge annotation columns and value CHECKs from :class:`Edge`."""
+    """Render edge annotation columns and value CHECKs from :class:`Edge`.
+
+    Returns:
+      result: The str.
+
+    """
     declarations: list[str] = []
     value_checks: list[str] = []
+    specs = column_specs(Edge)
     for col in _EDGE_METADATA_COLUMN_ORDER:
-        spec = _EDGE_METADATA_SPECS[col]
+        spec = specs[col]
         sql_type = spec.sql_type or "TEXT"
         default = (
             f" NOT NULL DEFAULT {spec.sql_default}"
@@ -368,33 +368,23 @@ def generate_edge_metadata_columns() -> str:
 
 
 def generate_edge_metadata_mirror_old() -> str:
-    """Render old-side change_log edge metadata mirrors from :class:`Edge`."""
+    """Render old-side change_log edge metadata mirrors from :class:`Edge`.
+
+    Returns:
+      result: The str.
+
+    """
     return _generate_edge_metadata_mirror("old")
 
 
 def generate_edge_metadata_mirror_new() -> str:
-    """Render new-side change_log edge metadata mirrors from :class:`Edge`."""
+    """Render new-side change_log edge metadata mirrors from :class:`Edge`.
+
+    Returns:
+      result: The str.
+
+    """
     return _generate_edge_metadata_mirror("new")
-
-
-def _generate_edge_metadata_mirror(prefix: Literal["old", "new"]) -> str:
-    declarations: list[str] = []
-    value_checks: list[str] = []
-    for col in _EDGE_METADATA_COLUMN_ORDER:
-        spec = _EDGE_METADATA_SPECS[col]
-        sql_type = spec.sql_type or "TEXT"
-        mirror_col = f"{prefix}_edge_{col}"
-        declarations.append(f"    {mirror_col} {sql_type},")
-        body = _edge_column_check_body(
-            col,
-            spec,
-            edge_kind_col=f"{prefix}_peer_edge_kind",
-        )
-        if body:
-            pattern = re.compile(rf"\b{re.escape(col)}\b")
-            check = pattern.sub(mirror_col, body)
-            value_checks.append(f"    CHECK ({mirror_col} IS NULL OR {check}),")
-    return "\n".join(declarations + value_checks)
 
 
 def generate_change_log_mirror() -> str:
@@ -410,6 +400,10 @@ def generate_change_log_mirror() -> str:
     Substituted into ``schema.sql``'s ``{change_log_mirror}`` slot at
     bootstrap; the mirror block is now derived from ``ColumnSpec``
     metadata rather than hand-typed in two places.
+
+    Returns:
+      result: The str.
+
     """
     declarations: list[str] = []
     populated_iff: list[str] = []
@@ -455,3 +449,58 @@ def generate_change_log_mirror() -> str:
         + "\n\n"
         + "\n".join(value_checks)
     )
+
+
+# Inverse of :func:`storage_name`: strips the ``<kind>_`` prefix a kind-specific column
+# carries, so a ``sql_check`` authored against the bare field (``source_kind IN (...)``)
+# can be rewritten to the storage column (``paper_source_kind``).
+def _bare_field(col: str, spec: ColumnSpec) -> str:
+    """Recover the bare field name from a storage column name."""
+    owners = spec.applies_to_inquiry_kinds
+    if owners is None or len(owners) != 1:
+        return col
+    (owner,) = owners
+    prefix = f"{owner.lower()}_"
+    return col.removeprefix(prefix)
+
+
+def _quote_values(values: frozenset[str]) -> str:
+    return ", ".join(f"'{v}'" for v in sorted(values))
+
+
+def _edge_column_check_body(
+    col: str,
+    spec: ColumnSpec,
+    *,
+    edge_kind_col: str,
+) -> str:
+    body = column_check_body(col, spec)
+    if spec.applies_to_edge_kinds is None:
+        return body
+    edge_kind_check = (
+        f"{edge_kind_col} IN ({_quote_values(spec.applies_to_edge_kinds)})"
+    )
+    if not body:
+        return edge_kind_check
+    return f"{body} AND {edge_kind_check}"
+
+
+def _generate_edge_metadata_mirror(prefix: Literal["old", "new"]) -> str:
+    declarations: list[str] = []
+    value_checks: list[str] = []
+    specs = column_specs(Edge)
+    for col in _EDGE_METADATA_COLUMN_ORDER:
+        spec = specs[col]
+        sql_type = spec.sql_type or "TEXT"
+        mirror_col = f"{prefix}_edge_{col}"
+        declarations.append(f"    {mirror_col} {sql_type},")
+        body = _edge_column_check_body(
+            col,
+            spec,
+            edge_kind_col=f"{prefix}_peer_edge_kind",
+        )
+        if body:
+            pattern = re.compile(rf"\b{re.escape(col)}\b")
+            check = pattern.sub(mirror_col, body)
+            value_checks.append(f"    CHECK ({mirror_col} IS NULL OR {check}),")
+    return "\n".join(declarations + value_checks)

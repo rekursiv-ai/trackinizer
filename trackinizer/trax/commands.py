@@ -18,14 +18,24 @@ class HelpPage:
     """A plain-text help page for one command or grammar topic."""
 
     usage: str
+
     summary: str
+
     arguments: tuple[tuple[str, str], ...] = ()
+
     options: tuple[tuple[str, str], ...] = ()
+
     examples: tuple[str, ...] = ()
+
     notes: tuple[str, ...] = ()
 
     def render(self) -> str:
-        """Format the page as CLI text."""
+        """Format the page as CLI text.
+
+        Returns:
+          result: The str.
+
+        """
         lines = [f"Usage: {self.usage}", "", self.summary]
         for title, rows in (("Arguments", self.arguments), ("Options", self.options)):
             if not rows:
@@ -47,7 +57,16 @@ class HelpPage:
         *,
         examples: tuple[str, ...] | None = None,
     ) -> HelpPage:
-        """Copy this page with a concrete usage line (and optional examples)."""
+        """Copy this page with a concrete usage line (and optional examples).
+
+        Args:
+          usage: Usage.
+          examples: Examples.
+
+        Returns:
+          result: The HelpPage.
+
+        """
         return HelpPage(
             usage=usage,
             summary=self.summary,
@@ -62,16 +81,30 @@ class Command:
     """Base class for one trax command's grammar and dispatch."""
 
     names: ClassVar[tuple[str, ...]]
+
     help: ClassVar[str | HelpPage] = ""
 
     @classmethod
     def matches(cls, verb: str) -> bool:
-        """Whether this command handles ``verb``."""
+        """Whether this command handles ``verb``.
+
+        Args:
+          verb: Verb.
+
+        Returns:
+          result: The bool.
+
+        """
         return verb in cls.names
 
     @classmethod
     def make_parser(cls) -> argparse.ArgumentParser:
-        """Build this command's argparse parser."""
+        """Build this command's argparse parser.
+
+        Returns:
+          result: The argparse.ArgumentParser.
+
+        """
         raise NotImplementedError
 
     @classmethod
@@ -88,6 +121,12 @@ class Command:
         are an alias for bare ``help`` in leading *or* trailing position
         (``trax issue 7 --help`` shows the context help, not argparse
         usage); only a ``--help`` buried mid-command stays an argparse token.
+
+        Args:
+          verb: Verb.
+          rest: Rest.
+          client_factory: Client factory.
+
         """
         if rest and rest[0] in {"--help", "-h"}:
             rest = [*rest[1:], "help"]
@@ -106,18 +145,38 @@ class Command:
         args: argparse.Namespace,
         client_factory: Callable[[], Client],
     ) -> None:
-        """Execute the parsed args."""
+        """Execute the parsed args.
+
+        Args:
+          verb: Verb.
+          args: Args.
+          client_factory: Client factory.
+
+        """
         del verb, args, client_factory
         raise NotImplementedError
 
     @classmethod
     def help_text(cls) -> str:
-        """Help text for this command's first name."""
+        """Help text for this command's first name.
+
+        Returns:
+          result: The str.
+
+        """
         return cls.help_text_for(next(iter(cls.names)))
 
     @classmethod
     def help_text_for(cls, verb: str) -> str:
-        """Help text for one handled verb."""
+        """Help text for one handled verb.
+
+        Args:
+          verb: Verb.
+
+        Returns:
+          result: The str.
+
+        """
         del verb
         if isinstance(cls.help, HelpPage):
             return cls.help.render()
@@ -132,6 +191,14 @@ class Command:
         Subclasses override this for context-sensitive help: ``trax issue 7
         priority help`` should describe the priority field, not the whole
         Issue verb. The base ignores ``prefix`` and returns the per-verb page.
+
+        Args:
+          verb: Verb.
+          prefix: Prefix.
+
+        Returns:
+          result: The str.
+
         """
         del prefix
         return cls.help_text_for(verb)

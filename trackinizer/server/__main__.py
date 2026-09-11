@@ -8,8 +8,9 @@ Runnable wrapper for the trackinizer server; the implementation lives in
 '''
 # fmt: on
 
-# Note: We intentionally don't use --no-sync in the polyglot so a remote
-# redeploy automatically triggers uv sync if needed.
+# The exec line above omits ``--no-sync`` on purpose: a remote redeploy pulls
+# new source and relies on ``uv run`` syncing the venv on first start.
+# house-lint: ignore[cli-shape]
 
 from __future__ import annotations
 

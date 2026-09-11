@@ -96,6 +96,13 @@ class _MetricsMixin(_StoreShared):
         concurrent same-experiment appender (no count-subtraction race) --
         mirroring :meth:`Store.append_session_records`.
 
+        Args:
+          experiment_id: Experiment id.
+          points: Points.
+
+        Returns:
+          result: The tuple[int, int].
+
         Raises:
           NotFoundError: ``experiment_id`` is not an existing inquiry.
           ConflictError: ``experiment_id`` is not an ``Experiment`` row (a
@@ -174,6 +181,16 @@ class _MetricsMixin(_StoreShared):
         ``[1, MAX_LIST_LIMIT]`` ceiling, matching the sibling
         ``read_session_records`` seam; a direct in-process caller may pass a
         larger window deliberately.
+
+        Args:
+          experiment_id: Experiment id.
+          key: Key.
+          limit: Limit.
+          offset: Offset.
+
+        Returns:
+          result: The list[MetricPoint].
+
         """
         clauses = ["experiment_id = $1"]
         params: list[object] = [experiment_id]
@@ -409,19 +426,17 @@ class _MetricsMixin(_StoreShared):
 
     @classmethod
     def _reduction_order(cls, mask: MetricMaskClause) -> str:
-        """SQL ``DISTINCT ON`` step direction for a ``max`` / ``min`` reduction."""
+        """Return the ``DISTINCT ON`` step direction for a max/min reduction."""
         if mask.axis != "step":
             raise ConflictError(
                 f"reduction {mask.op} applies only to the step axis, not {mask.axis!r}"
             )
         return "DESC" if mask.op == "max" else "ASC"
 
+    # Appends the coerced operand to ``params`` and returns the SQL fragment.
     @classmethod
     def _mask_predicate(cls, mask: MetricMaskClause, params: list[object]) -> str:
-        """Build one ``<axis> <op> $N::<cast>`` predicate, binding the operand.
-
-        Appends the coerced operand to ``params`` and returns the SQL fragment.
-        """
+        """Build one ``<axis> <op> $N::<cast>`` predicate, binding the operand."""
         if mask.op not in _OP_TO_SQL:
             raise ConflictError(f"op {mask.op!r} not supported on metric axis")
         params.append(_coerce_operand(mask))
@@ -488,14 +503,11 @@ class _MetricsMixin(_StoreShared):
         return await conn.execute(sql, *params)
 
 
+# ``key`` stays text; ``step`` becomes ``int`` and ``value`` ``float`` so the bound
+# parameter matches the ``bigint`` / ``float8`` cast. A non-numeric ``step`` / ``value``
+# operand is a caller error (409), not a DB ``DataError`` (500).
 def _coerce_operand(mask: MetricMaskClause) -> object:
-    """Coerce a mask's string operand to its axis's Python type.
-
-    ``key`` stays text; ``step`` becomes ``int`` and ``value`` ``float`` so the
-    bound parameter matches the ``bigint`` / ``float8`` cast. A non-numeric
-    ``step`` / ``value`` operand is a caller error (409), not a DB ``DataError``
-    (500).
-    """
+    """Coerce a mask's string operand to its axis's Python type."""
     if mask.axis == "key":
         return mask.value
     try:
@@ -506,10 +518,8 @@ def _coerce_operand(mask: MetricMaskClause) -> object:
         ) from exc
 
 
+# ``execute`` returns the command tag (``"UPDATE 3"``, ``"INSERT 0 1"``); the row count
+# is its final whitespace-delimited field.
 def _rowcount(status: str) -> int:
-    """Parse the affected-row count from an asyncpg command status tag.
-
-    ``execute`` returns the command tag (``"UPDATE 3"``, ``"INSERT 0 1"``); the
-    row count is its final whitespace-delimited field.
-    """
+    """Parse the affected-row count from an asyncpg command status tag."""
     return int(status.rsplit(maxsplit=1)[-1])

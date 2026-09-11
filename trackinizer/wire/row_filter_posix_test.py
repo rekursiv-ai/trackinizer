@@ -180,13 +180,12 @@ class TestDotMatchesNewlineLikePostgres:
 
 
 class TestDollarIsEndOfStringLikePostgres:
-    r"""``$`` anchors at end-of-STRING in Postgres, before a final newline in
-    Python.
+    r"""``$`` anchors at end-of-STRING in Postgres, before a final newline in Python.
 
     Live PG16: ``E'a\n' ~ 'a$'`` is FALSE. Python's ``$`` says true. Like the
     dot/newline gap, neither engine errors -- they simply return different
     rows -- so it has to be translated rather than refused. Python's
-    ``\Z`` is the anchor that means what Postgres means.
+    ``\\Z`` is the anchor that means what Postgres means.
     """
 
     @pytest.mark.parametrize(

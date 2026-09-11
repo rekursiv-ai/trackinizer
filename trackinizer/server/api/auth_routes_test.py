@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def auth_identity() -> AuthIdentity:
-    """A stable test principal injected by the dependency override."""
+    """Return a stable test principal injected by the dependency override."""
     return AuthIdentity(
         user_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
         api_key_id=uuid.UUID("22222222-2222-2222-2222-222222222222"),
@@ -194,7 +194,7 @@ class TestRevokeToken:
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
-        # asyncpg returns ``"UPDATE 1"`` when the predicate matched.
+        # ``asyncpg`` returns ``"UPDATE 1"`` when the predicate matched.
         engine.conn.execute = AsyncMock(return_value="UPDATE 1")
         r = client.post(f"/api/me/tokens/{uuid.uuid4()}/revoke")
         assert r.status_code == 200, r.text
@@ -398,7 +398,7 @@ class TestRouteRequiresAuth:
         assert r.status_code == 401
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

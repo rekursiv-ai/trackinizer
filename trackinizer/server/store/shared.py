@@ -90,10 +90,8 @@ class _StoreShared:
         # memory. Per-instance for the same reasons as the throttle above.
         self._verified_bearers: dict[bytes, tuple[AuthIdentity, float]] = {}
 
+    # Returns ``(embedder.name, vector)`` pairs in registration order.
     async def _embed_all(self, text: str) -> list[tuple[str, list[float]]]:
-        """Embed ``text`` with every registered embedder in parallel.
-
-        Returns ``(embedder.name, vector)`` pairs in registration order.
-        """
+        """Embed ``text`` with every registered embedder in parallel."""
         vecs = await asyncio.gather(*(e.embed(text) for e in self.embedders))
         return [(e.name, v) for e, v in zip(self.embedders, vecs, strict=True)]

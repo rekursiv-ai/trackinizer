@@ -110,12 +110,6 @@ def test_consume_ref_kind_without_seq_fails() -> None:
         consume_ref(["issue"], 0)
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
-    from trackinizer.lib.testing.main import test_main
-
-    test_main(__file__)
-
-
 # Coverage for parser.py error and edge-metadata branches.
 
 
@@ -432,14 +426,15 @@ def test_parse_bulk_apply_ref_list_add_accepts_typed_ref() -> None:
 
 
 def test_bulk_apply_codechange_field_not_swallowed_as_kind() -> None:
-    """`codechange` is both a kind keyword and a list field; a following mutation
-    operator makes it a MUTATION, not a bare kind-widening clause.
+    """`codechange` is both a kind keyword and a list field.
 
-    Regression: the clause scanner matched the kind keyword first, so
-    ``... codechange add 7`` consumed ``codechange`` as a bare kind and orphaned
-    ``add``. Dropping ``WebSearch.results`` left ``codechange`` the only
-    kind/field collision, exposing this. A bare kind is never followed by
-    ``to``/``add``/``del``, so the next token disambiguates cleanly.
+    A following mutation operator makes it a MUTATION, not a bare kind-widening clause.
+
+        Regression: the clause scanner matched the kind keyword first, so
+        ``... codechange add 7`` consumed ``codechange`` as a bare kind and orphaned
+        ``add``. Dropping ``WebSearch.results`` left ``codechange`` the only
+        kind/field collision, exposing this. A bare kind is never followed by
+        ``to``/``add``/``del``, so the next token disambiguates cleanly.
     """
     bulk = parse_bulk_apply(
         "Experiment", ["outcome", "is", "ok", "codechange", "add", "7"]
@@ -771,9 +766,10 @@ def test_consume_ref_kind_with_non_digit_raises() -> None:
 
 
 def test_consume_ref_kind_uuid_two_token() -> None:
-    """``kind <uuid>`` accepts the redundant kind and carries it on
-    the parsed ref as ``expected_kind``; the client compares it to
-    the server-resolved kind to catch typos.
+    """``kind <uuid>`` accepts the redundant kind and carries it on the parsed ref.
+
+    As ``expected_kind``; the client compares it to the server-resolved kind to catch
+    typos.
     """
     u = "550e8400-e29b-41d4-a716-446655440000"
     ref, consumed = consume_ref(["issue", u], 0)
@@ -1153,7 +1149,7 @@ def test_edge_marker_sets_collision_word_on_the_edge() -> None:
     assert len(actions) == 1
     act = actions[0]
     assert isinstance(act, EdgeAction)
-    assert act.metadata.get("priority") == 10  # high -> 10
+    assert act.metadata.get("priority") == 10  # high -> 10.
 
 
 def test_bare_collision_word_after_ref_rolls_up_never_silently_edge() -> None:
@@ -1273,9 +1269,9 @@ def test_edge_valence_non_number_is_client_error_not_value_error() -> None:
     """
     belief = "00000000-0000-4000-8000-000000000001"
     positions = [
-        ["favors", "belief", belief, "valence", "to", "abc"],  # post-target
-        ["favors", "valence", "to", "abc", "belief", belief],  # pre-target
-        ["produced", "websearch", "query", "to", "q", "valence", "to", "abc"],  # body
+        ["favors", "belief", belief, "valence", "to", "abc"],  # post-target.
+        ["favors", "valence", "to", "abc", "belief", belief],  # pre-target.
+        ["produced", "websearch", "query", "to", "q", "valence", "to", "abc"],  # body.
     ]
     for toks in positions:
         with pytest.raises(ClientError, match="valence must be a number"):
@@ -1291,7 +1287,7 @@ def test_edge_metadata_pre_and_post_merge_post_wins_same_key() -> None:
     describes so a future refactor cannot silently flip it.
     """
     belief = "00000000-0000-4000-8000-000000000001"
-    # priority high (=10) pre-target, critical (=0) post-target via the marker.
+    # Priority high (=10) pre-target, critical (=0) post-target via the marker.
     act = parse_actions(
         ["narrows", "priority", "to", "high",
          "issue", "3", "edge", "priority", "to", "critical"]
@@ -1316,8 +1312,9 @@ def test_cost_non_number_is_client_error_not_value_error() -> None:
     message, mirroring the edge-valence guard.
     """
     for toks in (
-        ["agent-cost", "add", "abc"],  # top-level
-        ["produced", "issue", "title", "to", "X", "agent-cost", "add", "xyz"],  # inline
+        ["agent-cost", "add", "abc"],  # top-level.
+        # Inline.
+        ["produced", "issue", "title", "to", "X", "agent-cost", "add", "xyz"],
         ["resource-cost", "add", "nope"],
     ):
         with pytest.raises(ClientError, match="must be a number"):
@@ -1365,8 +1362,8 @@ def test_begin_with_missing_or_bad_kind_is_client_error() -> None:
     Python traceback to the CLI. Now both surface as ClientError.
     """
     cases = [
-        ["disfavors", "begin"],  # begin at EOF -> IndexError
-        ["narrows", "begin", "3", "title", "to", "X"],  # non-kind after begin
+        ["disfavors", "begin"],  # begin at EOF -> IndexError.
+        ["narrows", "begin", "3", "title", "to", "X"],  # non-kind after begin.
         ["produced", "begin", "notakind", "title", "to", "X"],
     ]
     for toks in cases:
@@ -1390,7 +1387,7 @@ _ALPHABET: list[str] = sorted(
         *COST_FIELDS,
         *EDGE_ALIASES,
         "to", "add", "del", "edge", "begin", "end",
-        # values of each shape the coercers care about
+        # Values of each shape the coercers care about.
         "0.5", "-0.5", "abc", "high", "0", "3",
         "00000000-0000-4000-8000-000000000001",
     }
@@ -1416,7 +1413,7 @@ def test_parser_never_leaks_non_client_error(tokens: list[str]) -> None:
 # raw exception. These entry points were previously unfuzzed.
 
 _A_KIND: Inquiry.InquiryKind = (
-    "Issue"  # a fixed valid kind for entry points that need one
+    "Issue"  # a fixed valid kind for entry points that need one.
 )
 
 
@@ -1460,10 +1457,10 @@ _UUID = "00000000-0000-4000-8000-000000000001"
 
 
 def _meta_value(word: str) -> tuple[str, str]:
-    """A (op, value) pair valid for an edge-metadata ``word``."""
+    """Return a (op, value) pair valid for an edge-metadata ``word``."""
     if word == "priority":
         return "to", "high"
-    return "add", "x"  # label / labels
+    return "add", "x"  # label / labels.
 
 
 @settings(max_examples=300, deadline=None)
@@ -1535,19 +1532,19 @@ class TestParseMetricAction:
         )
 
     def test_step_is(self) -> None:
-        # spec Read: every key at step 3.
+        # ``spec`` Read: every key at step 3.
         assert parse_metric_action(["at", "step", "is", "3"]) == MetricAction(
             masks=(MetricMask(field="step", op="is", value="3"),)
         )
 
     def test_value_gt(self) -> None:
-        # spec Read: cells with value > 0.9.
+        # ``spec`` Read: cells with value > 0.9.
         assert parse_metric_action(["at", "value", "gt", "0.9"]) == MetricAction(
             masks=(MetricMask(field="value", op="gt", value="0.9"),)
         )
 
     def test_two_masks_and_together_read(self) -> None:
-        # spec Read: loss cells, step > 3.
+        # ``spec`` Read: loss cells, step > 3.
         assert parse_metric_action(
             ["at", "key", "is", "loss", "at", "step", "gt", "3"]
         ) == MetricAction(
@@ -1558,7 +1555,7 @@ class TestParseMetricAction:
         )
 
     def test_single_cell_write(self) -> None:
-        # spec Write: one cell (key + step pinned, then `to`).
+        # ``spec`` Write: one cell (key + step pinned, then `to`).
         assert parse_metric_action(
             ["at", "key", "is", "loss", "at", "step", "is", "3", "to", "0.5"]
         ) == MetricAction(
@@ -1582,7 +1579,7 @@ class TestParseMetricAction:
         )
 
     def test_bulk_write_step_gt(self) -> None:
-        # spec Write bulk: set every loss cell with step > 3 to 0.5.
+        # ``spec`` Write bulk: set every loss cell with step > 3 to 0.5.
         assert parse_metric_action(
             ["at", "key", "is", "loss", "at", "step", "gt", "3", "to", "0.5"]
         ) == MetricAction(
@@ -1594,7 +1591,7 @@ class TestParseMetricAction:
         )
 
     def test_read_sort_desc_limit(self) -> None:
-        # spec Read: loss's 5 largest.
+        # ``spec`` Read: loss's 5 largest.
         assert parse_metric_action(
             ["at", "key", "is", "loss", "sort", "desc", "limit", "5"]
         ) == MetricAction(
@@ -1619,7 +1616,7 @@ class TestParseMetricAction:
         )
 
     def test_step_max_reduction(self) -> None:
-        # spec Cross-experiment: final per experiment; max takes NO value.
+        # ``spec`` Cross-experiment: final per experiment; max takes NO value.
         assert parse_metric_action(["at", "step", "max"]) == MetricAction(
             masks=(MetricMask(field="step", op="max", value=""),)
         )
@@ -1639,7 +1636,7 @@ class TestParseMetricAction:
         )
 
     def test_cross_experiment_loss_at_step(self) -> None:
-        # spec Cross-experiment: loss@100 across all experiments.
+        # ``spec`` Cross-experiment: loss@100 across all experiments.
         assert parse_metric_action(
             ["at", "loss", "at", "step", "is", "100"]
         ) == MetricAction(
@@ -1650,7 +1647,7 @@ class TestParseMetricAction:
         )
 
     def test_cross_experiment_ranked(self) -> None:
-        # spec Cross-experiment: top 5 experiments by loss@100.
+        # ``spec`` Cross-experiment: top 5 experiments by loss@100.
         assert parse_metric_action(
             ["at", "loss", "at", "step", "is", "100", "sort", "desc", "limit", "5"]
         ) == MetricAction(
@@ -1732,7 +1729,7 @@ class TestParseMetricAction:
             parse_metric_action(["at", "loss", "to", "0.5", "limit", "5"])
 
     def test_write_before_sort_order_independent_errors(self) -> None:
-        # sort seen first, then `to`: still rejected (write has no ordering).
+        # Sort seen first, then `to`: still rejected (write has no ordering).
         with pytest.raises(ClientError, match="reads"):
             parse_metric_action(["at", "loss", "sort", "desc", "to", "0.5"])
 
@@ -1763,3 +1760,9 @@ class TestParseMetricAction:
     def test_unknown_leading_token_errors(self) -> None:
         with pytest.raises(ClientError):
             parse_metric_action(["bogus"])
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.main import test_main
+
+    test_main(__file__)

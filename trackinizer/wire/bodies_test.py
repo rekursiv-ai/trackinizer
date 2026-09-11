@@ -229,7 +229,7 @@ class TestSubmitModels:
             "https://example.com/p",
             "http://example.com/p",
             "isbn:978-3-16-148410-0",
-            "ArXiv:2405.16391",  # scheme match is case-insensitive
+            "ArXiv:2405.16391",  # scheme match is case-insensitive.
         ):
             assert SubmitPaper(title="x", source=ok).source == ok
 
@@ -439,7 +439,7 @@ class TestFieldBodies:
         # write (REV-OPUS-04).
         body = {
             "value": "x",
-            "expcted": "active",  # codespell:ignore expcted -- deliberate typo of 'expected'
+            "expcted": "active",  # codespell:ignore expcted -- deliberate typo of 'expected'.
             "actor": "alice",
         }
         with pytest.raises(ValidationError):
@@ -467,7 +467,7 @@ class TestFieldBodies:
         assert body.reason == "cleanup"
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

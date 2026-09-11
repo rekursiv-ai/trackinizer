@@ -87,6 +87,13 @@ def snake_case(name: str) -> str:
 
     Only the lower-to-upper boundary splits, so ``WebSearchResults`` becomes
     ``web_search_results`` and an acronym run stays together.
+
+    Args:
+      name: Name.
+
+    Returns:
+      result: The str.
+
     """
     return _CAMEL_BOUNDARY.sub("_", name).lower()
 
@@ -100,5 +107,13 @@ SESSION_RECORD_FIELDS: Final[dict[str, str]] = {
 
 
 def record_kind_for(column: str) -> str | None:
-    """The record kind ``column`` filters on, or ``None`` if it is not one."""
+    """Return the record kind ``column`` filters on, or ``None`` if it is not one.
+
+    Args:
+      column: Column.
+
+    Returns:
+      result: The str | None.
+
+    """
     return SESSION_RECORD_FIELDS.get(column)

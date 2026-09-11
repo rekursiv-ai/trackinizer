@@ -26,7 +26,7 @@ class Row(Protocol):
     satisfy this, so the row mappers never care which one they got.
     """
 
-    def __getitem__(self, key: Any, /) -> Any: ...
+    def __getitem__(self, key: str, /) -> Any: ...
     def __contains__(self, x: object, /) -> bool: ...
     @overload
     def get(self, key: str) -> Any | None: ...
@@ -144,6 +144,10 @@ def column_specs(cls: type[DataclassInstance]) -> dict[str, ColumnSpec]:
     view the wire route table, CLI, and wire bodies read, where the kind is
     still in scope. Setter dispatch and SQL codegen key by the storage name
     instead; see :func:`storage_name` / :func:`storage_column_specs`.
+
+    Returns:
+      out: The dict[str, ColumnSpec].
+
     """
     out: dict[str, ColumnSpec] = {}
     for f in fields(cls):
@@ -163,6 +167,14 @@ def storage_name(field: str, spec: ColumnSpec) -> str:
     ``change_log`` ``old_*``/``new_*`` mirrors, and the ``Change.Kind``
     value -- every surface where all kinds share one namespace and the
     kind is no longer in scope.
+
+    Args:
+      field: Field.
+      spec: Spec.
+
+    Returns:
+      field: The str.
+
     """
     owners = spec.applies_to_inquiry_kinds
     if owners is None or len(owners) != 1:
@@ -179,6 +191,10 @@ def storage_column_specs(cls: type[DataclassInstance]) -> dict[str, ColumnSpec]:
 
     Setter dispatch and SQL codegen read this so the column key matches
     the physical ``inquiries`` column and the emitted ``Change.Kind``.
+
+    Returns:
+      result: The dict[str, ColumnSpec].
+
     """
     return {storage_name(name, spec): spec for name, spec in column_specs(cls).items()}
 
@@ -205,6 +221,10 @@ def flat_column_specs(cls: type[DataclassInstance]) -> dict[str, FlatColumn]:
     else passes through unchanged. This is the storage- and wire-faithful
     view the route table and filter whitelist read, so neither has to spell
     out the flattened ``marginal_cost_*`` names by hand.
+
+    Returns:
+      out: The dict[str, FlatColumn].
+
     """
     annotations = _resolved_annotations(cls)
     out: dict[str, FlatColumn] = {}

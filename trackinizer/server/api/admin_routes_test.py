@@ -65,14 +65,11 @@ def _allowlist_row(
     }
 
 
+# Spans both ``execute`` and ``fetch`` via :func:`executed_sql`: ``tx()`` issues the
+# error-path ``ROLLBACK`` over the extended protocol (``fetch``) to avoid a pglite 0.5
+# simple-query mis-frame, so a rollback assertion must look at both methods.
 def _executed_sql(engine: FakeEngine) -> list[str]:
-    """Return the SQL strings captured on ``engine.conn``, in call order.
-
-    Spans both ``execute`` and ``fetch`` via :func:`executed_sql`: ``tx()``
-    issues the error-path ``ROLLBACK`` over the extended protocol (``fetch``) to
-    avoid a pglite 0.5 simple-query mis-frame, so a rollback assertion must look
-    at both methods.
-    """
+    """Return the SQL strings captured on ``engine.conn``, in call order."""
     return executed_sql(engine.conn)
 
 
@@ -988,7 +985,7 @@ class TestProfileRoute:
         assert r.status_code == 401
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

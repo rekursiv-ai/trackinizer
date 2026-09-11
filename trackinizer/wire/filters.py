@@ -198,7 +198,15 @@ def validate_clause(field: str, op: str, value: str) -> str | None:
 
 
 def is_nan(value: str) -> bool:
-    """Whether ``value`` parses as a NaN, whatever its spelling."""
+    """Whether ``value`` parses as a NaN, whatever its spelling.
+
+    Args:
+      value: Value.
+
+    Returns:
+      result: The bool.
+
+    """
     parsed = as_numeric(value)
     return parsed is not None and parsed.is_nan()
 
@@ -251,6 +259,13 @@ def validate_regex_dialect(pattern: str) -> str | None:
     backslash then ``b`` (no escape at all), and ``[\b]`` is an unambiguous
     backspace in both engines. Refusing either is refusing a pattern that
     always agreed.
+
+    Args:
+      pattern: Pattern.
+
+    Returns:
+      result: The str | None.
+
     """
     for escape in escapes(pattern):
         if escape.in_bracket:
@@ -292,16 +307,13 @@ IDENTITY_COLUMNS: Final[frozenset[str]] = frozenset(
 )
 
 
+# Derived from the column specs rather than hand-listed, so a future ``required=True``
+# field (or a new flattened axis) is covered automatically instead of silently breaking
+# presence-op validation. A column is NOT NULL when its spec is ``required``
+# (``status``, ``title``) or ``flatten``-ed (the cost axes, ``NOT NULL DEFAULT 0`` in
+# ``schema.sql``); everything else is a ``| None`` field on the Inquiry dataclass.
 def _derive_non_nullable_columns() -> frozenset[str]:
-    """Canonical columns that are NOT NULL in ``inquiries``.
-
-    Derived from the column specs rather than hand-listed, so a future
-    ``required=True`` field (or a new flattened axis) is covered automatically
-    instead of silently breaking presence-op validation. A column is NOT NULL
-    when its spec is ``required`` (``status``, ``title``) or ``flatten``-ed
-    (the cost axes, ``NOT NULL DEFAULT 0`` in ``schema.sql``); everything else
-    is a ``| None`` field on the Inquiry dataclass.
-    """
+    """Canonical columns that are NOT NULL in ``inquiries``."""
     columns = set(IDENTITY_COLUMNS)
     for source in INQUIRY_CLASSES:
         for name, flat in flat_column_specs(source).items():
@@ -324,29 +336,34 @@ def validate_presence_op(field: str, op: FilterOp) -> str | None:
     NOT-NULL one they silently match nothing / everything. ``field`` must
     already be canonical (post :func:`canonical_filter_field`). Returns
     ``None`` when the pairing is valid.
+
+    Args:
+      field: Field.
+      op: Op.
+
+    Returns:
+      result: The str | None.
+
     """
     if op in VALUELESS_FILTER_OPS and field in NON_NULLABLE_COLUMNS:
         return f"filter field {field!r} is NOT NULL; {op} does not apply"
     return None
 
 
+# A kind-specific column stores under a ``<kind>_`` prefix (``paper_source``), but the
+# CLI filters by the bare field (``source``), the kind already in scope. DERIVED from
+# the specs (the same ``storage_name`` rule the schema and routes use), so a new kind-
+# specific field is filterable with no edit here -- the GSI-02 bug class (a bare filter
+# the CLI accepted but the server 400'd because its alias was missing) cannot recur.
+#
+# This may emit an alias for a column with no CLI filter token today (``config`` ->
+# ``experiment_config``, ``opened_by_api_key_id`` -> ...): the alias is harmless -- its
+# target is already in the server whitelist (which derives from the same specs), so it
+# can never 400, and with no grammar token it is unreachable. Deriving the whole set is
+# deliberately preferred over a hand-tuned exclusion, which would re-introduce the drift
+# the derivation kills.
 def _kind_specific_aliases() -> dict[str, str]:
-    """Bare field name -> flat storage column, for every kind-specific column.
-
-    A kind-specific column stores under a ``<kind>_`` prefix (``paper_source``),
-    but the CLI filters by the bare field (``source``), the kind already in
-    scope. DERIVED from the specs (the same ``storage_name`` rule the schema and
-    routes use), so a new kind-specific field is filterable with no edit here --
-    the GSI-02 bug class (a bare filter the CLI accepted but the server 400'd
-    because its alias was missing) cannot recur.
-
-    This may emit an alias for a column with no CLI filter token today
-    (``config`` -> ``experiment_config``, ``opened_by_api_key_id`` -> ...): the
-    alias is harmless -- its target is already in the server whitelist (which
-    derives from the same specs), so it can never 400, and with no grammar token
-    it is unreachable. Deriving the whole set is deliberately preferred over a
-    hand-tuned exclusion, which would re-introduce the drift the derivation kills.
-    """
+    """Bare field name -> flat storage column, for every kind-specific column."""
     out: dict[str, str] = {}
     for cls in KIND_TO_CLASS.values():
         for name, spec in column_specs(cls).items():
@@ -379,6 +396,13 @@ def canonical_filter_field(field: str) -> str:
     A canonical column or an unknown field passes through unchanged, so
     callers can canonicalize unconditionally and the server still rejects
     genuinely-unknown fields with a precise error.
+
+    Args:
+      field: Field.
+
+    Returns:
+      result: The str.
+
     """
     return FILTER_FIELD_ALIASES.get(field, field)
 
@@ -393,7 +417,9 @@ class Filter:
     """
 
     field: str
+
     op: FilterOp
+
     value: str
 
     def __post_init__(self) -> None:
@@ -401,20 +427,32 @@ class Filter:
             raise ValueError(err)
 
 
-def _compilable(pattern: str) -> str | None:
-    r"""Reject a pattern Python cannot compile, in its TRANSLATED form.
+def folds_case(pattern: str) -> bool:
+    """Whether ``pattern`` turns on case-insensitive matching.
 
-    The evaluator compiles ``posix_pattern(value)``, so the TRANSLATED form is
-    what must compile: checking the raw text would refuse a ``\\y`` both
-    engines accept.
+    Args:
+      pattern: Pattern.
 
-    A POSIX bracket construct is refused before that: Postgres implements
-    ``[:class:]`` / ``[.x.]`` / ``[=x=]`` and Python does not, so the two
-    select different rows (live PG16: ``'x9' ~ '[[:digit:]]'`` is true, Python
-    false). It is refused structurally rather than by the ``FutureWarning``
-    Python emits, since CPython serves a cached pattern before parsing and one
-    earlier compile silences that warning for the process.
+    Returns:
+      result: The bool.
+
     """
+    return any(
+        is_flag_run(found.body, scoped=found.scoped, flag="i")
+        for found in paren_extensions(pattern)
+    )
+
+
+# The evaluator compiles ``posix_pattern(value)``, so the TRANSLATED form is what must
+# compile: checking the raw text would refuse a ``\\y`` both engines accept.
+#
+# A POSIX bracket construct is refused before that: Postgres implements ``[:class:]`` /
+# ``[.x.]`` / ``[=x=]`` and Python does not, so the two select different rows (live
+# PG16: ``'x9' ~ '[[:digit:]]'`` is true, Python false). It is refused structurally
+# rather than by the ``FutureWarning`` Python emits, since CPython serves a cached
+# pattern before parsing and one earlier compile silences that warning for the process.
+def _compilable(pattern: str) -> str | None:
+    r"""Reject a pattern Python cannot compile, in its TRANSLATED form."""
     if has_posix_bracket_construct(pattern):
         return (
             f"regex {pattern!r} uses a POSIX bracket construct "
@@ -438,31 +476,27 @@ def _compilable(pattern: str) -> str | None:
     return None
 
 
+# Postgres runs POSIX ARE and Python does not, and neither dialect contains the other.
+# Whichever way the gap falls the result is the same: one evaluator answers where the
+# other 400s, and the caller cannot tell which ran. Five classes, each measured on live
+# PG16:
+#
+# * escapes Python alone has (``\z``); * named groups and backreferences
+# (``(?P<x>...)``, ``(?P=x)``); * ``(?...)`` groups outside the closed set Postgres
+# implements, which covers atomic groups, conditionals, and every scoped ``(?i:...)``
+# form; * possessive quantifiers (``a*+``), added in Python 3.11; * flags POSTGRES alone
+# has (``(?n)``) -- the one class that runs on the lowered path and cannot be reproduced
+# here, so it is refused for the opposite reason to the rest.
+#
+# A sixth lives in :func:`_untranslatable_bracket_member`: ``[\D]`` parses in both and
+# ANSWERS differently, which needs no dialect gap at all.
+#
+# The ``(?...)`` rule is a WHITELIST of what Postgres implements, so a construct nobody
+# has met yet is refused rather than admitted. The rest of POSIX's grammar is not
+# enumerable, so the route still maps a Postgres-side failure through
+# ``regex_failures_as_400``.
 def _runs_in_postgres(pattern: str) -> str | None:
-    r"""Reject a pattern only one of the two engines can run, else ``None``.
-
-    Postgres runs POSIX ARE and Python does not, and neither dialect contains
-    the other. Whichever way the gap falls the result is the same: one
-    evaluator answers where the other 400s, and the caller cannot tell which
-    ran. Five classes, each measured on live PG16:
-
-    * escapes Python alone has (``\z``);
-    * named groups and backreferences (``(?P<x>...)``, ``(?P=x)``);
-    * ``(?...)`` groups outside the closed set Postgres implements, which
-      covers atomic groups, conditionals, and every scoped ``(?i:...)`` form;
-    * possessive quantifiers (``a*+``), added in Python 3.11;
-    * flags POSTGRES alone has (``(?n)``) -- the one class that runs on the
-      lowered path and cannot be reproduced here, so it is refused for the
-      opposite reason to the rest.
-
-    A sixth lives in :func:`_untranslatable_bracket_member`: ``[\D]`` parses
-    in both and ANSWERS differently, which needs no dialect gap at all.
-
-    The ``(?...)`` rule is a WHITELIST of what Postgres implements, so a
-    construct nobody has met yet is refused rather than admitted. The rest of
-    POSIX's grammar is not enumerable, so the route still maps a Postgres-side
-    failure through ``regex_failures_as_400``.
-    """
+    r"""Reject a pattern only one of the two engines can run, else ``None``."""
     for found in escapes(pattern):
         if not found.in_bracket and found.char in _PYTHON_ONLY_ESCAPES:
             return (
@@ -507,25 +541,23 @@ def _runs_in_postgres(pattern: str) -> str | None:
     return None
 
 
+# Postgres implements a CLOSED set of these, measured on live PG16: ``(?=`` ``(?!``
+# ``(?:`` ``(?<=`` ``(?<!`` ``(?#`` and an UNSCOPED run of the flag letters ``i s m n x
+# w b e q``. Everything else is an error -- ``(?>`` atomic groups, ``(?(`` conditionals,
+# ``(?a)`` / ``(?u)`` / ``(?L)``, and every scoped ``(?i:...)`` form, all of which
+# Python parses happily.
+#
+# Checked as that closed set rather than as a blacklist, so an extension nobody has
+# enumerated is refused rather than admitted.
 def _unsupported_paren_extension(pattern: str) -> str | None:
-    r"""Refuse a ``(?...)`` group the two engines do not share, else ``None``.
-
-    Postgres implements a CLOSED set of these, measured on live PG16:
-    ``(?=`` ``(?!`` ``(?:`` ``(?<=`` ``(?<!`` ``(?#`` and an UNSCOPED run of
-    the flag letters ``i s m n x w b e q``. Everything else is an error --
-    ``(?>`` atomic groups, ``(?(`` conditionals, ``(?a)`` / ``(?u)`` / ``(?L)``,
-    and every scoped ``(?i:...)`` form, all of which Python parses happily.
-
-    Checked as that closed set rather than as a blacklist, so an extension
-    nobody has enumerated is refused rather than admitted.
-    """
+    r"""Refuse a ``(?...)`` group the two engines do not share, else ``None``."""
     for found in paren_extensions(pattern):
         if found.body.startswith(("=", "!", "<=", "<!")):
             continue
         if found.body == "":
             # ``(?)`` and ``(?:)``; both engines settle these themselves.
             continue
-        if not set(found.body) <= _POSTGRES_FLAGS:
+        if set(found.body) - _POSTGRES_FLAGS:
             return (
                 f"regex group '(?{found.body}{':...' if found.scoped else ''})' "
                 "is not a construct Postgres implements, so the two "
@@ -560,16 +592,14 @@ def _untranslatable_bracket_member(pattern: str) -> str | None:
     return None
 
 
+# Python 3.11 added them; Postgres has never had them and answers "invalid regular
+# expression: quantifier operand invalid" for all four (measured).
+#
+# Both characters must be LIVE syntax: an escaped quantifier (``a\*+``), two adjacent
+# class members (``[*+]``), and comment prose (``(?#*+)a``) all run in PG16 and are not
+# possessive anything.
 def _possessive_quantifier(pattern: str) -> str | None:
-    r"""Name a ``*+`` / ``++`` / ``?+`` / ``{m,n}+`` quantifier, else ``None``.
-
-    Python 3.11 added them; Postgres has never had them and answers "invalid
-    regular expression: quantifier operand invalid" for all four (measured).
-
-    Both characters must be LIVE syntax: an escaped quantifier (``a\*+``),
-    two adjacent class members (``[*+]``), and comment prose (``(?#*+)a``) all
-    run in PG16 and are not possessive anything.
-    """
+    r"""Name a ``*+`` / ``++`` / ``?+`` / ``{m,n}+`` quantifier, else ``None``."""
     live = live_indices(pattern)
     for index in range(len(pattern) - 1):
         if index not in live or index + 1 not in live:
@@ -581,17 +611,14 @@ def _possessive_quantifier(pattern: str) -> str | None:
     return None
 
 
+# A bare ``}`` is an ordinary character in both engines -- live PG16 matches ``'a}}'``
+# with ``a}+`` and ``'{key}'`` with ``{key}+`` -- so only a real repetition close
+# counts. The body must START with an ASCII digit: Postgres reads ``{,3}`` as literal
+# text and runs ``a{,3}+``, where ``a{2,}+`` is the error. ASCII specifically, since
+# ``str.isdigit()`` accepts ``٢`` where a repetition bound does not -- live PG16 runs
+# ``a{٢,٣}+`` as a quantified brace.
 def _closes_repetition(pattern: str, index: int, live: frozenset[int]) -> bool:
-    """Whether ``pattern[index]`` is the ``}`` ending a ``{m,n}`` repetition.
-
-    A bare ``}`` is an ordinary character in both engines -- live PG16 matches
-    ``'a}}'`` with ``a}+`` and ``'{key}'`` with ``{key}+`` -- so only a real
-    repetition close counts. The body must START with an ASCII digit:
-    Postgres reads ``{,3}`` as literal text and runs ``a{,3}+``, where
-    ``a{2,}+`` is the error. ASCII specifically, since ``str.isdigit()``
-    accepts ``\u0662`` where a repetition bound does not -- live PG16 runs
-    ``a{\u0662,\u0663}+`` as a quantified brace.
-    """
+    """Whether ``pattern[index]`` is the ``}`` ending a ``{m,n}`` repetition."""
     if pattern[index] != "}":
         return False
     opening = pattern.rfind("{", 0, index)
@@ -605,18 +632,15 @@ def _closes_repetition(pattern: str, index: int, live: frozenset[int]) -> bool:
     )
 
 
+# A ``{`` followed by an ASCII digit is a repetition opener to BOTH engines, and live
+# PG16 answers "invalid regular expression" when no ``}`` closes it -- while Python
+# reads the brace as a literal and MATCHES, so the lowered path 400s where this
+# evaluator returns rows.
+#
+# The digit is what makes it an opener, exactly as in :func:`_closes_repetition`: live
+# PG16 runs ``a{``, ``a{,`` and ``a{x``, where the brace is ordinary text to both.
 def _unterminated_repetition(pattern: str) -> str | None:
-    r"""Name a ``{`` that opens a repetition and never closes, else ``None``.
-
-    A ``{`` followed by an ASCII digit is a repetition opener to BOTH engines,
-    and live PG16 answers "invalid regular expression" when no ``}`` closes
-    it -- while Python reads the brace as a literal and MATCHES, so the
-    lowered path 400s where this evaluator returns rows.
-
-    The digit is what makes it an opener, exactly as in
-    :func:`_closes_repetition`: live PG16 runs ``a{``, ``a{,`` and ``a{x``,
-    where the brace is ordinary text to both.
-    """
+    r"""Name a ``{`` that opens a repetition and never closes, else ``None``."""
     live = live_indices(pattern)
     for index, char in enumerate(pattern):
         if char != "{" or index not in live:
@@ -635,32 +659,21 @@ def _unterminated_repetition(pattern: str) -> str | None:
     return None
 
 
+# Python's ``(?i)`` folds by Unicode simple case mapping and Postgres folds narrowly, so
+# the two disagree on 6 of 10 measured pairs -- and both ANSWER, which is the class
+# nothing downstream catches. Neither ``re.ASCII`` nor the default reproduces Postgres's
+# fold, so this cannot be translated.
+#
+# Gated on the pattern's MATCHABLE characters, not its live ones: a class member is
+# inert to every SYNTAX rule but folds exactly like the bare atom -- live PG16 says
+# ``'s' ~ '(?i)[ſ]'`` is FALSE where Python matches, identical to ``(?i)ſ``. Only a
+# comment body is excluded, being prose that never matches: ``(?i)(?#é)a`` runs in both.
+#
+# The other half of the divergence -- an ASCII pattern against a non-ASCII VALUE --
+# needs the row, and is checked by :func:`row_filter.reject_inadmissible`, which has
+# one.
 def _folds_non_ascii(pattern: str) -> bool:
-    """Whether ``pattern`` asks for a case-insensitive non-ASCII match.
-
-    Python's ``(?i)`` folds by Unicode simple case mapping and Postgres folds
-    narrowly, so the two disagree on 6 of 10 measured pairs -- and both ANSWER,
-    which is the class nothing downstream catches. Neither ``re.ASCII`` nor the
-    default reproduces Postgres's fold, so this cannot be translated.
-
-    Gated on the pattern's MATCHABLE characters, not its live ones: a class
-    member is inert to every SYNTAX rule but folds exactly like the bare atom
-    -- live PG16 says ``'s' ~ '(?i)[\u017f]'`` is FALSE where Python matches,
-    identical to ``(?i)\u017f``. Only a comment body is excluded, being prose
-    that never matches: ``(?i)(?#\u00e9)a`` runs in both.
-
-    The other half of the divergence -- an ASCII pattern against a non-ASCII
-    VALUE -- needs the row, and is checked by
-    :func:`row_filter.reject_inadmissible`, which has one.
-    """
+    """Whether ``pattern`` asks for a case-insensitive non-ASCII match."""
     if not folds_case(pattern):
         return False
     return any(not pattern[index].isascii() for index in matchable_indices(pattern))
-
-
-def folds_case(pattern: str) -> bool:
-    """Whether ``pattern`` turns on case-insensitive matching."""
-    return any(
-        is_flag_run(found.body, scoped=found.scoped, flag="i")
-        for found in paren_extensions(pattern)
-    )

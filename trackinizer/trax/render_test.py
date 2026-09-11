@@ -10,7 +10,7 @@ import json
 import shutil
 import sys
 
-from trackinizer.trax import render as fmt
+from trackinizer.trax import render
 from trackinizer.trax.render import (
     _relation_title,
     _row_value,
@@ -27,18 +27,18 @@ if TYPE_CHECKING:
 class TestBasicFormats:
     def test_json_ids_and_empty_tables(self) -> None:
         payload = [{"id": "abc", "kind": "Issue"}]
-        assert json.loads(fmt.format_json(payload)) == payload
-        assert fmt.format_ids(payload) == "abc\n"
-        assert fmt.format_table([]) == "(no rows)\n"
-        assert fmt.format_changes([]) == "(no changes)\n"
+        assert json.loads(render.format_json(payload)) == payload
+        assert render.format_ids(payload) == "abc\n"
+        assert render.format_table([]) == "(no rows)\n"
+        assert render.format_changes([]) == "(no changes)\n"
 
     def test_field_value_dict_renders_indented_json(self) -> None:
         """A dict field (Experiment ``config``) prints as JSON, not repr."""
-        assert fmt.format_field_value({"lr": 0.1}) == '{\n  "lr": 0.1\n}'
-        assert fmt.format_field_value({}) == "{}"
+        assert render.format_field_value({"lr": 0.1}) == '{\n  "lr": 0.1\n}'
+        assert render.format_field_value({}) == "{}"
 
     def test_table_includes_ref_labels_and_cost_fields(self) -> None:
-        text = fmt.format_table(
+        text = render.format_table(
             [
                 {
                     "id": "abc",
@@ -60,7 +60,7 @@ class TestBasicFormats:
         assert "  COST" not in text
 
     def test_table_hides_empty_optional_columns(self) -> None:
-        text = fmt.format_table(
+        text = render.format_table(
             [
                 {
                     "id": "abc",
@@ -81,7 +81,7 @@ class TestBasicFormats:
         assert "RESOURCE-COST" not in text
 
     def test_table_includes_every_populated_schema_column(self) -> None:
-        text = fmt.format_table(
+        text = render.format_table(
             [
                 {
                     "id": "abc",
@@ -129,7 +129,7 @@ class TestBasicFormats:
         monkeypatch.setattr(shutil, "get_terminal_size", terminal_80)
         monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
 
-        text = fmt.format_table(
+        text = render.format_table(
             [
                 {
                     "id": "abc",
@@ -159,7 +159,7 @@ class TestBasicFormats:
         monkeypatch.setattr(shutil, "get_terminal_size", terminal_20)
         monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
 
-        text = fmt.format_table(
+        text = render.format_table(
             [
                 {
                     "id": "abc",
@@ -186,7 +186,7 @@ class TestBasicFormats:
         monkeypatch.setattr(shutil, "get_terminal_size", terminal_20)
         monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
 
-        text = fmt.format_table(
+        text = render.format_table(
             [
                 {
                     "id": "abc",
@@ -205,7 +205,7 @@ class TestBasicFormats:
         assert any(len(line) > 20 for line in text.splitlines())
 
     def test_table_preserves_wide_refs_at_narrow_width(self) -> None:
-        text = fmt.format_table(
+        text = render.format_table(
             [
                 {
                     "id": "abc",
@@ -229,7 +229,7 @@ class TestBasicFormats:
         assert "CodeChange#123456789" in text
 
     def test_table_preserves_edge_note_before_generic_columns(self) -> None:
-        text = fmt.format_table(
+        text = render.format_table(
             [
                 {
                     "id": "abc",
@@ -250,7 +250,7 @@ class TestBasicFormats:
         assert "must land first" in text
 
     def test_table_caps_verbose_columns_on_wide_terminals(self) -> None:
-        text = fmt.format_table(
+        text = render.format_table(
             [
                 {
                     "id": "abc",
@@ -279,7 +279,7 @@ class TestBasicFormats:
         )
 
     def test_table_width_zero_keeps_full_cells(self) -> None:
-        text = fmt.format_table(
+        text = render.format_table(
             [
                 {
                     "id": "abc",
@@ -298,7 +298,7 @@ class TestBasicFormats:
 
 class TestDetailFormats:
     def test_format_show_all_sections_except_changes(self) -> None:
-        text = fmt.format_show(_show_payload(), include_id=True)
+        text = render.format_show(_show_payload(), include_id=True)
 
         for expected in (
             "Belief#3",
@@ -327,12 +327,12 @@ class TestDetailFormats:
         assert "Recent changes:" not in text
 
     def test_format_show_changes_includes_recent_changes(self) -> None:
-        text = fmt.format_show(_show_payload(), changes=True)
+        text = render.format_show(_show_payload(), changes=True)
 
         assert "Recent changes:" in text
 
     def test_format_show_changes_hides_empty_deltas(self) -> None:
-        text = fmt.format_show(
+        text = render.format_show(
             {
                 "self": {
                     "id": "abc",
@@ -373,7 +373,7 @@ class TestDetailFormats:
         assert "edge_labels:" not in text
 
     def test_format_show_uses_semantic_relation_names(self) -> None:
-        text = fmt.format_show(
+        text = render.format_show(
             {
                 "self": {
                     "id": "abc",
@@ -417,7 +417,7 @@ class TestDetailFormats:
         assert _relation_title("cites_paper", inbound=True) == "cited_by"
 
     def test_format_show_uses_belief_facing_citation_names(self) -> None:
-        text = fmt.format_show(
+        text = render.format_show(
             {
                 "self": {
                     "id": "abc",
@@ -440,7 +440,7 @@ class TestDetailFormats:
         assert "favors:" not in text
 
     def test_format_show_uses_artifact_facing_citation_names(self) -> None:
-        text = fmt.format_show(
+        text = render.format_show(
             {
                 "self": {
                     "id": "abc",
@@ -457,7 +457,7 @@ class TestDetailFormats:
         assert "proved_by:" not in text
 
     def test_format_show_defaults_owner(self) -> None:
-        text = fmt.format_show(
+        text = render.format_show(
             {
                 "self": {
                     "id": "abc",
@@ -471,7 +471,7 @@ class TestDetailFormats:
         assert "owner:       (unassigned)" in text
 
     def test_format_show_hides_empty_optional_fields(self) -> None:
-        text = fmt.format_show(
+        text = render.format_show(
             {
                 "self": {
                     "id": "abc",
@@ -493,7 +493,7 @@ class TestDetailFormats:
         assert "resource-cost" not in text
 
     def test_format_show_formats_extra_list_values(self) -> None:
-        text = fmt.format_show(
+        text = render.format_show(
             {
                 "self": {
                     "id": "abc",
@@ -510,7 +510,7 @@ class TestDetailFormats:
         assert "['task'" not in text
 
     def test_format_show_includes_selected_edge_metadata(self) -> None:
-        text = fmt.format_show(
+        text = render.format_show(
             {
                 "self": {
                     "id": "abc",
@@ -536,7 +536,7 @@ class TestDetailFormats:
         assert "edge_labels" not in text
 
     def test_format_changes(self) -> None:
-        text = fmt.format_changes(
+        text = render.format_changes(
             [
                 {
                     "created": "2026-05-18T12:34:56",
@@ -557,7 +557,7 @@ class TestDetailFormats:
         assert "status: active -> complete" in text
 
     def test_format_changes_prints_local_time(self) -> None:
-        text = fmt.format_changes(
+        text = render.format_changes(
             [
                 {
                     "created": datetime(2026, 5, 18, 12, 34, 56, tzinfo=UTC),
@@ -617,20 +617,14 @@ def _show_payload() -> dict[str, object]:
     }
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
-    from trackinizer.lib.testing.main import test_main
-
-    test_main(__file__)
-
-
 # Folded in from former crasher_test.py.
 
 
 def test_format_local_time_handles_none() -> None:
     """``None`` / empty / unparseable timestamps must produce a placeholder."""
-    assert fmt._format_local_time(None) == ""
-    assert fmt._format_local_time("") == ""
-    assert fmt._format_local_time("x") == ""
+    assert render._format_local_time(None) == ""
+    assert render._format_local_time("") == ""
+    assert render._format_local_time("x") == ""
 
 
 def test_edge_annotation_includes_peer_priority() -> None:
@@ -641,7 +635,7 @@ def test_edge_annotation_includes_peer_priority() -> None:
     ``_edge_annotation`` dropped it. A ``priority=0`` peer must still render its
     priority (zero is a real, set value, not absence).
     """
-    text = fmt.format_show(
+    text = render.format_show(
         {
             "self": {
                 "id": "abc",
@@ -698,3 +692,9 @@ def test_row_value_depth_cap() -> None:
         cursor = nxt
     cursor.append("leaf")
     assert "..." in _row_value(deep)
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.main import test_main
+
+    test_main(__file__)

@@ -22,10 +22,7 @@ import shlex
 import pytest
 
 from trackinizer.client.errors import ClientError
-from trackinizer.trax import (
-    cli,
-    grammar as g,
-)
+from trackinizer.trax import cli, grammar
 from trackinizer.trax.conftest import FakeClient
 from trackinizer.trax.grammar import (
     _FIELDS,
@@ -117,14 +114,12 @@ def _counterexamples() -> list[tuple[int, str, list[str]]]:
     return out
 
 
+# Useful for examples that depend on prior commands (e.g. ``profile prod url ...`` must
+# run before ``profile prod del``). The whole sequence is asserted to parse and execute
+# without error.
 @functools.cache
 def _sequences() -> list[tuple[int, list[list[str]]]]:
-    """Extract ``trax-seq`` blocks: every line runs in order with shared state.
-
-    Useful for examples that depend on prior commands (e.g. ``profile
-    prod url ...`` must run before ``profile prod del``). The whole
-    sequence is asserted to parse and execute without error.
-    """
+    """Extract ``trax-seq`` blocks: every line runs in order with shared state."""
     out: list[tuple[int, list[list[str]]]] = []
     text = (_CWD / "docs" / "GRAMMAR.md").read_text(encoding="utf-8")
     for match in _SEQUENCE_PATTERN.finditer(text):
@@ -327,7 +322,7 @@ def test_field_value_config_rejects_overflowed_number() -> None:
 def test_config_is_writable_but_not_filterable() -> None:
     """Structural JSON filtering is not part of the scalar filter grammar."""
     assert "config" in WRITE_FIELDS_CLI["Experiment"]
-    assert "config" not in g.FILTER_FIELDS_CLI["Experiment"]
+    assert "config" not in grammar.FILTER_FIELDS_CLI["Experiment"]
 
 
 def test_write_fields_cli_matches_server_kind_gate() -> None:
@@ -362,13 +357,11 @@ def test_validate_writable_fields_rejects_cross_kind_field() -> None:
         validate_writable_fields("Issue", ("judgement",))
 
 
+# A §9 table is a single paragraph of ``code``-spanned tokens directly under its
+# heading; any rationale prose follows a blank line and is excluded. Used to pin the
+# hand-maintained §9 tables to ``grammar.py``.
 def _section_9_tokens(heading: str) -> set[str]:
-    """Backtick tokens in the list paragraph under a ``### {heading}``.
-
-    A §9 table is a single paragraph of ``code``-spanned tokens directly
-    under its heading; any rationale prose follows a blank line and is
-    excluded. Used to pin the hand-maintained §9 tables to ``grammar.py``.
-    """
+    """Backtick tokens in the list paragraph under a ``### {heading}``."""
     text = (_CWD / "docs" / "GRAMMAR.md").read_text(encoding="utf-8")
     start = text.index(f"### {heading}")
     body = text[start:].split("\n", 1)[1]
@@ -379,14 +372,14 @@ def _section_9_tokens(heading: str) -> set[str]:
 def _table_sources() -> dict[str, set[str]]:
     """Each §9 table heading mapped to its ``grammar.py`` source set."""
     return {
-        "Kinds": set(g.VALID_KINDS),
-        "Issue kinds (`issue_kind`)": set(g.ISSUE_KINDS),
-        "Editable scalar fields (`EDITABLE_FIELDS`)": set(g.EDITABLE_FIELDS),
-        "List fields (`LIST_FIELDS`)": set(g.LIST_FIELDS),
-        "Cost fields (`COST_FIELDS`)": set(g.COST_FIELDS),
-        "Edge keywords (`EDGE_ALIASES`)": set(g.EDGE_ALIASES),
+        "Kinds": set(grammar.VALID_KINDS),
+        "Issue kinds (`issue_kind`)": set(grammar.ISSUE_KINDS),
+        "Editable scalar fields (`EDITABLE_FIELDS`)": set(grammar.EDITABLE_FIELDS),
+        "List fields (`LIST_FIELDS`)": set(grammar.LIST_FIELDS),
+        "Cost fields (`COST_FIELDS`)": set(grammar.COST_FIELDS),
+        "Edge keywords (`EDGE_ALIASES`)": set(grammar.EDGE_ALIASES),
         "Statuses (`Inquiry.Status`)": set(get_args(Inquiry.Status.__value__)),
-        "Sort choices (`SORT_CHOICES`)": set(g.SORT_CHOICES),
+        "Sort choices (`SORT_CHOICES`)": set(grammar.SORT_CHOICES),
         "Filter ops (`FILTER_OPS`)": set(FILTER_OPS),
     }
 
@@ -416,8 +409,8 @@ def test_every_edge_kind_has_both_writable_directions() -> None:
     (reverse=False) AND a reverse one (reverse=True), so either endpoint can
     anchor the create.
     """
-    forward = {e.name for e in g.EDGE_ALIASES.values() if not e.reverse}
-    reverse = {e.name for e in g.EDGE_ALIASES.values() if e.reverse}
+    forward = {e.name for e in grammar.EDGE_ALIASES.values() if not e.reverse}
+    reverse = {e.name for e in grammar.EDGE_ALIASES.values() if e.reverse}
     kinds = set(get_args(Edge.Kind.__value__))
     assert kinds <= forward, f"no forward writable alias for {sorted(kinds - forward)}"
     assert kinds <= reverse, f"no reverse writable alias for {sorted(kinds - reverse)}"
@@ -429,10 +422,16 @@ def test_narrowed_by_produced_by_superseded_by_are_writable_reverses() -> None:
     ``produced_by`` is now the FORWARD spelling of the stored ``produced_by``
     kind (from=produced -> to=producer); ``produces`` is its reverse.
     """
-    assert g.EDGE_ALIASES["narrowed_by"] == g.Edge(name="narrows", reverse=True)
-    assert g.EDGE_ALIASES["produced_by"] == g.Edge(name="produced_by")
-    assert g.EDGE_ALIASES["produces"] == g.Edge(name="produced_by", reverse=True)
-    assert g.EDGE_ALIASES["superseded_by"] == g.Edge(name="supersedes", reverse=True)
+    assert grammar.EDGE_ALIASES["narrowed_by"] == grammar.Edge(
+        name="narrows", reverse=True
+    )
+    assert grammar.EDGE_ALIASES["produced_by"] == grammar.Edge(name="produced_by")
+    assert grammar.EDGE_ALIASES["produces"] == grammar.Edge(
+        name="produced_by", reverse=True
+    )
+    assert grammar.EDGE_ALIASES["superseded_by"] == grammar.Edge(
+        name="supersedes", reverse=True
+    )
 
 
 def test_taxonomy_edge_has_all_four_verb_forms() -> None:
@@ -444,12 +443,16 @@ def test_taxonomy_edge_has_all_four_verb_forms() -> None:
       child narrows parent    /  parent narrowed_by child   (child is from)
       parent broadens child   /  child broadened_by parent  (parent is from)
     """
-    # child on the from-side (forward storage):
-    assert g.EDGE_ALIASES["narrows"] == g.Edge(name="narrows")
-    assert g.EDGE_ALIASES["broadened_by"] == g.Edge(name="narrows")
-    # parent on the from-side (reverse storage):
-    assert g.EDGE_ALIASES["narrowed_by"] == g.Edge(name="narrows", reverse=True)
-    assert g.EDGE_ALIASES["broadens"] == g.Edge(name="narrows", reverse=True)
+    # Child on the from-side (forward storage):
+    assert grammar.EDGE_ALIASES["narrows"] == grammar.Edge(name="narrows")
+    assert grammar.EDGE_ALIASES["broadened_by"] == grammar.Edge(name="narrows")
+    # Parent on the from-side (reverse storage):
+    assert grammar.EDGE_ALIASES["narrowed_by"] == grammar.Edge(
+        name="narrows", reverse=True
+    )
+    assert grammar.EDGE_ALIASES["broadens"] == grammar.Edge(
+        name="narrows", reverse=True
+    )
 
 
 if __name__ == "__main__":

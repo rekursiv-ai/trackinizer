@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast, get_args
+from typing import Any, Final, cast, get_args
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
@@ -30,6 +30,9 @@ from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.wire_sessions import FeedEvent
 
 
+_CWD: Final = Path(__file__).resolve().parent
+
+
 # Tests in this module call the FastAPI route functions directly (not
 # via TestClient), so the ``Depends(require_role(...))`` resolution does
 # not run; the test must pass an :class:`AuthIdentity` explicitly to
@@ -45,6 +48,7 @@ _TEST_IDENTITY = AuthIdentity(
 @dataclass(slots=True, kw_only=True)
 class _State:
     store: object
+
     engine: object
 
 
@@ -327,7 +331,7 @@ class TestSerialization:
 
 class TestTimestampAssets:
     def test_browser_timestamp_formatters_use_local_time(self) -> None:
-        root = Path(__file__).resolve().parent / "assets"
+        root = _CWD / "assets"
         for name in ("index.html", "admin.html", "me.html"):
             text = (root / name).read_text()
             assert "new Date(iso)" in text
@@ -669,7 +673,7 @@ class TestRoutes:
             side_effect=[
                 # 1. recent ids (only the new node fits the limit)
                 [{"id": recent_id}],
-                # 2. edges touching the recent node -> reaches the old node
+                # 2. edges touching the recent node -> reaches the old node.
                 [
                     {
                         "from_id": recent_id,
@@ -678,7 +682,7 @@ class TestRoutes:
                         "valence": 0.5,
                     }
                 ],
-                # 3. full rows for the closed set (old + recent), created ASC
+                # 3. full rows for the closed set (old + recent), created ASC.
                 [
                     {
                         "id": old_id,
@@ -993,6 +997,7 @@ class _SessionStub:
     """Minimal stand-in for ``Config`` -- exposes the two attrs web.py reads."""
 
     session_secret: str | None = "test-secret"  # noqa: S105 -- test fixture.
+
     session_max_age_seconds: int = 600
 
 
@@ -1015,17 +1020,7 @@ def _viewer_identity() -> AuthIdentity:
 
 
 def _build_pages_app(tmp_path: Path, *, with_session: bool = True) -> FastAPI:
-    """Build a fresh FastAPI with the Phase 4 HTML pages attached.
-
-    Args:
-      tmp_path: Test-supplied temp dir holding stub HTML files. Each
-        page is written with a recognizable body so assertions can tell
-        them apart even though the routes serve raw files.
-      with_session: When true, the app gets a stub ``Config`` whose
-        ``session_secret`` is set; unauthed requests are then redirected
-        to ``/auth/login_page`` instead of served as-is.
-
-    """
+    """Build a fresh FastAPI with the Phase 4 HTML pages attached."""
     (tmp_path / "index.html").write_text("INDEX")
     (tmp_path / "console.html").write_text("CONSOLE-PAGE")
     (tmp_path / "me.html").write_text("ME-PAGE")
@@ -1166,7 +1161,7 @@ class TestPhase4Pages:
         assert r.text == "CONSOLE-PAGE"
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

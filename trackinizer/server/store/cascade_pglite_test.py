@@ -29,7 +29,7 @@ from trackinizer.wire.bodies import (
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """A bootstrapped Store over the session's shared PGlite engine."""
+    """Return a bootstrapped Store over the session's shared PGlite engine."""
     await reset_schema(pglite_engine)
     store = Store(pglite_engine, embed=StubEmbedder())
     await store.bootstrap()

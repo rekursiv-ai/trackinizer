@@ -22,6 +22,9 @@ import stat
 from trackinizer.lib.userdirs import config_dir, state_dir
 
 
+_CWD: Final = Path(__file__).resolve().parent
+
+
 PROTOCOL_VERSION: Final = 1
 """Bumped when the frame payload's shape changes incompatibly."""
 
@@ -125,6 +128,12 @@ class Request:
         return hash((self.argv, self.cwd, self.source_version))
 
     def to_json(self) -> bytes:
+        """Serialize to a JSON-compatible mapping.
+
+        Returns:
+          result: The bytes.
+
+        """
         return json.dumps(
             {
                 "argv": list(self.argv),
@@ -141,6 +150,12 @@ class Request:
     @classmethod
     def from_json(cls, raw: bytes) -> Self:
         """Parse one request frame.
+
+        Args:
+          raw: Raw.
+
+        Returns:
+          result: The Self.
 
         Raises:
           ProtocolVersionError: The peer speaks a different frame shape. A
@@ -195,6 +210,12 @@ class Response:
         return hash((self.stdout, self.stderr, self.exit_code))
 
     def to_json(self) -> bytes:
+        """Serialize to a JSON-compatible mapping.
+
+        Returns:
+          result: The bytes.
+
+        """
         return json.dumps(
             {
                 "stdout": self.stdout,
@@ -213,6 +234,12 @@ class Response:
         the worst failure this protocol can produce: a script branching on the
         exit status proceeds as though the command worked.
 
+        Args:
+          raw: Raw.
+
+        Returns:
+          result: The Self.
+
         Raises:
           ValueError: The frame is not a well-formed response.
 
@@ -230,12 +257,24 @@ class ProtocolVersionError(ValueError):
 
 
 def write_frame(conn: socket.socket, payload: bytes) -> None:
-    """Send one length-prefixed frame."""
+    """Send one length-prefixed frame.
+
+    Args:
+      conn: Conn.
+      payload: Payload.
+
+    """
     conn.sendall(len(payload).to_bytes(_LENGTH_BYTES, "big") + payload)
 
 
 def read_frame(conn: socket.socket) -> bytes:
     """Read exactly one length-prefixed frame.
+
+    Args:
+      conn: Conn.
+
+    Returns:
+      result: The bytes.
 
     Raises:
       ConnectionError: The peer closed before the frame completed.
@@ -260,6 +299,10 @@ def socket_path() -> Path:
     that directory means such a caller connects to -- or spawns -- a daemon
     that reads the same store, since the daemon inherits the environment of
     whoever spawned it.
+
+    Returns:
+      result: The Path.
+
     """
     digest = hashlib.blake2b(str(config_dir()).encode(), digest_size=8).hexdigest()
     logical_path = state_dir() / "rekursiv-ai" / "traxd" / f"{digest}.sock"
@@ -297,8 +340,12 @@ def package_root() -> Path:
     ``client`` and ``wire`` resident too, so a fingerprint scoped to the CLI
     alone would keep serving stale behavior after an edit to the HTTP client
     or a wire contract -- output that looks correct and is not.
+
+    Returns:
+      result: The Path.
+
     """
-    return Path(__file__).resolve().parents[2]
+    return _CWD.parents[1]
 
 
 def source_version(root: Path) -> str:
@@ -309,6 +356,13 @@ def source_version(root: Path) -> str:
     introduces. Hashing every ``.py`` path plus its size and mtime catches an
     edit without reading file contents (a few hundred ``stat`` calls,
     sub-millisecond) and without importing anything.
+
+    Args:
+      root: Root.
+
+    Returns:
+      result: The str.
+
     """
     digest = hashlib.blake2b(digest_size=16)
     for path in sorted(root.rglob("*.py")):
@@ -359,15 +413,12 @@ def _aliased_socket_path(logical_path: Path) -> Path:
     return address
 
 
+# The shared typed-JSON extractor is the house tool for this, but it pulls in the import
+# graph this module exists to avoid, so the narrowing is spelled out here instead. A
+# non-object frame raises ``ValueError`` rather than ``TypeError``: every malformed-
+# frame failure is one thing to the caller -- a peer that sent garbage.
 def _decode_object(raw: bytes, where: str) -> dict[str, object]:
-    """Decode one frame into a JSON object, or raise ``ValueError``.
-
-    The shared typed-JSON extractor is the house tool for this, but it pulls
-    in the import graph this module exists to avoid, so the narrowing is
-    spelled out here instead. A non-object frame raises ``ValueError`` rather
-    than ``TypeError``: every malformed-frame failure is one thing to the
-    caller -- a peer that sent garbage.
-    """
+    """Decode one frame into a JSON object, or raise ``ValueError``."""
     try:
         payload: object = json.loads(raw)
     except ValueError as err:
@@ -415,13 +466,11 @@ def _str_map(value: object) -> dict[str, str]:
     }
 
 
+# ``recv`` returns what is available, not what was asked for: a 167KB listing arrives in
+# many segments, so a single ``recv`` would silently truncate the frame and the CLI
+# would print a partial table.
 def _read_exactly(conn: socket.socket, size: int) -> bytes:
-    """Read ``size`` bytes, or raise if the peer closes first.
-
-    ``recv`` returns what is available, not what was asked for: a 167KB
-    listing arrives in many segments, so a single ``recv`` would silently
-    truncate the frame and the CLI would print a partial table.
-    """
+    """Read ``size`` bytes, or raise if the peer closes first."""
     chunks: list[bytes] = []
     remaining = size
     while remaining > 0:

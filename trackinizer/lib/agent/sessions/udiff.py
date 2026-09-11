@@ -155,15 +155,6 @@ def parse_udiff(diff: str) -> tuple[Splice, ...]:
     return tuple(out)
 
 
-def _unterminate(splice: Splice) -> Splice:
-    """Drop the trailing newline from a splice's last populated field."""
-    for name in ("trail", "after", "before", "lead"):
-        value = getattr(splice, name)
-        if value:
-            return replace(splice, **{name: value.removesuffix("\n")})
-    return splice
-
-
 def render_udiff(edits: Sequence[Splice]) -> str:
     """Render splices back as the unified diff text they came from.
 
@@ -194,14 +185,12 @@ def render_udiff(edits: Sequence[Splice]) -> str:
     return "".join(out)
 
 
+# Text whose last line carries no newline renders without one, so a patch that ended
+# mid-line rebuilds exactly as the provider wrote it. When more diff FOLLOWS that line,
+# the missing terminator is stated the way git does -- an annotation -- because the next
+# line has to start somewhere.
 def _marked(mark: str, text: str | None, *, terminate: bool = False) -> list[str]:
-    """Return each line of ``text`` under ``mark``, keeping its termination.
-
-    Text whose last line carries no newline renders without one, so a patch
-    that ended mid-line rebuilds exactly as the provider wrote it. When more
-    diff FOLLOWS that line, the missing terminator is stated the way git does
-    -- an annotation -- because the next line has to start somewhere.
-    """
+    """Return each line of ``text`` under ``mark``, keeping its termination."""
     lines = _lines(text)
     if not lines:
         return []
@@ -213,19 +202,20 @@ def _marked(mark: str, text: str | None, *, terminate: bool = False) -> list[str
     return out
 
 
+# A final line without its newline is still a line: ``printf hi >> f`` appends exactly
+# ``hi``, and dropping the last piece unconditionally rendered that whole edit as
+# nothing.
 def _lines(text: str | None) -> list[str]:
-    """Return text as its lines, terminated or not.
-
-    A final line without its newline is still a line: ``printf hi >> f``
-    appends exactly ``hi``, and dropping the last piece unconditionally
-    rendered that whole edit as nothing.
-    """
+    """Return text as its lines, terminated or not."""
     if not text:
         return []
     pieces = text.split("\n")
     return pieces[:-1] if pieces[-1] == "" else pieces
 
 
+# ``count`` is the lines the run REPLACED, which is what the field states -- the ``@@``
+# header's own count spans the whole hunk, context included, and copying it made every
+# splice claim lines it did not touch.
 def _close(
     out: list[Splice],
     *,
@@ -236,12 +226,7 @@ def _close(
     start: int | None,
     bare: AbstractSet[str],
 ) -> None:
-    """Append the splice being accumulated, when it holds anything.
-
-    ``count`` is the lines the run REPLACED, which is what the field states --
-    the ``@@`` header's own count spans the whole hunk, context included, and
-    copying it made every splice claim lines it did not touch.
-    """
+    """Append the splice being accumulated, when it holds anything."""
     if not (removed or added or lead or trail):
         return
     before = _joined(removed)
@@ -269,3 +254,12 @@ def _close(
 def _joined(lines: Sequence[str]) -> str | None:
     """Return newline-terminated text, or ``None`` when there was none."""
     return "".join(f"{line}\n" for line in lines) if lines else None
+
+
+def _unterminate(splice: Splice) -> Splice:
+    """Drop the trailing newline from a splice's last populated field."""
+    for name in ("trail", "after", "before", "lead"):
+        value = getattr(splice, name)
+        if value:
+            return replace(splice, **{name: value.removesuffix("\n")})
+    return splice

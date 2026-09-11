@@ -98,13 +98,145 @@ class InquiryFieldRoute:
     ``/api/inquiries/<id>/<field>``."""
 
 
-def _element_type(value_type: object) -> object | None:
-    """Return the element type of a ``tuple[X, ...] | None`` column.
+@cache
+def inquiry_field_routes() -> tuple[InquiryFieldRoute, ...]:
+    """Every mutable inquiry-field route, derived from ``types/``.
 
-    A list column is stored as ``tuple[X, ...]`` (optionally ``| None``),
-    and its PATCH element is one ``X``. Returns ``None`` when
-    ``value_type`` is not a homogeneous tuple.
+    One entry per distinct flat column across the Inquiry hierarchy, in a
+    stable order. Cached, since the table is fixed once the dataclasses
+    are defined.
+
+    Returns:
+      result: The tuple[InquiryFieldRoute, ...].
+
     """
+    seen: dict[str, InquiryFieldRoute] = {}
+    for cls in INQUIRY_CLASSES:
+        for column, flat in flat_column_specs(cls).items():
+            # A non-route-editable column (``agentsession_ended``) is written
+            # only through its dedicated method, so it gets no field route.
+            if column in seen or not flat.spec.route_editable:
+                continue
+            seen[column] = _route_for(column, flat)
+    return tuple(seen.values())
+
+
+@cache
+def field_owner_kind() -> dict[str, str]:
+    """Map each kind-specific field name to its lowercased owning kind.
+
+    Base fields and cost axes are absent (they route under
+    ``/api/inquiries``). Lets the client and SPA build the kind-scoped
+    field URL from the field name alone, with no parallel table.
+
+    Returns:
+      result: The dict[str, str].
+
+    """
+    return {
+        route.column: route.owner_kind
+        for route in inquiry_field_routes()
+        if route.owner_kind is not None
+    }
+
+
+def inquiry_field_path(field: str) -> str:
+    """Return the field-route path template for ``field``.
+
+    Kind-specific fields route under their owning kind
+    (``/api/<kind>/{target_id}/<field>``); base fields and cost axes stay
+    under ``/api/inquiries/{target_id}/<field>``. The kind segment mirrors
+    the Python ``paper.source`` and CLI ``trax paper`` structure.
+
+    Args:
+      field: Field.
+
+    Returns:
+      result: The str.
+
+    """
+    owner = field_owner_kind().get(field)
+    prefix = f"/api/{owner}" if owner is not None else "/api/inquiries"
+    return f"{prefix}/{{target_id}}/{field}"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class EdgeFieldRoute:
+    """One edge annotation column and the verbs it exposes.
+
+    Edge identity lives in the URL path, so the route carries only the
+    annotation column. Every annotation is PUT-settable and
+    DELETE-clearable; only list annotations (``labels``) are
+    PATCH-augmentable.
+    """
+
+    column: str
+    """Edge annotation column name; the ``{field}`` URL segment."""
+
+    value_type: object
+    """The annotation's type, used as ``FieldSet[value_type]`` for PUT."""
+
+    element_type: object | None
+    """PATCH element type for a list annotation; ``None`` otherwise."""
+
+    @property
+    def patch(self) -> bool:
+        """Whether PATCH (add/sub) applies."""
+        return self.element_type is not None
+
+
+@cache
+def edge_field_routes() -> tuple[EdgeFieldRoute, ...]:
+    """Every edge annotation route, derived from :class:`Edge`'s columns.
+
+    Mirrors :func:`inquiry_field_routes`. ``Edge`` has no ``flatten``
+    columns, so the flat view equals the raw column set.
+
+    Returns:
+      result: The tuple[EdgeFieldRoute, ...].
+
+    """
+    return tuple(
+        EdgeFieldRoute(
+            column=column,
+            value_type=flat.value_type,
+            element_type=(
+                _element_type(flat.value_type) if flat.spec.list_verb_stem else None
+            ),
+        )
+        for column, flat in flat_column_specs(Edge).items()
+    )
+
+
+def edge_field_path(field: str) -> str:
+    """Return the edge annotation path template for ``field``.
+
+    Args:
+      field: Field.
+
+    Returns:
+      result: The str.
+
+    """
+    return f"/api/edges/{{from_id}}/{{edge_kind}}/{{to_id}}/{field}"
+
+
+type HttpVerb = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
+
+
+# List-endpoint pagination policy. Part of the HTTP contract, so every
+# consumer reads it instead of hard-coding its own number.
+# ``DEFAULT_LIST_LIMIT`` applies when a caller omits ``limit``;
+# ``MAX_LIST_LIMIT`` is the ceiling the server enforces on any supplied
+# ``limit``.
+DEFAULT_LIST_LIMIT = 50  # config-globals: ignore -- shared default; threading would duplicate across N call sites
+MAX_LIST_LIMIT: Final = 1000
+
+
+# A list column is stored as ``tuple[X, ...]`` (optionally ``| None``), and its PATCH
+# element is one ``X``. Returns ``None`` when ``value_type`` is not a homogeneous tuple.
+def _element_type(value_type: object) -> object | None:
+    """Return the element type of a ``tuple[X, ...] | None`` column."""
     for member in get_args(value_type) or (value_type,):
         if get_origin(member) is tuple:
             args = get_args(member)
@@ -151,118 +283,10 @@ def _route_for(column: str, flat: FlatColumn) -> InquiryFieldRoute:
         compare_and_set=spec.compare_and_set,
         supports_reason=spec.supports_reason,
         element_type=_element_type(flat.value_type) if stem else None,
-        set_method=f"set_{column}" if not spec.immutable else None,
+        set_method=None if spec.immutable else f"set_{column}",
         patch=bool(stem),
         add_method=f"add_{stem}" if stem else None,
         sub_method=f"remove_{stem}" if stem else None,
         cost_axis=None,
         owner_kind=_owner_kind(flat),
     )
-
-
-@cache
-def inquiry_field_routes() -> tuple[InquiryFieldRoute, ...]:
-    """Every mutable inquiry-field route, derived from ``types/``.
-
-    One entry per distinct flat column across the Inquiry hierarchy, in a
-    stable order. Cached, since the table is fixed once the dataclasses
-    are defined.
-    """
-    seen: dict[str, InquiryFieldRoute] = {}
-    for cls in INQUIRY_CLASSES:
-        for column, flat in flat_column_specs(cls).items():
-            # A non-route-editable column (``agentsession_ended``) is written
-            # only through its dedicated method, so it gets no field route.
-            if column in seen or not flat.spec.route_editable:
-                continue
-            seen[column] = _route_for(column, flat)
-    return tuple(seen.values())
-
-
-@cache
-def field_owner_kind() -> dict[str, str]:
-    """Map each kind-specific field name to its lowercased owning kind.
-
-    Base fields and cost axes are absent (they route under
-    ``/api/inquiries``). Lets the client and SPA build the kind-scoped
-    field URL from the field name alone, with no parallel table.
-    """
-    return {
-        route.column: route.owner_kind
-        for route in inquiry_field_routes()
-        if route.owner_kind is not None
-    }
-
-
-def inquiry_field_path(field: str) -> str:
-    """Return the field-route path template for ``field``.
-
-    Kind-specific fields route under their owning kind
-    (``/api/<kind>/{target_id}/<field>``); base fields and cost axes stay
-    under ``/api/inquiries/{target_id}/<field>``. The kind segment mirrors
-    the Python ``paper.source`` and CLI ``trax paper`` structure.
-    """
-    owner = field_owner_kind().get(field)
-    prefix = f"/api/{owner}" if owner is not None else "/api/inquiries"
-    return f"{prefix}/{{target_id}}/{field}"
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class EdgeFieldRoute:
-    """One edge annotation column and the verbs it exposes.
-
-    Edge identity lives in the URL path, so the route carries only the
-    annotation column. Every annotation is PUT-settable and
-    DELETE-clearable; only list annotations (``labels``) are
-    PATCH-augmentable.
-    """
-
-    column: str
-    """Edge annotation column name; the ``{field}`` URL segment."""
-
-    value_type: object
-    """The annotation's type, used as ``FieldSet[value_type]`` for PUT."""
-
-    element_type: object | None
-    """PATCH element type for a list annotation; ``None`` otherwise."""
-
-    @property
-    def patch(self) -> bool:
-        """Whether PATCH (add/sub) applies."""
-        return self.element_type is not None
-
-
-@cache
-def edge_field_routes() -> tuple[EdgeFieldRoute, ...]:
-    """Every edge annotation route, derived from :class:`Edge`'s columns.
-
-    Mirrors :func:`inquiry_field_routes`. ``Edge`` has no ``flatten``
-    columns, so the flat view equals the raw column set.
-    """
-    return tuple(
-        EdgeFieldRoute(
-            column=column,
-            value_type=flat.value_type,
-            element_type=(
-                _element_type(flat.value_type) if flat.spec.list_verb_stem else None
-            ),
-        )
-        for column, flat in flat_column_specs(Edge).items()
-    )
-
-
-def edge_field_path(field: str) -> str:
-    """Return the edge annotation path template for ``field``."""
-    return f"/api/edges/{{from_id}}/{{edge_kind}}/{{to_id}}/{field}"
-
-
-type HttpVerb = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
-
-
-# List-endpoint pagination policy. Part of the HTTP contract, so every
-# consumer reads it instead of hard-coding its own number.
-# ``DEFAULT_LIST_LIMIT`` applies when a caller omits ``limit``;
-# ``MAX_LIST_LIMIT`` is the ceiling the server enforces on any supplied
-# ``limit``.
-DEFAULT_LIST_LIMIT = 50  # config-globals: ignore -- shared default; threading would duplicate across N call sites
-MAX_LIST_LIMIT: Final = 1000

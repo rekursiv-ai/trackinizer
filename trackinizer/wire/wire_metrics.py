@@ -44,15 +44,12 @@ than ``SubmitBatch``'s 1000 because a training run legitimately flushes many
 points at once; a run logging more per flush pages into several requests."""
 
 
+# The key is a primary-key component matched verbatim, so a whitespace-only key can
+# never be read back meaningfully and is almost certainly a client bug; reject it at the
+# boundary. ``Field(min_length=1)`` alone admits ``" "``, so this validator backs it --
+# mirroring ``wire_sessions``' ``_reject_blank`` rule for scalar identity fields.
 def _reject_blank_key(value: str) -> str:
-    """Reject an empty-or-whitespace metric key.
-
-    The key is a primary-key component matched verbatim, so a whitespace-only
-    key can never be read back meaningfully and is almost certainly a client
-    bug; reject it at the boundary. ``Field(min_length=1)`` alone admits
-    ``"   "``, so this validator backs it -- mirroring ``wire_sessions``'
-    ``_reject_blank`` rule for scalar identity fields.
-    """
+    """Reject an empty-or-whitespace metric key."""
     if not value.strip():
         raise ValueError("metric key must be non-empty")
     return value
@@ -133,6 +130,7 @@ class LogMetricsResponse(BaseModel):
     """
 
     logged: int
+
     skipped: int
 
 
@@ -158,5 +156,13 @@ METRICS_API_PATHS: tuple[str, ...] = (EXPERIMENT_METRICS_PATH,)
 
 
 def experiment_metrics_path(experiment_id: uuid.UUID) -> str:
-    """The metrics path (POST log, GET read) for one experiment."""
+    """Return the metrics path (POST log, GET read) for one experiment.
+
+    Args:
+      experiment_id: Experiment id.
+
+    Returns:
+      result: The str.
+
+    """
     return EXPERIMENT_METRICS_PATH.format(experiment_id=experiment_id)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -13,14 +12,12 @@ from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.profile import Profile
 
 
+# The module builds every path inline from ``config_dir``, so redirecting
+# ``XDG_CONFIG_HOME`` isolates the test through the same resolution production uses --
+# no module global to patch, and no way for the test to pass while the real lookup is
+# broken.
 def _redirect_config(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
-    """Point config_dir at ``root`` so profile writes stay in tmp.
-
-    The module builds every path inline from ``config_dir``, so redirecting
-    ``XDG_CONFIG_HOME`` isolates the test through the same resolution
-    production uses -- no module global to patch, and no way for the test to
-    pass while the real lookup is broken.
-    """
+    """Point config_dir at ``root`` so profile writes stay in tmp."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(root))
     (root / "rekursiv-ai" / "trax" / "profiles").mkdir(parents=True, exist_ok=True)
 
@@ -74,7 +71,7 @@ def test_profile_set_leaf_help_shows_local_forms(
 
 def test_bare_profile_lists_all_with_active_marked(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Any,
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Bare ``trax profile`` lists all profiles, active ``*``-marked.
@@ -98,7 +95,7 @@ def test_bare_profile_lists_all_with_active_marked(
 
 def test_profile_name_displays_named_connection_target(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Any,
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
@@ -111,7 +108,7 @@ def test_profile_name_displays_named_connection_target(
 
 def test_profile_field_displays_active_profile_field(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Any,
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
@@ -122,7 +119,7 @@ def test_profile_field_displays_active_profile_field(
 
 def test_profile_name_field_displays_named_profile_field(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Any,
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
@@ -133,7 +130,7 @@ def test_profile_name_field_displays_named_profile_field(
 
 def test_profile_token_sets_active_profile_token(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Any,
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
@@ -145,7 +142,7 @@ def test_profile_token_sets_active_profile_token(
 
 def test_profile_name_token_sets_named_profile_token(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Any,
+    tmp_path: Path,
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
     profile.save_profile("foo", Profile(url="http://foo:8765"))
@@ -155,7 +152,7 @@ def test_profile_name_token_sets_named_profile_token(
 
 def test_profile_url_creates_default_profile(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Any,
+    tmp_path: Path,
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
     run(["profile", "url", "to", "http://trackinizer.local:8765"], FakeClient())
@@ -164,7 +161,7 @@ def test_profile_url_creates_default_profile(
 
 def test_profile_current_selects_existing_profile(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Any,
+    tmp_path: Path,
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
     profile.save_profile("foo", Profile(url="http://foo:8765"))
@@ -174,7 +171,7 @@ def test_profile_current_selects_existing_profile(
 
 def test_profile_token_bootstraps_missing_profile(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Any,
+    tmp_path: Path,
 ) -> None:
     """A first-write on any missing profile bootstraps with the default URL."""
     _redirect_config(monkeypatch, tmp_path)
@@ -189,7 +186,7 @@ def test_profile_token_bootstraps_missing_profile(
 
 def test_profile_rejects_old_subcommand_sugar(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Any,
+    tmp_path: Path,
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
     profile.save_profile("default", Profile(url="http://trackinizer.local:8765"))
@@ -523,7 +520,7 @@ def test_write_atomic_uses_unique_temp_per_write(
     assert leftovers == [], f"temp file leaked: {leftovers}"
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

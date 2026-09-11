@@ -86,6 +86,13 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         race-proof backstop for concurrent *live* starts, so :meth:`start_session`
         retries this reservation when a concurrent start takes the same name
         between read and insert.
+
+        Args:
+          requested: Requested.
+
+        Returns:
+          requested: The str.
+
         """
         async with self.engine.acquire() as conn:
             taken = {
@@ -131,6 +138,12 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         the original session id AND its granted owner are replayed -- the
         change_log is probed for the key BEFORE reserving, so a retry never
         burns a fresh ``#N`` suffix.
+
+        Args:
+          req: Req.
+          requested_actor: Requested actor.
+          api_key_id: Api key id.
+          max_reserve_attempts: Max reserve attempts.
 
         Returns:
           session_id: The server-minted (or re-attached) inquiry id.
@@ -214,63 +227,54 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             f"{max_reserve_attempts} attempts"
         ) from last_error
 
+    # It reported the legacy event log's continuation point, which a resumed run seeded
+    # its counter from. A record's key is DERIVED from its position in its source file,
+    # so a resumed run re-derives the same keys and needs no continuation -- and the
+    # table it read is gone.
+    #
+    # ``SessionStartResponse.seq`` is the last consumer; no client reads it
+    # (``trax/run/sink.py::_ensure_session`` says so explicitly). The field goes when
+    # the wire type can change without a coordinated client release.
     @classmethod
     async def _next_event_seq(cls, conn: Conn, session_id: UUID) -> int:
-        """Deprecated: always 0, kept because the wire field still exists.
-
-        It reported the legacy event log's continuation point, which a resumed
-        run seeded its counter from. A record's key is DERIVED from its
-        position in its source file, so a resumed run re-derives the same keys
-        and needs no continuation -- and the table it read is gone.
-
-        ``SessionStartResponse.seq`` is the last consumer; no client reads it
-        (``trax/run/sink.py::_ensure_session`` says so explicitly). The field
-        goes when the wire type can change without a coordinated client
-        release.
-        """
+        """Return 0 always; deprecated, kept because the wire field still exists."""
         del conn, session_id
         return 0
 
+    # Returns ``(id, owner, next_seq)`` on a match, else ``None`` (no prior session this
+    # caller may resume -> caller mints a fresh one).
+    #
+    # Resume CORRELATION, not access control: a session re-attaches only to the
+    # ``api_key_id`` that opened it, matched ``IS NOT DISTINCT FROM`` so a ``--no-auth``
+    # None==None pairing still resolves. This routes the right capture log back to the
+    # right ``trax run`` -- a credentialed caller resuming another principal's
+    # ``cli_session_id`` gets ``None`` (mints a fresh session) rather than silently
+    # appending to a stranger's log. It is NOT an authorization boundary: AgentSessions
+    # are a shared workspace (events/read/end/drain are writer/viewer-gated, not owner-
+    # gated); ``opened_by_api_key_id`` is attribution + this resume key only. Under
+    # ``--no-auth`` ALL sessions stamp ``opened_by = NULL``, so the scope degrades to
+    # ``cli_session_id`` alone; a no-auth caller resuming a known ``cli_session_id`` re-
+    # attaches it, as intended for a single-tenant local deploy.
+    #
+    # Re-opening an ended session clears ``agentsession_ended`` and restores
+    # ``status='active'`` in one statement so the lifecycle CHECK (``ended`` set iff
+    # ``status='complete'``) never sees an intermediate desync -- the live<-ended mirror
+    # of ``end_session``'s atomic live->ended move. The re-open audit is attributed to
+    # ``actor`` -- the resuming request's ``--as`` string (the system-wide author label;
+    # the verified identity is the audit row's ``api_key_id``, not this free string),
+    # NOT the original owner. Any new ``req.rooms`` are applied -- on a live OR a re-
+    # opened re-attach -- so ``--resume --room X`` joins X rather than dropping it.
+    #
+    # Resume deliberately does NOT re-validate the session's ``account``. The account is
+    # mutable stamped data, not a live permission check: it is set at create and
+    # persists until something explicitly re-stamps it (via ``set_account``). A user
+    # disabled after the stamp does not rewrite anyone's existing stamp, and resume --
+    # like a plain field edit -- never revalidates it. Resume inherits the stamp as-is;
+    # this is the consistent behavior, not a carve-out.
     async def _resume_session(
         self, req: SubmitAgentSession, *, api_key_id: UUID | None, actor: Inquiry.Actor
     ) -> tuple[UUID, str, int] | None:
-        """Re-attach (and re-open if ended) the session for this CLI session id.
-
-        Returns ``(id, owner, next_seq)`` on a match, else ``None`` (no prior
-        session this caller may resume -> caller mints a fresh one).
-
-        Resume CORRELATION, not access control: a session re-attaches only to
-        the ``api_key_id`` that opened it, matched ``IS NOT DISTINCT FROM`` so a
-        ``--no-auth`` None==None pairing still resolves. This routes the right
-        capture log back to the right ``trax run`` -- a credentialed caller
-        resuming another principal's ``cli_session_id`` gets ``None`` (mints a
-        fresh session) rather than silently appending to a stranger's log. It is
-        NOT an authorization boundary: AgentSessions are a shared workspace
-        (events/read/end/drain are writer/viewer-gated, not owner-gated);
-        ``opened_by_api_key_id`` is attribution + this resume key only.
-        Under ``--no-auth`` ALL sessions stamp ``opened_by = NULL``, so the
-        scope degrades to ``cli_session_id`` alone; a no-auth caller
-        resuming a known ``cli_session_id`` re-attaches it, as intended for a
-        single-tenant local deploy.
-
-        Re-opening an ended session clears ``agentsession_ended`` and restores
-        ``status='active'`` in one statement so the lifecycle CHECK (``ended``
-        set iff ``status='complete'``) never sees an intermediate desync -- the
-        live<-ended mirror of ``end_session``'s atomic live->ended move. The
-        re-open audit is attributed to ``actor`` -- the resuming request's
-        ``--as`` string (the system-wide author label; the verified identity is
-        the audit row's ``api_key_id``, not this free string), NOT the original
-        owner. Any new ``req.rooms`` are applied -- on a live OR a re-opened
-        re-attach -- so ``--resume --room X`` joins X rather than dropping it.
-
-        Resume deliberately does NOT re-validate the session's ``account``. The
-        account is mutable stamped data, not a live permission check: it is set
-        at create and persists until something explicitly re-stamps it (via
-        ``set_account``). A user disabled after the stamp does not rewrite
-        anyone's existing stamp, and resume -- like a plain field edit -- never
-        revalidates it. Resume inherits the stamp as-is; this is the consistent
-        behavior, not a carve-out.
-        """
+        """Re-attach (and re-open if ended) the session for this CLI session id."""
         async with (
             notify_after_commit(),
             self.engine.acquire() as conn,
@@ -349,6 +353,10 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         the bare-``@actor`` ambiguity rule (a session in several rooms cannot be
         addressed without naming one). Ordered by ``(created, id)`` so the
         ordering is stable even when two rows share a creation instant.
+
+        Args:
+          actor: Actor.
+          room: Room.
 
         Returns:
           sessions: ``(session_id, rooms)`` pairs, oldest first.
@@ -515,11 +523,19 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         change_log row is the anchor, keyed by that UUID. A second close with
         a *different* (or no) key is a genuine duplicate and is rejected.
 
+        Args:
+          session_id: Session id.
+          ended: Ended.
+          cli_session_id: Cli session id.
+          api_key_id: Api key id.
+          actor: Actor.
+
         Returns:
           ended: The committed ``agentsession_ended`` timestamp -- the value
             just stamped, or, on an idempotent replay, the originally-stored
             one. The route echoes THIS so two same-key /end calls return the
             identical receipt rather than two fresh ``now()`` timestamps.
+
 
         Raises:
           NotFoundError: ``session_id`` is not an existing inquiry.

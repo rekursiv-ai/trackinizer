@@ -12,8 +12,8 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.lib.agent.sessions import (
-    claude as claude_ir,
-    codex as codex_ir,
+    claude,
+    codex,
 )
 from trackinizer.lib.agent.types.sessions import UncategorizedRecord, UserMessage
 from trackinizer.lib.custom_json import JSON, json_freeze
@@ -35,17 +35,15 @@ from trackinizer.wire.wire_session_ir import PartBody, RecordBody
 # Asked of the MODULE that owns it, not counted in parents from here: the
 # export republishes this tree one directory shallower, so a fixed hop
 # count resolved outside the package and the fixtures vanished.
-_TESTDATA: Final = Path(claude_ir.__file__).resolve().parent / "testdata"
+_TESTDATA: Final = Path(claude.__file__).resolve().parent / "testdata"
 
 
+# Fed a line at a time through :class:`Tail`, which is what capture does: the reader
+# PULLS and the runner PUSHES, so driving the pull side directly would exercise a path
+# the runner never takes.
 def _records(name: str) -> tuple[list[TraxRecord], JSON]:
-    """A corpus fixture's records and how its file spells its bytes.
-
-    Fed a line at a time through :class:`Tail`, which is what capture does:
-    the reader PULLS and the runner PUSHES, so driving the pull side directly
-    would exercise a path the runner never takes.
-    """
-    reader = Tail((codex_ir if name.startswith("codex") else claude_ir).normalize)
+    """Return a corpus fixture's records and how its file spells its bytes."""
+    reader = Tail((codex if name.startswith("codex") else claude).normalize)
     out: list[TraxRecord] = []
     with (_TESTDATA / name).open(encoding="utf-8") as handle:
         for line in handle:
@@ -222,7 +220,7 @@ class TestLossyConversion:
 
         rebuilt = Counter(
             type(record).__name__
-            for record in codex_ir.normalize(
+            for record in codex.normalize(
                 StringIO(written.path.read_text(encoding="utf-8"))
             )
         )
@@ -283,11 +281,11 @@ class TestLossyConversion:
 
 
 def cast_client(fake: _FakeClient) -> Client:
-    """The fake, as the ``Client`` the resume path declares."""
+    """Return the fake, as the ``Client`` the resume path declares."""
     return cast(Client, fake)
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

@@ -54,14 +54,12 @@ def _actor_of(body: ActorMixin, identity: AuthIdentity) -> str:
     return body.actor or identity.email
 
 
+# ``change_id`` is ``None`` for a no-op: the field already held the target value, so no
+# ``change_log`` row was written.
 def _mutation_response(
     target_id: uuid.UUID, change_id: uuid.UUID | None
 ) -> MutableJSON:
-    """Build the ``{id, change_id}`` mutation response.
-
-    ``change_id`` is ``None`` for a no-op: the field already held the
-    target value, so no ``change_log`` row was written.
-    """
+    """Build the ``{id, change_id}`` mutation response."""
     return {
         "id": str(target_id),
         "change_id": None if change_id is None else str(change_id),
@@ -131,16 +129,20 @@ def _make_delete(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSO
     return handler
 
 
-for _route in inquiry_field_routes():
-    _path = inquiry_field_path(_route.column)
-    if _route.put:
-        router.put(_path)(_make_put(_route))
-    if _route.delete:
-        router.delete(_path)(_make_delete(_route))
-    if _route.patch:
-        router.patch(_path)(_make_patch(_route))
+def _register_inquiry_field_routes() -> None:
+    """Attach the PUT/DELETE/PATCH each field route declares to ``router``."""
+    for route in inquiry_field_routes():
+        path = inquiry_field_path(route.column)
+        if route.put:
+            router.put(path)(_make_put(route))
+        if route.delete:
+            router.delete(path)(_make_delete(route))
+        if route.patch:
+            router.patch(path)(_make_patch(route))
 
 
+# Cost axes overwrite through ``Store.set_cost_axis``. Every other field forwards
+# ``value`` positionally to its ``set_<column>`` method.
 async def _set_value(
     route: InquiryFieldRoute,
     target_id: uuid.UUID,
@@ -150,11 +152,7 @@ async def _set_value(
     *,
     identity: AuthIdentity,
 ) -> uuid.UUID | None:
-    """Execute a blind ``PUT`` overwrite; return the change id, or ``None`` for a no-op.
-
-    Cost axes overwrite through ``Store.set_cost_axis``. Every other field
-    forwards ``value`` positionally to its ``set_<column>`` method.
-    """
+    """Execute a blind ``PUT`` overwrite; return the change id, or ``None``."""
     actor = _actor_of(body, identity)
     reason = cast(FieldSet[object], body).reason
     # ``account`` is the one column whose value must name an active user; the
@@ -176,6 +174,39 @@ async def _set_value(
     extra = {"reason": reason} if route.supports_reason else {}
     return await method(
         target_id, value, api_key_id=identity.api_key_id, actor=actor, **extra
+    )
+
+
+async def _run_patch(
+    route: InquiryFieldRoute,
+    target_id: uuid.UUID,
+    body: FieldOp[object],
+    store: Store,
+    identity: AuthIdentity,
+) -> uuid.UUID | None:
+    """Execute a ``PATCH``: a numeric cost delta or a list add/sub."""
+    actor = _actor_of(body, identity)
+    # Cost axes route through add_cost as a signed Cost delta, not a named
+    # add_<stem> setter, so they carry no add_method/sub_method; handle
+    # them before the list-method dispatch.
+    if route.cost_axis is not None:
+        amount = FloatCodec.coerce(body.value) * (1 if body.op == "add" else -1)
+        return await store.add_cost(
+            target_id,
+            Cost(**{route.cost_axis: amount}),
+            api_key_id=identity.api_key_id,
+            actor=actor,
+            reason=body.reason,
+        )
+    method_name = route.add_method if body.op == "add" else route.sub_method
+    if method_name is None:
+        raise HTTPException(
+            status_code=405,
+            detail=f"PATCH op={body.op!r} is not valid for field {route.column!r}",
+        )
+    element = cast(_ElementMethod, getattr(store, method_name))
+    return await element(
+        target_id, body.value, api_key_id=identity.api_key_id, actor=actor
     )
 
 
@@ -248,37 +279,7 @@ async def _run_compare_and_set(
     )
 
 
-async def _run_patch(
-    route: InquiryFieldRoute,
-    target_id: uuid.UUID,
-    body: FieldOp[object],
-    store: Store,
-    identity: AuthIdentity,
-) -> uuid.UUID | None:
-    """Execute a ``PATCH``: a numeric cost delta or a list add/sub."""
-    actor = _actor_of(body, identity)
-    # Cost axes route through add_cost as a signed Cost delta, not a named
-    # add_<stem> setter, so they carry no add_method/sub_method; handle
-    # them before the list-method dispatch.
-    if route.cost_axis is not None:
-        amount = FloatCodec.coerce(body.value) * (1 if body.op == "add" else -1)
-        return await store.add_cost(
-            target_id,
-            Cost(**{route.cost_axis: amount}),
-            api_key_id=identity.api_key_id,
-            actor=actor,
-            reason=body.reason,
-        )
-    method_name = route.add_method if body.op == "add" else route.sub_method
-    if method_name is None:
-        raise HTTPException(
-            status_code=405,
-            detail=f"PATCH op={body.op!r} is not valid for field {route.column!r}",
-        )
-    element = cast(_ElementMethod, getattr(store, method_name))
-    return await element(
-        target_id, body.value, api_key_id=identity.api_key_id, actor=actor
-    )
+_register_inquiry_field_routes()
 
 
 _SetterMethod = Callable[..., Awaitable["uuid.UUID | None"]]
