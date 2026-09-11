@@ -109,6 +109,9 @@ class _EditMixin(_CascadeAuditMixin):
             )
             return change_id
 
+    # ``FOR UPDATE`` is load-bearing: every ``set_X`` reads then decides whether to
+    # write; without the lock a concurrent purge or competing edit between the two steps
+    # races into a lost-update or a phantom audit row against a deleted subject.
     async def _read_field(
         self,
         conn: Conn,
@@ -117,30 +120,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         expected_kinds: frozenset[Inquiry.InquiryKind] | None = None,
     ) -> asyncpg.Record:
-        """Read ``<column>, kind`` for one inquiry under a row lock.
-
-        ``FOR UPDATE`` is load-bearing: every ``set_X`` reads then
-        decides whether to write; without the lock a concurrent purge
-        or competing edit between the two steps races into a
-        lost-update or a phantom audit row against a deleted subject.
-
-        Args:
-          conn: Active connection inside a transaction.
-          target_id: Row to read.
-          column: Single inquiries column to read alongside ``kind``.
-          expected_kinds: Closed-set gate. When non-None, the row's
-            ``kind`` must be in this set or a :class:`ConflictError`
-            is raised before the caller can attempt a schema-forbidden
-            UPDATE.
-
-        Returns:
-          row: Record with ``column`` and ``kind`` populated.
-
-        Raises:
-          NotFoundError: Subject is missing.
-          ConflictError: Subject's kind is outside ``expected_kinds``.
-
-        """
+        """Read ``<column>, kind`` for one inquiry under a row lock."""
         row = await conn.fetchrow(
             vetted_sql(
                 "SELECT ", column, ", kind FROM inquiries WHERE id = $1 FOR UPDATE"
@@ -189,21 +169,17 @@ class _EditMixin(_CascadeAuditMixin):
             f"idempotency_key {client_change_id} already used for a different operation"
         )
 
+    # Re-enforces ``ColumnSpec.immutable`` at the root write path so any future setter
+    # that bypasses :meth:`_set_field` (admin tools, bulk migrations) still cannot
+    # silently mutate immutable columns; the only correction path remains supersession.
     async def _update_field(
         self,
         conn: Conn,
         target_id: UUID,
         column: str,
-        value: Any,
+        value: object,
     ) -> None:
-        """UPDATE one inquiries column + bump modified.
-
-        Re-enforces ``ColumnSpec.immutable`` at the root write path so
-        any future setter that bypasses :meth:`_set_field` (admin
-        tools, bulk migrations) still cannot silently mutate
-        immutable columns; the only correction path remains
-        supersession.
-        """
+        """UPDATE one inquiries column + bump modified."""
         spec = COLUMN_SPECS[column]
         if spec.immutable:
             raise ConflictError(
@@ -230,6 +206,8 @@ class _EditMixin(_CascadeAuditMixin):
             target_id,
         )
 
+    # Returns ``(change_id, subscribers)`` mirroring :meth:`emit_change` so callers can
+    # post-commit notify with the subscriber list captured at change-emit time.
     async def _emit_field_change(
         self,
         conn: Conn,
@@ -245,12 +223,7 @@ class _EditMixin(_CascadeAuditMixin):
         extra_subscribers: tuple[Inquiry.Actor, ...] = (),
         caused_by: UUID | None = None,
     ) -> tuple[UUID, tuple[str, ...]]:
-        """Tiny convenience to keep set_X call shape readable.
-
-        Returns ``(change_id, subscribers)`` mirroring
-        :meth:`emit_change` so callers can post-commit notify with the
-        subscriber list captured at change-emit time.
-        """
+        """Tiny convenience to keep set_X call shape readable."""
         return await self.emit_change(
             conn,
             caused_by=caused_by,
@@ -281,47 +254,24 @@ class _EditMixin(_CascadeAuditMixin):
             actor=actor,
         )
 
+    # The single mutation pipeline that every ``set_X`` setter delegates into. Replaces
+    # 15 hand-written copies of the same five-step recipe -- previously every setter
+    # independently composed the lock, the dedup, the optional validator, the
+    # ``_update_field`` call, the snapshot pair, and the ``_emit_field_change``. One
+    # missed step in any of them produced a Disease-C bug. Now each setter is one line
+    # that names the column; the pipeline runs from :class:`ColumnSpec` metadata on the
+    # dataclass plus the matching :data:`RUNTIME_HOOKS` entry.
     async def _set_field(
         self,
         target_id: UUID,
-        value: Any,
+        value: object,
         *,
         column: str,
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
         reason: str = "",
     ) -> UUID | None:
-        """Drive one editable column through lock -> compare -> validate
-        -> update -> audit -> notify.
-
-        The single mutation pipeline that every ``set_X`` setter
-        delegates into. Replaces 15 hand-written copies of the same
-        five-step recipe -- previously every setter independently
-        composed the lock, the dedup, the optional validator, the
-        ``_update_field`` call, the snapshot pair, and the
-        ``_emit_field_change``. One missed step in any of them produced
-        a Disease-C bug. Now each setter is one line that names the
-        column; the pipeline runs from :class:`ColumnSpec` metadata on
-        the dataclass plus the matching :data:`RUNTIME_HOOKS` entry.
-
-        Args:
-          target_id: Inquiry to mutate.
-          value: New value, in whatever shape the public setter
-            accepts (e.g. ``Sequence[Inquiry.Actor]`` for ``subscribers``).
-          column: inquiries column name; resolves to a
-            :class:`ColumnSpec` via :data:`COLUMN_SPECS` and
-            (optionally) a behavioral override via :data:`RUNTIME_HOOKS`.
-          api_key_id: Server-stamped ``api_keys.id`` of the credential
-            used by the authenticated caller; ``None`` for tests /
-            programmatic callers without an auth context.
-          actor: Free-form audit string recorded on the emitted change
-            row. See the Auth section of ``docs/design.md`` for the credential-vs-actor
-            split.
-          reason: Optional free-form reason; only forwarded when the
-            spec's ``supports_reason`` is true (status, judgement,
-            confidence).
-
-        """
+        """Lock, compare, validate, update, audit, and notify one editable column."""
         spec = COLUMN_SPECS[column]
         if spec.immutable:
             raise ConflictError(
@@ -512,6 +462,15 @@ class _EditMixin(_CascadeAuditMixin):
         a real account), so a direct Store caller cannot blank a required field
         the route validates.
 
+        Args:
+          target_id: Target id.
+          value: Value.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
         Raises:
           ConflictError: ``value`` is empty or whitespace-only.
 
@@ -565,6 +524,18 @@ class _EditMixin(_CascadeAuditMixin):
         ``transition_status`` holds the row lock across the read of
         ``status`` and the UPDATE, so the second writer sees the
         post-edit state and gets ``ConflictError``.
+
+        Args:
+          target_id: Target id.
+          expected_from: Expected from.
+          to: To.
+          api_key_id: Api key id.
+          actor: Actor.
+          reason: Reason.
+
+        Returns:
+          result: The UUID | None.
+
         """
         async with (
             notify_after_commit(),
@@ -640,6 +611,18 @@ class _EditMixin(_CascadeAuditMixin):
         the row lock across the read of ``judgement`` and the UPDATE makes
         the second writer observe the post-edit state and get a
         :class:`ConflictError`.
+
+        Args:
+          target_id: Target id.
+          expected_from: Expected from.
+          to: To.
+          api_key_id: Api key id.
+          actor: Actor.
+          reason: Reason.
+
+        Returns:
+          result: The UUID | None.
+
         """
         async with (
             notify_after_commit(),
@@ -824,7 +807,18 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Atomically append one author to a Paper's byline."""
+        """Atomically append one author to a Paper's byline.
+
+        Args:
+          target_id: Target id.
+          author: Author.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
+        """
         return await self._mutate_list_field(
             target_id,
             author,
@@ -834,10 +828,15 @@ class _EditMixin(_CascadeAuditMixin):
             include=True,
         )
 
+    # The race the OG ``subscribe_self`` fix prevented (GET inquiry → mutate list → POST
+    # edit, with two writers clobbering one another) shows up for every multi-valued
+    # column: ``subscribers``, ``labels``, ``issue_kind``, ``codechanges``. This driver
+    # consolidates the read-lock-decide-update-audit pipeline once; each public
+    # ``add_X``/``remove_X`` is one-line delegation.
     async def _mutate_list_field(
         self,
         target_id: UUID,
-        item: Any,
+        item: object,
         *,
         column: str,
         api_key_id: UUID | None,
@@ -845,31 +844,7 @@ class _EditMixin(_CascadeAuditMixin):
         include: bool,
         validate_item: (Callable[[Conn], Awaitable[None]] | None) = None,
     ) -> UUID | None:
-        """Generic atomic add/remove on a list-valued column.
-
-        The race the OG ``subscribe_self`` fix prevented (GET inquiry
-        → mutate list → POST edit, with two writers clobbering one
-        another) shows up for every multi-valued column: ``subscribers``,
-        ``labels``, ``issue_kind``, ``codechanges``. This driver
-        consolidates the read-lock-decide-update-audit pipeline once;
-        each public ``add_X``/``remove_X`` is one-line delegation.
-
-        Args:
-          target_id: Inquiry to mutate.
-          item: The element to add or remove. Must be a member of the
-            column's element type (a label string, an Issue.Kind, a
-            CodeChange UUID, an actor id).
-          column: ``COLUMN_SPECS`` key (e.g. ``"labels"``).
-          api_key_id: Server-stamped ``api_keys.id`` of the credential
-            used by the authenticated caller; ``None`` for tests /
-            programmatic callers without an auth context.
-          actor: Free-form audit string.
-          include: True to add; False to remove.
-          validate_item: Optional async predicate run against the
-            connection before the UPDATE. Used by ``add_codechange``
-            to verify the target UUID resolves to a CodeChange row.
-
-        """
+        """Add to or remove from a list-valued column atomically."""
         async with (
             notify_after_commit(),
             self.engine.acquire() as conn,
@@ -886,11 +861,15 @@ class _EditMixin(_CascadeAuditMixin):
                 validate_item=validate_item,
             )
 
+    # The shared core of :meth:`_mutate_list_field` (its own tx) and any caller already
+    # inside a transaction (e.g. :meth:`_resume_session` applying ``--resume`` rooms).
+    # Returns the change id, or ``None`` for an idempotent no-op (add-present / remove-
+    # absent).
     async def _mutate_list_field_on_conn(
         self,
         conn: Conn,
         target_id: UUID,
-        item: Any,
+        item: object,
         *,
         column: str,
         api_key_id: UUID | None,
@@ -898,13 +877,7 @@ class _EditMixin(_CascadeAuditMixin):
         include: bool,
         validate_item: (Callable[[Conn], Awaitable[None]] | None) = None,
     ) -> UUID | None:
-        """Atomic add/remove on a list column, on an already-open transaction.
-
-        The shared core of :meth:`_mutate_list_field` (its own tx) and any
-        caller already inside a transaction (e.g. :meth:`_resume_session`
-        applying ``--resume`` rooms). Returns the change id, or ``None`` for an
-        idempotent no-op (add-present / remove-absent).
-        """
+        """Atomic add/remove on a list column, on an already-open transaction."""
         spec = COLUMN_SPECS[column]
         hooks = RUNTIME_HOOKS.get(column, NO_HOOKS)
         expected = (
@@ -1005,7 +978,18 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Atomically remove one author from a Paper's byline."""
+        """Atomically remove one author from a Paper's byline.
+
+        Args:
+          target_id: Target id.
+          author: Author.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
+        """
         return await self._mutate_list_field(
             target_id,
             author,
@@ -1087,13 +1071,24 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Edit a :class:`Paper`'s ``source`` -- the one self-describing
-        identifier whose scheme prefix names its kind (``arXiv:``, ``doi:``,
-        ``http(s)://``, ``isbn:``, ...).
+        """Edit a :class:`Paper`'s ``source``.
 
-        Enforces the same ``<scheme>:<rest>`` shape as the create boundary
-        (``SubmitPaper``) so the rule holds on both paths; a bare value that
-        drops the scheme is a clean ``ConflictError`` (4xx), not a silent write.
+        The one self-describing identifier whose scheme prefix names its kind
+        (``arXiv:``, ``doi:``, ``http(s)://``, ``isbn:``, ...).
+
+                Enforces the same ``<scheme>:<rest>`` shape as the create boundary
+                (``SubmitPaper``) so the rule holds on both paths; a bare value that
+                drops the scheme is a clean ``ConflictError`` (4xx), not a silent write.
+
+        Args:
+          target_id: Target id.
+          value: Value.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
         """
         if value is not None and value.strip() and not is_valid_source(value):
             raise ConflictError(
@@ -1116,11 +1111,22 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Edit a :class:`Paper`'s ``google_scholar_cluster_id`` (Scholar
-        data-cid; the paper's stable Scholar identity, present when indexed).
+        """Edit a :class:`Paper`'s ``google_scholar_cluster_id`` (Scholar data-cid.
 
-        A plain optional identifier -- no scheme validation (unlike ``source``);
-        an empty value clears it to NULL through ``_set_field``.
+        The paper's stable Scholar identity, present when indexed).
+
+                A plain optional identifier -- no scheme validation (unlike ``source``);
+                an empty value clears it to NULL through ``_set_field``.
+
+        Args:
+          target_id: Target id.
+          value: Value.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
         """
         return await self._set_field(
             target_id,
@@ -1138,11 +1144,22 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Edit a :class:`Paper`'s ``google_scholar_cites_id`` (Scholar cites_id;
-        the cited-by pivot handle, present only once the paper has citations).
+        """Edit a :class:`Paper`'s ``google_scholar_cites_id`` (Scholar cites_id.
 
-        A plain optional identifier -- no scheme validation (unlike ``source``);
-        an empty value clears it to NULL through ``_set_field``.
+        The cited-by pivot handle, present only once the paper has citations).
+
+                A plain optional identifier -- no scheme validation (unlike ``source``);
+                an empty value clears it to NULL through ``_set_field``.
+
+        Args:
+          target_id: Target id.
+          value: Value.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
         """
         return await self._set_field(
             target_id,
@@ -1229,6 +1246,16 @@ class _EditMixin(_CascadeAuditMixin):
         ``subscriber`` may differ from ``actor`` (the actor performing
         the change). The self-subscribe convenience is the CLI
         ``trax watch`` verb, which passes ``subscriber=actor``.
+
+        Args:
+          target_id: Target id.
+          subscriber: Subscriber.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
         """
         return await self._mutate_list_field(
             target_id,
@@ -1251,6 +1278,16 @@ class _EditMixin(_CascadeAuditMixin):
 
         Mirrors :meth:`add_subscriber`; ``subscriber`` may differ from
         ``actor``.
+
+        Args:
+          target_id: Target id.
+          subscriber: Subscriber.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
         """
         return await self._mutate_list_field(
             target_id,
@@ -1269,7 +1306,18 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Atomically add one label."""
+        """Atomically add one label.
+
+        Args:
+          target_id: Target id.
+          label: Label.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
+        """
         return await self._mutate_list_field(
             target_id,
             label,
@@ -1287,7 +1335,18 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Atomically remove one label."""
+        """Atomically remove one label.
+
+        Args:
+          target_id: Target id.
+          label: Label.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
+        """
         return await self._mutate_list_field(
             target_id,
             label,
@@ -1305,7 +1364,18 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Atomically add one issue_kind to an Issue's category set."""
+        """Atomically add one issue_kind to an Issue's category set.
+
+        Args:
+          target_id: Target id.
+          kind: Kind.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
+        """
         return await self._mutate_list_field(
             target_id,
             kind,
@@ -1323,7 +1393,18 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Atomically remove one issue_kind."""
+        """Atomically remove one issue_kind.
+
+        Args:
+          target_id: Target id.
+          kind: Kind.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
+        """
         return await self._mutate_list_field(
             target_id,
             kind,
@@ -1345,6 +1426,16 @@ class _EditMixin(_CascadeAuditMixin):
 
         Validates that ``codechange_id`` is an existing ``CodeChange``
         row (matches submit/set semantics).
+
+        Args:
+          target_id: Target id.
+          codechange_id: Codechange id.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
         """
         return await self._mutate_list_field(
             target_id,
@@ -1366,7 +1457,18 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Atomically remove one CodeChange UUID from an Experiment."""
+        """Atomically remove one CodeChange UUID from an Experiment.
+
+        Args:
+          target_id: Target id.
+          codechange_id: Codechange id.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
+        """
         return await self._mutate_list_field(
             target_id,
             codechange_id,
@@ -1496,7 +1598,18 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Atomically add one room to a session's membership."""
+        """Atomically add one room to a session's membership.
+
+        Args:
+          target_id: Target id.
+          room: Room.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
+        """
         return await self._mutate_list_field(
             target_id,
             room,
@@ -1514,7 +1627,18 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Atomically remove one room from a session's membership."""
+        """Atomically remove one room from a session's membership.
+
+        Args:
+          target_id: Target id.
+          room: Room.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
+        """
         return await self._mutate_list_field(
             target_id,
             room,
@@ -1592,6 +1716,18 @@ class _EditMixin(_CascadeAuditMixin):
         through the same audited ``marginal_cost`` emit as :meth:`add_cost`,
         keeping a single write path for cost. ``emit_change``'s floor guard
         rejects a delta that would drive the total negative.
+
+        Args:
+          target_id: Target id.
+          axis: Axis.
+          value: Value.
+          api_key_id: Api key id.
+          actor: Actor.
+          reason: Reason.
+
+        Returns:
+          result: The UUID | None.
+
         """
         column = f"marginal_cost_{axis}"
         async with (

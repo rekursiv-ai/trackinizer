@@ -32,6 +32,9 @@ command may already have applied."""
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one ``trax`` invocation, using the daemon when it can.
 
+    Args:
+      argv: Argv.
+
     Returns:
       exit_code: The process exit status.
 
@@ -59,17 +62,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stderr.write(response.stderr)
             return response.exit_code
     # No daemon, or a verb that must run here: the original path, unchanged.
-    from trackinizer.trax.cli import main as cli_main  # noqa: PLC0415
+    from trackinizer.trax import cli  # noqa: PLC0415
 
-    cli_main(args)
-    return 0
+    return cli.main(args)
 
 
+# ``TRAX_NO_DAEMON=1`` forces in-process execution -- the escape hatch for debugging a
+# suspected daemon fault without editing code or killing a running one.
 def _daemon_enabled() -> bool:
-    """Whether delegation is permitted.
-
-    ``TRAX_NO_DAEMON=1`` forces in-process execution -- the escape hatch for
-    debugging a suspected daemon fault without editing code or killing a
-    running one.
-    """
+    """Whether delegation is permitted."""
     return os.environ.get("TRAX_NO_DAEMON", "") not in ("1", "true", "yes")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Final
 from unittest.mock import AsyncMock
 
 import asyncio
@@ -23,6 +24,9 @@ from trackinizer.types.errors import NotFoundError, ValidationError
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.seq_ranges import SeqRange
+
+
+_CWD: Final = Path(__file__).resolve().parent
 
 
 K1: uuid.UUID = uuid.UUID("33333333-3333-3333-3333-333333333333")
@@ -122,9 +126,7 @@ class TestStoreReads:
         whose key matches the ORDER BY (Bitmap Index Scan, cost 130 -> 8.5
         at 5k rows).
         """
-        schema = (
-            Path(__file__).resolve().parents[1] / "assets" / "schema.sql"
-        ).read_text()
+        schema = (_CWD.parents[0] / "assets" / "schema.sql").read_text()
         assert "ON change_log (created, id)" in schema, (
             "no partial index serves what_changed_for_anyone's per-doorbell scan"
         )
@@ -249,7 +251,7 @@ class TestListKindFilterLowering:
 
     @classmethod
     async def sql_for(cls, *filters: Filter, limit: int = 5) -> str:
-        """The SELECT ``list_kind`` issues for ``filters``."""
+        """Return the SELECT ``list_kind`` issues for ``filters``."""
         conn = make_conn()
         conn.fetch.side_effect = [[], []]
         store, _engine = make_store(conn)
@@ -323,7 +325,7 @@ class TestListKindFilterLowering:
 
         sql, *params = conn.fetch.call_args_list[0].args
         assert "owner IS NULL" in sql
-        # kind, limit, offset -- no operand for the presence test.
+        # Kind, limit, offset -- no operand for the presence test.
         assert params == ["Issue", 5, 0]
 
     @pytest.mark.asyncio
@@ -400,7 +402,7 @@ class TestUnboundableRegexRefusal:
         )
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

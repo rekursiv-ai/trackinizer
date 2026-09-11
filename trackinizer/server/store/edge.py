@@ -56,6 +56,16 @@ inline string -- editing the human suffix never breaks that discrimination.
 class _EdgeMixin(_CascadeAuditMixin):
     """Edge insertion, annotation, and removal for :class:`Store`."""
 
+    # Returns ``(change_id, created)``: ``created`` is ``True`` when a new edge row was
+    # inserted, ``False`` when the edge already existed and this upserted its
+    # annotations (or no-oped). ``change_id`` is the emitted change, or ``None`` for a
+    # pure no-op.
+    #
+    # ``caused_by`` chains the from-side audit to a triggering change (the
+    # inferred-``produces`` path passes the edge that caused the inference, so the audit
+    # trail shows the link). ``cascade=False`` suppresses the ancestor re-assessment
+    # walk on the from-side emit, used by the inferred edge so one user action does not
+    # double-cascade.
     async def _add_edge_on_conn(
         self,
         conn: Conn,
@@ -73,19 +83,7 @@ class _EdgeMixin(_CascadeAuditMixin):
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
     ) -> tuple[UUID | None, bool]:
-        """Insert one edge + paired audits on an already-open transaction.
-
-        Returns ``(change_id, created)``: ``created`` is ``True`` when a new
-        edge row was inserted, ``False`` when the edge already existed and this
-        upserted its annotations (or no-oped). ``change_id`` is the emitted
-        change, or ``None`` for a pure no-op.
-
-        ``caused_by`` chains the from-side audit to a triggering change (the
-        inferred-``produces`` path passes the edge that caused the inference, so
-        the audit trail shows the link). ``cascade=False`` suppresses the
-        ancestor re-assessment walk on the from-side emit, used by the inferred
-        edge so one user action does not double-cascade.
-        """
+        """Insert one edge + paired audits on an already-open transaction."""
         edge_labels = canonical_strs(labels)
         # Mirror ``insert_edge``'s "unset is NULL" normalization so the audit
         # Snapshot matches what the ``edges`` row actually stored: a
@@ -176,6 +174,18 @@ class _EdgeMixin(_CascadeAuditMixin):
         )
         return cause, True
 
+    # The definition of provenance (see :attr:`Inquiry.produced_by`): the first edge
+    # between two vertices infers that the younger was produced by the older.
+    # :func:`infer_produced_endpoints` reads the whole pair-edge set and applies the
+    # precedence/suppression rules, so this runs after every real edge insert and lets
+    # that helper decide whether to stamp. The stored ``produced_by`` edge points child
+    # -> parent (from=produced, to=producer). The inferred edge commits on the same
+    # transaction, so it lands atomically with its trigger.
+    #
+    # A direct ``produced_by`` insert short-circuits here so the inferred edge never re-
+    # enters the rule. ``caused_by`` chains the inferred edge's audit to the triggering
+    # edge's change, and ``cascade=False`` keeps the inference from doubling the
+    # triggering action's ancestor cascade.
     async def _infer_produced_on_conn(
         self,
         conn: Conn,
@@ -187,22 +197,7 @@ class _EdgeMixin(_CascadeAuditMixin):
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
     ) -> None:
-        """Stamp ``younger produced_by older`` when the pair's edges warrant it.
-
-        The definition of provenance (see :attr:`Inquiry.produced_by`): the first
-        edge between two vertices infers that the younger was produced by the
-        older. :func:`infer_produced_endpoints` reads the whole pair-edge set and
-        applies the precedence/suppression rules, so this runs after every real
-        edge insert and lets that helper decide whether to stamp. The stored
-        ``produced_by`` edge points child -> parent (from=produced, to=producer).
-        The inferred edge commits on the same transaction, so it lands
-        atomically with its trigger.
-
-        A direct ``produced_by`` insert short-circuits here so the inferred edge
-        never re-enters the rule. ``caused_by`` chains the inferred edge's audit
-        to the triggering edge's change, and ``cascade=False`` keeps the
-        inference from doubling the triggering action's ancestor cascade.
-        """
+        """Stamp ``younger produced_by older`` when the pair's edges warrant it."""
         if edge_kind == "produced_by":
             return
         endpoints = await infer_produced_endpoints(conn, from_id=from_id, to_id=to_id)
@@ -263,6 +258,24 @@ class _EdgeMixin(_CascadeAuditMixin):
         the from-side. The paired audit is endpoint-symmetric, so only the
         stored row's direction (and which endpoint ``require_to_kind``
         validates) changes.
+
+        Args:
+          conn: Conn.
+          subject_id: Subject id.
+          subject_kind: Subject kind.
+          to_id: To id.
+          edge_kind: Edge kind.
+          api_key_id: Api key id.
+          actor: Actor.
+          caused_by: Caused by.
+          priority: Priority.
+          valence: Valence.
+          require_to_kind: Require to kind.
+          cite_peer_as_from: Cite peer as from.
+
+        Returns:
+          result: The bool.
+
         """
         # ``to_id`` is always the cited peer regardless of stored direction;
         # ``cite_peer_as_from`` only chooses which physical column it lands in.
@@ -390,6 +403,23 @@ class _EdgeMixin(_CascadeAuditMixin):
         the insert joins the caller's open transaction (e.g.
         :meth:`submit_batch` wiring create-time edges atomically with the
         new rows). The caller then owns ``tx`` / ``notify_after_commit``.
+
+        Args:
+          from_id: From id.
+          to_id: To id.
+          edge_kind: Edge kind.
+          priority: Priority.
+          note: Note.
+          valence: Valence.
+          labels: Labels.
+          reason: Reason.
+          api_key_id: Api key id.
+          actor: Actor.
+          conn: Conn.
+
+        Returns:
+          result: The tuple[UUID | None, bool].
+
         """
         if conn is not None:
             return await self._add_edge_on_conn(
@@ -453,6 +483,23 @@ class _EdgeMixin(_CascadeAuditMixin):
         read *under this method's row lock*, so concurrent ``PATCH``
         adds can't lost-update each other. Mutually exclusive with the
         whole-list ``labels`` overwrite.
+
+        Args:
+          from_id: From id.
+          to_id: To id.
+          edge_kind: Edge kind.
+          priority: Priority.
+          note: Note.
+          valence: Valence.
+          labels: Labels.
+          labels_delta: Labels delta.
+          reason: Reason.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
         """
         async with (
             notify_after_commit(),
@@ -475,6 +522,10 @@ class _EdgeMixin(_CascadeAuditMixin):
                 actor=actor,
             )
 
+    # The shared core of :meth:`set_edge_annotation` (its own tx) and the upsert arm of
+    # :meth:`_add_edge_on_conn` (the caller's tx). When ``require_existing`` is ``True``
+    # a missing edge raises :class:`NotFoundError`; the upsert caller passes ``False``
+    # because it only reaches here after its own insert found the edge already present.
     async def _set_edge_annotation_on_conn(
         self,
         conn: Conn,
@@ -492,14 +543,7 @@ class _EdgeMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Annotate an existing edge on an already-open transaction.
-
-        The shared core of :meth:`set_edge_annotation` (its own tx) and the
-        upsert arm of :meth:`_add_edge_on_conn` (the caller's tx). When
-        ``require_existing`` is ``True`` a missing edge raises
-        :class:`NotFoundError`; the upsert caller passes ``False`` because it
-        only reaches here after its own insert found the edge already present.
-        """
+        """Annotate an existing edge on an already-open transaction."""
         assert labels_delta is None or isinstance(labels, Absent), (
             "labels_delta (single add/remove) and labels (whole-list "
             "overwrite) are mutually exclusive"
@@ -675,6 +719,15 @@ class _EdgeMixin(_CascadeAuditMixin):
 
         Returns ``None`` when no such edge exists. Backs the read route
         ``GET /api/edges/<from>/<kind>/<to>`` (``docs/api.md`` 1.8).
+
+        Args:
+          from_id: From id.
+          to_id: To id.
+          edge_kind: Edge kind.
+
+        Returns:
+          result: The Edge | None.
+
         """
         async with self.engine.acquire() as conn:
             row = await conn.fetchrow(
@@ -698,7 +751,21 @@ class _EdgeMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Add ``label`` to an edge's labels; idempotent (no-op if present)."""
+        """Add ``label`` to an edge's labels; idempotent (no-op if present).
+
+        Args:
+          from_id: From id.
+          to_id: To id.
+          edge_kind: Edge kind.
+          label: Label.
+          reason: Reason.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
+        """
         return await self._mutate_edge_label(
             from_id=from_id,
             to_id=to_id,
@@ -721,7 +788,21 @@ class _EdgeMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Remove ``label`` from an edge's labels; idempotent (no-op if absent)."""
+        """Remove ``label`` from an edge's labels; idempotent (no-op if absent).
+
+        Args:
+          from_id: From id.
+          to_id: To id.
+          edge_kind: Edge kind.
+          label: Label.
+          reason: Reason.
+          api_key_id: Api key id.
+          actor: Actor.
+
+        Returns:
+          result: The UUID | None.
+
+        """
         return await self._mutate_edge_label(
             from_id=from_id,
             to_id=to_id,
@@ -733,6 +814,11 @@ class _EdgeMixin(_CascadeAuditMixin):
             actor=actor,
         )
 
+    # Delegates to ``set_edge_annotation``'s ``labels_delta`` path so the read-modify-
+    # write of the label set happens under that method's ``FOR UPDATE`` row lock in a
+    # single transaction; two concurrent adds can't lost-update each other. Idempotent:
+    # a no-op when the label is already present (add) or absent (remove), matching the
+    # ``PATCH`` semantics in ``docs/api.md`` 1.12.
     async def _mutate_edge_label(
         self,
         *,
@@ -745,15 +831,7 @@ class _EdgeMixin(_CascadeAuditMixin):
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
-        """Atomically add or remove one edge label.
-
-        Delegates to ``set_edge_annotation``'s ``labels_delta`` path so
-        the read-modify-write of the label set happens under that
-        method's ``FOR UPDATE`` row lock in a single transaction; two
-        concurrent adds can't lost-update each other. Idempotent: a
-        no-op when the label is already present (add) or absent (remove),
-        matching the ``PATCH`` semantics in ``docs/api.md`` 1.12.
-        """
+        """Atomically add or remove one edge label."""
         return await self.set_edge_annotation(
             from_id=from_id,
             to_id=to_id,

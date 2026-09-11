@@ -57,16 +57,6 @@ _NO_MORE_LINES: Final = _Signal()
 """There will be no further lines, so the reader may finish."""
 
 
-class _Failed(_Signal):
-    """The reader raised; the exception travels back to whoever fed the chunk."""
-
-    __slots__ = ("error",)
-
-    def __init__(self, error: Exception) -> None:
-        super().__init__()
-        self.error = error
-
-
 class Tail:
     """One file's reader, fed a line at a time.
 
@@ -128,6 +118,10 @@ class Tail:
 
         Whether the file ended on a newline is knowable nowhere else, and it is
         what a byte-exact rewrite needs. Idempotent.
+
+        Returns:
+          result: The list[TraxRecord].
+
         """
         if self._whole_file or self._reader is None or self._ended:
             return []
@@ -146,13 +140,11 @@ class Tail:
         """
         return dict(self._encoding)
 
+    # Fresh QUEUES, not merely a fresh thread: the dead reader posted an ``_ENDED``
+    # behind its failure, and reusing the queue would hand that to the next chunk as its
+    # answer.
     def _restart(self) -> None:
-        """Drop the dead reader and the queues it shared, ready to rebuild.
-
-        Fresh QUEUES, not merely a fresh thread: the dead reader posted an
-        ``_ENDED`` behind its failure, and reusing the queue would hand that
-        to the next chunk as its answer.
-        """
+        """Drop the dead reader and the queues it shared, ready to rebuild."""
         assert self._reader is not None
         self._reader.join()
         self._reader = None
@@ -191,13 +183,7 @@ class Tail:
             produced.put(_ENDED)
 
     def _collect(self) -> list[TraxRecord]:
-        """Take records until the reader asks for another line or finishes.
-
-        Raises:
-          Exception: Whatever the reader raised, re-raised on the thread that
-            fed the chunk.
-
-        """
+        """Take records until the reader asks for another line or finishes."""
         out: list[TraxRecord] = []
         while True:
             item = self._produced.get()
@@ -278,3 +264,13 @@ class _Pulled(StringIO):
         # A reader that wants the whole document rather than lines -- gemini's
         # -- never runs on this stream: it is driven whole-file instead.
         raise NotImplementedError("a pushed stream is read by lines, never whole")
+
+
+class _Failed(_Signal):
+    """The reader raised; the exception travels back to whoever fed the chunk."""
+
+    __slots__ = ("error",)
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error

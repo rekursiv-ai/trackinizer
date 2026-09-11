@@ -179,7 +179,7 @@ class TestEveryShapeMatchesTheDeclaredType:
         """
         declared = self.declared().get(column)
         if declared is None:
-            declared = "NUMERIC(14, 6)"  # the hand-declared cost axes
+            declared = "NUMERIC(14, 6)"  # the hand-declared cost axes.
         if declared.upper().startswith(("NUMERIC", "DECIMAL")):
             digits = re.search(r"\((\d+)\s*,\s*(\d+)\)", declared)
             assert digits is not None, f"{column} declares no precision: {declared}"

@@ -51,11 +51,11 @@ class TestStorageName:
         assert "paper_venue" in keys
         assert "paper_source_kind" not in keys
         assert "source" not in keys
-        # base columns still bare
+        # Base columns still bare.
         assert "status" in keys
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

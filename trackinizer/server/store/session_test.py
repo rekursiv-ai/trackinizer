@@ -74,7 +74,7 @@ class TestStartSession:
         not mistake the field for live information.
         """
         conn = make_conn()
-        conn.fetch = AsyncMock(return_value=[])  # reservation sees no live owners
+        conn.fetch = AsyncMock(return_value=[])  # reservation sees no live owners.
         existing_id = new_uuid()
 
         async def submit(*_args: object, **_kwargs: object) -> object:
@@ -104,7 +104,7 @@ class TestEndSession:
 
     @classmethod
     def _live_row(cls, cli: str | None = None) -> dict[str, Any]:
-        """A live ``AgentSession`` field-read row (``ended`` NULL)."""
+        """Return a live ``AgentSession`` field-read row (``ended`` NULL)."""
         return {
             "kind": "AgentSession",
             "status": "active",
@@ -146,7 +146,7 @@ class TestEndSession:
         conn = make_conn()
         set_field_row(conn, self._live_row())
 
-        async def _execute(sql: str, *args: Any) -> str:
+        async def _execute(sql: str, *args: object) -> str:
             del args
             # The close's combined ended+status UPDATE fails mid-flight.
             if "UPDATE inquiries SET agentsession_ended" in sql:
@@ -328,7 +328,7 @@ class TestEndSession:
             )
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

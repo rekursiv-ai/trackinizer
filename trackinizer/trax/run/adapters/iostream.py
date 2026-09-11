@@ -36,9 +36,9 @@ __all__ = ["IOStreamAdapter", "LineCapture"]
 # the text, not the rendering: CSI (colors, cursor movement), OSC (title-set,
 # ``\x1b]0;...\x07`` or ST-terminated), and DCS/APC/PM string sequences.
 _ANSI_ESCAPES: Final = re.compile(
-    rb"\x1b\[[0-9;?]*[a-zA-Z]"  # CSI
-    rb"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC, BEL- or ST-terminated
-    rb"|\x1b[PX^_][^\x1b]*\x1b\\"  # DCS/SOS/PM/APC, ST-terminated
+    rb"\x1b\[[0-9;?]*[a-zA-Z]"  # CSI.
+    rb"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC, BEL- or ST-terminated.
+    rb"|\x1b[PX^_][^\x1b]*\x1b\\"  # DCS/SOS/PM/APC, ST-terminated.
 )
 
 # One captured line's byte cap. Enforced at INGEST (``LineCapture.feed``),
@@ -64,34 +64,72 @@ class IOStreamAdapter:
     """
 
     name: str = "sh"
+
     cli_binary: str = ""
+
     whole_file: bool = False
+
     stream_source: bool = True
+
     capture: Capture = "pipe"
 
     def session_dirs(self) -> Iterable[Path]:
+        """Return the directories this CLI writes sessions under.
+
+        Returns:
+          result: The Iterable[Path].
+
+        """
         return ()
 
     def matches_session_file(self, path: Path) -> bool:
+        """Return whether ``path`` is one of this CLI's session files.
+
+        Args:
+          path: Path.
+
+        Returns:
+          result: The bool.
+
+        """
         del path
         return False
 
     def session_scope(self) -> Path | None:
+        """Return the scope key a session file is filed under.
+
+        Returns:
+          result: The Path | None.
+
+        """
         # The capture source is the child's own IO; no session file to scope.
         return None
 
     def session_id_from_path(self, path: Path) -> str | None:
+        """Return the session id encoded in ``path``.
+
+        Args:
+          path: Path.
+
+        Returns:
+          result: The str | None.
+
+        """
         del path
         return None
 
     def reader(self) -> Tail:
-        """A fresh IR reader for one captured stream.
+        """Return a fresh IR reader for one captured stream.
 
         Every line becomes a stream record: the contract is verbatim
         line-delimited text, so nothing is parsed and nothing can be
         misparsed. Semantic structure belongs to the wrapped script; WHICH
         stream carried the line is the one thing capture knows and the file
         does not, which is why the runner tags it rather than this reader.
+
+        Returns:
+          result: The Tail.
+
         """
         return Tail(scrape.normalize)
 
@@ -131,7 +169,12 @@ class LineCapture:
         self._dropped = 0
 
     def feed(self, chunk: bytes) -> None:
-        """Buffer ``chunk``, delivering each completed line."""
+        """Buffer ``chunk``, delivering each completed line.
+
+        Args:
+          chunk: Chunk.
+
+        """
         self._buffer.extend(chunk)
         while True:
             newline = self._buffer.find(b"\n")
@@ -152,12 +195,10 @@ class LineCapture:
             self._emit_line(bytes(self._buffer), terminated=False)
             self._buffer.clear()
 
+    # The terminator is re-attached AFTER clamping, so a truncation marker never lands
+    # past the newline and the line stays one line.
     def _emit_line(self, raw: bytes, *, terminated: bool) -> None:
-        """Clamp one framed line and hand it to the consumer.
-
-        The terminator is re-attached AFTER clamping, so a truncation marker
-        never lands past the newline and the line stays one line.
-        """
+        """Clamp one framed line and hand it to the consumer."""
         truncated = self._dropped > 0
         self._dropped = 0
         if len(raw) > _MAX_LINE_BYTES:

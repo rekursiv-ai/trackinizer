@@ -38,8 +38,8 @@ import shutil
 import subprocess
 
 from trackinizer.lib.agent.sessions import (
-    claude as claude_ir,
-    codex as codex_ir,
+    claude,
+    codex,
 )
 from trackinizer.lib.agent.types.sessions import (
     IncompleteRecord,
@@ -268,40 +268,35 @@ def _codex_scope() -> Path:
     return root / f"{today:%Y}" / f"{today:%m}" / f"{today:%d}"
 
 
+# The whole stem, not the bare uuid: codex lists ``rollout-*`` and
+# ``CodexAdapter.matches_session_file`` requires the same prefix, so a file named by the
+# id alone is invisible to the CLI and to our own capture.
 def _codex_filename(session_id: UUID) -> str:
-    """``rollout-<ISO>-<uuid>.jsonl``, the shape codex globs for.
-
-    The whole stem, not the bare uuid: codex lists ``rollout-*`` and
-    ``CodexAdapter.matches_session_file`` requires the same prefix, so a file
-    named by the id alone is invisible to the CLI and to our own capture.
-    """
+    """``rollout-<ISO>-<uuid>.jsonl``, the shape codex globs for."""
     return f"rollout-{datetime.now(UTC):%Y-%m-%dT%H-%M-%S}-{session_id}.jsonl"
 
 
+# ONE record, unlike claude's per-line ``sessionId``: codex declares its identity once,
+# on the ``session_meta`` line, which the IR carries as the ``payload`` residual of the
+# opening :class:`TurnContext`. A rollout whose payload still names the captured session
+# resumes one this machine does not have.
+#
+# ``id`` and ``session_id`` both, because the launch payload states both and the CLI
+# reads the pair; ``parent_thread_id`` is dropped rather than rewritten, since the
+# thread it forked from is not being materialized.
+#
+# The launch record is the one CARRYING a payload, not merely the first: a rollout that
+# opens with a blank line states its encoding before it declares itself, which is how
+# ``codex.py::denormalize`` finds it too.
+#
+# A session captured from ANOTHER CLI carries no launch payload at all -- claude
+# declares nothing of the kind -- so one is synthesized. Without it the writer emits no
+# ``session_meta`` line, and a rollout that never states its own id is one the CLI
+# cannot resume however it is named.
 def _codex_identified(
     records: Sequence[SessionRecord], session_id: UUID
 ) -> list[SessionRecord]:
-    """State ``session_id`` on the launch settings codex declares itself with.
-
-    ONE record, unlike claude's per-line ``sessionId``: codex declares its
-    identity once, on the ``session_meta`` line, which the IR carries as the
-    ``payload`` residual of the opening :class:`TurnContext`. A rollout whose
-    payload still names the captured session resumes one this machine does not
-    have.
-
-    ``id`` and ``session_id`` both, because the launch payload states both and
-    the CLI reads the pair; ``parent_thread_id`` is dropped rather than
-    rewritten, since the thread it forked from is not being materialized.
-
-    The launch record is the one CARRYING a payload, not merely the first: a
-    rollout that opens with a blank line states its encoding before it
-    declares itself, which is how ``codex.py::denormalize`` finds it too.
-
-    A session captured from ANOTHER CLI carries no launch payload at all --
-    claude declares nothing of the kind -- so one is synthesized. Without it
-    the writer emits no ``session_meta`` line, and a rollout that never states
-    its own id is one the CLI cannot resume however it is named.
-    """
+    """State ``session_id`` on the launch settings codex declares itself with."""
     at = _stamp()
     stamped = [
         _codex_declared(record, session_id)
@@ -323,42 +318,38 @@ def _codex_identified(
     ]
 
 
+# An unstamped line is one codex does NOT replay into the resumed context. Measured on
+# three rollouts of one conversation: stamping only the launch line resumed the session
+# but answered "Unknown" about its own transcript, while stamping every line answered
+# from it. The session opens either way, so a resume that only checks the CLI started
+# cannot see the difference.
+#
+# Its own stamp is kept when it has one, since the time a turn happened is a fact about
+# that turn rather than about this materialization.
+#
+# ``getattr``, because ``IncompleteRecord`` declares no ``timestamp`` at all -- it is a
+# raw line the reader could not parse, carrying only its text. Stamping it unguarded
+# crashed a real resume before anything was written. The same reason ``_renamed`` reads
+# the residual that way.
 def _codex_stamped(record: SessionRecord, at: str) -> SessionRecord:
-    """Give a record a timestamp when it crossed in without one.
-
-    An unstamped line is one codex does NOT replay into the resumed context.
-    Measured on three rollouts of one conversation: stamping only the launch
-    line resumed the session but answered "Unknown" about its own transcript,
-    while stamping every line answered from it. The session opens either way,
-    so a resume that only checks the CLI started cannot see the difference.
-
-    Its own stamp is kept when it has one, since the time a turn happened is a
-    fact about that turn rather than about this materialization.
-
-    ``getattr``, because ``IncompleteRecord`` declares no ``timestamp`` at all
-    -- it is a raw line the reader could not parse, carrying only its text.
-    Stamping it unguarded crashed a real resume before anything was written.
-    The same reason ``_renamed`` reads the residual that way.
-    """
+    """Give a record a timestamp when it crossed in without one."""
     if getattr(record, "timestamp", "") is not None:
         return record
     return replace(record, timestamp=at)
 
 
+# A payload stating only the id is REFUSED by the CLI: measured against the installed
+# binary, a materialized rollout carrying ``{id, session_id}`` answered "No saved
+# session found", and the same file resumed once its declaration named cwd, originator,
+# cli_version, source, thread_source, and model_provider. Codex validates a session by
+# what it declares, so the defaults below are the minimum a session it never recorded
+# must state.
+#
+# A captured codex rollout already declares all of it, and keeps its own: only identity
+# is restated, since the cwd and provider it ran under are facts about that session
+# rather than about this machine.
 def _codex_declared(record: TurnContext, session_id: UUID) -> TurnContext:
-    """Return the launch settings with this machine's declaration in them.
-
-    A payload stating only the id is REFUSED by the CLI: measured against the
-    installed binary, a materialized rollout carrying ``{id, session_id}``
-    answered "No saved session found", and the same file resumed once its
-    declaration named cwd, originator, cli_version, source, thread_source, and
-    model_provider. Codex validates a session by what it declares, so the
-    defaults below are the minimum a session it never recorded must state.
-
-    A captured codex rollout already declares all of it, and keeps its own:
-    only identity is restated, since the cwd and provider it ran under are
-    facts about that session rather than about this machine.
-    """
+    """Return the launch settings with this machine's declaration in them."""
     extra = dict(json_unfreeze(record.extra))
     stated = str(session_id)
     # The launch line's own ordinal, which is how codex numbers a rollout it
@@ -397,14 +388,12 @@ def _codex_declared(record: TurnContext, session_id: UUID) -> TurnContext:
     )
 
 
+# Read from the binary rather than pinned: the rollout claims to have been written by
+# the CLI that will read it, and a version far from the truth is a claim the file cannot
+# support. A CLI that cannot be asked leaves the floor, which is the version this was
+# verified against.
 def _codex_cli_version() -> str:
-    """The installed codex's own version, or a plausible floor.
-
-    Read from the binary rather than pinned: the rollout claims to have been
-    written by the CLI that will read it, and a version far from the truth is
-    a claim the file cannot support. A CLI that cannot be asked leaves the
-    floor, which is the version this was verified against.
-    """
+    """Return the installed codex's own version, or a plausible floor."""
     binary = shutil.which("codex")
     if binary is None:
         return "0.150.1"
@@ -422,17 +411,15 @@ def _codex_cli_version() -> str:
     return version[-1] if found.returncode == 0 and version else "0.150.1"
 
 
+# Writing the file is HALF the job: measured against the installed CLI, a rollout
+# sitting in ``sessions/`` with no ``session_index.jsonl`` entry answers "No saved
+# session found with ID ...", while a real rollout resumes in an otherwise-empty
+# ``CODEX_HOME`` given only its index line.
+#
+# APPENDED, never rewritten: the file is the operator's whole session list, and
+# materializing one session must not forget the rest.
 def _codex_indexed(path: Path, session_id: UUID) -> None:
-    """Announce the rollout in the index ``codex resume`` looks it up in.
-
-    Writing the file is HALF the job: measured against the installed CLI, a
-    rollout sitting in ``sessions/`` with no ``session_index.jsonl`` entry
-    answers "No saved session found with ID ...", while a real rollout resumes
-    in an otherwise-empty ``CODEX_HOME`` given only its index line.
-
-    APPENDED, never rewritten: the file is the operator's whole session list,
-    and materializing one session must not forget the rest.
-    """
+    """Announce the rollout in the index ``codex resume`` looks it up in."""
     # Beside the sessions ROOT, asked of the adapter rather than walked up from
     # the file: the Y/M/D depth is codex's sharding, and counting parents here
     # would be a second spelling of it.
@@ -455,6 +442,38 @@ def _stamp() -> str:
     return f"{datetime.now(UTC):%Y-%m-%dT%H:%M:%S.%f}"[:-3] + "Z"
 
 
+# Every record, because identity is not in the IR at all: claude repeats ``sessionId``
+# on every line, and the writer only fills one in where the record does not already
+# state it (``claude.py::_line_defaults``) -- deliberately, since replaying a captured
+# line verbatim is what makes the round-trip byte-exact. A captured record therefore
+# carries the ORIGINAL id, and a file rewritten without this step names the session it
+# came from while its filename names the new one: ``--resume`` then hands the CLI a
+# transcript that disagrees with the id it was asked for.
+#
+# Only that one key is touched. Everything else in the residual -- key order, nulls, the
+# uuid chain -- is what the byte-exact rewrite rests on.
+#
+# Two record classes carry no ``extra`` at all (``UncategorizedRecord`` holds its whole
+# line under ``payload``; ``IncompleteRecord`` is raw text), so they pass through:
+# neither states a ``sessionId`` the writer replays.
+def _renamed(record: SessionRecord, session_id: UUID) -> SessionRecord:
+    """Rewrite the ``sessionId`` a record carries in its provider residual."""
+    # ``getattr`` because two members declare no ``extra`` at all. Narrowed
+    # through ``DictCodec`` rather than an isinstance check: the attribute is
+    # untyped, and the codec takes ``object`` and returns a typed mapping.
+    #
+    # Not thawed first: the values are re-frozen unchanged, so unfreezing the
+    # whole residual only to freeze it again would walk every nested structure
+    # twice for one replaced key.
+    residual = DictCodec.coerce(getattr(record, "extra", None))
+    if "sessionId" not in residual:
+        return record
+    return replace(
+        record,
+        extra=json_freeze({**residual, "sessionId": str(session_id)}),
+    )
+
+
 _TARGETS: Mapping[str, _Target] = MappingProxyType(
     {
         "claude": _Target(
@@ -463,7 +482,7 @@ _TARGETS: Mapping[str, _Target] = MappingProxyType(
             identify=lambda records, session_id: [
                 _renamed(record, session_id) for record in records
             ],
-            write=lambda records, stream, session_id: claude_ir.denormalize(
+            write=lambda records, stream, session_id: claude.denormalize(
                 records, stream, seed=session_id
             ),
             # Claude scans its project directory, so the file IS the
@@ -476,7 +495,7 @@ _TARGETS: Mapping[str, _Target] = MappingProxyType(
             identify=_codex_identified,
             # Codex states identity once, on the launch line ``_codex_declared``
             # writes, so its writer needs no id.
-            write=lambda records, stream, _session_id: codex_ir.denormalize(
+            write=lambda records, stream, _session_id: codex.denormalize(
                 records, stream
             ),
             announce=_codex_indexed,
@@ -485,31 +504,28 @@ _TARGETS: Mapping[str, _Target] = MappingProxyType(
 )
 
 
+# Two things do not survive a crossing, both measured on a claude session resumed as
+# codex:
+#
+# - A :class:`Thinking` seal. Reasoning bytes are encrypted BY the provider that issued
+# them, so claude's rode into codex's ``encrypted_content`` and the first request came
+# back ``invalid_encrypted_content -- The encrypted content CAIS...AQ== could not be
+# verified``. The readable summary crosses; the seal cannot. - An
+# :class:`IncompleteRecord` written into a FOREIGN file. It is one provider's raw line,
+# replayed verbatim, so in a rollout it landed with no envelope -- the resulting line
+# parsed as nothing that format defines.
+#
+# The seal is a crossing question; an unstated source is not a crossing, since a caller
+# naming no format is building records by hand rather than moving them between two CLIs.
+# Same format both sides, the seal replays as it was read, which is what keeps the
+# round-trip byte-exact.
+#
+# An unparsable record is judged separately, by :func:`_writable`: one that cannot be a
+# line is dropped whether or not a crossing is happening.
 def _crossed(
     records: Sequence[SessionRecord], source: str | None, target: str
 ) -> list[SessionRecord]:
-    """Strip what only the CAPTURING provider could replay.
-
-    Two things do not survive a crossing, both measured on a claude session
-    resumed as codex:
-
-    - A :class:`Thinking` seal. Reasoning bytes are encrypted BY the provider
-      that issued them, so claude's rode into codex's ``encrypted_content``
-      and the first request came back ``invalid_encrypted_content -- The
-      encrypted content CAIS...AQ== could not be verified``. The readable
-      summary crosses; the seal cannot.
-    - An :class:`IncompleteRecord` written into a FOREIGN file. It is one
-      provider's raw line, replayed verbatim, so in a rollout it landed with no
-      envelope -- the resulting line parsed as nothing that format defines.
-
-    The seal is a crossing question; an unstated source is not a crossing,
-    since a caller naming no format is building records by hand rather than
-    moving them between two CLIs. Same format both sides, the seal replays as
-    it was read, which is what keeps the round-trip byte-exact.
-
-    An unparsable record is judged separately, by :func:`_writable`: one that
-    cannot be a line is dropped whether or not a crossing is happening.
-    """
+    """Strip what only the CAPTURING provider could replay."""
     crossing = source is not None and source != target
     return [
         replace(record, encrypted=None)
@@ -520,24 +536,21 @@ def _crossed(
     ]
 
 
+# Only :class:`IncompleteRecord` can fail: every other member is structured, and the
+# writer builds its line. This one carries raw bytes, and the writer emits them as they
+# stand.
+#
+# Two ways they cannot stand. Crossing, they are another format's line, so nothing the
+# target defines can read them. And a real capture stored 4498 characters -- a ``cost-
+# state``, an ``atis-latch`` and a ``turn_context`` concatenated with no separators --
+# under a SINGLE record, which is not one line in any format: written back into its own
+# rollout it produced a line that parsed as none.
+#
+# Anything that IS one line replays verbatim, valid or not: a truncated final line is
+# exactly what this record exists to preserve, and rewriting the file it came from must
+# reproduce it byte for byte.
 def _writable(record: SessionRecord, crossing: bool) -> bool:
-    """Whether ``record`` can be written as ONE line of the target's file.
-
-    Only :class:`IncompleteRecord` can fail: every other member is structured,
-    and the writer builds its line. This one carries raw bytes, and the writer
-    emits them as they stand.
-
-    Two ways they cannot stand. Crossing, they are another format's line, so
-    nothing the target defines can read them. And a real capture stored 4498
-    characters -- a ``cost-state``, an ``atis-latch`` and a ``turn_context``
-    concatenated with no separators -- under a SINGLE record, which is not one
-    line in any format: written back into its own rollout it produced a line
-    that parsed as none.
-
-    Anything that IS one line replays verbatim, valid or not: a truncated final
-    line is exactly what this record exists to preserve, and rewriting the file
-    it came from must reproduce it byte for byte.
-    """
+    """Whether ``record`` can be written as ONE line of the target's file."""
     if not isinstance(record, IncompleteRecord):
         return True
     if crossing:
@@ -558,14 +571,12 @@ def _one_line(text: str) -> bool:
     return not text.strip()[end:].strip()
 
 
+# Checked BEFORE anything is written: a partially-materialized file left on disk would
+# be discovered by the runner's watch as this run's own capture.
 def _spliced(
     records: Sequence[SessionRecord], sealed: Sequence[str | None]
 ) -> list[SessionRecord]:
-    """Rejoin each record with its ciphertext, or refuse if any is missing.
-
-    Checked BEFORE anything is written: a partially-materialized file left on
-    disk would be discovered by the runner's watch as this run's own capture.
-    """
+    """Rejoin each record with its ciphertext, or refuse if any is missing."""
     out: list[SessionRecord] = []
     for idx, record in enumerate(records):
         bytes_ = sealed[idx] if idx < len(sealed) else None
@@ -593,38 +604,3 @@ def _spliced(
             )
         out.append(record)
     return out
-
-
-def _renamed(record: SessionRecord, session_id: UUID) -> SessionRecord:
-    """Rewrite the ``sessionId`` a record carries in its provider residual.
-
-    Every record, because identity is not in the IR at all: claude repeats
-    ``sessionId`` on every line, and the writer only fills one in where the
-    record does not already state it (``claude.py::_line_defaults``) --
-    deliberately, since replaying a captured line verbatim is what makes the
-    round-trip byte-exact. A captured record therefore carries the ORIGINAL
-    id, and a file rewritten without this step names the session it came from
-    while its filename names the new one: ``--resume`` then hands the CLI a
-    transcript that disagrees with the id it was asked for.
-
-    Only that one key is touched. Everything else in the residual -- key
-    order, nulls, the uuid chain -- is what the byte-exact rewrite rests on.
-
-    Two record classes carry no ``extra`` at all (``UncategorizedRecord``
-    holds its whole line under ``payload``; ``IncompleteRecord`` is raw text),
-    so they pass through: neither states a ``sessionId`` the writer replays.
-    """
-    # ``getattr`` because two members declare no ``extra`` at all. Narrowed
-    # through ``DictCodec`` rather than an isinstance check: the attribute is
-    # untyped, and the codec takes ``object`` and returns a typed mapping.
-    #
-    # Not thawed first: the values are re-frozen unchanged, so unfreezing the
-    # whole residual only to freeze it again would walk every nested structure
-    # twice for one replaced key.
-    residual = DictCodec.coerce(getattr(record, "extra", None))
-    if "sessionId" not in residual:
-        return record
-    return replace(
-        record,
-        extra=json_freeze({**residual, "sessionId": str(session_id)}),
-    )

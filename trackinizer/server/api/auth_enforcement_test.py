@@ -34,13 +34,10 @@ if TYPE_CHECKING:
     from trackinizer.server.store.core import Store
 
 
+# ``emit_change`` builds the column dict in a stable order; we recover the bind position
+# from the SQL by parsing the column list. Avoids coupling tests to insertion order.
 def _change_log_column(engine: FakeEngine, name: str) -> object:
-    """Read the bound value for one column on the latest change_log insert.
-
-    ``emit_change`` builds the column dict in a stable order; we recover
-    the bind position from the SQL by parsing the column list. Avoids
-    coupling tests to insertion order.
-    """
+    """Read the bound value for one column on the latest change_log insert."""
     for call in reversed(engine.conn.execute.call_args_list):
         sql = call.args[0]
         if "INSERT INTO change_log" in sql:
@@ -50,13 +47,11 @@ def _change_log_column(engine: FakeEngine, name: str) -> object:
     raise AssertionError("no INSERT INTO change_log in executed SQL")
 
 
+# Like :func:`_change_log_column`, but ``inquiries`` mints ``seq`` inline via
+# ``nextval(...)`` rather than a bind param, so that column consumes no positional
+# argument -- discount it when mapping a column to its bind.
 def _inquiry_column(engine: FakeEngine, name: str) -> object:
-    """Read the bound value for one column on the latest inquiries insert.
-
-    Like :func:`_change_log_column`, but ``inquiries`` mints ``seq`` inline
-    via ``nextval(...)`` rather than a bind param, so that column consumes no
-    positional argument -- discount it when mapping a column to its bind.
-    """
+    """Read the bound value for one column on the latest inquiries insert."""
     for call in reversed(engine.conn.execute.call_args_list):
         sql = call.args[0]
         if "INSERT INTO inquiries" in sql:
@@ -148,8 +143,9 @@ class TestServerStampsPrincipal:
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
-        """The wire body has no ``api_key_id`` slot; an attempted
-        override is silently ignored. Only the server stamps it.
+        """The wire body has no ``api_key_id`` slot.
+
+        An attempted override is silently ignored. Only the server stamps it.
         """
         client, _store, engine = route_client
         bogus = "99999999-9999-9999-9999-999999999999"
@@ -239,7 +235,7 @@ class TestAccountAttribution:
         assert "account" in str(r.json())
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

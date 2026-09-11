@@ -191,7 +191,7 @@ def _server_args(**overrides: object) -> argparse.Namespace:
     return argparse.Namespace(**base)
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

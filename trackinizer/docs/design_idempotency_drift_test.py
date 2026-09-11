@@ -63,3 +63,9 @@ def test_design_idempotency_has_no_known_stale_names() -> None:
     stale = {"_submit_inquiry", "set_summary", "wire_inquiries"}
     present = {name for name in stale if name in text}
     assert not present, f"stale names back in design_idempotency.md: {sorted(present)}"
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.main import test_main
+
+    test_main(__file__)

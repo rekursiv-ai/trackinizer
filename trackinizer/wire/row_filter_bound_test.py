@@ -47,7 +47,9 @@ class _BareFilter:
     """
 
     field: str
+
     op: FilterOp
+
     value: str
 
 

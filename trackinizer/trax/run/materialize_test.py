@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from trackinizer.lib.agent.sessions import claude as claude_ir
+from trackinizer.lib.agent.sessions import claude
 from trackinizer.lib.agent.sessions.convert import detect_format
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
@@ -36,29 +36,25 @@ from trackinizer.trax.run.materialize import (
 # export republishes this tree one directory shallower, so a fixed hop count
 # resolved outside the package and the fixture vanished.
 _FIXTURE: Final = (
-    Path(claude_ir.__file__).resolve().parent / "testdata" / "claude_sidechain.jsonl"
+    Path(claude.__file__).resolve().parent / "testdata" / "claude_sidechain.jsonl"
 )
 
 
+# Real rather than synthetic: claude's writer reconstructs LINES from the provider-
+# native envelope each record carries in ``extra`` (``uuid``, ``parentUuid``, the key
+# order), so hand-built records with no envelope merge into one line and the rewrite
+# proves nothing about a real replay.
 def _records() -> list[SessionRecord]:
-    """A real captured transcript's records.
-
-    Real rather than synthetic: claude's writer reconstructs LINES from the
-    provider-native envelope each record carries in ``extra`` (``uuid``,
-    ``parentUuid``, the key order), so hand-built records with no envelope
-    merge into one line and the rewrite proves nothing about a real replay.
-    """
+    """Return a real captured transcript's records."""
     with _FIXTURE.open(encoding="utf-8") as handle:
-        return list(claude_ir.normalize(handle))
+        return list(claude.normalize(handle))
 
 
+# The LAST context stating one: the escaping convention is a majority over the lines
+# read, so the reader restates it as it moves and the final statement is the one in
+# force for the whole file.
 def _encoding() -> JSON:
-    """How that fixture spells its bytes, which the rewrite needs verbatim.
-
-    The LAST context stating one: the escaping convention is a majority over
-    the lines read, so the reader restates it as it moves and the final
-    statement is the one in force for the whole file.
-    """
+    """How that fixture spells its bytes, which the rewrite needs verbatim."""
     return next(
         record.encoding
         for record in reversed(_records())
@@ -160,7 +156,7 @@ class TestTheRewriteIsReadableBack:
         written = materialize_claude(records=_records(), encoding=_encoding())
 
         with written.path.open(encoding="utf-8") as handle:
-            reread = list(claude_ir.normalize(handle))
+            reread = list(claude.normalize(handle))
 
         before = [r.content for r in _records() if isinstance(r, UserMessage)]
         after = [r.content for r in reread if isinstance(r, UserMessage)]
@@ -179,7 +175,7 @@ class TestTheRewriteIsReadableBack:
         with written.path.open(encoding="utf-8") as handle:
             declared = {
                 DictCodec.coerce(getattr(record, "extra", None)).get("sessionId")
-                for record in claude_ir.normalize(handle)
+                for record in claude.normalize(handle)
             }
 
         assert declared - {None} == {str(written.cli_session_id)}
@@ -572,7 +568,7 @@ class TestMaterializingCodex:
             )
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

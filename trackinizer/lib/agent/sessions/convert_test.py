@@ -49,17 +49,14 @@ def _codex_session() -> str:
     )
 
 
+# The launch line, then everything from the first ``turn_context`` through the first
+# tool output: one user turn, one reasoning, one reply, one tool call and its result.
+# The pre-turn preamble -- skills, plugins, world state, 25 KB of it -- and the later
+# turns say nothing to a CLI test that the first act does not, and the whole 80 KB
+# capture cost 270 ms per round trip against 60 ms for this slice. Selected by kind, not
+# by line number, so a recapture that reorders the preamble still yields the same shape.
 def _first_turn(rollout: str) -> str:
-    """Return a codex rollout's launch line plus its first turn's first act.
-
-    The launch line, then everything from the first ``turn_context`` through
-    the first tool output: one user turn, one reasoning, one reply, one tool
-    call and its result. The pre-turn preamble -- skills, plugins, world
-    state, 25 KB of it -- and the later turns say nothing to a CLI test that
-    the first act does not, and the whole 80 KB capture cost 270 ms per round
-    trip against 60 ms for this slice. Selected by kind, not by line number,
-    so a recapture that reorders the preamble still yields the same shape.
-    """
+    """Return a codex rollout's launch line plus its first turn's first act."""
     kept = [rollout.splitlines(keepends=True)[0]]
     started = False
     for line in rollout.splitlines(keepends=True)[1:]:

@@ -29,6 +29,13 @@ def vetted_sql(*parts: str) -> str:
     interpolating them into an f-string literal, keeps the SQL-injection lint
     (ruff S608) satisfied in ONE vetted place instead of a suppression at every
     call site. The values still flow to the DB as bound parameters.
+
+    Args:
+      *parts: Parts.
+
+    Returns:
+      result: The str.
+
     """
     return "".join(parts)
 
@@ -42,21 +49,44 @@ def empty_optional_to_none(value: object) -> object:
     A falsy-but-valid scalar (``0`` priority, ``0.0`` confidence) is not a
     string or sequence, so it passes through untouched. The caller decides
     whether a column is nullable; this only normalizes the empty shape.
+
+    Args:
+      value: Value.
+
+    Returns:
+      value: The object.
+
     """
     if isinstance(value, str):
-        return None if not value.strip() else value
+        return value if value.strip() else None
     if isinstance(value, Sequence) and len(value) == 0:
         return None
     return value
 
 
 def vec_to_text(vec: Sequence[float]) -> str:
-    """Format a vector as the pgvector text input form: ``[v1,v2,...]``."""
+    """Format a vector as the pgvector text input form: ``[v1,v2,...]``.
+
+    Args:
+      vec: Vec.
+
+    Returns:
+      result: The str.
+
+    """
     return "[" + ",".join(repr(x) for x in vec) + "]"
 
 
 def list_or_none[T](value: Sequence[T] | None) -> list[T] | None:
-    """Pass ``None`` through; materialize any other sequence as ``list``."""
+    """Pass ``None`` through; materialize any other sequence as ``list``.
+
+    Args:
+      value: Value.
+
+    Returns:
+      result: The list[T] | None.
+
+    """
     return None if value is None else list(value)
 
 
@@ -68,6 +98,13 @@ def byline_strs[T: str](values: Iterable[T]) -> tuple[T, ...]:
     repeated author are significant, but a blank/whitespace element is absence
     and is dropped. Sharing this normalizer keeps ``submit(["A","A"])`` and
     ``set_authors(("A","A"))`` on one contract.
+
+    Args:
+      values: Values.
+
+    Returns:
+      result: The tuple[T, ...].
+
     """
     return tuple(s for s in (cast(T, v.strip()) for v in values) if s)
 
@@ -80,6 +117,13 @@ def canonical_strs[T: str](values: Iterable[T]) -> tuple[T, ...]:
     narrowing. Applied uniformly to every list-valued inquiries column
     (``labels``, ``subscribers``, ``issue_kind``) at the storage boundary
     so wire input and DB state agree on canonical form.
+
+    Args:
+      values: Values.
+
+    Returns:
+      result: The tuple[T, ...].
+
     """
     seen: dict[T, None] = {}
     for v in values:

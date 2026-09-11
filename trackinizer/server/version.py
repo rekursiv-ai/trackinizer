@@ -21,9 +21,13 @@ from __future__ import annotations
 
 from functools import cache
 from pathlib import Path
+from typing import Final
 
 import os
 import subprocess
+
+
+_CWD: Final = Path(__file__).resolve().parent
 
 
 @cache
@@ -32,6 +36,10 @@ def build_sha() -> str:
 
     Cached: the SHA is fixed for a process lifetime, so the env read and
     the at-most-one ``git`` subprocess happen on the first call only.
+
+    Returns:
+      env: The str.
+
     """
     # Strip before the truthiness test: a whitespace-only value is truthy
     # but strips to "", which would otherwise be returned as a blank SHA
@@ -45,7 +53,7 @@ def build_sha() -> str:
         # variability and it is benign here.
         result = subprocess.run(
             ("git", "rev-parse", "HEAD"),  # noqa: S607 -- PATH-resolved git; fixed args, no shell.
-            cwd=Path(__file__).resolve().parent,
+            cwd=_CWD,
             capture_output=True,
             text=True,
             timeout=2.0,

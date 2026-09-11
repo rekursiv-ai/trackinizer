@@ -54,16 +54,6 @@ _log = logging.getLogger(__name__)
 type _PeerMap = Mapping[str, Sequence[Mapping[str, object]]]
 
 
-def _peer_map(detail: Mapping[str, object], key: str) -> _PeerMap:
-    """Return one detail's ``edges``/``backlinks`` peer map (empty when absent)."""
-    return cast(_PeerMap, detail.get(key) or {})
-
-
-def _opt_float(value: object) -> float | None:
-    """Coerce a JSON edge ``valence`` to ``float`` (``None`` stays ``None``)."""
-    return None if value is None else FloatCodec.coerce(value)
-
-
 # The subset of fields the graph view (and a faithful-enough replay) needs,
 # per kind. Everything else on the live row is dropped: the demo only renders
 # kind, title, status, and the typed edges.
@@ -87,7 +77,12 @@ _DEFAULT_SOURCE: Final = ""
 
 
 def main() -> int:
-    """The main function. Return the process exit code."""
+    """Run the program; return the process exit code.
+
+    Returns:
+      result: The int.
+
+    """
     parser = argparse.ArgumentParser(
         description=(__doc__ or "").split("\n", 2)[2],
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -171,13 +166,11 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+# An empty ``source_url`` (the default) uses the profile's own URL -- the deployment the
+# operator is already pointed at. ``--source`` overrides just the address; the
+# credential comes from the profile either way.
 def _source_client(source_url: str) -> Client:
-    """Client for ``source_url``, authed with the saved trax profile's key.
-
-    An empty ``source_url`` (the default) uses the profile's own URL -- the
-    deployment the operator is already pointed at. ``--source`` overrides
-    just the address; the credential comes from the profile either way.
-    """
+    """Client for ``source_url``, authed with the saved trax profile's key."""
     profile = load_profile()
     if not profile.api_key:
         raise SystemExit(
@@ -189,14 +182,12 @@ def _source_client(source_url: str) -> Client:
     return Client(url, author=profile.author or "replay", api_key=profile.api_key)
 
 
+# Under ``--limit`` the kinds are ROUND-ROBINED rather than taken in enum order, so a
+# small cap samples every kind (Issue, Belief, Paper, ...) instead of filling up
+# entirely on the first kind. This keeps the replayed graph diverse -- and keeps cross-
+# kind edges (citations, provenance) -- at any size.
 def _pull_nodes(source: Client, *, limit: int) -> list[dict[str, Any]]:
-    """Every inquiry across all kinds, trimmed to the graph-relevant fields.
-
-    Under ``--limit`` the kinds are ROUND-ROBINED rather than taken in enum
-    order, so a small cap samples every kind (Issue, Belief, Paper, ...) instead
-    of filling up entirely on the first kind. This keeps the replayed graph
-    diverse -- and keeps cross-kind edges (citations, provenance) -- at any size.
-    """
+    """Every inquiry across all kinds, trimmed to the graph-relevant fields."""
     by_kind: dict[str, list[dict[str, Any]]] = {}
     for kind in get_args(Inquiry.InquiryKind.__value__):
         rows = source.list_kind_all(kind)
@@ -217,12 +208,10 @@ def _pull_nodes(source: Client, *, limit: int) -> list[dict[str, Any]]:
     return out
 
 
+# ``created`` is carried for traversal ordering, not replayed (it is server-stamped on
+# insert); ``_node_body`` drops it.
 def _node_from_row(row: dict[str, Any], kind: str) -> dict[str, Any]:
-    """Trim a live inquiry row to the graph-relevant fields.
-
-    ``created`` is carried for traversal ordering, not replayed (it is
-    server-stamped on insert); ``_node_body`` drops it.
-    """
+    """Trim a live inquiry row to the graph-relevant fields."""
     node: dict[str, Any] = {
         "id": row["id"],
         "kind": kind,
@@ -235,15 +224,13 @@ def _node_from_row(row: dict[str, Any], kind: str) -> dict[str, Any]:
     return node
 
 
+# Only the outbound ``edges`` projection is read (the inbound ``backlinks`` would re-
+# report the same row from the other endpoint), so the set is naturally deduplicated
+# across nodes.
 def _pull_edges(
     source: Client, node_ids: list[str]
 ) -> list[tuple[str, str, str, float | None]]:
-    """Outbound edges for each node, as ``(from_id, to_id, kind, valence)``.
-
-    Only the outbound ``edges`` projection is read (the inbound ``backlinks``
-    would re-report the same row from the other endpoint), so the set is
-    naturally deduplicated across nodes.
-    """
+    """Outbound edges for each node, as ``(from_id, to_id, kind, valence)``."""
     valid_kinds = set(get_args(Edge.Kind.__value__))
     known = set(node_ids)
     out: list[tuple[str, str, str, float | None]] = []
@@ -264,6 +251,37 @@ def _pull_edges(
     return out
 
 
+# The crawl INTERLEAVES discovery and insertion: as the BFS from the seeds reaches each
+# node it is inserted right away (in small ``chunk`` batches), so the target -- and an
+# open ``/graph`` page via SSE -- starts filling almost immediately instead of waiting
+# for the whole component to be read first. Each chunk is sorted by source ``created``
+# before insert, so the write order is locally deterministic; the web page re-sorts by
+# ``created`` for its own replay animation, so exact authoring order is preserved THERE.
+# A node that arrives before its peer is not stranded: the viz buffers an edge whose
+# other endpoint has not landed yet and attaches it when it does.
+#
+# Small batches (not one row at a time) keep the embedded pglite target healthy -- per-
+# row writes burst it into 500s and orphaned sockets. ``delay`` rate-limits between
+# chunks. Returns the inserted node count.
+def _flush(
+    pending: list[dict[str, Any]],
+    target: Client,
+    id_map: dict[str, str],
+    valid_kinds: set[str],
+    *,
+    delay: float,
+) -> None:
+    """Insert the pending chunk in dependency order and clear it."""
+    if not pending:
+        return
+    pending.sort(key=_detail_order_key)
+    _insert_chunk(target, list(pending), id_map, valid_kinds)
+    _log.info("[replay]   inserted %d nodes so far", len(id_map))
+    pending.clear()
+    if delay > 0:
+        time.sleep(delay)
+
+
 def _crawl_and_insert(
     source: Client,
     target: Client,
@@ -276,22 +294,7 @@ def _crawl_and_insert(
     # >1 so the embedded pglite target is never bursted by per-row writes.
     chunk: int = 5,
 ) -> int:
-    """Crawl the connected subgraph from ``seeds`` and stream it in, in order.
-
-    The crawl INTERLEAVES discovery and insertion: as the BFS from the seeds
-    reaches each node it is inserted right away (in small ``chunk`` batches),
-    so the target -- and an open ``/graph`` page via SSE -- starts filling
-    almost immediately instead of waiting for the whole component to be read
-    first. Each chunk is sorted by source ``created`` before insert, so the
-    write order is locally deterministic; the web page re-sorts by ``created``
-    for its own replay animation, so exact authoring order is preserved THERE.
-    A node that arrives before its peer is not stranded: the viz buffers an
-    edge whose other endpoint has not landed yet and attaches it when it does.
-
-    Small batches (not one row at a time) keep the embedded pglite target
-    healthy -- per-row writes burst it into 500s and orphaned sockets. ``delay``
-    rate-limits between chunks. Returns the inserted node count.
-    """
+    """Crawl the connected subgraph from ``seeds`` and stream it in, in order."""
     valid_kinds = set(get_args(Edge.Kind.__value__))
     seen: dict[str, dict[str, Any]] = {}
     id_map: dict[str, str] = {}
@@ -305,16 +308,6 @@ def _crawl_and_insert(
 
     pending: list[dict[str, Any]] = []
 
-    def flush() -> None:
-        if not pending:
-            return
-        pending.sort(key=_detail_order_key)
-        _insert_chunk(target, list(pending), id_map, valid_kinds)
-        _log.info("[replay]   inserted %d nodes so far", len(id_map))
-        pending.clear()
-        if delay > 0:
-            time.sleep(delay)
-
     while frontier:
         current = frontier.pop(0)
         detail = seen[current]
@@ -324,8 +317,8 @@ def _crawl_and_insert(
                 seen[peer_id] = DictCodec.coerce(source.get(f"/api/web/get/{peer_id}"))
                 frontier.append(peer_id)
         if len(pending) >= chunk:
-            flush()
-    flush()
+            _flush(pending, target, id_map, valid_kinds, delay=delay)
+    _flush(pending, target, id_map, valid_kinds, delay=delay)
 
     return len(id_map)
 
@@ -402,18 +395,15 @@ def _resolve_seed(source: Client, ref: str) -> str:
     return text
 
 
+# Outbound ``edges`` are ``node -> peer``; inbound ``backlinks`` are ``peer -> node``.
+# Each edge is collected from BOTH endpoints during the crawl, but ``_write_edge`` is an
+# upsert and the viz dedups, so a repeat is harmless.
 def _detail_edges(
     node_id: str,
     detail: dict[str, Any],
     valid_kinds: set[str],
 ) -> list[tuple[str, str, str, float | None]]:
-    """Every edge touching ``node_id``, oriented from_id -> to_id.
-
-    Outbound ``edges`` are ``node -> peer``; inbound ``backlinks`` are
-    ``peer -> node``. Each edge is collected from BOTH endpoints during the
-    crawl, but ``_write_edge`` is an upsert and the viz dedups, so a repeat is
-    harmless.
-    """
+    """Every edge touching ``node_id``, oriented from_id -> to_id."""
     out: list[tuple[str, str, str, float | None]] = []
     for kind, peers in _peer_map(detail, "edges").items():
         if kind in valid_kinds:
@@ -431,7 +421,7 @@ def _detail_edges(
 
 
 def _detail_peers(detail: dict[str, Any]) -> list[str]:
-    """The ids of every node adjacent to this one (both edge directions)."""
+    """Return the ids of every node adjacent to this one (both edge directions)."""
     out: list[str] = []
     for key in ("edges", "backlinks"):
         for peers in _peer_map(detail, key).values():
@@ -440,7 +430,7 @@ def _detail_peers(detail: dict[str, Any]) -> list[str]:
 
 
 def _node_from_detail(self_view: dict[str, Any]) -> dict[str, Any]:
-    """A submit body from a ``web_get`` ``self`` view: graph-relevant fields."""
+    """Return a submit body from a ``web_get`` ``self`` view: graph-relevant fields."""
     kind = self_view["kind"]
     body: dict[str, Any] = {}
     for field in _KIND_FIELDS.get(kind, ("title", "status")):
@@ -450,6 +440,9 @@ def _node_from_detail(self_view: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
+# Nodes are created first (in chunks) to learn their new target ids; edges then
+# reference those ids. Splitting nodes and edges avoids the index bookkeeping of a
+# single mixed batch while staying just a handful of requests.
 def _replay(
     target: Client,
     nodes: list[dict[str, Any]],
@@ -457,13 +450,7 @@ def _replay(
     *,
     batch: int = 200,
 ) -> None:
-    """Create every node, then every edge, on the target via batched submits.
-
-    Nodes are created first (in chunks) to learn their new target ids; edges
-    then reference those ids. Splitting nodes and edges avoids the index
-    bookkeeping of a single mixed batch while staying just a handful of
-    requests.
-    """
+    """Create every node, then every edge, on the target via batched submits."""
     id_map: dict[str, str] = {}
     for start in range(0, len(nodes), batch):
         chunk = nodes[start : start + batch]
@@ -481,6 +468,9 @@ def _replay(
                 _log.info("[replay]   edges %d/%d", written, len(edges))
 
 
+# Returns ``False`` (and writes nothing) if an endpoint was not replayed (e.g. dropped
+# by ``--limit``). Edges go through the dedicated edge route, not the inquiry-batch
+# route -- that route requires at least one item and rejects an edges-only batch.
 def _write_edge(
     target: Client,
     id_map: dict[str, str],
@@ -490,13 +480,7 @@ def _write_edge(
     *,
     valence: float | None,
 ) -> bool:
-    """Create one edge on the target, rewired to the replayed ids.
-
-    Returns ``False`` (and writes nothing) if an endpoint was not replayed
-    (e.g. dropped by ``--limit``). Edges go through the dedicated edge route,
-    not the inquiry-batch route -- that route requires at least one item and
-    rejects an edges-only batch.
-    """
+    """Create one edge on the target, rewired to the replayed ids."""
     if from_id not in id_map or to_id not in id_map:
         return False
     try:
@@ -519,6 +503,12 @@ def _write_edge(
     return True
 
 
+# Replays the graph's real authoring history: nodes are sorted by ``created`` and
+# inserted oldest-first, so the viz grows exactly as the knowledge was built. This also
+# makes every edge land cleanly -- edges are stored younger(child) -> older(parent), so
+# inserting oldest-first guarantees a node's parents already exist when it arrives, and
+# its edges to them fire immediately. The SSE stream pushes each insert to an open
+# ``/graph`` page, so the real graph visibly forms over time.
 def _replay_traversal(
     target: Client,
     nodes: list[dict[str, Any]],
@@ -526,16 +516,7 @@ def _replay_traversal(
     *,
     delay: float,
 ) -> None:
-    """Insert nodes one at a time in creation-time order, pausing between each.
-
-    Replays the graph's real authoring history: nodes are sorted by ``created``
-    and inserted oldest-first, so the viz grows exactly as the knowledge was
-    built. This also makes every edge land cleanly -- edges are stored
-    younger(child) -> older(parent), so inserting oldest-first guarantees a
-    node's parents already exist when it arrives, and its edges to them fire
-    immediately. The SSE stream pushes each insert to an open ``/graph`` page,
-    so the real graph visibly forms over time.
-    """
+    """Insert nodes one at a time in creation-time order, pausing between each."""
     edges_from: dict[str, list[tuple[str, str, str, float | None]]] = {
         n["id"]: [] for n in nodes
     }
@@ -558,13 +539,21 @@ def _replay_traversal(
             time.sleep(delay)
 
 
+# Drops ``id`` and ``kind`` (the route's own discriminators) and ``created`` (server-
+# stamped on insert; carried only for traversal ordering).
 def _node_body(node: dict[str, Any]) -> dict[str, Any]:
-    """A submit body from a pulled node: graph-relevant fields only.
-
-    Drops ``id`` and ``kind`` (the route's own discriminators) and ``created``
-    (server-stamped on insert; carried only for traversal ordering).
-    """
+    """Return a submit body from a pulled node: graph-relevant fields only."""
     return {k: v for k, v in node.items() if k not in ("id", "kind", "created")}
+
+
+def _peer_map(detail: Mapping[str, object], key: str) -> _PeerMap:
+    """Return one detail's ``edges``/``backlinks`` peer map (empty when absent)."""
+    return cast(_PeerMap, detail.get(key) or {})
+
+
+def _opt_float(value: object) -> float | None:
+    """Coerce a JSON edge ``valence`` to ``float`` (``None`` stays ``None``)."""
+    return None if value is None else FloatCodec.coerce(value)
 
 
 if __name__ == "__main__":

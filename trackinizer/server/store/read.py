@@ -50,109 +50,6 @@ __all__ = [
 ]
 
 
-def _lower_filter(filt: RowFilter, params: list[object]) -> str | None:
-    """Render one filter as a SQL clause, or ``None`` if it cannot lower.
-
-    Appends the operand to ``params`` (keeping positional placeholders in
-    lockstep with the caller's list) only when the clause actually takes one.
-    """
-    column = canonical_filter_field(filt.field)
-    template = sql_template(column, filt.op)
-    if template is None:
-        return None
-    if filt.op in ("isnull", "notnull"):
-        return template.format(col=column, p="")
-    params.append(filt.value)
-    return template.format(col=column, p=f"${len(params)}")
-
-
-async def _record_texts(
-    conn: Conn, ids: Sequence[UUID], filters: Sequence[RowFilter]
-) -> dict[UUID, dict[str, object]]:
-    """One session's IR record texts per id, for the record clauses in ``filters``.
-
-    A record field names no column on ``inquiries``, so the Python evaluator
-    has nothing to read unless the texts come along. Only the fields actually
-    filtered are fetched, and only when one is present -- the common case adds
-    no query at all, and returns an empty mapping.
-
-    ``match_filter`` reads a list-shaped value as "any element matches", which
-    is the rule the lowered ``EXISTS`` implements too, so the two evaluators
-    agree by construction rather than by coincidence.
-
-    Returns the texts keyed by session and then by FIELD, for the caller to
-    overlay onto a row it is about to filter -- rather than a rewritten row,
-    which would lose the ``Record`` that ``materialize`` needs.
-    """
-    kinds = {
-        kind: field
-        for field in {canonical_filter_field(f.field) for f in filters}
-        if (kind := record_kind_for(field)) is not None
-    }
-    if not kinds or not ids:
-        return {}
-    found = await conn.fetch(
-        "SELECT session_id, kind, array_agg(text) AS texts FROM session_records "
-        "WHERE session_id = ANY($1::uuid[]) AND kind = ANY($2::text[]) "
-        "GROUP BY session_id, kind",
-        list(ids),
-        list(kinds),
-    )
-    # A session with no such record is ABSENT rather than an empty list: absent
-    # reads as NULL, where an empty list would make ``notnull`` answer true.
-    texts: dict[UUID, dict[str, object]] = {}
-    for record in found:
-        texts.setdefault(record["session_id"], {})[kinds[record["kind"]]] = list(
-            record["texts"]
-        )
-    return texts
-
-
-def _partition_filters(
-    filters: Sequence[RowFilter], params: list[object], *, lowering: bool = True
-) -> tuple[Sequence[str], Sequence[RowFilter]]:
-    """Split ``filters`` into SQL clauses and clauses Python must still run.
-
-    Returns ``(clauses, remaining)``. The caller may only push ``LIMIT`` into
-    SQL when ``remaining`` is empty: a predicate still evaluated in Python
-    must run before the window, or matches past the limit are dropped unseen
-    (Issue#256).
-
-    Args:
-      filters: Clauses to split.
-      params: Running positional-parameter list; lowered clauses append to it.
-      lowering: Whether a clause may be pushed into SQL. Only the equivalence
-        tests pass ``False``, to run every clause through the Python
-        evaluator and compare the rows against the lowered path.
-
-    Returns:
-      clauses: SQL fragments to AND into the WHERE.
-      remaining: Clauses the caller must still evaluate per row.
-
-    Raises:
-      ValidationError: A clause neither evaluator can answer faithfully; see
-        :func:`~wire.row_filter.reject_inadmissible`.
-
-    """
-    # Screened BEFORE lowering, not only when lowering declines: a NaN operand
-    # is refused precisely because it LOWERS, where Postgres sorts it largest
-    # and answers ``true`` to ``seq < 'nan'``. Checking only the declined
-    # branch inspected every clause except the dangerous one.
-    for filt in filters:
-        reject_inadmissible(filt)
-    if not lowering:
-        return (), list(filters)
-    clauses: list[str] = []
-    remaining: list[RowFilter] = []
-    for filt in filters:
-        clause = _lower_filter(filt, params)
-        if clause is None:
-            remaining.append(filt)
-        else:
-            clauses.append(clause)
-    return clauses, remaining
-
-
 def seq_range_clause(
     params: list[object], seq_ranges: Sequence[SeqRange]
 ) -> str | None:
@@ -165,6 +62,14 @@ def seq_range_clause(
     ``seq``-windowed reader (:meth:`Store.list_kind`,
     :meth:`Store.read_session_records`) so the disjoint-union lowering has
     exactly one implementation.
+
+    Args:
+      params: Params.
+      seq_ranges: Seq ranges.
+
+    Returns:
+      result: The str | None.
+
     """
     if not seq_ranges:
         return None
@@ -186,7 +91,15 @@ class _ReadMixin(_StoreShared):
     """Read-only inquiry, cost, and change queries for :class:`Store`."""
 
     async def get_inquiry(self, target_id: UUID) -> Inquiry | None:
-        """Fetch any Inquiry by id; subclass dispatched from ``kind`` column."""
+        """Fetch any Inquiry by id; subclass dispatched from ``kind`` column.
+
+        Args:
+          target_id: Target id.
+
+        Returns:
+          result: The Inquiry | None.
+
+        """
         async with self.engine.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM inquiries WHERE id = $1",
@@ -231,6 +144,19 @@ class _ReadMixin(_StoreShared):
         ``lowering=False`` forces every clause through the Python evaluator.
         Only the equivalence tests pass it, to compare the two evaluators'
         rows; a caller has no reason to ask for the slower path.
+
+        Args:
+          kind: Kind.
+          status: Status.
+          limit: Limit.
+          offset: Offset.
+          seq_ranges: Seq ranges.
+          filters: Filters.
+          lowering: Lowering.
+
+        Returns:
+          result: The list[Inquiry].
+
         """
         params: list[object] = [kind]
         clauses = ["kind = $1"]
@@ -310,7 +236,12 @@ class _ReadMixin(_StoreShared):
         return [materialize(row, outbound, inbound) for row in rows]
 
     async def next_issue(self) -> Issue | None:
-        """Return the next active Issue whose prerequisites are all terminal."""
+        """Return the next active Issue whose prerequisites are all terminal.
+
+        Returns:
+          result: The Issue | None.
+
+        """
         async with self.engine.acquire() as conn:
             row = await conn.fetchrow(NEXT_ISSUE_SQL)
             if row is None:
@@ -326,6 +257,14 @@ class _ReadMixin(_StoreShared):
         ``cost_subtree.sql``; ``deep=False`` reads the row's own
         running totals. Both paths return ``None`` for an unknown id so
         callers can distinguish "no such row" from "zero recorded cost".
+
+        Args:
+          subject_id: Subject id.
+          deep: Deep.
+
+        Returns:
+          result: The Cost | None.
+
         """
         async with self.engine.acquire() as conn:
             exists = await conn.fetchval(
@@ -355,6 +294,13 @@ class _ReadMixin(_StoreShared):
         Each returned row is projected through :func:`fetch_edges_bulk`
         so its own provenance / citation fields are populated -- callers
         can drill into evidence chains without re-fetching.
+
+        Args:
+          belief_id: Belief id.
+
+        Returns:
+          result: The list[Inquiry].
+
         """
         async with self.engine.acquire() as conn:
             rows = await conn.fetch(PROVES_BELIEF_SQL, belief_id)
@@ -369,7 +315,7 @@ class _ReadMixin(_StoreShared):
         after_id: UUID | None = None,
         limit: int = 200,
     ) -> list[Change]:
-        """Changes since ``(since, after_id)`` for ``agent``, paginated.
+        """Return changes since ``(since, after_id)`` for ``agent``, paginated.
 
         The cursor is ``(created, id)``: cursor predicate is
         ``(c.created, c.id) > ($since, $after_id)``. Reading
@@ -422,7 +368,7 @@ class _ReadMixin(_StoreShared):
         after_id: UUID | None = None,
         limit: int = 200,
     ) -> list[tuple[Change, int | None]]:
-        """Changes past the ``(since, after_id)`` cursor naming any subscriber.
+        """Return changes past the ``(since, after_id)`` cursor naming any subscriber.
 
         :meth:`what_changed_for_me` minus the single-agent filter: rows whose
         ``subscribers_snapshot`` is non-empty, ordered by ``(created, id)``
@@ -464,7 +410,15 @@ class _ReadMixin(_StoreShared):
         return [(Change.from_row(r), r["subject_seq"]) for r in rows]
 
     async def get_change(self, change_id: UUID) -> Change | None:
-        """Fetch one ``change_log`` row by id; ``None`` when absent."""
+        """Fetch one ``change_log`` row by id; ``None`` when absent.
+
+        Args:
+          change_id: Change id.
+
+        Returns:
+          result: The Change | None.
+
+        """
         async with self.engine.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM change_log WHERE id = $1", change_id
@@ -482,7 +436,7 @@ class _ReadMixin(_StoreShared):
         kind: Change.Kind | None = None,
         limit: int = 200,
     ) -> list[Change]:
-        """Filtered, newest-first ``change_log`` slice.
+        """Return a filtered, newest-first ``change_log`` slice.
 
         Backs ``GET /api/change_log`` (``docs/api.md`` 1.14-1.15). Every
         filter is optional and ANDed; ``since`` is an inclusive lower
@@ -549,3 +503,83 @@ class _ReadMixin(_StoreShared):
                 *args,
             )
         return [Change.from_row(r) for r in rows]
+
+
+# Appends the operand to ``params`` (keeping positional placeholders in lockstep with
+# the caller's list) only when the clause actually takes one.
+def _lower_filter(filt: RowFilter, params: list[object]) -> str | None:
+    """Render one filter as a SQL clause, or ``None`` if it cannot lower."""
+    column = canonical_filter_field(filt.field)
+    template = sql_template(column, filt.op)
+    if template is None:
+        return None
+    if filt.op in ("isnull", "notnull"):
+        return template.format(col=column, p="")
+    params.append(filt.value)
+    return template.format(col=column, p=f"${len(params)}")
+
+
+# A record field names no column on ``inquiries``, so the Python evaluator has nothing
+# to read unless the texts come along. Only the fields actually filtered are fetched,
+# and only when one is present -- the common case adds no query at all, and returns an
+# empty mapping.
+#
+# ``match_filter`` reads a list-shaped value as "any element matches", which is the rule
+# the lowered ``EXISTS`` implements too, so the two evaluators agree by construction
+# rather than by coincidence.
+#
+# Returns the texts keyed by session and then by FIELD, for the caller to overlay onto a
+# row it is about to filter -- rather than a rewritten row, which would lose the
+# ``Record`` that ``materialize`` needs.
+async def _record_texts(
+    conn: Conn, ids: Sequence[UUID], filters: Sequence[RowFilter]
+) -> dict[UUID, dict[str, object]]:
+    """One session's IR record texts per id, for the record clauses in ``filters``."""
+    kinds = {
+        kind: field
+        for field in {canonical_filter_field(f.field) for f in filters}
+        if (kind := record_kind_for(field)) is not None
+    }
+    if not kinds or not ids:
+        return {}
+    found = await conn.fetch(
+        "SELECT session_id, kind, array_agg(text) AS texts FROM session_records "
+        "WHERE session_id = ANY($1::uuid[]) AND kind = ANY($2::text[]) "
+        "GROUP BY session_id, kind",
+        list(ids),
+        list(kinds),
+    )
+    # A session with no such record is ABSENT rather than an empty list: absent
+    # reads as NULL, where an empty list would make ``notnull`` answer true.
+    texts: dict[UUID, dict[str, object]] = {}
+    for record in found:
+        texts.setdefault(record["session_id"], {})[kinds[record["kind"]]] = list(
+            record["texts"]
+        )
+    return texts
+
+
+# Returns ``(clauses, remaining)``. The caller may only push ``LIMIT`` into SQL when
+# ``remaining`` is empty: a predicate still evaluated in Python must run before the
+# window, or matches past the limit are dropped unseen (Issue#256).
+def _partition_filters(
+    filters: Sequence[RowFilter], params: list[object], *, lowering: bool = True
+) -> tuple[Sequence[str], Sequence[RowFilter]]:
+    """Split ``filters`` into SQL clauses and clauses Python must still run."""
+    # Screened BEFORE lowering, not only when lowering declines: a NaN operand
+    # is refused precisely because it LOWERS, where Postgres sorts it largest
+    # and answers ``true`` to ``seq < 'nan'``. Checking only the declined
+    # branch inspected every clause except the dangerous one.
+    for filt in filters:
+        reject_inadmissible(filt)
+    if not lowering:
+        return (), list(filters)
+    clauses: list[str] = []
+    remaining: list[RowFilter] = []
+    for filt in filters:
+        clause = _lower_filter(filt, params)
+        if clause is None:
+            remaining.append(filt)
+        else:
+            clauses.append(clause)
+    return clauses, remaining

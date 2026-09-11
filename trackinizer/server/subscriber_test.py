@@ -50,7 +50,7 @@ def _change(
 
 
 def _future(seconds: float = 60.0) -> datetime:
-    """A timestamp safely past the task's boot cursor (``since = now()``)."""
+    """Return a timestamp safely past the task's boot cursor (``since = now()``)."""
     return datetime.now(UTC) + timedelta(seconds=seconds)
 
 
@@ -344,6 +344,9 @@ class _AlwaysFailingStore(_StubStore):
         raise ConnectionRefusedError(111, "Connection refused")
 
 
+# ``asyncio.sleep`` is stubbed so the test observes the SCHEDULE without waiting it out
+# -- a real exponential backoff reaches minutes per retry, and the schedule is the
+# subject under test, not the clock.
 async def _run_failing_sweep(
     store: _StubStore,
     monkeypatch: pytest.MonkeyPatch,
@@ -351,12 +354,7 @@ async def _run_failing_sweep(
     attempts: int,
     max_backoff_sec: float = 60.0,
 ) -> list[float]:
-    """Run the sweep against a failing store; return the delays it slept.
-
-    ``asyncio.sleep`` is stubbed so the test observes the SCHEDULE without
-    waiting it out -- a real exponential backoff reaches minutes per retry,
-    and the schedule is the subject under test, not the clock.
-    """
+    """Run the sweep against a failing store; return the delays it slept."""
     delays: list[float] = []
     real_sleep = asyncio.sleep
 
@@ -554,7 +552,7 @@ class TestPayloadAndKey:
         assert _delivery_key(new_uuid(), "alice") != _delivery_key(change_id, "alice")
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

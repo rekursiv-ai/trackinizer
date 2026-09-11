@@ -81,7 +81,7 @@ __all__ = [
 ]
 
 
-# scrypt cost: ~50ms per hash, within the OWASP 2023 minimum. Encoded
+# ``scrypt`` cost: ~50ms per hash, within the OWASP 2023 minimum. Encoded
 # into every hash so a future bump rotates per-row, leaving old rows valid.
 _SCRYPT_N: Final[int] = 2**14
 _SCRYPT_R: Final[int] = 8
@@ -156,6 +156,14 @@ def effective_role(user_role: Role, key_role: Role) -> Role:
     A bearer request is authorized at the minimum of the user's standing
     role and the presented key's ceiling. Session-authed requests carry no
     key, so that path just passes the user role through.
+
+    Args:
+      user_role: User role.
+      key_role: Key role.
+
+    Returns:
+      result: The Role.
+
     """
     return ROLE_ORDER[min(ROLE_ORDER.index(user_role), ROLE_ORDER.index(key_role))]
 
@@ -181,8 +189,11 @@ class AuthIdentity:
     """
 
     user_id: uuid.UUID
+
     api_key_id: uuid.UUID | None
+
     email: str
+
     role: Role
 
 
@@ -192,6 +203,13 @@ def hash_secret(secret: str) -> str:
     Returns a self-describing ``scrypt$n$r$p$saltB64$keyB64`` string. The
     cost parameters are baked in per-row so a future bump rolls forward
     without invalidating old hashes; :func:`verify_secret` reads them back.
+
+    Args:
+      secret: Secret.
+
+    Returns:
+      result: The str.
+
     """
     salt = secrets.token_bytes(_SCRYPT_SALT_BYTES)
     key = hashlib.scrypt(
@@ -214,6 +232,14 @@ def verify_secret(secret: str, encoded: str) -> bool:
     Returns ``True`` only when ``secret`` reproduces the stored key under the
     encoded parameters. A malformed ``encoded`` returns ``False`` rather than
     raising, so a corrupted row can't crash the auth middleware.
+
+    Args:
+      secret: Secret.
+      encoded: Encoded.
+
+    Returns:
+      result: The bool.
+
     """
     parts = encoded.split("$")
     if len(parts) != 6 or parts[0] != "scrypt":
@@ -256,6 +282,10 @@ def generate_token() -> tuple[str, str]:
     Returns ``(secret, prefix)``. The secret is the full plaintext token,
     shown to the user once and never stored. The prefix is its first
     :data:`TOKEN_PREFIX_LEN` chars, persisted for display and lookup scoping.
+
+    Returns:
+      result: The tuple[str, str].
+
     """
     secret = _TOKEN_LABEL + secrets.token_urlsafe(_TOKEN_BYTES)
     return secret, secret[:TOKEN_PREFIX_LEN]
@@ -274,6 +304,13 @@ async def current_user(request: Request) -> AuthIdentity:
     engine and the ``last_used_at`` throttle). Raises 401 when no credential
     is present, or the credential is unknown, revoked, or owned by a disabled
     user.
+
+    Args:
+      request: Request.
+
+    Returns:
+      identity: The AuthIdentity.
+
     """
     # ``--no-auth`` collapses the resolver to a synthetic admin -- demo mode
     # only. Tests that skip the lifespan leave ``config`` unset and fall
@@ -314,24 +351,15 @@ def require_role(min_role: Role) -> Callable[..., Awaitable[AuthIdentity]]:
     ranks below ``min_role``. Otherwise it returns the identity unchanged.
     Use ``"viewer"`` on reads, ``"writer"`` on mutations, ``"admin"`` on
     user management.
+
+    Args:
+      min_role: Min role.
+
+    Returns:
+      result: The Callable[..., Awaitable[AuthIdentity]].
+
     """
     return _RoleRequirement(min_role=min_role)
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class _RoleRequirement:
-    min_role: Role
-
-    async def __call__(
-        self,
-        identity: Annotated[AuthIdentity, Depends(current_user)],
-    ) -> AuthIdentity:
-        if ROLE_ORDER.index(identity.role) < ROLE_ORDER.index(self.min_role):
-            raise HTTPException(
-                status_code=403,
-                detail=f"role {identity.role!r} insufficient; need {self.min_role!r}",
-            )
-        return identity
 
 
 async def create_api_key(
@@ -362,6 +390,10 @@ async def create_api_key(
       ceiling: Effective role of the presenting credential (or the seeded role
         for the credential-less bootstrap path).
 
+
+    Returns:
+      result: The tuple[uuid.UUID, str, str, Role].
+
     Raises:
       RoleCeilingError: ``role`` is stronger than the effective ceiling.
       LookupError: ``user_id`` is not a row in ``users``.
@@ -388,14 +420,6 @@ async def create_api_key(
         final_role,
     )
     return key_id, secret, prefix, final_role
-
-
-async def _fetch_user_role(conn: Conn, user_id: uuid.UUID) -> Role:
-    """Return one user's role; raise when the user id is unknown."""
-    user_role_raw = await conn.fetchval("SELECT role FROM users WHERE id = $1", user_id)
-    if user_role_raw is None:
-        raise LookupError(f"unknown user {user_id}")
-    return cast(Role, user_role_raw)
 
 
 async def set_api_key_role(
@@ -430,6 +454,10 @@ async def set_api_key_role(
       user_id: Owning ``users.id``; scopes the UPDATE.
       role: Target role.
       ceiling: Effective role of the presenting credential.
+
+
+    Returns:
+      result: The bool.
 
     Raises:
       RoleCeilingError: ``role`` exceeds the effective ceiling for an owned,
@@ -470,6 +498,14 @@ async def list_api_keys(conn: Conn, *, user_id: uuid.UUID) -> list[dict[str, obj
     Only this user's rows are returned -- the trust boundary against
     cross-user enumeration. ``secret_hash`` is omitted; it must never reach
     the wire.
+
+    Args:
+      conn: Conn.
+      user_id: User id.
+
+    Returns:
+      result: The list[dict[str, object]].
+
     """
     rows = await conn.fetch(
         "SELECT id, name, prefix, role, created_at, last_used_at, revoked_at "
@@ -487,6 +523,15 @@ async def revoke_api_key(conn: Conn, *, key_id: uuid.UUID, user_id: uuid.UUID) -
     ``True`` only when a live key flipped to revoked; ``False`` (unknown,
     foreign, or already-revoked) maps to 404 at the route so a UUID-probing
     attacker can't distinguish the cases.
+
+    Args:
+      conn: Conn.
+      key_id: Key id.
+      user_id: User id.
+
+    Returns:
+      result: The bool.
+
     """
     result = await conn.execute(
         "UPDATE api_keys SET revoked_at = clock_timestamp() "
@@ -494,7 +539,7 @@ async def revoke_api_key(conn: Conn, *, key_id: uuid.UUID, user_id: uuid.UUID) -
         key_id,
         user_id,
     )
-    # asyncpg returns "UPDATE n"; a trailing " 1" means one row changed.
+    # ``asyncpg`` returns "UPDATE n"; a trailing " 1" means one row changed.
     return result.endswith(" 1")
 
 
@@ -506,6 +551,14 @@ async def allowlist_match(conn: Conn, *, email: str) -> Role | None:
     so an individual override beats the domain default. The wildcard lookup
     runs only on a literal miss, keeping the common case one indexed probe.
     Matching is case-insensitive.
+
+    Args:
+      conn: Conn.
+      email: Email.
+
+    Returns:
+      result: The Role | None.
+
     """
     literal = await conn.fetchval(
         "SELECT role FROM allowlist WHERE lower(email_or_pattern) = lower($1)",
@@ -540,6 +593,14 @@ async def lookup_user_by_id(
     Session requests have no ``api_keys`` row, so ``api_key_id`` is ``None``.
     A missing or disabled user returns ``None`` -- indistinguishable cases,
     so a stolen-cookie attacker learns nothing.
+
+    Args:
+      conn: Conn.
+      user_id: User id.
+
+    Returns:
+      result: The AuthIdentity | None.
+
     """
     row = await conn.fetchrow(
         "SELECT id, email, role, status FROM users WHERE id = $1",
@@ -569,6 +630,10 @@ async def assert_account_active(engine: DatabaseEngine, account: str) -> None:
 
     The check guards the value being written, never the row's existing
     account: a user disabled after being stamped is not swept.
+
+    Args:
+      engine: Engine.
+      account: Account.
 
     Raises:
       HTTPException: ``account`` has no ``active`` row in ``users`` (422).
@@ -603,6 +668,10 @@ async def bootstrap_admin(conn: Conn) -> None:
     the secret is fsynced to a ``.tmp`` sibling inside the tx (an FS failure
     rolls the DB back), then renamed into place after COMMIT (a COMMIT
     failure leaves no live secret at the final path, only an orphan ``.tmp``).
+
+    Args:
+      conn: Conn.
+
     """
     # Lowercase to match the admin-UI canonical form and the read path; the
     # column is case-sensitive, so a mixed-case env value would duplicate.
@@ -624,7 +693,7 @@ async def bootstrap_admin(conn: Conn) -> None:
             "ON CONFLICT (email_or_pattern) DO NOTHING",
             email,
         )
-        # name = email local part so the identity column isn't blank;
+        # Name = email local part so the identity column isn't blank;
         # status='active' so the minted key works immediately. The empty-users
         # probe above is outside this tx, so two servers booting against one
         # database (a redeploy overlap) can both clear it; ``ON CONFLICT
@@ -663,6 +732,10 @@ async def seed_no_auth_user(conn: Conn) -> None:
     write in demo mode would 422. Seeding the row -- with the same fixed id
     the resolver hands out -- makes no-auth submits attribute to a valid
     active account. Idempotent via ``ON CONFLICT``.
+
+    Args:
+      conn: Conn.
+
     """
     await conn.execute(
         "INSERT INTO users (id, email, name, role, status) "
@@ -683,13 +756,10 @@ def _bootstrap_token_path() -> Path:
     )
 
 
+# An ``OSError`` here propagates so ``tx(conn)`` rolls back. ``O_TRUNC`` overwrites any
+# ``.tmp`` orphan from a prior crash so re-bootstrap can't inherit a stale plaintext.
 def _stage_bootstrap_token(token_path: Path, secret: str) -> None:
-    """Stage the secret: fsync it to ``<final>.tmp`` inside the DB transaction.
-
-    An ``OSError`` here propagates so ``tx(conn)`` rolls back. ``O_TRUNC``
-    overwrites any ``.tmp`` orphan from a prior crash so re-bootstrap can't
-    inherit a stale plaintext.
-    """
+    """Stage the secret: fsync it to ``<final>.tmp`` inside the DB transaction."""
     token_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = token_path.with_name(token_path.name + ".tmp")
     fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -697,17 +767,16 @@ def _stage_bootstrap_token(token_path: Path, secret: str) -> None:
         f.write(secret + "\n")
         f.flush()
         os.fsync(f.fileno())
-    tmp_path.chmod(0o600)
+    # The target is the caller's chosen path; 0o600 is the token's contract.
+    tmp_path.chmod(0o600)  # house-lint: ignore[mkdir-mode]
 
 
+# Runs after the transaction commits. The POSIX rename is atomic (no partial file ever
+# visible) and the dir fsync makes it crash-durable. A failure here is a real outage --
+# the commit landed but the secret never materialized -- so the ``.tmp`` is left for
+# manual recovery.
 def _publish_bootstrap_token(token_path: Path) -> None:
-    """Publish the staged secret: rename ``.tmp`` to final and fsync the dir.
-
-    Runs after the transaction commits. The POSIX rename is atomic (no
-    partial file ever visible) and the dir fsync makes it crash-durable. A
-    failure here is a real outage -- the commit landed but the secret never
-    materialized -- so the ``.tmp`` is left for manual recovery.
-    """
+    """Publish the staged secret: rename ``.tmp`` to final and fsync the dir."""
     tmp_path = token_path.with_name(token_path.name + ".tmp")
     tmp_path.replace(token_path)
     dir_fd = os.open(token_path.parent, os.O_RDONLY)
@@ -721,14 +790,11 @@ def _publish_bootstrap_token(token_path: Path) -> None:
     )
 
 
+# A non-Bearer scheme yields ``None`` so :func:`current_user` can try the session path.
+# An offered blank Bearer credential returns ``""`` and 401s downstream; only "no bearer
+# offered" is silent. Authentication schemes are case-insensitive under HTTP semantics.
 def _try_extract_bearer(request: Request) -> str | None:
-    """Return the bearer secret from the Authorization header, or ``None``.
-
-    A non-Bearer scheme yields ``None`` so :func:`current_user` can try the
-    session path. An offered blank Bearer credential returns ``""`` and 401s
-    downstream; only "no bearer offered" is silent. Authentication schemes are
-    case-insensitive under HTTP semantics.
-    """
+    """Return the bearer secret from the Authorization header, or ``None``."""
     header = request.headers.get("Authorization", "")
     scheme, separator, credentials = header.partition(" ")
     if scheme.casefold() != "bearer":
@@ -738,13 +804,11 @@ def _try_extract_bearer(request: Request) -> str | None:
     return credentials.strip()
 
 
+# The session path is off when ``app.state.config`` is absent (tests that skip the
+# lifespan) or ``Config.session_secret`` is unset (OAuth not configured); bearer auth is
+# unaffected either way.
 def _try_read_session_user_id(request: Request) -> uuid.UUID | None:
-    """Return the ``users.id`` from the signed session cookie, or ``None``.
-
-    The session path is off when ``app.state.config`` is absent (tests that
-    skip the lifespan) or ``Config.session_secret`` is unset (OAuth not
-    configured); bearer auth is unaffected either way.
-    """
+    """Return the ``users.id`` from the signed session cookie, or ``None``."""
     config = getattr(request.app.state, "config", None)
     if config is None or not config.session_secret:
         return None
@@ -770,28 +834,26 @@ async def _resolve_session_identity(
         return await lookup_user_by_id(conn, user_id=user_id)
 
 
+# Returns ``None`` (a 401 at the route) when no live key matches. Disabled users also
+# return ``None``, so "unknown token" and "valid token, disabled user" are
+# indistinguishable.
+#
+# A previously verified secret short-circuits on the Store's cache: scrypt costs ~30ms
+# by design, so re-deriving it per request made auth the entire server-side latency.
+# Only successes are cached, so a wrong secret still pays the full verify and the
+# constant-time floor below is unaffected.
+#
+# A cache hit still runs the ``last_used_at`` throttle. The two clocks are independent:
+# skipping the bump on a hit would freeze the column at first contact for any key polled
+# faster than the cache TTL -- the busiest keys, which are exactly the ones the column
+# is consulted for.
 async def _resolve_identity(
     store: Store,
     secret: str,
     *,
     request_id: str,
 ) -> AuthIdentity | None:
-    """Resolve a bearer secret to an identity, bumping ``last_used_at``.
-
-    Returns ``None`` (a 401 at the route) when no live key matches. Disabled
-    users also return ``None``, so "unknown token" and "valid token, disabled
-    user" are indistinguishable.
-
-    A previously verified secret short-circuits on the Store's cache: scrypt
-    costs ~30ms by design, so re-deriving it per request made auth the entire
-    server-side latency. Only successes are cached, so a wrong secret still
-    pays the full verify and the constant-time floor below is unaffected.
-
-    A cache hit still runs the ``last_used_at`` throttle. The two clocks are
-    independent: skipping the bump on a hit would freeze the column at first
-    contact for any key polled faster than the cache TTL -- the busiest keys,
-    which are exactly the ones the column is consulted for.
-    """
+    """Resolve a bearer secret to an identity, bumping ``last_used_at``."""
     started = time.perf_counter()
     cached = store.cached_bearer_identity(secret)
     if cached is not None:
@@ -879,14 +941,12 @@ async def _resolve_identity(
     return None
 
 
+# Takes its own connection because the cache path never opens one -- that is the point
+# of the cache. The throttle keeps this to one write per key per
+# :data:`LAST_USED_BUMP_INTERVAL_SEC`, so the common hit still touches no connection at
+# all.
 async def _bump_last_used(store: Store, key_id: uuid.UUID | None) -> None:
-    """Refresh ``last_used_at`` for a cache-hit auth, subject to the throttle.
-
-    Takes its own connection because the cache path never opens one -- that
-    is the point of the cache. The throttle keeps this to one write per key
-    per :data:`LAST_USED_BUMP_INTERVAL_SEC`, so the common hit still touches
-    no connection at all.
-    """
+    """Refresh ``last_used_at`` for a cache-hit auth, subject to the throttle."""
     # Every cached entry came from the bearer path, which always sets a key.
     assert key_id is not None
     if not store.should_bump_api_key_last_used(key_id):
@@ -930,16 +990,13 @@ def _log_auth_resolution(
     )
 
 
+# Verified against on a bearer prefix miss so the miss pays the same ~50ms scrypt cost
+# as a hit, closing the timing oracle on which key prefixes exist. No minted token ever
+# reproduces it: the sentinel is never returned by :func:`generate_token`. Lazy so
+# module import (and test collection) doesn't eat a scrypt round on every process.
 @functools.cache
 def _dummy_verify_hash() -> str:
-    """A scrypt hash of an unguessable sentinel, computed once per process.
-
-    Verified against on a bearer prefix miss so the miss pays the same
-    ~50ms scrypt cost as a hit, closing the timing oracle on which key
-    prefixes exist. No minted token ever reproduces it: the sentinel is
-    never returned by :func:`generate_token`. Lazy so module import (and
-    test collection) doesn't eat a scrypt round on every process.
-    """
+    """Return a scrypt hash of an unguessable sentinel, computed once per process."""
     return hash_secret(secrets.token_urlsafe(_TOKEN_BYTES))
 
 
@@ -952,3 +1009,27 @@ def _b64decode(encoded: str) -> bytes:
     """Inverse of :func:`_b64encode`; restores padding before decoding."""
     pad = "=" * (-len(encoded) % 4)
     return base64.urlsafe_b64decode(encoded + pad)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _RoleRequirement:
+    min_role: Role
+
+    async def __call__(
+        self,
+        identity: Annotated[AuthIdentity, Depends(current_user)],
+    ) -> AuthIdentity:
+        if ROLE_ORDER.index(identity.role) < ROLE_ORDER.index(self.min_role):
+            raise HTTPException(
+                status_code=403,
+                detail=f"role {identity.role!r} insufficient; need {self.min_role!r}",
+            )
+        return identity
+
+
+async def _fetch_user_role(conn: Conn, user_id: uuid.UUID) -> Role:
+    """Return one user's role; raise when the user id is unknown."""
+    user_role_raw = await conn.fetchval("SELECT role FROM users WHERE id = $1", user_id)
+    if user_role_raw is None:
+        raise LookupError(f"unknown user {user_id}")
+    return cast(Role, user_role_raw)

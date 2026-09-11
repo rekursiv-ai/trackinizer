@@ -30,6 +30,7 @@ class SeqRange:
     """One inclusive ``seq`` interval; either bound may be open (``None``)."""
 
     start: int | None = None
+
     stop: int | None = None
 
     def __post_init__(self) -> None:
@@ -48,6 +49,13 @@ def format_interval(interval: SeqRange) -> str:
     An open bound renders as the empty side (``222..``, ``..10``); a
     closed single-row interval renders ``n..n``. The inverse of
     :func:`parse_interval`.
+
+    Args:
+      interval: Interval.
+
+    Returns:
+      result: The str.
+
     """
     start = str(interval.start) if interval.start is not None else ""
     stop = str(interval.stop) if interval.stop is not None else ""

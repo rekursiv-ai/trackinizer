@@ -69,3 +69,9 @@ def test_nre_over_list_value_negates_any_match() -> None:
         match_filter(has_match, Filter(field="labels", op="nre", value="hot")) is False
     )
     assert match_filter(no_match, Filter(field="labels", op="nre", value="hot")) is True
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.main import test_main
+
+    test_main(__file__)

@@ -60,7 +60,7 @@ class Cost:
         return self.agent_usd + self.resource_usd
 
     def __bool__(self) -> bool:
-        """True when either axis carries a nonzero value."""
+        """Report whether either axis carries a nonzero value."""
         return bool(self.agent_usd or self.resource_usd)
 
     def __add__(self, other: Cost) -> Cost:
@@ -93,6 +93,14 @@ class Cost:
         ``prefix`` is empty for an inquiries row, or ``"old_"`` / ``"new_"``
         for the two sides of a ``change_log`` row. A missing column reads as
         zero on that axis.
+
+        Args:
+          row: Row.
+          prefix: Prefix.
+
+        Returns:
+          result: The Self.
+
         """
         agent_col = prefix + "marginal_cost_agent_usd"
         resource_col = prefix + "marginal_cost_resource_usd"

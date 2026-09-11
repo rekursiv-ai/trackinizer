@@ -19,6 +19,7 @@ class SeqRef:
     """A per-kind short reference, written ``kind#seq``."""
 
     kind: Inquiry.InquiryKind
+
     seq: int
 
     @override
@@ -35,6 +36,7 @@ class UuidRef:
     """
 
     uuid: UUID
+
     expected_kind: Inquiry.InquiryKind | None = None
 
     @override

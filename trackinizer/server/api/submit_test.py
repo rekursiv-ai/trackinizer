@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 
 def _is_uuid(value: str) -> bool:
-    """True iff ``value`` parses as a UUID."""
+    """Report whether ``value`` parses as a UUID."""
     try:
         uuid.UUID(value)
     except ValueError:
@@ -366,3 +366,9 @@ class TestRoutes:
             if c.args and "INSERT INTO inquiries" in c.args[0]
         ]
         assert inserts == []
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.main import test_main
+
+    test_main(__file__)

@@ -80,6 +80,13 @@ def should_delegate(argv: Sequence[str]) -> bool:
     and any command whose value is the ``-`` stdin sentinel. Each is judged by
     POSITION rather than by presence, so a row whose title happens to be "run"
     still gets the daemon.
+
+    Args:
+      argv: Argv.
+
+    Returns:
+      result: The bool.
+
     """
     if SERVE_FLAG in argv:
         return False
@@ -140,22 +147,19 @@ def delegate(
     return _try_once(argv, path, source_version)
 
 
+# TWO spellings, and the second is why this is not a verb lookup:
+#
+# * ``trax run claude`` -- ``run`` in verb position. * ``trax agentsession 42 run
+# codex`` -- the RESUME tail, whose verb is ``agentsession``. Judging by the verb alone
+# delegated it, and the daemon then spawned the CLI on ITS terminal: measured, the child
+# ran on the daemon's tty while the user's shell blocked on the socket forever, with a
+# live CLI waiting for input on a terminal nobody was attached to.
+#
+# The tail is recognized by ``run`` FOLLOWED BY a target, which is what distinguishes it
+# from the word appearing as a value (``title to run``) -- refusing on presence alone
+# would make an ordinary edit forfeit the daemon.
 def _spawns_a_terminal(argv: Sequence[str]) -> bool:
-    """Whether ``argv`` will put a CLI on a PTY this process must own.
-
-    TWO spellings, and the second is why this is not a verb lookup:
-
-    * ``trax run claude`` -- ``run`` in verb position.
-    * ``trax agentsession 42 run codex`` -- the RESUME tail, whose verb is
-      ``agentsession``. Judging by the verb alone delegated it, and the daemon
-      then spawned the CLI on ITS terminal: measured, the child ran on the
-      daemon's tty while the user's shell blocked on the socket forever, with
-      a live CLI waiting for input on a terminal nobody was attached to.
-
-    The tail is recognized by ``run`` FOLLOWED BY a target, which is what
-    distinguishes it from the word appearing as a value (``title to run``) --
-    refusing on presence alone would make an ordinary edit forfeit the daemon.
-    """
+    """Whether ``argv`` will put a CLI on a PTY this process must own."""
     if _verb(argv) in _LOCAL_ONLY_VERBS:
         return True
     return any(
@@ -170,7 +174,7 @@ def _spawns_a_terminal(argv: Sequence[str]) -> bool:
 
 
 def _verb(argv: Sequence[str]) -> str:
-    """The verb token: the first argument past the global-flag prefix."""
+    """Return the verb token: the first argument past the global-flag prefix."""
     index = 0
     while index < len(argv):
         token = argv[index]
@@ -191,14 +195,12 @@ def _reads_stdin(argv: Sequence[str]) -> bool:
     )
 
 
+# Returns ``None`` only while nothing has been delivered. Once the request is on the
+# wire the outcome is the daemon's answer or :class:`DaemonRequestLostError` -- never a
+# silent ``None`` that would invite the caller to run a possibly-applied command a
+# second time.
 def _try_once(argv: Sequence[str], path: Path, source_version: str) -> Response | None:
-    """One connect-send-receive round trip.
-
-    Returns ``None`` only while nothing has been delivered. Once the request
-    is on the wire the outcome is the daemon's answer or
-    :class:`DaemonRequestLostError` -- never a silent ``None`` that would invite
-    the caller to run a possibly-applied command a second time.
-    """
+    """One connect-send-receive round trip."""
     conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         try:
@@ -256,22 +258,19 @@ def _request(argv: Sequence[str], source_version: str) -> Request:
     )
 
 
+# Spawns ``sys.executable -m <trax package>`` rather than re-running ``bin/trax``: that
+# entry point is a polyglot shim that execs ``uv run``, which would re-resolve the
+# project on every spawn. This process is already inside the resolved venv.
+#
+# ``start_new_session`` detaches the daemon from the caller's process group so it
+# survives the shell that started it and does not hold the terminal open -- without it,
+# the invoking shell hangs on exit.
+#
+# Readiness is a successful connect, not the socket file appearing: a stale file from a
+# killed daemon exists immediately, and waiting on existence would report ready before
+# anything is listening.
 def _spawn(path: Path) -> bool:
-    """Start a detached daemon and wait until it ACCEPTS, returning success.
-
-    Spawns ``sys.executable -m <trax package>`` rather than re-running
-    ``bin/trax``: that entry point is a polyglot shim that execs ``uv run``,
-    which would re-resolve the project on every spawn. This process is
-    already inside the resolved venv.
-
-    ``start_new_session`` detaches the daemon from the caller's process group
-    so it survives the shell that started it and does not hold the terminal
-    open -- without it, the invoking shell hangs on exit.
-
-    Readiness is a successful connect, not the socket file appearing: a stale
-    file from a killed daemon exists immediately, and waiting on existence
-    would report ready before anything is listening.
-    """
+    """Start a detached daemon and wait until it ACCEPTS, returning success."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     # 3.2ms, paid only on the once-per-daemon-lifetime spawn. Every other
     # invocation connects to a daemon that is already up.

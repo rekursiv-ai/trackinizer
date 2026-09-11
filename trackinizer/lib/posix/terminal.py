@@ -83,15 +83,15 @@ dotfile picks a different wrong answer.
 # idempotent, so sending them when the child already cleaned up is a no-op.
 TERMINAL_RESET: Final = b"".join(
     (
-        b"\x1b[?1049l",  # leave alternate screen
-        b"\x1b[?1000l\x1b[?1002l\x1b[?1003l",  # mouse: click, drag, any-motion
-        b"\x1b[?1005l\x1b[?1006l\x1b[?1015l",  # mouse encodings: utf8, SGR, urxvt
-        b"\x1b[?1004l",  # focus in/out reporting
-        b"\x1b[?2004l",  # bracketed paste
-        b"\x1b[?1l\x1b>",  # normal cursor keys, numeric keypad
-        b"\x1b[?7h",  # autowrap back on
-        b"\x1b[?25h",  # cursor visible
-        b"\x1b[0m",  # default colors and attributes
+        b"\x1b[?1049l",  # leave alternate screen.
+        b"\x1b[?1000l\x1b[?1002l\x1b[?1003l",  # mouse: click, drag, any-motion.
+        b"\x1b[?1005l\x1b[?1006l\x1b[?1015l",  # mouse encodings: utf8, SGR, urxvt.
+        b"\x1b[?1004l",  # focus in/out reporting.
+        b"\x1b[?2004l",  # bracketed paste.
+        b"\x1b[?1l\x1b>",  # normal cursor keys, numeric keypad.
+        b"\x1b[?7h",  # autowrap back on.
+        b"\x1b[?25h",  # cursor visible.
+        b"\x1b[0m",  # default colors and attributes.
     )
 )
 
@@ -318,7 +318,7 @@ class Terminal:
         os.set_blocking(self._master_fd, False)
 
     def _child_env(self) -> dict[str, str]:
-        """The environment the child starts with; see ``clean_env``."""
+        """Return the environment the child starts with; see ``clean_env``."""
         if self._clean_env:
             env = {
                 name: os.environ[name] for name in ESSENTIAL_ENV if name in os.environ
@@ -416,15 +416,12 @@ class Terminal:
             self._submitted += 1
             return True
 
+    # No paste bracket (its sentinels would be literal bytes to a ``read``) and no Enter
+    # delay to outwait. Interior newlines become spaces so that ONE submission is ONE
+    # read: a literal newline would split the message into several input records,
+    # turning one routed message into several commands.
     async def _submit_line(self, text: str) -> bool:
-        """Send one plain newline-terminated line to a line-reading child.
-
-        No paste bracket (its sentinels would be literal bytes to a ``read``)
-        and no Enter delay to outwait. Interior newlines become spaces so that
-        ONE submission is ONE read: a literal newline would split the message
-        into several input records, turning one routed message into several
-        commands.
-        """
+        """Send one plain newline-terminated line to a line-reading child."""
         self.silence_line_discipline()
         body = text.replace("\r", "\n").replace("\n", " ").encode()
         async with self._write_lock:
@@ -510,21 +507,18 @@ class Terminal:
             os.close(self._master_fd)
             self._master_fd = -1
 
+    # The pid is re-read here rather than captured by the caller: a concurrent
+    # :meth:`wait` can reap the child and clear it mid-grace, and ``killpg(-1, ...)``
+    # signals every process the user owns.
+    #
+    # ESRCH from ``killpg`` still falls back to ``kill`` on the pid. The group is
+    # guaranteed to exist once :meth:`start` returns -- ``Popen`` completes ``setsid``
+    # before returning -- but the fallback is what a spawner that lost that guarantee
+    # would need (``pty.fork`` had a ~25%-of-spawns window before the child's
+    # ``setsid``, and treating it as death abandoned a healthy child), so it stays as
+    # the regression guard the lifecycle tests pin.
     def _signal(self, sig: int) -> bool:
-        """Signal the child's process group; False once it is gone.
-
-        The pid is re-read here rather than captured by the caller: a
-        concurrent :meth:`wait` can reap the child and clear it mid-grace, and
-        ``killpg(-1, ...)`` signals every process the user owns.
-
-        ESRCH from ``killpg`` still falls back to ``kill`` on the pid. The
-        group is guaranteed to exist once :meth:`start` returns -- ``Popen``
-        completes ``setsid`` before returning -- but the fallback is what a
-        spawner that lost that guarantee would need (``pty.fork`` had a
-        ~25%-of-spawns window before the child's ``setsid``, and treating it as
-        death abandoned a healthy child), so it stays as the regression guard
-        the lifecycle tests pin.
-        """
+        """Signal the child's process group; False once it is gone."""
         pid = self._pid
         if pid <= 0:
             return False
@@ -579,13 +573,10 @@ class Terminal:
         self._proc.returncode = code
         return code
 
+    # Caller holds ``_write_lock``: the master is non-blocking, so a large payload
+    # yields mid-write and a peer could otherwise land bytes inside a bracketed paste.
     async def _write(self, data: bytes) -> bool:
-        """Write every byte to the master; False once the child is gone.
-
-        Caller holds ``_write_lock``: the master is non-blocking, so a large
-        payload yields mid-write and a peer could otherwise land bytes inside
-        a bracketed paste.
-        """
+        """Write every byte to the master; False once the child is gone."""
         if self._master_fd < 0:
             return False
         view = memoryview(data)

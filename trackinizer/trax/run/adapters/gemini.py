@@ -19,7 +19,7 @@ from pathlib import Path
 
 import hashlib
 
-from trackinizer.lib.agent.sessions import gemini as gemini_ir
+from trackinizer.lib.agent.sessions import gemini
 from trackinizer.trax.run.adapters.tail import Tail
 
 
@@ -32,7 +32,9 @@ class GeminiAdapter:
     """
 
     name: str = "gemini"
+
     cli_binary: str = "gemini"
+
     whole_file: bool = True
 
     @property
@@ -41,6 +43,12 @@ class GeminiAdapter:
         return Path.home() / ".gemini" / "tmp"
 
     def session_dirs(self) -> Iterable[Path]:
+        """Return the directories this CLI writes sessions under.
+
+        Returns:
+          result: The Iterable[Path].
+
+        """
         # Returned whether or not it exists yet: the runner MINTS these before
         # arming its watch (see ClaudeAdapter for why withholding an absent
         # root silently disables capture on a first-ever run).
@@ -55,6 +63,15 @@ class GeminiAdapter:
         return (self._tmp_dir,)
 
     def matches_session_file(self, path: Path) -> bool:
+        """Return whether ``path`` is one of this CLI's session files.
+
+        Args:
+          path: Path.
+
+        Returns:
+          result: The bool.
+
+        """
         return (
             path.suffix == ".json"
             and path.parent.name == "chats"
@@ -62,29 +79,46 @@ class GeminiAdapter:
         )
 
     def session_scope(self) -> Path | None:
-        """The one project directory this run's cwd hashes to.
+        """Return the one project directory this run's cwd hashes to.
 
         Gemini shards ``tmp/`` by the sha256 of the working directory, so the
         run's own subtree is derivable and a concurrent run in another
         workspace lands under a different hash. The path is RESOLVED first:
         the CLI hashes what it resolved at startup, so a symlinked cwd would
         name a directory that never receives a write.
+
+        Returns:
+          result: The Path | None.
+
         """
         digest = hashlib.sha256(str(Path.cwd().resolve()).encode()).hexdigest()
         return self._tmp_dir / digest
 
     def session_id_from_path(self, path: Path) -> str | None:
+        """Return the session id encoded in ``path``.
+
+        Args:
+          path: Path.
+
+        Returns:
+          result: The str | None.
+
+        """
         # Gemini's ``session-<id>.json`` stem carries an id, but resume
         # correlation isn't wired for it yet; treat as non-resumable for now.
         del path
         return None
 
     def reader(self) -> Tail:
-        """A fresh IR reader for one gemini session document.
+        """Return a fresh IR reader for one gemini session document.
 
         Whole-file: gemini rewrites in place, so each chunk is the entire
         session again rather than a continuation. The runner marks such a
         chunk a restart, so every record lands back on the position it already
         held instead of being appended a second time.
+
+        Returns:
+          result: The Tail.
+
         """
-        return Tail(gemini_ir.normalize, whole_file=True)
+        return Tail(gemini.normalize, whole_file=True)

@@ -142,23 +142,20 @@ def _lines_for(adapter: _Adapter, count: int, *, text_chars: int = 200) -> list[
     )
 
 
+# The MINIMUM over a few runs. ``get_traced_memory`` reports a process-wide high-water
+# mark, so anything the interpreter does during the window -- a prior test's garbage
+# finalizing, an import's one-time table -- adds to the reading and nothing subtracts
+# from it. A single sample therefore fails at random under xdist (measured 34344 against
+# a bound of 22950, where a clean run reports ~1100), while the floor is stable. Noise
+# only ever inflates the cost, so a writer that really buffers still fails: its minimum
+# is proportional to the session too.
+#
+# Requires exclusive tracemalloc ownership: an outer trace has one global peak that
+# cannot be sampled independently without resetting its recorded peak.
 def _write_cost(
     adapter: _Adapter, records: Sequence[SessionRecord], *, repeats: int = 3
 ) -> int:
-    """Return the peak bytes ``denormalize`` allocates beyond its input.
-
-    The MINIMUM over a few runs. ``get_traced_memory`` reports a process-wide
-    high-water mark, so anything the interpreter does during the window -- a
-    prior test's garbage finalizing, an import's one-time table -- adds to the
-    reading and nothing subtracts from it. A single sample therefore fails at
-    random under xdist (measured 34344 against a bound of 22950, where a clean
-    run reports ~1100), while the floor is stable. Noise only ever inflates the
-    cost, so a writer that really buffers still fails: its minimum is
-    proportional to the session too.
-
-    Requires exclusive tracemalloc ownership: an outer trace has one global
-    peak that cannot be sampled independently without resetting its recorded peak.
-    """
+    """Return the peak bytes ``denormalize`` allocates beyond its input."""
     if tracemalloc.is_tracing():
         raise RuntimeError(
             "Writer allocation measurement requires exclusive tracemalloc ownership"

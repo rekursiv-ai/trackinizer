@@ -20,8 +20,8 @@ from uuid import UUID, uuid4
 
 from trackinizer.client.client import Client
 from trackinizer.lib.agent.sessions import (
-    claude as claude_ir,
-    codex as codex_ir,
+    claude,
+    codex,
 )
 from trackinizer.lib.agent.types.sessions import (
     ContextClear,
@@ -117,46 +117,40 @@ def prepare_resume(
     )
 
 
+# Written and re-read rather than reasoned about: whether a conversion loses anything
+# depends on which kinds this session HOLDS, not on the format pair alone. The rewrite
+# is thrown away -- only its record population is read.
+#
+# Measured on the file that will actually be WRITTEN, identity and all: materialization
+# stamps the target's own id first (codex needs a ``session_meta`` line, synthesized
+# when the source carried none), and that line is what an opening ``ContextClear`` rides
+# out on. Measuring the unstamped records named a drop the written file does not have.
+#
+# Only ACTS count. State records are DERIVED -- each adapter states settings in its own
+# shape, claude repeating an envelope per line where codex declares once per turn -- so
+# their counts legitimately differ across a crossing while no turn is touched. Counting
+# them made every claude-to-codex resume demand ``--lossy`` for a transcript that loses
+# nothing, which is a flag meaning the opposite of what it says.
+#
+# A session resumed in the format it was captured in converts nothing, so it can lose
+# nothing and the round trip is skipped.
 def _undroppable(
     records: Sequence[SessionRecord], source: str, target: str
 ) -> tuple[str, ...]:
-    """Acts writing as ``target`` would lose, measured by rewriting.
-
-    Written and re-read rather than reasoned about: whether a conversion loses
-    anything depends on which kinds this session HOLDS, not on the format pair
-    alone. The rewrite is thrown away -- only its record population is read.
-
-    Measured on the file that will actually be WRITTEN, identity and all:
-    materialization stamps the target's own id first (codex needs a
-    ``session_meta`` line, synthesized when the source carried none), and that
-    line is what an opening ``ContextClear`` rides out on. Measuring the
-    unstamped records named a drop the written file does not have.
-
-    Only ACTS count. State records are DERIVED -- each adapter states settings
-    in its own shape, claude repeating an envelope per line where codex
-    declares once per turn -- so their counts legitimately differ across a
-    crossing while no turn is touched. Counting them made every claude-to-codex
-    resume demand ``--lossy`` for a transcript that loses nothing, which is a
-    flag meaning the opposite of what it says.
-
-    A session resumed in the format it was captured in converts nothing, so it
-    can lose nothing and the round trip is skipped.
-    """
+    """Acts writing as ``target`` would lose, measured by rewriting."""
     if source == target:
         return ()
-    writer = claude_ir if target == "claude" else codex_ir
+    writer = claude if target == "claude" else codex
     out = StringIO()
     writer.denormalize(identified(target, records, uuid4()), out)
     rebuilt = writer.normalize(StringIO(out.getvalue()))
     return tuple(sorted((_acts(records) - _acts(rebuilt)).elements()))
 
 
+# ``TurnContext`` and ``ContextClear`` are restated per format rather than conveyed, so
+# a differing count is a spelling difference, not a loss.
 def _acts(records: Iterable[SessionRecord]) -> Counter[str]:
-    """Count the records carrying a turn, ignoring derived state.
-
-    ``TurnContext`` and ``ContextClear`` are restated per format rather than
-    conveyed, so a differing count is a spelling difference, not a loss.
-    """
+    """Count the records carrying a turn, ignoring derived state."""
     return Counter(
         type(record).__name__
         for record in records
@@ -164,20 +158,17 @@ def _acts(records: Iterable[SessionRecord]) -> Counter[str]:
     )
 
 
+# Read WITH the ciphertext, unlike a viewer: a replay is the one caller that needs the
+# sealed half, since the provider validates it.
+#
+# The store speaks ``TraxRecord``, which is wider than any CLI dialect. Only a part with
+# a NATIVE format reaches here, and a scrape's stream records live only in a formatless
+# part -- so the narrowing is a real invariant rather than a cast, and it is asserted so
+# a future part that breaks it fails here instead of inside the claude writer.
 def _read_part(
     client: Client, session_id: UUID, part: int
 ) -> tuple[Sequence[SessionRecord], Sequence[str | None]]:
-    """Every record of one part, and the ciphertext each carried.
-
-    Read WITH the ciphertext, unlike a viewer: a replay is the one caller that
-    needs the sealed half, since the provider validates it.
-
-    The store speaks ``TraxRecord``, which is wider than any CLI dialect. Only
-    a part with a NATIVE format reaches here, and a scrape's stream records
-    live only in a formatless part -- so the narrowing is a real invariant
-    rather than a cast, and it is asserted so a future part that breaks it
-    fails here instead of inside the claude writer.
-    """
+    """Every record of one part, and the ciphertext each carried."""
     records: list[SessionRecord] = []
     sealed: list[str | None] = []
     for body in client.read_session_records(session_id, part=part):

@@ -41,16 +41,24 @@ async def version_route() -> dict[str, str]:
     checkout's ``git HEAD``), else ``{"sha": "unknown"}``. A 404 instead
     means the live binary predates this endpoint -- itself a staleness
     signal.
+
+    Returns:
+      result: The dict[str, str].
+
     """
     return {"sha": build_sha()}
 
 
 def enum_values() -> dict[str, list[str]]:
-    """The closed-set vocabularies the SPA renders as ``<select>`` options.
+    """Return the closed-set vocabularies the SPA renders as ``<select>`` options.
 
     Each list is read straight off its type ``Literal`` via ``get_args`` so
     there is exactly one source of truth (the type), not a copy in the page.
     Adding a publication-type / issue-kind / edge-kind here is automatic.
+
+    Returns:
+      result: The dict[str, list[str]].
+
     """
     return {
         "status": list(get_args(Issue.Status.__value__)),
@@ -74,6 +82,10 @@ async def enums_route() -> dict[str, list[str]]:
     controls (status, judgement, issue kind, paper publication type, edge
     kind) instead of hard-coding the lists, so a new Literal member can never
     desync the UI.
+
+    Returns:
+      result: The dict[str, list[str]].
+
     """
     return enum_values()
 
@@ -85,21 +97,30 @@ async def fields_route() -> dict[str, str]:
     The SPA builds its per-field edit URL (``/api/<owner>/<id>/<field>``) from
     this instead of a hand-typed copy, so a new kind-specific field can never
     desync the UI from the server's route table.
+
+    Returns:
+      result: The dict[str, str].
+
     """
     return field_owner_kind()
 
 
 @router.get("/api/meta/edges")
 async def edges_route() -> dict[str, dict[str, list[str] | str]]:
-    """Return the edge topology + labels (``edge_kind -> {from_kinds, to_kinds,
-    forward, inverse}``).
+    """Return the edge topology + labels.
 
-    The SPA derives BOTH its edge picker (which kinds each edge admits on each
-    stored endpoint) and its ``edgeDisplayName`` relation labels from this
-    instead of hard-coding either. The topology backs the schema CHECK and is
-    pinned to it by ``server/edge_topology_test``, so a citation-direction or
-    label change updates one server place and the SPA follows -- it can no
-    longer hold a stale hand-typed copy.
+    ``edge_kind -> {from_kinds, to_kinds, forward, inverse}``).
+
+        The SPA derives BOTH its edge picker (which kinds each edge admits on each
+        stored endpoint) and its ``edgeDisplayName`` relation labels from this
+        instead of hard-coding either. The topology backs the schema CHECK and is
+        pinned to it by ``server/edge_topology_test``, so a citation-direction or
+        label change updates one server place and the SPA follows -- it can no
+        longer hold a stale hand-typed copy.
+
+    Returns:
+      result: The dict[str, dict[str, list[str] | str]].
+
     """
     topology = edge_topology()
     labels = edge_labels()

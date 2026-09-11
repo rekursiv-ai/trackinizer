@@ -1,5 +1,9 @@
-#!/usr/bin/env python
-"""Generate grammar.lark with CONCRETE terminals from the live trax tables.
+#!/bin/sh
+# ruff: noqa: EXE003, D300 -- Polyglot shell/Python script.
+# fmt: off
+'''' 2>/dev/null #
+exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
+Generate grammar.lark with CONCRETE terminals from the live trax tables.
 
 grammar.lark is the single, machine-checked, LLM-facing description of the trax
 command language. Its STRUCTURE (where tails bind, descent vs ``begin/end``, the
@@ -33,7 +37,8 @@ Run to regenerate (writes grammar.lark in place):
 
 ``grammar_check.py`` / the drift test assert the committed grammar.lark equals
 ``render_grammar()``; a table edit that is not regenerated fails the check.
-"""
+'''
+# fmt: on
 
 from __future__ import annotations
 
@@ -57,7 +62,7 @@ from trackinizer.trax.grammar import (
 )
 from trackinizer.trax.profile import Profiles
 from trackinizer.trax.run.materialize import RESUMABLE_TARGETS
-from trackinizer.trax.run.session import build_parser as run_parser
+from trackinizer.trax.run.session import build_parser
 from trackinizer.types.inquiries import (
     Belief,
     Inquiry,
@@ -74,6 +79,9 @@ from trackinizer.wire.wire_metrics_query import (
     METRIC_COMPARE_OPS,
     MetricReduce,
 )
+
+
+_CWD: Final = Path(__file__).resolve().parent
 
 
 # The hand-written structural body: the productions and the binding-rule prose.
@@ -251,26 +259,64 @@ VALUE:    /\S+/
 VERB_ARG: /\S+/"""
 
 
-def _literal_terminal(name: str, spellings: Sequence[str], comment: str = "") -> str:
-    """Render one terminal as an ordered alternation of quoted literals.
+def render_grammar() -> str:
+    """Return the full grammar.lark text.
 
-    Spellings are sorted longest-first so a scannerless match prefers the longer
-    keyword (``codechanges`` before ``codechange``, ``isnull`` before ``is``),
-    then alphabetically for a stable, regenerable order.
+    Structural template, terminals, and the generated semantics block that makes the
+    file self-sufficient.
+
+    Returns:
+      result: The str.
+
     """
+    return f"{_STRUCTURE}\n{_terminal_block()}\n\n{_semantics_block()}\n"
+
+
+def grammar_path() -> Path:
+    """Return the committed grammar.lark, alongside this generator in trax/docs/.
+
+    Returns:
+      result: The Path.
+
+    """
+    return _CWD / ("grammar.lark")
+
+
+def main() -> int:
+    """Regenerate grammar.lark in place; report whether it changed.
+
+    Returns:
+      result: The int.
+
+    """
+    path = grammar_path()
+    new = render_grammar()
+    old = path.read_text() if path.exists() else ""
+    if new == old:
+        print(f"grammar.lark: already current ({len(new)} bytes).")
+        return 0
+    path.write_text(new)
+    print(f"grammar.lark: regenerated ({len(new)} bytes).")
+    return 0
+
+
+# Spellings are sorted longest-first so a scannerless match prefers the longer keyword
+# (``codechanges`` before ``codechange``, ``isnull`` before ``is``), then alphabetically
+# for a stable, regenerable order.
+def _literal_terminal(name: str, spellings: Sequence[str], comment: str = "") -> str:
+    """Render one terminal as an ordered alternation of quoted literals."""
     ordered = sorted(spellings, key=lambda s: (-len(s), s))
     body = " | ".join(f'"{s}"' for s in ordered)
     tail = f"   // {comment}" if comment else ""
     return f"{name}: {body}{tail}"
 
 
+# Sourced from the live ``DISPATCHERS`` table minus the kind verbs (which lead row
+# commands, not verb commands), plus ``run`` -- special-cased in ``parse_and_run``
+# rather than registered as a dispatcher.
+# `next`, `recent`, `profile`, ....
 def _verb_spellings() -> list[str]:
-    """The non-kind top-level verb spellings (`next`, `recent`, `profile`, ...).
-
-    Sourced from the live ``DISPATCHERS`` table minus the kind verbs (which lead
-    row commands, not verb commands), plus ``run`` -- special-cased in
-    ``parse_and_run`` rather than registered as a dispatcher.
-    """
+    """Return the non-kind top-level verb spellings."""
     kinds = {k.lower() for k in VALID_KINDS}
     names = {name for dispatcher in DISPATCHERS for name in dispatcher.names}
     return sorted((names - kinds) | {"run"})
@@ -363,10 +409,9 @@ def _terminal_block() -> str:
     return "\n".join(lines)
 
 
+# Base fields, valid everywhere, are listed once separately.
 def _kind_field_lines() -> list[str]:
-    """One line per kind listing its KIND-SPECIFIC writable fields (base fields,
-    valid everywhere, are listed once separately).
-    """
+    """One line per kind listing its KIND-SPECIFIC writable fields."""
     kinds = list(WRITE_FIELDS_CLI)
     base: set[str] = set(WRITE_FIELDS_CLI[kinds[0]])
     for kind in kinds[1:]:
@@ -379,10 +424,9 @@ def _kind_field_lines() -> list[str]:
     return lines
 
 
+# Reverse-voice aliases address the SAME stored edge from the opposite endpoint.
 def _edge_direction_lines() -> list[str]:
-    """One line per stored edge kind: its forward spellings and reverse-voice
-    aliases (which address the SAME stored edge from the opposite endpoint).
-    """
+    """One line per stored edge kind: forward spellings and reverse-voice aliases."""
     forward: dict[str, list[str]] = {}
     reverse: dict[str, list[str]] = {}
     for spelling, edge in EDGE_ALIASES.items():
@@ -433,12 +477,10 @@ def _verb_usage(verb: str, parser: argparse.ArgumentParser) -> str:
     return f"//   {' '.join(parts)}"
 
 
+# Covers every non-kind dispatcher plus ``run`` (special-cased in the CLI) and
+# ``profile`` (whose ``rest`` hides a hand-parsed sub-grammar stated inline).
 def _verb_lines() -> list[str]:
-    """A usage line per top-level verb, introspected from its live argparse parser.
-
-    Covers every non-kind dispatcher plus ``run`` (special-cased in the CLI) and
-    ``profile`` (whose ``rest`` hides a hand-parsed sub-grammar stated inline).
-    """
+    """Return a usage line per top-level verb, from its live argparse parser."""
     kinds = {k.lower() for k in VALID_KINDS}
     lines: list[str] = []
     for dispatcher in DISPATCHERS:
@@ -446,11 +488,11 @@ def _verb_lines() -> list[str]:
         if verb is None or dispatcher is Profiles:
             continue  # kind dispatcher, or profile (handled below)
         lines.append(_verb_usage(verb, _verb_parser(dispatcher)))
-    lines.append(_verb_usage("run", run_parser()))
-    # profile parses ``rest`` by hand; its sub-grammar is fixed, stated directly.
+    lines.append(_verb_usage("run", build_parser()))
+    # Profile parses ``rest`` by hand; its sub-grammar is fixed, stated directly.
     lines.append("//   profile [NAME] [ url|actor|token [to V] | current NAME | del ]")
     lines = sorted(lines)
-    # argparse positionals/--as carry meaning the bare usage can't show; gloss the
+    # ``argparse`` positionals/--as carry meaning the bare usage can't show; gloss the
     # non-obvious ones (sourced from the verbs' own help text).
     lines.append(
         "//   ^ run --as NAME = the session's owner; doubles as its routing handle"
@@ -465,15 +507,13 @@ def _verb_lines() -> list[str]:
 
 
 def _verb_parser(dispatcher: type[Command]) -> argparse.ArgumentParser:
-    """The argparse parser a verb dispatcher builds (its ``make_parser``)."""
+    """Return the argparse parser a verb dispatcher builds (its ``make_parser``)."""
     return dispatcher.make_parser()
 
 
+# Every list is sourced from the live tables.
 def _semantics_block() -> str:
-    """The generated ``// SEMANTICS`` section: the value/validity rules the
-    context-free shape cannot carry, so grammar.lark alone suffices to author
-    commands. Every list is sourced from the live tables.
-    """
+    """Return the ``// SEMANTICS`` section: rules the grammar shape cannot carry."""
     status = " ".join(get_args(Inquiry.Status.__value__))
     judgement = " ".join(get_args(Belief.Judgement.__value__))
     issue_kind = " ".join(get_args(Issue.Kind.__value__))
@@ -504,30 +544,6 @@ def _semantics_block() -> str:
     return "\n".join(lines)
 
 
-def render_grammar() -> str:
-    """The full grammar.lark text: structural template, terminals, and the
-    generated semantics block that makes the file self-sufficient.
-    """
-    return f"{_STRUCTURE}\n{_terminal_block()}\n\n{_semantics_block()}\n"
-
-
-def grammar_path() -> Path:
-    """The committed grammar.lark, alongside this generator in trax/docs/."""
-    return Path(__file__).with_name("grammar.lark")
-
-
-def main() -> int:
-    """Regenerate grammar.lark in place; report whether it changed."""
-    path = grammar_path()
-    new = render_grammar()
-    old = path.read_text() if path.exists() else ""
-    if new == old:
-        print(f"grammar.lark: already current ({len(new)} bytes).")
-        return 0
-    path.write_text(new)
-    print(f"grammar.lark: regenerated ({len(new)} bytes).")
-    return 0
-
-
 if __name__ == "__main__":
     raise SystemExit(main())
+# vim: ft=python

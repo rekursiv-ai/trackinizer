@@ -58,8 +58,9 @@ class TestStubEmbedder:
 
 
 class _NamedStub(StubEmbedder):
-    """StubEmbedder variant with a configurable ``name`` so multiple
-    embedders coexist per ``inquiry_embeddings`` PK ``(inquiry_id, model)``.
+    """StubEmbedder variant with a configurable ``name`` so multiple embedders.
+
+    Coexist per ``inquiry_embeddings`` PK ``(inquiry_id, model)``.
     """
 
     def __init__(self, name: str) -> None:
@@ -96,6 +97,7 @@ class TestStoreEmbedders:
     def test_dim_mismatch_rejected(self) -> None:
         class _WrongDim:
             name = "wrong"
+
             dim = 17
 
             async def embed(self, text: str) -> list[float]:
@@ -475,7 +477,7 @@ class TestStoreBootstrap:
         assert "DDL died first" in str(exc.value)
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

@@ -185,7 +185,12 @@ class Piped:
             os.killpg(os.getpgid(process.pid), signal.SIGKILL)
 
     async def wait(self) -> int:
-        """Reap the child and return its exit status."""
+        """Reap the child and return its exit status.
+
+        Returns:
+          result: The int.
+
+        """
         process = self._process
         if process is None:
             return 0

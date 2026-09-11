@@ -32,7 +32,7 @@ from trackinizer.conftest import (
     make_conn,
 )
 from trackinizer.lib.postgres import PostgresEngine
-from trackinizer.server import auth as auth_mod
+from trackinizer.server import auth
 from trackinizer.server.auth import (
     BOOTSTRAP_ADMIN_ENV,
     BOOTSTRAP_TOKEN_FILE_ENV,
@@ -86,7 +86,7 @@ class TestHashSecret:
         parts = encoded.split("$")
         assert parts[0] == "scrypt"
         assert len(parts) == 6
-        # n, r, p must round-trip as ints so a future cost bump can
+        # N, r, p must round-trip as ints so a future cost bump can
         # rotate per-row without orphaning historical rows.
         int(parts[1])
         int(parts[2])
@@ -119,6 +119,9 @@ class TestHashSecret:
 # ---- current_user tests ---------------------------------------------------
 
 
+# The legacy ``role`` kwarg sets both ``user_role`` and ``key_role`` so tests written
+# before the per-key ceiling landed keep working without edits; tests that want a
+# min(user, key) split set them explicitly.
 def _row(
     *,
     secret_hash: str,
@@ -130,12 +133,7 @@ def _row(
     user_role: str | None = None,
     key_role: str | None = None,
 ) -> dict[str, Any]:
-    """Build one ``api_keys JOIN users`` row in the shape ``_resolve_identity`` reads.
-
-    The legacy ``role`` kwarg sets both ``user_role`` and ``key_role`` so
-    tests written before the per-key ceiling landed keep working without
-    edits; tests that want a min(user, key) split set them explicitly.
-    """
+    """Build one ``api_keys JOIN users`` row as ``_resolve_identity`` reads it."""
     return {
         "key_id": key_id or uuid.uuid4(),
         "secret_hash": secret_hash,
@@ -147,6 +145,13 @@ def _row(
     }
 
 
+# ``app.state.config`` defaults to a vanilla :class:`Config` (auth on, no session
+# secret) so ``current_user``'s no-auth short-circuit doesn't fire on tests that don't
+# care about it. Pass ``Config(auth_disabled=True)`` to opt in.
+#
+# A fresh :class:`Store` is bound on ``app.state.store`` by default so the per-instance
+# ``last_used_at`` throttle is hermetic per call; tests that care about throttle
+# behaviour across multiple requests pass an explicit ``store`` to reuse one.
 def _request_with(
     engine: FakeEngine,
     authorization: str | None,
@@ -155,18 +160,7 @@ def _request_with(
     config: Config | None = None,
     store: Store | None = None,
 ) -> Any:
-    """Build a fake :class:`fastapi.Request` carrying one header + the engine.
-
-    ``app.state.config`` defaults to a vanilla :class:`Config` (auth on,
-    no session secret) so ``current_user``'s no-auth short-circuit
-    doesn't fire on tests that don't care about it. Pass
-    ``Config(auth_disabled=True)`` to opt in.
-
-    A fresh :class:`Store` is bound on ``app.state.store`` by default so
-    the per-instance ``last_used_at`` throttle is hermetic per call;
-    tests that care about throttle behaviour across multiple requests
-    pass an explicit ``store`` to reuse one.
-    """
+    """Build a fake :class:`fastapi.Request` carrying one header + the engine."""
     request = MagicMock()
     headers: dict[str, str] = {}
     if authorization is not None:
@@ -322,16 +316,16 @@ class TestCurrentUser:
         # prefixes exist. The dummy verify is the constant-time floor.
         secret, _ = generate_token()
         engine = FakeEngine()
-        engine.conn.fetch.return_value = []  # prefix miss
+        engine.conn.fetch.return_value = []  # prefix miss.
 
         calls: list[str] = []
-        real_verify = auth_mod.verify_secret
+        real_verify = auth.verify_secret
 
         def _spy(candidate: str, encoded: str) -> bool:
             calls.append(encoded)
             return real_verify(candidate, encoded)
 
-        monkeypatch.setattr(auth_mod, "verify_secret", _spy)
+        monkeypatch.setattr(auth, "verify_secret", _spy)
         with pytest.raises(HTTPException):
             await current_user(_request_with(engine, f"Bearer {secret}"))
         # Exactly one verify ran even though no row matched, and it used a
@@ -435,7 +429,7 @@ class TestCurrentUser:
         store = Store(cast(Any, engine), embed=StubEmbedder())
 
         clock: list[float] = [1_000.0]
-        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: clock[0])
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
 
         for _ in range(5):
             await current_user(_request_with(engine, f"Bearer {secret}", store=store))
@@ -474,7 +468,7 @@ class TestCurrentUser:
         engine.conn.fetch.return_value = [row]
         store_a = Store(cast(Any, engine), embed=StubEmbedder())
         store_b = Store(cast(Any, engine), embed=StubEmbedder())
-        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: 1_000.0)
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {secret}", store=store_a))
         await current_user(_request_with(engine, f"Bearer {secret}", store=store_b))
@@ -495,23 +489,23 @@ class TestVerifiedBearerCache:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # scrypt is ~30ms by design, so re-deriving it per request made auth
+        # ``scrypt`` is ~30ms by design, so re-deriving it per request made auth
         # the whole of a 32ms response and capped the server near 110 req/s.
         # A verified secret must cost one dict probe on the second hit.
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
         store = Store(cast(Any, engine), embed=StubEmbedder())
-        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: 1_000.0)
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         verifies: list[str] = []
-        real_verify = auth_mod.verify_secret
+        real_verify = auth.verify_secret
 
         def _spy(candidate: str, encoded: str) -> bool:
             verifies.append(encoded)
             return real_verify(candidate, encoded)
 
-        monkeypatch.setattr(auth_mod, "verify_secret", _spy)
+        monkeypatch.setattr(auth, "verify_secret", _spy)
         first = await current_user(
             _request_with(engine, f"Bearer {secret}", store=store)
         )
@@ -538,13 +532,13 @@ class TestVerifiedBearerCache:
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
         store = Store(cast(Any, engine), embed=StubEmbedder())
         clock = [1_000.0]
-        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: clock[0])
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
         # TTL well past the bump interval so the entry is still cached when
         # the bump comes due -- the case the fast path would swallow.
-        monkeypatch.setattr(auth_mod, "VERIFIED_BEARER_TTL_SEC", 600.0)
+        monkeypatch.setattr(auth, "VERIFIED_BEARER_TTL_SEC", 600.0)
 
         await current_user(_request_with(engine, f"Bearer {secret}", store=store))
-        clock[0] += 2 * auth_mod.LAST_USED_BUMP_INTERVAL_SEC
+        clock[0] += 2 * auth.LAST_USED_BUMP_INTERVAL_SEC
         await current_user(_request_with(engine, f"Bearer {secret}", store=store))
 
         bump_sqls = [
@@ -565,7 +559,7 @@ class TestVerifiedBearerCache:
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
         store = Store(cast(Any, engine), embed=StubEmbedder())
-        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: 1_000.0)
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         for _ in range(5):
             await current_user(_request_with(engine, f"Bearer {secret}", store=store))
@@ -589,7 +583,7 @@ class TestVerifiedBearerCache:
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
         store = Store(cast(Any, engine), embed=StubEmbedder())
-        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: 1_000.0)
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {secret}", store=store))
         caplog.clear()
@@ -616,18 +610,18 @@ class TestVerifiedBearerCache:
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
         store = Store(cast(Any, engine), embed=StubEmbedder())
         clock = [1_000.0]
-        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: clock[0])
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
 
         verifies: list[str] = []
-        real_verify = auth_mod.verify_secret
+        real_verify = auth.verify_secret
 
         def _spy(candidate: str, encoded: str) -> bool:
             verifies.append(encoded)
             return real_verify(candidate, encoded)
 
-        monkeypatch.setattr(auth_mod, "verify_secret", _spy)
+        monkeypatch.setattr(auth, "verify_secret", _spy)
         await current_user(_request_with(engine, f"Bearer {secret}", store=store))
-        clock[0] += auth_mod.VERIFIED_BEARER_TTL_SEC + 1.0
+        clock[0] += auth.VERIFIED_BEARER_TTL_SEC + 1.0
         await current_user(_request_with(engine, f"Bearer {secret}", store=store))
         # The TTL is the revocation lag; if it did not expire, a revoked key
         # would be honored forever.
@@ -645,16 +639,16 @@ class TestVerifiedBearerCache:
         engine = FakeEngine()
         engine.conn.fetch.return_value = []
         store = Store(cast(Any, engine), embed=StubEmbedder())
-        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: 1_000.0)
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         verifies: list[str] = []
-        real_verify = auth_mod.verify_secret
+        real_verify = auth.verify_secret
 
         def _spy(candidate: str, encoded: str) -> bool:
             verifies.append(encoded)
             return real_verify(candidate, encoded)
 
-        monkeypatch.setattr(auth_mod, "verify_secret", _spy)
+        monkeypatch.setattr(auth, "verify_secret", _spy)
         for _ in range(3):
             with pytest.raises(HTTPException):
                 await current_user(
@@ -676,7 +670,7 @@ class TestVerifiedBearerCache:
             _row(secret_hash=hash_secret(secret), user_id=user_id),
         ]
         store = Store(cast(Any, engine), embed=StubEmbedder())
-        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: 1_000.0)
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {secret}", store=store))
         assert store.cached_bearer_identity(secret) is not None
@@ -695,7 +689,7 @@ class TestVerifiedBearerCache:
             _row(secret_hash=hash_secret(kept_secret), user_id=kept_user),
         ]
         store = Store(cast(Any, engine), embed=StubEmbedder())
-        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: 1_000.0)
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {kept_secret}", store=store))
         store.forget_bearer_identities(uuid.uuid4())
@@ -705,9 +699,9 @@ class TestVerifiedBearerCache:
         # A flood of distinct keys must not pin unbounded memory.
         engine = FakeEngine()
         store = Store(cast(Any, engine), embed=StubEmbedder())
-        monkeypatch.setattr(auth_mod, "VERIFIED_BEARER_MAX_ENTRIES", 4)
+        monkeypatch.setattr(auth, "VERIFIED_BEARER_MAX_ENTRIES", 4)
         clock = [1_000.0]
-        monkeypatch.setattr(auth_mod, "monotonic_clock", lambda: clock[0])
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
 
         identity = AuthIdentity(
             user_id=uuid.uuid4(),
@@ -1184,11 +1178,12 @@ class TestBootstrapAdminRace:
 
 
 class _FakeResponse:
-    """Minimal stand-in for :class:`fastapi.Response` that satisfies the
+    """Minimal stand-in for :class:`fastapi.Response` that satisfies the.
+
     :class:`session._SetsCookies` Protocol -- captures cookies.
 
-    Signature mirrors the Protocol exactly so structural-typing checkers
-    accept it without casts.
+        Signature mirrors the Protocol exactly so structural-typing checkers
+        accept it without casts.
     """
 
     def __init__(self) -> None:
@@ -1338,7 +1333,7 @@ def _session_cookie_value(user_id: uuid.UUID, secret: str) -> str:
 
 
 def _config_with_session_secret(secret: str) -> Config:
-    """A :class:`Config` carrying just enough fields for the session path."""
+    """Return a :class:`Config` carrying just enough fields for the session path."""
     return Config(session_secret=secret, session_max_age_seconds=600)
 
 
@@ -1565,8 +1560,9 @@ class TestAllowlistMatch:
 
 
 class TestEffectiveRole:
-    """Pure :func:`effective_role` semantics: returns the floor under
-    :data:`ROLE_ORDER`.
+    """Pure :func:`effective_role` semantics.
+
+    Returns the floor under :data:`ROLE_ORDER`.
     """
 
     def test_returns_min_when_user_stronger(self) -> None:
@@ -1727,7 +1723,7 @@ class TestSetApiKeyRole:
         assert not any("UPDATE api_keys SET role" in s for s in sqls)
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

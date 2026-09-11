@@ -11,7 +11,7 @@ client and the generated doc.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import get_args
+from typing import Final, get_args
 
 from fastapi import FastAPI
 
@@ -37,6 +37,9 @@ from trackinizer.wire.wire_metrics_query import (
 from trackinizer.wire.wire_sessions import SESSION_API_PATHS
 
 
+_CWD: Final = Path(__file__).resolve().parent
+
+
 # Field-mutation routes are exactly the PUT/PATCH/DELETE verbs under the
 # per-field prefix. GET reads under the same prefix (``/cost``,
 # ``/proves_belief``) are query routes, not part of the field-mutation
@@ -54,14 +57,12 @@ def _registered_mutations_under(prefix: str) -> set[tuple[str, str]]:
     return out
 
 
+# Kind-specific fields route under their owning kind
+# (``/api/<kind>/{target_id}/<field>``); base fields and cost axes stay under
+# ``/api/inquiries``. Scan every prefix the wire table declares so the registered set
+# spans all kind-scoped routes.
 def _registered_field_verbs() -> set[tuple[str, str]]:
-    """``(path, method)`` for every registered inquiry-field mutation.
-
-    Kind-specific fields route under their owning kind
-    (``/api/<kind>/{target_id}/<field>``); base fields and cost axes stay
-    under ``/api/inquiries``. Scan every prefix the wire table declares so
-    the registered set spans all kind-scoped routes.
-    """
+    """``(path, method)`` for every registered inquiry-field mutation."""
     prefixes = {
         inquiry_field_path(route.column).rsplit("/", 1)[0] + "/"
         for route in inquiry_field_routes()
@@ -202,7 +203,7 @@ def test_session_api_paths_are_documented() -> None:
     drifted out of the doc entirely. The literal-segment check tolerates the
     doc's ``<uuid>`` spelling vs. the route template's ``{session_id}``.
     """
-    api_md = (Path(__file__).resolve().parents[2] / "docs" / "api.md").read_text()
+    api_md = (_CWD.parents[1] / "docs" / "api.md").read_text()
     # Reduce each route template to the literal segments around the path
     # parameter, then assert each survives in the doc text.
     missing: list[str] = []
@@ -223,7 +224,7 @@ def test_submit_tokens_are_kind_lowercased() -> None:
     assert set(SUBMIT_BODY) == {kind.lower() for kind in kinds}
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

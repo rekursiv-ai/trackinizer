@@ -37,6 +37,10 @@ def regex_failures_as_400() -> Generator[None]:
 
     Anything else propagates untouched: a real server fault must not be
     relabelled as the caller's mistake.
+
+    Yields:
+      item: Each yielded value.
+
     """
     try:
         yield

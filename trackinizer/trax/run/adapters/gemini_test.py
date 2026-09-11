@@ -48,8 +48,9 @@ class TestSessionDiscovery:
     def test_the_scope_is_the_hash_of_the_resolved_cwd(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The CLI hashes what IT resolved, so a symlinked cwd names a
-        directory that never receives a write.
+        """The CLI hashes what IT resolved.
+
+        A symlinked cwd names a directory that never receives a write.
         """
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         real = tmp_path / "workspace"

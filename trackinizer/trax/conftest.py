@@ -65,17 +65,14 @@ def _seq_in_interval(seq: int, interval: SeqRange) -> bool:
     return not (interval.stop is not None and seq > interval.stop)
 
 
+# ``match_filter`` resolves a filter field through ``canonical_filter_field`` and looks
+# the result up by key, so it expects storage-column keys (``issue_priority``,
+# ``paper_source``, ...). The fake's rows -- and the CLI render path -- carry the
+# ergonomic bare names (``priority``, ``source``); this view is built solely for the
+# predicate, leaving the returned/rendered row intact. Sourced from
+# ``FILTER_FIELD_ALIASES`` so no parallel map drifts.
 def _storage_view(row: dict[str, object]) -> dict[str, object]:
-    """Re-key a bare-keyed fake row to canonical SQL storage columns.
-
-    ``match_filter`` resolves a filter field through
-    ``canonical_filter_field`` and looks the result up by key, so it
-    expects storage-column keys (``issue_priority``, ``paper_source``,
-    ...). The fake's rows -- and the CLI render path -- carry the
-    ergonomic bare names (``priority``, ``source``); this view is built
-    solely for the predicate, leaving the returned/rendered row intact.
-    Sourced from ``FILTER_FIELD_ALIASES`` so no parallel map drifts.
-    """
+    """Re-key a bare-keyed fake row to canonical SQL storage columns."""
     view = dict(row)
     for alias, column in FILTER_FIELD_ALIASES.items():
         # ``kind``/``label``/... are base-field aliases whose canonical
@@ -101,7 +98,8 @@ def tmp_config_dir(
     variable does not bleed into the test process.
     """
     root = cast(Any, tmp_path)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(root))
+    # A test fixture repointing userdirs.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(root))  # house-lint: ignore[xdg-literal]
     (root / "rekursiv-ai" / "trax" / "profiles").mkdir(parents=True, exist_ok=True)
     monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
     monkeypatch.delenv("TRACKINIZER_URL", raising=False)
@@ -268,7 +266,7 @@ class FakeClient:
         }
 
     def close(self) -> None:
-        pass
+        """Release held resources."""
 
     def __enter__(self) -> Self:
         return self
@@ -283,6 +281,7 @@ class FakeClient:
         self.close()
 
     def resolve_id(self, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        """Resolve id."""
         self.calls.append(("resolve_id", (ref,), {}))
         if isinstance(ref, SeqRef):
             row = next(
@@ -301,6 +300,7 @@ class FakeClient:
     def resolve_ids(
         self, refs: Sequence[Ref]
     ) -> list[tuple[Inquiry.InquiryKind, uuid.UUID]]:
+        """Resolve ids."""
         self.calls.append(("resolve_ids", (tuple(refs),), {}))
         return [self.resolve_id(ref) for ref in refs]
 
@@ -312,6 +312,7 @@ class FakeClient:
         to: Inquiry.Actor | None,
         actor: Inquiry.Actor,
     ) -> None:
+        """Transition owner."""
         self.calls.append(
             (
                 "transition_owner",
@@ -329,6 +330,7 @@ class FakeClient:
         actor: Inquiry.Actor,
         reason: str = "",
     ) -> None:
+        """Transition status."""
         self.calls.append(
             (
                 "transition_status",
@@ -343,6 +345,7 @@ class FakeClient:
         )
 
     def submit(self, kind: Inquiry.InquiryKind, body: dict[str, object]) -> uuid.UUID:
+        """Submit."""
         self.calls.append(("submit", (kind, body), {}))
         return self.target_id
 
@@ -352,6 +355,7 @@ class FakeClient:
         *,
         edges: Sequence[Any] = (),
     ) -> list[uuid.UUID]:
+        """Submit batch."""
         self.calls.append(("submit_batch", (tuple(items),), {"edges": tuple(edges)}))
         # One distinct id per item so callers can map inline targets back.
         return [self.target_id if i == 0 else uuid.uuid4() for i in range(len(items))]
@@ -366,6 +370,7 @@ class FakeClient:
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[Filter] = (),
     ) -> list[dict[str, Any]]:
+        """List kind."""
         self.calls.append(
             (
                 "list_kind",
@@ -461,6 +466,7 @@ class FakeClient:
     def get_inquiry(
         self, ref: Ref
     ) -> tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, Any]]:
+        """Get inquiry."""
         self.calls.append(("get_inquiry", (ref,), {}))
         if isinstance(ref, UuidRef):
             target_id = ref.uuid
@@ -495,10 +501,12 @@ class FakeClient:
         )
 
     def next_issue(self) -> dict[str, Any] | None:
+        """Next issue."""
         self.calls.append(("next_issue", (), {}))
         return self.next_payload
 
     def version(self) -> str:
+        """Version."""
         self.calls.append(("version", (), {}))
         return "testsha"
 
@@ -530,10 +538,12 @@ class FakeClient:
         )
 
     def recent_changes(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """Recent changes."""
         self.calls.append(("recent_changes", (), {"limit": limit}))
         return list(self.changes)
 
     def cost_for(self, target_id: uuid.UUID, *, deep: bool = False) -> dict[str, float]:
+        """Cost for."""
         self.calls.append(("cost_for", (target_id,), {"deep": deep}))
         return dict(self.cost_payload)
 
@@ -546,6 +556,7 @@ class FakeClient:
         actor: str,
         reason: str = "",
     ) -> None:
+        """Edit."""
         self.calls.append(
             ("edit", (target_id, field, value), {"actor": actor, "reason": reason})
         )
@@ -559,6 +570,7 @@ class FakeClient:
         actor: str,
         reason: str = "",
     ) -> None:
+        """Add cost."""
         self.calls.append(
             ("add_cost", (target_id, field, value), {"actor": actor, "reason": reason})
         )
@@ -576,6 +588,7 @@ class FakeClient:
         labels: Sequence[str] | None = (),
         reason: str = "",
     ) -> EdgeWrite:
+        """Add edge."""
         # ``labels=None`` is the explicit clear-to-empty: the real client cannot
         # carry it on the upsert (the store collapses empty), so it threads the
         # clear through ``annotate_edge`` after the POST. Mirror that here so a
@@ -632,6 +645,7 @@ class FakeClient:
         *,
         actor: str,
     ) -> None:
+        """Remove edge."""
         self.calls.append(
             ("remove_edge", (from_id, to_id, edge_kind), {"actor": actor})
         )
@@ -648,6 +662,7 @@ class FakeClient:
         valence: float | Absent | None = _ABSENT,
         labels: Sequence[str] | Absent | None = _ABSENT,
     ) -> None:
+        """Annotate edge."""
         metadata: dict[str, object] = {"actor": actor}
         if not isinstance(priority, Absent):
             metadata["priority"] = priority
@@ -660,9 +675,11 @@ class FakeClient:
         self.calls.append(("annotate_edge", (from_id, to_id, edge_kind), metadata))
 
     def purge(self, target_id: uuid.UUID, *, actor: str, reason: str = "") -> None:
+        """Purge."""
         self.calls.append(("purge", (target_id,), {"actor": actor, "reason": reason}))
 
     def session_start(self, body: SessionStart) -> SessionStartResponse:
+        """Session start."""
         self.calls.append(("session_start", (body,), {}))
         return SessionStartResponse(id=self.target_id, seq=1)
 
@@ -704,6 +721,7 @@ class FakeClient:
         )
 
     def read_session_parts(self, session_id: uuid.UUID) -> list[PartBody]:
+        """Read session parts."""
         self.calls.append(("read_session_parts", (session_id,), {}))
         return []
 
@@ -716,6 +734,7 @@ class FakeClient:
         limit: int = DEFAULT_LIST_LIMIT,
         plaintext_only: bool = False,
     ) -> list[RecordBody]:
+        """Read session records."""
         self.calls.append(
             (
                 "read_session_records",
@@ -737,6 +756,7 @@ class FakeClient:
         *,
         actor: Inquiry.Actor = "agent",
     ) -> None:
+        """Set cli session id."""
         self.calls.append(
             ("set_cli_session_id", (session_id, cli_session_id), {"actor": actor})
         )
@@ -744,6 +764,7 @@ class FakeClient:
     def log_metrics(
         self, experiment_id: uuid.UUID, points: Sequence[MetricPoint]
     ) -> LogMetricsResponse:
+        """Log metrics."""
         self.calls.append(("log_metrics", (experiment_id, points), {}))
         return LogMetricsResponse(logged=len(list(points)), skipped=0)
 
@@ -755,6 +776,7 @@ class FakeClient:
         limit: int = DEFAULT_LIST_LIMIT,
         offset: int = 0,
     ) -> list[MetricPoint]:
+        """Read metrics."""
         self.calls.append(
             (
                 "read_metrics",
@@ -772,6 +794,7 @@ class FakeClient:
         sort: str | None = None,
         limit: int | None = None,
     ) -> list[MetricPoint]:
+        """Query metrics."""
         self.calls.append(
             (
                 "query_metrics",
@@ -788,6 +811,7 @@ class FakeClient:
         masks: Sequence[MetricMaskClause],
         value: float,
     ) -> int:
+        """Write metrics masked."""
         self.calls.append(
             (
                 "write_metrics_masked",
@@ -805,6 +829,7 @@ class FakeClient:
         sort: str | None = None,
         limit: int | None = None,
     ) -> list[MetricRankRow]:
+        """Rank metrics."""
         self.calls.append(
             (
                 "rank_metrics",
@@ -817,51 +842,61 @@ class FakeClient:
     def session_end(
         self, session_id: uuid.UUID, body: SessionEnd | None = None
     ) -> SessionEndResponse:
+        """Session end."""
         self.calls.append(("session_end", (session_id, body), {}))
         return SessionEndResponse(id=session_id)
 
     def enqueue_inbound(self, session_id: uuid.UUID, text: str) -> int:
+        """Enqueue inbound."""
         self.calls.append(("enqueue_inbound", (session_id, text), {}))
         return 1
 
     def drain_inbound(
         self, session_id: uuid.UUID, *, wait_sec: float = 0.0
     ) -> list[tuple[str, str | None, str | None]]:
+        """Drain inbound."""
         self.calls.append(("drain_inbound", (session_id,), {"wait_sec": wait_sec}))
         return []
 
     def send_message(
         self, actor: str, text: str, *, room: str | None = None
     ) -> list[uuid.UUID]:
+        """Send message."""
         self.calls.append(("send_message", (actor, text), {"room": room}))
         return [self.target_id]
 
     def add_subscriber(
         self, target_id: uuid.UUID, subscriber: str, *, actor: str
     ) -> None:
+        """Add subscriber."""
         self.calls.append(("add_subscriber", (target_id, subscriber), {"actor": actor}))
 
     def remove_subscriber(
         self, target_id: uuid.UUID, subscriber: str, *, actor: str
     ) -> None:
+        """Remove subscriber."""
         self.calls.append(
             ("remove_subscriber", (target_id, subscriber), {"actor": actor})
         )
 
     def add_label(self, target_id: uuid.UUID, label: str, *, actor: str) -> None:
+        """Add label."""
         self.calls.append(("add_label", (target_id, label), {"actor": actor}))
 
     def remove_label(self, target_id: uuid.UUID, label: str, *, actor: str) -> None:
+        """Remove label."""
         self.calls.append(("remove_label", (target_id, label), {"actor": actor}))
 
     def add_issue_kind(
         self, target_id: uuid.UUID, issue_kind: str, *, actor: str
     ) -> None:
+        """Add issue kind."""
         self.calls.append(("add_issue_kind", (target_id, issue_kind), {"actor": actor}))
 
     def remove_issue_kind(
         self, target_id: uuid.UUID, issue_kind: str, *, actor: str
     ) -> None:
+        """Remove issue kind."""
         self.calls.append(
             ("remove_issue_kind", (target_id, issue_kind), {"actor": actor})
         )
@@ -869,6 +904,7 @@ class FakeClient:
     def add_codechange(
         self, target_id: uuid.UUID, codechange_id: uuid.UUID, *, actor: str
     ) -> None:
+        """Add codechange."""
         self.calls.append(
             ("add_codechange", (target_id, codechange_id), {"actor": actor})
         )
@@ -876,21 +912,26 @@ class FakeClient:
     def remove_codechange(
         self, target_id: uuid.UUID, codechange_id: uuid.UUID, *, actor: str
     ) -> None:
+        """Remove codechange."""
         self.calls.append(
             ("remove_codechange", (target_id, codechange_id), {"actor": actor})
         )
 
     def add_author(self, target_id: uuid.UUID, author: str, *, actor: str) -> None:
+        """Add author."""
         self.calls.append(("add_author", (target_id, author), {"actor": actor}))
 
     def remove_author(self, target_id: uuid.UUID, author: str, *, actor: str) -> None:
+        """Remove author."""
         self.calls.append(("remove_author", (target_id, author), {"actor": actor}))
 
 
 @pytest.fixture
 def client() -> FakeClient:
+    """Client."""
     return FakeClient()
 
 
 def run(argv: list[str], client: FakeClient) -> None:
+    """Run."""
     cli.parse_and_run(argv, client_factory=lambda: cast(Any, client))

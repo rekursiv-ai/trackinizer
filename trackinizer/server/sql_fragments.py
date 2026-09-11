@@ -24,29 +24,23 @@ __all__ = [
 ]
 
 
+# Only consumed by trusted-internal SQL builders below; the strings come from
+# :data:`Edge.Kind`, a closed set.
 def _quote_kinds(kinds: Iterable[str]) -> str:
-    """Render an iterable of edge-kind names as a SQL IN-list body.
-
-    Only consumed by trusted-internal SQL builders below; the strings
-    come from :data:`Edge.Kind`, a closed set.
-    """
+    """Render an iterable of edge-kind names as a SQL IN-list body."""
     return ", ".join(f"'{k}'" for k in sorted(kinds))
 
 
+# Used by the ``next_issue`` and ``proves_belief`` queries to drop endpoints that an
+# edge marks as scheduler-excluded or currency-invalidated. ``subject_alias`` is the
+# inquiry alias the NOT EXISTS subquery joins against (``issue.id`` for next_issue,
+# ``t.id`` for proves_belief).
 def _policy_exclude_clauses(
     *,
     subject_alias: str,
     policy_attr: Literal["skips_scheduler_on", "invalidates_currency_on"],
 ) -> str:
-    """Render ``AND NOT EXISTS (...)`` clauses for every policy that
-    sets ``policy_attr``.
-
-    Used by the ``next_issue`` and ``proves_belief`` queries to
-    drop endpoints that an edge marks as scheduler-excluded or
-    currency-invalidated. ``subject_alias`` is the inquiry alias the
-    NOT EXISTS subquery joins against (``issue.id`` for next_issue,
-    ``t.id`` for proves_belief).
-    """
+    """Render an ``AND NOT EXISTS`` clause per policy that sets ``policy_attr``."""
     sides: dict[Literal["from", "to"], list[str]] = {"from": [], "to": []}
     for kind, policy in EDGE_POLICIES.items():
         side = getattr(policy, policy_attr)
@@ -97,7 +91,7 @@ Built from the policy registry: any edge kind with
 
 
 PROVES_BELIEF_SQL: Final[str] = vetted_sql(
-    # proves is stored Artifact(from) -> Belief(to), so the artifacts proving
+    # Proves is stored Artifact(from) -> Belief(to), so the artifacts proving
     # belief $1 are the from-side of edges pointing at it.
     "SELECT t.* FROM inquiries t "
     "JOIN edges e ON e.from_id = t.id AND e.edge_kind = 'proves' "

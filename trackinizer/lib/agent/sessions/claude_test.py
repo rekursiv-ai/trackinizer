@@ -66,13 +66,11 @@ def _transcript(records: Iterable[SessionRecord]) -> tuple[TranscriptItem, ...]:
     )
 
 
+# Claude's escaping convention is a majority over the lines read, so the reader restates
+# it as a trailing :class:`TurnContext` whenever it moves -- the final record of a
+# stream is that state, not the act a line carried.
 def _last_act(records: Sequence[SessionRecord]) -> SessionRecord:
-    """Return the last record that is not a restatement of the settings.
-
-    Claude's escaping convention is a majority over the lines read, so the
-    reader restates it as a trailing :class:`TurnContext` whenever it moves --
-    the final record of a stream is that state, not the act a line carried.
-    """
+    """Return the last record that is not a restatement of the settings."""
     return next(
         record for record in reversed(records) if not isinstance(record, TurnContext)
     )
@@ -1304,7 +1302,7 @@ def test_provider_dollar_key_after_envelope_stays_after_envelope() -> None:
 
 
 def test_mixed_unicode_escaping_is_preserved_per_line() -> None:
-    escaped = "caf\\u00e9"  # codespell:ignore caf
+    escaped = "caf\\u00e9"  # codespell:ignore caf.
     native = _line(
         type='"user"', message=f'{{"role":"user","content":"{escaped}"}}'
     ) + _line(type='"user"', message='{"role":"user","content":"café"}')

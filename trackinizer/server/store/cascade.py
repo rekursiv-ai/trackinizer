@@ -65,13 +65,11 @@ _MIRROR_LIST_COLUMNS: frozenset[str] = frozenset(
 )
 
 
+# Derived from :data:`CHANGE_LOG_COLUMN_ORDER` so a new audited column flows in with no
+# edit here; list columns pass through ``list_or_none`` (NULL stays NULL, a set becomes
+# a plain list asyncpg binds to the array column).
 def _snapshot_mirror(side: str, snap: Snapshot) -> dict[str, Any]:
-    """Build the ``{side}_<col>`` audit-mirror entries for one Snapshot side.
-
-    Derived from :data:`CHANGE_LOG_COLUMN_ORDER` so a new audited column flows
-    in with no edit here; list columns pass through ``list_or_none`` (NULL stays
-    NULL, a set becomes a plain list asyncpg binds to the array column).
-    """
+    """Build the ``{side}_<col>`` audit-mirror entries for one Snapshot side."""
     return {
         f"{side}_{col}": (
             list_or_none(getattr(snap, col))
@@ -107,6 +105,197 @@ _NON_PROPAGATING_CHANGE_KINDS: frozenset[Change.Kind] = frozenset(
 )
 
 
+# Pulled out of ``emit_change`` so the client-supplied-id path can wrap both
+# statements in a savepoint and roll them back atomically on a unique-key collision
+# (the retry case).
+async def _apply_change(
+    conn: Conn,
+    *,
+    change_id: UUID,
+    subject_id: UUID,
+    subject_kind: Inquiry.InquiryKind,
+    kind: Change.Kind,
+    api_key_id: UUID | None,
+    actor: Inquiry.Actor,
+    caused_by: UUID | None,
+    reason: str,
+    marginal_cost: Cost,
+    cost_delta: Cost,
+    old: Snapshot,
+    new: Snapshot,
+    extra_subscribers: tuple[Inquiry.Actor, ...],
+) -> tuple[Cost, Cost, tuple[Inquiry.Actor, ...]]:
+    """Run the cost UPDATE and ``change_log`` INSERT for this change."""
+    # ``clock_timestamp()`` is the wall clock at this statement, not
+    # the transaction-start timestamp ``now()`` returns. Without it,
+    # multiple changes in one transaction share a tie-broken
+    # timestamp and late-committing transactions can land with a
+    # ``created`` earlier than already-observed rows -- breaking
+    # ``what_changed_for_me``'s ``since`` cursor semantics.
+    agent_delta = marginal_cost.agent_usd + cost_delta.agent_usd
+    resource_delta = marginal_cost.resource_usd + cost_delta.resource_usd
+    # Floor guard lives in the WHERE clause so the UPDATE itself
+    # is atomic: a delta that would drive either running total
+    # negative matches no row, the row stays put, and a caller
+    # without an outer transaction cannot leave a negative
+    # balance behind before the raise propagates. The presence
+    # probe is folded into the same statement via a CTE so a
+    # row purged between two statements cannot collapse a
+    # floor-refused delta into a silent zero-delta audit emit:
+    # Postgres runs all sub-statements of one statement against
+    # one snapshot, so ``probe.id`` and ``upd.new_*`` always
+    # agree on whether the row was present at evaluation time.
+    # The probe takes ``FOR SHARE`` so it serializes against
+    # purge's ``FOR UPDATE``: a concurrent purge cannot commit a
+    # DELETE between the probe finding the row and the UPDATE
+    # touching it, which would otherwise leave ``probe.id``
+    # non-NULL while ``upd`` matched nothing -- a phantom
+    # zero-delta audit for an already-deleted subject.
+    cost_row = await conn.fetchrow(
+        "WITH probe AS ( "
+        "    SELECT id FROM inquiries WHERE id = $3 FOR SHARE "
+        "), "
+        "upd AS ( "
+        "    UPDATE inquiries "
+        "    SET marginal_cost_agent_usd    = marginal_cost_agent_usd    + $1, "
+        "        marginal_cost_resource_usd = marginal_cost_resource_usd + $2, "
+        "        modified                   = clock_timestamp() "
+        "    WHERE id = $3 "
+        "      AND marginal_cost_agent_usd    + $1 >= 0 "
+        "      AND marginal_cost_resource_usd + $2 >= 0 "
+        "    RETURNING marginal_cost_agent_usd    - $1 AS old_agent, "
+        "              marginal_cost_resource_usd - $2 AS old_resource, "
+        "              marginal_cost_agent_usd    AS new_agent, "
+        "              marginal_cost_resource_usd AS new_resource, "
+        "              subscribers AS current_subscribers "
+        ") "
+        "SELECT probe.id AS existing_id, "
+        "       upd.old_agent, upd.old_resource, "
+        "       upd.new_agent, upd.new_resource, "
+        "       upd.current_subscribers "
+        "FROM probe LEFT JOIN upd ON true",
+        agent_delta,
+        resource_delta,
+        subject_id,
+    )
+    if cost_row is None:
+        # Genuine tombstone: the row was already gone at the
+        # statement's snapshot, so the probe matched nothing
+        # and the outer SELECT produced no rows. Audit proceeds
+        # with zero deltas.
+        old_cost = new_cost = Cost()
+        subs: tuple[Inquiry.Actor, ...] = ()
+    elif cost_row["new_agent"] is None:
+        # Row present at snapshot but the floor refused the
+        # delta: ``probe.id`` is non-NULL and the LEFT JOIN
+        # filled ``upd.*`` with NULLs.
+        raise ConflictError(
+            f"cost_delta would drive marginal_cost negative; "
+            f"agent_delta={agent_delta}, "
+            f"resource_delta={resource_delta}"
+        )
+    else:
+        old_cost = Cost(
+            agent_usd=float(cost_row["old_agent"]),
+            resource_usd=float(cost_row["old_resource"]),
+        )
+        new_cost = Cost(
+            agent_usd=float(cost_row["new_agent"]),
+            resource_usd=float(cost_row["new_resource"]),
+        )
+        subs = cast(
+            tuple[Inquiry.Actor, ...],
+            tuple(cost_row["current_subscribers"] or ()),
+        )
+    if extra_subscribers:
+        # Update ``seen`` in-loop so duplicates *within*
+        # ``extra_subscribers`` are also collapsed.
+        seen: set[Inquiry.Actor] = set(subs)
+        extras: list[Inquiry.Actor] = []
+        for extra in extra_subscribers:
+            if extra not in seen:
+                seen.add(extra)
+                extras.append(extra)
+        subs = subs + tuple(extras)
+    # Edge-peer presence-equivalence CHECK on change_log requires
+    # ``edge_note`` and ``edge_labels`` to be non-NULL whenever
+    # their side's ``peer_id`` is non-NULL. The Edge dataclass
+    # now lets these store as NULL on the edges table (a
+    # cleared annotation), so coerce None to ``""`` / ``[]``
+    # only on the audit side, only when peer is present.
+    old_edge_note = (
+        "" if old.peer_id is not None and old.edge_note is None else old.edge_note
+    )
+    old_edge_labels = (
+        []
+        if old.peer_id is not None and old.edge_labels is None
+        else list_or_none(old.edge_labels)
+    )
+    new_edge_note = (
+        "" if new.peer_id is not None and new.edge_note is None else new.edge_note
+    )
+    new_edge_labels = (
+        []
+        if new.peer_id is not None and new.edge_labels is None
+        else list_or_none(new.edge_labels)
+    )
+    columns: dict[str, Any] = {
+        "id": change_id,
+        "api_key_id": api_key_id,
+        "actor": actor,
+        "subject_id": subject_id,
+        "subject_kind": subject_kind,
+        "kind": kind,
+        "caused_by": caused_by,
+        "reason": reason,
+        "subscribers_snapshot": list(subs),
+        "old_title": old.title,
+        "old_description": old.description,
+        "old_labels": list_or_none(old.labels),
+        "old_owner": old.owner,
+        "old_account": old.account,
+        "old_subscribers": list_or_none(old.subscribers),
+        "old_peer_id": old.peer_id,
+        "old_peer_kind": old.peer_kind,
+        "old_peer_edge_kind": old.peer_edge_kind,
+        "old_edge_priority": old.edge_priority,
+        "old_edge_note": old_edge_note,
+        "old_edge_valence": old.edge_valence,
+        "old_edge_labels": old_edge_labels,
+        # The per-column old_/new_ mirror is DERIVED from
+        # CHANGE_LOG_COLUMN_ORDER (see _snapshot_mirror), so a new audited
+        # field can't be dropped from the audit INSERT (GSI-01 class). The
+        # composite marginal_cost axes come from old_cost/new_cost (not a
+        # Snapshot field) and stay explicit.
+        **_snapshot_mirror("old", old),
+        "old_marginal_cost_agent_usd": old_cost.agent_usd,
+        "old_marginal_cost_resource_usd": old_cost.resource_usd,
+        "new_peer_id": new.peer_id,
+        "new_peer_kind": new.peer_kind,
+        "new_peer_edge_kind": new.peer_edge_kind,
+        "new_edge_priority": new.edge_priority,
+        "new_edge_note": new_edge_note,
+        "new_edge_valence": new.edge_valence,
+        "new_edge_labels": new_edge_labels,
+        **_snapshot_mirror("new", new),
+        "new_marginal_cost_agent_usd": new_cost.agent_usd,
+        "new_marginal_cost_resource_usd": new_cost.resource_usd,
+    }
+    col_names = ", ".join(columns)
+    placeholders = ", ".join(f"${i + 1}" for i in range(len(columns)))
+    await conn.execute(
+        vetted_sql(
+            "INSERT INTO change_log (",
+            col_names,
+            ") VALUES (",
+            placeholders,
+            ")",
+        ),
+        *columns.values(),
+    )
+    return old_cost, new_cost, subs
+
+
 class _CascadeAuditMixin(_StoreShared):
     """Change emission, ancestor cascade, and purge for :class:`Store`."""
 
@@ -137,6 +326,22 @@ class _CascadeAuditMixin(_StoreShared):
         caller so post-commit notification can route without consulting
         the (possibly-purged) ``inquiries`` row.
 
+        Args:
+          conn: Conn.
+          subject_id: Subject id.
+          subject_kind: Subject kind.
+          kind: Kind.
+          api_key_id: Api key id.
+          actor: Actor.
+          caused_by: Caused by.
+          reason: Reason.
+          marginal_cost: Marginal cost.
+          cost_delta: Cost delta.
+          old: Old.
+          new: New.
+          cascade: Cascade.
+          extra_subscribers: Extra subscribers.
+
         Returns:
           change_id: New ``change_log`` row id.
           subscribers: Tuple of agent ids subscribed at this moment;
@@ -154,188 +359,23 @@ class _CascadeAuditMixin(_StoreShared):
         client_change_id = _consume_client_change_id()
         change_id = client_change_id or uuid.uuid4()
 
-        async def _apply() -> tuple[Cost, Cost, tuple[Inquiry.Actor, ...]]:
-            """Run the cost UPDATE and ``change_log`` INSERT for this change.
-
-            Pulled into a closure so the client-supplied-id path can wrap
-            both statements in a savepoint and roll them back atomically
-            on a unique-key collision (the retry case).
-            """
-            # ``clock_timestamp()`` is the wall clock at this statement, not
-            # the transaction-start timestamp ``now()`` returns. Without it,
-            # multiple changes in one transaction share a tie-broken
-            # timestamp and late-committing transactions can land with a
-            # ``created`` earlier than already-observed rows -- breaking
-            # ``what_changed_for_me``'s ``since`` cursor semantics.
-            agent_delta = marginal_cost.agent_usd + cost_delta.agent_usd
-            resource_delta = marginal_cost.resource_usd + cost_delta.resource_usd
-            # Floor guard lives in the WHERE clause so the UPDATE itself
-            # is atomic: a delta that would drive either running total
-            # negative matches no row, the row stays put, and a caller
-            # without an outer transaction cannot leave a negative
-            # balance behind before the raise propagates. The presence
-            # probe is folded into the same statement via a CTE so a
-            # row purged between two statements cannot collapse a
-            # floor-refused delta into a silent zero-delta audit emit:
-            # Postgres runs all sub-statements of one statement against
-            # one snapshot, so ``probe.id`` and ``upd.new_*`` always
-            # agree on whether the row was present at evaluation time.
-            # The probe takes ``FOR SHARE`` so it serializes against
-            # purge's ``FOR UPDATE``: a concurrent purge cannot commit a
-            # DELETE between the probe finding the row and the UPDATE
-            # touching it, which would otherwise leave ``probe.id``
-            # non-NULL while ``upd`` matched nothing -- a phantom
-            # zero-delta audit for an already-deleted subject.
-            cost_row = await conn.fetchrow(
-                "WITH probe AS ( "
-                "    SELECT id FROM inquiries WHERE id = $3 FOR SHARE "
-                "), "
-                "upd AS ( "
-                "    UPDATE inquiries "
-                "    SET marginal_cost_agent_usd    = marginal_cost_agent_usd    + $1, "
-                "        marginal_cost_resource_usd = marginal_cost_resource_usd + $2, "
-                "        modified                   = clock_timestamp() "
-                "    WHERE id = $3 "
-                "      AND marginal_cost_agent_usd    + $1 >= 0 "
-                "      AND marginal_cost_resource_usd + $2 >= 0 "
-                "    RETURNING marginal_cost_agent_usd    - $1 AS old_agent, "
-                "              marginal_cost_resource_usd - $2 AS old_resource, "
-                "              marginal_cost_agent_usd    AS new_agent, "
-                "              marginal_cost_resource_usd AS new_resource, "
-                "              subscribers AS current_subscribers "
-                ") "
-                "SELECT probe.id AS existing_id, "
-                "       upd.old_agent, upd.old_resource, "
-                "       upd.new_agent, upd.new_resource, "
-                "       upd.current_subscribers "
-                "FROM probe LEFT JOIN upd ON true",
-                agent_delta,
-                resource_delta,
-                subject_id,
-            )
-            if cost_row is None:
-                # Genuine tombstone: the row was already gone at the
-                # statement's snapshot, so the probe matched nothing
-                # and the outer SELECT produced no rows. Audit proceeds
-                # with zero deltas.
-                old_cost = new_cost = Cost()
-                subs: tuple[Inquiry.Actor, ...] = ()
-            elif cost_row["new_agent"] is None:
-                # Row present at snapshot but the floor refused the
-                # delta: ``probe.id`` is non-NULL and the LEFT JOIN
-                # filled ``upd.*`` with NULLs.
-                raise ConflictError(
-                    f"cost_delta would drive marginal_cost negative; "
-                    f"agent_delta={agent_delta}, "
-                    f"resource_delta={resource_delta}"
-                )
-            else:
-                old_cost = Cost(
-                    agent_usd=float(cost_row["old_agent"]),
-                    resource_usd=float(cost_row["old_resource"]),
-                )
-                new_cost = Cost(
-                    agent_usd=float(cost_row["new_agent"]),
-                    resource_usd=float(cost_row["new_resource"]),
-                )
-                subs = cast(
-                    tuple[Inquiry.Actor, ...],
-                    tuple(cost_row["current_subscribers"] or ()),
-                )
-            if extra_subscribers:
-                # Update ``seen`` in-loop so duplicates *within*
-                # ``extra_subscribers`` are also collapsed.
-                seen: set[Inquiry.Actor] = set(subs)
-                extras: list[Inquiry.Actor] = []
-                for extra in extra_subscribers:
-                    if extra not in seen:
-                        seen.add(extra)
-                        extras.append(extra)
-                subs = subs + tuple(extras)
-            # Edge-peer presence-equivalence CHECK on change_log requires
-            # ``edge_note`` and ``edge_labels`` to be non-NULL whenever
-            # their side's ``peer_id`` is non-NULL. The Edge dataclass
-            # now lets these store as NULL on the edges table (a
-            # cleared annotation), so coerce None to ``""`` / ``[]``
-            # only on the audit side, only when peer is present.
-            old_edge_note = (
-                ""
-                if old.peer_id is not None and old.edge_note is None
-                else old.edge_note
-            )
-            old_edge_labels = (
-                []
-                if old.peer_id is not None and old.edge_labels is None
-                else list_or_none(old.edge_labels)
-            )
-            new_edge_note = (
-                ""
-                if new.peer_id is not None and new.edge_note is None
-                else new.edge_note
-            )
-            new_edge_labels = (
-                []
-                if new.peer_id is not None and new.edge_labels is None
-                else list_or_none(new.edge_labels)
-            )
-            columns: dict[str, Any] = {
-                "id": change_id,
-                "api_key_id": api_key_id,
-                "actor": actor,
-                "subject_id": subject_id,
-                "subject_kind": subject_kind,
-                "kind": kind,
-                "caused_by": caused_by,
-                "reason": reason,
-                "subscribers_snapshot": list(subs),
-                "old_title": old.title,
-                "old_description": old.description,
-                "old_labels": list_or_none(old.labels),
-                "old_owner": old.owner,
-                "old_account": old.account,
-                "old_subscribers": list_or_none(old.subscribers),
-                "old_peer_id": old.peer_id,
-                "old_peer_kind": old.peer_kind,
-                "old_peer_edge_kind": old.peer_edge_kind,
-                "old_edge_priority": old.edge_priority,
-                "old_edge_note": old_edge_note,
-                "old_edge_valence": old.edge_valence,
-                "old_edge_labels": old_edge_labels,
-                # The per-column old_/new_ mirror is DERIVED from
-                # CHANGE_LOG_COLUMN_ORDER (see _snapshot_mirror), so a new audited
-                # field can't be dropped from the audit INSERT (GSI-01 class). The
-                # composite marginal_cost axes come from old_cost/new_cost (not a
-                # Snapshot field) and stay explicit.
-                **_snapshot_mirror("old", old),
-                "old_marginal_cost_agent_usd": old_cost.agent_usd,
-                "old_marginal_cost_resource_usd": old_cost.resource_usd,
-                "new_peer_id": new.peer_id,
-                "new_peer_kind": new.peer_kind,
-                "new_peer_edge_kind": new.peer_edge_kind,
-                "new_edge_priority": new.edge_priority,
-                "new_edge_note": new_edge_note,
-                "new_edge_valence": new.edge_valence,
-                "new_edge_labels": new_edge_labels,
-                **_snapshot_mirror("new", new),
-                "new_marginal_cost_agent_usd": new_cost.agent_usd,
-                "new_marginal_cost_resource_usd": new_cost.resource_usd,
-            }
-            col_names = ", ".join(columns)
-            placeholders = ", ".join(f"${i + 1}" for i in range(len(columns)))
-            await conn.execute(
-                vetted_sql(
-                    "INSERT INTO change_log (",
-                    col_names,
-                    ") VALUES (",
-                    placeholders,
-                    ")",
-                ),
-                *columns.values(),
-            )
-            return old_cost, new_cost, subs
-
         if client_change_id is None:
-            _, _, subscribers = await _apply()
+            _, _, subscribers = await _apply_change(
+                conn,
+                change_id=change_id,
+                subject_id=subject_id,
+                subject_kind=subject_kind,
+                kind=kind,
+                api_key_id=api_key_id,
+                actor=actor,
+                caused_by=caused_by,
+                reason=reason,
+                marginal_cost=marginal_cost,
+                cost_delta=cost_delta,
+                old=old,
+                new=new,
+                extra_subscribers=extra_subscribers,
+            )
         else:
             # Client supplied the id; a second INSERT with the same id
             # (retry after the response was lost) collides on the PK.
@@ -344,7 +384,22 @@ class _CascadeAuditMixin(_StoreShared):
             # without double-charging cost or re-firing the cascade.
             await conn.execute("SAVEPOINT emit_change")
             try:
-                _, _, subscribers = await _apply()
+                _, _, subscribers = await _apply_change(
+                    conn,
+                    change_id=change_id,
+                    subject_id=subject_id,
+                    subject_kind=subject_kind,
+                    kind=kind,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    caused_by=caused_by,
+                    reason=reason,
+                    marginal_cost=marginal_cost,
+                    cost_delta=cost_delta,
+                    old=old,
+                    new=new,
+                    extra_subscribers=extra_subscribers,
+                )
             except asyncpg.UniqueViolationError as err:
                 await conn.execute("ROLLBACK TO SAVEPOINT emit_change")
                 existing = await conn.fetchrow(
@@ -396,6 +451,33 @@ class _CascadeAuditMixin(_StoreShared):
             )
         return change_id, subscribers
 
+    # STORAGE direction is uniform and never varies: every edge is stored ``from =
+    # younger child, to = older parent``. This method's "dependent" endpoint is a
+    # SEPARATE, cascade-only concept -- which side gets the ``dependency_changed`` alert
+    # -- read from ``EdgeKindPolicy``, not from the storage direction. Do not conflate
+    # the two.
+    #
+    # One rule covers every kind: for each edge touching the changed subject, alert that
+    # edge's ``cascade_dependent`` endpoint (from ``EdgeKindPolicy``) -- unless that
+    # endpoint IS the subject, which self-suppresses. There is no per-kind branch in the
+    # mechanism; kinds differ only in their policy value. Most kinds (provenance,
+    # supersession, ``requires``) name the stored ``from`` child as dependent (its state
+    # derives from the parent), so a change to the ``to`` parent alerts the ``from``
+    # side. ``narrows`` and the ``proves``/``favors`` citations name the ``to`` side
+    # dependent instead -- the broader goal rolls up its narrower issues' state, and a
+    # cited claim leans on its evidence, so a change to the stored ``from`` child alerts
+    # the ``to`` parent -- but both run through the same single rule, not a special
+    # case.
+    #
+    # ``edge_rows`` lets ``purge()`` hand in a pre-captured edge list (its child's edges
+    # are about to be cascade-deleted, so the live SELECT would miss them). Each row
+    # must carry ``from_id, from_kind, to_id, to_kind, edge_kind, note, valence,
+    # labels``. Subsequent ancestor hops re-query live via the same path.
+    #
+    # Iterative BFS over the dependency DAG: a recursive walk would blow the Python
+    # stack on long chains, even though edge acyclicity bounds the visited set. Each
+    # (parent, edge) hop emits one ``dependency_changed`` row and then re-queues its own
+    # ancestors.
     async def _cascade_dependency_changed(
         self,
         conn: Conn,
@@ -405,39 +487,7 @@ class _CascadeAuditMixin(_StoreShared):
         caused_by: UUID,
         edge_rows: Sequence[asyncpg.Record] | None = None,
     ) -> None:
-        """Emit ancestor re-assessment alerts through parent edges.
-
-        STORAGE direction is uniform and never varies: every edge is stored
-        ``from = younger child, to = older parent``. This method's "dependent"
-        endpoint is a SEPARATE, cascade-only concept -- which side gets the
-        ``dependency_changed`` alert -- read from ``EdgeKindPolicy``, not from the
-        storage direction. Do not conflate the two.
-
-        One rule covers every kind: for each edge touching the changed subject,
-        alert that edge's ``cascade_dependent`` endpoint (from ``EdgeKindPolicy``)
-        -- unless that endpoint IS the subject, which self-suppresses. There is no
-        per-kind branch in the mechanism; kinds differ only in their policy value.
-        Most kinds (provenance, supersession, ``requires``) name the stored
-        ``from`` child as dependent (its state derives from the parent), so a
-        change to the ``to`` parent alerts the ``from`` side. ``narrows`` and the
-        ``proves``/``favors`` citations name the ``to`` side dependent instead --
-        the broader goal rolls up its narrower issues' state, and a cited claim
-        leans on its evidence, so a change to the stored ``from`` child alerts the
-        ``to`` parent -- but both run through the same single rule, not a special
-        case.
-
-        ``edge_rows`` lets ``purge()`` hand in a pre-captured edge list
-        (its child's edges are about to be cascade-deleted, so the
-        live SELECT would miss them). Each row must carry ``from_id,
-        from_kind, to_id, to_kind, edge_kind, note, valence, labels``.
-        Subsequent ancestor hops re-query live via the same path.
-
-        Iterative BFS over the dependency DAG: a recursive walk would
-        blow the Python stack on long chains, even though edge
-        acyclicity bounds the visited set. Each (parent, edge) hop
-        emits one ``dependency_changed`` row and then re-queues its own
-        ancestors.
-        """
+        """Emit ancestor re-assessment alerts through parent edges."""
         # Each edge in the walk fires exactly one ``dependency_changed``
         # row -- including multiple distinct edges from the same parent
         # (e.g. a Belief that both ``proves`` and ``favors``
@@ -480,29 +530,25 @@ class _CascadeAuditMixin(_StoreShared):
                     walked.add(parent_id)
                     frontier.append((parent_id, parent_kind, change_id, None))
 
+    # Reads the :class:`EdgeKindPolicy` registry for the dependent endpoint of each edge
+    # kind: ``cascade_dependent="from"`` for provenance / supersession / ``requires``;
+    # ``cascade_dependent="to"`` for ``narrows`` and the ``proves`` / ``favors``
+    # citations (the cited claim is re-assessed). When ``edge_rows`` is None, queries
+    # live; otherwise iterates the caller-supplied list (used by ``purge`` to capture
+    # edges before FK cascade deletes them).
+    #
+    # Assumes single-version deployment: a stored ``edge_kind`` outside this Store's
+    # :data:`EDGE_POLICIES` raises ``KeyError`` (fail-fast) rather than silently
+    # dropping the cascade. A mixed-version cluster that writes kinds an older reader
+    # doesn't know would need a read-side guard here; today every writer and reader
+    # share one kind set.
     async def _parent_edges(
         self,
         conn: Conn,
         child_id: UUID,
         edge_rows: Sequence[asyncpg.Record] | None,
     ) -> list[tuple[UUID, Inquiry.InquiryKind, asyncpg.Record]]:
-        """Resolve every (dependent, dependency_edge) pair touching ``child_id``.
-
-        Reads the :class:`EdgeKindPolicy` registry for the dependent
-        endpoint of each edge kind: ``cascade_dependent="from"`` for
-        provenance / supersession / ``requires``;
-        ``cascade_dependent="to"`` for ``narrows`` and the ``proves`` /
-        ``favors`` citations (the cited claim is re-assessed). When
-        ``edge_rows`` is None, queries live; otherwise iterates the
-        caller-supplied list (used by ``purge`` to capture edges before
-        FK cascade deletes them).
-
-        Assumes single-version deployment: a stored ``edge_kind`` outside this
-        Store's :data:`EDGE_POLICIES` raises ``KeyError`` (fail-fast)
-        rather than silently dropping the cascade. A mixed-version cluster that
-        writes kinds an older reader doesn't know would need a read-side guard
-        here; today every writer and reader share one kind set.
-        """
+        """Resolve every (dependent, dependency_edge) pair touching ``child_id``."""
         if edge_rows is None:
             edge_rows = await conn.fetch(
                 "SELECT from_id, from_kind, to_id, to_kind, "
@@ -527,15 +573,12 @@ class _CascadeAuditMixin(_StoreShared):
             out.append((dependent_id, dependent_kind, row))
         return out
 
+    # Silently no-ops when no buffer is active. Callers that mutate through the
+    # documented Store API always wrap in :func:`notify_after_commit`; tests and one-off
+    # helpers that drive :meth:`emit_change` directly should not crash on a missing
+    # buffer.
     def _buffer_notification(self, subject_id: UUID) -> None:
-        """Queue a notify payload for post-commit publish.
-
-        Silently no-ops when no buffer is active. Callers that mutate
-        through the documented Store API always wrap in
-        :func:`notify_after_commit`; tests and one-off helpers that
-        drive :meth:`emit_change` directly should not crash on a
-        missing buffer.
-        """
+        """Queue a notify payload for post-commit publish."""
         buffer = NOTIFICATION_BUFFER.get()
         if buffer is None:
             return

@@ -66,7 +66,7 @@ def test_grammar_rejects_bare_open_range() -> None:
         ambiguity="explicit",
     )
     with pytest.raises(LarkError):
-        # lark ships inline (partially-Any) types; the parse result is unused.
+        # ``lark`` ships inline (partially-Any) types; the parse result is unused.
         parser.parse("issue ..")
     # A one-bound open range still parses (the legitimate form must survive).
     parser.parse("issue 222..")

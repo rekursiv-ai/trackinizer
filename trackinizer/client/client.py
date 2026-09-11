@@ -111,74 +111,6 @@ else:
     wire_metrics_query = lazy_import("trackinizer.wire.wire_metrics_query")
 
 
-def _field_path(target_id: uuid.UUID, field: str) -> str:
-    """Fill in the inquiry field-route path for one inquiry.
-
-    The template lives in :func:`wire.routes.inquiry_field_path`, so the
-    client never spells the path itself; it only supplies the id.
-    """
-    return inquiry_field_path(field).format(target_id=target_id)
-
-
-def _truncate(text: str, limit: int = 2_048) -> str:
-    """Return ``text`` capped at ``limit`` chars, with an ellipsis marker.
-
-    ``limit`` caps how much server error text rides into a ``ClientError``
-    message: an unbounded body would balloon logs/memory and could echo a
-    secret verbatim; a 2KB prefix keeps the diagnostic useful while bounding
-    both.
-    """
-    return text if len(text) <= limit else f"{text[:limit]}... (truncated)"
-
-
-def _require_mapping(payload: object, where: str) -> Mapping[str, object]:
-    """Return ``payload`` as a mapping, or raise a wrapped ``ClientError``.
-
-    A server response of the wrong JSON type would otherwise leak a raw
-    ``TypeError`` when a caller subscripts it, past the ClientError contract.
-    """
-    if not isinstance(payload, Mapping):
-        raise ClientError(f"{where} returned a malformed payload: {payload!r}")
-    return cast(Mapping[str, object], payload)
-
-
-def _require_list(payload: object, where: str) -> list[Any]:
-    """Return ``payload`` as a list, or raise a wrapped ``ClientError``."""
-    if not isinstance(payload, list):
-        raise ClientError(f"{where} returned a malformed payload: {payload!r}")
-    return cast(list[Any], payload)
-
-
-def _require_field(payload: object, field: str, where: str) -> object:
-    """Return ``payload[field]``, wrapping a missing key or wrong type."""
-    mapping = _require_mapping(payload, where)
-    if field not in mapping:
-        raise ClientError(f"{where} returned a malformed payload: missing {field!r}")
-    return mapping[field]
-
-
-def _require_uuid(value: object, where: str) -> uuid.UUID:
-    """Parse ``value`` into a ``UUID``, wrapping a bad value as ``ClientError``."""
-    try:
-        return uuid.UUID(str(value))
-    except (ValueError, TypeError, AttributeError) as err:
-        raise ClientError(f"{where} returned a malformed id {value!r}: {err}") from err
-
-
-def _validate_model[M: pydantic.BaseModel](
-    model: type[M], response: object, where: str
-) -> M:
-    """Validate ``response`` into ``model``, wrapping pydantic errors.
-
-    A malformed session-route response would otherwise leak a raw
-    ``pydantic.ValidationError`` past the ClientError contract.
-    """
-    try:
-        return model.model_validate(response)
-    except pydantic.ValidationError as err:
-        raise ClientError(f"{where} returned a malformed payload: {err}") from err
-
-
 def server_url(raw: str, source: str) -> str:
     """Return a normalized HTTP(S) URL, or raise ``ClientError``.
 
@@ -186,6 +118,14 @@ def server_url(raw: str, source: str) -> str:
     embedded credentials, a query, or a fragment is rejected, as is a
     missing host or a malformed / out-of-range port. Bearer credentials
     belong in the ``api_key`` field, not the URL.
+
+    Args:
+      raw: Raw.
+      source: Source.
+
+    Returns:
+      url: The str.
+
     """
     url = raw.rstrip("/")
     parsed = urlparse(url)
@@ -209,63 +149,6 @@ def server_url(raw: str, source: str) -> str:
     return url
 
 
-def _clean_params(
-    params: Mapping[str, object] | None,
-) -> tuple[tuple[str, str], ...] | None:
-    """Drop ``None`` and empty values, stringifying the rest for httpx2.
-
-    A sequence-valued entry emits one repeated query param per element
-    (``filter`` is the current consumer), with empty elements dropped just
-    like empty scalars. Returns a tuple of ``(key, value)`` pairs, which
-    matches httpx2's ``QueryParams`` signature without an unsafe cast.
-    """
-    if not params:
-        return None
-    out: list[tuple[str, str]] = []
-    for key, value in params.items():
-        if value is None or value == "":
-            continue
-        if isinstance(value, (list, tuple)):
-            for item in cast(Sequence[object], value):
-                if item is None or item == "":
-                    continue
-                out.append((key, str(item)))
-        else:
-            out.append((key, str(value)))
-    return tuple(out) or None
-
-
-def _transport_failure(error: httpx2.TransportError) -> tuple[str, str]:
-    """Return stable coarse and detailed transport classifications."""
-    message = str(error).casefold()
-    if isinstance(error, httpx2.ConnectTimeout):
-        detail = (
-            "tls_handshake_timeout"
-            if "handshake operation timed out" in message
-            else "connect_timeout"
-        )
-        return "connect_timeout", detail
-    if isinstance(error, httpx2.ConnectError):
-        if "connection refused" in message:
-            return "connect_error", "connection_refused"
-        if "connection reset" in message:
-            return "connect_error", "connection_reset"
-        return "connect_error", "connect_error"
-    if isinstance(error, httpx2.ReadTimeout):
-        return "read_timeout", "read_timeout"
-    if isinstance(error, httpx2.ReadError):
-        return "read_error", "read_error"
-    if isinstance(error, httpx2.WriteTimeout):
-        return "write_timeout", "write_timeout"
-    if isinstance(error, httpx2.WriteError):
-        return "write_error", "write_error"
-    if isinstance(error, httpx2.PoolTimeout):
-        return "pool_timeout", "pool_timeout"
-    if isinstance(error, httpx2.RemoteProtocolError):
-        return "remote_protocol_error", "remote_protocol_error"
-    return "transport_error", "transport_error"
-
-
 class EdgeWrite(NamedTuple):
     """Outcome of an edge upsert.
 
@@ -276,6 +159,7 @@ class EdgeWrite(NamedTuple):
     """
 
     created: bool
+
     changed: bool
 
 
@@ -328,6 +212,7 @@ class Client:
         )
 
     def close(self) -> None:
+        """Release held resources."""
         self._http.close()
 
     def __enter__(self) -> Self:
@@ -344,24 +229,82 @@ class Client:
     def get(
         self, path: str, *, params: Mapping[str, object] | None = None
     ) -> JSONValue:
+        """Send a GET request.
+
+        Args:
+          path: Path.
+          params: Params.
+
+        Returns:
+          result: The JSONValue.
+
+        """
         return self._request("GET", path, params=params)
 
     def post(self, path: str, *, body: object = None) -> JSONValue:
+        """Send a POST request.
+
+        Args:
+          path: Path.
+          body: Body.
+
+        Returns:
+          result: The JSONValue.
+
+        """
         return self._request("POST", path, body=body)
 
     def put(self, path: str, *, body: object = None) -> JSONValue:
+        """Send a PUT request.
+
+        Args:
+          path: Path.
+          body: Body.
+
+        Returns:
+          result: The JSONValue.
+
+        """
         return self._request("PUT", path, body=body)
 
     def patch(self, path: str, *, body: object = None) -> JSONValue:
+        """Send a PATCH request.
+
+        Args:
+          path: Path.
+          body: Body.
+
+        Returns:
+          result: The JSONValue.
+
+        """
         return self._request("PATCH", path, body=body)
 
     def delete(self, path: str, *, body: object = None) -> JSONValue:
+        """Send a DELETE request.
+
+        Args:
+          path: Path.
+          body: Body.
+
+        Returns:
+          result: The JSONValue.
+
+        """
         return self._request("DELETE", path, body=body)
 
     # -- Reference resolution ------------------------------------------------
 
     def resolve_id(self, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
-        """Resolve a ref to ``(kind, uuid)``."""
+        """Resolve a ref to ``(kind, uuid)``.
+
+        Args:
+          ref: Ref.
+
+        Returns:
+          result: The tuple[Inquiry.InquiryKind, uuid.UUID].
+
+        """
         if isinstance(ref, SeqRef):
             where = f"/api/inquiries/{ref.kind}/{ref.seq}"
             view = self.get(where)
@@ -386,6 +329,13 @@ class Client:
         UUID refs resolve in a single lookup round-trip; SeqRefs still go
         one-by-one (rare in bulk). Output order matches input order, so a
         caller can zip with the original list.
+
+        Args:
+          refs: Refs.
+
+        Returns:
+          out: The list[tuple[Inquiry.InquiryKind, uuid.UUID]].
+
         """
         uuid_indices = [i for i, r in enumerate(refs) if isinstance(r, UuidRef)]
         if uuid_indices:
@@ -432,6 +382,20 @@ class Client:
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[Filter] = (),
     ) -> list[dict[str, Any]]:
+        """List kind.
+
+        Args:
+          kind: Kind.
+          status: Status.
+          limit: Limit.
+          offset: Offset.
+          seq_ranges: Seq ranges.
+          filters: Filters.
+
+        Returns:
+          result: The list[dict[str, Any]].
+
+        """
         # Each filter rides as its own ``filter=<json>`` query param, so
         # values containing separators round-trip without escaping. The
         # server applies them before LIMIT to keep the result set honest.
@@ -491,6 +455,16 @@ class Client:
         route change is not worth it for a dormant, self-healing-on-refresh
         edge in whole-collection display views. Revisit if collections ever
         exceed the cap under concurrent writes.
+
+        Args:
+          kind: Kind.
+          status: Status.
+          seq_ranges: Seq ranges.
+          filters: Filters.
+
+        Returns:
+          rows: The list[dict[str, Any]].
+
         """
         rows: list[dict[str, Any]] = []
         offset = 0
@@ -512,12 +486,26 @@ class Client:
         self,
         ref: Ref,
     ) -> tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, Any]]:
-        """Resolve and fetch the SPA detail view (self + edges + changes)."""
+        """Resolve and fetch the SPA detail view (self + edges + changes).
+
+        Args:
+          ref: Ref.
+
+        Returns:
+          result: The tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, Any]].
+
+        """
         kind, target_id = self.resolve_id(ref)
         where = f"/api/web/get/{target_id}"
         return kind, target_id, dict(_require_mapping(self.get(where), where))
 
     def next_issue(self) -> dict[str, Any] | None:
+        """Next issue.
+
+        Returns:
+          result: The dict[str, Any] | None.
+
+        """
         where = "/api/inquiries/next_issue"
         payload = self.get(where)
         if payload is None:
@@ -533,6 +521,10 @@ class Client:
         staleness signal. A response missing the ``sha`` key is a contract
         violation, not a build the server declined to name, so it raises rather
         than masquerading as the server's own ``"unknown"``.
+
+        Returns:
+          result: The str.
+
         """
         payload = self.get("/api/version")
         if not isinstance(payload, dict) or "sha" not in payload:
@@ -589,12 +581,31 @@ class Client:
                 return
 
     def recent_changes(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """Recent changes.
+
+        Args:
+          limit: Limit.
+
+        Returns:
+          result: The list[dict[str, Any]].
+
+        """
         return _require_list(
             self.get("/api/web/recent_changes", params={"limit": limit}),
             "/api/web/recent_changes",
         )
 
     def cost_for(self, target_id: uuid.UUID, *, deep: bool = False) -> dict[str, float]:
+        """Cost for.
+
+        Args:
+          target_id: Target id.
+          deep: Deep.
+
+        Returns:
+          result: The dict[str, float].
+
+        """
         where = f"/api/inquiries/{target_id}/cost"
         return cast(
             dict[str, float],
@@ -616,6 +627,14 @@ class Client:
         Mints one ``idempotency_key`` per call so a network-timed-out
         retry replays safely; a caller-supplied key wins. The new
         inquiry's ``id`` is server-minted and read from the response.
+
+        Args:
+          kind: Kind.
+          body: Body.
+
+        Returns:
+          result: The uuid.UUID.
+
         """
         payload = dict(body)
         existing = payload.get("idempotency_key")
@@ -638,6 +657,14 @@ class Client:
         so a timed-out retry replays without duplicating rows. Edges name
         endpoints by item index (see ``BatchEdge``). Returns server-minted
         ids in item order.
+
+        Args:
+          items: Items.
+          edges: Edges.
+
+        Returns:
+          result: The list[uuid.UUID].
+
         """
         item_bodies: list[Mapping[str, object]] = []
         for index, (kind, body) in enumerate(items):
@@ -676,7 +703,16 @@ class Client:
         actor: Inquiry.Actor,
         reason: str = "",
     ) -> None:
-        """Overwrite ``field`` with ``value`` (a blind PUT)."""
+        """Overwrite ``field`` with ``value`` (a blind PUT).
+
+        Args:
+          target_id: Target id.
+          field: Field.
+          value: Value.
+          actor: Actor.
+          reason: Reason.
+
+        """
         body: dict[str, object] = {"value": value, "actor": actor}
         if reason:
             body["reason"] = reason
@@ -696,6 +732,14 @@ class Client:
         ``field`` is ``marginal_cost_agent_usd`` or
         ``marginal_cost_resource_usd``. A negative ``value`` is sent as
         ``op=sub`` so the wire keeps its non-negative ``value`` convention.
+
+        Args:
+          target_id: Target id.
+          field: Field.
+          value: Value.
+          actor: Actor.
+          reason: Reason.
+
         """
         op = "add" if value >= 0 else "sub"
         body: dict[str, object] = {"op": op, "value": abs(value), "actor": actor}
@@ -734,6 +778,21 @@ class Client:
         Returns an :class:`EdgeWrite` distinguishing a fresh create
         (``created=True``) from an annotation applied to an existing edge
         (``created=False, changed=True``) from a no-op (both ``False``).
+
+        Args:
+          from_id: From id.
+          to_id: To id.
+          edge_kind: Edge kind.
+          actor: Actor.
+          priority: Priority.
+          note: Note.
+          valence: Valence.
+          labels: Labels.
+          reason: Reason.
+
+        Returns:
+          write: The EdgeWrite.
+
         """
         body: dict[str, object] = {"actor": actor}
         if priority is not None:
@@ -801,6 +860,17 @@ class Client:
         gains redundant entries. Stable per-(edge, field) keys would dedup
         them, but the value-overwrite semantics make the duplicates harmless,
         so this is documented rather than engineered around.
+
+        Args:
+          from_id: From id.
+          to_id: To id.
+          edge_kind: Edge kind.
+          actor: Actor.
+          priority: Priority.
+          note: Note.
+          valence: Valence.
+          labels: Labels.
+
         """
         base = f"/api/edges/{from_id}/{edge_kind}/{to_id}"
         for field, value in (
@@ -822,6 +892,15 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
+        """Remove edge.
+
+        Args:
+          from_id: From id.
+          to_id: To id.
+          edge_kind: Edge kind.
+          actor: Actor.
+
+        """
         self.delete(
             f"/api/edges/{from_id}/{edge_kind}/{to_id}",
             body={"actor": actor},
@@ -838,6 +917,12 @@ class Client:
 
         ``subscriber`` may differ from ``actor``, which is the provenance
         recorded for the change.
+
+        Args:
+          target_id: Target id.
+          subscriber: Subscriber.
+          actor: Actor.
+
         """
         self._patch_field(target_id, "subscribers", "add", subscriber, actor=actor)
 
@@ -848,7 +933,14 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Remove one subscriber, atomically and idempotently."""
+        """Remove one subscriber, atomically and idempotently.
+
+        Args:
+          target_id: Target id.
+          subscriber: Subscriber.
+          actor: Actor.
+
+        """
         self._patch_field(target_id, "subscribers", "sub", subscriber, actor=actor)
 
     def add_label(
@@ -858,7 +950,14 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Add one label, race-free."""
+        """Add one label, race-free.
+
+        Args:
+          target_id: Target id.
+          label: Label.
+          actor: Actor.
+
+        """
         self._patch_field(target_id, "labels", "add", label, actor=actor)
 
     def remove_label(
@@ -868,7 +967,14 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Remove one label, race-free."""
+        """Remove one label, race-free.
+
+        Args:
+          target_id: Target id.
+          label: Label.
+          actor: Actor.
+
+        """
         self._patch_field(target_id, "labels", "sub", label, actor=actor)
 
     def add_issue_kind(
@@ -878,6 +984,14 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
+        """Add issue kind.
+
+        Args:
+          target_id: Target id.
+          issue_kind: Issue kind.
+          actor: Actor.
+
+        """
         self._patch_field(target_id, "issue_kind", "add", issue_kind, actor=actor)
 
     def remove_issue_kind(
@@ -887,6 +1001,14 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
+        """Remove issue kind.
+
+        Args:
+          target_id: Target id.
+          issue_kind: Issue kind.
+          actor: Actor.
+
+        """
         self._patch_field(target_id, "issue_kind", "sub", issue_kind, actor=actor)
 
     def add_codechange(
@@ -896,6 +1018,14 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
+        """Add codechange.
+
+        Args:
+          target_id: Target id.
+          codechange_id: Codechange id.
+          actor: Actor.
+
+        """
         self._patch_field(
             target_id, "codechanges", "add", str(codechange_id), actor=actor
         )
@@ -907,6 +1037,14 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
+        """Remove codechange.
+
+        Args:
+          target_id: Target id.
+          codechange_id: Codechange id.
+          actor: Actor.
+
+        """
         self._patch_field(
             target_id, "codechanges", "sub", str(codechange_id), actor=actor
         )
@@ -918,7 +1056,14 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Atomically append one author to a Paper's byline, race-free."""
+        """Atomically append one author to a Paper's byline, race-free.
+
+        Args:
+          target_id: Target id.
+          author: Author.
+          actor: Actor.
+
+        """
         self._patch_field(target_id, "authors", "add", author, actor=actor)
 
     def remove_author(
@@ -928,7 +1073,14 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Atomically remove one author from a Paper's byline, race-free."""
+        """Atomically remove one author from a Paper's byline, race-free.
+
+        Args:
+          target_id: Target id.
+          author: Author.
+          actor: Actor.
+
+        """
         self._patch_field(target_id, "authors", "sub", author, actor=actor)
 
     def transition_owner(
@@ -939,7 +1091,15 @@ class Client:
         to: Inquiry.Actor | None,
         actor: Inquiry.Actor,
     ) -> None:
-        """Compare-and-set the owner; 409s if it is not ``expected_from``."""
+        """Compare-and-set the owner; 409s if it is not ``expected_from``.
+
+        Args:
+          target_id: Target id.
+          expected_from: Expected from.
+          to: To.
+          actor: Actor.
+
+        """
         self.put(
             _field_path(target_id, "owner"),
             body={
@@ -963,6 +1123,14 @@ class Client:
 
         Sent as a PUT on the ``status`` field with ``mode='cas'`` and the
         ``expected`` guard.
+
+        Args:
+          target_id: Target id.
+          expected_from: Expected from.
+          to: To.
+          actor: Actor.
+          reason: Reason.
+
         """
         self.put(
             _field_path(target_id, "status"),
@@ -982,7 +1150,14 @@ class Client:
         actor: Inquiry.Actor,
         reason: str = "",
     ) -> None:
-        """Delete an inquiry."""
+        """Delete an inquiry.
+
+        Args:
+          target_id: Target id.
+          actor: Actor.
+          reason: Reason.
+
+        """
         self.delete(
             f"/api/inquiries/{target_id}",
             body={"actor": actor, "reason": reason},
@@ -993,6 +1168,13 @@ class Client:
 
         Mints an ``idempotency_key`` when the caller omits one, so a
         timed-out retry replays rather than minting a second session.
+
+        Args:
+          body: Body.
+
+        Returns:
+          result: The SessionStartResponse.
+
         """
         if body.idempotency_key is None:
             body = body.model_copy(update={"idempotency_key": uuid.uuid4()})
@@ -1052,7 +1234,15 @@ class Client:
         return _validate_model(wire_session_ir.AppendRecordsResponse, response, where)
 
     def read_session_parts(self, session_id: uuid.UUID) -> list[PartBody]:
-        """The files this session was captured from, in ``part`` order."""
+        """Return the files this session was captured from, in ``part`` order.
+
+        Args:
+          session_id: Session id.
+
+        Returns:
+          result: The list[PartBody].
+
+        """
         where = wire_session_ir.session_parts_path(session_id)
         response = self._request("GET", where)
         parsed = _validate_model(wire_session_ir.ReadPartsResponse, response, where)
@@ -1076,6 +1266,17 @@ class Client:
 
         ``plaintext_only`` skips the ciphertext, which is what a viewer wants;
         a replay needs the sealed half and leaves it false.
+
+        Args:
+          session_id: Session id.
+          part: Part.
+          after_idx: After idx.
+          limit: Limit.
+          plaintext_only: Plaintext only.
+
+        Returns:
+          found: The list[RecordBody].
+
         """
         where = wire_session_ir.session_records_path(session_id)
         found: list[RecordBody] = []
@@ -1109,6 +1310,12 @@ class Client:
         Sent BEFORE the resumed run opens its session: the server correlates a
         resume by finding the existing row whose stored id matches, so without
         this the run mints a second AgentSession and the transcript splits.
+
+        Args:
+          session_id: Session id.
+          cli_session_id: Cli session id.
+          actor: Actor.
+
         """
         self.edit(
             session_id,
@@ -1127,6 +1334,14 @@ class Client:
 
         A retried batch (same ``(key, step)`` pairs) reports ``logged=0``. The
         server rejects a non-Experiment id (409) or a missing one (404).
+
+        Args:
+          experiment_id: Experiment id.
+          points: Points.
+
+        Returns:
+          result: The LogMetricsResponse.
+
         """
         req = wire_metrics.LogMetricsRequest(points=list(points))
         where = wire_metrics.experiment_metrics_path(experiment_id)
@@ -1145,6 +1360,16 @@ class Client:
 
         Paginated (``limit`` / ``offset`` / ``key``) so a caller never pulls a
         whole large run at once; ``key`` narrows to one metric.
+
+        Args:
+          experiment_id: Experiment id.
+          key: Key.
+          limit: Limit.
+          offset: Offset.
+
+        Returns:
+          result: The list[MetricPoint].
+
         """
         params: dict[str, object] = {"limit": limit, "offset": offset}
         if key is not None:
@@ -1161,7 +1386,18 @@ class Client:
         sort: Literal["asc", "desc"] | None = None,
         limit: int | None = None,
     ) -> list[MetricPoint]:
-        """Read one experiment's masked metric cells (the mask-query surface)."""
+        """Read one experiment's masked metric cells (the mask-query surface).
+
+        Args:
+          experiment_id: Experiment id.
+          masks: Masks.
+          sort: Sort.
+          limit: Limit.
+
+        Returns:
+          result: The list[MetricPoint].
+
+        """
         req = wire_metrics_query.MetricQueryRequest(
             masks=list(masks), sort=sort, limit=limit
         )
@@ -1178,7 +1414,17 @@ class Client:
         masks: Sequence[MetricMaskClause],
         value: float,
     ) -> int:
-        """Assign ``value`` to every cell the mask selects; return the count."""
+        """Assign ``value`` to every cell the mask selects; return the count.
+
+        Args:
+          experiment_id: Experiment id.
+          masks: Masks.
+          value: Value.
+
+        Returns:
+          result: The int.
+
+        """
         req = wire_metrics_query.MetricQueryRequest(masks=list(masks), write=value)
         where = wire_metrics_query.experiment_metric_write_path(experiment_id)
         response = self._request("POST", where, body=req.model_dump(mode="json"))
@@ -1194,7 +1440,18 @@ class Client:
         sort: Literal["asc", "desc"] | None = None,
         limit: int | None = None,
     ) -> list[MetricRankRow]:
-        """Cross-experiment masked read/rank over the given experiments."""
+        """Cross-experiment masked read/rank over the given experiments.
+
+        Args:
+          experiment_ids: Experiment ids.
+          masks: Masks.
+          sort: Sort.
+          limit: Limit.
+
+        Returns:
+          result: The list[MetricRankRow].
+
+        """
         query = wire_metrics_query.MetricQueryRequest(
             masks=list(masks), sort=sort, limit=limit
         )
@@ -1212,7 +1469,16 @@ class Client:
         session_id: uuid.UUID,
         body: SessionEnd | None = None,
     ) -> SessionEndResponse:
-        """Close a capture session, optionally backfilling late-known fields."""
+        """Close a capture session, optionally backfilling late-known fields.
+
+        Args:
+          session_id: Session id.
+          body: Body.
+
+        Returns:
+          result: The SessionEndResponse.
+
+        """
         payload = (body or wire_sessions.SessionEnd()).model_dump(mode="json")
         where = wire_sessions.session_end_path(session_id)
         response = self._request("POST", where, body=payload)
@@ -1227,6 +1493,14 @@ class Client:
 
         The sender is attested server-side from the authenticated principal,
         so the request carries no ``source`` -- the enqueue body forbids it.
+
+        Args:
+          session_id: Session id.
+          text: Text.
+
+        Returns:
+          result: The int.
+
         """
         body = wire_sessions.InboundEnqueueRequest(text=text).model_dump(mode="json")
         where = wire_sessions.session_inbound_path(session_id)
@@ -1256,6 +1530,9 @@ class Client:
             up to an interval late. The read timeout must exceed it, or the
             client aborts the very wait it asked for.
 
+        Returns:
+          result: The list[tuple[str, str | None, str | None]].
+
         """
         where = wire_sessions.session_inbound_path(session_id)
         response = self._request(
@@ -1281,6 +1558,15 @@ class Client:
 
         Returns the session ids the server enqueued to (empty = no live
         session matched: an honest undelivered signal).
+
+        Args:
+          actor: Actor.
+          text: Text.
+          room: Room.
+
+        Returns:
+          result: The list[uuid.UUID].
+
         """
         body = wire_sessions.SendMessage(actor=actor, room=room, text=text).model_dump(
             mode="json"
@@ -1464,3 +1750,117 @@ class Client:
                 "error_type": type(error).__name__,
             },
         )
+
+
+# The template lives in :func:`wire.routes.inquiry_field_path`, so the client never
+# spells the path itself; it only supplies the id.
+def _field_path(target_id: uuid.UUID, field: str) -> str:
+    """Fill in the inquiry field-route path for one inquiry."""
+    return inquiry_field_path(field).format(target_id=target_id)
+
+
+# ``limit`` caps how much server error text rides into a ``ClientError`` message: an
+# unbounded body would balloon logs/memory and could echo a secret verbatim; a 2KB
+# prefix keeps the diagnostic useful while bounding both.
+def _truncate(text: str, limit: int = 2_048) -> str:
+    """Return ``text`` capped at ``limit`` chars, with an ellipsis marker."""
+    return text if len(text) <= limit else f"{text[:limit]}... (truncated)"
+
+
+# A server response of the wrong JSON type would otherwise leak a raw ``TypeError`` when
+# a caller subscripts it, past the ClientError contract.
+def _require_mapping(payload: object, where: str) -> Mapping[str, object]:
+    """Return ``payload`` as a mapping, or raise a wrapped ``ClientError``."""
+    if not isinstance(payload, Mapping):
+        raise ClientError(f"{where} returned a malformed payload: {payload!r}")
+    return cast(Mapping[str, object], payload)
+
+
+def _require_list(payload: object, where: str) -> list[Any]:
+    """Return ``payload`` as a list, or raise a wrapped ``ClientError``."""
+    if not isinstance(payload, list):
+        raise ClientError(f"{where} returned a malformed payload: {payload!r}")
+    return cast(list[Any], payload)
+
+
+def _require_field(payload: object, field: str, where: str) -> object:
+    """Return ``payload[field]``, wrapping a missing key or wrong type."""
+    mapping = _require_mapping(payload, where)
+    if field not in mapping:
+        raise ClientError(f"{where} returned a malformed payload: missing {field!r}")
+    return mapping[field]
+
+
+def _require_uuid(value: object, where: str) -> uuid.UUID:
+    """Parse ``value`` into a ``UUID``, wrapping a bad value as ``ClientError``."""
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, TypeError, AttributeError) as err:
+        raise ClientError(f"{where} returned a malformed id {value!r}: {err}") from err
+
+
+# A malformed session-route response would otherwise leak a raw
+# ``pydantic.ValidationError`` past the ClientError contract.
+def _validate_model[M: pydantic.BaseModel](
+    model: type[M], response: object, where: str
+) -> M:
+    """Validate ``response`` into ``model``, wrapping pydantic errors."""
+    try:
+        return model.model_validate(response)
+    except pydantic.ValidationError as err:
+        raise ClientError(f"{where} returned a malformed payload: {err}") from err
+
+
+# A sequence-valued entry emits one repeated query param per element (``filter`` is the
+# current consumer), with empty elements dropped just like empty scalars. Returns a
+# tuple of ``(key, value)`` pairs, which matches httpx2's ``QueryParams`` signature
+# without an unsafe cast.
+def _clean_params(
+    params: Mapping[str, object] | None,
+) -> tuple[tuple[str, str], ...] | None:
+    """Drop ``None`` and empty values, stringifying the rest for httpx2."""
+    if not params:
+        return None
+    out: list[tuple[str, str]] = []
+    for key, value in params.items():
+        if value is None or value == "":
+            continue
+        if isinstance(value, (list, tuple)):
+            for item in cast(Sequence[object], value):
+                if item is None or item == "":
+                    continue
+                out.append((key, str(item)))
+        else:
+            out.append((key, str(value)))
+    return tuple(out) or None
+
+
+def _transport_failure(error: httpx2.TransportError) -> tuple[str, str]:
+    """Return stable coarse and detailed transport classifications."""
+    message = str(error).casefold()
+    if isinstance(error, httpx2.ConnectTimeout):
+        detail = (
+            "tls_handshake_timeout"
+            if "handshake operation timed out" in message
+            else "connect_timeout"
+        )
+        return "connect_timeout", detail
+    if isinstance(error, httpx2.ConnectError):
+        if "connection refused" in message:
+            return "connect_error", "connection_refused"
+        if "connection reset" in message:
+            return "connect_error", "connection_reset"
+        return "connect_error", "connect_error"
+    if isinstance(error, httpx2.ReadTimeout):
+        return "read_timeout", "read_timeout"
+    if isinstance(error, httpx2.ReadError):
+        return "read_error", "read_error"
+    if isinstance(error, httpx2.WriteTimeout):
+        return "write_timeout", "write_timeout"
+    if isinstance(error, httpx2.WriteError):
+        return "write_error", "write_error"
+    if isinstance(error, httpx2.PoolTimeout):
+        return "pool_timeout", "pool_timeout"
+    if isinstance(error, httpx2.RemoteProtocolError):
+        return "remote_protocol_error", "remote_protocol_error"
+    return "transport_error", "transport_error"

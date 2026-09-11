@@ -12,8 +12,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
-from typing import Any, cast, get_args
+from functools import partial
+from typing import cast, get_args
 from uuid import UUID
+
+import math
 
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.schema_gen import SEQ_FOR_KIND
@@ -21,7 +24,6 @@ from trackinizer.server.setter_dispatch import (
     COLUMN_SPECS,
     NO_HOOKS,
     RUNTIME_HOOKS,
-    TargetValidator,
 )
 from trackinizer.server.values import (
     canonical_strs,
@@ -58,29 +60,6 @@ _INSERT_EXPLICIT_COLUMNS: frozenset[str] = frozenset(
 )
 
 
-def _normalize_for_insert(column: str, value: object) -> object:
-    """Normalize one column value for storage, from its spec + runtime hooks.
-
-    The single "unset is NULL" contract the edit path (``Store._set_field``)
-    already applies, reused here so create and edit agree: run the column's
-    ``normalize`` hook (canonical / byline for list columns; identity
-    otherwise), then collapse an empty result to SQL NULL for a nullable,
-    non-``min_items`` column. A required column, a ``min_items`` column
-    (``issue_kind`` -- an empty value must reach the DB CHECK, not collapse),
-    and a falsy-but-valid scalar (``0`` / ``0.0`` / ``{}``) are left intact.
-    """
-    if value is None:
-        return None
-    hooks = RUNTIME_HOOKS.get(column, NO_HOOKS)
-    normalized = hooks.normalize(value)
-    spec = COLUMN_SPECS[column]
-    if not spec.required and spec.min_items == 0:
-        collapsed = empty_optional_to_none(normalized)
-        if collapsed is None:
-            return None
-    return hooks.encode(normalized)
-
-
 async def insert_inquiry(
     conn: Conn,
     row_id: UUID,
@@ -101,6 +80,14 @@ async def insert_inquiry(
     ``status`` are handled explicitly (identity + the ``status`` COALESCE
     default); ``marginal_cost`` is never a row column. Embeddings land
     separately via :func:`upsert_embedding`.
+
+    Args:
+      conn: Conn.
+      row_id: Row id.
+      kind: Kind.
+      status: Status.
+      values: Values.
+
     """
     # Deterministic derived column order: COLUMN_SPECS is built by walking the
     # Inquiry hierarchy in a fixed order, minus the explicitly-handled columns.
@@ -151,6 +138,13 @@ async def upsert_embedding(
     Called on submit and on title re-embed. The PK ``(inquiry_id, model)``
     plus ``ON CONFLICT DO UPDATE`` keeps the vector aligned with the current
     title across edits.
+
+    Args:
+      conn: Conn.
+      inquiry_id: Inquiry id.
+      model: Model.
+      embedding: Embedding.
+
     """
     await conn.execute(
         "INSERT INTO inquiry_embeddings (inquiry_id, model, embedding) "
@@ -165,6 +159,13 @@ async def upsert_embedding(
 
 async def lookup_kind(conn: Conn, target_id: UUID) -> Inquiry.InquiryKind:
     """Resolve an inquiry id to its discriminator ``kind``.
+
+    Args:
+      conn: Conn.
+      target_id: Target id.
+
+    Returns:
+      result: The Inquiry.InquiryKind.
 
     Raises:
       NotFoundError: ``target_id`` is not in ``inquiries`` (a 404, so every
@@ -188,6 +189,15 @@ async def lookup_kinds(
     One query regardless of list size. ``for_share=True`` locks the referenced
     rows until the transaction commits -- the write-time stand-in for an FK on
     columns whose JSONB / ``UUID[]`` shape rules out a real one.
+
+    Args:
+      conn: Conn.
+      ids: Ids.
+      for_share: For share.
+
+    Returns:
+      result: The dict[UUID, Inquiry.InquiryKind].
+
     """
     if not ids:
         return {}
@@ -213,6 +223,12 @@ async def validate_list_references(
     Referenced rows are locked ``FOR SHARE`` so they can't be purged between
     the kind check and the committing UPDATE -- the write-time stand-in for
     the FK the storage shape rules out.
+
+    Args:
+      conn: Conn.
+      value: Value.
+      column: Column.
+
     """
     if not value:
         return
@@ -243,24 +259,16 @@ async def validate_list_references(
             )
 
 
+# Lives here because the validator shares ``lookup_kinds`` with the edge-insert path;
+# binding it in ``setter_dispatch`` would pull ``Conn`` into that module. Each closure
+# captures its own ``column`` name.
 def _bind_reference_validators() -> None:
-    """Bind :func:`validate_list_references` to every column with references.
-
-    Lives here because the validator shares ``lookup_kinds`` with the
-    edge-insert path; binding it in ``setter_dispatch`` would pull ``Conn``
-    into that module. Each closure captures its own ``column`` name.
-    """
-
-    def make(column: str) -> TargetValidator:
-        async def validate(conn: Conn, value: Any) -> None:
-            await validate_list_references(conn, value, column=column)
-
-        return validate
-
+    """Bind :func:`validate_list_references` to every column with references."""
     for col, spec in COLUMN_SPECS.items():
         if spec.references:
             RUNTIME_HOOKS[col] = replace(
-                RUNTIME_HOOKS.get(col, NO_HOOKS), validate=make(col)
+                RUNTIME_HOOKS.get(col, NO_HOOKS),
+                validate=partial(validate_list_references, column=col),
             )
 
 
@@ -286,6 +294,21 @@ async def insert_edge(
     defaults to :data:`CITATION_VALENCE_DEFAULT`, never NULL); a structural edge
     stores NULL regardless of the argument. This is the single boundary the
     citation-valence invariant is enforced at.
+
+    Args:
+      conn: Conn.
+      from_id: From id.
+      from_kind: From kind.
+      to_id: To id.
+      edge_kind: Edge kind.
+      priority: Priority.
+      note: Note.
+      valence: Valence.
+      labels: Labels.
+
+    Returns:
+      result: The tuple[bool, Inquiry.InquiryKind].
+
     """
     to_kind = await lookup_kind(conn, to_id)
     validate_edge_priority(edge_kind, priority)
@@ -393,18 +416,6 @@ _EDGE_ANNOTATION_KINDS: dict[str, frozenset[str]] = {
 _VALID_EDGE_KINDS = cast(frozenset[str], frozenset(get_args(Edge.Kind.__value__)))
 
 
-def _reject_unknown_edge_kind(edge_kind: Edge.Kind) -> None:
-    """Reject an ``edge_kind`` outside the closed :data:`Edge.Kind` set.
-
-    ``edge_kind`` is typed as a closed Literal, but the runtime does not enforce
-    it. Validating membership here, before any annotation guard, stops a bogus
-    kind from silently clearing the priority / valence guards (which only
-    *positively* gate the known kinds) and surfaces it as a clean 4xx.
-    """
-    if edge_kind not in _VALID_EDGE_KINDS:
-        raise ValidationError(f"unknown edge kind {edge_kind!r}")
-
-
 def validate_edge_priority(
     edge_kind: Edge.Kind,
     priority: Issue.Priority | None,
@@ -416,6 +427,11 @@ def validate_edge_priority(
     A value on any other edge is a caller error; the app-layer guard turns it
     into a clean :class:`ValidationError` (4xx) instead of a raw mid-transaction
     CHECK violation (500). Sibling of :func:`validate_edge_valence`.
+
+    Args:
+      edge_kind: Edge kind.
+      priority: Priority.
+
     """
     _reject_unknown_edge_kind(edge_kind)
     if priority is None or edge_kind in _EDGE_ANNOTATION_KINDS["priority"]:
@@ -446,6 +462,10 @@ def validate_edge_valence(
     mid-transaction DB CHECK violation (500). Mirrors
     :func:`validate_edge_priority`.
 
+    Args:
+      edge_kind: Edge kind.
+      valence: Valence.
+
     Returns:
       stored_valence: ``None`` for a structural edge; an in-range float in
         ``[-1, 1]`` for a citation (the default when unset).
@@ -458,12 +478,18 @@ def validate_edge_valence(
         return None
     if valence is None:
         return CITATION_VALENCE_DEFAULT
-    # ``not -1 <= v <= 1`` also rejects NaN (every comparison with NaN is False).
-    if not -1.0 <= valence <= 1.0:
+    if math.isnan(valence) or valence < -1.0 or valence > 1.0:
         raise ValidationError(f"valence must be in [-1, 1]; got {valence}")
     return valence
 
 
+# Acyclicity is per-edge-kind: a ``produces`` and a ``supersedes`` between the same
+# nodes are disjoint relations, not a cycle. The advisory lock is per-kind too, so
+# writers on unrelated kinds don't serialize.
+#
+# A kind whose :attr:`EdgeKindPolicy.enforces_acyclicity` is ``False`` (a graph we do
+# not own, e.g. ``cites_paper`` bibliographies) skips the cycle walk entirely -- mutual
+# citation is valid data. The self-loop bar still applies to every kind.
 async def _reject_edge_cycle(
     conn: Conn,
     *,
@@ -471,17 +497,7 @@ async def _reject_edge_cycle(
     to_id: UUID,
     edge_kind: Edge.Kind,
 ) -> None:
-    """Reject ``from_id -> to_id`` when it closes a cycle within one edge kind.
-
-    Acyclicity is per-edge-kind: a ``produces`` and a ``supersedes``
-    between the same nodes are disjoint relations, not a cycle. The advisory
-    lock is per-kind too, so writers on unrelated kinds don't serialize.
-
-    A kind whose :attr:`EdgeKindPolicy.enforces_acyclicity` is ``False`` (a
-    graph we do not own, e.g. ``cites_paper`` bibliographies) skips the cycle
-    walk entirely -- mutual citation is valid data. The self-loop bar still
-    applies to every kind.
-    """
+    """Reject ``from_id -> to_id`` when it closes a cycle within one edge kind."""
     if from_id == to_id:
         raise ValidationError(f"{edge_kind} edge {from_id} -> {to_id} is a self-loop")
     # ``edge_kind`` is typed as ``Edge.Kind`` (a closed Literal), but Python's
@@ -514,3 +530,33 @@ async def _reject_edge_cycle(
         raise ConflictError(
             f"{edge_kind} edge {from_id} -> {to_id} would create a cycle"
         )
+
+
+# The single "unset is NULL" contract the edit path (``Store._set_field``) already
+# applies, reused here so create and edit agree: run the column's ``normalize`` hook
+# (canonical / byline for list columns; identity otherwise), then collapse an empty
+# result to SQL NULL for a nullable, non-``min_items`` column. A required column, a
+# ``min_items`` column (``issue_kind`` -- an empty value must reach the DB CHECK, not
+# collapse), and a falsy-but-valid scalar (``0`` / ``0.0`` / ``{}``) are left intact.
+def _normalize_for_insert(column: str, value: object) -> object:
+    """Normalize one column value for storage, from its spec + runtime hooks."""
+    if value is None:
+        return None
+    hooks = RUNTIME_HOOKS.get(column, NO_HOOKS)
+    normalized = hooks.normalize(value)
+    spec = COLUMN_SPECS[column]
+    if not spec.required and spec.min_items == 0:
+        collapsed = empty_optional_to_none(normalized)
+        if collapsed is None:
+            return None
+    return hooks.encode(normalized)
+
+
+# ``edge_kind`` is typed as a closed Literal, but the runtime does not enforce it.
+# Validating membership here, before any annotation guard, stops a bogus kind from
+# silently clearing the priority / valence guards (which only *positively* gate the
+# known kinds) and surfaces it as a clean 4xx.
+def _reject_unknown_edge_kind(edge_kind: Edge.Kind) -> None:
+    """Reject an ``edge_kind`` outside the closed :data:`Edge.Kind` set."""
+    if edge_kind not in _VALID_EDGE_KINDS:
+        raise ValidationError(f"unknown edge kind {edge_kind!r}")

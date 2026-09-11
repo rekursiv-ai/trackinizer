@@ -32,27 +32,10 @@ from trackinizer.server.config import (
 )
 
 
-logger = logging.getLogger("trackinizer")
+logger = logging.getLogger(__name__)
 
 
-class _SuppressZeroTaskCancel(logging.Filter):
-    """Drop uvicorn's spurious "Cancel 0 running task(s)" shutdown ERROR.
-
-    With ``timeout_graceful_shutdown=0`` uvicorn's shutdown always trips its
-    ``asyncio.TimeoutError`` branch and logs ``Cancel N running task(s),
-    timeout graceful shutdown exceeded`` -- even on a clean shutdown with N=0,
-    where nothing was actually cancelled. That zero-task case is noise on every
-    normal exit, so suppress exactly it; a real cancel (N>0) still logs.
-    """
-
-    @override
-    def filter(self, record: logging.LogRecord) -> bool:
-        return record.getMessage() != (
-            "Cancel 0 running task(s), timeout graceful shutdown exceeded"
-        )
-
-
-def main() -> None:
+def main() -> int:
     """Parse args, configure the app, and run uvicorn in THIS process.
 
     One process serves everything. The inbound message queue
@@ -61,9 +44,13 @@ def main() -> None:
     uvicorn's fork-based fan-out would lose and duplicate messages; the app
     object is handed to uvicorn directly rather than through a re-import
     factory.
+
+    Returns:
+      result: The int.
+
     """
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 1)[0],
+        description=(__doc__ or "").strip(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     args, remaining = _parse_args(parser)
@@ -98,6 +85,7 @@ def main() -> None:
         # back), so there is nothing to drain for; 0 = don't wait, tear down now.
         timeout_graceful_shutdown=0,
     )
+    return 0
 
 
 def _configure_app(args: argparse.Namespace) -> None:
@@ -247,17 +235,7 @@ def _positive_session_ttl(value: str) -> int:
 
 
 def _configure_logging(level: str | None) -> int | None:
-    """Set the package log level from the flag or ``TRACKINIZER_LOG_LEVEL``.
-
-    Args:
-        level: Level name from ``--log-level``, or None to consult the
-            environment.
-
-    Returns:
-        resolved: The numeric level the caller should also hand uvicorn, or
-            None when neither the flag nor the environment named one.
-
-    """
+    """Set the package log level from the flag or ``TRACKINIZER_LOG_LEVEL``."""
     raw = level or os.environ.get("TRACKINIZER_LOG_LEVEL")
     if not raw:
         return None
@@ -270,3 +248,20 @@ def _configure_logging(level: str | None) -> int | None:
     )
     logger.setLevel(value)
     return value
+
+
+class _SuppressZeroTaskCancel(logging.Filter):
+    """Drop uvicorn's spurious "Cancel 0 running task(s)" shutdown ERROR.
+
+    With ``timeout_graceful_shutdown=0`` uvicorn's shutdown always trips its
+    ``asyncio.TimeoutError`` branch and logs ``Cancel N running task(s),
+    timeout graceful shutdown exceeded`` -- even on a clean shutdown with N=0,
+    where nothing was actually cancelled. That zero-task case is noise on every
+    normal exit, so suppress exactly it; a real cancel (N>0) still logs.
+    """
+
+    @override
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage() != (
+            "Cancel 0 running task(s), timeout graceful shutdown exceeded"
+        )

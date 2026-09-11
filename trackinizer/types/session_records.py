@@ -79,7 +79,7 @@ it -- 250,000 emoji are a legal 250,000-character string and an illegal
 
 
 def search_text(record: object) -> str:
-    """The plaintext a record contributes to search, capped and never lossy.
+    """Return the plaintext a record contributes to search, capped and never lossy.
 
     Computed once at ingest and stored, never re-derived on read: phase 7
     backfills legacy rows with a ``text`` this rule would compute as ``""``,
@@ -206,6 +206,10 @@ class SessionRecordRow:
         Ciphertext is NOT spliced here: this type holds one row, and the bytes
         live in another table. A reader that fetched them calls
         ``dataclasses.replace(record, encrypted=...)`` itself.
+
+        Returns:
+          result: The TraxRecord.
+
         """
         return DataclassCodec.from_json(
             _class_for(self.kind), json_unfreeze(self.payload)
@@ -277,14 +281,12 @@ def _truncate(text: str) -> str:
     return encoded[:MAX_SEARCH_TEXT_BYTES].decode(errors="ignore")
 
 
+# The IR keeps timestamps as the provider's own STRINGS so a session rewrites byte-
+# exactly; the column is TIMESTAMPTZ so it can be ordered and filtered. An unparseable
+# value stores NULL rather than failing the whole batch -- the string itself survives in
+# ``payload``, which is what replays the file.
 def _parsed(raw: str | None) -> datetime | None:
-    """A record's ISO-8601 timestamp as a datetime, or ``None``.
-
-    The IR keeps timestamps as the provider's own STRINGS so a session rewrites
-    byte-exactly; the column is TIMESTAMPTZ so it can be ordered and filtered.
-    An unparseable value stores NULL rather than failing the whole batch -- the
-    string itself survives in ``payload``, which is what replays the file.
-    """
+    """Return a record's ISO-8601 timestamp as a datetime, or ``None``."""
     if raw is None:
         return None
     try:
@@ -294,7 +296,7 @@ def _parsed(raw: str | None) -> datetime | None:
 
 
 def _class_for(kind: str) -> type[TraxRecord]:
-    """The record class named by a row's ``kind``."""
+    """Return the record class named by a row's ``kind``."""
     found = _BY_KIND.get(kind)
     if found is None:
         raise ValueError(f"unknown session record kind {kind!r}")

@@ -124,20 +124,21 @@ the reverse."""
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class InquiryEdge:
-    """One projected edge endpoint: the related inquiry plus this edge's
-    context, viewed from one vertex.
+    """One projected edge endpoint.
 
-    A relationship projection field on an Inquiry is a tuple of these, one per
-    stored ``Edge`` row touching the vertex. Every projected edge carries the
-    peer's id and kind plus the branch-agnostic annotations (``note``,
-    ``labels``). The two Inquiry branches subclass this to add the annotation
-    their edges carry: :class:`IssueEdge` adds the contextual ``priority`` (on
-    Issue-to-Issue ``narrows`` / ``requires`` edges), :class:`ArtifactEdge` adds
-    the signed ``valence`` (on ``proves`` / ``favors`` citations). The base type
-    backs the branch-neutral ``produces`` and ``supersedes`` relations.
+    The related inquiry plus this edge's context, viewed from one vertex.
 
-    This replaces the ad-hoc mix of bare ``UUID`` tuples and
-    ``(UUID, kind)`` / ``(UUID, priority)`` pairs with one named-field type.
+        A relationship projection field on an Inquiry is a tuple of these, one per
+        stored ``Edge`` row touching the vertex. Every projected edge carries the
+        peer's id and kind plus the branch-agnostic annotations (``note``,
+        ``labels``). The two Inquiry branches subclass this to add the annotation
+        their edges carry: :class:`IssueEdge` adds the contextual ``priority`` (on
+        Issue-to-Issue ``narrows`` / ``requires`` edges), :class:`ArtifactEdge` adds
+        the signed ``valence`` (on ``proves`` / ``favors`` citations). The base type
+        backs the branch-neutral ``produces`` and ``supersedes`` relations.
+
+        This replaces the ad-hoc mix of bare ``UUID`` tuples and
+        ``(UUID, kind)`` / ``(UUID, priority)`` pairs with one named-field type.
     """
 
     id: UUID
@@ -152,43 +153,6 @@ class InquiryEdge:
 
     labels: tuple[str, ...] | None = None
     """Edge-local labels for why this relationship matters here."""
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class IssueEdge(InquiryEdge):
-    """An Issue-to-Issue edge endpoint (``narrows`` / ``requires``), carrying the
-    contextual ``priority`` the edge may override. ``None`` means the edge adds
-    no override, so the endpoint Issue's own :attr:`Issue.priority` applies.
-    """
-
-    priority: Issue.Priority | None = None
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ArtifactEdge(InquiryEdge):
-    """A citation edge endpoint (``proves`` / ``favors`` and their ``proved_by``
-    / ``favored_by`` inverses), carrying the signed :attr:`Edge.valence` --
-    positive supports the claim, negative argues against it; magnitude is the
-    evidential weight. Defaults to :data:`CITATION_VALENCE_DEFAULT` (mild
-    support).
-    """
-
-    valence: float = CITATION_VALENCE_DEFAULT
-
-
-# Genuine Postgres array COLUMNS on ``inquiries`` that ``Inquiry.from_row``
-# coerces to a Python tuple. The relationship projection fields (``produces``,
-# ``proves``, ``narrowed_by``, ...) are NOT here: they are not row columns
-# at all but tuples of :class:`InquiryEdge` built by the projection layer from the
-# ``edges`` table, so ``from_row`` skips them (they default to ``()``).
-_TUPLE_COLUMNS: frozenset[str] = frozenset(
-    {
-        "codechanges",
-        "issue_kind",
-        "rooms",
-        "authors",
-    }
-)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -469,6 +433,13 @@ class Inquiry:
         a junk Issue. ``Inquiry`` itself is the common parent and accepts any
         kind, which is how :meth:`Store.get_inquiry` dispatches through
         ``KIND_TO_CLASS``.
+
+        Args:
+          row: Row.
+
+        Returns:
+          result: The Self.
+
         """
         if cls is not Inquiry and "kind" in row:
             row_kind = row["kind"]
@@ -530,6 +501,46 @@ class Inquiry:
                 value = tuple(value)
             kwargs[f.name] = value
         return cls(**kwargs)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class IssueEdge(InquiryEdge):
+    """An Issue-to-Issue edge endpoint.
+
+    ``narrows`` / ``requires``), carrying the contextual ``priority`` the edge may
+    override. ``None`` means the edge adds no override, so the endpoint Issue's own
+    :attr:`Issue.priority` applies.
+    """
+
+    priority: Issue.Priority | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ArtifactEdge(InquiryEdge):
+    """A citation edge endpoint.
+
+    ``proves`` / ``favors`` and their ``proved_by`` / ``favored_by`` inverses), carrying
+    the signed :attr:`Edge.valence` -- positive supports the claim, negative argues
+    against it; magnitude is the evidential weight. Defaults to
+    :data:`CITATION_VALENCE_DEFAULT` (mild support).
+    """
+
+    valence: float = CITATION_VALENCE_DEFAULT
+
+
+# Genuine Postgres array COLUMNS on ``inquiries`` that ``Inquiry.from_row``
+# coerces to a Python tuple. The relationship projection fields (``produces``,
+# ``proves``, ``narrowed_by``, ...) are NOT here: they are not row columns
+# at all but tuples of :class:`InquiryEdge` built by the projection layer from the
+# ``edges`` table, so ``from_row`` skips them (they default to ``()``).
+_TUPLE_COLUMNS: frozenset[str] = frozenset(
+    {
+        "codechanges",
+        "issue_kind",
+        "rooms",
+        "authors",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -797,6 +808,13 @@ def is_valid_source(value: str) -> bool:
     One rule for both the create boundary (``SubmitPaper``) and the edit boundary
     (``Store.set_source``): a ``<scheme>:<rest>`` with a non-empty scheme and a
     non-empty remainder. See :data:`_SOURCE_SCHEME_RE`.
+
+    Args:
+      value: Value.
+
+    Returns:
+      result: The bool.
+
     """
     return _SOURCE_SCHEME_RE.match(value) is not None
 
@@ -1206,18 +1224,15 @@ class AgentSession(Artifact):
     mirror."""
 
 
+# Walks the ``Inquiry`` subclass tree so a new kind registers itself with no parallel
+# edit, then resolves each walked class through this module's namespace.
+# ``@dataclass(slots=True)`` rebuilds a decorated class (slots cannot be added in
+# place), leaving the pre-rebuild "ghost" alive in ``__subclasses__()`` until it is
+# GC'd; keying a bare ``{cls.__name__: cls}`` comprehension would non-deterministically
+# pick the ghost, whose ``isinstance`` identity differs from the exported class.
+# Resolving through ``sys.modules[__name__]`` pins each kind to the canonical export.
 def _kind_to_class() -> dict[Inquiry.InquiryKind, type[Inquiry]]:
-    """Map each row discriminator to the concrete class ``inquiries`` exports.
-
-    Walks the ``Inquiry`` subclass tree so a new kind registers itself with no
-    parallel edit, then resolves each walked class through this module's
-    namespace. ``@dataclass(slots=True)`` rebuilds a decorated class (slots
-    cannot be added in place), leaving the pre-rebuild "ghost" alive in
-    ``__subclasses__()`` until it is GC'd; keying a bare ``{cls.__name__: cls}``
-    comprehension would non-deterministically pick the ghost, whose
-    ``isinstance`` identity differs from the exported class. Resolving through
-    ``sys.modules[__name__]`` pins each kind to the canonical export.
-    """
+    """Map each row discriminator to the concrete class ``inquiries`` exports."""
     module = sys.modules[__name__]
     mapping: dict[Inquiry.InquiryKind, type[Inquiry]] = {}
     # Breadth-first in declaration order (``__subclasses__`` preserves

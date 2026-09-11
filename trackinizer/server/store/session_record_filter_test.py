@@ -35,7 +35,7 @@ from trackinizer.wire.filters import Filter
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """A bootstrapped store on the shared integration database."""
+    """Return a bootstrapped store on the shared integration database."""
     built = Store(integ_engine, embed=StubEmbedder())
     await built.bootstrap()
     yield built
@@ -44,7 +44,7 @@ async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
 async def _session_with(
     store: Store, records: Sequence[SessionRecord], *, title: str = "s"
 ) -> UUID:
-    """An AgentSession holding ``records``, numbered by stream position."""
+    """Return an AgentSession holding ``records``, numbered by stream position."""
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
@@ -65,7 +65,7 @@ async def _session_with(
 
 
 async def _matching(store: Store, *filters: Filter, lowering: bool = True) -> set[UUID]:
-    """The AgentSession ids ``filters`` select."""
+    """Return the AgentSession ids ``filters`` select."""
     rows = await store.list_kind(
         "AgentSession", filters=list(filters), limit=500, lowering=lowering
     )
@@ -241,7 +241,7 @@ async def test_a_record_kind_scopes_the_match(store: Store) -> None:
     assert session_id not in as_tool
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

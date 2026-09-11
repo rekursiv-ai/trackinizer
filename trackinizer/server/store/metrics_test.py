@@ -70,7 +70,7 @@ class TestLogMetrics:
     @pytest.mark.asyncio
     async def test_log_metrics_missing_experiment_raises_not_found(self) -> None:
         conn = make_conn()
-        set_field_row(conn, None)  # fetchrow returns no row
+        set_field_row(conn, None)  # fetchrow returns no row.
         store, _engine = make_store(conn)
         with pytest.raises(NotFoundError, match="not found"):
             await store.log_metrics(
@@ -135,7 +135,7 @@ class TestReadMetrics:
 
 
 def _row(**over: object) -> dict[str, object]:
-    """A default ``experiment_metrics`` result row, overridable per test."""
+    """Return a default ``experiment_metrics`` result row, overridable per test."""
     return {
         "experiment_id": uuid.uuid4(),
         "key": "loss",
@@ -433,3 +433,9 @@ class TestWriteMetricsMasked:
             await store.write_metrics_masked(
                 uuid.uuid4(), masks=self._pinned(), value=0.5
             )
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.main import test_main
+
+    test_main(__file__)

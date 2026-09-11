@@ -80,6 +80,16 @@ async def next_issue_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> MutableJSON | None:
+    """Next issue route.
+
+    Args:
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON | None.
+
+    """
     del identity
     return tag_kind(await get_store(request).next_issue())
 
@@ -105,6 +115,15 @@ async def lookup_route(
     is ``{"found": {id: kind}, "missing": [id]}`` so a caller learns which
     ids were unknown rather than having them silently dropped from a flat
     mapping (REV-OPUS-12).
+
+    Args:
+      ids: Ids.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      body: The MutableJSON.
+
     """
     del identity
     async with get_store(request).engine.acquire() as conn:
@@ -138,6 +157,20 @@ async def list_inquiries_route(
     least one ``kind`` is required. Each ``seq_range`` param is one
     inclusive ``a..b`` interval; their union selects rows across disjoint
     seq windows in a single query.
+
+    Args:
+      request: Request.
+      identity: Identity.
+      kind: Kind.
+      status: Status.
+      limit: Limit.
+      offset: Offset.
+      seq_range: Seq range.
+      filter_: Filter.
+
+    Returns:
+      out: The list[MutableJSON].
+
     """
     del identity
     if limit < 1 or limit > MAX_LIST_LIMIT:
@@ -231,20 +264,20 @@ async def cost_route(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     deep: bool = False,
 ) -> Cost:
+    """Cost route.
+
+    Args:
+      target_id: Target id.
+      request: Request.
+      identity: Identity.
+      deep: Deep.
+
+    Returns:
+      result: The Cost.
+
+    """
     del identity
     return _require_found(await get_store(request).cost_for(target_id, deep=deep))
-
-
-def _require_found[T](value: T | None) -> T:
-    """Return ``value`` or raise 404 when it is ``None``.
-
-    A read addressing a specific id (inquiry, short-ref, cost) that finds
-    no row is 404, not a 200 with a null body -- consistent with
-    ``get_change`` / ``get_edge`` (API-08/24).
-    """
-    if value is None:
-        raise HTTPException(status_code=404, detail="not found")
-    return value
 
 
 @router.get("/api/inquiries/{target_id}/proves_belief")
@@ -253,6 +286,17 @@ async def proves_belief_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> list[MutableJSON]:
+    """Proves belief route.
+
+    Args:
+      target_id: Target id.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The list[MutableJSON].
+
+    """
     del identity
     rows = await get_store(request).proves_belief(target_id)
     return [tag_row(r) for r in rows]
@@ -265,7 +309,18 @@ async def by_seq_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> MutableJSON:
-    """Resolve a short-ref ``kind#seq`` to the full inquiry."""
+    """Resolve a short-ref ``kind#seq`` to the full inquiry.
+
+    Args:
+      kind: Kind.
+      seq: Seq.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
+    """
     del identity
     async with get_store(request).engine.acquire() as conn:
         row = await conn.fetchrow(
@@ -282,6 +337,17 @@ async def get_inquiry_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> MutableJSON:
+    """Get inquiry route.
+
+    Args:
+      target_id: Target id.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
+    """
     del identity
     return _require_found(tag_kind(await get_store(request).get_inquiry(target_id)))
 
@@ -301,6 +367,16 @@ async def delete_inquiry_route(
     Writer-gated like every other mutation; inquiries (including AgentSessions)
     are a shared workspace, so any writer may purge an unowned row. A claimed
     row must first release its owner through the compare-and-set owner route.
+
+    Args:
+      target_id: Target id.
+      req: Req.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
     """
     store = get_store(request)
     change_id = await store.purge(
@@ -327,6 +403,14 @@ async def change_log_stream_route(
 
     Shares ``iter_sse_events`` with ``/api/web/subscribe`` so both emit
     one wire shape; offline catch-up uses ``GET /api/change_log``.
+
+    Args:
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The StreamingResponse.
+
     """
     del identity
     engine = cast(DatabaseEngine, request.app.state.engine)
@@ -339,6 +423,17 @@ async def get_change_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> Change:
+    """Get change route.
+
+    Args:
+      change_id: Change id.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      change: The Change.
+
+    """
     del identity
     change = await get_store(request).get_change(change_id)
     if change is None:
@@ -361,7 +456,23 @@ async def list_change_log_route(
     # default and cap come from the shared wire contract.
     limit: int = 200,
 ) -> list[Change]:
-    """Return a filtered, newest-first slice of the change log."""
+    """Return a filtered, newest-first slice of the change log.
+
+    Args:
+      request: Request.
+      identity: Identity.
+      since: Since.
+      after_id: After id.
+      actor: Actor.
+      subject_id: Subject id.
+      subject_kind: Subject kind.
+      kind: Kind.
+      limit: Limit.
+
+    Returns:
+      result: The list[Change].
+
+    """
     del identity
     if limit < 1 or limit > MAX_LIST_LIMIT:
         raise HTTPException(
@@ -378,16 +489,13 @@ async def list_change_log_route(
     )
 
 
+# Derived from ``flat_column_specs`` so the whitelist tracks the Inquiry hierarchy
+# automatically, including the flattened ``marginal_cost_*`` axes. Each flat column maps
+# through :func:`storage_name`, since ``canonical_filter_field`` resolves a filter to
+# its storage column (``priority`` -> ``issue_priority``) and the whitelist validates
+# the canonical name.
 def _filter_columns_for(kind: Inquiry.InquiryKind) -> frozenset[str]:
-    """Return the canonical SQL column names a ``Filter`` may target for ``kind``.
-
-    Derived from ``flat_column_specs`` so the whitelist tracks the Inquiry
-    hierarchy automatically, including the flattened ``marginal_cost_*``
-    axes. Each flat column maps through :func:`storage_name`, since
-    ``canonical_filter_field`` resolves a filter to its storage column
-    (``priority`` -> ``issue_priority``) and the whitelist validates the
-    canonical name.
-    """
+    """Return the canonical SQL column names a ``Filter`` may target for ``kind``."""
     cls = KIND_TO_CLASS[kind]
     declared = {
         storage_name(name, flat.spec)
@@ -401,14 +509,12 @@ def _filter_columns_for(kind: Inquiry.InquiryKind) -> frozenset[str]:
     return IDENTITY_COLUMNS | frozenset(declared) | frozenset(records)
 
 
+# ``field`` may arrive as a CLI-friendly alias (``kind``, ``agent-cost``, ``result``,
+# ...) or the canonical SQL column name. Both resolve through
+# ``canonical_filter_field``, so the returned ``Filter`` always carries the canonical
+# column, which is what the whitelist validates against.
 def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
-    """Decode one ``filter=<json>`` query param, raising 400 on bad input.
-
-    ``field`` may arrive as a CLI-friendly alias (``kind``, ``agent-cost``,
-    ``result``, ...) or the canonical SQL column name. Both resolve through
-    ``canonical_filter_field``, so the returned ``Filter`` always carries
-    the canonical column, which is what the whitelist validates against.
-    """
+    """Decode one ``filter=<json>`` query param, raising 400 on bad input."""
     try:
         payload = cast(object, json.loads(raw))
     except json.JSONDecodeError as err:
@@ -458,3 +564,13 @@ def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
         return Filter(field=canonical, op=cast(FilterOp, op), value=value)
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
+
+
+# A read addressing a specific id (inquiry, short-ref, cost) that finds no row is 404,
+# not a 200 with a null body -- consistent with ``get_change`` / ``get_edge``
+# (API-08/24).
+def _require_found[T](value: T | None) -> T:
+    """Return ``value`` or raise 404 when it is ``None``."""
+    if value is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return value

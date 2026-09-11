@@ -28,11 +28,15 @@ class CreateEdge(ActorMixin):
     """
 
     priority: Issue.Priority | None = Field(default=None, ge=0)
+
     note: str = ""
+
     valence: float | None = Field(default=None, ge=-1.0, le=1.0)
+
     labels: list[str] | None = None
     """Edge labels. ``None`` means unset; the route coerces it to the
     empty list before calling the Store."""
+
     reason: str = ""
 
 
@@ -40,7 +44,9 @@ class CreateEdgeItem(CreateEdge):
     """One :class:`CreateEdgeBatch` item, with edge identity in the body."""
 
     from_id: uuid.UUID
+
     to_id: uuid.UUID
+
     edge_kind: Edge.Kind
 
 

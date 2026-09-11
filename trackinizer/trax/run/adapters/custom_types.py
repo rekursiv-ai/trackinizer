@@ -68,6 +68,10 @@ class Adapter(Protocol):
         one. Paths may not exist before a first hermetic run; the live runner
         creates them before arming its filesystem watches. An empty iterable
         means the adapter has no filesystem capture source.
+
+        Returns:
+          result: The Iterable[Path].
+
         """
         ...
 
@@ -75,11 +79,18 @@ class Adapter(Protocol):
         """Whether ``path`` under ``session_dirs()`` is a log this adapter parses.
 
         Usually a check on the suffix (``*.jsonl``) and maybe the parent dir.
+
+        Args:
+          path: Path.
+
+        Returns:
+          result: The bool.
+
         """
         ...
 
     def session_scope(self) -> Path | None:
-        """The subtree THIS run's session files land in, if the CLI has one.
+        """Return the subtree THIS run's session files land in, if the CLI has one.
 
         ``session_dirs()`` is deliberately wide -- a root, so a project
         directory minted mid-run is still covered. That width is what makes a
@@ -92,21 +103,32 @@ class Adapter(Protocol):
         drops anything outside it. ``None`` means the CLI offers no such
         signal -- codex shards by DATE, which every concurrent run shares --
         and the run falls back to capturing every new match.
+
+        Returns:
+          result: The Path | None.
+
         """
         ...
 
     def session_id_from_path(self, path: Path) -> str | None:
-        """The CLI's OWN session id for this file, used to correlate a resume.
+        """Return the CLI's OWN session id for this file, used to correlate a resume.
 
         Claude names each session file ``<session-id>.jsonl``, so the stem is
         the id that stays stable across ``--resume``; an adapter whose CLI has
         no stable per-session id returns ``None`` (such a CLI's runs are simply
         not resumable via correlation).
+
+        Args:
+          path: Path.
+
+        Returns:
+          result: The str | None.
+
         """
         ...
 
     def reader(self) -> Tail:
-        """A fresh reader for one of this CLI's session files.
+        """Return a fresh reader for one of this CLI's session files.
 
         One per FILE, not per run: a reader carries the position it has read
         to, and a session spans several files (claude splits on compaction,
@@ -117,6 +139,10 @@ class Adapter(Protocol):
         ``normalize`` PULLS lines and the runner PUSHES them, and ``Tail`` is
         that turn -- so capture runs the same reader conversion does, and a
         dialect fix lands in both.
+
+        Returns:
+          result: The Tail.
+
         """
         ...
 

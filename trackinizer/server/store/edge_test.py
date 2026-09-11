@@ -183,7 +183,7 @@ class TestEdge:
             None,
         )
         assert update is not None, "label add should issue an UPDATE for labels"
-        # args: (sql, priority, note, valence, labels, from, to, edge_kind)
+        # Args: (sql, priority, note, valence, labels, from, to, edge_kind)
         assert update.args[3] is None, "valence must stay NULL, not heal to default"
         assert update.args[4] == ["mechanism"]
 
@@ -219,7 +219,7 @@ class TestEdge:
         assert change_kinds == ["edge_removed", "edge_removed"]
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

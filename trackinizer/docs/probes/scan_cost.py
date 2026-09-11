@@ -1,5 +1,9 @@
-#!/usr/bin/env python
-"""Measure the per-tick session-file discovery scan cost, per adapter.
+#!/bin/sh
+# ruff: noqa: EXE003, D300 -- Polyglot shell/Python script.
+# fmt: off
+'''' 2>/dev/null #
+exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
+Measure the per-tick session-file discovery scan cost, per adapter.
 
 Reproduces the table in ``design_agent_session_logging.md``'s addendum.
 Numbers are machine- and history-dependent: the claude figure scales with
@@ -7,7 +11,8 @@ how many project directories that CLI has ever created on THIS host, so a
 fresh machine shows a small number and a long-lived one a large one.
 
 Run:  uv --quiet run --frozen python trackinizer/docs/probes/scan_cost.py
-"""
+'''
+# fmt: on
 
 from __future__ import annotations
 
@@ -28,6 +33,9 @@ if TYPE_CHECKING:
 
 def scan_once(adapter: Adapter) -> tuple[int, int]:
     """One full discovery sweep, mirroring ``_scan_and_read``'s walk.
+
+    Args:
+      adapter: Adapter.
 
     Returns:
       dirs: How many session directories the adapter offered.
@@ -52,6 +60,11 @@ def report(*, tick_sec: float, repeats: int) -> None:
     Occupancy is the share of each tick the drain thread spends walking
     directories -- wall-clock time in that thread, largely ``stat()`` syscalls,
     NOT a CPU-utilization figure.
+
+    Args:
+      tick_sec: Tick sec.
+      repeats: Repeats.
+
     """
     print(f"{'adapter':8} {'dirs':>6} {'matched':>8} {'median':>10} {'occupancy':>10}")
     for adapter in (ClaudeAdapter(), CodexAdapter(), GeminiAdapter()):
@@ -69,7 +82,24 @@ def report(*, tick_sec: float, repeats: int) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="scan_cost", description=__doc__)
+    """Run the program; return the process exit code.
+
+
+    Returns:
+      result: The int.
+
+    """
+    parser = argparse.ArgumentParser(
+        prog="scan_cost", description=(__doc__ or "").split("\n", 2)[2]
+    )
+    _add_arguments(parser)
+    args = parser.parse_args()
+    report(tick_sec=args.tick_sec, repeats=args.repeats)
+    return 0
+
+
+def _add_arguments(parser: argparse.ArgumentParser) -> None:
+    """Register flags on ``parser``."""
     parser.add_argument(
         "--tick-sec",
         type=float,
@@ -79,10 +109,8 @@ def main() -> int:
     parser.add_argument(
         "--repeats", type=int, default=3, help="scans per adapter; median is reported"
     )
-    args = parser.parse_args()
-    report(tick_sec=args.tick_sec, repeats=args.repeats)
-    return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+# vim: ft=python

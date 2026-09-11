@@ -53,34 +53,35 @@ class TestSubmit:
 
     @pytest.mark.asyncio
     async def test_submit_idempotency_change_log_race_returns_winner(self) -> None:
-        """Racer that loses the change_log PK race re-probes and returns
-        the winner's server-minted inquiry id.
+        """Racer that loses the change_log PK race re-probes and returns the.
 
-        Walk: pre-probe sees no row -> insert_inquiry succeeds ->
-        emit_change attempts change_log INSERT and gets UniqueViolation
-        (a concurrent winner committed first) -> the outer ``tx()``
-        rolls the racer's row back -> ``_submit_inquiry`` re-probes and
-        returns the winner's subject_id from the existing change_log row.
+        Winner's server-minted inquiry id.
 
-        Queued fetchrows (cost UPDATEs are auto-synthesized):
-          1. pre-probe ``_lookup_existing_by_change``: no row.
-          2. inside ``emit_change``'s catch: SELECT actor/subject_id/kind
-             of the colliding change_log row.
-          3. post-rollback re-probe via ``_lookup_existing_by_change``.
+                Walk: pre-probe sees no row -> insert_inquiry succeeds ->
+                emit_change attempts change_log INSERT and gets UniqueViolation
+                (a concurrent winner committed first) -> the outer ``tx()``
+                rolls the racer's row back -> ``_submit_inquiry`` re-probes and
+                returns the winner's subject_id from the existing change_log row.
+
+                Queued fetchrows (cost UPDATEs are auto-synthesized):
+                  1. pre-probe ``_lookup_existing_by_change``: no row.
+                  2. inside ``emit_change``'s catch: SELECT actor/subject_id/kind
+                     of the colliding change_log row.
+                  3. post-rollback re-probe via ``_lookup_existing_by_change``.
         """
         winner_subject_id = new_uuid()
         idempotency_key = new_uuid()
         conn = make_conn()
         queue_field_rows(
             conn,
-            None,  # 1: pre-probe -- key is free at this snapshot
-            {  # 2: change_log re-read inside emit_change catch
+            None,  # 1: pre-probe -- key is free at this snapshot.
+            {  # 2: change_log re-read inside emit_change catch.
                 "actor": "system",
                 "subject_id": winner_subject_id,
                 "kind": "created",
                 "subscribers_snapshot": None,
             },
-            {  # 3: post-rollback re-probe surfaces winner
+            {  # 3: post-rollback re-probe surfaces winner.
                 "subject_id": winner_subject_id,
                 "change_kind": "created",
                 "subject_kind": "Issue",
@@ -206,8 +207,8 @@ class TestSubmit:
         #  note, valence, labels). call.args is (sql, $1, $2, ...).
         insert_args = edge_inserts[0].args
         assert insert_args[1] == evidence_id  # $1 = from_id (the citing artifact)
-        assert insert_args[2] == "Experiment"  # $2 = from_kind
-        assert insert_args[5] == "proves"  # $5 = edge_kind
+        assert insert_args[2] == "Experiment"  # $2 = from_kind.
+        assert insert_args[5] == "proves"  # $5 = edge_kind.
         assert insert_args[8] == 0.8  # $8 = valence (signed citation weight)
         assert not any("UPDATE inquiries SET judgement" in sql for sql in sqls)
 
@@ -275,8 +276,8 @@ class TestSubmit:
         # *derived) -- find paper_authors within the SQL's derived column list.
         sql = "".join(a for a in insert.args if isinstance(a, str))
         cols = sql.split("(", 1)[1].split(")", 1)[0].split(", ")
-        derived = cols[cols.index("status") + 1 :]  # columns after status
-        # binds: args[0]=SQL, [1]=row_id, [2]=kind, [3]=status, [4:]=derived
+        derived = cols[cols.index("status") + 1 :]  # columns after status.
+        # Binds: args[0]=SQL, [1]=row_id, [2]=kind, [3]=status, [4:]=derived.
         authors = insert.args[4 + derived.index("paper_authors")]
         # byline_strs preserves order + duplicates (unlike canonical_strs dedup),
         # matching set_authors. Stored as tuple/list -- both bind to TEXT[].
@@ -297,12 +298,13 @@ class TestIdempotentShortCircuitConsumesChangeId:
 
     @pytest.mark.asyncio
     async def test_pre_probe_replay_does_not_leak_key_forward(self) -> None:
-        """A submit whose pre-probe replays must not leak its
-        idempotency_key into the next submit's ``emit_change``.
+        """A submit whose pre-probe replays must not leak its idempotency_key into.
 
-        Walk: submit_issue replays via the pre-probe (no emit_change
-        runs); a follow-up submit_artifact with no key inherits a fresh
-        server-minted change_log.id, not the prior submit's key.
+        The next submit's ``emit_change``.
+
+                Walk: submit_issue replays via the pre-probe (no emit_change
+                runs); a follow-up submit_artifact with no key inherits a fresh
+                server-minted change_log.id, not the prior submit's key.
         """
         conn = make_conn()
         winner_subject_id = new_uuid()
@@ -350,7 +352,7 @@ class TestIdempotentShortCircuitConsumesChangeId:
         """
         conn = make_conn()
         winner_subject_id = new_uuid()
-        external_key = new_uuid()  # whatever was set before the submit ran
+        external_key = new_uuid()  # whatever was set before the submit ran.
         replay_key = new_uuid()
         queue_field_rows(
             conn,
@@ -395,14 +397,14 @@ class TestIdempotentShortCircuitConsumesChangeId:
         racer_key = new_uuid()
         queue_field_rows(
             conn,
-            None,  # pre-probe: key looks free
-            {  # emit_change re-reads change_log on UniqueViolation
+            None,  # pre-probe: key looks free.
+            {  # emit_change re-reads change_log on UniqueViolation.
                 "actor": "system",
                 "subject_id": winner_subject_id,
                 "kind": "created",
                 "subscribers_snapshot": None,
             },
-            {  # post-rollback re-probe surfaces winner
+            {  # post-rollback re-probe surfaces winner.
                 "subject_id": winner_subject_id,
                 "change_kind": "created",
                 "subject_kind": "Issue",
@@ -502,6 +504,7 @@ class _BeginRecordingEmbedder:
     """
 
     name = "begin-recorder"
+
     dim = EMBEDDING_DIM
 
     def __init__(self, conn: AsyncMock) -> None:
@@ -540,13 +543,11 @@ class TestSubmitEmbedsBeforeTx:
         )
 
 
+# Sourced from :func:`executed_sql`, which spans both ``execute`` and ``fetch``:
+# ``tx()`` issues the error-path ``ROLLBACK`` over the extended protocol (``fetch``) to
+# dodge a pglite 0.5 simple-query mis-frame.
 def _tx_verbs(conn: AsyncMock) -> list[str]:
-    """The BEGIN/COMMIT/ROLLBACK verbs issued on ``conn``, in order.
-
-    Sourced from :func:`executed_sql`, which spans both ``execute`` and
-    ``fetch``: ``tx()`` issues the error-path ``ROLLBACK`` over the extended
-    protocol (``fetch``) to dodge a pglite 0.5 simple-query mis-frame.
-    """
+    """Return the BEGIN/COMMIT/ROLLBACK verbs issued on ``conn``, in order."""
     return [s for s in executed_sql(conn) if s in ("BEGIN", "COMMIT", "ROLLBACK")]
 
 
@@ -674,7 +675,7 @@ class TestSubmitBatch:
         )
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

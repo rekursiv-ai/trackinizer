@@ -89,9 +89,13 @@ class _RuntimeHooks:
     """
 
     normalize: _Encoder = field(default=lambda v: v)
+
     encode: _Encoder = field(default=lambda v: v)
+
     decode_old: _Decoder = field(default=lambda v: v)
+
     validate: TargetValidator | None = None
+
     notify_old_subscribers: bool = False
 
 
@@ -100,14 +104,12 @@ def _canonical_tuple(value: Iterable[str]) -> tuple[str, ...]:
     return canonical_strs(value)
 
 
+# A NULL list column stays ``None`` ("value was absent") rather than collapsing to
+# ``()`` ("explicitly cleared"), so an edit from an unset column records a NULL old side
+# in the audit log -- the distinction the change-log snapshot relies on (see
+# ``types/change_log.py``).
 def _tuple_or_none(value: Iterable[object] | None) -> tuple[object, ...] | None:
-    """Decode a stored list column, preserving NULL as ``None``.
-
-    A NULL list column stays ``None`` ("value was absent") rather than
-    collapsing to ``()`` ("explicitly cleared"), so an edit from an unset
-    column records a NULL old side in the audit log -- the distinction the
-    change-log snapshot relies on (see ``types/change_log.py``).
-    """
+    """Decode a stored list column, preserving NULL as ``None``."""
     return None if value is None else tuple(value)
 
 
@@ -170,17 +172,14 @@ validators are attached by ``primitives.py`` at import time once their
 helpers are defined."""
 
 
+# Keyed by the flat storage name (:func:`storage_name`), so a kind-specific column lands
+# under ``paper_source`` -- matching its physical ``inquiries`` column and emitted
+# ``Change.Kind`` -- while base columns stay bare. Several columns appear on more than
+# one Inquiry subclass (``status`` on ``Inquiry``, inherited everywhere); one pass over
+# the hierarchy gives the Store one mapping to dispatch from. Asserts that duplicate
+# columns agree on their specs.
 def _column_specs_for(*classes: type[DataclassInstance]) -> dict[str, ColumnSpec]:
-    """Merge ``ColumnSpec`` metadata across a tuple of dataclass classes.
-
-    Keyed by the flat storage name (:func:`storage_name`), so a
-    kind-specific column lands under ``paper_source`` -- matching its
-    physical ``inquiries`` column and emitted ``Change.Kind`` -- while
-    base columns stay bare. Several columns appear on more than one
-    Inquiry subclass (``status`` on ``Inquiry``, inherited everywhere);
-    one pass over the hierarchy gives the Store one mapping to dispatch
-    from. Asserts that duplicate columns agree on their specs.
-    """
+    """Merge ``ColumnSpec`` metadata across a tuple of dataclass classes."""
     merged: dict[str, ColumnSpec] = {}
     for cls in classes:
         for field_name, spec in column_specs(cls).items():

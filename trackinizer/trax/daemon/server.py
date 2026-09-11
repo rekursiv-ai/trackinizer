@@ -111,6 +111,10 @@ def serve(path: Path | None = None) -> None:
     Binding is the arbiter for the spawn race: several clients missing a
     daemon at once all try to start one, and every loser gets ``EADDRINUSE``
     and simply connects to the winner instead.
+
+    Args:
+      path: Path.
+
     """
     sock = socket_address(path) if path is not None else socket_path()
     sock.parent.mkdir(parents=True, exist_ok=True, mode=_SOCKET_DIR_MODE)
@@ -127,110 +131,6 @@ def serve(path: Path | None = None) -> None:
     finally:
         server.server_close()
         _unlink_if_owned(sock, owned_inode)
-
-
-def _bind(sock: Path, version: str) -> _Server | None:
-    """Bind the socket, clearing a dead predecessor's file first.
-
-    Returns ``None`` when another daemon owns the socket -- it won the race,
-    and this process has nothing to do.
-    """
-    for _ in range(2):
-        previous_umask = os.umask(_SOCKET_UMASK)
-        try:
-            return _Server(str(sock), version)
-        except OSError:
-            pass
-        finally:
-            os.umask(previous_umask)
-        # ``EADDRINUSE`` is either a live daemon (give up) or a file left by
-        # one that was killed (clear it and retry exactly once).
-        if _is_live(sock):
-            return None
-        with contextlib.suppress(OSError):
-            sock.unlink()
-    return None
-
-
-def _is_live(sock: Path) -> bool:
-    """Whether something is accepting connections on ``sock``."""
-    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        probe.settimeout(0.2)
-        probe.connect(str(sock))
-    except OSError:
-        return False
-    else:
-        return True
-    finally:
-        probe.close()
-
-
-def _unlink_if_owned(sock: Path, inode: int) -> None:
-    """Remove the socket only if it is still the one this daemon bound."""
-    try:
-        if sock.stat().st_ino == inode:
-            sock.unlink()
-    except OSError:
-        return
-
-
-def _run_isolated(
-    request: Request,
-    run: Callable[[Sequence[str]], None],
-    out: io.StringIO,
-    err: io.StringIO,
-) -> int:
-    """Run one verb bound to the caller's streams, environment, and directory.
-
-    Every binding is a ContextVar, never a process global. ``os.environ``,
-    ``os.chdir``, and ``sys.stdout`` are shared by the whole process, so
-    swapping them around a request leaks into every other request in flight
-    -- measured, not theorized: four concurrent requests saw each other's
-    ``$USER``, and one response came back carrying another's output.
-
-    ``sys.stdout``/``sys.stderr`` ARE redirected on top of that, for the one
-    writer that cannot be taught the ContextVars: ``argparse`` prints usage
-    and errors to the real streams before raising ``SystemExit``. Those are
-    the daemon's ``/dev/null``, so without this an invalid flag returns exit
-    2 with no message at all. The redirect is process-wide, so a concurrent
-    request could capture a stray write from another -- acceptable only
-    because every trax writer goes through ``echo``; argparse is the
-    exception this exists for.
-    """
-    OUT_STREAM.set(out)
-    ERR_STREAM.set(err)
-    ENV.set(dict(request.env))
-    OVERLAID_NAMES.set(frozenset(FORWARDED_ENV))
-    CWD.set(request.cwd)
-    # The daemon's stdout is a socket, so ``isatty()`` there is always False
-    # and autodetection would size every table as if piped.
-    TERMINAL_WIDTH.set(request.columns if request.isatty else 0)
-    try:
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            run(request.argv)
-    except ClientError as error:
-        err.write(f"trax: {error}\n")
-        return _CLIENT_ERROR_EXIT_CODE
-    except SystemExit as exit_request:
-        return _exit_status(exit_request, err)
-    return 0
-
-
-def _exit_status(exit_request: SystemExit, err: io.StringIO) -> int:
-    """Map a ``SystemExit`` payload to a process exit status.
-
-    ``sys.exit`` accepts a string, which the interpreter prints to stderr and
-    reports as status 1. Coercing it with ``int()`` would raise instead, and
-    the real message would be replaced by an internal-error traceback.
-    """
-    code = exit_request.code
-    if code is None:
-        return 0
-    if isinstance(code, int):
-        return code
-    err.write(f"{code}\n")
-    return 1
 
 
 class _Handler(socketserver.BaseRequestHandler):
@@ -281,6 +181,7 @@ class _Server(socketserver.ThreadingUnixStreamServer):
     """
 
     daemon_threads = True
+
     request_queue_size = 128
 
     def __init__(self, path: str, version: str) -> None:
@@ -311,3 +212,100 @@ class _Server(socketserver.ThreadingUnixStreamServer):
         super().service_actions()
         if time.monotonic() - self._last_seen > _IDLE_TIMEOUT_SEC:
             self.begin_shutdown()
+
+
+# ``sys.exit`` accepts a string, which the interpreter prints to stderr and reports as
+# status 1. Coercing it with ``int()`` would raise instead, and the real message would
+# be replaced by an internal-error traceback.
+def _exit_status(exit_request: SystemExit, err: io.StringIO) -> int:
+    """Map a ``SystemExit`` payload to a process exit status."""
+    code = exit_request.code
+    if code is None:
+        return 0
+    if isinstance(code, int):
+        return code
+    err.write(f"{code}\n")
+    return 1
+
+
+# Every binding is a ContextVar, never a process global. ``os.environ``, ``os.chdir``,
+# and ``sys.stdout`` are shared by the whole process, so swapping them around a request
+# leaks into every other request in flight -- measured, not theorized: four concurrent
+# requests saw each other's ``$USER``, and one response came back carrying another's
+# output.
+#
+# ``sys.stdout``/``sys.stderr`` ARE redirected on top of that, for the one writer that
+# cannot be taught the ContextVars: ``argparse`` prints usage and errors to the real
+# streams before raising ``SystemExit``. Those are the daemon's ``/dev/null``, so
+# without this an invalid flag returns exit 2 with no message at all. The redirect is
+# process-wide, so a concurrent request could capture a stray write from another --
+# acceptable only because every trax writer goes through ``echo``; argparse is the
+# exception this exists for.
+def _run_isolated(
+    request: Request,
+    run: Callable[[Sequence[str]], None],
+    out: io.StringIO,
+    err: io.StringIO,
+) -> int:
+    """Run one verb bound to the caller's streams, environment, and directory."""
+    OUT_STREAM.set(out)
+    ERR_STREAM.set(err)
+    ENV.set(dict(request.env))
+    OVERLAID_NAMES.set(frozenset(FORWARDED_ENV))
+    CWD.set(request.cwd)
+    # The daemon's stdout is a socket, so ``isatty()`` there is always False
+    # and autodetection would size every table as if piped.
+    TERMINAL_WIDTH.set(request.columns if request.isatty else 0)
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            run(request.argv)
+    except ClientError as error:
+        err.write(f"trax: {error}\n")
+        return _CLIENT_ERROR_EXIT_CODE
+    except SystemExit as exit_request:
+        return _exit_status(exit_request, err)
+    return 0
+
+
+# Returns ``None`` when another daemon owns the socket -- it won the race, and this
+# process has nothing to do.
+def _bind(sock: Path, version: str) -> _Server | None:
+    """Bind the socket, clearing a dead predecessor's file first."""
+    for _ in range(2):
+        previous_umask = os.umask(_SOCKET_UMASK)
+        try:
+            return _Server(str(sock), version)
+        except OSError:
+            pass
+        finally:
+            os.umask(previous_umask)
+        # ``EADDRINUSE`` is either a live daemon (give up) or a file left by
+        # one that was killed (clear it and retry exactly once).
+        if _is_live(sock):
+            return None
+        with contextlib.suppress(OSError):
+            sock.unlink()
+    return None
+
+
+def _is_live(sock: Path) -> bool:
+    """Whether something is accepting connections on ``sock``."""
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(0.2)
+        probe.connect(str(sock))
+    except OSError:
+        return False
+    else:
+        return True
+    finally:
+        probe.close()
+
+
+def _unlink_if_owned(sock: Path, inode: int) -> None:
+    """Remove the socket only if it is still the one this daemon bound."""
+    try:
+        if sock.stat().st_ino == inode:
+            sock.unlink()
+    except OSError:
+        return

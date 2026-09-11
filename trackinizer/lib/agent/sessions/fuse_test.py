@@ -25,17 +25,15 @@ from trackinizer.lib.custom_json import DictCodec, StrCodec
 _CWD: Final = Path(__file__).resolve().parent
 
 
+# ``unfuse`` yields one ITERATOR per part and they are consumed in order, so a test that
+# wants them all materializes each as it arrives.
 def _unfused(records: Iterable[SessionRecord]) -> list[list[SessionRecord]]:
-    """Every part of a fused stream, drained in order.
-
-    ``unfuse`` yields one ITERATOR per part and they are consumed in order, so
-    a test that wants them all materializes each as it arrives.
-    """
+    """Every part of a fused stream, drained in order."""
     return [list(part) for part in fuse.unfuse(records)]
 
 
 def _part(name: str, *records: SessionRecord) -> list[SessionRecord]:
-    """A record stream whose opening settings declare it as ``name``."""
+    """Return a record stream whose opening settings declare it as ``name``."""
     return [TurnContext(extra={"payload": {"id": name}}), *records]
 
 
@@ -209,7 +207,7 @@ def test_chain_orders_parts_by_the_thread_each_forked_from() -> None:
 
 
 def _declared_id(part: Sequence[SessionRecord]) -> str:
-    """The thread id a part's launch settings name."""
+    """Return the thread id a part's launch settings name."""
     opening = part[0]
     assert isinstance(opening, TurnContext)
     return StrCodec.coerce(DictCodec.coerce(opening.extra.get("payload")).get("id"))

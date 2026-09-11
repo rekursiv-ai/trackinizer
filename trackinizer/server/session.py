@@ -165,7 +165,12 @@ def read_session_cookie(
 
 
 def clear_session_cookie(response: _SetsCookies) -> None:
-    """Append a ``Set-Cookie`` that expires the session cookie immediately."""
+    """Append a ``Set-Cookie`` that expires the session cookie immediately.
+
+    Args:
+      response: Response.
+
+    """
     response.delete_cookie(
         key=SESSION_COOKIE_NAME,
         path="/",
@@ -243,7 +248,12 @@ def read_oauth_state_cookie(
 
 
 def clear_oauth_state_cookie(response: _SetsCookies) -> None:
-    """Append a ``Set-Cookie`` that expires the OAuth state cookie."""
+    """Append a ``Set-Cookie`` that expires the OAuth state cookie.
+
+    Args:
+      response: Response.
+
+    """
     response.delete_cookie(
         key=OAUTH_STATE_COOKIE_NAME,
         path="/",

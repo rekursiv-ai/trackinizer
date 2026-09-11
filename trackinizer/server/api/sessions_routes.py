@@ -49,19 +49,6 @@ router = APIRouter()
 _MAX_INBOUND_WAIT_SEC: Final = 30.0
 
 
-def _actor(identity: AuthIdentity, supplied: str | None) -> str:
-    """The audit actor: the client-supplied value, else the principal email."""
-    return supplied or identity.email
-
-
-async def _require_session(store: Store, session_id: UUID) -> AgentSession:
-    """Fetch an AgentSession row or raise 404; reject non-session ids."""
-    row = await store.get_inquiry(session_id)
-    if not isinstance(row, AgentSession):
-        raise HTTPException(status_code=404, detail=f"unknown session {session_id}")
-    return row
-
-
 @router.post("/api/sessions/start", status_code=201)
 async def session_start_route(
     body: SessionStart,
@@ -74,6 +61,15 @@ async def session_start_route(
     unique among live sessions (suffix on collision); the granted name is the
     owner stamped on the row and is echoed in the response so ``trax run``
     adopts whatever it was given.
+
+    Args:
+      body: Body.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The SessionStartResponse.
+
     """
     store = get_store(request)
     # An AgentSession is an inquiry like any other, so it carries the same
@@ -129,6 +125,16 @@ async def session_inbound_enqueue_route(
     still polling is not checked -- delivery is drop-if-absent and the receipt
     only reports the queue depth. An *ended* session is rejected (409): no
     poller will ever drain it.
+
+    Args:
+      session_id: Session id.
+      body: Body.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The InboundEnqueueResponse.
+
     """
     session = await _require_session(get_store(request), session_id)
     if session.ended is not None:
@@ -175,6 +181,15 @@ async def send_message_route(
     dedup against), but only a delivery that reached at least one live session
     is recorded: an empty send leaves the key unrecorded so a later retry --
     once the session is live -- still delivers instead of replaying nothing.
+
+    Args:
+      body: Body.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The SendMessageResponse.
+
     """
     inbound = get_inbound(request)
     idempotency_key = _idempotency_key(request)
@@ -220,21 +235,6 @@ async def send_message_route(
     return SendMessageResponse(delivered=delivered)
 
 
-def _idempotency_key(request: Request) -> UUID | None:
-    """Return the request's already-parsed ``Idempotency-Key``, or ``None``.
-
-    ``ChangeIdMiddleware`` parses the header once (rejecting a malformed key
-    with 400) and stashes the validated UUID on ``request.state``; this just
-    reads it, so the parse + its failure branch live in exactly one place.
-    ``getattr`` default covers a request that never passed through the
-    middleware (a bare test app), leaving the send un-deduped -- the safe
-    default.
-    """
-    key = getattr(request.state, "idempotency_key", None)
-    assert key is None or isinstance(key, UUID)
-    return key
-
-
 @router.get(
     "/api/sessions/{session_id}/inbound",
     dependencies=[Depends(require_role("writer"))],
@@ -260,6 +260,15 @@ async def session_inbound_drain_route(
     Writer-gated, not owner-gated: AgentSessions are a shared workspace, so any
     writer may drain. In practice the session's own ``trax run`` is the only
     reader, but the route enforces no per-opener restriction.
+
+    Args:
+      session_id: Session id.
+      request: Request.
+      wait_sec: Wait sec.
+
+    Returns:
+      result: The DrainInboundResponse.
+
     """
     await _require_session(get_store(request), session_id)
     inbound = get_inbound(request)
@@ -291,6 +300,16 @@ async def session_end_route(
     ``status`` non-terminal -- and the inbound queue is drained only after
     the close commits, so a failed end never silently discards undelivered
     steering messages. A second end on an already-closed session is a 409.
+
+    Args:
+      session_id: Session id.
+      body: Body.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The SessionEndResponse.
+
     """
     store = get_store(request)
     await _require_session(store, session_id)
@@ -314,3 +333,28 @@ async def session_end_route(
     # a clean close, so a failed end doesn't discard undelivered messages.
     get_inbound(request).drain(session_id)
     return SessionEndResponse(id=session_id, ended=committed_ended)
+
+
+def _actor(identity: AuthIdentity, supplied: str | None) -> str:
+    """Return the audit actor: the client-supplied value, else the principal email."""
+    return supplied or identity.email
+
+
+async def _require_session(store: Store, session_id: UUID) -> AgentSession:
+    """Fetch an AgentSession row or raise 404; reject non-session ids."""
+    row = await store.get_inquiry(session_id)
+    if not isinstance(row, AgentSession):
+        raise HTTPException(status_code=404, detail=f"unknown session {session_id}")
+    return row
+
+
+# ``ChangeIdMiddleware`` parses the header once (rejecting a malformed key with 400) and
+# stashes the validated UUID on ``request.state``; this just reads it, so the parse +
+# its failure branch live in exactly one place. ``getattr`` default covers a request
+# that never passed through the middleware (a bare test app), leaving the send un-
+# deduped -- the safe default.
+def _idempotency_key(request: Request) -> UUID | None:
+    """Return the request's already-parsed ``Idempotency-Key``, or ``None``."""
+    key = getattr(request.state, "idempotency_key", None)
+    assert key is None or isinstance(key, UUID)
+    return key

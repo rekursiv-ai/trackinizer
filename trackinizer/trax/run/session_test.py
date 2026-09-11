@@ -30,7 +30,7 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
 )
 from trackinizer.lib.posix.follow import follow_tree
-from trackinizer.trax.run import session as session_mod
+from trackinizer.trax.run import session
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.custom_types import Adapter
@@ -58,8 +58,8 @@ from trackinizer.wire.wire_session_ir import RecordBody
 @pytest.fixture(autouse=True)
 def short_queue_drain_interval(monkeypatch: pytest.MonkeyPatch) -> None:
     """Preserve flush ticks and rearm backoff without production-sized waits."""
-    monkeypatch.setattr(session_mod, "_QUEUE_DRAIN_SEC", 0.005)
-    monkeypatch.setattr(session_mod, "_WATCH_REARM_SEC", 0.01)
+    monkeypatch.setattr(session, "_QUEUE_DRAIN_SEC", 0.005)
+    monkeypatch.setattr(session, "_WATCH_REARM_SEC", 0.01)
 
 
 class _RecordingSink(Sink):
@@ -122,18 +122,15 @@ class _RecordingSink(Sink):
         self.closed = True
 
 
+# Reads the record's own field rather than a projection, so a test failure names the
+# turn that went missing rather than a search string.
+#
+# Records with no prose are SKIPPED, not asserted against: one native line legitimately
+# produces several records -- a claude user line also emits the ``TurnContext`` that
+# applies to it -- and the drain tests are about which turns were captured and in what
+# order, not how many records a dialect spends saying so.
 def _texts(sink: _RecordingSink) -> list[str]:
-    """The prose of each captured record that carries any, in emit order.
-
-    Reads the record's own field rather than a projection, so a test failure
-    names the turn that went missing rather than a search string.
-
-    Records with no prose are SKIPPED, not asserted against: one native line
-    legitimately produces several records -- a claude user line also emits the
-    ``TurnContext`` that applies to it -- and the drain tests are about which
-    turns were captured and in what order, not how many records a dialect
-    spends saying so.
-    """
+    """Return the prose of each captured record that carries any, in emit order."""
     out: list[str] = []
     for _idx, _name, event in sink.events:
         match event.record:
@@ -146,26 +143,22 @@ def _texts(sink: _RecordingSink) -> list[str]:
     return out
 
 
+# The fake dialect the file-drain tests use: it makes "which turns were captured, in
+# what order" the only thing under test, with no provider grammar in the way -- so it
+# states no opening ``TurnContext`` either, which a real dialect does and which would
+# show up in every count here.
 def _line_records(stream: TextIO) -> Iterator[SessionRecord]:
-    """One record per line, carrying the line's own text.
-
-    The fake dialect the file-drain tests use: it makes "which turns were
-    captured, in what order" the only thing under test, with no provider
-    grammar in the way -- so it states no opening ``TurnContext`` either,
-    which a real dialect does and which would show up in every count here.
-    """
+    """One record per line, carrying the line's own text."""
     for line in stream:
         yield UserMessage(content=line.rstrip("\n"))
 
 
+# STREAMING, like the real dialects: the reader runs on the ``Tail``'s own thread, and a
+# generator that raises is finished -- so the tail rebuilds it and the raise is handed
+# back to whoever fed the poison line. That is what keeps one bad line costing one line
+# rather than the rest of the file.
 def _poison_records(stream: TextIO) -> Iterator[SessionRecord]:
-    """One record per line; raise on the line whose text is ``boom``.
-
-    STREAMING, like the real dialects: the reader runs on the ``Tail``'s own
-    thread, and a generator that raises is finished -- so the tail rebuilds it
-    and the raise is handed back to whoever fed the poison line. That is what
-    keeps one bad line costing one line rather than the rest of the file.
-    """
+    """One record per line; raise on the line whose text is ``boom``."""
     for line in stream:
         text = line.rstrip("\n")
         if text == "boom":
@@ -173,14 +166,11 @@ def _poison_records(stream: TextIO) -> Iterator[SessionRecord]:
         yield UserMessage(content=text)
 
 
+# Mirrors gemini, which rewrites ONE JSON object in place: the runner re-feeds the whole
+# body on each change and marks the chunk a restart, so each record lands back on the
+# position it already held rather than the reader having to remember what it emitted.
 def _document_records(stream: TextIO) -> Iterator[SessionRecord]:
-    """Every message a whole document holds, re-read from its start.
-
-    Mirrors gemini, which rewrites ONE JSON object in place: the runner
-    re-feeds the whole body on each change and marks the chunk a restart, so
-    each record lands back on the position it already held rather than the
-    reader having to remember what it emitted.
-    """
+    """Every message a whole document holds, re-read from its start."""
     obj = cast(dict[str, list[str]], json.loads(stream.read()))
     for text in obj.get("messages") or []:
         yield UserMessage(content=text)
@@ -190,7 +180,9 @@ class _FakeAdapter:
     """Treats every ``*.jsonl`` line as one ``UserMessage`` record."""
 
     name: str = "fake"
+
     cli_binary: str = "fake"
+
     whole_file: bool = False
 
     def __init__(self, root: Path) -> None:
@@ -221,7 +213,9 @@ class _WholeFileAdapter(_FakeAdapter):
     """
 
     name: str = "wholefile"
+
     cli_binary: str = "wholefile"
+
     whole_file: bool = True
 
     @override
@@ -237,6 +231,7 @@ class _PoisonAdapter(_FakeAdapter):
     """Raises on a line whose text is ``boom``; otherwise a ``UserMessage``."""
 
     name: str = "poison"
+
     cli_binary: str = "poison"
 
     @override
@@ -247,7 +242,7 @@ class _PoisonAdapter(_FakeAdapter):
 def _always_found(
     cmd: str, mode: int = os.F_OK | os.X_OK, path: str | None = None
 ) -> str:
-    """A ``shutil.which`` that resolves anything: the binary is never exec'd."""
+    """Return a ``shutil.which`` that resolves anything: the binary is never exec'd."""
     del mode, path
     return f"/bin/{cmd}"
 
@@ -256,19 +251,20 @@ def _write(path: Path, lines: int) -> None:
     path.write_text("".join(json.dumps({"n": i}) + "\n" for i in range(lines)))
 
 
+# Delivery is the handshake between a test's writes: a second write issued once the
+# first's turn has been EMITTED cannot be folded into the same wake, which no fixed
+# pause can promise. Returns rather than asserts on timeout so the caller's own
+# assertion names what is missing.
 def _wait_for_events(sink: _RecordingSink, count: int) -> None:
-    """Block until ``sink`` holds ``count`` events, or give up after 3s.
-
-    Delivery is the handshake between a test's writes: a second write issued
-    once the first's turn has been EMITTED cannot be folded into the same wake,
-    which no fixed pause can promise. Returns rather than asserts on timeout so
-    the caller's own assertion names what is missing.
-    """
+    """Block until ``sink`` holds ``count`` events, or give up after 3s."""
     deadline = time.monotonic() + 3.0
     while len(sink.events) < count and time.monotonic() < deadline:
         time.sleep(0.005)
 
 
+# The drain is wake-driven, so a test cannot call one scan and inspect the result: it
+# starts the loop, writes, and waits for delivery. A ``write`` that handshakes on
+# delivery mid-way passes the ``sink`` it will watch.
 def _drain_once(
     adapter: Adapter,
     write: Callable[[], object],
@@ -277,12 +273,7 @@ def _drain_once(
     expected: int = 1,
     sink: _RecordingSink | None = None,
 ) -> tuple[_Stats, _RecordingSink]:
-    """Run the real drain, perform ``write``, and collect what it captured.
-
-    The drain is wake-driven, so a test cannot call one scan and inspect the
-    result: it starts the loop, writes, and waits for delivery. A ``write``
-    that handshakes on delivery mid-way passes the ``sink`` it will watch.
-    """
+    """Run the real drain, perform ``write``, and collect what it captured."""
     sink = sink or _RecordingSink()
     stats = _Stats()
     stop = threading.Event()
@@ -313,17 +304,15 @@ def _drain_once(
     return stats, sink
 
 
+# The trailing pause is a settle window, not a spawn guess: the test proves NOTHING
+# arrives after the identical rewrite, and absence has no event to wait on. Ten drain
+# intervals is ample for a duplicate to have been emitted.
 def _rewrite_identically(log: Path, body: str, sink: _RecordingSink) -> None:
-    """Write ``body``, wait for its turn to land, then write the same bytes.
-
-    The trailing pause is a settle window, not a spawn guess: the test proves
-    NOTHING arrives after the identical rewrite, and absence has no event to
-    wait on. Ten drain intervals is ample for a duplicate to have been emitted.
-    """
+    """Write ``body``, wait for its turn to land, then write the same bytes."""
     log.write_text(body)
     _wait_for_events(sink, 1)
     log.write_text(body)
-    time.sleep(10 * session_mod._QUEUE_DRAIN_SEC)
+    time.sleep(10 * session._QUEUE_DRAIN_SEC)
 
 
 class _RecordingStop(threading.Event):
@@ -506,7 +495,7 @@ class TestProjectDirectoryBornMidRun:
         expected = tmp_path / "codex" / "sessions"
 
         assert not expected.exists()
-        session_mod._prepare_session_dirs(CodexAdapter())
+        session._prepare_session_dirs(CodexAdapter())
         assert expected.is_dir()
 
     def test_claude_captures_a_project_directory_created_after_the_watch(
@@ -582,7 +571,7 @@ class TestProjectDirectoryBornMidRun:
         expected = tmp_path / "fresh" / "projects"
 
         assert not expected.exists()
-        session_mod._prepare_session_dirs(ClaudeAdapter())
+        session._prepare_session_dirs(ClaudeAdapter())
         assert expected.is_dir()
 
     def test_a_missing_gemini_tmp_root_is_created_before_the_watch(
@@ -593,7 +582,7 @@ class TestProjectDirectoryBornMidRun:
         expected = tmp_path / ".gemini" / "tmp"
 
         assert not expected.exists()
-        session_mod._prepare_session_dirs(GeminiAdapter())
+        session._prepare_session_dirs(GeminiAdapter())
         assert expected.is_dir()
 
     def test_claude_captures_when_no_project_directory_exists_yet(
@@ -788,10 +777,10 @@ class TestDrainSurvivesParseError:
         def record_warning(message: str, *args: object, exc_info: bool = False) -> None:
             calls.append((message, args, exc_info))
 
-        monkeypatch.setattr(session_mod._logger, "warning", record_warning)
+        monkeypatch.setattr(session._logger, "warning", record_warning)
 
         _process_chunk(
-            session_mod._Captured(path=tmp_path / "s.jsonl", raw=b"boom"),
+            session._Captured(path=tmp_path / "s.jsonl", raw=b"boom"),
             cast(Adapter, adapter),
             sink,
             _Stats(),
@@ -841,13 +830,13 @@ class TestTheWatchIsArmedBeforeTheChildSpawns:
                 )
                 return 0
 
-        monkeypatch.setattr(session_mod, "ThreadedRelay", _WritingRelay)
+        monkeypatch.setattr(session, "ThreadedRelay", _WritingRelay)
         monkeypatch.setattr(shutil, "which", _always_found)
 
         # Not 0.0: the relay exits the instant it writes, so the quiesce is the
         # only window the drain gets before ``stop``; ten drain intervals, with
         # the loop's final pass as the backstop.
-        rc = session_mod._spawn_and_drain(
+        rc = session._spawn_and_drain(
             RunConfig(cli_name="claude", quiesce_seconds=0.05),
             ClaudeAdapter(),
             cast(Any, sink),
@@ -884,7 +873,7 @@ class TestFollowerRearmsAfterAFailure:
             kwargs["on_armed"] = rearmed.set
             return real_follow(*directories, **cast(Any, kwargs))
 
-        monkeypatch.setattr(session_mod, "follow_tree", flaky)
+        monkeypatch.setattr(session, "follow_tree", flaky)
 
         def write_after_rearm() -> None:
             # A failure releases the original armed event without registering a watch.
@@ -970,8 +959,9 @@ class TestDrainSurvivesSinkError:
 
 
 class _FlakyFlushSink(_RecordingSink):
-    """Records events, but ``flush`` raises a transient error a fixed number of
-    times before succeeding, to drive the drain loop's resilience.
+    """Records events, but ``flush`` raises a transient error a fixed number of.
+
+    Times before succeeding, to drive the drain loop's resilience.
     """
 
     def __init__(self, fail_times: int) -> None:
@@ -997,11 +987,11 @@ class TestStreamQueueIsBounded:
     """
 
     def test_overflow_drops_oldest_not_memory(self) -> None:
-        queue: deque[bytes] = deque(maxlen=session_mod._STREAM_QUEUE_MAX)
-        overfill = session_mod._STREAM_QUEUE_MAX + 1_000
+        queue: deque[bytes] = deque(maxlen=session._STREAM_QUEUE_MAX)
+        overfill = session._STREAM_QUEUE_MAX + 1_000
         for i in range(overfill):
             queue.append(f"{i}\n".encode())
-        assert len(queue) == session_mod._STREAM_QUEUE_MAX
+        assert len(queue) == session._STREAM_QUEUE_MAX
         # Oldest dropped, newest kept.
         assert queue[-1] == f"{overfill - 1}\n".encode()
 
@@ -1024,17 +1014,17 @@ class TestStreamQueueIsBounded:
         def missing_binary(cmd: str) -> None:
             del cmd
 
-        monkeypatch.setattr(session_mod, "_drain_filesystem_loop", observe_queue)
+        monkeypatch.setattr(session, "_drain_filesystem_loop", observe_queue)
         monkeypatch.setattr(shutil, "which", missing_binary)
         with pytest.raises(SystemExit, match="not found in PATH"):
-            session_mod._spawn_and_drain(
+            session._spawn_and_drain(
                 RunConfig(cli_name="fake"),
                 _FakeAdapter(tmp_path),
                 _RecordingSink(),
                 _Stats(),
             )
 
-        assert limits == [session_mod._STREAM_QUEUE_MAX]
+        assert limits == [session._STREAM_QUEUE_MAX]
 
     def test_overflow_is_counted_and_warned(
         self, caplog: pytest.LogCaptureFixture
@@ -1048,7 +1038,7 @@ class TestStreamQueueIsBounded:
         stats = _Stats()
         with caplog.at_level("WARNING"):
             for i in range(5):
-                session_mod._enqueue_stream_line(queue, stats, f"{i}\n".encode())
+                session._enqueue_stream_line(queue, stats, f"{i}\n".encode())
         assert stats.counts["StreamEventDropped"] == 3
         warns = [r for r in caplog.records if "queue full" in r.message]
         assert len(warns) == 1, "one WARN per run, not one per dropped event"
@@ -1375,6 +1365,7 @@ class _UuidAdapter(_FakeAdapter):
     """A line adapter over uuid-stamped records, like claude's."""
 
     name: str = "uuids"
+
     cli_binary: str = "uuids"
 
     @override
@@ -1386,11 +1377,12 @@ class TestAdapterRegistryFreshPerRun:
     """Each run gets a fresh adapter so per-run state never leaks across runs."""
 
     def test_registry_builds_a_fresh_adapter_each_call(self) -> None:
-        """The codex adapter carries per-run ``_last_model`` state; two runs in
-        one process (tests, a future supervisor) must not share it. The registry
-        holds a factory, so each lookup yields a distinct instance.
+        """The codex adapter carries per-run ``_last_model`` state.
+
+        Two runs in one process (tests, a future supervisor) must not share it. The
+        registry holds a factory, so each lookup yields a distinct instance.
         """
-        factory = session_mod._ADAPTERS["codex"]
+        factory = session._ADAPTERS["codex"]
         first = factory()
         second = factory()
         assert first is not second
@@ -1409,12 +1401,12 @@ class TestMissingBinary:
         config = RunConfig(
             cli_name=adapter.name, sync=False, out_path=tmp_path / "o.jsonl"
         )
-        session_mod._ADAPTERS[adapter.name] = lambda: cast(Adapter, adapter)
+        session._ADAPTERS[adapter.name] = lambda: cast(Adapter, adapter)
         try:
             with pytest.raises(SystemExit, match="not found in PATH"):
                 run(config)
         finally:
-            session_mod._ADAPTERS.pop(adapter.name, None)
+            session._ADAPTERS.pop(adapter.name, None)
 
 
 class TestRoutingEnv:
@@ -1469,7 +1461,7 @@ class TestEmitSlashCommands:
             RunConfig(cli_name="fake"),
             queue,
         )
-        assert not queue  # fully drained
+        assert not queue  # fully drained.
         # NOT records: a command is absent from the session log, so it holds no
         # position in any part and must not consume one.
         assert sink.events == []
@@ -1510,7 +1502,7 @@ class TestDryRunDrain:
         stats = _Stats()
         stop = threading.Event()
         stop.set()
-        rc = session_mod._dry_run_drain(
+        rc = session._dry_run_drain(
             RunConfig(cli_name="wholefile"),
             cast(Adapter, adapter),
             sink,
@@ -1525,8 +1517,8 @@ class TestDryRunDrain:
         """The dry-run loop exits promptly once ``stop`` is set (no spin)."""
         adapter = _FakeAdapter(tmp_path)
         stop = threading.Event()
-        stop.set()  # already stopped: the loop runs one final sweep and returns
-        rc = session_mod._dry_run_drain(
+        stop.set()  # already stopped: the loop runs one final sweep and returns.
+        rc = session._dry_run_drain(
             RunConfig(cli_name="fake"),
             cast(Adapter, adapter),
             _RecordingSink(),
@@ -1563,12 +1555,12 @@ class TestRunPreservesClient:
         def _fake_dry_run(*_a: object, **_k: object) -> int:
             return 0
 
-        original = session_mod._dry_run_drain
-        session_mod._dry_run_drain = cast(Any, _fake_dry_run)
+        original = session._dry_run_drain
+        session._dry_run_drain = cast(Any, _fake_dry_run)
         try:
             rc = run(config)
         finally:
-            session_mod._dry_run_drain = original
+            session._dry_run_drain = original
         assert rc == 0
         assert client.close_calls == 0
 
@@ -1599,18 +1591,18 @@ class TestTeardownRunsEvenWhenTheRelayRaises:
         def watching_drain(*args: object, **kwargs: object) -> None:
             armed = kwargs["armed"]
             assert isinstance(armed, threading.Event)
-            armed.set()  # release the spawn, as a real armed watch would
+            armed.set()  # release the spawn, as a real armed watch would.
             stop = args[4]
             assert isinstance(stop, threading.Event)
             observed.append(stop.wait(timeout=5.0))
 
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-        monkeypatch.setattr(session_mod, "ThreadedRelay", _ExplodingRelay)
+        monkeypatch.setattr(session, "ThreadedRelay", _ExplodingRelay)
         monkeypatch.setattr(shutil, "which", _always_found)
-        monkeypatch.setattr(session_mod, "_drain_filesystem_loop", watching_drain)
+        monkeypatch.setattr(session, "_drain_filesystem_loop", watching_drain)
 
         with pytest.raises(RuntimeError, match="pty allocation"):
-            _ = session_mod._spawn_and_drain(
+            _ = session._spawn_and_drain(
                 RunConfig(cli_name="claude", quiesce_seconds=0.0),
                 ClaudeAdapter(),
                 cast(Any, _RecordingSink()),

@@ -20,7 +20,15 @@ RoleLiteral = Literal["viewer", "writer", "admin"]
 
 
 def engine_of(request: Request) -> DatabaseEngine:
-    """Return the DatabaseEngine held on app state."""
+    """Return the DatabaseEngine held on app state.
+
+    Args:
+      request: Request.
+
+    Returns:
+      engine: The DatabaseEngine.
+
+    """
     engine: DatabaseEngine = request.app.state.engine
     return engine
 
@@ -34,6 +42,14 @@ def parse_seq_ranges(
     list-style endpoint maps its repeated ``seq_range`` params through here,
     so the grammar and the ``min_seq`` lower-bound check live in a single
     place and a malformed param is a uniform 400 across routes.
+
+    Args:
+      raw: Raw.
+      min_seq: Min seq.
+
+    Returns:
+      result: The tuple[SeqRange, ...].
+
     """
     try:
         return tuple(parse_seq_range(text, min_seq=min_seq) for text in (raw or ()))
@@ -42,7 +58,15 @@ def parse_seq_ranges(
 
 
 def iso_format(value: object) -> str | None:
-    """Render a datetime column as an ISO 8601 string, or None."""
+    """Render a datetime column as an ISO 8601 string, or None.
+
+    Args:
+      value: Value.
+
+    Returns:
+      result: The str | None.
+
+    """
     if value is None:
         return None
     return cast(datetime, value).isoformat()

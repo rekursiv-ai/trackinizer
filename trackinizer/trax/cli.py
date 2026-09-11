@@ -46,18 +46,23 @@ from trackinizer.trax.verbs import (
 
 
 if TYPE_CHECKING:
-    from trackinizer.trax.run.session import main as run_main
+    from trackinizer.trax.run import session
 else:
     from wrapt import lazy_import
 
     # ``trax run`` is the only verb that needs the PTY/tail/adapter machinery
     # (importing ``trax.run.session`` costs ~324ms), so bind it lazily: the
     # proxy resolves on first call, which only happens inside the ``run`` branch.
-    run_main = lazy_import("trackinizer.trax.run.session", "main")
+    session = lazy_import("trackinizer.trax.run.session")
 
 
 def connect_flags(parser: argparse.ArgumentParser) -> None:
-    """Register ``--profile``, ``--host``, and ``--port``."""
+    """Register ``--profile``, ``--host``, and ``--port``.
+
+    Args:
+      parser: Parser.
+
+    """
     parser.add_argument("--profile", default=None)
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=None)
@@ -80,6 +85,13 @@ def connect(args: argparse.Namespace) -> Client:
     from one process: a fresh ``Client`` per request would open a new
     connection pool each time -- discarding the keep-alive the transport
     exists to provide -- and accumulate sockets for the daemon's whole life.
+
+    Args:
+      args: Args.
+
+    Returns:
+      result: The Client.
+
     """
     return _shared_client(_resolve_target(args))
 
@@ -89,28 +101,10 @@ class _Target:
     """The resolved connection identity a ``Client`` is keyed on."""
 
     url: str
+
     author: str
+
     api_key: str
-
-
-def _resolve_target(args: argparse.Namespace) -> _Target:
-    """Resolve flags, environment, and profile into one connection identity."""
-    host = getattr(args, "host", None)
-    port = getattr(args, "port", None)
-    if name := getattr(args, "profile", None):
-        profile = read_profile(name)
-    elif env_url := env("TRACKINIZER_URL"):
-        profile = Profile(url=server_url(env_url, "TRACKINIZER_URL"), author="")
-    else:
-        profile = load_profile()
-    url = profile.url
-    if host is not None or port is not None:
-        parsed = urlparse(profile.url)
-        scheme = parsed.scheme or "http"
-        host = host or parsed.hostname or "127.0.0.1"
-        port = port or parsed.port
-        url = f"{scheme}://{host if port is None else f'{host}:{port}'}"
-    return _Target(url=url, author=profile.author, api_key=profile.api_key)
 
 
 _CLIENTS: Final[dict[_Target, Client]] = {}
@@ -124,16 +118,6 @@ profiles a user actually addresses."""
 _CLIENTS_LOCK: Final = threading.Lock()
 """The daemon serves requests on threads, so two may resolve the same target
 at once; without this each would build a pool and one would be orphaned."""
-
-
-def _shared_client(target: _Target) -> Client:
-    """The Client for ``target``, building it once per process."""
-    with _CLIENTS_LOCK:
-        if (client := _CLIENTS.get(target)) is not None:
-            return client
-        client = Client(target.url, author=target.author, api_key=target.api_key)
-        _CLIENTS[target] = client
-        return client
 
 
 def close_clients() -> None:
@@ -152,6 +136,7 @@ class Help(Command):
     """Print top-level help or per-verb help."""
 
     names = ("help",)
+
     help = HelpPage(
         usage="trax COMMAND [ARGS] [OPTIONS]",
         summary="Subjects:\n  issue artifact experiment paper belief codechange webresult websearch agentsession",
@@ -227,6 +212,11 @@ def parse_and_run(
     sole ``--help`` / ``-h`` routes to the ``help`` verb; bare ``trax``
     lists every kind. Tests pass an explicit ``client_factory``, so the
     connection flags go unused.
+
+    Args:
+      argv: Argv.
+      client_factory: Client factory.
+
     """
     top, leftover = _peel_top_flags(list(argv))
     SHOW_IDS.set(bool(getattr(top, "show_ids", False)))
@@ -243,13 +233,13 @@ def parse_and_run(
     verb = leftover[0].lower()
     rest = leftover[1:]
     if verb == "run":
-        # ``trax run`` shim. ``run_main`` is a module-level ``lazy_import`` proxy,
+        # ``trax run`` shim. ``session.main`` is a module-level ``lazy_import`` proxy,
         # so the PTY/tail machinery imports only here, on first call -- other
         # verbs never pay for it. Sync is on by default, so resolve a Client
         # from the active profile (same chain every verb uses) and hand it over;
         # the memoized ``client_factory`` is unused.
         del client_factory
-        rc = run_main(rest, client_factory=lambda: connect(top))
+        rc = session.main(rest, client_factory=lambda: connect(top))
         if rc != 0:
             sys.exit(rc)
         return None
@@ -264,14 +254,69 @@ def parse_and_run(
     return _run_kindless(leftover, client_factory)
 
 
-def _run_kindless(tokens: Sequence[str], client_factory: Callable[[], Client]) -> None:
-    """List across every kind, filtered by ``tokens``.
+# The connection flags that take a value, so the prefix scan knows to skip the
+# token after them when locating the verb. ``--show-ids`` is a store_true and
+# takes none.
+_VALUE_FLAGS: frozenset[str] = frozenset({"--profile", "--host", "--port"})
 
-    The one kindless path: bare ``trax`` reaches it with no tokens, and a
-    leading filter field reaches it with the whole command. Parsed through
-    ``Kind``'s parser so ``--format`` / ``--limit`` / ``--sort`` mean the same
-    thing they do after a kind name.
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the program; return the process exit code.
+
+    Args:
+      argv: Argv.
+
+    Returns:
+      result: The int.
+
     """
+    # Drain pooled sockets at exit; httpx2 warns if a Client is garbage
+    # collected with any still open. The daemon never reaches this path -- it
+    # calls ``parse_and_run`` directly and keeps its clients for its lifetime.
+    atexit.register(close_clients)
+    try:
+        parse_and_run(sys.argv[1:] if argv is None else list(argv))
+    except ClientError as err:
+        sys.stderr.write(f"trax: {err}\n")
+        return 2
+    return 0
+
+
+def _resolve_target(args: argparse.Namespace) -> _Target:
+    """Resolve flags, environment, and profile into one connection identity."""
+    host = getattr(args, "host", None)
+    port = getattr(args, "port", None)
+    if name := getattr(args, "profile", None):
+        profile = read_profile(name)
+    elif env_url := env("TRACKINIZER_URL"):
+        profile = Profile(url=server_url(env_url, "TRACKINIZER_URL"), author="")
+    else:
+        profile = load_profile()
+    url = profile.url
+    if host is not None or port is not None:
+        parsed = urlparse(profile.url)
+        scheme = parsed.scheme or "http"
+        host = host or parsed.hostname or "127.0.0.1"
+        port = port or parsed.port
+        url = f"{scheme}://{host if port is None else f'{host}:{port}'}"
+    return _Target(url=url, author=profile.author, api_key=profile.api_key)
+
+
+def _shared_client(target: _Target) -> Client:
+    """Return the Client for ``target``, building it once per process."""
+    with _CLIENTS_LOCK:
+        if (client := _CLIENTS.get(target)) is not None:
+            return client
+        client = Client(target.url, author=target.author, api_key=target.api_key)
+        _CLIENTS[target] = client
+        return client
+
+
+# The one kindless path: bare ``trax`` reaches it with no tokens, and a leading filter
+# field reaches it with the whole command. Parsed through ``Kind``'s parser so
+# ``--format`` / ``--limit`` / ``--sort`` mean the same thing they do after a kind name.
+def _run_kindless(tokens: Sequence[str], client_factory: Callable[[], Client]) -> None:
+    """List across every kind, filtered by ``tokens``."""
     args = Kind.make_parser().parse_args(list(tokens))
     query = parse_list_query(None, cast(Sequence[str], args.rest))
     if query is None:
@@ -279,16 +324,13 @@ def _run_kindless(tokens: Sequence[str], client_factory: Callable[[], Client]) -
     return run_list_query(query, args, client_factory)
 
 
+# Global flags are peeled ONLY from the pre-verb prefix -- the run of leading tokens up
+# to the first verb/kind. A flag spelling that appears AFTER the verb is a field value
+# (``issue 7 title to --show-ids``) and must flow through verbatim, so it is never
+# consumed here (TRAX-CLI-001). Top-level ``--help`` is left for ``parse_and_run`` to
+# route to the ``help`` verb, keeping one help renderer in charge of output.
 def _peel_top_flags(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
-    """Split connection flags from the sub-command argv.
-
-    Global flags are peeled ONLY from the pre-verb prefix -- the run of leading
-    tokens up to the first verb/kind. A flag spelling that appears AFTER the
-    verb is a field value (``issue 7 title to --show-ids``) and must flow
-    through verbatim, so it is never consumed here (TRAX-CLI-001). Top-level
-    ``--help`` is left for ``parse_and_run`` to route to the ``help`` verb,
-    keeping one help renderer in charge of output.
-    """
+    """Split connection flags from the sub-command argv."""
     parser = argparse.ArgumentParser(prog="trax", add_help=False)
     connect_flags(parser)
     parser.add_argument(
@@ -302,20 +344,12 @@ def _peel_top_flags(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     return args, [*unknown, *argv[split:]]
 
 
-# The connection flags that take a value, so the prefix scan knows to skip the
-# token after them when locating the verb. ``--show-ids`` is a store_true and
-# takes none.
-_VALUE_FLAGS: frozenset[str] = frozenset({"--profile", "--host", "--port"})
-
-
+# The prefix is the leading run of global flags and their values. The first token that
+# is neither a flag (``--``) nor the value of a preceding value-taking flag is the
+# verb/kind; everything from there on is the sub-command, where a flag spelling is a
+# field value, not a global flag.
 def _prefix_end(argv: list[str]) -> int:
-    """Index of the first verb/kind token: the end of the global-flag prefix.
-
-    The prefix is the leading run of global flags and their values. The first
-    token that is neither a flag (``--``) nor the value of a preceding
-    value-taking flag is the verb/kind; everything from there on is the
-    sub-command, where a flag spelling is a field value, not a global flag.
-    """
+    """Index of the first verb/kind token: the end of the global-flag prefix."""
     index = 0
     while index < len(argv):
         token = argv[index]
@@ -327,15 +361,3 @@ def _prefix_end(argv: list[str]) -> int:
             index += 1
         index += 1
     return len(argv)
-
-
-def main(argv: Sequence[str] | None = None) -> None:
-    # Drain pooled sockets at exit; httpx2 warns if a Client is garbage
-    # collected with any still open. The daemon never reaches this path -- it
-    # calls ``parse_and_run`` directly and keeps its clients for its lifetime.
-    atexit.register(close_clients)
-    try:
-        parse_and_run(sys.argv[1:] if argv is None else list(argv))
-    except ClientError as err:
-        sys.stderr.write(f"trax: {err}\n")
-        sys.exit(2)

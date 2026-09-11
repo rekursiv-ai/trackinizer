@@ -33,16 +33,13 @@ from trackinizer.wire.seq_ranges import SeqRange
 from trackinizer.wire.wire_sessions import SessionStart
 
 
+# ``handler`` receives an ``httpx2.Request`` and returns an ``httpx2.Response``. The
+# test asserts on the request that arrives in the handler.
 def _install_mock_transport(
     client: Client,
     handler: Any,
 ) -> None:
-    """Replace the client's transport with one that calls ``handler``.
-
-    ``handler`` receives an ``httpx2.Request`` and returns an
-    ``httpx2.Response``. The test asserts on the request that arrives
-    in the handler.
-    """
+    """Replace the client's transport with one that calls ``handler``."""
     client._http.close()
     client._http = httpx2.Client(
         base_url=client.base_url,
@@ -381,7 +378,8 @@ class TestRequests:
                 client.post("/x")
 
     def test_http_error_carries_structured_code(self) -> None:
-        def handler(_request: httpx2.Request) -> httpx2.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
             return httpx2.Response(
                 409,
                 json={"detail": "clash", "code": "conflict"},
@@ -443,8 +441,8 @@ class TestRequests:
     ) -> None:
         """A 502/503/504 retries the same request body and Idempotency-Key."""
 
-        def _no_sleep(_s: float) -> None:
-            pass
+        def _no_sleep(s: float) -> None:
+            del s
 
         monkeypatch.setattr("trackinizer.client.client.time.sleep", _no_sleep)
         seen: list[httpx2.Request] = []
@@ -477,8 +475,8 @@ class TestRequests:
         retried like the other 5xx -- one logical write, not two.
         """
 
-        def _no_sleep(_s: float) -> None:
-            pass
+        def _no_sleep(s: float) -> None:
+            del s
 
         monkeypatch.setattr("trackinizer.client.client.time.sleep", _no_sleep)
         seen: list[httpx2.Request] = []
@@ -493,15 +491,15 @@ class TestRequests:
             _install_mock_transport(client, handler)
             result = client.post("/api/x", body={"a": 1})
         assert result == {"ok": True}
-        assert len(seen) == 2  # one 500, then the retry succeeded
+        assert len(seen) == 2  # one 500, then the retry succeeded.
         change_ids = {req.headers["Idempotency-Key"] for req in seen}
         assert len(change_ids) == 1, "the 500 retry must reuse the same UUID"
 
     def test_gives_up_after_max_retries(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """After exhausting retries the final 5xx surfaces as ClientError."""
 
-        def _no_sleep(_s: float) -> None:
-            pass
+        def _no_sleep(s: float) -> None:
+            del s
 
         monkeypatch.setattr("trackinizer.client.client.time.sleep", _no_sleep)
         attempts: list[httpx2.Request] = []
@@ -556,7 +554,8 @@ def test_request_truncates_oversized_error_text() -> None:
     """
     big = "x" * 4_096
 
-    def handler(_request: httpx2.Request) -> httpx2.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(400, content=big.encode())
 
     with Client("http://server") as client:
@@ -570,7 +569,8 @@ def test_request_truncates_oversized_error_text() -> None:
 
 class TestVersion:
     def test_returns_server_sha(self) -> None:
-        def handler(_request: httpx2.Request) -> httpx2.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
             return httpx2.Response(200, json={"sha": "deadbeef"})
 
         with Client("http://server") as client:
@@ -580,7 +580,8 @@ class TestVersion:
     def test_servers_own_unknown_passes_through(self) -> None:
         # The server resolved its build to the literal "unknown"; that is a
         # real answer, returned verbatim (distinct from a malformed payload).
-        def handler(_request: httpx2.Request) -> httpx2.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
             return httpx2.Response(200, json={"sha": "unknown"})
 
         with Client("http://server") as client:
@@ -590,7 +591,8 @@ class TestVersion:
     def test_malformed_payload_raises_not_silent_unknown(self) -> None:
         # A response with no ``sha`` key is a contract violation; it must raise,
         # not masquerade as the server's own "unknown".
-        def handler(_request: httpx2.Request) -> httpx2.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
             return httpx2.Response(200, json={})
 
         with Client("http://server") as client:
@@ -611,7 +613,8 @@ class TestClientErrorContract:
     def test_resolve_id_seq_missing_id_raises_client_error(self) -> None:
         """A scalar-returning seam: ``resolve_id`` SeqRef with no ``id`` key."""
 
-        def handler(_request: httpx2.Request) -> httpx2.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
             return httpx2.Response(200, json={"wrong": "shape"})
 
         with Client("http://server") as client:
@@ -622,7 +625,8 @@ class TestClientErrorContract:
     def test_resolve_id_uuid_non_dict_raises_client_error(self) -> None:
         """A dict-shaped seam fed a list must not leak ``TypeError``."""
 
-        def handler(_request: httpx2.Request) -> httpx2.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
             return httpx2.Response(200, json=[1, 2, 3])
 
         with Client("http://server") as client:
@@ -633,7 +637,8 @@ class TestClientErrorContract:
     def test_resolve_ids_missing_found_raises_client_error(self) -> None:
         """``resolve_ids`` reads ``response['found']``; absence must wrap."""
 
-        def handler(_request: httpx2.Request) -> httpx2.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
             return httpx2.Response(200, json={"nope": {}})
 
         with Client("http://server") as client:
@@ -644,7 +649,8 @@ class TestClientErrorContract:
     def test_submit_missing_id_raises_client_error(self) -> None:
         """``submit`` reads the server-minted ``id``; absence must wrap."""
 
-        def handler(_request: httpx2.Request) -> httpx2.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
             return httpx2.Response(200, json={"nope": "x"})
 
         with Client("http://server") as client:
@@ -655,7 +661,8 @@ class TestClientErrorContract:
     def test_submit_non_uuid_id_raises_client_error(self) -> None:
         """A non-UUID ``id`` value must wrap, not leak ``ValueError``."""
 
-        def handler(_request: httpx2.Request) -> httpx2.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
             return httpx2.Response(200, json={"id": "not-a-uuid"})
 
         with Client("http://server") as client:
@@ -666,7 +673,8 @@ class TestClientErrorContract:
     def test_submit_batch_missing_ids_raises_client_error(self) -> None:
         """A list-returning seam: ``submit_batch`` reads ``response['ids']``."""
 
-        def handler(_request: httpx2.Request) -> httpx2.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
             return httpx2.Response(200, json={"nope": []})
 
         with Client("http://server") as client:
@@ -677,7 +685,8 @@ class TestClientErrorContract:
     def test_next_issue_non_dict_raises_client_error(self) -> None:
         """``next_issue`` promises ``dict | None``; a list is malformed."""
 
-        def handler(_request: httpx2.Request) -> httpx2.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
             return httpx2.Response(200, json=[1, 2, 3])
 
         with Client("http://server") as client:
@@ -688,7 +697,8 @@ class TestClientErrorContract:
     def test_recent_changes_non_list_raises_client_error(self) -> None:
         """A list-returning read fed a dict must surface ``ClientError``."""
 
-        def handler(_request: httpx2.Request) -> httpx2.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
             return httpx2.Response(200, json={"not": "a list"})
 
         with Client("http://server") as client:
@@ -699,7 +709,8 @@ class TestClientErrorContract:
     def test_session_start_malformed_wraps_validation_error(self) -> None:
         """A pydantic ``model_validate`` seam must wrap ``ValidationError``."""
 
-        def handler(_request: httpx2.Request) -> httpx2.Response:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
             return httpx2.Response(201, json={"bogus": True})
 
         with Client("http://server") as client:
@@ -1089,7 +1100,7 @@ class TestClientMethods:
             )
         base = f"/api/edges/{target_id}/narrows/{target_id}"
         sent = [(m, p) for m, p, _ in client.request_calls]
-        # priority landed first, note failed; valence/labels never sent.
+        # Priority landed first, note failed; valence/labels never sent.
         assert sent == [
             ("PUT", f"{base}/priority"),
             ("PUT", f"{base}/note"),
@@ -1155,12 +1166,6 @@ class TestClientMethods:
         client.post_result = {"found": {}, "missing": [str(missing)]}
         with pytest.raises(ClientError, match="not found"):
             client.resolve_ids([UuidRef(uuid=missing)])
-
-
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
-    from trackinizer.lib.testing.main import test_main
-
-    test_main(__file__)
 
 
 # Folded in from former fake_surface_test.py.
@@ -1243,9 +1248,9 @@ def test_server_url_rejects_fragment() -> None:
 @pytest.mark.parametrize(
     "raw",
     [
-        "http://:8765",  # missing host
-        "http://example.com:abc",  # non-numeric port
-        "http://example.com:99999",  # out-of-range port
+        "http://:8765",  # missing host.
+        "http://example.com:abc",  # non-numeric port.
+        "http://example.com:99999",  # out-of-range port.
     ],
 )
 def test_server_url_rejects_malformed_host_or_port(raw: str) -> None:
@@ -1276,7 +1281,8 @@ def test_request_wraps_malformed_json_on_2xx() -> None:
     the ``ClientError`` contract the module promises.
     """
 
-    def handler(_request: httpx2.Request) -> httpx2.Response:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
         return httpx2.Response(200, content=b"<html>oops")
 
     with Client("http://server") as client:
@@ -1288,7 +1294,7 @@ def test_request_wraps_malformed_json_on_2xx() -> None:
 def _edge_post(
     *, created: bool, change_id: str | None
 ) -> Callable[..., Mapping[str, object]]:
-    """A fake ``post`` returning the edge route's ``{change_id, created}``."""
+    """Return a fake ``post`` returning the edge route's ``{change_id, created}``."""
 
     def fake_post(path: str, *, body: object = None) -> Mapping[str, object]:
         del path, body
@@ -1397,8 +1403,8 @@ def test_submit_batch_accepts_matching_or_absent_body_kind() -> None:
     client = _ClientSpy(post_result={"ids": []})
     client.submit_batch(
         [
-            ("Issue", {"title": "a"}),  # absent body kind
-            ("Belief", {"title": "b", "kind": "Belief"}),  # matching body kind
+            ("Issue", {"title": "a"}),  # absent body kind.
+            ("Belief", {"title": "b", "kind": "Belief"}),  # matching body kind.
         ]
     )
     body = cast(dict[str, object], client.request_calls[0][2])
@@ -1442,8 +1448,9 @@ def test_annotate_edge_accepts_metadata_kwargs(
 
 
 class TestSessionMethods:
-    """The session-ingest client methods build the right requests and parse
-    the responses, via a mock transport that inspects each call.
+    """The session-ingest client methods build the right requests and parse the.
+
+    Responses, via a mock transport that inspects each call.
     """
 
     def test_session_start_posts_and_parses(self) -> None:
@@ -1479,3 +1486,9 @@ class TestSessionMethods:
         resp = client.session_end(sid)
         assert seen["path"] == f"/api/sessions/{sid}/end"
         assert resp.id == sid
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.main import test_main
+
+    test_main(__file__)

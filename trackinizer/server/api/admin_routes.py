@@ -68,6 +68,7 @@ class AllowlistAddBody(BaseModel):
     """
 
     email_or_pattern: str = Field(min_length=1, max_length=320)
+
     role: RoleLiteral
 
 
@@ -76,7 +77,16 @@ async def admin_list_users_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("admin"))],
 ) -> MutableJSON:
-    """List every user row for the admin table."""
+    """List every user row for the admin table.
+
+    Args:
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
+    """
     del identity
     engine = engine_of(request)
     async with engine.acquire() as conn:
@@ -94,7 +104,18 @@ async def admin_set_user_role_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("admin"))],
 ) -> MutableJSON:
-    """Update one user's role; 404 when the id matches no row."""
+    """Update one user's role; 404 when the id matches no row.
+
+    Args:
+      user_id: User id.
+      body: Body.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
+    """
     if user_id == identity.user_id and body.role != "admin":
         raise HTTPException(
             status_code=409,
@@ -128,6 +149,15 @@ async def admin_disable_user_route(
 
     The status change and the revocation share one transaction, so a
     failed revoke can't leave a disabled user holding live tokens.
+
+    Args:
+      user_id: User id.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
     """
     if user_id == identity.user_id:
         raise HTTPException(
@@ -165,6 +195,15 @@ async def admin_enable_user_route(
 
     Revoked tokens stay revoked; the user mints fresh keys via ``/me``,
     matching the rotate-on-suspicion stance across the auth surface.
+
+    Args:
+      user_id: User id.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
     """
     del identity
     engine = engine_of(request)
@@ -194,6 +233,15 @@ async def admin_remove_user_route(
     Self-delete is refused with 409 so an admin can't accidentally lock
     the org out. A multi-admin org still rotates admins by having one
     admin delete the other.
+
+    Args:
+      user_id: User id.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The Response.
+
     """
     if user_id == identity.user_id:
         raise HTTPException(
@@ -218,7 +266,16 @@ async def admin_list_allowlist_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("admin"))],
 ) -> MutableJSON:
-    """List allowlist entries for the admin page."""
+    """List allowlist entries for the admin page.
+
+    Args:
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
+    """
     del identity
     engine = engine_of(request)
     async with engine.acquire() as conn:
@@ -239,6 +296,15 @@ async def admin_add_allowlist_route(
 
     The 409 comes from the global unique-violation handler in
     ``api.app``, so this route needs no try/except of its own.
+
+    Args:
+      body: Body.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
     """
     email_or_pattern = _canonical_allowlist_entry(body.email_or_pattern)
     engine = engine_of(request)
@@ -257,13 +323,6 @@ async def admin_add_allowlist_route(
     }
 
 
-def _canonical_allowlist_entry(value: str) -> str:
-    canonical = value.strip().lower()
-    if not canonical:
-        raise HTTPException(status_code=422, detail="allowlist entry cannot be blank")
-    return canonical
-
-
 @router.put("/api/admin/allowlist/{email_or_pattern}/role")
 async def admin_set_allowlist_role_route(
     email_or_pattern: str,
@@ -276,6 +335,16 @@ async def admin_set_allowlist_role_route(
     Same URL-decode behavior as the DELETE route: clients percent-encode
     wildcard rows like ``*@example.com`` as ``%2A%40example.com`` and
     FastAPI hands the path param back already decoded.
+
+    Args:
+      email_or_pattern: Email or pattern.
+      body: Body.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
     """
     del identity
     engine = engine_of(request)
@@ -301,6 +370,15 @@ async def admin_remove_allowlist_route(
     Clients URL-encode ``*@example.com`` as ``%2A%40example.com``;
     Starlette percent-decodes path params before the handler sees them,
     so the value matches the stored row as-is.
+
+    Args:
+      email_or_pattern: Email or pattern.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
     """
     del identity
     engine = engine_of(request)
@@ -314,27 +392,22 @@ async def admin_remove_allowlist_route(
     return {"ok": True}
 
 
+# The last-admin guard is a cross-row invariant. Under Read Committed, two concurrent
+# demote/disable/delete transactions on distinct admins each see ``other_admins >= 1``
+# and both commit, leaving zero active admins. A fixed-key, transaction-scoped advisory
+# lock funnels every role-affecting transaction through one critical section, so the
+# guard reads a stable roster.
 async def _lock_admin_roster(conn: Conn) -> None:
-    """Serialize admin-roster mutations within the current transaction.
-
-    The last-admin guard is a cross-row invariant. Under Read Committed,
-    two concurrent demote/disable/delete transactions on distinct admins
-    each see ``other_admins >= 1`` and both commit, leaving zero active
-    admins. A fixed-key, transaction-scoped advisory lock funnels every
-    role-affecting transaction through one critical section, so the guard
-    reads a stable roster.
-    """
+    """Serialize admin-roster mutations within the current transaction."""
     await conn.execute("SELECT pg_advisory_xact_lock(hashtext('admin_roster'))")
 
 
+# Queries the ``users`` table for whether ``target_id`` is an active admin and how many
+# other active admins exist, then raises 409 with ``last_admin`` when removing this one
+# would empty the roster. Callers must already hold ``_lock_admin_roster`` for the read
+# to be race-free.
 async def _refuse_last_admin_loss(conn: Conn, target_id: uuid.UUID) -> None:
-    """Refuse a demote/disable/delete that would leave zero active admins.
-
-    Queries the ``users`` table for whether ``target_id`` is an active
-    admin and how many other active admins exist, then raises 409 with
-    ``last_admin`` when removing this one would empty the roster. Callers
-    must already hold ``_lock_admin_roster`` for the read to be race-free.
-    """
+    """Refuse a demote/disable/delete that would leave zero active admins."""
     row = await conn.fetchrow(
         "SELECT "
         "(SELECT role = 'admin' AND status = 'active' FROM users WHERE id = $1) "
@@ -376,3 +449,10 @@ def _serialize_allowlist(row: dict[str, object]) -> MutableJSON:
         "added_by": (None if added_by is None else str(cast(uuid.UUID, added_by))),
         "added_at": iso_format(row["added_at"]),
     }
+
+
+def _canonical_allowlist_entry(value: str) -> str:
+    canonical = value.strip().lower()
+    if not canonical:
+        raise HTTPException(status_code=422, detail="allowlist entry cannot be blank")
+    return canonical

@@ -34,7 +34,7 @@ from trackinizer.wire.filters import NON_NULLABLE_COLUMNS
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def scratch_engine(pg_dsn: str) -> AsyncIterator[postgres.PostgresEngine]:
-    """A dedicated empty database, so schema surgery never hits shared tables."""
+    """Return a dedicated empty database, so schema surgery never hits shared tables."""
     # Create a sibling DB on the same server as pg_dsn.
     base = pg_dsn.rsplit("/", 1)[0]
     name = "trackinizer_mig_gate"
@@ -240,7 +240,7 @@ async def test_session_records_context_id_check_rejects_a_forward_reference(
         await conn.execute(insert, sid, 6, 6)
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

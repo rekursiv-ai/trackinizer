@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 
 import asyncio
 import contextlib
@@ -29,6 +29,9 @@ from trackinizer.lib.posix.relay import (
     terminal_size,
 )
 from trackinizer.lib.posix.terminal import PASTE_START, Terminal
+
+
+_CWD: Final = Path(__file__).resolve().parent
 
 
 class TestRealFd:
@@ -242,12 +245,12 @@ class TestTerminalHandback:
         assert b"\x1b[?1003h" in seen
         # ...and every mode it left on is disabled before the relay returns.
         for disable in (
-            b"\x1b[?1004l",  # focus reporting: the reported ``\x1b[I`` symptom
-            b"\x1b[?1003l",  # any-motion mouse reporting
-            b"\x1b[?1006l",  # SGR mouse encoding
-            b"\x1b[?1049l",  # alternate screen
-            b"\x1b[?2004l",  # bracketed paste
-            b"\x1b[?25h",  # cursor visible
+            b"\x1b[?1004l",  # focus reporting: the reported ``\x1b[I`` symptom.
+            b"\x1b[?1003l",  # any-motion mouse reporting.
+            b"\x1b[?1006l",  # SGR mouse encoding.
+            b"\x1b[?1049l",  # alternate screen.
+            b"\x1b[?2004l",  # bracketed paste.
+            b"\x1b[?25h",  # cursor visible.
         ):
             assert disable in seen
 
@@ -320,7 +323,7 @@ class TestTerminalHandback:
             [sys.executable, "-c", source],
             capture_output=True,
             check=False,
-            cwd=Path(__file__).resolve().parents[3],
+            cwd=_CWD.parents[2],
             text=True,
             timeout=60,
         )
@@ -647,13 +650,11 @@ async def _drain(fd: int, into: bytearray) -> None:
         into.extend(chunk)
 
 
+# ``PENDIN`` reports that input is queued for reprocessing. It is set by the kernel,
+# never by this module, so a comparison including it tests the kernel's mood rather than
+# whether the line discipline was handed back.
 def _without_pendin(attributes: object) -> list[object]:
-    """Return ``tcgetattr`` output with the kernel's ``PENDIN`` bit cleared.
-
-    ``PENDIN`` reports that input is queued for reprocessing. It is set by the
-    kernel, never by this module, so a comparison including it tests the
-    kernel's mood rather than whether the line discipline was handed back.
-    """
+    """Return ``tcgetattr`` output with the kernel's ``PENDIN`` bit cleared."""
     values = list(cast(list[object], attributes))
     lflag_index = 3
     values[lflag_index] = cast(int, values[lflag_index]) & ~termios.PENDIN

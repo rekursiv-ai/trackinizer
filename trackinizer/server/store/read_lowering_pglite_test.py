@@ -47,7 +47,7 @@ from trackinizer.wire.filters import (
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """A bootstrapped Store over the session's shared PGlite engine."""
+    """Return a bootstrapped Store over the session's shared PGlite engine."""
     await reset_schema(pglite_engine)
     store = Store(pglite_engine, embed=StubEmbedder())
     await store.bootstrap()
@@ -489,7 +489,7 @@ async def test_paging_agrees_between_the_two_paths(store: Store, offset: int) ->
     assert [row.seq for row in lowered] == [row.seq for row in in_python]
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

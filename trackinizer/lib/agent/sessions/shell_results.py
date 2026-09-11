@@ -150,21 +150,24 @@ class _BashNode(Protocol):
     """Expose the bashlex AST fields this classifier reads."""
 
     kind: str
+
     parts: list[_BashNode]
+
     word: str
+
     type: str
+
     op: str
+
     input: int | None
+
     output: _BashNode
+
     heredoc: _BashNode | None
+
     value: str
+
     pos: tuple[int, int]
-
-
-class _Bashlex(Protocol):
-    """Expose the bashlex entry point this classifier calls."""
-
-    def parse(self, source: str) -> list[_BashNode]: ...
 
 
 def lift_shell_result(
@@ -403,22 +406,10 @@ def _shell_source(command: tuple[str, ...] | None) -> tuple[str, int | None] | N
     return None
 
 
+# Each branch below is one row of the table in this module's docstring, in the same
+# order. A command matching no row is not a file operation.
 def _operation(script: str) -> Operation | None:
-    """Classify one shell command as a file read, write, or edit.
-
-    Each branch below is one row of the table in this module's docstring, in
-    the same order. A command matching no row is not a file operation.
-
-    Args:
-      script: Shell source of one command.
-
-    Returns:
-      operation: What it did, to which path, where that path sits in the
-        source, and the content it wrote -- or ``None`` when no row matches.
-        The path is composed against a static ``cd`` destination, so it names
-        the file the command actually resolved.
-
-    """
+    """Classify one shell command as a file read, write, or edit."""
     quoted = _quoted_heredoc(script)
     found = _simple_command(quoted[0] if quoted is not None else script)
     if found is None:
@@ -441,12 +432,10 @@ def _operation(script: str) -> Operation | None:
     return (act, resolved, span, content, ranges, chdir)
 
 
+# The command will chdir again on replay, so splicing the resolved path in would resolve
+# the destination twice -- ``cd sub && cat sub/a.txt``.
 def _operand(command: str, path: str) -> str:
-    """Return a resolved path back as the operand its command should carry.
-
-    The command will chdir again on replay, so splicing the resolved path in
-    would resolve the destination twice -- ``cd sub && cat sub/a.txt``.
-    """
+    """Return a resolved path back as the operand its command should carry."""
     found = _operation(command)
     chdir = found[5] if found is not None else None
     return path if chdir is None else path.removeprefix(f"{chdir.rstrip('/')}/")
@@ -523,15 +512,13 @@ def _matched_row(
     return None
 
 
+# ``bashlex`` cannot parse ``<< 'EOF'`` at all -- it reports the document as
+# unterminated -- and that is precisely the form worth lifting, since a quoted delimiter
+# is the one that suppresses expansion and so writes its body verbatim. Unquoting it for
+# the parser is safe because the delimiter itself is never content; the body is taken
+# from the original text.
 def _quoted_heredoc(script: str) -> tuple[str, str] | None:
-    """Return ``script`` with a QUOTED heredoc delimiter bared, and the body.
-
-    bashlex cannot parse ``<< 'EOF'`` at all -- it reports the document as
-    unterminated -- and that is precisely the form worth lifting, since a
-    quoted delimiter is the one that suppresses expansion and so writes its
-    body verbatim. Unquoting it for the parser is safe because the delimiter
-    itself is never content; the body is taken from the original text.
-    """
+    """Return ``script`` with a QUOTED heredoc delimiter bared, and the body."""
     match = re.search(r"(<<-?)\s*(['\"])(\w+)\2\s*?\n", script)
     if match is None:
         return None
@@ -560,14 +547,12 @@ def _quoted_heredoc(script: str) -> tuple[str, str] | None:
     return (f"{script[: match.start()]}<< {delimiter}\n{body}{delimiter}\n", body)
 
 
+# Agents author files this way constantly; 4.6% of 1351 captured claude commands carry a
+# heredoc. Only a QUOTED delimiter lifts: an unquoted one expands ``$var`` and backticks
+# inside the body, so the bytes on disk are not the bytes in the transcript and a replay
+# would write the wrong file.
 def _heredoc_write(parts: Sequence[_BashNode], *, literal: bool) -> MatchedRow | None:
-    """Return the write a ``cat > path << EOF`` performs, when it is static.
-
-    Agents author files this way constantly; 4.6% of 1351 captured claude
-    commands carry a heredoc. Only a QUOTED delimiter lifts: an unquoted one
-    expands ``$var`` and backticks inside the body, so the bytes on disk are
-    not the bytes in the transcript and a replay would write the wrong file.
-    """
+    """Return the write a ``cat > path << EOF`` performs, when it is static."""
     redirects = [part for part in parts if part.kind == "redirect"]
     documents = [part for part in redirects if part.type in {"<<", "<<-"}]
     if len(documents) != 1 or not literal:
@@ -587,7 +572,7 @@ def _heredoc_write(parts: Sequence[_BashNode], *, literal: bool) -> MatchedRow |
     content = body.value if body is not None else None
     if delimiter is None or not isinstance(content, str):
         return None
-    # bashlex reports the body WITH its terminator appended and no trailing
+    # ``bashlex`` reports the body WITH its terminator appended and no trailing
     # newline: ``beta\nEOF`` for a file holding ``beta\n``. Verified against
     # /bin/bash for empty, single-line, multi-line, and blank-line bodies.
     if not content.endswith(delimiter):
@@ -595,21 +580,18 @@ def _heredoc_write(parts: Sequence[_BashNode], *, literal: bool) -> MatchedRow |
     return (operation, path, span, content[: -len(delimiter)], ())
 
 
+# A BARE name counts. It is not certain -- ``cat`` could be a shell function or
+# something earlier in ``PATH`` -- but requiring ``/bin/cat`` matched nothing agents
+# actually write: across 359 captured codex shell results and 588 claude ones it lifted
+# ZERO, and on codex that one rule accounted for 31.5% of rejections by itself. A
+# classifier that recognizes no real command annotates nothing, and shadowing a
+# coreutils with a function that does something else was never observed.
+#
+# Only the leaf is read, so ``/usr/bin/sed`` and ``sed`` are one utility; a path ending
+# in the name but living elsewhere -- ``/opt/tools/cat`` -- is a different program and
+# stays excluded.
 def _standard_utility(executable: str) -> str | None:
-    """Return the utility an executable names, bare or by absolute path.
-
-    A BARE name counts. It is not certain -- ``cat`` could be a shell function
-    or something earlier in ``PATH`` -- but requiring ``/bin/cat`` matched
-    nothing agents actually write: across 359 captured codex shell results and
-    588 claude ones it lifted ZERO, and on codex that one rule accounted for
-    31.5% of rejections by itself. A classifier that recognizes no real
-    command annotates nothing, and shadowing a coreutils with a function that
-    does something else was never observed.
-
-    Only the leaf is read, so ``/usr/bin/sed`` and ``sed`` are one utility; a
-    path ending in the name but living elsewhere -- ``/opt/tools/cat`` -- is a
-    different program and stays excluded.
-    """
+    """Return the utility an executable names, bare or by absolute path."""
     directory, _, name = executable.rpartition("/")
     if directory not in {"", "/bin", "/usr/bin", "/usr/local/bin"}:
         return None
@@ -628,23 +610,14 @@ def _standard_utility(executable: str) -> str | None:
     return name if name in utilities else None
 
 
+# A bare command, or the last stage of a ``cd``-prefixed chain: agents write ``cd repo
+# && cat file`` constantly -- 58.3% of 1351 captured claude commands are ``cd``-prefixed
+# -- and rejecting the shape left the majority of real reads unlifted. Only ``cd`` may
+# precede, because it is the one utility that changes nothing but the directory the read
+# resolves against; any other leading command could have WRITTEN the file being read,
+# which would make the observed content not the file's prior state.
 def _simple_command(script: str) -> tuple[_BashNode, str | None] | None:
-    """Parse the one file-touching command a script runs, failing closed.
-
-    A bare command, or the last stage of a ``cd``-prefixed chain: agents write
-    ``cd repo && cat file`` constantly -- 58.3% of 1351 captured claude
-    commands are ``cd``-prefixed -- and rejecting the shape left the majority
-    of real reads unlifted. Only ``cd`` may precede, because it is the one
-    utility that changes nothing but the directory the read resolves against;
-    any other leading command could have WRITTEN the file being read, which
-    would make the observed content not the file's prior state.
-
-    Returns:
-      command: The node whose parts name the file operation.
-      chdir: The ``cd`` destination when it is literal text, ``None`` when
-        there was no ``cd`` or its destination expands.
-
-    """
+    """Parse the one file-touching command a script runs, failing closed."""
     try:
         parser = cast(_Bashlex, bashlex)
         trees = parser.parse(script)
@@ -691,15 +664,13 @@ def _static_word(node: _BashNode) -> str | None:
     return node.word
 
 
+# ``>`` replaces the file and ``>>`` adds to it, which is the difference between a write
+# and an append -- the same distinction the table draws between ``echo > F`` and ``echo
+# >> F``.
 def _single_output(
     redirects: Sequence[_BashNode],
 ) -> tuple[Act, str, tuple[int, int]] | None:
-    """Return one stdout redirection: whether it truncates, and its target.
-
-    ``>`` replaces the file and ``>>`` adds to it, which is the difference
-    between a write and an append -- the same distinction the table draws
-    between ``echo > F`` and ``echo >> F``.
-    """
+    """Return one stdout redirection: whether it truncates, and its target."""
     if len(redirects) != 1:
         return None
     redirect = redirects[0]
@@ -730,16 +701,14 @@ def _write_content(executable: str, arguments: Sequence[str]) -> str | None:
     return " ".join(arguments) + "\n"
 
 
+# Always a ``rewrite``, never a ``write``, even without ``-a``: tee's content is
+# whatever was piped into it, and a pipeline is not a form this module matches, so the
+# bytes are unknown either way. A ``write`` would have to state them, and stating ``""``
+# would claim the command emptied the file.
 def _tee_operation(
     argv: Sequence[str], nodes: Sequence[_BashNode]
 ) -> MatchedRow | None:
-    """Return what ``tee`` did. TABLE ROWS: ``tee F`` and ``tee -a F``.
-
-    Always a ``rewrite``, never a ``write``, even without ``-a``: tee's content
-    is whatever was piped into it, and a pipeline is not a form this module
-    matches, so the bytes are unknown either way. A ``write`` would have to
-    state them, and stating ``""`` would claim the command emptied the file.
-    """
+    """Return what ``tee`` did. TABLE ROWS: ``tee F`` and ``tee -a F``."""
     flags = [word for word in argv[1:] if word.startswith("-")]
     # Carried WITH its index, never looked up by value afterwards: a file named
     # after its own utility -- ``tee tee`` -- makes ``argv.index`` return the
@@ -757,13 +726,10 @@ def _tee_operation(
     return ("rewrite", path, nodes[at].pos, "", ())
 
 
+# ``-i`` may carry a backup suffix (``-i.bak``) and may be bundled with other letters
+# (``perl -pi -e``), so the flag is recognized by its ``i`` rather than by equality.
 def _in_place(arguments: Sequence[str]) -> bool:
-    """Whether a sed/perl invocation rewrites its file rather than printing.
-
-    ``-i`` may carry a backup suffix (``-i.bak``) and may be bundled with
-    other letters (``perl -pi -e``), so the flag is recognized by its ``i``
-    rather than by equality.
-    """
+    """Whether a sed/perl invocation rewrites its file rather than printing."""
     for word in arguments:
         if word == "--in-place":
             return True
@@ -779,18 +745,15 @@ def _in_place(arguments: Sequence[str]) -> bool:
     return False
 
 
+# TABLE ROWS: ``sed -i ... F`` and ``perl -i ... F``.
+#
+# The file's new bytes are not in the transcript -- the command printed nothing -- so
+# the record states its path and no content, exactly as ``tee`` and ``patch`` do. The
+# command that transformed it rides in ``$shell``, which is what a replay puts back.
 def _in_place_operation(
     argv: Sequence[str], nodes: Sequence[_BashNode]
 ) -> MatchedRow | None:
-    """Return the edit an in-place rewrite performed.
-
-    TABLE ROWS: ``sed -i ... F`` and ``perl -i ... F``.
-
-    The file's new bytes are not in the transcript -- the command printed
-    nothing -- so the record states its path and no content, exactly as
-    ``tee`` and ``patch`` do. The command that transformed it rides in
-    ``$shell``, which is what a replay puts back.
-    """
+    """Return the edit an in-place rewrite performed."""
     operands = [
         (word, index) for index, word in enumerate(argv) if not word.startswith("-")
     ][1:]
@@ -816,15 +779,13 @@ def _in_place_operation(
     return ("rewrite", path, nodes[at].pos, "", ())
 
 
+# TABLE ROW: ``patch ... F`` in its inline form. Unlike every other rewrite, the change
+# is right there in the command -- the heredoc holds the diff -- so the record carries
+# it rather than leaving :attr:`edits` empty.
 def _patch_heredoc(
     parts: Sequence[_BashNode], *, body: str | None
 ) -> MatchedRow | None:
-    """Return the edit ``patch F << 'EOF'`` applied, diff included.
-
-    TABLE ROW: ``patch ... F`` in its inline form. Unlike every other rewrite,
-    the change is right there in the command -- the heredoc holds the diff --
-    so the record carries it rather than leaving :attr:`edits` empty.
-    """
+    """Return the edit ``patch F << 'EOF'`` applied, diff included."""
     if body is None:
         return None
     words = [part for part in parts if part.kind == "word"]
@@ -837,15 +798,13 @@ def _patch_heredoc(
     return ("patched", found[1], words[1].pos, body, ())
 
 
+# The diff arrives on stdin, which the transcript holds only when the command spelled it
+# inline; a ``patch < f.diff`` reads a file this reader has never seen, so it names no
+# edit it can describe.
 def _patch_operation(
     argv: Sequence[str], nodes: Sequence[_BashNode], redirects: Sequence[_BashNode]
 ) -> MatchedRow | None:
-    """Return the edit ``patch`` applied. TABLE ROW: ``patch ... F``.
-
-    The diff arrives on stdin, which the transcript holds only when the
-    command spelled it inline; a ``patch < f.diff`` reads a file this reader
-    has never seen, so it names no edit it can describe.
-    """
+    """Return the edit ``patch`` applied. TABLE ROW: ``patch ... F``."""
     if redirects:
         return None
     operands = [
@@ -857,30 +816,25 @@ def _patch_operation(
     return ("rewrite", path, nodes[at].pos, "", ())
 
 
+# Only ``-ba``: it numbers every line, so the output's line count matches the file's.
+# Any other numbering style skips lines, and the content would then be a projection of
+# the file rather than the file.
 def _nl_operation(argv: Sequence[str], nodes: Sequence[_BashNode]) -> MatchedRow | None:
-    """Return the read ``nl -ba F`` performs. TABLE ROW: ``nl -ba F``.
-
-    Only ``-ba``: it numbers every line, so the output's line count matches
-    the file's. Any other numbering style skips lines, and the content would
-    then be a projection of the file rather than the file.
-    """
+    """Return the read ``nl -ba F`` performs. TABLE ROW: ``nl -ba F``."""
     if len(argv) != 3 or argv[1] != "-ba" or argv[2].startswith("-"):
         return None
     return ("read", argv[2], nodes[2].pos, None, ())
 
 
+# TABLE ROWS: ``head [-n N] F`` and ``tail [-n N] F``.
+#
+# The count is the READ's line range, so it travels on the record: ``head -20 f``
+# returned lines 1-20, and a record without that says the whole file came back. A SIGNED
+# count names a different window entirely, which :func:`_line_range` resolves.
 def _line_reader_operation(
     utility: str, argv: Sequence[str], nodes: Sequence[_BashNode]
 ) -> MatchedRow | None:
-    """Return the bounded read ``head`` or ``tail`` performed.
-
-    TABLE ROWS: ``head [-n N] F`` and ``tail [-n N] F``.
-
-    The count is the READ's line range, so it travels on the record: ``head
-    -20 f`` returned lines 1-20, and a record without that says the whole file
-    came back. A SIGNED count names a different window entirely, which
-    :func:`_line_range` resolves.
-    """
+    """Return the bounded read ``head`` or ``tail`` performed."""
     if len(argv) == 2:
         # The default is 10 lines, but stating it would report a bound the
         # command never gave; an unstated count is not a known one.
@@ -908,38 +862,33 @@ def _line_reader_operation(
     return ("read", path, nodes[path_index].pos, None, (_line_range(utility, count),))
 
 
+# A sign changes WHICH lines print, not merely how many, so it cannot be stripped.
+# Measured against coreutils on an 8-line file:
+#
+# * ``tail -n +5`` printed lines 5-8 -- a FROM-line address, running to an end this
+# reader cannot number. ``+0`` and ``+1`` both print the whole file, since line 0 is not
+# a line. * ``head -n -5`` printed lines 1-3 -- it DROPS the last five, so the read
+# starts at line 1 and ends where only the file's length says. * ``tail -n -5`` and
+# ``tail -n 5`` are the same count from the end.
 def _line_range(utility: str, count: str) -> tuple[int | None, int | None]:
-    """Return the lines a signed ``head``/``tail`` count names.
-
-    A sign changes WHICH lines print, not merely how many, so it cannot be
-    stripped. Measured against coreutils on an 8-line file:
-
-    * ``tail -n +5`` printed lines 5-8 -- a FROM-line address, running to an
-      end this reader cannot number. ``+0`` and ``+1`` both print the whole
-      file, since line 0 is not a line.
-    * ``head -n -5`` printed lines 1-3 -- it DROPS the last five, so the read
-      starts at line 1 and ends where only the file's length says.
-    * ``tail -n -5`` and ``tail -n 5`` are the same count from the end.
-    """
+    """Return the lines a signed ``head``/``tail`` count names."""
     lines = int(count.lstrip("+-"))
     if utility == "tail":
         return (max(lines, 1), None) if count.startswith("+") else (None, lines)
     return (1, None) if count.startswith("-") else (1, lines)
 
 
+# TABLE ROW: ``sed -n 'N,Mp' F``, the single most common read agents write -- 181 of 279
+# captured codex reads. The script IS the line range, so it becomes the record's ranges
+# rather than being discarded.
+#
+# A script may hold SEVERAL addresses (``'84p;101p;132p'``), which is why ranges are a
+# tuple: each clause contributes its own pair, and the gaps between them were never
+# read.
 def _sed_operation(
     argv: Sequence[str], nodes: Sequence[_BashNode]
 ) -> MatchedRow | None:
-    """Return the bounded read a ``sed -n`` script performed.
-
-    TABLE ROW: ``sed -n 'N,Mp' F``, the single most common read agents write
-    -- 181 of 279 captured codex reads. The script IS the line range, so it
-    becomes the record's ranges rather than being discarded.
-
-    A script may hold SEVERAL addresses (``'84p;101p;132p'``), which is why
-    ranges are a tuple: each clause contributes its own pair, and the gaps
-    between them were never read.
-    """
+    """Return the bounded read a ``sed -n`` script performed."""
     if len(argv) != 4:
         return None
     option, script, path = argv[1:]
@@ -959,13 +908,11 @@ def _sed_operation(
     return ("read", path, nodes[3].pos, None, tuple(ranges))
 
 
+# A print is a read. Any other command -- ``w`` writing a file, ``r`` splicing one in,
+# ``e`` running a shell command, ``s`` substituting -- makes the invocation something
+# this row does not describe.
 def _sed_clause_range(clause: str) -> tuple[int | None, int | None] | None:
-    """Return the lines one ``sed`` clause prints, or ``None`` if it is no read.
-
-    A print is a read. Any other command -- ``w`` writing a file, ``r``
-    splicing one in, ``e`` running a shell command, ``s`` substituting --
-    makes the invocation something this row does not describe.
-    """
+    """Return the lines one ``sed`` clause prints, or ``None`` if it is no read."""
     match = re.fullmatch(r"(\d+|\$)(?:,(\d+|\$))?p", clause)
     if match is not None:
         # Line 0 is not a line: /bin/sed exits 1 with "invalid usage of line
@@ -982,12 +929,10 @@ def _sed_clause_range(clause: str) -> tuple[int | None, int | None] | None:
     return None
 
 
+# ``$`` is the file's last line, whose number depends on the file, so a range ending
+# there states its start and leaves the count unknown.
 def _sed_range(first: str, last: str | None) -> tuple[int | None, int | None]:
-    """Return the line range a ``sed -n`` address describes.
-
-    ``$`` is the file's last line, whose number depends on the file, so a
-    range ending there states its start and leaves the count unknown.
-    """
+    """Return the line range a ``sed -n`` address describes."""
     if first == "$":
         return (None, 1 if last is None else None)
     start = int(first)
@@ -1033,3 +978,9 @@ def _stencil_command(
     rewritten = list(command)
     rewritten[source[1]] = rewrite_shell_source(source[0], result)
     return tuple(rewritten)
+
+
+class _Bashlex(Protocol):
+    """Expose the bashlex entry point this classifier calls."""
+
+    def parse(self, source: str) -> list[_BashNode]: ...

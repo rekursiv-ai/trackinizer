@@ -27,7 +27,12 @@ unbounded-width rows. ``0`` means "not a terminal" (no cap)."""
 
 
 def show_ids() -> bool:
-    """Whether UUIDs should appear in output (set by ``--show-ids``)."""
+    """Whether UUIDs should appear in output (set by ``--show-ids``).
+
+    Returns:
+      result: The bool.
+
+    """
     return SHOW_IDS.get()
 
 
@@ -38,6 +43,12 @@ def echo(message: object = "", *, err: bool = False, nl: bool = True) -> None:
     daemon serves concurrent invocations in one process, where rebinding
     ``sys.stdout`` around a request would route one caller's output into
     another caller's response.
+
+    Args:
+      message: Message.
+      err: Err.
+      nl: Nl.
+
     """
     stream = err_stream() if err else out_stream()
     stream.write(str(message))
@@ -51,7 +62,14 @@ def print_rows(
     *,
     width: int | None = None,
 ) -> None:
-    """Print rows as a table, JSON, or one id per line."""
+    """Print rows as a table, JSON, or one id per line.
+
+    Args:
+      rows: Rows.
+      output: Output.
+      width: Width.
+
+    """
     if output == "json":
         echo(format_json(list(rows)), nl=False)
     elif output == "ids":
@@ -65,6 +83,13 @@ def format_field_value(value: object) -> str:
 
     A dict (the Experiment ``config`` JSON object) prints as indented
     JSON so the output round-trips through ``config to @file.json``.
+
+    Args:
+      value: Value.
+
+    Returns:
+      result: The str.
+
     """
     if isinstance(value, list):
         return "\n".join(str(item) for item in cast(list[object], value))
@@ -74,13 +99,26 @@ def format_field_value(value: object) -> str:
 
 
 def add_write_flags(parser: argparse.ArgumentParser) -> None:
-    """Add the ``--as`` (actor) and ``--reason`` flags shared by write commands."""
+    """Add the ``--as`` (actor) and ``--reason`` flags shared by write commands.
+
+    Args:
+      parser: Parser.
+
+    """
     parser.add_argument("--as", "--actor", dest="actor", default="")
     parser.add_argument("--reason", default="")
 
 
 def resolve_labels(labels: Sequence[str] | None) -> list[str]:
-    """Split comma-separated labels and trim whitespace, dropping empties."""
+    """Split comma-separated labels and trim whitespace, dropping empties.
+
+    Args:
+      labels: Labels.
+
+    Returns:
+      out: The list[str].
+
+    """
     out: list[str] = []
     for raw in labels or ():
         out.extend(label.strip() for label in raw.split(",") if label.strip())
@@ -95,17 +133,42 @@ type _RowFn = Callable[[dict[str, Any]], str]
 
 
 def format_json(payload: object) -> str:
-    """Pretty-print ``payload`` as indented JSON, stringifying anything unserializable."""
+    """Pretty-print ``payload`` as indented JSON, stringifying anything unserializable.
+
+    Args:
+      payload: Payload.
+
+    Returns:
+      result: The str.
+
+    """
     return json.dumps(payload, indent=2, default=str) + "\n"
 
 
 def format_ids(rows: Iterable[dict[str, Any]]) -> str:
-    """One row id per line."""
+    """One row id per line.
+
+    Args:
+      rows: Rows.
+
+    Returns:
+      result: The str.
+
+    """
     return "".join(f"{row['id']}\n" for row in rows)
 
 
 def format_table(rows: Sequence[dict[str, Any]], *, width: int | None = None) -> str:
-    """Render rows as an aligned table, dropping empty optional columns to fit width."""
+    """Render rows as an aligned table, dropping empty optional columns to fit width.
+
+    Args:
+      rows: Rows.
+      width: Width.
+
+    Returns:
+      result: The str.
+
+    """
     if not rows:
         return "(no rows)\n"
     columns = _visible_table_columns(
@@ -170,6 +233,14 @@ def format_edge(view: Mapping[str, object], *, changes: bool = False) -> str:
 
     ``changes`` adds the recent-changes block; off by default to keep
     mutation echoes compact (the CLI opts in with ``--changes``).
+
+    Args:
+      view: View.
+      changes: Changes.
+
+    Returns:
+      result: The str.
+
     """
     edge = cast(Mapping[str, object], view["edge"])
     lines = [f"edge: {view['title']!s}"]
@@ -200,6 +271,15 @@ def format_show(
     """Render one inquiry: its own fields, then its relations.
 
     The seq-ref header is always shown; ``include_id`` adds the UUID line.
+
+    Args:
+      view: View.
+      changes: Changes.
+      include_id: Include id.
+
+    Returns:
+      result: The str.
+
     """
     self_view = cast(dict[str, Any], view["self"])
     lines: list[str] = []
@@ -281,7 +361,15 @@ def format_show(
 
 
 def format_changes(rows: Sequence[dict[str, Any]]) -> str:
-    """Render the audit feed, one entry plus its field deltas."""
+    """Render the audit feed, one entry plus its field deltas.
+
+    Args:
+      rows: Rows.
+
+    Returns:
+      result: The str.
+
+    """
     if not rows:
         return "(no changes)\n"
     lines: list[str] = []
@@ -296,114 +384,40 @@ def format_changes(rows: Sequence[dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _visible_table_columns(
-    rows: Sequence[dict[str, Any]],
-    columns: Sequence[tuple[str, _RowFn]],
-) -> tuple[tuple[str, _RowFn], ...]:
-    return tuple(
-        column
-        for index, column in enumerate(columns)
-        if index < 3 or any(column[1](row) for row in rows)
-    )
-
-
-def _resolved_table_width(width: int | None) -> int:
-    if width is not None:
-        return width
-    if (injected := TERMINAL_WIDTH.get()) is not None:
-        return injected
-    if not sys.stdout.isatty():
-        return 0
-    return shutil.get_terminal_size(fallback=(120, 24)).columns
-
-
-def _columns_for_width(
-    columns: tuple[tuple[str, _RowFn], ...],
-    *,
-    width: int,
-) -> tuple[tuple[str, _RowFn], ...]:
-    if width <= 0:
-        return columns
-    out = list(columns)
-    for name in (
-        "validation",
-        "description",
-        "subscribers",
-        "codechanges",
-        "resource-cost",
-        "agent-cost",
-        "edge-labels",
-        "query",
-        "url",
-        "source",
-        "sha",
-        "labels",
-        "kind",
-        "owner",
-        "note",
-    ):
-        if _minimum_table_width(out) <= width:
-            break
-        out = [column for column in out if column[0] != name]
-    return tuple(out)
-
-
-def _minimum_table_width(columns: Sequence[tuple[str, _RowFn]]) -> int:
-    return sum(_minimum_column_width(name) for name, _ in columns) + 2 * (
-        len(columns) - 1
-    )
-
-
 def table_width(width: int | None = None) -> int:
-    """Table width for this invocation: explicit, terminal, or unbounded."""
+    """Table width for this invocation: explicit, terminal, or unbounded.
+
+    Args:
+      width: Width.
+
+    Returns:
+      result: The int.
+
+    """
     return _resolved_table_width(width)
 
 
 def table_cell(value: str, width: int) -> str:
-    """Collapse whitespace in ``value`` and truncate it to ``width``."""
+    """Collapse whitespace in ``value`` and truncate it to ``width``.
+
+    Args:
+      value: Value.
+      width: Width.
+
+    Returns:
+      result: The str.
+
+    """
     return _truncate_cell(_table_cell(value), width)
 
 
-def _column_heading(name: str) -> str:
-    return {
-        "priority": "PRI",
-        "description": "DESC",
-        "validation": "VALID",
-        "subscribers": "SUBS",
-        "publish_date": "PUBLISHED",
-        "edge-priority": "EDGE-PRI",
-        "edge-labels": "EDGE-LABEL",
-        "agent-cost": "$AGENT",
-        "resource-cost": "$RESOURCE",
-    }.get(name, name.upper())
-
-
-def _minimum_column_width(name: str) -> int:
-    return {
-        "ref": 8,
-        "status": 8,
-        "title": 20,
-        "priority": 3,
-        "owner": 8,
-        "description": 16,
-        "validation": 16,
-    }.get(name, len(name))
-
-
-def _capped_column_width(name: str, natural_width: int) -> int:
-    return min(natural_width, _max_column_width(name))
-
-
-def _max_column_width(name: str) -> int:
-    return {
-        "description": 40,
-        "validation": 40,
-        "note": 80,
-    }.get(name, natural_unbounded_width())
-
-
 def natural_unbounded_width() -> int:
-    """Sentinel column width standing in for "no cap"."""
+    """Sentinel column width standing in for "no cap".
+
+    Returns:
+      result: The int.
+
+    """
     return 1_000_000
 
 
@@ -458,14 +472,14 @@ def _table_cell(value: str) -> str:
     return " ".join(value.split())
 
 
-def _row_value(value: object, _depth: int = 0) -> str:
-    if _depth > 8:
+def _row_value(value: object, depth: int = 0) -> str:
+    if depth > 8:
         return "..."
     if value is None or value == "":
         return ""
     if isinstance(value, list | tuple):
         return ",".join(
-            _row_value(item, _depth + 1) for item in cast(Sequence[object], value)
+            _row_value(item, depth + 1) for item in cast(Sequence[object], value)
         )
     return str(value)
 
@@ -526,12 +540,10 @@ def _format_change_delta(change: Mapping[str, object]) -> list[str]:
     ]
 
 
+# Returning empty rather than raising lets the surrounding render decide whether to drop
+# the line or show a placeholder.
 def _format_local_time(value: object) -> str:
-    """Format a server timestamp in local time, or ``""`` if absent or unparseable.
-
-    Returning empty rather than raising lets the surrounding render decide
-    whether to drop the line or show a placeholder.
-    """
+    """Format a server timestamp in local time, or ``""`` if absent or unparseable."""
     if value is None or value == "":
         return ""
     if isinstance(value, datetime):
@@ -583,3 +595,99 @@ def _edge_annotation(peer: dict[str, Any]) -> str:
     if note := peer.get("note"):
         parts.append(str(note))
     return f"  [{'; '.join(parts)}]" if parts else ""
+
+
+def _visible_table_columns(
+    rows: Sequence[dict[str, Any]],
+    columns: Sequence[tuple[str, _RowFn]],
+) -> tuple[tuple[str, _RowFn], ...]:
+    return tuple(
+        column
+        for index, column in enumerate(columns)
+        if index < 3 or any(column[1](row) for row in rows)
+    )
+
+
+def _resolved_table_width(width: int | None) -> int:
+    if width is not None:
+        return width
+    if (injected := TERMINAL_WIDTH.get()) is not None:
+        return injected
+    if not sys.stdout.isatty():
+        return 0
+    return shutil.get_terminal_size(fallback=(120, 24)).columns
+
+
+def _columns_for_width(
+    columns: tuple[tuple[str, _RowFn], ...],
+    *,
+    width: int,
+) -> tuple[tuple[str, _RowFn], ...]:
+    if width <= 0:
+        return columns
+    out = list(columns)
+    for name in (
+        "validation",
+        "description",
+        "subscribers",
+        "codechanges",
+        "resource-cost",
+        "agent-cost",
+        "edge-labels",
+        "query",
+        "url",
+        "source",
+        "sha",
+        "labels",
+        "kind",
+        "owner",
+        "note",
+    ):
+        if _minimum_table_width(out) <= width:
+            break
+        out = [column for column in out if column[0] != name]
+    return tuple(out)
+
+
+def _minimum_table_width(columns: Sequence[tuple[str, _RowFn]]) -> int:
+    return sum(_minimum_column_width(name) for name, _ in columns) + 2 * (
+        len(columns) - 1
+    )
+
+
+def _column_heading(name: str) -> str:
+    return {
+        "priority": "PRI",
+        "description": "DESC",
+        "validation": "VALID",
+        "subscribers": "SUBS",
+        "publish_date": "PUBLISHED",
+        "edge-priority": "EDGE-PRI",
+        "edge-labels": "EDGE-LABEL",
+        "agent-cost": "$AGENT",
+        "resource-cost": "$RESOURCE",
+    }.get(name, name.upper())
+
+
+def _minimum_column_width(name: str) -> int:
+    return {
+        "ref": 8,
+        "status": 8,
+        "title": 20,
+        "priority": 3,
+        "owner": 8,
+        "description": 16,
+        "validation": 16,
+    }.get(name, len(name))
+
+
+def _capped_column_width(name: str, natural_width: int) -> int:
+    return min(natural_width, _max_column_width(name))
+
+
+def _max_column_width(name: str) -> int:
+    return {
+        "description": 40,
+        "validation": 40,
+        "note": 80,
+    }.get(name, natural_unbounded_width())

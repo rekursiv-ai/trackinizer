@@ -32,17 +32,15 @@ if TYPE_CHECKING:
     from trackinizer.server.store.core import Store
 
 
+# A real instance, not a renamed stand-in: ``_require_session`` gates with
+# ``isinstance``, so the row must be the canonical class. Defaults its opening
+# credential to ``TEST_API_KEY_ID`` -- the key the default test identity presents -- so
+# a route's owner-scope check passes for a same-credential caller; foreign-credential
+# tests pass an explicit other id.
 def _live_session(
     opened_by_api_key_id: uuid.UUID | None = TEST_API_KEY_ID,
 ) -> AgentSession:
-    """A minimal live ``AgentSession`` (``ended`` is ``None``).
-
-    A real instance, not a renamed stand-in: ``_require_session`` gates with
-    ``isinstance``, so the row must be the canonical class. Defaults its
-    opening credential to ``TEST_API_KEY_ID`` -- the key the default test
-    identity presents -- so a route's owner-scope check passes for a
-    same-credential caller; foreign-credential tests pass an explicit other id.
-    """
+    """Return a minimal live ``AgentSession`` (``ended`` is ``None``)."""
     return AgentSession(
         owner="scientist",
         cli="claude",

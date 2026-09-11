@@ -29,13 +29,13 @@ from trackinizer.lib.agent.types.sessions import (
 
 
 def _content(record: SessionRecord) -> str:
-    """The prose of a user turn, narrowed so the union stays honest."""
+    """Return the prose of a user turn, narrowed so the union stays honest."""
     assert isinstance(record, UserMessage)
     return record.content or ""
 
 
 def _document(*messages: dict[str, object], session_id: str = "s1") -> str:
-    """A gemini session document holding ``messages``."""
+    """Return a gemini session document holding ``messages``."""
     return json.dumps({"sessionId": session_id, "messages": list(messages)})
 
 

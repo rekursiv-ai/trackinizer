@@ -258,12 +258,12 @@ def test_warm_cache_preserves_superseded_keys_that_may_still_be_live(
     monkeypatch.setattr(
         "trackinizer.lib.postgres.substrate.subprocess.run", MagicMock()
     )
-    current = substrate._ensure_shared_node_modules()  # warms current key
+    current = substrate._ensure_shared_node_modules()  # warms current key.
     stale = current.parent.parent / "deadbeef00000000"
     stale.mkdir()
     (stale / ".ready").touch()
 
-    substrate._ensure_shared_node_modules()  # warm return path
+    substrate._ensure_shared_node_modules()  # warm return path.
 
     assert stale.exists()
     assert current.parent.exists()
@@ -285,8 +285,8 @@ def test_install_lock_reclaimed_when_stale(tmp_path: Path) -> None:
     stale = time.time() - substrate._INSTALL_LOCK_STALE_SECONDS - 60
     os.utime(lock, (stale, stale))
 
-    assert substrate._try_acquire_install_lock(lock) is False  # reclaim pass
-    assert substrate._try_acquire_install_lock(lock) is True  # now claimable
+    assert substrate._try_acquire_install_lock(lock) is False  # reclaim pass.
+    assert substrate._try_acquire_install_lock(lock) is True  # now claimable.
 
 
 def test_install_lock_held_when_fresh(tmp_path: Path) -> None:
@@ -320,7 +320,7 @@ def test_boot_semaphore_caps_concurrent_holders(
     monkeypatch.setattr(substrate, "_real_sleep", _mark_polled)
 
     held = [substrate._acquire_boot_slot(), substrate._acquire_boot_slot()]
-    assert len({s.name for s in held}) == 2  # two distinct slots
+    assert len({s.name for s in held}) == 2  # two distinct slots.
 
     # Pool exhausted: a third acquire must poll (sleep) rather than return. Run
     # it in a thread so the test does not wedge on the (now patched) busy-wait.
@@ -328,13 +328,13 @@ def test_boot_semaphore_caps_concurrent_holders(
     waiter = threading.Thread(target=lambda: got.append(substrate._acquire_boot_slot()))
     waiter.start()
     assert polled.wait(timeout=2.0)  # waiter reached the poll loop (blocked)
-    assert waiter.is_alive()  # still blocked on a full pool
+    assert waiter.is_alive()  # still blocked on a full pool.
 
-    substrate._release_boot_slot(held[0])  # free one slot
+    substrate._release_boot_slot(held[0])  # free one slot.
     waiter.join(timeout=2.0)
-    assert not waiter.is_alive()  # unblocked
-    assert got  # the waiter returned a slot
-    assert got[0].name == held[0].name  # reused the freed slot
+    assert not waiter.is_alive()  # unblocked.
+    assert got  # the waiter returned a slot.
+    assert got[0].name == held[0].name  # reused the freed slot.
 
 
 def test_boot_slot_reclaimed_when_stale(
@@ -376,11 +376,11 @@ def test_release_does_not_delete_a_reclaimed_slots_new_owner(
     stale = time.time() - substrate._BOOT_SLOT_STALE_SECONDS - 60
     os.utime(first.path, (stale, stale))
 
-    second = substrate._acquire_boot_slot()  # reclaims + re-owns slot-0
+    second = substrate._acquire_boot_slot()  # reclaims + re-owns slot-0.
     assert second.name == first.name
     assert second.token != first.token
 
-    substrate._release_boot_slot(first)  # the slow original holder releases
+    substrate._release_boot_slot(first)  # the slow original holder releases.
 
     assert second.path.exists(), "stale holder deleted the reclaimer's live slot"
     assert substrate._boot_owner_path(second).exists()
@@ -440,7 +440,8 @@ async def test_node_modules_warmed_before_boot_slot(
 
     engine = substrate.PGliteEngine(workdir=tmp_path / "wd", extensions=())
 
-    async def fake_start_once(_workdir: Path) -> None:
+    async def fake_start_once(workdir: Path) -> None:
+        del workdir
         order.append("start")
 
     monkeypatch.setattr(engine, "_start_once", fake_start_once)
@@ -473,7 +474,8 @@ async def test_start_retries_past_transient_boot_runtimeerror(
 
     attempts = 0
 
-    async def flaky_start_once(_workdir: Path) -> None:
+    async def flaky_start_once(workdir: Path) -> None:
+        del workdir
         nonlocal attempts
         attempts += 1
         if attempts == 1:
@@ -505,7 +507,8 @@ async def test_start_surfaces_deterministic_boot_failure(
 
     attempts = 0
 
-    async def always_fail(_workdir: Path) -> None:
+    async def always_fail(workdir: Path) -> None:
+        del workdir
         nonlocal attempts
         attempts += 1
         raise RuntimeError("PGlite process died during startup. Output: bad ext")
@@ -600,12 +603,6 @@ def test_link_shared_node_modules_leaves_existing_tree(
     ensure.assert_not_called()
 
 
-if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
-
-    test_main(__file__)
-
-
 async def _anext[T](items: AsyncGenerator[T, None]) -> T:
     """Return the next item from an async generator."""
     return await anext(items)
@@ -617,3 +614,9 @@ def _make_conn() -> AsyncMock:
     conn.set_type_codec = AsyncMock()
     conn.is_closed = MagicMock(return_value=False)
     return conn
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.main import test_main
+
+    test_main(__file__)

@@ -60,6 +60,7 @@ class CreateTokenBody(BaseModel):
     """
 
     name: str = Field(min_length=1, max_length=128)
+
     role: RoleLiteral | None = None
 
 
@@ -85,6 +86,14 @@ async def profile_route(
     cookie is HttpOnly, so JS can't decode it. The shape mirrors the
     ``users`` table minus ``status``, since a disabled caller never
     reaches this route.
+
+    Args:
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
     """
     engine = engine_of(request)
     async with engine.acquire() as conn:
@@ -120,6 +129,15 @@ async def create_token_route(
     credential they presented -- defaulting to that ceiling when omitted. A
     stronger role returns 403, the boundary that keeps a writer from minting
     an admin token and a scoped-down key from self-escalating.
+
+    Args:
+      body: Body.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
     """
     engine = engine_of(request)
     async with engine.acquire() as conn:
@@ -151,6 +169,14 @@ async def list_tokens_route(
 
     Hashes and secrets are never returned; ``prefix`` is the only field a
     caller can use to recognize a specific key.
+
+    Args:
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
     """
     engine = engine_of(request)
     async with engine.acquire() as conn:
@@ -168,6 +194,15 @@ async def revoke_token_route(
 
     Unknown id, foreign owner, and already-revoked all return 404, so an
     attacker probing UUIDs learns nothing about which keys exist.
+
+    Args:
+      key_id: Key id.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
     """
     engine = engine_of(request)
     async with engine.acquire() as conn:
@@ -196,6 +231,16 @@ async def set_token_role_route(
     presented credential's role), and anything stronger returns 403.
     Unknown id, foreign owner, and already-revoked all fold to 404, matching
     the revoke route's anti-enumeration stance.
+
+    Args:
+      key_id: Key id.
+      body: Body.
+      request: Request.
+      identity: Identity.
+
+    Returns:
+      result: The MutableJSON.
+
     """
     engine = engine_of(request)
     async with engine.acquire() as conn:

@@ -115,12 +115,12 @@ class TestResetTerminalModes:
             os.close(slave)
         assert seen == TERMINAL_RESET
         for disable in (
-            b"\x1b[?1004l",  # focus reporting: the reported ``\x1b[I`` symptom
-            b"\x1b[?1003l",  # any-motion mouse reporting
-            b"\x1b[?1006l",  # SGR mouse encoding
-            b"\x1b[?1049l",  # alternate screen
-            b"\x1b[?2004l",  # bracketed paste
-            b"\x1b[?25h",  # cursor visible
+            b"\x1b[?1004l",  # focus reporting: the reported ``\x1b[I`` symptom.
+            b"\x1b[?1003l",  # any-motion mouse reporting.
+            b"\x1b[?1006l",  # SGR mouse encoding.
+            b"\x1b[?1049l",  # alternate screen.
+            b"\x1b[?2004l",  # bracketed paste.
+            b"\x1b[?25h",  # cursor visible.
         ):
             assert disable in seen
 
@@ -807,12 +807,10 @@ class TestWriteFailures:
         assert len(attempts) == 3
 
 
+# The default gap outwaits codex's paste-Enter suppression; ``cat`` has none, so only
+# the two tests that assert ON the gap set it.
 def _cat() -> Terminal:
-    """``cat`` on a pty with no paste-Enter gap.
-
-    The default gap outwaits codex's paste-Enter suppression; ``cat`` has none,
-    so only the two tests that assert ON the gap set it.
-    """
+    """``cat`` on a pty with no paste-Enter gap."""
     return Terminal(["cat"], enter_delay_sec=0.0)
 
 

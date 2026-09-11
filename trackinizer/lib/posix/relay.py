@@ -61,7 +61,12 @@ class HasFileno(Protocol):
     """
 
     def fileno(self) -> int:
-        """Return the underlying descriptor."""
+        """Return the underlying descriptor.
+
+        Returns:
+          result: The int.
+
+        """
         ...
 
 
@@ -188,13 +193,11 @@ class Relay:
             return 128 + self._interrupted
         return status
 
+    # Returns the signals actually installed: a loop on a non-main thread accepts none,
+    # so a caller driving the relay from a worker silently goes without rather than
+    # crashing.
     def _install_handlers(self, stdin_fd: int) -> tuple[int, ...]:
-        """Forward window resizes and turn a relay TERM into child teardown.
-
-        Returns the signals actually installed: a loop on a non-main thread
-        accepts none, so a caller driving the relay from a worker silently
-        goes without rather than crashing.
-        """
+        """Forward window resizes and turn a relay TERM into child teardown."""
         loop = asyncio.get_running_loop()
         installed: list[int] = []
         for sig, handler in (
@@ -213,26 +216,21 @@ class Relay:
         if stdin_fd >= 0:
             self._terminal.set_winsize(*terminal_size(stdin_fd))
 
+    # The task is retained: a bare ``create_task`` reference is weak, so the teardown
+    # could be garbage-collected before the child is signalled.
     def _interrupt(self, signum: int) -> None:
-        """Record a relay-level signal and tear the child down for it.
-
-        The task is retained: a bare ``create_task`` reference is weak, so the
-        teardown could be garbage-collected before the child is signalled.
-        """
+        """Record a relay-level signal and tear the child down for it."""
         self._interrupted = signum
         self._teardown = asyncio.get_running_loop().create_task(
             self._terminal.terminate()
         )
 
+    # The child's output ends the relay: on a pty the master reads EIO when the slave
+    # closes, which is the child exiting. A closed stdin does NOT end it -- the human
+    # pressing Ctrl-D at this layer only stops the keystroke direction, and the child
+    # keeps painting until it decides to leave.
     async def _pump(self, stdin_fd: int, out_fd: int) -> None:
-        """Copy keystrokes down and the child's painting up, until it exits.
-
-        The child's output ends the relay: on a pty the master reads EIO when
-        the slave closes, which is the child exiting. A closed stdin does NOT
-        end it -- the human pressing Ctrl-D at this layer only stops the
-        keystroke direction, and the child keeps painting until it decides to
-        leave.
-        """
+        """Copy keystrokes down and the child's painting up, until it exits."""
         keystrokes = (
             asyncio.create_task(self._forward_input(stdin_fd))
             if stdin_fd >= 0
@@ -379,15 +377,13 @@ class ThreadedRelay:
         finally:
             self._running.clear()
 
+    # Every "the loop is gone" shape is the same non-event: the child exited on its own,
+    # so there is nothing left to submit to or signal. Closing the coroutine keeps that
+    # from surfacing as an un-awaited warning.
     def _on_loop(
         self, work: Coroutine[None, None, object], *, timeout_sec: float
     ) -> None:
-        """Run ``work`` on the serving loop from this thread; wait for it.
-
-        Every "the loop is gone" shape is the same non-event: the child exited
-        on its own, so there is nothing left to submit to or signal. Closing
-        the coroutine keeps that from surfacing as an un-awaited warning.
-        """
+        """Run ``work`` on the serving loop from this thread; wait for it."""
         loop = self._loop
         if loop is None or loop.is_closed():
             work.close()
@@ -401,12 +397,10 @@ class ThreadedRelay:
             return
 
 
+# None when ``fd`` is not a terminal (piped stdin, or -1), so the relay still runs -- it
+# just has no line discipline to toggle.
 def _enter_raw(fd: int) -> list[Any] | None:
-    """Put ``fd`` in raw mode; return prior attributes to restore, or None.
-
-    None when ``fd`` is not a terminal (piped stdin, or -1), so the relay
-    still runs -- it just has no line discipline to toggle.
-    """
+    """Put ``fd`` in raw mode; return prior attributes to restore, or None."""
     if fd < 0:
         return None
     try:
@@ -417,35 +411,29 @@ def _enter_raw(fd: int) -> list[Any] | None:
     return old
 
 
+# ``TCSANOW``, not ``TCSADRAIN``: draining waits for the terminal's pending output to be
+# consumed, and by here the relay has stopped reading, so a queue nobody drains never
+# empties. On Darwin that call then blocks FOREVER -- the child is already gone and the
+# human's shell never comes back. Linux returns immediately from the same call, which is
+# why only a macOS run ever hung and CI stayed green throughout.
+#
+# The guarantee ``TCSADRAIN`` buys -- queued bytes reach the terminal under the old
+# discipline -- is unobtainable anyway when there is no consumer to reach them.
 def _restore(fd: int, old_attr: list[Any] | None) -> None:
-    """Restore terminal attributes saved by :func:`_enter_raw`.
-
-    ``TCSANOW``, not ``TCSADRAIN``: draining waits for the terminal's pending
-    output to be consumed, and by here the relay has stopped reading, so a
-    queue nobody drains never empties. On Darwin that call then blocks
-    FOREVER -- the child is already gone and the human's shell never comes
-    back. Linux returns immediately from the same call, which is why only a
-    macOS run ever hung and CI stayed green throughout.
-
-    The guarantee ``TCSADRAIN`` buys -- queued bytes reach the terminal under
-    the old discipline -- is unobtainable anyway when there is no consumer to
-    reach them.
-    """
+    """Restore terminal attributes saved by :func:`_enter_raw`."""
     if old_attr is None:
         return
     with contextlib.suppress(termios.error):
         termios.tcsetattr(fd, termios.TCSANOW, old_attr)
 
 
+# A selector is the cheap path, but it rejects a regular file outright (``EPERM`` from
+# ``epoll``), and stdin is a redirected file whenever the caller was invoked with ``<
+# file`` or driven by a harness. Such a file is always ready anyway, so falling back to
+# a thread read is not a busy loop -- it is one blocking read per chunk, off the event
+# loop.
 async def _readable(fd: int) -> bool:
-    """Wait until ``fd`` has bytes; False once it is unreadable.
-
-    A selector is the cheap path, but it rejects a regular file outright
-    (``EPERM`` from ``epoll``), and stdin is a redirected file whenever the
-    caller was invoked with ``< file`` or driven by a harness. Such a file is
-    always ready anyway, so falling back to a thread read is not a busy loop
-    -- it is one blocking read per chunk, off the event loop.
-    """
+    """Wait until ``fd`` has bytes; False once it is unreadable."""
     loop = asyncio.get_running_loop()
     ready = cast(asyncio.Future[None], loop.create_future())
     try:

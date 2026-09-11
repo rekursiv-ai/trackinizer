@@ -122,13 +122,13 @@ class TestSchema:
             assert f"CREATE SEQUENCE IF NOT EXISTS seq_{kind}" in sql
 
     def test_schema_emits_issue_kind_cardinality_check(self) -> None:
-        """``min_items=1`` on ``Issue.issue_kind`` propagates from
-        ``ColumnSpec`` metadata into both the per-kind ``inquiries``
-        CHECK and the matching ``change_log`` mirror, so empty
-        ``issue_kind`` is rejected by the DB rather than by a racy
-        application-layer precheck. ``cardinality`` (not
-        ``array_length(col, 1)``) because the latter returns NULL on
-        empty arrays and CHECK treats NULL as pass.
+        """``min_items=1`` on ``Issue.issue_kind`` propagates from ``ColumnSpec``.
+
+        Metadata into both the per-kind ``inquiries`` CHECK and the matching
+        ``change_log`` mirror, so empty ``issue_kind`` is rejected by the DB rather than
+        by a racy application-layer precheck. ``cardinality`` (not ``array_length(col,
+        1)``) because the latter returns NULL on empty arrays and CHECK treats NULL as
+        pass.
         """
         sql = substitute_schema_placeholders(load_sql("schema"))
         assert "cardinality(issue_kind) >= 1" in sql
@@ -219,7 +219,7 @@ class TestCLIHelpers:
             quote_literal(Literal[1, 2, 3])
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

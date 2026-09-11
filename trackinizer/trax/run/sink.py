@@ -85,6 +85,10 @@ class Sink(Protocol):
         Lets the runner open before fork so the server-granted handle is in the
         child env from the start. A local-file sink has no server session and
         returns None.
+
+        Returns:
+          result: The str | None.
+
         """
         ...
 
@@ -93,11 +97,21 @@ class Sink(Protocol):
 
         Lets a fresh run become resumable on its next ``--resume``. A local-file
         sink has no server session and ignores it.
+
+        Args:
+          cli_session_id: Cli session id.
+
         """
         ...
 
     def emit(self, adapter_name: str, event: Event) -> None:
-        """Record one record; call ``restart`` before a replacement's first record."""
+        """Record one record; call ``restart`` before a replacement's first record.
+
+        Args:
+          adapter_name: Adapter name.
+          event: Event.
+
+        """
         ...
 
     def restart(self, path: Path) -> None:
@@ -216,27 +230,16 @@ class Sink(Protocol):
         failure loses nothing (REV-02). On the Protocol -- not reached via
         ``getattr`` -- so a rename is a type error instead of a silent
         buffer loss. A sink that delivers synchronously returns ``[]``.
+
+        Returns:
+          result: The list[tuple[Path, RecordBody]].
+
         """
         ...
 
     def close(self) -> None:
         """Flush and release resources; idempotent."""
         ...
-
-
-def _record_body(idx: int, event: Event) -> RecordBody:
-    """The wire body for one captured record at position ``idx``.
-
-    Built through :class:`SessionRecordRow` rather than field by field, so the
-    ciphertext split and the search projection are computed in ONE place and
-    the stored row cannot disagree with what the wire carried.
-    """
-    # ``session_id`` is the server's to assign; the row type needs one, and
-    # only its projections are read here.
-    row = SessionRecordRow.of(
-        session_id=UUID(int=0), part=0, idx=idx, record=event.record
-    )
-    return RecordBody.of(row)
 
 
 class FileSink(Sink):
@@ -305,6 +308,12 @@ class FileSink(Sink):
         this sink's counter. Advancing past the replayed ``idx`` is
         load-bearing: a later live ``emit`` would otherwise restart at 0 and
         collide with what was just replayed.
+
+        Args:
+          adapter_name: Adapter name.
+          path: Path.
+          body: Body.
+
         """
         self._next_idx[path] = max(self._next_idx.get(path, 0), body.idx + 1)
         self._write_record(adapter_name, path, body)
@@ -398,8 +407,9 @@ class TrackinizerSink(Sink):
 
     @property
     def granted_actor(self) -> str | None:
-        """The routing name the server granted this session (after collision
-        renegotiation), or ``None`` before the session opens.
+        """The routing name the server granted this session.
+
+        After collision renegotiation), or ``None`` before the session opens.
         """
         return self._granted_actor
 
@@ -411,7 +421,7 @@ class TrackinizerSink(Sink):
 
     @override
     def emit(self, adapter_name: str, event: Event) -> None:
-        del adapter_name  # the session already names its CLI
+        del adapter_name  # the session already names its CLI.
         self._ensure_session()
         idx = self._next_idx.get(event.path, 0)
         if event.restart or idx < self._overwrite_until.get(event.path, 0):
@@ -522,18 +532,16 @@ class TrackinizerSink(Sink):
         self._oldest_buffered_at = None
         return pending
 
+    # One part per request: the server resolves a part from the file's basename, so
+    # records from two files cannot share a request without one of them landing under
+    # the wrong part.
+    #
+    # Buffered slash commands ride the FIRST request, so they commit in the same
+    # transaction as the turns around them. A batch with no records at all still sends
+    # them, naming no file -- a command typed before the CLI has written anything
+    # belongs to no part.
     def _flush(self) -> None:
-        """Send each file's records as its own batch.
-
-        One part per request: the server resolves a part from the file's
-        basename, so records from two files cannot share a request without
-        one of them landing under the wrong part.
-
-        Buffered slash commands ride the FIRST request, so they commit in the
-        same transaction as the turns around them. A batch with no records at
-        all still sends them, naming no file -- a command typed before the CLI
-        has written anything belongs to no part.
-        """
+        """Send each file's records as its own batch."""
         if self._session_id is None or not (self._buffer or self._slash):
             return
         by_path: dict[Path, list[RecordBody]] = {}
@@ -568,26 +576,21 @@ class TrackinizerSink(Sink):
         self._buffer = []
         self._oldest_buffered_at = None
 
+    # Not decoration, and not derivable server-side: claude's ascii-escaping convention
+    # (a majority flag plus its exception bitmap) rides on the ``TurnContext`` in force,
+    # and a rewrite without it writes raw UTF-8 where the CLI wrote ``\\u00e9``. Every
+    # record still matches, so nothing downstream notices -- but the bytes differ, and a
+    # provider handed a transcript it did not write is entitled to reject it.
+    #
+    # Read from the per-file reader at FLUSH time rather than captured once:
+    # ``ascii_escaped`` is a majority over the lines consumed, so the value correct for
+    # one batch may be wrong for the next, and the reader restates it when it moves.
+    # That is the same reason the manifest is re-sent per batch at all.
+    #
+    # A path with no reader yet -- a body replayed into a degraded sink, which carries
+    # positions but no reader -- declares nothing, which the empty default already says.
     def _metadata_for(self, path: Path) -> JSON:
-        r"""How the file SPELLS its bytes, as its own reader has read it so far.
-
-        Not decoration, and not derivable server-side: claude's ascii-escaping
-        convention (a majority flag plus its exception bitmap) rides on the
-        ``TurnContext`` in force, and a rewrite without it writes raw UTF-8
-        where the CLI wrote ``\\u00e9``. Every record still matches, so nothing
-        downstream notices -- but the bytes differ, and a provider handed a
-        transcript it did not write is entitled to reject it.
-
-        Read from the per-file reader at FLUSH time rather than captured once:
-        ``ascii_escaped`` is a majority over the lines consumed, so the value
-        correct for one batch may be wrong for the next, and the reader
-        restates it when it moves. That is the same reason the manifest is
-        re-sent per batch at all.
-
-        A path with no reader yet -- a body replayed into a degraded sink,
-        which carries positions but no reader -- declares nothing, which the
-        empty default already says.
-        """
+        r"""How the file SPELLS its bytes, as its own reader has read it so far."""
         reader = self.readers.get(path)
         if reader is None:
             return json_freeze({})
@@ -618,6 +621,19 @@ class TrackinizerSink(Sink):
                     ),
                 )
         self._closed = True
+
+
+# Built through :class:`SessionRecordRow` rather than field by field, so the ciphertext
+# split and the search projection are computed in ONE place and the stored row cannot
+# disagree with what the wire carried.
+def _record_body(idx: int, event: Event) -> RecordBody:
+    """Return the wire body for one captured record at position ``idx``."""
+    # ``session_id`` is the server's to assign; the row type needs one, and
+    # only its projections are read here.
+    row = SessionRecordRow.of(
+        session_id=UUID(int=0), part=0, idx=idx, record=event.record
+    )
+    return RecordBody.of(row)
 
 
 class ResilientSink(Sink):
@@ -736,18 +752,10 @@ class ResilientSink(Sink):
         if self._fallback is not None:
             self._fallback.close()
 
+    # Any events the primary had buffered but not yet sent are replayed into the
+    # fallback first, in order, so a flush failure loses nothing (REV-02).
     def _degrade(self, err: Exception) -> bool:
-        """Abandon the primary sink and route the rest to a local file.
-
-        Any events the primary had buffered but not yet sent are replayed into
-        the fallback first, in order, so a flush failure loses nothing (REV-02).
-
-        Returns:
-          replayed: Whether anything was replayed. ``emit`` needs this to tell
-            a primary that already took the failing event (buffered, so
-            replayed just now) from one that raised before taking it.
-
-        """
+        """Abandon the primary sink and route the rest to a local file."""
         primary, self._primary = self._primary, None
         assert primary is not None, "degrade is only reachable with a live primary"
         sys.stderr.write(

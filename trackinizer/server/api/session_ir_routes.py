@@ -55,6 +55,15 @@ async def append_session_records_route(
     A body naming no file carries only slash commands -- a command is typed
     into the SESSION, and one submitted before the CLI has written a
     transcript has no part to belong to.
+
+    Args:
+      session_id: Session id.
+      request: Request.
+      body: Body.
+
+    Returns:
+      result: The AppendRecordsResponse.
+
     """
     store = get_store(request)
     await _require_session(store, session_id)
@@ -96,7 +105,16 @@ async def append_session_records_route(
 async def read_session_parts_route(
     session_id: UUID, request: Request
 ) -> ReadPartsResponse:
-    """List the files this session was captured from, in ``part`` order."""
+    """List the files this session was captured from, in ``part`` order.
+
+    Args:
+      session_id: Session id.
+      request: Request.
+
+    Returns:
+      result: The ReadPartsResponse.
+
+    """
     store = get_store(request)
     await _require_session(store, session_id)
     manifests = await store.read_session_manifests(session_id)
@@ -139,6 +157,18 @@ async def read_session_records_route(
     ``plaintext_only`` skips the ciphertext splice, which is what a viewer
     wants -- only a replay needs the encrypted half, and it is the largest
     thing on the row.
+
+    Args:
+      session_id: Session id.
+      request: Request.
+      part: Part.
+      after_idx: After idx.
+      limit: Limit.
+      plaintext_only: Plaintext only.
+
+    Returns:
+      result: The ReadRecordsResponse.
+
     """
     if limit < 1 or limit > MAX_LIST_LIMIT:
         raise HTTPException(

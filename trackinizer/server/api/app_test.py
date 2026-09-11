@@ -22,7 +22,6 @@ from trackinizer.lib.custom_json import (
     SchemaError,
     StrCodec,
 )
-from trackinizer.server.api import app as app_module
 from trackinizer.server.api.app import (
     check_violation_handler,
     conflict_handler,
@@ -39,6 +38,8 @@ from trackinizer.types.errors import (
     NotFoundError,
     ValidationError,
 )
+
+import trackinizer.server.api.app
 
 
 if TYPE_CHECKING:
@@ -79,7 +80,7 @@ class TestCLIHelpers:
             assert prefix in body["detail"]
 
     def test_handlers_do_not_leak_constraint_detail(self) -> None:
-        # asyncpg ``detail`` carries internal column / constraint names
+        # ``asyncpg`` ``detail`` carries internal column / constraint names
         # (e.g. ``Key (from_id)=(...) is not present``); the client-facing
         # body must NOT echo it -- only a generic message (REV-OPUS-03).
         req = cast(Any, Mock())
@@ -97,7 +98,7 @@ class TestCLIHelpers:
         ]
         for handler, exc_type in zip(cases, exc_types, strict=True):
             exc = exc_type(constraint)
-            # asyncpg exposes ``detail`` from the server error fields; set it
+            # ``asyncpg`` exposes ``detail`` from the server error fields; set it
             # so the handler sees a realistic leaky value.
             object.__setattr__(exc, "detail", leak)
             response = asyncio.run(handler(req, cast(Any, exc)))
@@ -140,7 +141,10 @@ class TestCLIHelpers:
         # only consults REGISTERED handlers, and a codec ``SchemaError``
         # reaches the app as a plain ``ValueError`` on a client-supplied
         # body. Assert the registration, which is the part that was missing.
-        assert app_module.app.exception_handlers.get(SchemaError) is schema_handler
+        assert (
+            trackinizer.server.api.app.app.exception_handlers.get(SchemaError)
+            is schema_handler
+        )
 
 
 class TestRequestLogging:
@@ -207,19 +211,25 @@ class TestRequestLogging:
 class TestAuthDisabledWarning:
     """The lifespan loudly warns when auth is disabled (synthetic-admin mode)."""
 
+    # The warning fires inside ``lifespan``; the engine, store, and embedder are
+    # replaced so the body runs hermetically (no real DB).
     @classmethod
     def _run_lifespan(
         cls, monkeypatch: pytest.MonkeyPatch, *, auth_disabled: bool
     ) -> None:
-        """Drive the real ``lifespan`` once with engine/store/embedder stubbed.
-
-        The warning fires inside ``lifespan``; the engine, store, and
-        embedder are replaced so the body runs hermetically (no real DB).
-        """
+        """Drive the real ``lifespan`` once with engine/store/embedder stubbed."""
         store, engine = make_store()
-        monkeypatch.setattr(app_module, "build_engine", Mock(return_value=engine))
-        monkeypatch.setattr(app_module, "build_embedder", Mock(return_value=object()))
-        monkeypatch.setattr(app_module, "Store", Mock(return_value=store))
+        monkeypatch.setattr(
+            trackinizer.server.api.app, "build_engine", Mock(return_value=engine)
+        )
+        monkeypatch.setattr(
+            trackinizer.server.api.app,
+            "build_embedder",
+            Mock(return_value=object()),
+        )
+        monkeypatch.setattr(
+            trackinizer.server.api.app, "Store", Mock(return_value=store)
+        )
         monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
         app = cast(FastAPI, Mock())
         app.state = Mock()
@@ -256,9 +266,17 @@ class TestAuthDisabledWarning:
     ) -> bool:
         """Drive the lifespan and report whether the no-auth user was seeded."""
         store, engine = make_store()
-        monkeypatch.setattr(app_module, "build_engine", Mock(return_value=engine))
-        monkeypatch.setattr(app_module, "build_embedder", Mock(return_value=object()))
-        monkeypatch.setattr(app_module, "Store", Mock(return_value=store))
+        monkeypatch.setattr(
+            trackinizer.server.api.app, "build_engine", Mock(return_value=engine)
+        )
+        monkeypatch.setattr(
+            trackinizer.server.api.app,
+            "build_embedder",
+            Mock(return_value=object()),
+        )
+        monkeypatch.setattr(
+            trackinizer.server.api.app, "Store", Mock(return_value=store)
+        )
         monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
         app = cast(FastAPI, Mock())
         app.state = Mock()
@@ -286,7 +304,7 @@ class TestAuthDisabledWarning:
         assert not self._seeded_no_auth_user(monkeypatch, auth_disabled=False)
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

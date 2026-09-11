@@ -23,12 +23,13 @@ from trackinizer.wire.routes import (
 
 
 def test_compare_and_set_rejects_unwired_column() -> None:
-    """A CAS route whose column is neither status nor judgement raises, not a
-    silent route to ``transition_judgement`` (a wrong-field write).
+    """A CAS route whose column is neither status nor judgement raises.
 
-    Drift defense: a future ``compare_and_set=True`` column with no named
-    transition branch in ``_run_compare_and_set`` must fail loudly. Clones a
-    real CAS route and renames its column to one with no branch.
+    A silent route to ``transition_judgement`` (a wrong-field write).
+
+        Drift defense: a future ``compare_and_set=True`` column with no named
+        transition branch in ``_run_compare_and_set`` must fail loudly. Clones a
+        real CAS route and renames its column to one with no branch.
     """
     cas_route = next(r for r in inquiry_field_routes() if r.compare_and_set)
     bogus = dataclasses.replace(cas_route, column="confidence")
@@ -342,7 +343,7 @@ class TestRoutes:
             f"/api/inquiries/{new_uuid()}/status",
             json={
                 "value": "complete",
-                "expcted": "active",  # codespell:ignore expcted -- deliberate typo of 'expected'
+                "expcted": "active",  # codespell:ignore expcted -- deliberate typo of 'expected'.
                 "actor": "alice",
             },
         )
@@ -489,7 +490,7 @@ class TestCoverageRoutesAndCli:
             assert (
                 client.post(f"/api/inquiries/{token}", json=payload).status_code == 201
             )
-        # field -> (column, old, new, expected_status); PUT overwrites.
+        # Field -> (column, old, new, expected_status); PUT overwrites.
         edit_values: dict[str, tuple[str, object, object, int]] = {
             "title": ("title", "old", "new", 200),
             "description": ("description", "old", "new", 200),
@@ -499,7 +500,7 @@ class TestCoverageRoutesAndCli:
             "confidence": ("belief_confidence", 0.5, 0.75, 200),
             "priority": ("issue_priority", 30, 10, 200),
             "outcome": ("experiment_outcome", "old", "new", 200),
-            # source is scheme-validated (<scheme>:<rest>), so use schemed values.
+            # Source is scheme-validated (<scheme>:<rest>), so use schemed values.
             "source": ("paper_source", "doi:10.1/old", "doi:10.1/new", 200),
             "query": ("websearch_query", "old", "new", 200),
             "provider": ("websearch_provider", "old", "new", 200),
@@ -550,7 +551,7 @@ class TestCoverageRoutesAndCli:
             engine.conn,
             {"paper_source": "doi:10.1/old", "kind": "Paper"},
         )
-        # source is scheme-validated (<scheme>:<rest>); a schemed value passes.
+        # Source is scheme-validated (<scheme>:<rest>); a schemed value passes.
         assert (
             client.put(
                 f"/api/paper/{new_uuid()}/source",
@@ -560,7 +561,7 @@ class TestCoverageRoutesAndCli:
         )
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

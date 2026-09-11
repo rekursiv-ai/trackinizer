@@ -19,8 +19,8 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.agent.sessions import (
-    claude as claude_ir,
-    codex as codex_ir,
+    claude,
+    codex,
 )
 from trackinizer.lib.agent.types.sessions import SessionRecord, Thinking
 from trackinizer.lib.custom_json import DictCodec, json_freeze
@@ -37,12 +37,12 @@ from trackinizer.wire.bodies import SubmitAgentSession
 # Asked of the MODULE that owns it, not counted in parents from here: the
 # export republishes this tree one directory shallower, so a fixed hop
 # count resolved outside the package and the fixtures vanished.
-_TESTDATA: Final = Path(claude_ir.__file__).resolve().parent / "testdata"
+_TESTDATA: Final = Path(claude.__file__).resolve().parent / "testdata"
 
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """A bootstrapped store on the shared integration database."""
+    """Return a bootstrapped store on the shared integration database."""
     built = Store(integ_engine, embed=StubEmbedder())
     await built.bootstrap()
     yield built
@@ -54,15 +54,13 @@ def local_claude_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
 
 
+# Fed a line at a time through :class:`Tail`, which is what capture does: the reader
+# PULLS lines and the runner PUSHES them, so driving the pull side directly would
+# exercise a path the runner never takes.
 async def _captured(store: Store, name: str) -> tuple[UUID, int]:
-    """Ingest a corpus fixture as a session; return its id and part.
-
-    Fed a line at a time through :class:`Tail`, which is what capture does:
-    the reader PULLS lines and the runner PUSHES them, so driving the pull
-    side directly would exercise a path the runner never takes.
-    """
+    """Ingest a corpus fixture as a session; return its id and part."""
     path = _TESTDATA / name
-    reader = Tail((codex_ir if name.startswith("codex") else claude_ir).normalize)
+    reader = Tail((codex if name.startswith("codex") else claude).normalize)
     records: list[TraxRecord] = []
     with path.open(encoding="utf-8") as handle:
         for line in handle:
@@ -94,16 +92,14 @@ async def _captured(store: Store, name: str) -> tuple[UUID, int]:
     return session_id, part
 
 
+# Narrowed to the shared IR, exactly as ``resume.py::_read_part`` narrows: these parts
+# hold a claude or codex file, and only a formatless scrape part carries stream records.
+# Asserted rather than cast, so a fixture that broke the invariant would fail here
+# instead of inside the claude writer.
 async def _read_back(
     store: Store, session_id: UUID, part: int
 ) -> tuple[Sequence[SessionRecord], Sequence[str | None]]:
-    """One part's records and ciphertext, as a resume reads them.
-
-    Narrowed to the shared IR, exactly as ``resume.py::_read_part`` narrows:
-    these parts hold a claude or codex file, and only a formatless scrape part
-    carries stream records. Asserted rather than cast, so a fixture that broke
-    the invariant would fail here instead of inside the claude writer.
-    """
+    """One part's records and ciphertext, as a resume reads them."""
     rows = await store.read_session_records(session_id, part=part, limit=100_000)
     records: list[SessionRecord] = []
     for row in rows:
@@ -130,7 +126,7 @@ async def test_a_claude_session_resumes_to_its_stored_records(store: Store) -> N
         records=records, encoding=manifests[0].metadata, sealed=sealed
     )
     with written.path.open(encoding="utf-8") as handle:
-        reread = list(claude_ir.normalize(handle))
+        reread = list(claude.normalize(handle))
 
     # Compared with the session id normalized away on both sides: rewriting it
     # is the POINT of materializing, so a record differing only there is a
@@ -175,7 +171,7 @@ async def test_a_codex_capture_resumes_as_claude(store: Store) -> None:
 
     assert written.path.exists()
     with written.path.open(encoding="utf-8") as handle:
-        reread = list(claude_ir.normalize(handle))
+        reread = list(claude.normalize(handle))
     # A conversion across formats is lossy in the ENVELOPE, not the content:
     # every message the model and user exchanged comes back.
     assert reread, "a codex capture materialized to an empty transcript"
@@ -303,7 +299,7 @@ async def test_the_session_stays_searchable_without_its_ciphertext(
     assert any(row.text for row in rows), "the searchable text was lost"
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

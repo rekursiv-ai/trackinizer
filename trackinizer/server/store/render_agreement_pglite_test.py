@@ -26,8 +26,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 
-import math
-
 import pytest
 import pytest_asyncio
 
@@ -38,33 +36,27 @@ from trackinizer.wire.column_shapes import _REAL_TEXT, _TS_TEXT
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def engine(pglite_engine: PGliteEngine) -> AsyncIterator[PGliteEngine]:
-    """The session's shared PGlite engine; a rendering needs no schema."""
+    """Return the session's shared PGlite engine; a rendering needs no schema."""
     await reset_schema(pglite_engine)
     yield pglite_engine
 
 
+# The golden-ratio low-discrepancy sequence rather than a PRNG: it needs no seed to be
+# reproducible, and it fills the interval more evenly than random sampling at the same
+# count, which is the whole point of the interior sweep. A rendering bug lives in a
+# narrow band of the domain, so coverage is what finds it.
 def _spread(count: int) -> Iterator[float]:
-    """``count`` points spread over ``[0, 1)``, deterministically.
-
-    The golden-ratio low-discrepancy sequence rather than a PRNG: it needs no
-    seed to be reproducible, and it fills the interval more evenly than random
-    sampling at the same count, which is the whole point of the interior
-    sweep. A rendering bug lives in a narrow band of the domain, so coverage
-    is what finds it.
-    """
+    """``count`` points spread over ``[0, 1)``, deterministically."""
     for index in range(count):
-        yield (index * ((math.sqrt(5.0) - 1.0) / 2.0)) % 1.0
+        yield float((index * ((5.0**0.5 - 1.0) / 2.0)) % 1.0)
 
 
+# The boundaries are the values that have produced a bug or sit one step from one: both
+# zeros, whole numbers on each side of the ``.0`` branch, the subnormal floor, and the
+# largest magnitude ``NUMERIC(14, 6)`` can hold. The interior sample covers the two
+# reachable ranges -- ``[0, 1]`` for ``belief_confidence`` and the cost axes' full span.
 def _reals() -> tuple[float, ...]:
-    """Boundary floats plus an evenly spread interior sample.
-
-    The boundaries are the values that have produced a bug or sit one step
-    from one: both zeros, whole numbers on each side of the ``.0`` branch, the
-    subnormal floor, and the largest magnitude ``NUMERIC(14, 6)`` can hold.
-    The interior sample covers the two reachable ranges -- ``[0, 1]`` for
-    ``belief_confidence`` and the cost axes' full span.
-    """
+    """Boundary floats plus an evenly spread interior sample."""
     boundaries = (
         -0.0,
         0.0,
@@ -91,15 +83,12 @@ def _reals() -> tuple[float, ...]:
     return boundaries + unit + costs
 
 
+# ``datetime.min`` / ``datetime.max`` are the ones that mattered: asyncpg encodes them
+# as Postgres ``±infinity``, where ``to_char`` answers NULL. The rest bracket the
+# microsecond branch -- exactly zero, exactly one, and the maximum -- since that branch
+# is what decides whether a fractional part is printed at all.
 def _timestamps() -> tuple[datetime, ...]:
-    """Boundary datetimes plus an evenly spread interior sample.
-
-    ``datetime.min`` / ``datetime.max`` are the ones that mattered: asyncpg
-    encodes them as Postgres ``±infinity``, where ``to_char`` answers NULL.
-    The rest bracket the microsecond branch -- exactly zero, exactly one, and
-    the maximum -- since that branch is what decides whether a fractional part
-    is printed at all.
-    """
+    """Boundary datetimes plus an evenly spread interior sample."""
     boundaries = (
         datetime.min.replace(tzinfo=UTC),
         datetime.max.replace(tzinfo=UTC),
@@ -126,18 +115,15 @@ def _timestamps() -> tuple[datetime, ...]:
     return boundaries + sample
 
 
+# The values are BOUND, not interpolated: asyncpg's binary encoder is the production
+# path, and a literal would test a different parser. The decoded value comes back
+# alongside its rendering so the comparison is against what Python would actually hold
+# for that row -- which is the whole claim, and is not the same object for
+# ``±infinity``, where asyncpg returns a naive datetime.
 async def _rendered(
     engine: PGliteEngine, sql_type: str, template: str, values: Sequence[object]
 ) -> list[tuple[object, str | None]]:
-    """Render every value through ``template`` on a real engine.
-
-    The values are BOUND, not interpolated: asyncpg's binary encoder is the
-    production path, and a literal would test a different parser. The decoded
-    value comes back alongside its rendering so the comparison is against what
-    Python would actually hold for that row -- which is the whole claim, and
-    is not the same object for ``±infinity``, where asyncpg returns a naive
-    datetime.
-    """
+    """Render every value through ``template`` on a real engine."""
     async with engine.acquire() as conn:
         rows = await conn.fetch(
             f"SELECT val, {template.format(col='val')} AS rendered "  # noqa: S608
@@ -196,7 +182,7 @@ async def test_the_timestamp_template_renders_what_python_str_renders(
     )
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

@@ -55,13 +55,10 @@ _API_PATH_METHOD_RE = re.compile(
 )
 
 
+# ``/api/inquiries/${id}/${field}`` -> ``/api/inquiries/{id}/{field}``; a trailing
+# ``${...}`` segment becomes a single ``{param}``. Static paths pass through unchanged.
 def _template_to_route(path: str) -> str:
-    """Turn a JS template-literal path into a FastAPI route template.
-
-    ``/api/inquiries/${id}/${field}`` -> ``/api/inquiries/{id}/{field}``;
-    a trailing ``${...}`` segment becomes a single ``{param}``. Static
-    paths pass through unchanged.
-    """
+    """Turn a JS template-literal path into a FastAPI route template."""
     return re.sub(r"\$\{[^}]*\}", "{param}", path)
 
 
@@ -74,15 +71,13 @@ def _registered_path_templates(application: FastAPI) -> set[str]:
     }
 
 
+# ``fieldPath`` builds a kind-scoped base fragment ``/api/${owner}`` that is
+# concatenated with ``/${id}/${field}`` before any fetch -- it is never requested on its
+# own. A bare ``/api/{param}`` fragment is such a base, not a fetched path, so it is
+# excluded (the same concatenation limitation already documented for the edge-field
+# ``${base}/${field}``).
 def _spa_api_paths() -> set[str]:
-    """Every distinct ``/api/...`` literal the SPA issues, as route templates.
-
-    ``fieldPath`` builds a kind-scoped base fragment ``/api/${owner}`` that
-    is concatenated with ``/${id}/${field}`` before any fetch -- it is
-    never requested on its own. A bare ``/api/{param}`` fragment is such a
-    base, not a fetched path, so it is excluded (the same concatenation
-    limitation already documented for the edge-field ``${base}/${field}``).
-    """
+    """Every distinct ``/api/...`` literal the SPA issues, as route templates."""
     raw: set[str] = set()
     for name in _SPA_PAGE_NAMES:
         page = _CWD / "assets" / name
@@ -120,13 +115,11 @@ def _registered_path_methods(application: FastAPI) -> set[tuple[str, str]]:
     return out
 
 
+# Only pairs where the SPA spells both a ``/api/...`` literal and an adjacent ``method:
+# "VERB"`` are returned; a bare path (GET) is covered by the path-only test. ``{param}``
+# bases (concatenated fragments) are excluded.
 def _spa_api_path_methods() -> set[tuple[str, str]]:
-    """Every ``(path, method)`` the SPA issues with an explicit ``method:``.
-
-    Only pairs where the SPA spells both a ``/api/...`` literal and an adjacent
-    ``method: "VERB"`` are returned; a bare path (GET) is covered by the
-    path-only test. ``{param}`` bases (concatenated fragments) are excluded.
-    """
+    """Every ``(path, method)`` the SPA issues with an explicit ``method:``."""
     pairs: set[tuple[str, str]] = set()
     for name in _SPA_PAGE_NAMES:
         page = _CWD / "assets" / name
@@ -257,7 +250,7 @@ def test_search_box_routes_exact_refs_before_text_search() -> None:
 
 
 def _render_turn_block() -> str:
-    """The body of ``renderTurn``, up to the next top-level function."""
+    """Return the body of ``renderTurn``, up to the next top-level function."""
     html = (_CWD / "assets" / "index.html").read_text()
     start = html.index("function renderTurn(ev)")
     return html[start : html.index("\nfunction ", start + 1)]
@@ -312,7 +305,7 @@ def test_a_context_clear_shows_what_the_fresh_context_was_given() -> None:
     assert "m.summary" in arm
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

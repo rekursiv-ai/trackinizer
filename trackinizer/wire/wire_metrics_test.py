@@ -35,8 +35,10 @@ class TestMetricPointValueDomain:
 
 class TestMetricPointKind:
     def test_rejects_non_scalar_kind(self) -> None:
-        """``kind`` is closed to ``"scalar"``: readers assume a numeric scalar,
-        so a non-scalar point would render wrong. Reject until media lands.
+        """``kind`` is closed to ``"scalar"``.
+
+        Readers assume a numeric scalar, so a non-scalar point would render wrong.
+        Reject until media lands.
         """
         # Runtime-invalid on purpose: the Literal makes this a static error too,
         # so cast to feed the bad value past the type checker to the validator.
@@ -84,3 +86,9 @@ class TestLogMetricsRequestBatchSize:
             for i in range(_MAX_POINTS_PER_BATCH)
         ]
         assert len(LogMetricsRequest(points=points).points) == _MAX_POINTS_PER_BATCH
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.main import test_main
+
+    test_main(__file__)

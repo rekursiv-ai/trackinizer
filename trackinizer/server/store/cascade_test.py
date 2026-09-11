@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import AsyncMock
 
 import json
@@ -23,13 +22,11 @@ from trackinizer.types.cost import Cost
 from trackinizer.types.errors import ConflictError
 
 
+# Returns the list each invocation appends to, so a test asserts the cascade fired
+# exactly N times via ``len(...)``. A real typed ``async def`` (not an ``AsyncMock``)
+# keeps the patch type-correct under ty.
 def _spy_cascade(store: Store, monkeypatch: pytest.MonkeyPatch) -> list[object]:
-    """Replace ``Store._cascade_dependency_changed`` with a recording stub.
-
-    Returns the list each invocation appends to, so a test asserts the
-    cascade fired exactly N times via ``len(...)``. A real typed ``async
-    def`` (not an ``AsyncMock``) keeps the patch type-correct under ty.
-    """
+    """Replace ``Store._cascade_dependency_changed`` with a recording stub."""
     calls: list[object] = []
 
     async def stub(*args: object, **kwargs: object) -> None:
@@ -149,7 +146,7 @@ class TestEmitChangeFloorIsAtomic:
         """
         conn = make_conn()
 
-        async def fetchrow(sql: str, *args: Any) -> Any:
+        async def fetchrow(sql: str, *args: object) -> object:
             if "marginal_cost_agent_usd" in sql and "RETURNING" in sql:
                 # Mirror Postgres: the modifying CTE rejects the floor-
                 # violating row; the outer SELECT still emits one row
@@ -211,7 +208,7 @@ class TestEmitChangeFloorIsAtomic:
         """
         conn = make_conn()
 
-        async def fetchrow(sql: str, *args: Any) -> Any:
+        async def fetchrow(sql: str, *args: object) -> object:
             del args
             # The fix uses a single ``WITH ... SELECT`` statement that
             # carries the cost UPDATE inside a modifying CTE. Detect it
@@ -390,7 +387,7 @@ class TestEdgeCascadeSymmetry:
         assert new_edge_note == ""
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

@@ -78,6 +78,7 @@ class Snapshot:
     """Mirrors :attr:`Inquiry.status`."""
 
     belief_judgement: Belief.Judgement | None = None
+
     belief_confidence: float | None = None
 
     edge_priority: Issue.Priority | None = None
@@ -97,27 +98,49 @@ class Snapshot:
     cannot be confused with :attr:`Change.kind`, the row discriminator."""
 
     issue_validation: str | None = None
+
     issue_priority: Issue.Priority | None = None
+
     experiment_outcome: str | None = None
+
     experiment_config: dict[str, object] | None = None
+
     paper_abstract: str | None = None
+
     paper_authors: tuple[str, ...] | None = None
+
     paper_publication_type: Paper.PublicationType | None = None
+
     paper_venue: str | None = None
+
     paper_subvenue: str | None = None
+
     paper_publish_date: datetime | None = None
+
     paper_source: str | None = None
+
     paper_google_scholar_cluster_id: str | None = None
+
     paper_google_scholar_cites_id: str | None = None
+
     codechange_sha: str | None = None
+
     webresult_url: str | None = None
+
     websearch_query: str | None = None
+
     websearch_provider: str | None = None
+
     experiment_codechanges: tuple[UUID, ...] | None = None
+
     agentsession_cli: str | None = None
+
     agentsession_cli_session_id: str | None = None
+
     agentsession_started: datetime | None = None
+
     agentsession_ended: datetime | None = None
+
     agentsession_rooms: tuple[str, ...] | None = None
 
     subscribers: tuple[Inquiry.Actor, ...] | None = None
@@ -129,7 +152,7 @@ class Snapshot:
     :attr:`Change.marginal_cost`."""
 
     def __bool__(self) -> bool:
-        """True when any field is populated."""
+        """Report whether any field is populated."""
         return any(getattr(self, f.name) is not None for f in fields(self))
 
     @classmethod
@@ -145,6 +168,14 @@ class Snapshot:
         no longer produced, but the decoder still maps one through faithfully
         if legacy data carries it. ``marginal_cost`` is the one composite,
         rebuilt via :meth:`Cost.from_row`.
+
+        Args:
+          row: Row.
+          prefix: Prefix.
+
+        Returns:
+          result: The Self.
+
         """
         kwargs: dict[str, Any] = {}
         for f in fields(cls):
@@ -311,6 +342,13 @@ class Change:
         Identity columns are read directly; ``old`` and ``new`` are
         assembled from the flat ``old_*`` / ``new_*`` columns through
         :meth:`Snapshot.from_row`.
+
+        Args:
+          row: Row.
+
+        Returns:
+          result: The Self.
+
         """
         kwargs: dict[str, Any] = {
             "id": row["id"],

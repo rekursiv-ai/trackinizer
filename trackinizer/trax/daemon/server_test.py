@@ -69,7 +69,8 @@ class TestHandle:
     def test_maps_client_error_to_the_cli_exit_code(self) -> None:
         """``main`` exits 2 on ClientError; scripts branch on that."""
 
-        def boom(_argv: Sequence[str]) -> None:
+        def boom(argv: Sequence[str]) -> None:
+            del argv
             raise ClientError("nope")
 
         response = handle(make_request(["x"]), run=boom)
@@ -80,7 +81,8 @@ class TestHandle:
     def test_survives_an_unexpected_exception(self) -> None:
         """A verb bug must fail one request, never kill the shared daemon."""
 
-        def boom(_argv: Sequence[str]) -> None:
+        def boom(argv: Sequence[str]) -> None:
+            del argv
             raise RuntimeError("kaboom")
 
         response = handle(make_request(["x"]), run=boom)
@@ -339,7 +341,7 @@ def _current_user() -> str:
     return env("USER") or ""
 
 
-if __name__ == "__main__":  # pragma: no cover -- entry point only.
+if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 
     test_main(__file__)

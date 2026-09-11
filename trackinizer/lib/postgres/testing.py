@@ -46,6 +46,9 @@ def pglite_workdir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     database. Under xdist each worker is its own process and gets its own
     ``tmp_path_factory`` root, so workers never collide.
 
+    Args:
+      tmp_path_factory: Tmp path factory.
+
     Returns:
       workdir: Directory the shared engines may own for the session.
 
@@ -73,6 +76,10 @@ async def pglite_engine(
     would resolve that once, in whichever package asked first, then serve the
     same engine to packages wanting a different extension set. The engine itself
     is still booted at most once per set, inside the cache.
+
+    Args:
+      pglite_engine_cache: Pglite engine cache.
+      request: Request.
 
     Returns:
       engine: A started engine. Call :func:`reset_schema` for an empty schema.
@@ -119,6 +126,9 @@ async def pglite_engine_cache(pglite_workdir: Path) -> AsyncGenerator[_EngineCac
 
     Consumed by :func:`pglite_engine`, which is what a test should ask for.
 
+    Args:
+      pglite_workdir: Pglite workdir.
+
     Yields:
       cache: Call ``get(extensions)`` for a started engine.
 
@@ -144,7 +154,15 @@ class _EngineCache:
         self._engines: dict[tuple[str, ...], PGliteEngine] = {}
 
     async def get(self, extensions: tuple[str, ...]) -> PGliteEngine:
-        """Return the started engine for ``extensions``, booting on first ask."""
+        """Return the started engine for ``extensions``, booting on first ask.
+
+        Args:
+          extensions: Extensions.
+
+        Returns:
+          engine: The PGliteEngine.
+
+        """
         key = tuple(sorted(extensions))
         engine = self._engines.get(key)
         if engine is None:

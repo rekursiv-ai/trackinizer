@@ -38,7 +38,7 @@ from trackinizer.lib.agent.types.sessions import (
 
 
 def _session() -> list[SessionRecord]:
-    """A small session carrying prose and a call."""
+    """Return a small session carrying prose and a call."""
     return [
         UserMessage(content="do the thing"),
         AssistantMessage(content="running it"),
