@@ -48,7 +48,6 @@ NOTIFY_CHANNEL: Final = "trackinizer"
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Notification:
     engine: DatabaseEngine
-
     subject_id: UUID
 
 
@@ -82,10 +81,10 @@ async def tx(conn: Conn) -> AsyncGenerator[None]:
     propagate instead of being masked by a cleanup error.
 
     Args:
-      conn: Conn.
+      conn: Database connection (asyncpg or pglite).
 
     Yields:
-      item: Each yielded value.
+      item: (nothing; the yield resumes body and expects cleanup).
 
     """
     await conn.execute("BEGIN")
@@ -108,7 +107,7 @@ async def notify_after_commit() -> AsyncGenerator[None]:
     :func:`_publish_notifications`; failures there are logged, not raised.
 
     Yields:
-      item: Each yielded value.
+      item: (nothing; the yield resumes body for buffering).
 
     """
     outer = NOTIFICATION_BUFFER.get()
@@ -137,10 +136,10 @@ async def iter_sse_events(engine: DatabaseEngine) -> AsyncIterator[bytes]:
     they share one generator and one wire contract.
 
     Args:
-      engine: Engine.
+      engine: Database connection to listen on.
 
     Yields:
-      item: Each yielded value.
+      item: SSE-formatted frames (bytes with id and newline).
 
     """
     async for payload in engine.listen(NOTIFY_CHANNEL):

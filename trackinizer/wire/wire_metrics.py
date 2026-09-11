@@ -130,7 +130,6 @@ class LogMetricsResponse(BaseModel):
     """
 
     logged: int
-
     skipped: int
 
 
@@ -156,13 +155,5 @@ METRICS_API_PATHS: tuple[str, ...] = (EXPERIMENT_METRICS_PATH,)
 
 
 def experiment_metrics_path(experiment_id: uuid.UUID) -> str:
-    """Return the metrics path (POST log, GET read) for one experiment.
-
-    Args:
-      experiment_id: Experiment id.
-
-    Returns:
-      result: The str.
-
-    """
+    """Return the metrics path (POST log, GET read) for one experiment."""
     return EXPERIMENT_METRICS_PATH.format(experiment_id=experiment_id)

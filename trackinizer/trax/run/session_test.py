@@ -180,9 +180,7 @@ class _FakeAdapter:
     """Treats every ``*.jsonl`` line as one ``UserMessage`` record."""
 
     name: str = "fake"
-
     cli_binary: str = "fake"
-
     whole_file: bool = False
 
     def __init__(self, root: Path) -> None:
@@ -213,9 +211,7 @@ class _WholeFileAdapter(_FakeAdapter):
     """
 
     name: str = "wholefile"
-
     cli_binary: str = "wholefile"
-
     whole_file: bool = True
 
     @override
@@ -231,7 +227,6 @@ class _PoisonAdapter(_FakeAdapter):
     """Raises on a line whose text is ``boom``; otherwise a ``UserMessage``."""
 
     name: str = "poison"
-
     cli_binary: str = "poison"
 
     @override
@@ -1365,7 +1360,6 @@ class _UuidAdapter(_FakeAdapter):
     """A line adapter over uuid-stamped records, like claude's."""
 
     name: str = "uuids"
-
     cli_binary: str = "uuids"
 
     @override

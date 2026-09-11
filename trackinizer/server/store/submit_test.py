@@ -504,7 +504,6 @@ class _BeginRecordingEmbedder:
     """
 
     name = "begin-recorder"
-
     dim = EMBEDDING_DIM
 
     def __init__(self, conn: AsyncMock) -> None:

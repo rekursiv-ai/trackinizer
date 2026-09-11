@@ -56,11 +56,11 @@ async def get_edge_route(
     """Get edge route.
 
     Args:
-      from_id: From id.
-      edge_kind: Edge kind.
-      to_id: To id.
-      request: Request.
-      identity: Identity.
+      from_id: UUID of the source inquiry.
+      edge_kind: Type of edge (proves, favors, cites_paper, etc.).
+      to_id: UUID of the target inquiry.
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user identity, viewer-role-gated.
 
     Returns:
       result: The MutableJSON | None.
@@ -84,12 +84,12 @@ async def create_edge_batch_route(
     """Create many edges in one round-trip, reporting per-item success.
 
     Args:
-      req: Req.
-      request: Request.
-      identity: Identity.
+      req: Batch request body (items list).
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user identity, writer-role-gated.
 
     Returns:
-      result: The MutableJSON.
+      response: JSON with "ok" flag and per-item success/error list.
 
     """
     store = get_store(request)
@@ -132,15 +132,15 @@ async def create_edge_route(
     """Create edge route.
 
     Args:
-      from_id: From id.
-      edge_kind: Edge kind.
-      to_id: To id.
-      req: Req.
-      request: Request.
-      identity: Identity.
+      from_id: UUID of the source inquiry.
+      edge_kind: Type of edge (proves, favors, cites_paper, etc.).
+      to_id: UUID of the target inquiry.
+      req: Edge creation body (priority, note, valence, labels).
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user identity, writer-role-gated.
 
     Returns:
-      result: The MutableJSON.
+      response: JSON with edge mutation result (change_id, created flag).
 
     """
     store = get_store(request)
@@ -172,15 +172,15 @@ async def delete_edge_route(
     """Delete edge route.
 
     Args:
-      from_id: From id.
-      edge_kind: Edge kind.
-      to_id: To id.
-      req: Req.
-      request: Request.
-      identity: Identity.
+      from_id: UUID of the source inquiry.
+      edge_kind: Type of edge (proves, favors, cites_paper, etc.).
+      to_id: UUID of the target inquiry.
+      req: Mutation body (actor, reason).
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user identity, writer-role-gated.
 
     Returns:
-      result: The MutableJSON.
+      response: JSON with edge mutation result (change_id, created flag).
 
     """
     store = get_store(request)
@@ -208,15 +208,15 @@ async def patch_edge_labels_route(
     """Add or remove one label on an edge, the only ``PATCH``-able annotation.
 
     Args:
-      from_id: From id.
-      edge_kind: Edge kind.
-      to_id: To id.
-      req: Req.
-      request: Request.
-      identity: Identity.
+      from_id: UUID of the source inquiry.
+      edge_kind: Type of edge (proves, favors, cites_paper, etc.).
+      to_id: UUID of the target inquiry.
+      req: Mutation body (op: "add"|"remove", value, reason).
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user identity, writer-role-gated.
 
     Returns:
-      result: The MutableJSON.
+      response: JSON with edge mutation result (change_id, created flag).
 
     """
     store = get_store(request)
@@ -332,9 +332,7 @@ class _EdgeBatchSuccess(BaseModel):
 
 class _EdgeBatchFailure(BaseModel):
     ok: Literal[False] = False
-
     index: int
-
     error: str
 
 

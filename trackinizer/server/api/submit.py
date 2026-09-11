@@ -81,12 +81,12 @@ async def submit_batch_route(
     that item would raise (e.g. 409 on a conflict, 422 on bad input).
 
     Args:
-      req: Req.
-      request: Request.
-      identity: Identity.
+      req: SubmitBatch payload with items and edges to create atomically.
+      request: FastAPI request object; used to fetch the store.
+      identity: Authenticated writer; enforced by Depends(require_role("writer")).
 
     Returns:
-      body: The MutableJSON.
+      body: JSON object with "ids" key mapping to list of minted server IDs.
 
     """
     store = get_store(request)
@@ -126,13 +126,13 @@ async def submit_route(
     different model.
 
     Args:
-      kind: Kind.
-      payload: Payload.
-      request: Request.
-      identity: Identity.
+      kind: Lowercase URL token (e.g. "issue", "experiment") selecting the submit model.
+      payload: JSON body to validate and submit; discriminator kind is auto-injected.
+      request: FastAPI request object; used to fetch the store.
+      identity: Authenticated writer; enforced by Depends(require_role("writer")).
 
     Returns:
-      result: The MutableJSON.
+      result: JSON with server-minted fields (id, created) merged into the input.
 
     """
     body_cls = SUBMIT_BODY.get(kind)

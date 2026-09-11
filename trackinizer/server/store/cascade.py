@@ -327,20 +327,21 @@ class _CascadeAuditMixin(_StoreShared):
         the (possibly-purged) ``inquiries`` row.
 
         Args:
-          conn: Conn.
-          subject_id: Subject id.
-          subject_kind: Subject kind.
-          kind: Kind.
-          api_key_id: Api key id.
-          actor: Actor.
-          caused_by: Caused by.
-          reason: Reason.
-          marginal_cost: Marginal cost.
-          cost_delta: Cost delta.
-          old: Old.
-          new: New.
-          cascade: Cascade.
-          extra_subscribers: Extra subscribers.
+          conn: Open database connection.
+          subject_id: ID of the Inquiry that changed.
+          subject_kind: Type of Inquiry (Issue, Belief, Paper, etc).
+          kind: Type of change emitted.
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user or system making this change.
+          caused_by: ID of an earlier change that triggered this one.
+          reason: Optional explanation for the change.
+          marginal_cost: Cost of resources consumed in this change.
+          cost_delta: Change in total accumulated cost.
+          old: Pre-change field values.
+          new: Post-change field values.
+          cascade: Whether to trigger dependent changes.
+          extra_subscribers: Additional subscribers to notify beyond the row's
+            current list.
 
         Returns:
           change_id: New ``change_log`` row id.

@@ -84,10 +84,10 @@ class _LifecycleMixin(_StoreShared):
         distinct keys cannot pin unbounded memory.
 
         Args:
-          key_id: Key id.
+          key_id: API key UUID to check.
 
         Returns:
-          result: The bool.
+          result: True if the last_used_at database column should be updated.
 
         """
         # Read clock and interval through the module so test monkeypatching
@@ -115,10 +115,10 @@ class _LifecycleMixin(_StoreShared):
         stops being presented costs nothing until its slot is reused.
 
         Args:
-          secret: Secret.
+          secret: API key plaintext secret to look up.
 
         Returns:
-          identity: The auth.AuthIdentity | None.
+          identity: Cached AuthIdentity if found and not expired; None otherwise.
 
         """
         digest = hashlib.sha256(secret.encode("utf-8")).digest()
@@ -143,8 +143,8 @@ class _LifecycleMixin(_StoreShared):
         flood of distinct keys.
 
         Args:
-          secret: Secret.
-          identity: Identity.
+          secret: API key plaintext secret that was verified.
+          identity: AuthIdentity from the verified key; cached with an expiration.
 
         """
         digest = hashlib.sha256(secret.encode("utf-8")).digest()
@@ -177,7 +177,7 @@ class _LifecycleMixin(_StoreShared):
         bounds :data:`auth.VERIFIED_BEARER_TTL_SEC`.
 
         Args:
-          user_id: User id.
+          user_id: User UUID whose all cached keys should be dropped.
 
         """
         self._forget_bearers_where(lambda identity: identity.user_id == user_id)
@@ -190,7 +190,7 @@ class _LifecycleMixin(_StoreShared):
         someone else's key must evict the victim's entry, not their own.
 
         Args:
-          key_id: Key id.
+          key_id: API key UUID whose cached identity should be dropped.
 
         """
         self._forget_bearers_where(lambda identity: identity.api_key_id == key_id)
@@ -265,7 +265,10 @@ class _LifecycleMixin(_StoreShared):
         (``FileNotFoundError``) likewise surfaces immediately.
 
         Args:
-          attempts: Attempts.
+          attempts: Max retry attempts on transient PGlite faults.
+
+        Raises:
+          Various: On first pass deterministic failures (bad DDL, missing extension).
 
         """
         for attempt in range(attempts):
@@ -449,19 +452,10 @@ class StubEmbedder:
     """Deterministic hash-based embedder for tests and offline bootstrap."""
 
     name = "stub"
-
     dim = EMBEDDING_DIM
 
     async def embed(self, text: str) -> list[float]:
-        """Embed ``text`` into a vector.
-
-        Args:
-          text: Text.
-
-        Returns:
-          result: The list[float].
-
-        """
+        """Embed ``text`` into a vector."""
         seed = hashlib.sha256(text.encode("utf-8")).digest()
         rng = _xorshift_floats(int.from_bytes(seed[:8], "little") or 1)
         vec = [next(rng) for _ in range(self.dim)]

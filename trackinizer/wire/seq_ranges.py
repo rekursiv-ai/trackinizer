@@ -30,7 +30,6 @@ class SeqRange:
     """One inclusive ``seq`` interval; either bound may be open (``None``)."""
 
     start: int | None = None
-
     stop: int | None = None
 
     def __post_init__(self) -> None:
@@ -51,10 +50,10 @@ def format_interval(interval: SeqRange) -> str:
     :func:`parse_interval`.
 
     Args:
-      interval: Interval.
+      interval: SeqRange with optional start and stop seq numbers.
 
     Returns:
-      result: The str.
+      result: Wire format string (e.g., '123..456', '..10', '222..').
 
     """
     start = str(interval.start) if interval.start is not None else ""

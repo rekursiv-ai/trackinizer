@@ -96,10 +96,6 @@ class DatabaseEngine(Protocol):
         Args:
           channel: Channel name; matches a string passed to ``notify``.
 
-
-        Returns:
-          result: The AsyncGenerator[str, None].
-
         Yields:
           payload: One message body per ``notify`` call, in publish order.
 
@@ -361,7 +357,7 @@ class PGliteEngine:
         would deadlock, so the guard raises instead.
 
         Returns:
-          result: The _ConnGuard.
+          guard: Async context manager yielding the single connection.
 
         """
         assert self._manager is not None, "engine not entered"
@@ -419,25 +415,11 @@ class PGliteEngine:
         return self._conn
 
     async def notify(self, channel: str, payload: str) -> None:
-        """Publish via the in-process bus (PGlite has no cross-conn NOTIFY).
-
-        Args:
-          channel: Channel.
-          payload: Payload.
-
-        """
+        """Publish via the in-process bus (PGlite has no cross-conn NOTIFY)."""
         self._bus.publish(channel, payload)
 
     def listen(self, channel: str) -> AsyncGenerator[str, None]:
-        """Yield messages published to ``channel``.
-
-        Args:
-          channel: Channel.
-
-        Returns:
-          result: The AsyncGenerator[str, None].
-
-        """
+        """Yield messages published to ``channel``."""
         return self._bus.subscribe(channel)
 
 
@@ -512,36 +494,17 @@ class PostgresEngine:
         await self._pool.close()
 
     def acquire(self) -> asyncpg.pool.PoolAcquireContext[asyncpg.Record]:
-        """Acquire a connection from the pool.
-
-        Returns:
-          result: The asyncpg.pool.PoolAcquireContext[asyncpg.Record].
-
-        """
+        """Acquire a connection from the pool."""
         assert self._pool is not None, "engine not entered"
         return self._pool.acquire()
 
     async def notify(self, channel: str, payload: str) -> None:
-        """Send a NOTIFY via ``pg_notify`` (parameterised; ``NOTIFY`` syntax cannot).
-
-        Args:
-          channel: Channel.
-          payload: Payload.
-
-        """
+        """Send a NOTIFY via ``pg_notify`` (parameterised; ``NOTIFY`` syntax cannot)."""
         async with self.acquire() as conn:
             await conn.execute("SELECT pg_notify($1, $2)", channel, payload)
 
     def listen(self, channel: str) -> AsyncGenerator[str, None]:
-        """Yield messages forwarded from the dedicated listener connection.
-
-        Args:
-          channel: Channel.
-
-        Returns:
-          result: The AsyncGenerator[str, None].
-
-        """
+        """Yield messages forwarded from the dedicated listener connection."""
         return self._bus.subscribe(channel)
 
 
@@ -564,8 +527,8 @@ class _LocalBus:
         """Push ``payload`` onto every subscriber queue; drop oldest on overflow.
 
         Args:
-          channel: Channel.
-          payload: Payload.
+          channel: Channel name to publish to.
+          payload: Message body to broadcast.
 
         """
         for q in self._subscribers.get(channel, ()):
@@ -587,7 +550,7 @@ class _LocalBus:
             past this depth.
 
         Yields:
-          item: Each yielded value.
+          message: One published payload per iteration.
 
         """
         q: asyncio.Queue[str] = asyncio.Queue(maxsize=queue_maxsize)
@@ -843,7 +806,6 @@ class _BootSlot:
     """
 
     path: Path
-
     token: str
 
     @property

@@ -40,9 +40,7 @@ class Stdin:
     """
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     text: str
 
 
@@ -51,9 +49,7 @@ class Stdout:
     """One line the wrapped command wrote to its standard output."""
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     text: str
 
 
@@ -67,9 +63,7 @@ class Stderr:
     """
 
     context_id: int | None = None
-
     timestamp: str | None = None
-
     text: str
 
 

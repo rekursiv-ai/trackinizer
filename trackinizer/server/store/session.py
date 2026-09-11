@@ -88,10 +88,10 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         between read and insert.
 
         Args:
-          requested: Requested.
+          requested: Desired routing name (e.g., "claude", "gemini").
 
         Returns:
-          requested: The str.
+          granted: Requested name or name#N if requested is taken.
 
         """
         async with self.engine.acquire() as conn:
@@ -140,15 +140,18 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         burns a fresh ``#N`` suffix.
 
         Args:
-          req: Req.
-          requested_actor: Requested actor.
-          api_key_id: Api key id.
-          max_reserve_attempts: Max reserve attempts.
+          req: SubmitAgentSession body (may include cli_session_id for resume).
+          requested_actor: Desired routing name; suffixed with #N if taken.
+          api_key_id: API key that opened this session; used in resume correlation.
+          max_reserve_attempts: Max retries on live-owner unique constraint.
 
         Returns:
-          session_id: The server-minted (or re-attached) inquiry id.
-          granted_actor: The routing name stamped on the row.
-          next_seq: The event log's next free seq (``max(seq)+1``, 0 if empty).
+          session_id: Server-minted UUID (or re-attached on resume).
+          granted_actor: Routing name (requested or requested#N).
+          next_seq: Zero (deprecated; kept for wire compatibility).
+
+        Raises:
+          ConflictError: Max reserve attempts exhausted; cannot acquire a name.
 
         """
         # Resume correlation BEFORE reserve/replay: a known cli_session_id
@@ -355,11 +358,11 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         ordering is stable even when two rows share a creation instant.
 
         Args:
-          actor: Actor.
-          room: Room.
+          actor: Routing name to resolve (e.g., "claude", "gemini#2").
+          room: Optional room name; filters to sessions joined to it.
 
         Returns:
-          sessions: ``(session_id, rooms)`` pairs, oldest first.
+          sessions: (session_id, rooms) tuples for matching live sessions, oldest first.
 
         """
         clauses = [
@@ -524,23 +527,18 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         a *different* (or no) key is a genuine duplicate and is rejected.
 
         Args:
-          session_id: Session id.
-          ended: Ended.
-          cli_session_id: Cli session id.
-          api_key_id: Api key id.
-          actor: Actor.
+          session_id: AgentSession UUID to close.
+          ended: Timestamp to stamp in agentsession_ended.
+          cli_session_id: CLI session id to backfill if not already set.
+          api_key_id: API key that opened this session; used in audit attribution.
+          actor: System-wide author label for the close audit.
 
         Returns:
-          ended: The committed ``agentsession_ended`` timestamp -- the value
-            just stamped, or, on an idempotent replay, the originally-stored
-            one. The route echoes THIS so two same-key /end calls return the
-            identical receipt rather than two fresh ``now()`` timestamps.
-
+          ended: The committed agentsession_ended timestamp (just-stamped or replayed).
 
         Raises:
-          NotFoundError: ``session_id`` is not an existing inquiry.
-          ConflictError: the row is not an ``AgentSession``, or it is already
-            ended by a *different* idempotency key (a genuine second close).
+          NotFoundError: session_id does not exist.
+          ConflictError: Row is not an AgentSession, or already ended by a different key.
 
         """
         # The only legal terminal status for an ended AgentSession; the

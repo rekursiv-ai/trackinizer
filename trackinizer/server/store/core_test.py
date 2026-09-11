@@ -97,7 +97,6 @@ class TestStoreEmbedders:
     def test_dim_mismatch_rejected(self) -> None:
         class _WrongDim:
             name = "wrong"
-
             dim = 17
 
             async def embed(self, text: str) -> list[float]:

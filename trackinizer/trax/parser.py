@@ -183,9 +183,7 @@ class _FilterClause:
     """A ``field op value`` predicate in raw CLI spelling."""
 
     field: str
-
     op: FilterOp
-
     value: str
 
 
@@ -205,11 +203,11 @@ def token(tokens: Sequence[str], index: int) -> str | None:
     """``tokens[index]`` if in range, else ``None``.
 
     Args:
-      tokens: Tokens.
-      index: Index.
+      tokens: Sequence of tokens to index into.
+      index: Position in the sequence.
 
     Returns:
-      result: The str | None.
+      result: Token at index, or None if out of range.
 
     """
     return tokens[index] if index < len(tokens) else None
@@ -227,7 +225,6 @@ class _UnknownClause:
     """
 
     token: str
-
     bad_filter_op: str | None = None
 
 
@@ -326,10 +323,10 @@ def parse_actions(tokens: Sequence[str]) -> list[Action]:
     scalar field may be set only once per command.
 
     Args:
-      tokens: Tokens.
+      tokens: Command tokens to parse into actions.
 
     Returns:
-      actions: The list[Action].
+      actions: Sequence of mutation actions.
 
     """
     actions: list[Action] = []
@@ -436,30 +433,14 @@ def parse_metric_action(tokens: Sequence[str]) -> MetricAction:
 
 
 def ref_text(ref: Ref) -> str:
-    """CLI spelling for ``ref``: seq number or UUID.
-
-    Args:
-      ref: Ref.
-
-    Returns:
-      result: The str.
-
-    """
+    """CLI spelling for ``ref``: seq number or UUID."""
     if isinstance(ref, SeqRef):
         return str(ref.seq)
     return str(ref.uuid)
 
 
 def starts_with_ref(tokens: Sequence[str]) -> bool:
-    """Whether the first token is a seq number or UUID.
-
-    Args:
-      tokens: Tokens.
-
-    Returns:
-      result: The bool.
-
-    """
+    """Whether the first token is a seq number or UUID."""
     return bool(tokens) and (
         tokens[0].isdigit() or UUID_RE.match(tokens[0]) is not None
     )
@@ -475,11 +456,12 @@ def parse_subject_list(
     is a tail keyword (field, edge, op) or a trailing kind has no seq.
 
     Args:
-      tokens: Tokens.
-      default_kind: Default kind.
+      tokens: Tokens to parse as a reference list.
+      default_kind: Assumed kind for bare sequence numbers.
 
     Returns:
-      result: The list[Ref] | None.
+      result: List of references if all tokens are seqs/kinds/UUIDs, else
+        None.
 
     """
     subjects: list[Ref] = []
@@ -542,11 +524,12 @@ def edge_metadata(
     that rolls up to the subject).
 
     Args:
-      tokens: Tokens.
-      allow_bare_collision: Allow bare collision.
+      tokens: Tokens to parse for edge metadata fields.
+      allow_bare_collision: If True, accept priority/label/labels without the
+        "edge" marker (pre-target context).
 
     Returns:
-      result: The tuple[Mapping[str, object], int].
+      result: (metadata dict, count of consumed tokens).
 
     """
     metadata: dict[str, object] = {}
@@ -623,17 +606,7 @@ def edge_metadata(
 
 
 def required_token(tokens: Sequence[str], index: int, message: str) -> str:
-    """``tokens[index]`` if in range, else raise ``ClientError(message)``.
-
-    Args:
-      tokens: Tokens.
-      index: Index.
-      message: Message.
-
-    Returns:
-      result: The str.
-
-    """
+    """``tokens[index]`` if in range, else raise ``ClientError(message)``."""
     if index >= len(tokens):
         raise ClientError(message)
     return tokens[index]
@@ -648,12 +621,12 @@ def consume_ref(
     """Consume a reference at ``args[pos]``; return it and how many tokens it used.
 
     Args:
-      args: Args.
-      pos: Pos.
-      kind_hint: Kind hint.
+      args: Token sequence to parse.
+      pos: Starting position in the sequence.
+      kind_hint: Default kind when a bare sequence number is found.
 
     Returns:
-      result: The tuple[Ref, int].
+      result: (parsed reference, number of tokens consumed).
 
     """
     if pos >= len(args):
@@ -698,11 +671,11 @@ def consume_edge_target(args: Sequence[str], pos: int = 0) -> tuple[EdgeTarget, 
     read better inline than behind a constant.
 
     Args:
-      args: Args.
-      pos: Pos.
+      args: Token sequence to parse.
+      pos: Starting position in the sequence.
 
     Returns:
-      result: The tuple[EdgeTarget, int].
+      result: (parsed edge target (ref or inline create), tokens consumed).
 
     """
     if pos >= len(args):

@@ -89,13 +89,9 @@ class _RuntimeHooks:
     """
 
     normalize: _Encoder = field(default=lambda v: v)
-
     encode: _Encoder = field(default=lambda v: v)
-
     decode_old: _Decoder = field(default=lambda v: v)
-
     validate: TargetValidator | None = None
-
     notify_old_subscribers: bool = False
 
 

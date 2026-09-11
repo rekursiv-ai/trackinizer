@@ -66,7 +66,6 @@ class RecordBody(BaseModel):
     itself."""
 
     timestamp: datetime | None = None
-
     model: str | None = None
 
     payload: JSON = Field(default_factory=dict)
@@ -88,10 +87,10 @@ class RecordBody(BaseModel):
         """Build a wire body from a stored row.
 
         Args:
-          row: Row.
+          row: Stored SessionRecordRow to serialize.
 
         Returns:
-          result: The RecordBody.
+          result: RecordBody with payload and ciphertext for wire transmission.
 
         """
         return cls(
@@ -109,11 +108,11 @@ class RecordBody(BaseModel):
         """Rebuild the storable row for ``session_id`` and ``part``.
 
         Args:
-          session_id: Session id.
-          part: Part.
+          session_id: Target session UUID.
+          part: Part number within the session.
 
         Returns:
-          result: The SessionRecordRow.
+          result: SessionRecordRow ready to store in the database.
 
         """
         return SessionRecordRow(
@@ -161,11 +160,8 @@ class PartBody(BaseModel):
     """One part of a session, as ``GET .../parts`` lists it."""
 
     part: int = Field(ge=0)
-
     name: str
-
     format: str
-
     records: int = Field(ge=0)
 
     metadata: JSON = Field(default_factory=dict)
@@ -266,9 +262,7 @@ class AppendRecordsResponse(BaseModel):
     no file (a slash-command-only append)."""
 
     written: int = Field(ge=0)
-
     skipped: int = Field(ge=0)
-
     slash_commands: int = Field(default=0, ge=0)
     """How many slash commands this request stored."""
 
@@ -283,31 +277,14 @@ class ReadRecordsResponse(BaseModel):
     """One page of a part's records, in ``idx`` order."""
 
     part: int = Field(ge=0)
-
     records: list[RecordBody] = Field(default_factory=list)
 
 
 def session_records_path(session_id: UUID) -> str:
-    """Return the append/read path for one session's IR records.
-
-    Args:
-      session_id: Session id.
-
-    Returns:
-      result: The str.
-
-    """
+    """Return the append/read path for one session's IR records."""
     return f"/api/sessions/{session_id}/records"
 
 
 def session_parts_path(session_id: UUID) -> str:
-    """Return the path listing one session's parts.
-
-    Args:
-      session_id: Session id.
-
-    Returns:
-      result: The str.
-
-    """
+    """Return the path listing one session's parts."""
     return f"/api/sessions/{session_id}/parts"

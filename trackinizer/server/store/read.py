@@ -64,11 +64,14 @@ def seq_range_clause(
     exactly one implementation.
 
     Args:
-      params: Params.
-      seq_ranges: Seq ranges.
+      params: Mutable list to append SQL parameter values into (mutated
+        in-place to keep position placeholders in sync).
+      seq_ranges: Union of inclusive intervals [start, stop] to match against
+        the ``seq`` column; empty list returns None.
 
     Returns:
-      result: The str | None.
+      clause: One ``(... OR ...)`` group joining disjuncts, or None if
+        seq_ranges is empty.
 
     """
     if not seq_ranges:
@@ -94,10 +97,11 @@ class _ReadMixin(_StoreShared):
         """Fetch any Inquiry by id; subclass dispatched from ``kind`` column.
 
         Args:
-          target_id: Target id.
+          target_id: Row id to retrieve and materialize with edges.
 
         Returns:
-          result: The Inquiry | None.
+          inquiry: Issue, Belief, CodeChange, Experiment, WebResult,
+            WebSearch, or AgentSession, or None if not found.
 
         """
         async with self.engine.acquire() as conn:
@@ -146,16 +150,19 @@ class _ReadMixin(_StoreShared):
         rows; a caller has no reason to ask for the slower path.
 
         Args:
-          kind: Kind.
-          status: Status.
-          limit: Limit.
-          offset: Offset.
-          seq_ranges: Seq ranges.
-          filters: Filters.
-          lowering: Lowering.
+          kind: Inquiry.InquiryKind enum value (Issue, Belief, etc.).
+          status: Optional Inquiry.Status to filter on, or None for all.
+          limit: Maximum rows to return.
+          offset: Number of rows to skip (after filtering).
+          seq_ranges: Disjoint intervals of row sequence numbers to match.
+          filters: Post-filter pipeline (RowFilter predicates evaluated
+            in-process after SQL prefilter).
+          lowering: If False, force all filters through Python evaluator
+            (for testing equivalence).
 
         Returns:
-          result: The list[Inquiry].
+          rows: Materialized Inquiry rows in created-desc order (newest first),
+            up to limit, after offset and all filters applied.
 
         """
         params: list[object] = [kind]
@@ -259,11 +266,13 @@ class _ReadMixin(_StoreShared):
         callers can distinguish "no such row" from "zero recorded cost".
 
         Args:
-          subject_id: Subject id.
-          deep: Deep.
+          subject_id: Row id to query (Issue, CodeChange, or WebSearch).
+          deep: If True, sum costs of all child Issues (recursive); if False,
+            return only this row's marginal costs.
 
         Returns:
-          result: The Cost | None.
+          cost: Cost object with agent_usd and resource_usd, or None if the
+            row does not exist.
 
         """
         async with self.engine.acquire() as conn:
@@ -296,10 +305,11 @@ class _ReadMixin(_StoreShared):
         can drill into evidence chains without re-fetching.
 
         Args:
-          belief_id: Belief id.
+          belief_id: Belief row id to find evidence for.
 
         Returns:
-          result: The list[Inquiry].
+          artifacts: List of non-terminal CodeChange/WebSearch/WebResult rows
+            with proves edges pointing to the belief.
 
         """
         async with self.engine.acquire() as conn:
@@ -413,10 +423,11 @@ class _ReadMixin(_StoreShared):
         """Fetch one ``change_log`` row by id; ``None`` when absent.
 
         Args:
-          change_id: Change id.
+          change_id: change_log row id to retrieve.
 
         Returns:
-          result: The Change | None.
+          change: Change object materialized from the row, or None if not
+            found.
 
         """
         async with self.engine.acquire() as conn:

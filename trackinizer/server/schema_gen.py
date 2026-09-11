@@ -42,11 +42,11 @@ def column_check_body(col: str, spec: ColumnSpec) -> str:
     unrelated tokens stay intact.
 
     Args:
-      col: Col.
-      spec: Spec.
+      col: Storage column name (possibly with ``<kind>_`` prefix).
+      spec: ColumnSpec holding sql_check and min_items constraints.
 
     Returns:
-      result: The str.
+      check_body: SQL CHECK clause body (and-separated constraints).
 
     """
     parts: list[str] = []
@@ -148,10 +148,10 @@ def substitute_schema_placeholders(body: str) -> str:
         sections.
 
     Args:
-      body: Body.
+      body: Migration SQL template with ``{placeholder}`` tokens.
 
     Returns:
-      result: The str.
+      substituted: Migration SQL with all placeholders filled from metadata.
 
     """
     return (
@@ -201,10 +201,10 @@ def quote_literal(literal_alias: object) -> str:
     syntax-error with no pointer back to the wrong type alias.
 
     Args:
-      literal_alias: Literal alias.
+      literal_alias: Literal type or PEP-695 type alias wrapping one.
 
     Returns:
-      result: The str.
+      sql_in_list: Comma-separated quoted members, e.g. ``'A', 'B'``.
 
     """
     target = getattr(literal_alias, "__value__", literal_alias)
@@ -237,7 +237,7 @@ def generate_inquiry_kind_columns() -> str:
     CASE-WHEN duplication.
 
     Returns:
-      result: The str.
+      sql_block: CREATE TABLE column and CHECK declarations, newline-separated.
 
     """
     # Sanity-check: the order tuple must cover every concrete kind so
@@ -304,7 +304,7 @@ def generate_per_kind_sequences() -> str:
     schema edit needed.
 
     Returns:
-      result: The str.
+      sql_block: CREATE SEQUENCE statements, one per Inquiry kind.
 
     """
     return "\n".join(
@@ -321,7 +321,7 @@ def generate_change_log_kind_matrix() -> str:
     time; this is the schema-level backstop.
 
     Returns:
-      result: The str.
+      sql_block: CHECK constraints, one per kind-specific column.
 
     """
     lines: list[str] = []
@@ -345,7 +345,7 @@ def generate_edge_metadata_columns() -> str:
     """Render edge annotation columns and value CHECKs from :class:`Edge`.
 
     Returns:
-      result: The str.
+      sql_block: Column declarations and CHECK constraints for edge metadata.
 
     """
     declarations: list[str] = []
@@ -368,22 +368,12 @@ def generate_edge_metadata_columns() -> str:
 
 
 def generate_edge_metadata_mirror_old() -> str:
-    """Render old-side change_log edge metadata mirrors from :class:`Edge`.
-
-    Returns:
-      result: The str.
-
-    """
+    """Render old-side change_log edge metadata mirrors from :class:`Edge`."""
     return _generate_edge_metadata_mirror("old")
 
 
 def generate_edge_metadata_mirror_new() -> str:
-    """Render new-side change_log edge metadata mirrors from :class:`Edge`.
-
-    Returns:
-      result: The str.
-
-    """
+    """Render new-side change_log edge metadata mirrors from :class:`Edge`."""
     return _generate_edge_metadata_mirror("new")
 
 
@@ -402,7 +392,7 @@ def generate_change_log_mirror() -> str:
     metadata rather than hand-typed in two places.
 
     Returns:
-      result: The str.
+      sql_block: old_X/new_X columns, populated-iff checks, value checks.
 
     """
     declarations: list[str] = []

@@ -27,12 +27,7 @@ unbounded-width rows. ``0`` means "not a terminal" (no cap)."""
 
 
 def show_ids() -> bool:
-    """Whether UUIDs should appear in output (set by ``--show-ids``).
-
-    Returns:
-      result: The bool.
-
-    """
+    """Whether UUIDs should appear in output (set by ``--show-ids``)."""
     return SHOW_IDS.get()
 
 
@@ -45,9 +40,9 @@ def echo(message: object = "", *, err: bool = False, nl: bool = True) -> None:
     another caller's response.
 
     Args:
-      message: Message.
-      err: Err.
-      nl: Nl.
+      message: Object to write (stringified if needed).
+      err: Write to stderr instead of stdout.
+      nl: Append a newline after the message.
 
     """
     stream = err_stream() if err else out_stream()
@@ -65,9 +60,9 @@ def print_rows(
     """Print rows as a table, JSON, or one id per line.
 
     Args:
-      rows: Rows.
-      output: Output.
-      width: Width.
+      rows: Sequence of dict records to display.
+      output: Format: 'table' (default), 'json', or 'ids'.
+      width: Column width limit; None auto-detects from terminal.
 
     """
     if output == "json":
@@ -85,10 +80,10 @@ def format_field_value(value: object) -> str:
     JSON so the output round-trips through ``config to @file.json``.
 
     Args:
-      value: Value.
+      value: Field value to format (list, dict, or scalar).
 
     Returns:
-      result: The str.
+      result: Single string with items newline-separated if a list.
 
     """
     if isinstance(value, list):
@@ -99,26 +94,13 @@ def format_field_value(value: object) -> str:
 
 
 def add_write_flags(parser: argparse.ArgumentParser) -> None:
-    """Add the ``--as`` (actor) and ``--reason`` flags shared by write commands.
-
-    Args:
-      parser: Parser.
-
-    """
+    """Add the ``--as`` (actor) and ``--reason`` flags shared by write commands."""
     parser.add_argument("--as", "--actor", dest="actor", default="")
     parser.add_argument("--reason", default="")
 
 
 def resolve_labels(labels: Sequence[str] | None) -> list[str]:
-    """Split comma-separated labels and trim whitespace, dropping empties.
-
-    Args:
-      labels: Labels.
-
-    Returns:
-      out: The list[str].
-
-    """
+    """Split comma-separated labels and trim whitespace, dropping empties."""
     out: list[str] = []
     for raw in labels or ():
         out.extend(label.strip() for label in raw.split(",") if label.strip())
@@ -136,25 +118,17 @@ def format_json(payload: object) -> str:
     """Pretty-print ``payload`` as indented JSON, stringifying anything unserializable.
 
     Args:
-      payload: Payload.
+      payload: Object to serialize (converts non-JSON-able values to str).
 
     Returns:
-      result: The str.
+      result: JSON string with 2-space indentation and trailing newline.
 
     """
     return json.dumps(payload, indent=2, default=str) + "\n"
 
 
 def format_ids(rows: Iterable[dict[str, Any]]) -> str:
-    """One row id per line.
-
-    Args:
-      rows: Rows.
-
-    Returns:
-      result: The str.
-
-    """
+    """One row id per line."""
     return "".join(f"{row['id']}\n" for row in rows)
 
 
@@ -162,11 +136,11 @@ def format_table(rows: Sequence[dict[str, Any]], *, width: int | None = None) ->
     """Render rows as an aligned table, dropping empty optional columns to fit width.
 
     Args:
-      rows: Rows.
-      width: Width.
+      rows: Sequence of dict records to tabulate.
+      width: Column width limit in chars; None auto-detects from terminal.
 
     Returns:
-      result: The str.
+      result: Right-aligned table with header row and newline-terminated lines.
 
     """
     if not rows:
@@ -235,11 +209,11 @@ def format_edge(view: Mapping[str, object], *, changes: bool = False) -> str:
     mutation echoes compact (the CLI opts in with ``--changes``).
 
     Args:
-      view: View.
-      changes: Changes.
+      view: Edge view dict with 'endpoints' and 'edge' and optional 'changes'.
+      changes: Include recent audit changes below the edge metadata.
 
     Returns:
-      result: The str.
+      result: Formatted edge display with newline-terminated lines.
 
     """
     edge = cast(Mapping[str, object], view["edge"])
@@ -273,12 +247,12 @@ def format_show(
     The seq-ref header is always shown; ``include_id`` adds the UUID line.
 
     Args:
-      view: View.
-      changes: Changes.
-      include_id: Include id.
+      view: Inquiry view dict with 'self', 'edges', 'backlinks', 'changes'.
+      changes: Include recent audit changes in the output.
+      include_id: Show the UUID in addition to the kind#seq ref.
 
     Returns:
-      result: The str.
+      result: Formatted inquiry display with newline-terminated lines.
 
     """
     self_view = cast(dict[str, Any], view["self"])
@@ -364,10 +338,10 @@ def format_changes(rows: Sequence[dict[str, Any]]) -> str:
     """Render the audit feed, one entry plus its field deltas.
 
     Args:
-      rows: Rows.
+      rows: Audit change records with timestamps, actors, and old/new diffs.
 
     Returns:
-      result: The str.
+      result: Formatted change log with newline-terminated lines.
 
     """
     if not rows:
@@ -385,39 +359,17 @@ def format_changes(rows: Sequence[dict[str, Any]]) -> str:
 
 
 def table_width(width: int | None = None) -> int:
-    """Table width for this invocation: explicit, terminal, or unbounded.
-
-    Args:
-      width: Width.
-
-    Returns:
-      result: The int.
-
-    """
+    """Table width for this invocation: explicit, terminal, or unbounded."""
     return _resolved_table_width(width)
 
 
 def table_cell(value: str, width: int) -> str:
-    """Collapse whitespace in ``value`` and truncate it to ``width``.
-
-    Args:
-      value: Value.
-      width: Width.
-
-    Returns:
-      result: The str.
-
-    """
+    """Collapse whitespace in ``value`` and truncate it to ``width``."""
     return _truncate_cell(_table_cell(value), width)
 
 
 def natural_unbounded_width() -> int:
-    """Sentinel column width standing in for "no cap".
-
-    Returns:
-      result: The int.
-
-    """
+    """Sentinel column width standing in for "no cap"."""
     return 1_000_000
 
 

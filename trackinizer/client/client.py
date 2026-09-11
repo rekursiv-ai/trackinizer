@@ -120,11 +120,11 @@ def server_url(raw: str, source: str) -> str:
     belong in the ``api_key`` field, not the URL.
 
     Args:
-      raw: Raw.
-      source: Source.
+      raw: The URL string to normalize (trailing slash removed).
+      source: The location name for error messages.
 
     Returns:
-      url: The str.
+      url: Normalized URL with scheme, host, and optional path.
 
     """
     url = raw.rstrip("/")
@@ -159,7 +159,6 @@ class EdgeWrite(NamedTuple):
     """
 
     created: bool
-
     changed: bool
 
 
@@ -229,68 +228,23 @@ class Client:
     def get(
         self, path: str, *, params: Mapping[str, object] | None = None
     ) -> JSONValue:
-        """Send a GET request.
-
-        Args:
-          path: Path.
-          params: Params.
-
-        Returns:
-          result: The JSONValue.
-
-        """
+        """Send a GET request."""
         return self._request("GET", path, params=params)
 
     def post(self, path: str, *, body: object = None) -> JSONValue:
-        """Send a POST request.
-
-        Args:
-          path: Path.
-          body: Body.
-
-        Returns:
-          result: The JSONValue.
-
-        """
+        """Send a POST request."""
         return self._request("POST", path, body=body)
 
     def put(self, path: str, *, body: object = None) -> JSONValue:
-        """Send a PUT request.
-
-        Args:
-          path: Path.
-          body: Body.
-
-        Returns:
-          result: The JSONValue.
-
-        """
+        """Send a PUT request."""
         return self._request("PUT", path, body=body)
 
     def patch(self, path: str, *, body: object = None) -> JSONValue:
-        """Send a PATCH request.
-
-        Args:
-          path: Path.
-          body: Body.
-
-        Returns:
-          result: The JSONValue.
-
-        """
+        """Send a PATCH request."""
         return self._request("PATCH", path, body=body)
 
     def delete(self, path: str, *, body: object = None) -> JSONValue:
-        """Send a DELETE request.
-
-        Args:
-          path: Path.
-          body: Body.
-
-        Returns:
-          result: The JSONValue.
-
-        """
+        """Send a DELETE request."""
         return self._request("DELETE", path, body=body)
 
     # -- Reference resolution ------------------------------------------------
@@ -299,10 +253,10 @@ class Client:
         """Resolve a ref to ``(kind, uuid)``.
 
         Args:
-          ref: Ref.
+          ref: SeqRef or UuidRef to resolve via server lookup.
 
         Returns:
-          result: The tuple[Inquiry.InquiryKind, uuid.UUID].
+          result: (kind, uuid) pair identifying the inquiry row.
 
         """
         if isinstance(ref, SeqRef):
@@ -331,10 +285,10 @@ class Client:
         caller can zip with the original list.
 
         Args:
-          refs: Refs.
+          refs: Sequence of SeqRef and/or UuidRef to batch-resolve.
 
         Returns:
-          out: The list[tuple[Inquiry.InquiryKind, uuid.UUID]].
+          out: (kind, uuid) pairs in the same order as input refs.
 
         """
         uuid_indices = [i for i, r in enumerate(refs) if isinstance(r, UuidRef)]
@@ -382,18 +336,18 @@ class Client:
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[Filter] = (),
     ) -> list[dict[str, Any]]:
-        """List kind.
+        """Fetch one page of inquiries of a given kind.
 
         Args:
-          kind: Kind.
-          status: Status.
-          limit: Limit.
-          offset: Offset.
-          seq_ranges: Seq ranges.
-          filters: Filters.
+          kind: InquiryKind to list.
+          status: Optional status filter; None includes all statuses.
+          limit: Max rows per page (capped at MAX_LIST_LIMIT by server).
+          offset: Rows to skip (not stable during concurrent writes).
+          seq_ranges: Sequence intervals to include (disjoint union).
+          filters: Field predicates applied before LIMIT on the server.
 
         Returns:
-          result: The list[dict[str, Any]].
+          result: Page of matching inquiry rows as dicts.
 
         """
         # Each filter rides as its own ``filter=<json>`` query param, so
@@ -457,13 +411,13 @@ class Client:
         exceed the cap under concurrent writes.
 
         Args:
-          kind: Kind.
-          status: Status.
-          seq_ranges: Seq ranges.
-          filters: Filters.
+          kind: InquiryKind to list exhaustively.
+          status: Optional status filter.
+          seq_ranges: Sequence intervals to include.
+          filters: Field predicates.
 
         Returns:
-          rows: The list[dict[str, Any]].
+          rows: All matching inquiry rows as dicts, concatenated from pages.
 
         """
         rows: list[dict[str, Any]] = []
@@ -486,15 +440,7 @@ class Client:
         self,
         ref: Ref,
     ) -> tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, Any]]:
-        """Resolve and fetch the SPA detail view (self + edges + changes).
-
-        Args:
-          ref: Ref.
-
-        Returns:
-          result: The tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, Any]].
-
-        """
+        """Resolve and fetch the SPA detail view (self + edges + changes)."""
         kind, target_id = self.resolve_id(ref)
         where = f"/api/web/get/{target_id}"
         return kind, target_id, dict(_require_mapping(self.get(where), where))
@@ -523,7 +469,7 @@ class Client:
         than masquerading as the server's own ``"unknown"``.
 
         Returns:
-          result: The str.
+          result: Build SHA from server or literal "unknown" if unresolved.
 
         """
         payload = self.get("/api/version")
@@ -581,29 +527,21 @@ class Client:
                 return
 
     def recent_changes(self, *, limit: int = 50) -> list[dict[str, Any]]:
-        """Recent changes.
-
-        Args:
-          limit: Limit.
-
-        Returns:
-          result: The list[dict[str, Any]].
-
-        """
+        """Recent changes."""
         return _require_list(
             self.get("/api/web/recent_changes", params={"limit": limit}),
             "/api/web/recent_changes",
         )
 
     def cost_for(self, target_id: uuid.UUID, *, deep: bool = False) -> dict[str, float]:
-        """Cost for.
+        """Fetch cost breakdown by field name; optionally include related rows.
 
         Args:
-          target_id: Target id.
-          deep: Deep.
+          target_id: Inquiry ID to cost.
+          deep: Include costs from linked inquiries (edges).
 
         Returns:
-          result: The dict[str, float].
+          result: Field name to cost (USD) mapping.
 
         """
         where = f"/api/inquiries/{target_id}/cost"
@@ -629,11 +567,11 @@ class Client:
         inquiry's ``id`` is server-minted and read from the response.
 
         Args:
-          kind: Kind.
-          body: Body.
+          kind: InquiryKind to create.
+          body: Inquiry fields as dict (idempotency_key auto-minted if absent).
 
         Returns:
-          result: The uuid.UUID.
+          result: Server-minted UUID of the new inquiry.
 
         """
         payload = dict(body)
@@ -659,11 +597,11 @@ class Client:
         ids in item order.
 
         Args:
-          items: Items.
-          edges: Edges.
+          items: (kind, body) tuples; idempotency_key auto-minted if missing.
+          edges: Edge definitions referencing item indices by name.
 
         Returns:
-          result: The list[uuid.UUID].
+          result: Server-minted UUIDs in item order.
 
         """
         item_bodies: list[Mapping[str, object]] = []
@@ -703,16 +641,7 @@ class Client:
         actor: Inquiry.Actor,
         reason: str = "",
     ) -> None:
-        """Overwrite ``field`` with ``value`` (a blind PUT).
-
-        Args:
-          target_id: Target id.
-          field: Field.
-          value: Value.
-          actor: Actor.
-          reason: Reason.
-
-        """
+        """Overwrite ``field`` with ``value`` (a blind PUT)."""
         body: dict[str, object] = {"value": value, "actor": actor}
         if reason:
             body["reason"] = reason
@@ -734,11 +663,11 @@ class Client:
         ``op=sub`` so the wire keeps its non-negative ``value`` convention.
 
         Args:
-          target_id: Target id.
-          field: Field.
-          value: Value.
-          actor: Actor.
-          reason: Reason.
+          target_id: Inquiry ID to charge.
+          field: Cost field name (marginal_cost_agent_usd or similar).
+          value: Cost delta in USD (negative charged as subtract).
+          actor: Change actor for audit log.
+          reason: Optional audit note.
 
         """
         op = "add" if value >= 0 else "sub"
@@ -780,18 +709,18 @@ class Client:
         (``created=False, changed=True``) from a no-op (both ``False``).
 
         Args:
-          from_id: From id.
-          to_id: To id.
-          edge_kind: Edge kind.
-          actor: Actor.
-          priority: Priority.
-          note: Note.
-          valence: Valence.
-          labels: Labels.
-          reason: Reason.
+          from_id: Source inquiry ID.
+          to_id: Target inquiry ID.
+          edge_kind: Relationship type name.
+          actor: Change actor for audit log.
+          priority: Optional numeric ordering or importance.
+          note: Optional annotation text.
+          valence: Optional credibility or weight [-1, 1].
+          labels: Tags; () = unchanged, list = replace, None = clear.
+          reason: Optional audit note.
 
         Returns:
-          write: The EdgeWrite.
+          write: Outcome flags (created, changed) indicating the mutation.
 
         """
         body: dict[str, object] = {"actor": actor}
@@ -862,14 +791,14 @@ class Client:
         so this is documented rather than engineered around.
 
         Args:
-          from_id: From id.
-          to_id: To id.
-          edge_kind: Edge kind.
-          actor: Actor.
-          priority: Priority.
-          note: Note.
-          valence: Valence.
-          labels: Labels.
+          from_id: Source inquiry ID.
+          to_id: Target inquiry ID.
+          edge_kind: Relationship type name.
+          actor: Change actor for audit log.
+          priority: Numeric ordering/importance (omit to leave unchanged).
+          note: Annotation text (omit to leave unchanged).
+          valence: Credibility or weight (omit to leave unchanged).
+          labels: Tag list (omit to leave unchanged).
 
         """
         base = f"/api/edges/{from_id}/{edge_kind}/{to_id}"
@@ -892,15 +821,7 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Remove edge.
-
-        Args:
-          from_id: From id.
-          to_id: To id.
-          edge_kind: Edge kind.
-          actor: Actor.
-
-        """
+        """Remove edge."""
         self.delete(
             f"/api/edges/{from_id}/{edge_kind}/{to_id}",
             body={"actor": actor},
@@ -919,9 +840,9 @@ class Client:
         recorded for the change.
 
         Args:
-          target_id: Target id.
-          subscriber: Subscriber.
-          actor: Actor.
+          target_id: Inquiry ID to subscribe to.
+          subscriber: Actor to add as subscriber (may differ from actor).
+          actor: Change actor for audit log.
 
         """
         self._patch_field(target_id, "subscribers", "add", subscriber, actor=actor)
@@ -933,14 +854,7 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Remove one subscriber, atomically and idempotently.
-
-        Args:
-          target_id: Target id.
-          subscriber: Subscriber.
-          actor: Actor.
-
-        """
+        """Remove one subscriber, atomically and idempotently."""
         self._patch_field(target_id, "subscribers", "sub", subscriber, actor=actor)
 
     def add_label(
@@ -950,14 +864,7 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Add one label, race-free.
-
-        Args:
-          target_id: Target id.
-          label: Label.
-          actor: Actor.
-
-        """
+        """Add one label, race-free."""
         self._patch_field(target_id, "labels", "add", label, actor=actor)
 
     def remove_label(
@@ -967,14 +874,7 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Remove one label, race-free.
-
-        Args:
-          target_id: Target id.
-          label: Label.
-          actor: Actor.
-
-        """
+        """Remove one label, race-free."""
         self._patch_field(target_id, "labels", "sub", label, actor=actor)
 
     def add_issue_kind(
@@ -984,14 +884,7 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Add issue kind.
-
-        Args:
-          target_id: Target id.
-          issue_kind: Issue kind.
-          actor: Actor.
-
-        """
+        """Add issue kind."""
         self._patch_field(target_id, "issue_kind", "add", issue_kind, actor=actor)
 
     def remove_issue_kind(
@@ -1001,14 +894,7 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Remove issue kind.
-
-        Args:
-          target_id: Target id.
-          issue_kind: Issue kind.
-          actor: Actor.
-
-        """
+        """Remove issue kind."""
         self._patch_field(target_id, "issue_kind", "sub", issue_kind, actor=actor)
 
     def add_codechange(
@@ -1018,14 +904,7 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Add codechange.
-
-        Args:
-          target_id: Target id.
-          codechange_id: Codechange id.
-          actor: Actor.
-
-        """
+        """Add codechange."""
         self._patch_field(
             target_id, "codechanges", "add", str(codechange_id), actor=actor
         )
@@ -1037,14 +916,7 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Remove codechange.
-
-        Args:
-          target_id: Target id.
-          codechange_id: Codechange id.
-          actor: Actor.
-
-        """
+        """Remove codechange."""
         self._patch_field(
             target_id, "codechanges", "sub", str(codechange_id), actor=actor
         )
@@ -1056,14 +928,7 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Atomically append one author to a Paper's byline, race-free.
-
-        Args:
-          target_id: Target id.
-          author: Author.
-          actor: Actor.
-
-        """
+        """Atomically append one author to a Paper's byline, race-free."""
         self._patch_field(target_id, "authors", "add", author, actor=actor)
 
     def remove_author(
@@ -1073,14 +938,7 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Atomically remove one author from a Paper's byline, race-free.
-
-        Args:
-          target_id: Target id.
-          author: Author.
-          actor: Actor.
-
-        """
+        """Atomically remove one author from a Paper's byline, race-free."""
         self._patch_field(target_id, "authors", "sub", author, actor=actor)
 
     def transition_owner(
@@ -1094,10 +952,10 @@ class Client:
         """Compare-and-set the owner; 409s if it is not ``expected_from``.
 
         Args:
-          target_id: Target id.
-          expected_from: Expected from.
-          to: To.
-          actor: Actor.
+          target_id: Inquiry ID to reassign.
+          expected_from: Current owner (guard, raises 409 if mismatch).
+          to: New owner (None = unowned).
+          actor: Change actor for audit log.
 
         """
         self.put(
@@ -1125,11 +983,11 @@ class Client:
         ``expected`` guard.
 
         Args:
-          target_id: Target id.
-          expected_from: Expected from.
-          to: To.
-          actor: Actor.
-          reason: Reason.
+          target_id: Inquiry ID to transition.
+          expected_from: Current status (guard, raises 409 if mismatch).
+          to: New status.
+          actor: Change actor for audit log.
+          reason: Optional audit note.
 
         """
         self.put(
@@ -1150,14 +1008,7 @@ class Client:
         actor: Inquiry.Actor,
         reason: str = "",
     ) -> None:
-        """Delete an inquiry.
-
-        Args:
-          target_id: Target id.
-          actor: Actor.
-          reason: Reason.
-
-        """
+        """Delete an inquiry."""
         self.delete(
             f"/api/inquiries/{target_id}",
             body={"actor": actor, "reason": reason},
@@ -1170,10 +1021,10 @@ class Client:
         timed-out retry replays rather than minting a second session.
 
         Args:
-          body: Body.
+          body: Session metadata (idempotency_key auto-minted if absent).
 
         Returns:
-          result: The SessionStartResponse.
+          result: SessionStartResponse with server-minted session ID.
 
         """
         if body.idempotency_key is None:
@@ -1234,15 +1085,7 @@ class Client:
         return _validate_model(wire_session_ir.AppendRecordsResponse, response, where)
 
     def read_session_parts(self, session_id: uuid.UUID) -> list[PartBody]:
-        """Return the files this session was captured from, in ``part`` order.
-
-        Args:
-          session_id: Session id.
-
-        Returns:
-          result: The list[PartBody].
-
-        """
+        """Return the files this session was captured from, in ``part`` order."""
         where = wire_session_ir.session_parts_path(session_id)
         response = self._request("GET", where)
         parsed = _validate_model(wire_session_ir.ReadPartsResponse, response, where)
@@ -1268,14 +1111,14 @@ class Client:
         a replay needs the sealed half and leaves it false.
 
         Args:
-          session_id: Session id.
-          part: Part.
-          after_idx: After idx.
-          limit: Limit.
-          plaintext_only: Plaintext only.
+          session_id: AgentSession ID to read from.
+          part: File index within the session (0-based).
+          after_idx: Exclusive lower bound (idx > this); -1 starts from 0.
+          limit: Max rows per page request.
+          plaintext_only: Omit ciphertext; set for viewers, not replays.
 
         Returns:
-          found: The list[RecordBody].
+          found: All records from part, concatenated from pages.
 
         """
         where = wire_session_ir.session_records_path(session_id)
@@ -1312,9 +1155,9 @@ class Client:
         this the run mints a second AgentSession and the transcript splits.
 
         Args:
-          session_id: Session id.
-          cli_session_id: Cli session id.
-          actor: Actor.
+          session_id: AgentSession ID to annotate.
+          cli_session_id: CLI process session ID for resume correlation.
+          actor: Change actor for audit log.
 
         """
         self.edit(
@@ -1336,11 +1179,11 @@ class Client:
         server rejects a non-Experiment id (409) or a missing one (404).
 
         Args:
-          experiment_id: Experiment id.
-          points: Points.
+          experiment_id: Experiment ID to log points to.
+          points: (key, step, value) triples.
 
         Returns:
-          result: The LogMetricsResponse.
+          result: LogMetricsResponse with count of newly written points.
 
         """
         req = wire_metrics.LogMetricsRequest(points=list(points))
@@ -1362,13 +1205,13 @@ class Client:
         whole large run at once; ``key`` narrows to one metric.
 
         Args:
-          experiment_id: Experiment id.
-          key: Key.
-          limit: Limit.
-          offset: Offset.
+          experiment_id: Experiment ID to read from.
+          key: Optional metric name to filter to single metric.
+          limit: Max rows per page.
+          offset: Rows to skip.
 
         Returns:
-          result: The list[MetricPoint].
+          result: Page of (key, step, value) points in order.
 
         """
         params: dict[str, object] = {"limit": limit, "offset": offset}
@@ -1389,13 +1232,13 @@ class Client:
         """Read one experiment's masked metric cells (the mask-query surface).
 
         Args:
-          experiment_id: Experiment id.
-          masks: Masks.
-          sort: Sort.
-          limit: Limit.
+          experiment_id: Experiment ID to query.
+          masks: Field predicates selecting cells.
+          sort: Asc/desc ordering by value.
+          limit: Max rows (None = all matching).
 
         Returns:
-          result: The list[MetricPoint].
+          result: (key, step, value) points matching the masks.
 
         """
         req = wire_metrics_query.MetricQueryRequest(
@@ -1417,12 +1260,12 @@ class Client:
         """Assign ``value`` to every cell the mask selects; return the count.
 
         Args:
-          experiment_id: Experiment id.
-          masks: Masks.
-          value: Value.
+          experiment_id: Experiment ID to write to.
+          masks: Field predicates selecting cells to overwrite.
+          value: Numeric value to assign to matched cells.
 
         Returns:
-          result: The int.
+          result: Count of cells written.
 
         """
         req = wire_metrics_query.MetricQueryRequest(masks=list(masks), write=value)
@@ -1443,13 +1286,13 @@ class Client:
         """Cross-experiment masked read/rank over the given experiments.
 
         Args:
-          experiment_ids: Experiment ids.
-          masks: Masks.
-          sort: Sort.
-          limit: Limit.
+          experiment_ids: Experiment IDs to rank across.
+          masks: Field predicates selecting cells.
+          sort: Asc/desc ordering by value.
+          limit: Max rows (None = all matching).
 
         Returns:
-          result: The list[MetricRankRow].
+          result: Ranked rows with experiment ID and metric values.
 
         """
         query = wire_metrics_query.MetricQueryRequest(
@@ -1469,16 +1312,7 @@ class Client:
         session_id: uuid.UUID,
         body: SessionEnd | None = None,
     ) -> SessionEndResponse:
-        """Close a capture session, optionally backfilling late-known fields.
-
-        Args:
-          session_id: Session id.
-          body: Body.
-
-        Returns:
-          result: The SessionEndResponse.
-
-        """
+        """Close a capture session, optionally backfilling late-known fields."""
         payload = (body or wire_sessions.SessionEnd()).model_dump(mode="json")
         where = wire_sessions.session_end_path(session_id)
         response = self._request("POST", where, body=payload)
@@ -1495,11 +1329,11 @@ class Client:
         so the request carries no ``source`` -- the enqueue body forbids it.
 
         Args:
-          session_id: Session id.
-          text: Text.
+          session_id: AgentSession ID to message.
+          text: Message text to enqueue.
 
         Returns:
-          result: The int.
+          result: Number of messages now queued for this session.
 
         """
         body = wire_sessions.InboundEnqueueRequest(text=text).model_dump(mode="json")
@@ -1560,12 +1394,12 @@ class Client:
         session matched: an honest undelivered signal).
 
         Args:
-          actor: Actor.
-          text: Text.
-          room: Room.
+          actor: Target actor name (targets all live sessions for actor).
+          text: Message text to broadcast.
+          room: Optional room filter (targets actor+room pair).
 
         Returns:
-          result: The list[uuid.UUID].
+          result: Session IDs the message was enqueued to.
 
         """
         body = wire_sessions.SendMessage(actor=actor, room=room, text=text).model_dump(

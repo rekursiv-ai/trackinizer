@@ -252,7 +252,7 @@ if sys.platform == "darwin":
             """Arm before the caller drains, replacing an obsolete inode watch.
 
             Args:
-              path: Path.
+              path: File to watch (or remove watch if missing).
 
             """
             fd = self._files.get(path)
@@ -449,14 +449,7 @@ class _Observer(Protocol):
     """
 
     def schedule(self, handler: object, path: str, *, recursive: bool) -> None:
-        """Watch one directory tree, dispatching events to ``handler``.
-
-        Args:
-          handler: Handler.
-          path: Path.
-          recursive: Recursive.
-
-        """
+        """Watch one directory tree, dispatching events to ``handler``."""
         ...
 
     def start(self) -> None:
@@ -468,12 +461,7 @@ class _Observer(Protocol):
         ...
 
     def join(self, timeout: float | None = None) -> None:
-        """Wait for the observer thread to exit.
-
-        Args:
-          timeout: Timeout.
-
-        """
+        """Wait for the observer thread to exit."""
         ...
 
 
@@ -527,19 +515,14 @@ class _FsEventsHandler:
         self._physical = root.resolve()
 
     def dispatch(self, event: object) -> None:
-        """Watchdog's entry point; forwards to :meth:`on_any_event`.
-
-        Args:
-          event: Event.
-
-        """
+        """Watchdog's entry point; forwards to :meth:`on_any_event`."""
         self.on_any_event(event)
 
     def on_any_event(self, event: object) -> None:
         """Hand in-root rename endpoints and file changes to the loop.
 
         Args:
-          event: Event.
+          event: watchdog event object (checked for src_path/dest_path).
 
         """
         if getattr(event, "is_directory", False):
@@ -838,7 +821,7 @@ class _Cursor:
         instead of overwriting the rows they already held.
 
         Returns:
-          result: The list[str].
+          result: Newly appended complete lines (newline preserved).
 
         """
         try:

@@ -97,11 +97,11 @@ class _MetricsMixin(_StoreShared):
         mirroring :meth:`Store.append_session_records`.
 
         Args:
-          experiment_id: Experiment id.
-          points: Points.
+          experiment_id: Experiment UUID to attach metrics to.
+          points: MetricPoint records (key, step, value, kind, timestamp).
 
         Returns:
-          result: The tuple[int, int].
+          result: Tuple of (newly_logged_count, skipped_duplicate_count).
 
         Raises:
           NotFoundError: ``experiment_id`` is not an existing inquiry.
@@ -183,13 +183,13 @@ class _MetricsMixin(_StoreShared):
         larger window deliberately.
 
         Args:
-          experiment_id: Experiment id.
-          key: Key.
-          limit: Limit.
-          offset: Offset.
+          experiment_id: Experiment UUID to read metrics from.
+          key: Optional metric name to filter (None returns all keys).
+          limit: Max results to return; None defaults to DEFAULT_LIST_LIMIT.
+          offset: Number of rows to skip before returning limit.
 
         Returns:
-          result: The list[MetricPoint].
+          result: List of MetricPoint records in (key, step) index order.
 
         """
         clauses = ["experiment_id = $1"]

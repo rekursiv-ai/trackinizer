@@ -105,11 +105,8 @@ class Case:
     """
 
     label: str
-
     tokens: str
-
     ambiguous: bool = False
-
     rejects: bool = False
 
 
@@ -386,9 +383,8 @@ CORPUS: tuple[Case, ...] = (
 def main() -> int:
     """Run the program; return the process exit code.
 
-
     Returns:
-      result: The int.
+      result: 0 if grammar is current, 1 if stale or invalid.
 
     """
     path = grammar_path()

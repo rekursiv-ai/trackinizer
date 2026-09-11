@@ -25,9 +25,7 @@ class Profile:
     """A saved server identity: URL, audit actor, and bearer token."""
 
     url: str
-
     author: str = ""
-
     api_key: str = ""
     """Sent as ``Authorization: Bearer <api_key>``."""
 
@@ -36,9 +34,7 @@ class Profiles(Command):
     """Show and mutate saved server profiles, subject-first like the rest of trax."""
 
     names = ("profile",)
-
     fields: ClassVar[tuple[str, ...]] = ("url", "actor", "token", "current")
-
     help = """\
 Usage: trax profile [NAME] [ACTION]
 
@@ -54,13 +50,11 @@ Examples:
 
 Fields: url actor token
 """
-
     field_help: ClassVar[HelpPage] = HelpPage(
         usage="trax profile [NAME] FIELD [to VALUE]",
         summary="No VALUE projects the field; 'to VALUE' mutates it.",
         examples=("trax profile url", "trax profile foo token to trax__..."),
     )
-
     field_set_help: ClassVar[HelpPage] = HelpPage(
         usage="trax profile [NAME] FIELD to VALUE",
         summary="Mutates the selected profile field (one field per command).",
@@ -117,10 +111,10 @@ Fields: url actor token
         """Help for.
 
         Args:
-          tokens: Tokens.
+          tokens: Command tokens to resolve help for.
 
         Returns:
-          result: The str.
+          result: Rendered help text with usage instructions.
 
         """
         if not tokens:
@@ -159,7 +153,7 @@ Fields: url actor token
         """Run show.
 
         Args:
-          name: Name.
+          name: Profile name to display.
 
         """
         profile = load_profile() if name == current_profile() else read_profile(name)
@@ -176,8 +170,8 @@ Fields: url actor token
         """Run field or set.
 
         Args:
-          name: Name.
-          tokens: Tokens.
+          name: Profile name to query or modify.
+          tokens: Command tokens (empty=show, one=get field, three=set field).
 
         """
         if not tokens:
@@ -200,8 +194,8 @@ Fields: url actor token
         """Run field.
 
         Args:
-          name: Name.
-          field: Field.
+          name: Profile name to query.
+          field: Field name to display (url, actor, or token).
 
         """
         if field not in cls.fields or field == "current":
@@ -226,9 +220,9 @@ Fields: url actor token
         """Run set.
 
         Args:
-          name: Name.
-          field: Field.
-          value: Value.
+          name: Profile name to modify.
+          field: Field name to set (url, actor, or token).
+          value: New value for the field.
 
         """
         if field not in cls.fields or field == "current":
@@ -246,12 +240,7 @@ Fields: url actor token
 
     @classmethod
     def run_current(cls, tokens: Sequence[str]) -> None:
-        """Run current.
-
-        Args:
-          tokens: Tokens.
-
-        """
+        """Run current."""
         if len(tokens) != 1:
             raise ClientError("expected profile name after current")
         read_profile(tokens[0])
@@ -260,12 +249,7 @@ Fields: url actor token
 
     @classmethod
     def run_del(cls, tokens: Sequence[str]) -> None:
-        """Run del.
-
-        Args:
-          tokens: Tokens.
-
-        """
+        """Run del."""
         if len(tokens) != 1:
             raise ClientError("expected profile name before del")
         if not del_profile(tokens[0]):
@@ -292,7 +276,8 @@ def load_profile() -> Profile:
     pinned.
 
     Returns:
-      result: The Profile.
+      profile: Current trax Profile with URL and API key, falling back to
+        localhost when no profile is explicitly set.
 
     """
     name = current_profile()
@@ -304,12 +289,7 @@ def load_profile() -> Profile:
 
 
 def current_profile() -> str:
-    """Name of the active profile, defaulting to ``default``.
-
-    Returns:
-      result: The str.
-
-    """
+    """Name of the active profile, defaulting to ``default``."""
     return _explicit_profile() or "default"
 
 
@@ -321,8 +301,8 @@ def save_profile(name: str, profile: Profile) -> None:
     so the token never has a world-readable window.
 
     Args:
-      name: Name.
-      profile: Profile.
+      name: Profile name to save under.
+      profile: Profile object with URL, author, and optional API key.
 
     """
     _validate_profile_name(name)
@@ -344,12 +324,7 @@ def save_profile(name: str, profile: Profile) -> None:
 
 
 def switch_profile(name: str) -> None:
-    """Pin ``name`` as the active profile for future invocations.
-
-    Args:
-      name: Name.
-
-    """
+    """Pin ``name`` as the active profile for future invocations."""
     _validate_profile_name(name)
     _write_atomic(
         config_dir() / "rekursiv-ai" / "trax" / "current", name + "\n", mode=0o600
@@ -357,12 +332,7 @@ def switch_profile(name: str) -> None:
 
 
 def list_profiles() -> list[tuple[str, Profile]]:
-    """Every saved ``(name, profile)`` pair, sorted by name.
-
-    Returns:
-      result: The list[tuple[str, Profile]].
-
-    """
+    """Every saved ``(name, profile)`` pair, sorted by name."""
     if not (config_dir() / "rekursiv-ai" / "trax" / "profiles").exists():
         return []
     return sorted(_iter_profiles())
@@ -372,10 +342,10 @@ def del_profile(name: str) -> bool:
     """Delete profile ``name``; return whether it existed.
 
     Args:
-      name: Name.
+      name: Profile name to delete.
 
     Returns:
-      result: The bool.
+      deleted: True if the profile existed and was removed; False if not found.
 
     """
     _validate_profile_name(name)
@@ -396,10 +366,10 @@ def read_profile(name: str) -> Profile:
     localhost would mask typos and torn writes.
 
     Args:
-      name: Name.
+      name: Profile name to load.
 
     Returns:
-      result: The Profile.
+      profile: Parsed Profile with validated URL and optional API key.
 
     Raises:
       ClientError: If the file is absent or has no ``url=`` line.

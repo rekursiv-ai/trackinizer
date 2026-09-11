@@ -39,9 +39,7 @@ class ClaudeAdapter:
     """Reads the ``claude`` CLI's per-project session JSONL files."""
 
     name: str = "claude"
-
     cli_binary: str = "claude"
-
     whole_file: bool = False
 
     @property
@@ -55,12 +53,7 @@ class ClaudeAdapter:
         return (Path(root) if root else Path.home() / ".claude") / "projects"
 
     def session_dirs(self) -> Iterable[Path]:
-        """Return the directories this CLI writes sessions under.
-
-        Returns:
-          result: The Iterable[Path].
-
-        """
+        """Return the directories this CLI writes sessions under."""
         # Returned whether or not it exists yet: the runner MINTS these before
         # arming its watch (``_prepare_session_dirs``), so an adapter that
         # withheld an absent root would leave the runner nothing to create --
@@ -79,15 +72,7 @@ class ClaudeAdapter:
         return (self._projects_dir,)
 
     def matches_session_file(self, path: Path) -> bool:
-        """Return whether ``path`` is one of this CLI's session files.
-
-        Args:
-          path: Path.
-
-        Returns:
-          result: The bool.
-
-        """
+        """Return whether ``path`` is one of this CLI's session files."""
         return path.suffix == ".jsonl" and path.parent.parent == self._projects_dir
 
     def session_scope(self) -> Path | None:
@@ -113,10 +98,10 @@ class ClaudeAdapter:
         a path that is not one of this adapter's session files.
 
         Args:
-          path: Path.
+          path: File path (typically *.jsonl).
 
         Returns:
-          result: The str | None.
+          result: Session id stem from the filename, or None if not a .jsonl file.
 
         """
         if path.suffix != ".jsonl":
@@ -124,10 +109,5 @@ class ClaudeAdapter:
         return path.stem or None
 
     def reader(self) -> Tail:
-        """Return a fresh IR reader for one claude session file.
-
-        Returns:
-          result: The Tail.
-
-        """
+        """Return a fresh IR reader for one claude session file."""
         return Tail(claude.normalize)

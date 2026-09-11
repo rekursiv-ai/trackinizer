@@ -63,12 +63,15 @@ async def session_start_route(
     adopts whatever it was given.
 
     Args:
-      body: Body.
-      request: Request.
-      identity: Identity.
+      body: Session metadata (title, cli, cli_session_id, started, rooms,
+        account, idempotency_key).
+      request: Starlette request object.
+      identity: Authenticated user (email, api_key_id, role).
 
     Returns:
-      result: The SessionStartResponse.
+      response: SessionStartResponse with session id, next event seq (0 for
+        new, or max(seq)+1 for resumed), cli_session_id, and granted actor
+        name.
 
     """
     store = get_store(request)
@@ -127,13 +130,14 @@ async def session_inbound_enqueue_route(
     poller will ever drain it.
 
     Args:
-      session_id: Session id.
-      body: Body.
-      request: Request.
-      identity: Identity.
+      session_id: UUID of the session to message.
+      body: Message text to inject.
+      request: Starlette request object.
+      identity: Authenticated user (sender is attested, not from body).
 
     Returns:
-      result: The InboundEnqueueResponse.
+      response: InboundEnqueueResponse with list of (session_id,
+        message_count) pairs of sessions enqueued (always the one target).
 
     """
     session = await _require_session(get_store(request), session_id)
@@ -183,12 +187,14 @@ async def send_message_route(
     once the session is live -- still delivers instead of replaying nothing.
 
     Args:
-      body: Body.
-      request: Request.
-      identity: Identity.
+      body: Message text and optional room scope to address by actor name.
+      request: Starlette request object.
+      identity: Authenticated user (sender is attested, not from body).
 
     Returns:
-      result: The SendMessageResponse.
+      response: SendMessageResponse with list of (session_id,
+        message_count) pairs of all sessions enqueued (may be empty if no
+        live session matched).
 
     """
     inbound = get_inbound(request)
@@ -262,12 +268,14 @@ async def session_inbound_drain_route(
     reader, but the route enforces no per-opener restriction.
 
     Args:
-      session_id: Session id.
-      request: Request.
-      wait_sec: Wait sec.
+      session_id: UUID of the session to drain messages from.
+      request: Starlette request object.
+      wait_sec: Seconds to hold the request open for a message to arrive
+        (clamped to [0, 30]; 0 returns queued messages immediately).
 
     Returns:
-      result: The DrainInboundResponse.
+      response: DrainInboundResponse with list of pending messages (text,
+        source, room), oldest first, or empty list if none are queued.
 
     """
     await _require_session(get_store(request), session_id)
@@ -302,13 +310,14 @@ async def session_end_route(
     steering messages. A second end on an already-closed session is a 409.
 
     Args:
-      session_id: Session id.
-      body: Body.
-      request: Request.
-      identity: Identity.
+      session_id: UUID of the session to close.
+      body: Session status and optional cli_session_id backfill.
+      request: Starlette request object.
+      identity: Authenticated user (audit actor for the change).
 
     Returns:
-      result: The SessionEndResponse.
+      response: SessionEndResponse with session id and committed ended
+        timestamp (original value on idempotent replay).
 
     """
     store = get_store(request)

@@ -109,12 +109,7 @@ class SlashCommandDetector:
         self._in_paste = False  # inside a bracketed paste (newlines stay literal)
 
     def feed(self, data: bytes) -> None:
-        """Consume one chunk of raw keystroke bytes, emitting on each Enter.
-
-        Args:
-          data: Data.
-
-        """
+        """Consume one chunk of raw keystroke bytes, emitting on each Enter."""
         for byte in data:
             self._consume(byte)
 

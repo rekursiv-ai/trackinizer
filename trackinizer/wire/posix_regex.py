@@ -164,10 +164,10 @@ def has_posix_bracket_construct(pattern: str) -> bool:
     the warning for the process and the check stops working.
 
     Args:
-      pattern: Pattern.
+      pattern: Regex pattern string to scan.
 
     Returns:
-      result: The bool.
+      result: True if any POSIX bracket construct is present.
 
     """
     return any(isinstance(found, PosixClass) for found in _scan(pattern))
@@ -183,10 +183,10 @@ def live_indices(pattern: str) -> frozenset[int]:
     itself looks identical either way.
 
     Args:
-      pattern: Pattern.
+      pattern: Regex pattern string to scan.
 
     Returns:
-      result: The frozenset[int].
+      result: Frozenset of indices where syntax is active (exclude inert spans).
 
     """
     inert: set[int] = set()
@@ -209,10 +209,10 @@ def matchable_indices(pattern: str) -> frozenset[int]:
     anything -- live PG16 runs ``(?i)(?#\u00e9)a``.
 
     Args:
-      pattern: Pattern.
+      pattern: Regex pattern string to scan.
 
     Returns:
-      result: The frozenset[int].
+      result: Frozenset of indices involved in matching (exclude comments only).
 
     """
     inert: set[int] = set()
@@ -231,10 +231,10 @@ def paren_extensions(pattern: str) -> Iterator[ParenExtension]:
     FIRST ``)``, which is why that example carries no closing paren of its own.
 
     Args:
-      pattern: Pattern.
+      pattern: Regex pattern string to scan.
 
     Returns:
-      result: The Iterator[ParenExtension].
+      result: Iterator of ParenExtension objects found in order.
 
     """
     return (found for found in _scan(pattern) if isinstance(found, ParenExtension))
@@ -249,25 +249,17 @@ def has_python_named_group(pattern: str) -> bool:
     match ``'Px'`` in BOTH engines.
 
     Args:
-      pattern: Pattern.
+      pattern: Regex pattern string to scan.
 
     Returns:
-      result: The bool.
+      result: True if any ``(?P<...>...)`` or ``(?P=...)`` construct exists.
 
     """
     return any(isinstance(found, NamedGroup) for found in _scan(pattern))
 
 
 def escapes(pattern: str) -> Iterator[Escape]:
-    """Yield only the escapes from the shared scan.
-
-    Args:
-      pattern: Pattern.
-
-    Returns:
-      result: The Iterator[Escape].
-
-    """
+    """Yield only the escapes from the shared scan."""
     return (found for found in _scan(pattern) if isinstance(found, Escape))
 
 
@@ -282,12 +274,12 @@ def is_flag_run(body: str, *, scoped: bool, flag: str) -> bool:
     a colon-terminated group scopes its flags to its own body.
 
     Args:
-      body: Body.
-      scoped: Scoped.
-      flag: Flag.
+      body: Text between ``(?`` and ``:)`` or ``)``.
+      scoped: True if the group uses ``:`` (scoped to its body).
+      flag: Single flag letter to check (i, m, x, etc).
 
     Returns:
-      result: The bool.
+      result: True if flag is present and not scoped (pattern-wide).
 
     """
     return flag in body and not scoped and set(body) <= FLAG_LETTERS
@@ -305,10 +297,10 @@ def posix_pattern(pattern: str) -> str:
     two rules cannot rewrite the same span twice.
 
     Args:
-      pattern: Pattern.
+      pattern: POSIX regex pattern to translate.
 
     Returns:
-      result: The str.
+      result: Python-compatible regex with leading ``(?s)`` and substitutions.
 
     """
     # ``.`` matches a newline in Postgres and not in Python: live PG16 says

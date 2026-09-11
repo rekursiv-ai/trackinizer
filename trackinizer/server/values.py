@@ -31,10 +31,10 @@ def vetted_sql(*parts: str) -> str:
     call site. The values still flow to the DB as bound parameters.
 
     Args:
-      *parts: Parts.
+      *parts: SQL text fragments from closed-set sources.
 
     Returns:
-      result: The str.
+      query: Concatenated SQL string.
 
     """
     return "".join(parts)
@@ -51,10 +51,10 @@ def empty_optional_to_none(value: object) -> object:
     whether a column is nullable; this only normalizes the empty shape.
 
     Args:
-      value: Value.
+      value: Object from a nullable column or form field.
 
     Returns:
-      value: The object.
+      normalized: None for empty strings/sequences, value unchanged otherwise.
 
     """
     if isinstance(value, str):
@@ -65,15 +65,7 @@ def empty_optional_to_none(value: object) -> object:
 
 
 def vec_to_text(vec: Sequence[float]) -> str:
-    """Format a vector as the pgvector text input form: ``[v1,v2,...]``.
-
-    Args:
-      vec: Vec.
-
-    Returns:
-      result: The str.
-
-    """
+    """Format a vector as the pgvector text input form: ``[v1,v2,...]``."""
     return "[" + ",".join(repr(x) for x in vec) + "]"
 
 
@@ -81,10 +73,10 @@ def list_or_none[T](value: Sequence[T] | None) -> list[T] | None:
     """Pass ``None`` through; materialize any other sequence as ``list``.
 
     Args:
-      value: Value.
+      value: Sequence or None.
 
     Returns:
-      result: The list[T] | None.
+      result: list(value) if value is not None, else None.
 
     """
     return None if value is None else list(value)
@@ -100,10 +92,10 @@ def byline_strs[T: str](values: Iterable[T]) -> tuple[T, ...]:
     ``set_authors(("A","A"))`` on one contract.
 
     Args:
-      values: Values.
+      values: Author names (each may be whitespace-padded).
 
     Returns:
-      result: The tuple[T, ...].
+      authors: Tuple of stripped names in order, blanks removed, dups kept.
 
     """
     return tuple(s for s in (cast(T, v.strip()) for v in values) if s)
@@ -119,10 +111,10 @@ def canonical_strs[T: str](values: Iterable[T]) -> tuple[T, ...]:
     so wire input and DB state agree on canonical form.
 
     Args:
-      values: Values.
+      values: Strings to canonicalize (each may be whitespace-padded).
 
     Returns:
-      result: The tuple[T, ...].
+      unique: Tuple of stripped, deduplicated strings in insertion order.
 
     """
     seen: dict[T, None] = {}

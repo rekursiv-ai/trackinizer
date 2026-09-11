@@ -261,7 +261,6 @@ def test_server_thread_stops_thread_on_startup_timeout(
 
     class _FakeServer:
         started = False
-
         should_exit = False
 
     fake = _FakeServer()
@@ -514,9 +513,7 @@ class _LineAdapter:
     """
 
     name: str = "fakeline"
-
     cli_binary: str = "fakeline"
-
     whole_file: bool = False
 
     def __init__(self, root: Path) -> None:
@@ -689,9 +686,7 @@ class _InjectionResult(enum.Enum):
     """
 
     TOKEN_SEEN = enum.auto()
-
     UNAUTHENTICATED = enum.auto()
-
     INCONCLUSIVE = enum.auto()
 
 

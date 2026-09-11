@@ -113,7 +113,7 @@ def serve(path: Path | None = None) -> None:
     and simply connects to the winner instead.
 
     Args:
-      path: Path.
+      path: Socket path for the daemon; uses socket_path() if None.
 
     """
     sock = socket_address(path) if path is not None else socket_path()
@@ -181,7 +181,6 @@ class _Server(socketserver.ThreadingUnixStreamServer):
     """
 
     daemon_threads = True
-
     request_queue_size = 128
 
     def __init__(self, path: str, version: str) -> None:

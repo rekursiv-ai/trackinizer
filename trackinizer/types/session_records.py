@@ -208,7 +208,7 @@ class SessionRecordRow:
         ``dataclasses.replace(record, encrypted=...)`` itself.
 
         Returns:
-          result: The TraxRecord.
+          record: Decoded TraxRecord of the appropriate subtype.
 
         """
         return DataclassCodec.from_json(

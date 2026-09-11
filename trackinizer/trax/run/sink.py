@@ -99,19 +99,13 @@ class Sink(Protocol):
         sink has no server session and ignores it.
 
         Args:
-          cli_session_id: Cli session id.
+          cli_session_id: Session id from the CLI's own tracer.
 
         """
         ...
 
     def emit(self, adapter_name: str, event: Event) -> None:
-        """Record one record; call ``restart`` before a replacement's first record.
-
-        Args:
-          adapter_name: Adapter name.
-          event: Event.
-
-        """
+        """Record one record; call ``restart`` before a replacement's first record."""
         ...
 
     def restart(self, path: Path) -> None:
@@ -232,7 +226,7 @@ class Sink(Protocol):
         buffer loss. A sink that delivers synchronously returns ``[]``.
 
         Returns:
-          result: The list[tuple[Path, RecordBody]].
+          pending: List of (path, RecordBody) tuples waiting for delivery.
 
         """
         ...
@@ -310,9 +304,9 @@ class FileSink(Sink):
         collide with what was just replayed.
 
         Args:
-          adapter_name: Adapter name.
-          path: Path.
-          body: Body.
+          adapter_name: Adapter name (for the JSON record field).
+          path: Source file path (for part naming).
+          body: Pre-built RecordBody with original idx to preserve.
 
         """
         self._next_idx[path] = max(self._next_idx.get(path, 0), body.idx + 1)

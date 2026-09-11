@@ -211,10 +211,10 @@ class Edge:
         selected, so for them a missing column reads the same as NULL.
 
         Args:
-          row: Row.
+          row: Database row with edge columns.
 
         Returns:
-          result: The Self.
+          edge: Parsed Edge instance.
 
         """
         return cls(
@@ -260,10 +260,10 @@ def kind_group_members(group: KindGroup) -> tuple[Inquiry.InquiryKind, ...]:
     source of truth instead of a hand-typed copy in the SPA.
 
     Args:
-      group: Group.
+      group: Enum value: "inquiries" or "artifacts".
 
     Returns:
-      result: The tuple[Inquiry.InquiryKind, ...].
+      kinds: Tuple of inquiry type strings this group permits.
 
     """
     inquiry: tuple[Inquiry.InquiryKind, ...] = cast(
@@ -538,7 +538,7 @@ def edge_topology() -> dict[str, dict[str, list[str]]]:
     update this one place, not a stale hand-typed SPA copy).
 
     Returns:
-      result: The dict[str, dict[str, list[str]]].
+      topology: Nested dict: edge_kind → ("from_kinds", "to_kinds") → names.
 
     """
     return {
@@ -560,7 +560,7 @@ def edge_labels() -> dict[str, dict[str, str]]:
     the same single-source rule the topology already follows.
 
     Returns:
-      result: The dict[str, dict[str, str]].
+      labels: Nested dict: edge_kind → ("forward", "inverse") → label text.
 
     """
     return {

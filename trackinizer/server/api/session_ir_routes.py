@@ -57,12 +57,12 @@ async def append_session_records_route(
     transcript has no part to belong to.
 
     Args:
-      session_id: Session id.
-      request: Request.
-      body: Body.
+      session_id: AgentSession ID to append to.
+      request: FastAPI request (carries auth and store).
+      body: Records, manifest, and slash commands to append.
 
     Returns:
-      result: The AppendRecordsResponse.
+      result: AppendRecordsResponse with row counts.
 
     """
     store = get_store(request)
@@ -108,11 +108,11 @@ async def read_session_parts_route(
     """List the files this session was captured from, in ``part`` order.
 
     Args:
-      session_id: Session id.
-      request: Request.
+      session_id: AgentSession ID to list parts from.
+      request: FastAPI request (carries auth and store).
 
     Returns:
-      result: The ReadPartsResponse.
+      result: ReadPartsResponse with manifest info for each part.
 
     """
     store = get_store(request)
@@ -159,15 +159,15 @@ async def read_session_records_route(
     thing on the row.
 
     Args:
-      session_id: Session id.
-      request: Request.
-      part: Part.
-      after_idx: After idx.
-      limit: Limit.
-      plaintext_only: Plaintext only.
+      session_id: AgentSession ID to read from.
+      request: FastAPI request (carries auth and store).
+      part: File index (0-based).
+      after_idx: Exclusive lower bound on idx (cursor-based paging).
+      limit: Max rows per page.
+      plaintext_only: Omit ciphertext.
 
     Returns:
-      result: The ReadRecordsResponse.
+      result: ReadRecordsResponse with matching records.
 
     """
     if limit < 1 or limit > MAX_LIST_LIMIT:

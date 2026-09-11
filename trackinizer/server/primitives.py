@@ -82,11 +82,11 @@ async def insert_inquiry(
     separately via :func:`upsert_embedding`.
 
     Args:
-      conn: Conn.
-      row_id: Row id.
-      kind: Kind.
-      status: Status.
-      values: Values.
+      conn: Database connection.
+      row_id: UUID to assign the new row.
+      kind: Inquiry discriminator (Issue, Paper, etc).
+      status: Terminal status; defaults to active via COALESCE in the DB.
+      values: Flat column->value map for all non-identity columns; missing are NULL.
 
     """
     # Deterministic derived column order: COLUMN_SPECS is built by walking the
@@ -140,10 +140,10 @@ async def upsert_embedding(
     title across edits.
 
     Args:
-      conn: Conn.
-      inquiry_id: Inquiry id.
-      model: Model.
-      embedding: Embedding.
+      conn: Database connection.
+      inquiry_id: The inquiry row to embed.
+      model: Embedder name (e.g., "stub", "voyage", "openai").
+      embedding: Vector as a sequence of floats; stored as pgvector text.
 
     """
     await conn.execute(
@@ -161,11 +161,11 @@ async def lookup_kind(conn: Conn, target_id: UUID) -> Inquiry.InquiryKind:
     """Resolve an inquiry id to its discriminator ``kind``.
 
     Args:
-      conn: Conn.
-      target_id: Target id.
+      conn: Database connection.
+      target_id: Inquiry id to look up.
 
     Returns:
-      result: The Inquiry.InquiryKind.
+      result: The Inquiry.InquiryKind discriminator of the row.
 
     Raises:
       NotFoundError: ``target_id`` is not in ``inquiries`` (a 404, so every
@@ -191,12 +191,12 @@ async def lookup_kinds(
     columns whose JSONB / ``UUID[]`` shape rules out a real one.
 
     Args:
-      conn: Conn.
-      ids: Ids.
-      for_share: For share.
+      conn: Database connection.
+      ids: Inquiry ids to look up.
+      for_share: Lock rows with FOR SHARE until transaction end.
 
     Returns:
-      result: The dict[UUID, Inquiry.InquiryKind].
+      result: Dict of found UUIDs to their kinds; missing ids are not returned.
 
     """
     if not ids:
@@ -225,9 +225,13 @@ async def validate_list_references(
     the FK the storage shape rules out.
 
     Args:
-      conn: Conn.
-      value: Value.
-      column: Column.
+      conn: Database connection with active transaction.
+      value: Inquiry ids (bare or tuples with declared kind).
+      column: Name of the list column; used to look up permitted kinds.
+
+    Raises:
+      NotFoundError: A target id does not exist.
+      ConflictError: A target kind is not permitted or declared kind mismatches.
 
     """
     if not value:
@@ -296,18 +300,23 @@ async def insert_edge(
     citation-valence invariant is enforced at.
 
     Args:
-      conn: Conn.
-      from_id: From id.
-      from_kind: From kind.
-      to_id: To id.
-      edge_kind: Edge kind.
-      priority: Priority.
-      note: Note.
-      valence: Valence.
-      labels: Labels.
+      conn: Database connection with active transaction.
+      from_id: Source inquiry id.
+      from_kind: Source inquiry kind.
+      to_id: Target inquiry id.
+      edge_kind: Edge type (cites_paper, supersedes, etc).
+      priority: Issue-to-Issue priority level; checked for applicability.
+      note: User-provided edge annotation; stored as NULL if empty.
+      valence: Citation valence in [-1, 1]; defaults to CITATION_VALENCE_DEFAULT.
+      labels: Tags on the edge; canonicalized and stored as NULL if empty.
 
     Returns:
-      result: The tuple[bool, Inquiry.InquiryKind].
+      inserted: True if the row was inserted (false if conflict existed).
+      to_kind: The target inquiry's discriminator.
+
+    Raises:
+      ConflictError: Insertion would create a cycle, or validation fails.
+      NotFoundError: Target id does not exist.
 
     """
     to_kind = await lookup_kind(conn, to_id)
@@ -429,8 +438,11 @@ def validate_edge_priority(
     CHECK violation (500). Sibling of :func:`validate_edge_valence`.
 
     Args:
-      edge_kind: Edge kind.
-      priority: Priority.
+      edge_kind: The edge type (cites_paper, supersedes, etc).
+      priority: Priority level, or None; validated only for permitted kinds.
+
+    Raises:
+      ValidationError: priority is set on a kind that cannot carry it.
 
     """
     _reject_unknown_edge_kind(edge_kind)
@@ -463,12 +475,14 @@ def validate_edge_valence(
     :func:`validate_edge_priority`.
 
     Args:
-      edge_kind: Edge kind.
-      valence: Valence.
+      edge_kind: The edge type (cites_paper, supersedes, etc).
+      valence: Citation strength in [-1, 1], or None; normalized and validated.
 
     Returns:
-      stored_valence: ``None`` for a structural edge; an in-range float in
-        ``[-1, 1]`` for a citation (the default when unset).
+      stored_valence: None for non-citation edges; a float in [-1, 1] for citations.
+
+    Raises:
+      ValidationError: valence is set on a structural edge, out of range, or not finite.
 
     """
     _reject_unknown_edge_kind(edge_kind)

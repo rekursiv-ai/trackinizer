@@ -59,13 +59,9 @@ class FileResult:
     """The outcome of converting one session file."""
 
     path: Path
-
     source: Format | None = None
-
     target: Format | None = None
-
     text: str = ""
-
     parts: tuple[tuple[str, str], ...] = ()
     """The files a native conversion writes: ``(name, text)``, in order.
 
@@ -74,7 +70,6 @@ class FileResult:
     """
 
     byte_exact: bool = False
-
     source_bytes: int = 0
     """Bytes the source files held, summed over every part."""
 
@@ -88,9 +83,7 @@ class FileResult:
     """
 
     dropped: tuple[str, ...] = ()
-
     diff: str = ""
-
     error: str | None = None
 
     @property
@@ -107,11 +100,11 @@ def main(
     """Convert sessions and return the process exit code.
 
     Args:
-      argv: Argv.
-      formats: Formats.
+      argv: Command-line arguments (or sys.argv[1:] if None).
+      formats: Supported output formats.
 
     Returns:
-      result: The int.
+      result: Exit code (0 on success).
 
     """
     parser = argparse.ArgumentParser(
@@ -295,25 +288,11 @@ class _Adapter(Protocol):
     """
 
     def normalize(self, stream: TextIO, /) -> Iterator[SessionRecord]:
-        """Yield the records a native stream states.
-
-        Args:
-          stream: Stream.
-
-        Returns:
-          result: The Iterator[SessionRecord].
-
-        """
+        """Yield the records a native stream states."""
         ...
 
     def denormalize(self, records: Iterable[SessionRecord], stream: TextIO, /) -> None:
-        """Denormalize records to a native stream.
-
-        Args:
-          records: Records.
-          stream: Stream.
-
-        """
+        """Denormalize records to a native stream."""
         ...
 
 

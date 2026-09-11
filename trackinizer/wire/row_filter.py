@@ -112,7 +112,7 @@ _NEGATED_OPS: Final[dict[FilterOp, FilterOp]] = {
 
 
 def reject_inadmissible(filt: RowFilter) -> None:
-    """Refuse a filter whose two evaluators would not agree.
+    """Refuse a filter that Python and SQL would disagree on.
 
     This predicate must select the rows the store's SQL would have. A filter
     it answers DIFFERENTLY is not a slower path to the same result -- it is a
@@ -143,7 +143,7 @@ def reject_inadmissible(filt: RowFilter) -> None:
     ``"jsonb"`` both defeat.
 
     Args:
-      filt: Filt.
+      filt: Filter clause with field, op, and value attributes to validate.
 
     Raises:
       ValidationError: The filter cannot be evaluated here faithfully.
@@ -228,11 +228,11 @@ def match_filter(row: _Row, filt: RowFilter) -> bool:
     test presence directly and ignore ``filt.value``.
 
     Args:
-      row: Row.
-      filt: Filt.
+      row: Database row mapping column names to values.
+      filt: Filter predicate to test.
 
     Returns:
-      result: The bool.
+      match: True if row satisfies the filter, False otherwise.
 
     """
     reject_inadmissible(filt)

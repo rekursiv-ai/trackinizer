@@ -83,8 +83,8 @@ async def next_issue_route(
     """Next issue route.
 
     Args:
-      request: Request.
-      identity: Identity.
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user identity, viewer-role-gated.
 
     Returns:
       result: The MutableJSON | None.
@@ -117,12 +117,12 @@ async def lookup_route(
     mapping (REV-OPUS-12).
 
     Args:
-      ids: Ids.
-      request: Request.
-      identity: Identity.
+      ids: List of UUIDs to resolve; capped at MAX_LIST_LIMIT by FastAPI.
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user identity, viewer-role-gated.
 
     Returns:
-      body: The MutableJSON.
+      body: Mapping with "found" (id->kind dict) and "missing" (unknown ids).
 
     """
     del identity
@@ -159,17 +159,17 @@ async def list_inquiries_route(
     seq windows in a single query.
 
     Args:
-      request: Request.
-      identity: Identity.
-      kind: Kind.
-      status: Status.
-      limit: Limit.
-      offset: Offset.
-      seq_range: Seq range.
-      filter_: Filter.
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user identity, viewer-role-gated.
+      kind: Inquiry kinds to list; deduplicated before query.
+      status: Optional status filter applied to each kind's query.
+      limit: Rows per kind (validated in [1, MAX_LIST_LIMIT]).
+      offset: Skip this many rows in each kind's result.
+      seq_range: Inclusive seq intervals; union selects rows.
+      filter_: JSON filter expressions; one per repeated param.
 
     Returns:
-      out: The list[MutableJSON].
+      out: One JSON object per distinct kind, with inquiries for that kind.
 
     """
     del identity
@@ -264,18 +264,7 @@ async def cost_route(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     deep: bool = False,
 ) -> Cost:
-    """Cost route.
-
-    Args:
-      target_id: Target id.
-      request: Request.
-      identity: Identity.
-      deep: Deep.
-
-    Returns:
-      result: The Cost.
-
-    """
+    """Cost route."""
     del identity
     return _require_found(await get_store(request).cost_for(target_id, deep=deep))
 
@@ -286,17 +275,7 @@ async def proves_belief_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> list[MutableJSON]:
-    """Proves belief route.
-
-    Args:
-      target_id: Target id.
-      request: Request.
-      identity: Identity.
-
-    Returns:
-      result: The list[MutableJSON].
-
-    """
+    """Proves belief route."""
     del identity
     rows = await get_store(request).proves_belief(target_id)
     return [tag_row(r) for r in rows]
@@ -312,13 +291,13 @@ async def by_seq_route(
     """Resolve a short-ref ``kind#seq`` to the full inquiry.
 
     Args:
-      kind: Kind.
-      seq: Seq.
-      request: Request.
-      identity: Identity.
+      kind: Inquiry kind (Issue, Belief, etc.).
+      seq: Per-kind sequence number starting at 1.
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user identity, viewer-role-gated.
 
     Returns:
-      result: The MutableJSON.
+      result: Full inquiry record tagged with kind and seq.
 
     """
     del identity
@@ -337,17 +316,7 @@ async def get_inquiry_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> MutableJSON:
-    """Get inquiry route.
-
-    Args:
-      target_id: Target id.
-      request: Request.
-      identity: Identity.
-
-    Returns:
-      result: The MutableJSON.
-
-    """
+    """Get inquiry route."""
     del identity
     return _require_found(tag_kind(await get_store(request).get_inquiry(target_id)))
 
@@ -369,13 +338,13 @@ async def delete_inquiry_route(
     row must first release its owner through the compare-and-set owner route.
 
     Args:
-      target_id: Target id.
-      req: Req.
-      request: Request.
-      identity: Identity.
+      target_id: UUID of the inquiry to delete.
+      req: Mutation body (actor, reason).
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user identity, writer-role-gated.
 
     Returns:
-      result: The MutableJSON.
+      result: Mapping with "id" (inquiry UUID) and "change_id" (purge operation).
 
     """
     store = get_store(request)
@@ -405,11 +374,11 @@ async def change_log_stream_route(
     one wire shape; offline catch-up uses ``GET /api/change_log``.
 
     Args:
-      request: Request.
-      identity: Identity.
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user identity, viewer-role-gated.
 
     Returns:
-      result: The StreamingResponse.
+      result: Server-sent events stream emitting change ids.
 
     """
     del identity
@@ -423,17 +392,7 @@ async def get_change_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> Change:
-    """Get change route.
-
-    Args:
-      change_id: Change id.
-      request: Request.
-      identity: Identity.
-
-    Returns:
-      change: The Change.
-
-    """
+    """Get change route."""
     del identity
     change = await get_store(request).get_change(change_id)
     if change is None:
@@ -459,18 +418,18 @@ async def list_change_log_route(
     """Return a filtered, newest-first slice of the change log.
 
     Args:
-      request: Request.
-      identity: Identity.
-      since: Since.
-      after_id: After id.
-      actor: Actor.
-      subject_id: Subject id.
-      subject_kind: Subject kind.
-      kind: Kind.
-      limit: Limit.
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user identity, viewer-role-gated.
+      since: Minimum timestamp (inclusive); defaults to earliest.
+      after_id: Only rows with id > after_id; used for pagination.
+      actor: Exact match on the change's actor email.
+      subject_id: UUID of the changed inquiry.
+      subject_kind: Inquiry kind of the changed subject.
+      kind: Type of change (field edit, edge mutation, etc.).
+      limit: Maximum rows returned (validated in [1, MAX_LIST_LIMIT]).
 
     Returns:
-      result: The list[Change].
+      result: Newest-first ordered list of changes matching the filters.
 
     """
     del identity

@@ -48,12 +48,7 @@ CWD: ContextVar[str] = ContextVar("trax_cwd", default="")
 
 
 def out_stream() -> TextIO:
-    """Return the stream ``echo`` should write to.
-
-    Returns:
-      stream: The TextIO.
-
-    """
+    """Return the stream ``echo`` should write to."""
     if (stream := OUT_STREAM.get()) is not None:
         return stream
     # ``fallback`` does not widen this function's return type.
@@ -61,12 +56,7 @@ def out_stream() -> TextIO:
 
 
 def err_stream() -> TextIO:
-    """Return the stream ``echo(err=True)`` should write to.
-
-    Returns:
-      stream: The TextIO.
-
-    """
+    """Return the stream ``echo(err=True)`` should write to."""
     if (stream := ERR_STREAM.get()) is not None:
         return stream
     return cast(TextIO, sys.stderr)
@@ -81,10 +71,10 @@ def env(name: str) -> str | None:
     through to ``os.environ``, which is process-wide by nature.
 
     Args:
-      name: Name.
+      name: Environment variable name.
 
     Returns:
-      result: The str | None.
+      value: Variable value from overlay or os.environ, or None if unset.
 
     """
     if (overlay := ENV.get()) is not None:
@@ -96,10 +86,5 @@ def env(name: str) -> str | None:
 
 
 def cwd() -> Path:
-    """Return the directory relative paths in this invocation resolve against.
-
-    Returns:
-      result: The Path.
-
-    """
+    """Return the directory relative paths in this invocation resolve against."""
     return Path(bound) if (bound := CWD.get()) else Path.cwd()

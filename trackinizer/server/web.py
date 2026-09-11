@@ -77,15 +77,7 @@ router = APIRouter()
 
 
 def get_store(request: Request) -> Store:
-    """Return the process-wide store.
-
-    Args:
-      request: Request.
-
-    Returns:
-      result: The Store.
-
-    """
+    """Return the process-wide store."""
     return cast(Store, request.app.state.store)
 
 
@@ -106,14 +98,14 @@ async def web_search(
     / ``description:re`` = field-scoped regex.
 
     Args:
-      request: Request.
-      q: Q.
-      identity: Identity.
-      kind: Kind.
-      limit: Limit.
+      request: FastAPI request object for middleware access.
+      q: Bare-token and field-scoped regex search string.
+      identity: Authenticated user, validated to have viewer role.
+      kind: Filter to one inquiry kind; None means search all kinds.
+      limit: Maximum results, 1-1000.
 
     Returns:
-      result: The list[WebView].
+      matches: Matching inquiry views flattened to lightweight projection.
 
     """
     del identity
@@ -174,12 +166,12 @@ async def web_recent_changes(
     """Most-recent ``change_log`` rows, snapshot deltas flattened.
 
     Args:
-      request: Request.
-      identity: Identity.
-      limit: Limit.
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user, validated to have viewer role.
+      limit: Maximum results, 1-1000.
 
     Returns:
-      result: The list[WebView].
+      changes: Change log deltas, newest first.
 
     """
     del identity
@@ -202,12 +194,12 @@ async def web_lookup(
     """Resolve a UUID to its kind; 404 when not found.
 
     Args:
-      target_id: Target id.
-      request: Request.
-      identity: Identity.
+      target_id: UUID to look up.
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user, validated to have viewer role.
 
     Returns:
-      result: The WebView.
+      view: Lightweight node with kind and id.
 
     """
     del identity
@@ -229,12 +221,12 @@ async def web_get(
     """Single inquiry + edges + backlinks + recent changes, for the SPA.
 
     Args:
-      target_id: Target id.
-      request: Request.
-      identity: Identity.
+      target_id: UUID of the node to fetch.
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user, validated to have viewer role.
 
     Returns:
-      result: The WebView.
+      view: Complete node record with all outbound and inbound edges.
 
     """
     del identity
@@ -288,12 +280,12 @@ async def web_graph(
     (:func:`web_get`) serves the full per-kind fields for one node on demand.
 
     Args:
-      request: Request.
-      identity: Identity.
-      limit: Limit.
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user, validated to have viewer role.
+      limit: Cap to N most-recent nodes (0 unbounded).
 
     Returns:
-      result: The WebView.
+      graph: Nodes and edges for replay visualization, ordered by created time.
 
     """
     del identity
@@ -364,11 +356,11 @@ async def web_subscribe(
     who may open the stream at all.
 
     Args:
-      request: Request.
-      identity: Identity.
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user, validated to have viewer role.
 
     Returns:
-      result: The StreamingResponse.
+      stream: Server-sent events of mutated node ids.
 
     """
     del identity
@@ -409,21 +401,21 @@ async def web_feed(
     tail does not rewind.
 
     Args:
-      request: Request.
-      identity: Identity.
-      after_created: After created.
-      after_session: After session.
-      after_part: After part.
-      after_seq: After seq.
-      since: Since.
-      until: Until.
-      room: Room.
-      actor: Actor.
-      limit: Limit.
-      tail: Tail.
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user, validated to have viewer role.
+      after_created: Resume cursor: creation timestamp of last-seen turn.
+      after_session: Resume cursor: session id of last-seen turn.
+      after_part: Resume cursor: part index within the session.
+      after_seq: Resume cursor: sequence number within the part.
+      since: Absolute window start (inclusive).
+      until: Absolute window end (exclusive).
+      room: Filter turns by job/room routing label.
+      actor: Filter turns by actor/agent name.
+      limit: Maximum turns to return.
+      tail: Return newest page first (true) or oldest available (false).
 
     Returns:
-      result: The FeedResponse.
+      feed: Turns across all sessions, pagination cursor for next poll.
 
     """
     del identity
@@ -464,7 +456,7 @@ def graph_legend() -> dict[str, list[str]]:
     appears here automatically (pinned by ``web_test.py``).
 
     Returns:
-      result: The dict[str, list[str]].
+      legend: Enum values for node_kinds and edge_kinds; keyed by name.
 
     """
     return {
@@ -513,10 +505,10 @@ async def optional_identity(request: Request) -> AuthIdentity | None:
     raising ``AttributeError``.
 
     Args:
-      request: Request.
+      request: FastAPI request object for middleware access.
 
     Returns:
-      result: The AuthIdentity | None.
+      identity: Authenticated principal, or None if missing/invalid credentials.
 
     """
     if not hasattr(request.app.state, "engine"):
@@ -547,9 +539,9 @@ def attach(
     duplicate routes (TRK-SRV-002).
 
     Args:
-      app: App.
-      assets_dir: Assets dir.
-      static_dir: Static dir.
+      app: FastAPI instance to mount routes on.
+      assets_dir: Directory to serve at /assets (overrides bundled SPA).
+      static_dir: Directory to serve at /static (overrides bundled default).
 
     """
     if getattr(app.state, "web_attached", False):
@@ -573,7 +565,6 @@ def attach(
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _PageRoute:
     page_path: Path
-
     admin_only: bool = False
 
     async def __call__(

@@ -93,9 +93,7 @@ class MetricMaskClause(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     axis: MetricAxis
-
     op: MetricCompareOp | MetricReduce
-
     value: str = ""
 
 
@@ -111,11 +109,8 @@ class MetricQueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     masks: list[MetricMaskClause] = Field(default_factory=list)
-
     write: float | None = Field(default=None, allow_inf_nan=False)
-
     sort: Literal["asc", "desc"] | None = None
-
     limit: int | None = Field(default=None, ge=1)
 
 
@@ -148,7 +143,6 @@ class MetricRankRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     experiment_ids: list[uuid.UUID] = Field(min_length=1)
-
     query: MetricQueryRequest
 
 
@@ -156,7 +150,6 @@ class MetricRankRow(BaseModel):
     """One cell of a cross-experiment read, tagged with its experiment."""
 
     experiment_id: uuid.UUID
-
     point: MetricPoint
 
 
@@ -186,26 +179,10 @@ METRICS_QUERY_API_PATHS: tuple[str, ...] = (
 
 
 def experiment_metric_query_path(experiment_id: uuid.UUID) -> str:
-    """Return the masked-read path for one experiment.
-
-    Args:
-      experiment_id: Experiment id.
-
-    Returns:
-      result: The str.
-
-    """
+    """Return the masked-read path for one experiment."""
     return EXPERIMENT_METRIC_QUERY_PATH.format(experiment_id=experiment_id)
 
 
 def experiment_metric_write_path(experiment_id: uuid.UUID) -> str:
-    """Return the masked-write path for one experiment.
-
-    Args:
-      experiment_id: Experiment id.
-
-    Returns:
-      result: The str.
-
-    """
+    """Return the masked-write path for one experiment."""
     return EXPERIMENT_METRIC_WRITE_PATH.format(experiment_id=experiment_id)

@@ -47,7 +47,7 @@ def pglite_workdir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     ``tmp_path_factory`` root, so workers never collide.
 
     Args:
-      tmp_path_factory: Tmp path factory.
+      tmp_path_factory: pytest fixture for temp directory creation.
 
     Returns:
       workdir: Directory the shared engines may own for the session.
@@ -78,8 +78,8 @@ async def pglite_engine(
     is still booted at most once per set, inside the cache.
 
     Args:
-      pglite_engine_cache: Pglite engine cache.
-      request: Request.
+      pglite_engine_cache: Session cache of engines keyed by extension set.
+      request: pytest fixture request to resolve pglite_extensions.
 
     Returns:
       engine: A started engine. Call :func:`reset_schema` for an empty schema.
@@ -127,7 +127,7 @@ async def pglite_engine_cache(pglite_workdir: Path) -> AsyncGenerator[_EngineCac
     Consumed by :func:`pglite_engine`, which is what a test should ask for.
 
     Args:
-      pglite_workdir: Pglite workdir.
+      pglite_workdir: Session temp directory for database files.
 
     Yields:
       cache: Call ``get(extensions)`` for a started engine.
@@ -157,10 +157,10 @@ class _EngineCache:
         """Return the started engine for ``extensions``, booting on first ask.
 
         Args:
-          extensions: Extensions.
+          extensions: PostgreSQL extension names to load.
 
         Returns:
-          engine: The PGliteEngine.
+          engine: Started and connected PGliteEngine instance.
 
         """
         key = tuple(sorted(extensions))

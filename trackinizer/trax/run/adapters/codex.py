@@ -42,9 +42,7 @@ class CodexAdapter:
     """
 
     name: str = "codex"
-
     cli_binary: str = "codex"
-
     whole_file: bool = False
 
     @property
@@ -56,26 +54,13 @@ class CodexAdapter:
         return (Path(home) if home else Path.home() / ".codex") / "sessions"
 
     def session_dirs(self) -> Iterable[Path]:
-        """Return the directories this CLI writes sessions under.
-
-        Returns:
-          result: The Iterable[Path].
-
-        """
+        """Return the directories this CLI writes sessions under."""
         # Codex shards by Y/M/D; returning the root lets the runner glob
         # recursively, so older days still get captured if they keep growing.
         return (self._sessions_dir,)
 
     def matches_session_file(self, path: Path) -> bool:
-        """Return whether ``path`` is one of this CLI's session files.
-
-        Args:
-          path: Path.
-
-        Returns:
-          result: The bool.
-
-        """
+        """Return whether ``path`` is one of this CLI's session files."""
         return (
             path.suffix == ".jsonl"
             and path.name.startswith("rollout-")
@@ -120,10 +105,5 @@ class CodexAdapter:
         return StrCodec.coerce(found["session_id"])
 
     def reader(self) -> Tail:
-        """Return a fresh IR reader for one codex rollout file.
-
-        Returns:
-          result: The Tail.
-
-        """
+        """Return a fresh IR reader for one codex rollout file."""
         return Tail(codex.normalize)

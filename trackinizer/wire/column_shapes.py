@@ -288,11 +288,11 @@ def compares_as_float(column: str, op: str) -> bool:
     Python float, and that cast is also a range ceiling the operand must clear.
 
     Args:
-      column: Column.
-      op: Op.
+      column: Column name from COLUMN_SPECS.
+      op: Comparison operator (>, <, >=, <=).
 
     Returns:
-      result: The bool.
+      is_float: True if the SQL template casts to float8.
 
     """
     template = sql_template(column, op)
@@ -309,11 +309,11 @@ def requires_numeric_operand(column: str, op: str) -> bool:
     template rather than inferred from the op.
 
     Args:
-      column: Column.
-      op: Op.
+      column: Column name from COLUMN_SPECS.
+      op: Comparison operator (>, <, >=, <=).
 
     Returns:
-      result: The bool.
+      is_numeric: True if the SQL template casts to numeric.
 
     """
     template = sql_template(column, op)
@@ -321,16 +321,7 @@ def requires_numeric_operand(column: str, op: str) -> bool:
 
 
 def lowers_into_sql(column: str, op: str) -> bool:
-    """Whether ``(column, op)`` has a SQL form, so both evaluators agree.
-
-    Args:
-      column: Column.
-      op: Op.
-
-    Returns:
-      result: The bool.
-
-    """
+    """Whether ``(column, op)`` has a SQL form, so both evaluators agree."""
     return sql_template(column, op) is not None
 
 

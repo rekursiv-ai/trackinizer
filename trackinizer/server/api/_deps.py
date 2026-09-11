@@ -19,28 +19,12 @@ if TYPE_CHECKING:
 
 
 def get_store(request: Request) -> Store:
-    """Return the Store held on the FastAPI app state.
-
-    Args:
-      request: Request.
-
-    Returns:
-      result: The Store.
-
-    """
+    """Return the Store held on the FastAPI app state."""
     return cast(Store, request.app.state.store)
 
 
 def get_inbound(request: Request) -> InboundQueue:
-    """Return the inbound-message queue held on the FastAPI app state.
-
-    Args:
-      request: Request.
-
-    Returns:
-      result: The InboundQueue.
-
-    """
+    """Return the inbound-message queue held on the FastAPI app state."""
     return cast(InboundQueue, request.app.state.inbound)
 
 
@@ -53,10 +37,10 @@ def tag_row(inquiry: Inquiry) -> MutableJSON:
     signature was wider than any caller needed.
 
     Args:
-      inquiry: Inquiry.
+      inquiry: Inquiry to serialize; raises TypeError if None.
 
     Returns:
-      payload: The MutableJSON.
+      payload: JSON with "kind" field set to the Inquiry subclass name.
 
     """
     payload = cast(MutableJSON, _jsonable(inquiry))
@@ -87,7 +71,7 @@ def tag_kind(inquiry: Inquiry | None) -> MutableJSON | None:
     all-``None`` payloads and proving nothing about the fields it named.
 
     Args:
-      inquiry: Inquiry.
+      inquiry: Inquiry to serialize; None returns None.
 
     Returns:
       result: The MutableJSON | None.

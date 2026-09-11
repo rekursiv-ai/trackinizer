@@ -463,10 +463,10 @@ class _EditMixin(_CascadeAuditMixin):
         the route validates.
 
         Args:
-          target_id: Target id.
-          value: Value.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the Inquiry to edit.
+          value: The new account identifier (non-empty string).
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -526,12 +526,12 @@ class _EditMixin(_CascadeAuditMixin):
         post-edit state and gets ``ConflictError``.
 
         Args:
-          target_id: Target id.
-          expected_from: Expected from.
-          to: To.
-          api_key_id: Api key id.
-          actor: Actor.
-          reason: Reason.
+          target_id: ID of the Inquiry to edit.
+          expected_from: Current status that must match before transition.
+          to: Desired terminal status (complete, abandoned, or invalidate).
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
+          reason: Optional explanation of the status change.
 
         Returns:
           result: The UUID | None.
@@ -613,12 +613,12 @@ class _EditMixin(_CascadeAuditMixin):
         :class:`ConflictError`.
 
         Args:
-          target_id: Target id.
-          expected_from: Expected from.
-          to: To.
-          api_key_id: Api key id.
-          actor: Actor.
-          reason: Reason.
+          target_id: ID of the Belief to edit.
+          expected_from: Current judgement that must match before transition.
+          to: Desired terminal judgement (proved or disproved).
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
+          reason: Optional explanation of the judgement change.
 
         Returns:
           result: The UUID | None.
@@ -810,10 +810,10 @@ class _EditMixin(_CascadeAuditMixin):
         """Atomically append one author to a Paper's byline.
 
         Args:
-          target_id: Target id.
-          author: Author.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the Paper to edit.
+          author: Author name to append.
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -981,10 +981,10 @@ class _EditMixin(_CascadeAuditMixin):
         """Atomically remove one author from a Paper's byline.
 
         Args:
-          target_id: Target id.
-          author: Author.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the Paper to edit.
+          author: Author name to remove.
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -1081,10 +1081,10 @@ class _EditMixin(_CascadeAuditMixin):
                 drops the scheme is a clean ``ConflictError`` (4xx), not a silent write.
 
         Args:
-          target_id: Target id.
-          value: Value.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the Paper to edit.
+          value: The new source identifier (scheme:value form, or None to clear).
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -1119,10 +1119,10 @@ class _EditMixin(_CascadeAuditMixin):
                 an empty value clears it to NULL through ``_set_field``.
 
         Args:
-          target_id: Target id.
-          value: Value.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the Paper to edit.
+          value: Google Scholar cluster ID (or None to clear).
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -1152,10 +1152,10 @@ class _EditMixin(_CascadeAuditMixin):
                 an empty value clears it to NULL through ``_set_field``.
 
         Args:
-          target_id: Target id.
-          value: Value.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the Paper to edit.
+          value: Google Scholar cites ID (or None to clear).
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -1248,10 +1248,10 @@ class _EditMixin(_CascadeAuditMixin):
         ``trax watch`` verb, which passes ``subscriber=actor``.
 
         Args:
-          target_id: Target id.
-          subscriber: Subscriber.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the Inquiry to edit.
+          subscriber: Subscriber identifier to add.
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -1280,10 +1280,10 @@ class _EditMixin(_CascadeAuditMixin):
         ``actor``.
 
         Args:
-          target_id: Target id.
-          subscriber: Subscriber.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the Inquiry to edit.
+          subscriber: Subscriber identifier to remove.
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -1309,10 +1309,10 @@ class _EditMixin(_CascadeAuditMixin):
         """Atomically add one label.
 
         Args:
-          target_id: Target id.
-          label: Label.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the Inquiry to edit.
+          label: Label string to add.
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -1338,10 +1338,10 @@ class _EditMixin(_CascadeAuditMixin):
         """Atomically remove one label.
 
         Args:
-          target_id: Target id.
-          label: Label.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the Inquiry to edit.
+          label: Label string to remove.
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -1367,10 +1367,10 @@ class _EditMixin(_CascadeAuditMixin):
         """Atomically add one issue_kind to an Issue's category set.
 
         Args:
-          target_id: Target id.
-          kind: Kind.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the Issue to edit.
+          kind: Issue kind to add.
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -1396,10 +1396,10 @@ class _EditMixin(_CascadeAuditMixin):
         """Atomically remove one issue_kind.
 
         Args:
-          target_id: Target id.
-          kind: Kind.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the Issue to edit.
+          kind: Issue kind to remove.
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -1428,10 +1428,10 @@ class _EditMixin(_CascadeAuditMixin):
         row (matches submit/set semantics).
 
         Args:
-          target_id: Target id.
-          codechange_id: Codechange id.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the Experiment to edit.
+          codechange_id: UUID of the CodeChange to append.
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -1460,10 +1460,10 @@ class _EditMixin(_CascadeAuditMixin):
         """Atomically remove one CodeChange UUID from an Experiment.
 
         Args:
-          target_id: Target id.
-          codechange_id: Codechange id.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the Experiment to edit.
+          codechange_id: UUID of the CodeChange to remove.
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -1601,10 +1601,10 @@ class _EditMixin(_CascadeAuditMixin):
         """Atomically add one room to a session's membership.
 
         Args:
-          target_id: Target id.
-          room: Room.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the AgentSession to edit.
+          room: Room identifier to add.
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -1630,10 +1630,10 @@ class _EditMixin(_CascadeAuditMixin):
         """Atomically remove one room from a session's membership.
 
         Args:
-          target_id: Target id.
-          room: Room.
-          api_key_id: Api key id.
-          actor: Actor.
+          target_id: ID of the AgentSession to edit.
+          room: Room identifier to remove.
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
 
         Returns:
           result: The UUID | None.
@@ -1718,12 +1718,12 @@ class _EditMixin(_CascadeAuditMixin):
         rejects a delta that would drive the total negative.
 
         Args:
-          target_id: Target id.
-          axis: Axis.
-          value: Value.
-          api_key_id: Api key id.
-          actor: Actor.
-          reason: Reason.
+          target_id: ID of the Inquiry to edit.
+          axis: Cost axis name (agent_usd for compute, resource_usd for data).
+          value: New cost value in USD (0 to clear).
+          api_key_id: ID of the API key used for this edit, if any.
+          actor: Identifier of the user making this edit.
+          reason: Optional explanation for the cost change.
 
         Returns:
           result: The UUID | None.

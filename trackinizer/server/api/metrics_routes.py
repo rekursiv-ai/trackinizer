@@ -62,12 +62,12 @@ async def log_metrics_route(
     missing one (404).
 
     Args:
-      experiment_id: Experiment id.
-      body: Body.
-      request: Request.
+      experiment_id: Target Experiment inquiry id.
+      body: Request body with points array.
+      request: FastAPI Request context (used to get the store).
 
     Returns:
-      result: The LogMetricsResponse.
+      result: LogMetricsResponse with logged and skipped counts.
 
     """
     store = get_store(request)
@@ -92,14 +92,17 @@ async def read_metrics_route(
     narrows to one metric.
 
     Args:
-      experiment_id: Experiment id.
-      request: Request.
-      limit: Limit.
-      offset: Offset.
-      key: Key.
+      experiment_id: Target Experiment inquiry id.
+      request: FastAPI Request context (used to get the store).
+      limit: Max points per page; must be in [1, MAX_LIST_LIMIT].
+      offset: Number of points to skip from the start; must be >= 0.
+      key: Optional metric name to filter by.
 
     Returns:
-      result: The ReadMetricsResponse.
+      result: ReadMetricsResponse with points array.
+
+    Raises:
+      HTTPException: 400 if limit or offset invalid.
 
     """
     if limit < 1 or limit > MAX_LIST_LIMIT:
@@ -124,17 +127,7 @@ async def query_metrics_route(
     body: MetricQueryRequest,
     request: Request,
 ) -> MetricQueryResponse:
-    """Read one experiment's masked metric cells (the mask-query surface).
-
-    Args:
-      experiment_id: Experiment id.
-      body: Body.
-      request: Request.
-
-    Returns:
-      result: The MetricQueryResponse.
-
-    """
+    """Read one experiment's masked metric cells (the mask-query surface)."""
     store = get_store(request)
     rows = await store.query_metrics(
         [experiment_id], masks=body.masks, sort=body.sort, limit=body.limit
@@ -154,12 +147,15 @@ async def write_metrics_route(
     """Assign ``body.write`` to every cell the mask selects (bulk upsert).
 
     Args:
-      experiment_id: Experiment id.
-      body: Body.
-      request: Request.
+      experiment_id: Target Experiment inquiry id.
+      body: Request body with masks and write value.
+      request: FastAPI Request context (used to get the store).
 
     Returns:
-      result: The MetricWriteResponse.
+      result: MetricWriteResponse with count of cells written.
+
+    Raises:
+      HTTPException: 400 if write value is missing.
 
     """
     if body.write is None:
@@ -182,11 +178,11 @@ async def rank_metrics_route(
     """Cross-experiment masked read/rank over the given experiments.
 
     Args:
-      body: Body.
-      request: Request.
+      body: Request body with experiment_ids and query (masks, sort, limit).
+      request: FastAPI Request context (used to get the store).
 
     Returns:
-      result: The MetricRankResponse.
+      result: MetricRankResponse with rows array (experiment_id, point pairs).
 
     """
     store = get_store(request)

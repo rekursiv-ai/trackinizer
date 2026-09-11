@@ -276,10 +276,10 @@ class _SessionIRMixin(_CascadeAuditMixin):
         """Every command typed into one session, in ``seq`` order.
 
         Args:
-          session_id: Session id.
+          session_id: UUID of the session to retrieve commands for.
 
         Returns:
-          result: The list[SlashCommandRow].
+          result: List of commands with timestamp, command text, and args; ordered by seq.
 
         """
         async with self.engine.acquire() as conn:
@@ -474,10 +474,10 @@ class _SessionIRMixin(_CascadeAuditMixin):
         """Every part of one session, in ``part`` order.
 
         Args:
-          session_id: Session id.
+          session_id: UUID of the session to retrieve manifests for.
 
         Returns:
-          result: The list[SessionManifest].
+          result: List of manifests with part, name, format, record count; ordered by part.
 
         """
         async with self.engine.acquire() as conn:

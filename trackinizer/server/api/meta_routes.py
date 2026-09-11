@@ -43,7 +43,7 @@ async def version_route() -> dict[str, str]:
     signal.
 
     Returns:
-      result: The dict[str, str].
+      version: Dict with 'sha' key containing build commit hash or 'unknown'.
 
     """
     return {"sha": build_sha()}
@@ -57,7 +57,7 @@ def enum_values() -> dict[str, list[str]]:
     Adding a publication-type / issue-kind / edge-kind here is automatic.
 
     Returns:
-      result: The dict[str, list[str]].
+      enums: Dict mapping field name to list of valid enum values.
 
     """
     return {
@@ -84,7 +84,7 @@ async def enums_route() -> dict[str, list[str]]:
     desync the UI.
 
     Returns:
-      result: The dict[str, list[str]].
+      enums: Dict mapping enum field names to lists of valid choices.
 
     """
     return enum_values()
@@ -99,7 +99,7 @@ async def fields_route() -> dict[str, str]:
     desync the UI from the server's route table.
 
     Returns:
-      result: The dict[str, str].
+      fields: Dict mapping field name to owning Inquiry kind (Issue, Belief, etc).
 
     """
     return field_owner_kind()

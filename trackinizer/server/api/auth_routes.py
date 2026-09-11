@@ -60,7 +60,6 @@ class CreateTokenBody(BaseModel):
     """
 
     name: str = Field(min_length=1, max_length=128)
-
     role: RoleLiteral | None = None
 
 
@@ -88,11 +87,11 @@ async def profile_route(
     reaches this route.
 
     Args:
-      request: Request.
-      identity: Identity.
+      request: FastAPI Request context (used to get the store).
+      identity: Authenticated user from Bearer token or session cookie.
 
     Returns:
-      result: The MutableJSON.
+      result: JSON with user_id, email, name, role, last_login.
 
     """
     engine = engine_of(request)
@@ -131,12 +130,15 @@ async def create_token_route(
     an admin token and a scoped-down key from self-escalating.
 
     Args:
-      body: Body.
-      request: Request.
-      identity: Identity.
+      body: Request body with name and optional role ceiling.
+      request: FastAPI Request context (used to get the store).
+      identity: Authenticated user from Bearer token or session cookie.
 
     Returns:
-      result: The MutableJSON.
+      result: JSON with key id, name, prefix, role, and plaintext secret.
+
+    Raises:
+      HTTPException: 403 if requested role exceeds caller's effective role.
 
     """
     engine = engine_of(request)
@@ -171,11 +173,11 @@ async def list_tokens_route(
     caller can use to recognize a specific key.
 
     Args:
-      request: Request.
-      identity: Identity.
+      request: FastAPI Request context (used to get the store).
+      identity: Authenticated user from Bearer token or session cookie.
 
     Returns:
-      result: The MutableJSON.
+      result: JSON with a "tokens" array of key metadata.
 
     """
     engine = engine_of(request)
@@ -196,12 +198,15 @@ async def revoke_token_route(
     attacker probing UUIDs learns nothing about which keys exist.
 
     Args:
-      key_id: Key id.
-      request: Request.
-      identity: Identity.
+      key_id: API key UUID to revoke.
+      request: FastAPI Request context (used to get the store).
+      identity: Authenticated user from Bearer token or session cookie.
 
     Returns:
-      result: The MutableJSON.
+      result: JSON with {"ok": true} on success.
+
+    Raises:
+      HTTPException: 404 if key not found, owned by another user, or already revoked.
 
     """
     engine = engine_of(request)
@@ -233,13 +238,16 @@ async def set_token_role_route(
     the revoke route's anti-enumeration stance.
 
     Args:
-      key_id: Key id.
-      body: Body.
-      request: Request.
-      identity: Identity.
+      key_id: API key UUID to re-tier.
+      body: Request body with new role.
+      request: FastAPI Request context (used to get the store).
+      identity: Authenticated user from Bearer token or session cookie.
 
     Returns:
-      result: The MutableJSON.
+      result: JSON with {"ok": true, "role": new_role} on success.
+
+    Raises:
+      HTTPException: 403 if role exceeds caller's effective ceiling; 404 otherwise.
 
     """
     engine = engine_of(request)

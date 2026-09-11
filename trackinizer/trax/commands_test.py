@@ -64,7 +64,6 @@ def test_help_page_with_usage_can_override_examples() -> None:
 def test_command_base_help_text_for_handles_string_help() -> None:
     class _Cmd(Command):
         names = ("widget",)
-
         help = "widget help text\n"
 
     assert _Cmd.help_text() == "widget help text\n"

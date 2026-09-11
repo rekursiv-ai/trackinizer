@@ -96,7 +96,6 @@ class SubmitBase(_CostFields):
         return value
 
     description: str | None = None
-
     status: Inquiry.Status | None = None
     """Optional lifecycle status at creation. ``None`` is born ``active`` (the
     server default); an explicit value (e.g. ``complete``) is honored so a
@@ -106,7 +105,6 @@ class SubmitBase(_CostFields):
     be born ``complete`` without ``ended``)."""
 
     owner: Inquiry.Actor | None = None
-
     account: Inquiry.Actor | None = None
     """The active user this row is attributed to. ``None`` lets the server
     default to the creator's authenticated email; a non-``None`` value must
@@ -156,7 +154,6 @@ class SubmitBase(_CostFields):
     """
 
     labels: list[str] | None = None
-
     subscribers: list[Inquiry.Actor] | None = None
 
     @field_validator("subscribers", mode="after")
@@ -181,13 +178,9 @@ class SubmitIssue(SubmitBase):
     """Submit body for a new Issue."""
 
     kind: Literal["Issue"] = "Issue"
-
     issue_kind: list[Issue.Kind] | None = Field(default=None, min_length=1)
-
     validation: str | None = None
-
     priority: Issue.Priority | None = Field(default=None, ge=0)
-
     narrows: list[tuple[uuid.UUID, Annotated[Issue.Priority, Field(ge=0)] | None]] = (
         Field(default_factory=list)
     )
@@ -216,7 +209,6 @@ class SubmitExperiment(SubmitBase):
     """Submit body for a new Experiment."""
 
     kind: Literal["Experiment"] = "Experiment"
-
     codechanges: list[uuid.UUID] | None = None
     """:class:`CodeChange` ids of the code states this experiment ran at."""
 
@@ -231,23 +223,14 @@ class SubmitPaper(SubmitBase):
     """Submit body for a new Paper."""
 
     kind: Literal["Paper"] = "Paper"
-
     abstract: str | None = None
-
     authors: list[str] | None = None
-
     publication_type: Paper.PublicationType | None = None
-
     venue: str | None = None
-
     subvenue: str | None = None
-
     publish_date: datetime | None = None
-
     source: str | None = None
-
     google_scholar_cluster_id: str | None = None
-
     google_scholar_cites_id: str | None = None
 
     @field_validator(
@@ -315,11 +298,8 @@ class SubmitBelief(SubmitBase):
     """Submit body for a new Belief."""
 
     kind: Literal["Belief"] = "Belief"
-
     judgement: Belief.Judgement | None = None
-
     confidence: float | None = Field(default=None, ge=0.0, le=1.0)
-
     proved_by: list[Citation] = Field(default_factory=list)
     """Load-bearing citations: each Artifact citing this belief as proof. Stamps
     an Artifact -> Belief ``proves`` edge carrying the signed valence (positive
@@ -342,7 +322,6 @@ class SubmitCodeChange(SubmitBase):
     """Submit body for a new CodeChange."""
 
     kind: Literal["CodeChange"] = "CodeChange"
-
     sha: str | None = None
     """Git SHA."""
 
@@ -356,7 +335,6 @@ class SubmitWebResult(SubmitBase):
     """Submit body for a new WebResult."""
 
     kind: Literal["WebResult"] = "WebResult"
-
     url: str | None = None
     """Page URL."""
 
@@ -370,9 +348,7 @@ class SubmitWebSearch(SubmitBase):
     """Submit body for a new WebSearch."""
 
     kind: Literal["WebSearch"] = "WebSearch"
-
     query: str | None = None
-
     provider: str | None = None
 
     @field_validator("query", "provider", mode="after")
@@ -385,7 +361,6 @@ class SubmitAgentSession(SubmitBase):
     """Submit body for a new AgentSession (a captured ``trax run`` session)."""
 
     kind: Literal["AgentSession"] = "AgentSession"
-
     cli: str | None = Field(default=None, min_length=1)
     """Wrapped CLI: ``claude`` / ``gemini`` / ``codex`` / ``cursor``."""
 
@@ -393,7 +368,6 @@ class SubmitAgentSession(SubmitBase):
     """The CLI's own session id, for correlation with vendor records."""
 
     started: datetime | None = None
-
     # No ``ended`` at create: a session is born live (``ended IS NULL``).
     # ``ended`` is stamped only by ``POST /api/sessions/{id}/end``, which sets
     # it together with ``status = 'complete'`` -- the lifecycle CHECK on
@@ -494,21 +468,13 @@ class BatchEdge(BaseModel):
     """
 
     from_index: int | None = Field(default=None, ge=0)
-
     from_id: uuid.UUID | None = None
-
     to_index: int | None = Field(default=None, ge=0)
-
     to_id: uuid.UUID | None = None
-
     edge_kind: Edge.Kind
-
     priority: Issue.Priority | None = Field(default=None, ge=0)
-
     note: str = ""
-
     valence: float | None = Field(default=None, ge=-1.0, le=1.0)
-
     labels: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -536,7 +502,6 @@ class SubmitBatch(BaseModel):
     """
 
     items: list[SubmitItem] = Field(min_length=1, max_length=BATCH_MAX_ITEMS)
-
     edges: list[BatchEdge] = Field(default_factory=list, max_length=BATCH_MAX_ITEMS)
 
     @field_validator("items", mode="after")
@@ -688,9 +653,7 @@ class FieldSet[T](FieldMutation):
     model_config = ConfigDict(extra="forbid")
 
     value: T
-
     expected: T | None = None
-
     mode: Literal["set", "cas"] = "set"
 
     @model_validator(mode="after")
@@ -717,5 +680,4 @@ class FieldOp[T](FieldMutation):
     """
 
     op: Literal["add", "sub"]
-
     value: T
