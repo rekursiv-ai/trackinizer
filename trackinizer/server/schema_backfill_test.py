@@ -125,7 +125,7 @@ async def test_a_fresh_install_has_no_table_to_convert(store: Store) -> None:
     async with store.engine.acquire() as conn:
         await conn.execute("DROP TABLE IF EXISTS agent_session_events")
 
-    await _run_backfill(store)  # must not raise.
+    await _run_backfill(store)  # Must not raise.
 
 
 @pytest.mark.db_pglite

@@ -244,11 +244,11 @@ class TestBatch:
             "Issue",
             "Issue",
             False,
-            new_uuid(),  # first edge.
+            new_uuid(),  # First edge.
             "Issue",
             "Issue",
             False,
-            new_uuid(),  # second edge.
+            new_uuid(),  # Second edge.
         ]
         r = client.post(
             "/api/edges/batch",

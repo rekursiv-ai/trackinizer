@@ -281,7 +281,7 @@ class _LifecycleMixin(_StoreShared):
                 await asyncio.sleep(0.25 * (attempt + 1))
             except asyncpg.InterfaceError as err:
                 if not _is_transient_pglite_fault(err):
-                    raise  # asyncpg API misuse -- deterministic, do not retry.
+                    raise  # `asyncpg` API misuse -- deterministic, do not retry.
                 if attempt == attempts - 1:
                     raise
                 await asyncio.sleep(0.25 * (attempt + 1))

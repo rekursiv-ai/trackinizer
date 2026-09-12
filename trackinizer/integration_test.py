@@ -255,9 +255,9 @@ class TestIntegrationEndToEnd:
             integ_store.log_metrics(eid, b),
         )
         back = await integ_store.read_metrics(eid, limit=10_000)
-        assert len(back) == 150  # union 0..149: no loss, no duplicate.
-        assert la + lb == 150  # total newly-written == distinct rows.
-        assert (la + sa, lb + sb) == (100, 100)  # each call accounts for its batch.
+        assert len(back) == 150  # Union 0..149: no loss, no duplicate.
+        assert la + lb == 150  # Total newly-written == distinct rows.
+        assert (la + sa, lb + sb) == (100, 100)  # Each call accounts for its batch.
 
     async def test_log_metrics_large_batch_at_cap(self, integ_store: Store) -> None:
         """A max-size batch inserts and reads back in order at scale."""
@@ -450,7 +450,7 @@ class TestIntegrationEndToEnd:
             SubmitExperiment(account="tester@example.com", title="run", config=cfg)
         )
         row = cast(Experiment, await integ_store.get_inquiry(eid))
-        assert row.config == cfg  # dict in, dict out (asyncpg jsonb codec)
+        assert row.config == cfg  # `dict` in, dict out (asyncpg jsonb codec)
 
         # Edit via set_config: overwrite the whole object.
         new_cfg: dict[str, object] = {"lr": 1e-4, "batch": 64}
@@ -1090,7 +1090,7 @@ class TestIntegrationEndToEnd:
                 )
                 assert over_resp.status_code == 422, over_resp.text
                 still = await http.get(f"/api/experiments/{eid}/metrics")
-                assert len(still.json()["points"]) == 3  # unchanged.
+                assert len(still.json()["points"]) == 3  # Unchanged.
         finally:
             app.dependency_overrides.pop(current_user, None)
             app.dependency_overrides.pop(web.optional_identity, None)
@@ -3197,8 +3197,8 @@ class TestIntegrationEndToEnd:
             priority=3,
             actor="user",
         )
-        assert ann_created is False  # existing edge, not a fresh create.
-        assert ann_change is not None  # but a change WAS emitted (annotated)
+        assert ann_created is False  # `existing` edge, not a fresh create.
+        assert ann_change is not None  # But a change WAS emitted (annotated)
         edge = await integ_store.get_edge(from_id=a, to_id=b, edge_kind="requires")
         assert edge is not None
         assert edge.note == "degradation half"
@@ -4372,7 +4372,7 @@ class TestIntegrationAuth:
         request.headers = {"Authorization": f"Bearer {secret}"}
         request.app.state.engine = integ_store.engine
         request.app.state.store = integ_store
-        request.app.state.config = Config()  # see test_create_token rationale.
+        request.app.state.config = Config()  # See test_create_token rationale.
         with pytest.raises(HTTPException) as exc_info:
             await current_user(request)
         assert exc_info.value.status_code == 401

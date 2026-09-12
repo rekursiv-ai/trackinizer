@@ -222,7 +222,7 @@ class TestCoverageStoreReads:
         bounds bind every interval's present sides.
         """
         conn = make_conn()
-        conn.fetch.side_effect = [[], [], []]  # main select + bulk-edges.
+        conn.fetch.side_effect = [[], [], []]  # `main` select + bulk-edges.
         store, _engine = make_store(conn)
         await store.list_kind(
             "Issue",

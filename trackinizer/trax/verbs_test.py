@@ -1389,7 +1389,7 @@ def test_kind_create_format_ids_lists_inline_targets(
     out = capsys.readouterr().out
     lines = out.splitlines()
     assert lines[0] == str(client.target_id)
-    assert len(lines) == 2  # root + one inline target.
+    assert len(lines) == 2  # `root` + one inline target.
     assert "created:" not in out
     assert "added:" not in out
 
@@ -2350,7 +2350,7 @@ def test_send_undelivered_when_no_match(
 ) -> None:
     def _send(actor: str, text: str, *, room: str | None = None) -> list[uuid.UUID]:
         del actor, text, room
-        return []  # no live session matched.
+        return []  # No live session matched.
 
     monkeypatch.setattr(client, "send_message", _send)
     run(["send", "@ghost", "hi"], client)

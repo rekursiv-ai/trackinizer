@@ -530,7 +530,7 @@ class SubmitBatch(BaseModel):
         duplicates: list[int] = []
         for i, item in enumerate(value):
             key = item.idempotency_key
-            if key is None:  # missing keys reported by _require_idempotency_keys.
+            if key is None:  # `missing` keys reported by _require_idempotency_keys.
                 continue
             if key in seen:
                 duplicates.append(i)
@@ -579,7 +579,7 @@ class SubmitBatch(BaseModel):
         group: KindGroup,
     ) -> None:
         """Reject a new-row endpoint whose kind the edge policy forbids."""
-        if idx is None:  # id endpoint: kind unknown at wire, left to the Store.
+        if idx is None:  # Id endpoint: kind unknown at wire, left to the Store.
             return
         kind = self.items[idx].kind
         allowed = kind_group_members(group)

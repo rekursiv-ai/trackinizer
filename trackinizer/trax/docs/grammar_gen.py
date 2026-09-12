@@ -481,7 +481,7 @@ def _verb_lines() -> list[str]:
     for dispatcher in DISPATCHERS:
         verb = next((n for n in dispatcher.names if n not in kinds), None)
         if verb is None or dispatcher is Profiles:
-            continue  # kind dispatcher, or profile (handled below)
+            continue  # `kind` dispatcher, or profile (handled below)
         lines.append(_verb_usage(verb, _verb_parser(dispatcher)))
     lines.append(_verb_usage("run", build_parser()))
     # Profile parses ``rest`` by hand; its sub-grammar is fixed, stated directly.

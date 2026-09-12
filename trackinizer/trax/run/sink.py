@@ -421,7 +421,7 @@ class TrackinizerSink(Sink):
 
     @override
     def emit(self, adapter_name: str, event: Event) -> None:
-        del adapter_name  # the session already names its CLI.
+        del adapter_name  # The session already names its CLI.
         self._ensure_session()
         idx = self._next_idx.get(event.path, 0)
         if event.restart or idx < self._overwrite_until.get(event.path, 0):

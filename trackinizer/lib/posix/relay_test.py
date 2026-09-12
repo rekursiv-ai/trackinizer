@@ -245,12 +245,12 @@ class TestTerminalHandback:
         assert b"\x1b[?1003h" in seen
         # ...and every mode it left on is disabled before the relay returns.
         for disable in (
-            b"\x1b[?1004l",  # focus reporting: the reported ``\x1b[I`` symptom.
+            b"\x1b[?1004l",  # Focus reporting: the reported ``\x1b[I`` symptom.
             b"\x1b[?1003l",  # any-motion mouse reporting.
             b"\x1b[?1006l",  # SGR mouse encoding.
-            b"\x1b[?1049l",  # alternate screen.
-            b"\x1b[?2004l",  # bracketed paste.
-            b"\x1b[?25h",  # cursor visible.
+            b"\x1b[?1049l",  # Alternate screen.
+            b"\x1b[?2004l",  # Bracketed paste.
+            b"\x1b[?25h",  # Cursor visible.
         ):
             assert disable in seen
 

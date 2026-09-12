@@ -650,7 +650,7 @@ def test_inbound_injection_reaches_child_end_to_end(server: str) -> None:
     relay_thread.start()
     poller.start()
     try:
-        time.sleep(0.5)  # let the child start.
+        time.sleep(0.5)  # Let the child start.
         queued = client.enqueue_inbound(session_id, "run it")
         assert queued >= 1
         # The poller should drain it and the relay type it; the child echoes.

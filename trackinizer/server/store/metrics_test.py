@@ -70,7 +70,7 @@ class TestLogMetrics:
     @pytest.mark.asyncio
     async def test_log_metrics_missing_experiment_raises_not_found(self) -> None:
         conn = make_conn()
-        set_field_row(conn, None)  # fetchrow returns no row.
+        set_field_row(conn, None)  # Fetchrow returns no row.
         store, _engine = make_store(conn)
         with pytest.raises(NotFoundError, match="not found"):
             await store.log_metrics(

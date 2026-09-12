@@ -229,7 +229,7 @@ class TestSubmitModels:
             "https://example.com/p",
             "http://example.com/p",
             "isbn:978-3-16-148410-0",
-            "ArXiv:2405.16391",  # scheme match is case-insensitive.
+            "ArXiv:2405.16391",  # Scheme match is case-insensitive.
         ):
             assert SubmitPaper(title="x", source=ok).source == ok
 

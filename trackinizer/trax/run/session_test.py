@@ -1455,7 +1455,7 @@ class TestEmitSlashCommands:
             RunConfig(cli_name="fake"),
             queue,
         )
-        assert not queue  # fully drained.
+        assert not queue  # Fully drained.
         # NOT records: a command is absent from the session log, so it holds no
         # position in any part and must not consume one.
         assert sink.events == []
@@ -1511,7 +1511,7 @@ class TestDryRunDrain:
         """The dry-run loop exits promptly once ``stop`` is set (no spin)."""
         adapter = _FakeAdapter(tmp_path)
         stop = threading.Event()
-        stop.set()  # already stopped: the loop runs one final sweep and returns.
+        stop.set()  # Already stopped: the loop runs one final sweep and returns.
         rc = session._dry_run_drain(
             RunConfig(cli_name="fake"),
             cast(Adapter, adapter),
@@ -1585,7 +1585,7 @@ class TestTeardownRunsEvenWhenTheRelayRaises:
         def watching_drain(*args: object, **kwargs: object) -> None:
             armed = kwargs["armed"]
             assert isinstance(armed, threading.Event)
-            armed.set()  # release the spawn, as a real armed watch would.
+            armed.set()  # Release the spawn, as a real armed watch would.
             stop = args[4]
             assert isinstance(stop, threading.Event)
             observed.append(stop.wait(timeout=5.0))

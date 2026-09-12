@@ -110,7 +110,7 @@ def parse_list_query(
     kinds: list[Inquiry.InquiryKind] = [] if kind is None else [kind]
     ranges: dict[Inquiry.InquiryKind, tuple[SeqRange, ...]] = {}
     cli_filters: list[tuple[str, FilterOp, str]] = []  # CLI names, not yet canonical.
-    committed = False  # a range or filter has fixed this as a query, not a create.
+    committed = False  # A range or filter has fixed this as a query, not a create.
     for clause in _scan_clauses(tokens):
         if isinstance(clause, _KindClause):
             kinds.append(clause.kind)
@@ -788,7 +788,7 @@ def _consume_inline_create(
     while cursor < len(args):
         word = args[cursor].lower()
         if grouped and word == "end":
-            break  # the parent's `end` pops this group; leave it for the caller.
+            break  # The parent's `end` pops this group; leave it for the caller.
         if word in COST_FIELDS:
             action, consumed = _parse_cost_action(args, cursor, word)
             if not isinstance(action, AddCost):
@@ -825,7 +825,7 @@ def _consume_inline_create(
             continue
         edge = EDGE_ALIASES.get(word)
         if edge is None:
-            break  # neither field, cost, metadata, nor edge: rebinds to the caller.
+            break  # Neither field, cost, metadata, nor edge: rebinds to the caller.
         action, consumed = _parse_edge_action(args, cursor, edge)
         if not isinstance(action, EdgeAction):  # pragma: no cover -- always EdgeAction
             raise ClientError("inline-create tail must be an edge")
