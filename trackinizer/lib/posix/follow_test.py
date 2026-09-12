@@ -912,10 +912,10 @@ class TestFollowTree:
         assert cursor.drain() == ["first"]
         assert not cursor.restarted
 
-        _ = target.write_text("")  # the truncate half of a replacement.
+        _ = target.write_text("")  # The truncate half of a replacement.
         assert cursor.drain() == []
 
-        _ = target.write_text("rewritten\n")  # the write half.
+        _ = target.write_text("rewritten\n")  # The write half.
         assert cursor.drain() == ["rewritten"]
         assert cursor.restarted, "the restart was lost before any line carried it"
 

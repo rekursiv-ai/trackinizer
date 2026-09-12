@@ -74,7 +74,7 @@ class TestStartSession:
         not mistake the field for live information.
         """
         conn = make_conn()
-        conn.fetch = AsyncMock(return_value=[])  # reservation sees no live owners.
+        conn.fetch = AsyncMock(return_value=[])  # Reservation sees no live owners.
         existing_id = new_uuid()
 
         async def submit(*_args: object, **_kwargs: object) -> object:
@@ -262,7 +262,7 @@ class TestEndSession:
         row = self._live_row()
         row["agentsession_ended"] = datetime(2025, 1, 1, tzinfo=UTC)
         set_field_row(conn, row)
-        conn.fetchval = AsyncMock(return_value=None)  # no matching original.
+        conn.fetchval = AsyncMock(return_value=None)  # No matching original.
         store, _engine = make_store(conn)
         set_client_change_id(new_uuid())
         with pytest.raises(ConflictError, match="ended"):
@@ -285,7 +285,7 @@ class TestEndSession:
         row = self._live_row()
         row["agentsession_ended"] = datetime(2025, 1, 1, tzinfo=UTC)
         set_field_row(conn, row)
-        conn.fetchval = AsyncMock(return_value=None)  # no matching original.
+        conn.fetchval = AsyncMock(return_value=None)  # No matching original.
         store, _engine = make_store(conn)
         set_client_change_id(new_uuid())
         with pytest.raises(ConflictError, match="ended"):

@@ -1149,7 +1149,7 @@ def test_edge_marker_sets_collision_word_on_the_edge() -> None:
     assert len(actions) == 1
     act = actions[0]
     assert isinstance(act, EdgeAction)
-    assert act.metadata.get("priority") == 10  # high -> 10.
+    assert act.metadata.get("priority") == 10  # High -> 10.
 
 
 def test_bare_collision_word_after_ref_rolls_up_never_silently_edge() -> None:
@@ -1271,7 +1271,7 @@ def test_edge_valence_non_number_is_client_error_not_value_error() -> None:
     positions = [
         ["favors", "belief", belief, "valence", "to", "abc"],  # post-target.
         ["favors", "valence", "to", "abc", "belief", belief],  # pre-target.
-        ["produced", "websearch", "query", "to", "q", "valence", "to", "abc"],  # body.
+        ["produced", "websearch", "query", "to", "q", "valence", "to", "abc"],  # Body.
     ]
     for toks in positions:
         with pytest.raises(ClientError, match="valence must be a number"):
@@ -1362,7 +1362,7 @@ def test_begin_with_missing_or_bad_kind_is_client_error() -> None:
     Python traceback to the CLI. Now both surface as ClientError.
     """
     cases = [
-        ["disfavors", "begin"],  # begin at EOF -> IndexError.
+        ["disfavors", "begin"],  # Begin at EOF -> IndexError.
         ["narrows", "begin", "3", "title", "to", "X"],  # non-kind after begin.
         ["produced", "begin", "notakind", "title", "to", "X"],
     ]
@@ -1413,7 +1413,7 @@ def test_parser_never_leaks_non_client_error(tokens: list[str]) -> None:
 # raw exception. These entry points were previously unfuzzed.
 
 _A_KIND: Inquiry.InquiryKind = (
-    "Issue"  # a fixed valid kind for entry points that need one.
+    "Issue"  # `a` fixed valid kind for entry points that need one.
 )
 
 
@@ -1460,7 +1460,7 @@ def _meta_value(word: str) -> tuple[str, str]:
     """Return a (op, value) pair valid for an edge-metadata ``word``."""
     if word == "priority":
         return "to", "high"
-    return "add", "x"  # label / labels.
+    return "add", "x"  # Label / labels.
 
 
 @settings(max_examples=300, deadline=None)

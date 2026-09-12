@@ -83,15 +83,15 @@ dotfile picks a different wrong answer.
 # idempotent, so sending them when the child already cleaned up is a no-op.
 TERMINAL_RESET: Final = b"".join(
     (
-        b"\x1b[?1049l",  # leave alternate screen.
-        b"\x1b[?1000l\x1b[?1002l\x1b[?1003l",  # mouse: click, drag, any-motion.
-        b"\x1b[?1005l\x1b[?1006l\x1b[?1015l",  # mouse encodings: utf8, SGR, urxvt.
-        b"\x1b[?1004l",  # focus in/out reporting.
-        b"\x1b[?2004l",  # bracketed paste.
-        b"\x1b[?1l\x1b>",  # normal cursor keys, numeric keypad.
-        b"\x1b[?7h",  # autowrap back on.
-        b"\x1b[?25h",  # cursor visible.
-        b"\x1b[0m",  # default colors and attributes.
+        b"\x1b[?1049l",  # Leave alternate screen.
+        b"\x1b[?1000l\x1b[?1002l\x1b[?1003l",  # Mouse: click, drag, any-motion.
+        b"\x1b[?1005l\x1b[?1006l\x1b[?1015l",  # Mouse encodings: utf8, SGR, urxvt.
+        b"\x1b[?1004l",  # Focus in/out reporting.
+        b"\x1b[?2004l",  # Bracketed paste.
+        b"\x1b[?1l\x1b>",  # Normal cursor keys, numeric keypad.
+        b"\x1b[?7h",  # Autowrap back on.
+        b"\x1b[?25h",  # Cursor visible.
+        b"\x1b[0m",  # Default colors and attributes.
     )
 )
 

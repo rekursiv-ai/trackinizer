@@ -260,7 +260,7 @@ class TestStoreBootstrap:
     @pytest.mark.asyncio
     async def test_bootstrap_skips_sequence_reconcile_for_empty_kinds(self) -> None:
         """A kind with no rows leaves its sequence minting from the start."""
-        store, engine = make_store()  # fetchval defaults to None (empty table).
+        store, engine = make_store()  # `fetchval` defaults to None (empty table).
         await store.bootstrap()
         assert not any(
             "setval" in c.args[0] for c in engine.conn.execute.call_args_list
@@ -294,7 +294,7 @@ class TestStoreBootstrap:
     @pytest.mark.asyncio
     async def test_bootstrap_skips_backfill_when_fully_embedded(self) -> None:
         """No embedding inserts fire when every inquiry already has a row."""
-        store, engine = make_store()  # fetch defaults to [] (nothing missing).
+        store, engine = make_store()  # `fetch` defaults to [] (nothing missing).
         await store.bootstrap()
         assert not any(
             "INSERT INTO inquiry_embeddings" in c.args[0]

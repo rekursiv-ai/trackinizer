@@ -105,8 +105,8 @@ class SlashCommandDetector:
         self._clock = clock
         self._line = bytearray()
         self._in_escape = False
-        self._escape = bytearray()  # bytes of the in-progress escape, post-ESC.
-        self._in_paste = False  # inside a bracketed paste (newlines stay literal)
+        self._escape = bytearray()  # `bytes` of the in-progress escape, post-ESC.
+        self._in_paste = False  # Inside a bracketed paste (newlines stay literal)
 
     def feed(self, data: bytes) -> None:
         """Consume one chunk of raw keystroke bytes, emitting on each Enter.
@@ -124,7 +124,7 @@ class SlashCommandDetector:
             return
         if byte == _ESC:
             self._in_escape = True
-            self._escape = bytearray()  # accumulate the sequence to classify it.
+            self._escape = bytearray()  # Accumulate the sequence to classify it.
         elif byte in _ENTER:
             # A newline inside a bracketed paste is literal content, not a
             # submit: a multi-line paste is one line of input, so treating an
@@ -141,7 +141,7 @@ class SlashCommandDetector:
             self._line.clear()
         elif byte == _WORD_ERASE:
             self._erase_word()
-        elif byte >= 0x20:  # printable; other low control bytes are ignored.
+        elif byte >= 0x20:  # Printable; other low control bytes are ignored.
             self._line.append(byte)
 
     # A CSI/SS3 sequence (``ESC [`` / ``ESC O``) ends on a byte in 0x40-0x7E; a bare
@@ -172,7 +172,7 @@ class SlashCommandDetector:
 
     def _erase_word(self) -> None:
         """Drop the trailing whitespace run plus the word before it (Ctrl-W)."""
-        while self._line and self._line[-1] == 0x20:  # space.
+        while self._line and self._line[-1] == 0x20:  # Space.
             self._line.pop()
         while self._line and self._line[-1] != 0x20:
             self._line.pop()

@@ -258,12 +258,12 @@ def test_warm_cache_preserves_superseded_keys_that_may_still_be_live(
     monkeypatch.setattr(
         "trackinizer.lib.postgres.substrate.subprocess.run", MagicMock()
     )
-    current = substrate._ensure_shared_node_modules()  # warms current key.
+    current = substrate._ensure_shared_node_modules()  # Warms current key.
     stale = current.parent.parent / "deadbeef00000000"
     stale.mkdir()
     (stale / ".ready").touch()
 
-    substrate._ensure_shared_node_modules()  # warm return path.
+    substrate._ensure_shared_node_modules()  # Warm return path.
 
     assert stale.exists()
     assert current.parent.exists()
@@ -285,8 +285,8 @@ def test_install_lock_reclaimed_when_stale(tmp_path: Path) -> None:
     stale = time.time() - substrate._INSTALL_LOCK_STALE_SECONDS - 60
     os.utime(lock, (stale, stale))
 
-    assert substrate._try_acquire_install_lock(lock) is False  # reclaim pass.
-    assert substrate._try_acquire_install_lock(lock) is True  # now claimable.
+    assert substrate._try_acquire_install_lock(lock) is False  # Reclaim pass.
+    assert substrate._try_acquire_install_lock(lock) is True  # Now claimable.
 
 
 def test_install_lock_held_when_fresh(tmp_path: Path) -> None:
@@ -320,21 +320,21 @@ def test_boot_semaphore_caps_concurrent_holders(
     monkeypatch.setattr(substrate, "_real_sleep", _mark_polled)
 
     held = [substrate._acquire_boot_slot(), substrate._acquire_boot_slot()]
-    assert len({s.name for s in held}) == 2  # two distinct slots.
+    assert len({s.name for s in held}) == 2  # Two distinct slots.
 
     # Pool exhausted: a third acquire must poll (sleep) rather than return. Run
     # it in a thread so the test does not wedge on the (now patched) busy-wait.
     got: list[substrate._BootSlot] = []
     waiter = threading.Thread(target=lambda: got.append(substrate._acquire_boot_slot()))
     waiter.start()
-    assert polled.wait(timeout=2.0)  # waiter reached the poll loop (blocked)
-    assert waiter.is_alive()  # still blocked on a full pool.
+    assert polled.wait(timeout=2.0)  # `waiter` reached the poll loop (blocked)
+    assert waiter.is_alive()  # Still blocked on a full pool.
 
-    substrate._release_boot_slot(held[0])  # free one slot.
+    substrate._release_boot_slot(held[0])  # Free one slot.
     waiter.join(timeout=2.0)
-    assert not waiter.is_alive()  # unblocked.
-    assert got  # the waiter returned a slot.
-    assert got[0].name == held[0].name  # reused the freed slot.
+    assert not waiter.is_alive()  # Unblocked.
+    assert got  # The waiter returned a slot.
+    assert got[0].name == held[0].name  # Reused the freed slot.
 
 
 def test_boot_slot_reclaimed_when_stale(
@@ -376,11 +376,11 @@ def test_release_does_not_delete_a_reclaimed_slots_new_owner(
     stale = time.time() - substrate._BOOT_SLOT_STALE_SECONDS - 60
     os.utime(first.path, (stale, stale))
 
-    second = substrate._acquire_boot_slot()  # reclaims + re-owns slot-0.
+    second = substrate._acquire_boot_slot()  # Reclaims + re-owns slot-0.
     assert second.name == first.name
     assert second.token != first.token
 
-    substrate._release_boot_slot(first)  # the slow original holder releases.
+    substrate._release_boot_slot(first)  # The slow original holder releases.
 
     assert second.path.exists(), "stale holder deleted the reclaimer's live slot"
     assert substrate._boot_owner_path(second).exists()

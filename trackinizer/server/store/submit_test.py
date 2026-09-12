@@ -276,7 +276,7 @@ class TestSubmit:
         # *derived) -- find paper_authors within the SQL's derived column list.
         sql = "".join(a for a in insert.args if isinstance(a, str))
         cols = sql.split("(", 1)[1].split(")", 1)[0].split(", ")
-        derived = cols[cols.index("status") + 1 :]  # columns after status.
+        derived = cols[cols.index("status") + 1 :]  # Columns after status.
         # Binds: args[0]=SQL, [1]=row_id, [2]=kind, [3]=status, [4:]=derived.
         authors = insert.args[4 + derived.index("paper_authors")]
         # byline_strs preserves order + duplicates (unlike canonical_strs dedup),
@@ -352,7 +352,7 @@ class TestIdempotentShortCircuitConsumesChangeId:
         """
         conn = make_conn()
         winner_subject_id = new_uuid()
-        external_key = new_uuid()  # whatever was set before the submit ran.
+        external_key = new_uuid()  # Whatever was set before the submit ran.
         replay_key = new_uuid()
         queue_field_rows(
             conn,

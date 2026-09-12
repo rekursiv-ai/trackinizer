@@ -48,7 +48,7 @@ class TestInboundQueue:
         sid = uuid.uuid4()
         q.enqueue(sid, Inbound(text="1"))
         q.enqueue(sid, Inbound(text="2"))
-        q.enqueue(sid, Inbound(text="3"))  # evicts "1"
+        q.enqueue(sid, Inbound(text="3"))  # Evicts "1"
         assert [m.text for m in q.drain(sid)] == ["2", "3"]
 
     def test_cap_drop_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -59,8 +59,8 @@ class TestInboundQueue:
         sid = uuid.uuid4()
         q.enqueue(sid, Inbound(text="1"))
         with caplog.at_level("WARNING"):
-            q.enqueue(sid, Inbound(text="2"))  # evicts "1"
-            q.enqueue(sid, Inbound(text="3"))  # evicts "2"
+            q.enqueue(sid, Inbound(text="2"))  # Evicts "1"
+            q.enqueue(sid, Inbound(text="3"))  # Evicts "2"
         drops = [r for r in caplog.records if "dropped oldest" in r.message]
         assert len(drops) == 2
 

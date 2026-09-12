@@ -281,8 +281,8 @@ def _owner_dead(dir_name: str) -> bool:
     except ProcessLookupError:
         return True
     except PermissionError:
-        return False  # alive, owned by another user.
-    return False  # signal delivered -> process is alive.
+        return False  # Alive, owned by another user.
+    return False  # Signal delivered -> process is alive.
 
 
 # Ephemeral servers must NOT share a workdir: PGlite rewrites ``pglite_manager.js`` and

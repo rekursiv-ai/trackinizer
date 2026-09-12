@@ -316,7 +316,7 @@ class TestCurrentUser:
         # prefixes exist. The dummy verify is the constant-time floor.
         secret, _ = generate_token()
         engine = FakeEngine()
-        engine.conn.fetch.return_value = []  # prefix miss.
+        engine.conn.fetch.return_value = []  # `prefix` miss.
 
         calls: list[str] = []
         real_verify = auth.verify_secret

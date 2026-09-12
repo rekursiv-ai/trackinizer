@@ -118,7 +118,7 @@ class TestSlashCommandDetector:
             raise ZeroDivisionError("boom")
 
         detector = SlashCommandDetector(_boom)
-        detector.feed(b"/exit\r")  # must not raise.
+        detector.feed(b"/exit\r")  # Must not raise.
 
     def test_command_carries_submit_timestamp(self) -> None:
         # The detector stamps each command with the submit-time clock (R-019).

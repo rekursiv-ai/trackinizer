@@ -491,7 +491,7 @@ class TestRequests:
             _install_mock_transport(client, handler)
             result = client.post("/api/x", body={"a": 1})
         assert result == {"ok": True}
-        assert len(seen) == 2  # one 500, then the retry succeeded.
+        assert len(seen) == 2  # One 500, then the retry succeeded.
         change_ids = {req.headers["Idempotency-Key"] for req in seen}
         assert len(change_ids) == 1, "the 500 retry must reuse the same UUID"
 
@@ -1248,7 +1248,7 @@ def test_server_url_rejects_fragment() -> None:
 @pytest.mark.parametrize(
     "raw",
     [
-        "http://:8765",  # missing host.
+        "http://:8765",  # `missing` host.
         "http://example.com:abc",  # non-numeric port.
         "http://example.com:99999",  # out-of-range port.
     ],
@@ -1403,8 +1403,8 @@ def test_submit_batch_accepts_matching_or_absent_body_kind() -> None:
     client = _ClientSpy(post_result={"ids": []})
     client.submit_batch(
         [
-            ("Issue", {"title": "a"}),  # absent body kind.
-            ("Belief", {"title": "b", "kind": "Belief"}),  # matching body kind.
+            ("Issue", {"title": "a"}),  # Absent body kind.
+            ("Belief", {"title": "b", "kind": "Belief"}),  # Matching body kind.
         ]
     )
     body = cast(dict[str, object], client.request_calls[0][2])

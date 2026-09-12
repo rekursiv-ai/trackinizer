@@ -293,7 +293,7 @@ def generate_inquiry_kind_columns() -> str:
     # CREATE TABLE column list. The caller (schema.sql) handles the
     # adjacent comma/no-comma context via placement.
     if sections and sections[-1].endswith("),"):
-        sections[-1] = sections[-1][:-1]  # drop the comma.
+        sections[-1] = sections[-1][:-1]  # Drop the comma.
     return "\n".join(sections)
 
 

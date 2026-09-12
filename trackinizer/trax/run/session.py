@@ -727,7 +727,7 @@ def _inbound_poll_loop(
             # since no later drain will ever return them again.
             for text, source, room in batch:
                 _deliver_one(relay, text, source, room, stream=stream)
-            warned = False  # recovered; allow a fresh warning next outage.
+            warned = False  # Recovered; allow a fresh warning next outage.
             # No sleep: the request itself was the wait, so re-arming
             # immediately is what keeps the channel continuously parked.
             continue
