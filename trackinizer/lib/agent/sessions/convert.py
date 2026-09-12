@@ -59,9 +59,13 @@ class FileResult:
     """The outcome of converting one session file."""
 
     path: Path
+
     source: Format | None = None
+
     target: Format | None = None
+
     text: str = ""
+
     parts: tuple[tuple[str, str], ...] = ()
     """The files a native conversion writes: ``(name, text)``, in order.
 
@@ -70,6 +74,7 @@ class FileResult:
     """
 
     byte_exact: bool = False
+
     source_bytes: int = 0
     """Bytes the source files held, summed over every part."""
 
@@ -83,7 +88,9 @@ class FileResult:
     """
 
     dropped: tuple[str, ...] = ()
+
     diff: str = ""
+
     error: str | None = None
 
     @property
@@ -288,11 +295,25 @@ class _Adapter(Protocol):
     """
 
     def normalize(self, stream: TextIO, /) -> Iterator[SessionRecord]:
-        """Yield the records a native stream states."""
+        """Yield the records a native stream states.
+
+        Args:
+          stream: Stream.
+
+        Returns:
+          result: The Iterator[SessionRecord].
+
+        """
         ...
 
     def denormalize(self, records: Iterable[SessionRecord], stream: TextIO, /) -> None:
-        """Denormalize records to a native stream."""
+        """Denormalize records to a native stream.
+
+        Args:
+          records: Records.
+          stream: Stream.
+
+        """
         ...
 
 

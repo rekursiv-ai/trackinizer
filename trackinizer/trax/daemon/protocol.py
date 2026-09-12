@@ -257,7 +257,13 @@ class ProtocolVersionError(ValueError):
 
 
 def write_frame(conn: socket.socket, payload: bytes) -> None:
-    """Send one length-prefixed frame."""
+    """Send one length-prefixed frame.
+
+    Args:
+      conn: Conn.
+      payload: Payload.
+
+    """
     conn.sendall(len(payload).to_bytes(_LENGTH_BYTES, "big") + payload)
 
 

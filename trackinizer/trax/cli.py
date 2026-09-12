@@ -57,7 +57,12 @@ else:
 
 
 def connect_flags(parser: argparse.ArgumentParser) -> None:
-    """Register ``--profile``, ``--host``, and ``--port``."""
+    """Register ``--profile``, ``--host``, and ``--port``.
+
+    Args:
+      parser: Parser.
+
+    """
     parser.add_argument("--profile", default=None)
     parser.add_argument("--host", default=None)
     parser.add_argument("--port", type=int, default=None)
@@ -131,6 +136,7 @@ class Help(Command):
     """Print top-level help or per-verb help."""
 
     names = ("help",)
+
     help = HelpPage(
         usage="trax COMMAND [ARGS] [OPTIONS]",
         summary="Subjects:\n  issue artifact experiment paper belief codechange webresult websearch agentsession",

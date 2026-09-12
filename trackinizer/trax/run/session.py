@@ -134,7 +134,9 @@ class _Captured:
     """
 
     path: Path
+
     raw: bytes
+
     restart: bool = False
 
 
@@ -149,7 +151,12 @@ class _Stats:
     counts: dict[str, int] = field(default_factory=dict)
 
     def record(self, kind: str) -> None:
-        """Tally one event of ``kind`` for the end-of-run summary."""
+        """Tally one event of ``kind`` for the end-of-run summary.
+
+        Args:
+          kind: Kind.
+
+        """
         self.counts[kind] = self.counts.get(kind, 0) + 1
 
     def render(self) -> str:

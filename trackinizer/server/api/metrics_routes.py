@@ -127,7 +127,17 @@ async def query_metrics_route(
     body: MetricQueryRequest,
     request: Request,
 ) -> MetricQueryResponse:
-    """Read one experiment's masked metric cells (the mask-query surface)."""
+    """Read one experiment's masked metric cells (the mask-query surface).
+
+    Args:
+      experiment_id: Experiment id.
+      body: Body.
+      request: Request.
+
+    Returns:
+      result: The MetricQueryResponse.
+
+    """
     store = get_store(request)
     rows = await store.query_metrics(
         [experiment_id], masks=body.masks, sort=body.sort, limit=body.limit

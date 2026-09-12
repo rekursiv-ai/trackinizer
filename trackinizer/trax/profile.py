@@ -34,7 +34,9 @@ class Profiles(Command):
     """Show and mutate saved server profiles, subject-first like the rest of trax."""
 
     names = ("profile",)
+
     fields: ClassVar[tuple[str, ...]] = ("url", "actor", "token", "current")
+
     help = """\
 Usage: trax profile [NAME] [ACTION]
 
@@ -50,11 +52,13 @@ Examples:
 
 Fields: url actor token
 """
+
     field_help: ClassVar[HelpPage] = HelpPage(
         usage="trax profile [NAME] FIELD [to VALUE]",
         summary="No VALUE projects the field; 'to VALUE' mutates it.",
         examples=("trax profile url", "trax profile foo token to trax__..."),
     )
+
     field_set_help: ClassVar[HelpPage] = HelpPage(
         usage="trax profile [NAME] FIELD to VALUE",
         summary="Mutates the selected profile field (one field per command).",
@@ -289,7 +293,12 @@ def load_profile() -> Profile:
 
 
 def current_profile() -> str:
-    """Name of the active profile, defaulting to ``default``."""
+    """Name of the active profile, defaulting to ``default``.
+
+    Returns:
+      result: The str.
+
+    """
     return _explicit_profile() or "default"
 
 
@@ -324,7 +333,12 @@ def save_profile(name: str, profile: Profile) -> None:
 
 
 def switch_profile(name: str) -> None:
-    """Pin ``name`` as the active profile for future invocations."""
+    """Pin ``name`` as the active profile for future invocations.
+
+    Args:
+      name: Name.
+
+    """
     _validate_profile_name(name)
     _write_atomic(
         config_dir() / "rekursiv-ai" / "trax" / "current", name + "\n", mode=0o600
@@ -332,7 +346,12 @@ def switch_profile(name: str) -> None:
 
 
 def list_profiles() -> list[tuple[str, Profile]]:
-    """Every saved ``(name, profile)`` pair, sorted by name."""
+    """Every saved ``(name, profile)`` pair, sorted by name.
+
+    Returns:
+      result: The list[tuple[str, Profile]].
+
+    """
     if not (config_dir() / "rekursiv-ai" / "trax" / "profiles").exists():
         return []
     return sorted(_iter_profiles())

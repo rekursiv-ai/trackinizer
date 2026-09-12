@@ -27,7 +27,12 @@ unbounded-width rows. ``0`` means "not a terminal" (no cap)."""
 
 
 def show_ids() -> bool:
-    """Whether UUIDs should appear in output (set by ``--show-ids``)."""
+    """Whether UUIDs should appear in output (set by ``--show-ids``).
+
+    Returns:
+      result: The bool.
+
+    """
     return SHOW_IDS.get()
 
 
@@ -94,13 +99,26 @@ def format_field_value(value: object) -> str:
 
 
 def add_write_flags(parser: argparse.ArgumentParser) -> None:
-    """Add the ``--as`` (actor) and ``--reason`` flags shared by write commands."""
+    """Add the ``--as`` (actor) and ``--reason`` flags shared by write commands.
+
+    Args:
+      parser: Parser.
+
+    """
     parser.add_argument("--as", "--actor", dest="actor", default="")
     parser.add_argument("--reason", default="")
 
 
 def resolve_labels(labels: Sequence[str] | None) -> list[str]:
-    """Split comma-separated labels and trim whitespace, dropping empties."""
+    """Split comma-separated labels and trim whitespace, dropping empties.
+
+    Args:
+      labels: Labels.
+
+    Returns:
+      out: The list[str].
+
+    """
     out: list[str] = []
     for raw in labels or ():
         out.extend(label.strip() for label in raw.split(",") if label.strip())
@@ -128,7 +146,15 @@ def format_json(payload: object) -> str:
 
 
 def format_ids(rows: Iterable[dict[str, Any]]) -> str:
-    """One row id per line."""
+    """One row id per line.
+
+    Args:
+      rows: Rows.
+
+    Returns:
+      result: The str.
+
+    """
     return "".join(f"{row['id']}\n" for row in rows)
 
 
@@ -359,17 +385,39 @@ def format_changes(rows: Sequence[dict[str, Any]]) -> str:
 
 
 def table_width(width: int | None = None) -> int:
-    """Table width for this invocation: explicit, terminal, or unbounded."""
+    """Table width for this invocation: explicit, terminal, or unbounded.
+
+    Args:
+      width: Width.
+
+    Returns:
+      result: The int.
+
+    """
     return _resolved_table_width(width)
 
 
 def table_cell(value: str, width: int) -> str:
-    """Collapse whitespace in ``value`` and truncate it to ``width``."""
+    """Collapse whitespace in ``value`` and truncate it to ``width``.
+
+    Args:
+      value: Value.
+      width: Width.
+
+    Returns:
+      result: The str.
+
+    """
     return _truncate_cell(_table_cell(value), width)
 
 
 def natural_unbounded_width() -> int:
-    """Sentinel column width standing in for "no cap"."""
+    """Sentinel column width standing in for "no cap".
+
+    Returns:
+      result: The int.
+
+    """
     return 1_000_000
 
 

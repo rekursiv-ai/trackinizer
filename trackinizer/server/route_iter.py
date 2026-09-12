@@ -51,12 +51,28 @@ def iter_routes(app: FastAPI) -> Iterator[tuple[str, frozenset[str]]]:
 
 
 def registered_paths(app: FastAPI) -> set[str]:
-    """All registered route path templates of ``app``."""
+    """All registered route path templates of ``app``.
+
+    Args:
+      app: App.
+
+    Returns:
+      result: The set[str].
+
+    """
     return {path for path, _ in iter_routes(app)}
 
 
 def registered_path_methods(app: FastAPI) -> set[tuple[str, str]]:
-    """All registered ``(path, method)`` pairs of ``app``."""
+    """All registered ``(path, method)`` pairs of ``app``.
+
+    Args:
+      app: App.
+
+    Returns:
+      result: The set[tuple[str, str]].
+
+    """
     return {(path, method) for path, methods in iter_routes(app) for method in methods}
 
 

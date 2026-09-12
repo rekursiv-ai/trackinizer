@@ -198,7 +198,15 @@ def validate_clause(field: str, op: str, value: str) -> str | None:
 
 
 def is_nan(value: str) -> bool:
-    """Whether ``value`` parses as a NaN, whatever its spelling."""
+    """Whether ``value`` parses as a NaN, whatever its spelling.
+
+    Args:
+      value: Value.
+
+    Returns:
+      result: The bool.
+
+    """
     parsed = as_numeric(value)
     return parsed is not None and parsed.is_nan()
 
@@ -409,7 +417,9 @@ class Filter:
     """
 
     field: str
+
     op: FilterOp
+
     value: str
 
     def __post_init__(self) -> None:

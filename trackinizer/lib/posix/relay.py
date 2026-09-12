@@ -61,7 +61,12 @@ class HasFileno(Protocol):
     """
 
     def fileno(self) -> int:
-        """Return the underlying descriptor."""
+        """Return the underlying descriptor.
+
+        Returns:
+          result: The int.
+
+        """
         ...
 
 

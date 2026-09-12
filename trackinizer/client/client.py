@@ -159,6 +159,7 @@ class EdgeWrite(NamedTuple):
     """
 
     created: bool
+
     changed: bool
 
 
@@ -442,7 +443,15 @@ class Client:
         self,
         ref: Ref,
     ) -> tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, Any]]:
-        """Resolve and fetch the SPA detail view (self + edges + changes)."""
+        """Resolve and fetch the SPA detail view (self + edges + changes).
+
+        Args:
+          ref: Ref.
+
+        Returns:
+          result: The tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, Any]].
+
+        """
         kind, target_id = self.resolve_id(ref)
         where = f"/api/web/get/{target_id}"
         return kind, target_id, dict(_require_mapping(self.get(where), where))
@@ -643,7 +652,16 @@ class Client:
         actor: Inquiry.Actor,
         reason: str = "",
     ) -> None:
-        """Overwrite ``field`` with ``value`` (a blind PUT)."""
+        """Overwrite ``field`` with ``value`` (a blind PUT).
+
+        Args:
+          target_id: Target id.
+          field: Field.
+          value: Value.
+          actor: Actor.
+          reason: Reason.
+
+        """
         body: dict[str, object] = {"value": value, "actor": actor}
         if reason:
             body["reason"] = reason
@@ -856,7 +874,14 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Remove one subscriber, atomically and idempotently."""
+        """Remove one subscriber, atomically and idempotently.
+
+        Args:
+          target_id: Target id.
+          subscriber: Subscriber.
+          actor: Actor.
+
+        """
         self._patch_field(target_id, "subscribers", "sub", subscriber, actor=actor)
 
     def add_label(
@@ -866,7 +891,14 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Add one label, race-free."""
+        """Add one label, race-free.
+
+        Args:
+          target_id: Target id.
+          label: Label.
+          actor: Actor.
+
+        """
         self._patch_field(target_id, "labels", "add", label, actor=actor)
 
     def remove_label(
@@ -876,7 +908,14 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Remove one label, race-free."""
+        """Remove one label, race-free.
+
+        Args:
+          target_id: Target id.
+          label: Label.
+          actor: Actor.
+
+        """
         self._patch_field(target_id, "labels", "sub", label, actor=actor)
 
     def add_issue_kind(
@@ -930,7 +969,14 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Atomically append one author to a Paper's byline, race-free."""
+        """Atomically append one author to a Paper's byline, race-free.
+
+        Args:
+          target_id: Target id.
+          author: Author.
+          actor: Actor.
+
+        """
         self._patch_field(target_id, "authors", "add", author, actor=actor)
 
     def remove_author(
@@ -940,7 +986,14 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Atomically remove one author from a Paper's byline, race-free."""
+        """Atomically remove one author from a Paper's byline, race-free.
+
+        Args:
+          target_id: Target id.
+          author: Author.
+          actor: Actor.
+
+        """
         self._patch_field(target_id, "authors", "sub", author, actor=actor)
 
     def transition_owner(
@@ -1010,7 +1063,14 @@ class Client:
         actor: Inquiry.Actor,
         reason: str = "",
     ) -> None:
-        """Delete an inquiry."""
+        """Delete an inquiry.
+
+        Args:
+          target_id: Target id.
+          actor: Actor.
+          reason: Reason.
+
+        """
         self.delete(
             f"/api/inquiries/{target_id}",
             body={"actor": actor, "reason": reason},
@@ -1314,7 +1374,16 @@ class Client:
         session_id: uuid.UUID,
         body: SessionEnd | None = None,
     ) -> SessionEndResponse:
-        """Close a capture session, optionally backfilling late-known fields."""
+        """Close a capture session, optionally backfilling late-known fields.
+
+        Args:
+          session_id: Session id.
+          body: Body.
+
+        Returns:
+          result: The SessionEndResponse.
+
+        """
         payload = (body or wire_sessions.SessionEnd()).model_dump(mode="json")
         where = wire_sessions.session_end_path(session_id)
         response = self._request("POST", where, body=payload)
