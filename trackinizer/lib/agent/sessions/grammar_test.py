@@ -87,7 +87,8 @@ def _read(adapter: _Adapter, native: str) -> list[SessionRecord]:
 
 @pytest.mark.parametrize(("adapter", "native"), _cases())
 def test_normalize_yields_records_rather_than_a_session(
-    adapter: _Adapter, native: str
+    adapter: _Adapter,
+    native: str,
 ) -> None:
     """``normalize`` is a stream, so a tailer sees a record when it lands.
 
@@ -111,7 +112,8 @@ def test_settings_precede_the_acts_they_govern(adapter: _Adapter, native: str) -
 
 @pytest.mark.parametrize(("adapter", "native"), _cases())
 def test_a_window_opens_with_the_context_it_begins_from(
-    adapter: _Adapter, native: str
+    adapter: _Adapter,
+    native: str,
 ) -> None:
     """A ``ContextClear`` follows the settings and precedes the turns."""
     records = _read(adapter, native)
@@ -121,7 +123,8 @@ def test_a_window_opens_with_the_context_it_begins_from(
 
 @pytest.mark.parametrize(("adapter", "native"), _cases())
 def test_the_opening_context_states_the_file_encoding(
-    adapter: _Adapter, native: str
+    adapter: _Adapter,
+    native: str,
 ) -> None:
     """Encoding rides the settings, because a rewrite needs it and it moves.
 
@@ -272,7 +275,8 @@ def test_a_compaction_is_followed_by_the_window_it_opened() -> None:
 
 @pytest.mark.parametrize(("adapter", "native"), _cases())
 def test_a_session_rewrites_to_the_bytes_it_was_read_from(
-    adapter: _Adapter, native: str
+    adapter: _Adapter,
+    native: str,
 ) -> None:
     """The grammar costs no bytes: every added record is derived."""
     out = StringIO()

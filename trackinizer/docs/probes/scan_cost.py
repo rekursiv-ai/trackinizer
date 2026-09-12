@@ -77,7 +77,7 @@ def report(*, tick_sec: float, repeats: int) -> None:
         median = statistics.median(times)
         print(
             f"{adapter.name:8} {dirs:6} {matched:8} "
-            f"{median * 1000:9.1f}ms {median / tick_sec:9.0%}"
+            f"{median * 1000:9.1f}ms {median / tick_sec:9.0%}",
         )
 
 
@@ -89,7 +89,8 @@ def main() -> int:
 
     """
     parser = argparse.ArgumentParser(
-        prog="scan_cost", description=(__doc__ or "").split("\n", 2)[2]
+        prog="scan_cost",
+        description=(__doc__ or "").split("\n", 2)[2],
     )
     _add_arguments(parser)
     args = parser.parse_args()
@@ -106,7 +107,10 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
         help="drain poll interval to score occupancy against",
     )
     parser.add_argument(
-        "--repeats", type=int, default=3, help="scans per adapter; median is reported"
+        "--repeats",
+        type=int,
+        default=3,
+        help="scans per adapter; median is reported",
     )
 
 

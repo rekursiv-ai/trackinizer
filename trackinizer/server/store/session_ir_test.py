@@ -54,7 +54,10 @@ async def _session(store: Store) -> UUID:
 
 
 def _rows(
-    session_id: UUID, records: Sequence[SessionRecord], *, part: int = 0
+    session_id: UUID,
+    records: Sequence[SessionRecord],
+    *,
+    part: int = 0,
 ) -> list[SessionRecordRow]:
     """Rows for ``records``, numbered by their stream position."""
     return [
@@ -99,7 +102,8 @@ async def test_appended_records_read_back_in_order(store: Store) -> None:
     ]
 
     await store.append_session_records(
-        session_id, await _bounded(store, session_id, records)
+        session_id,
+        await _bounded(store, session_id, records),
     )
     read = await store.read_session_records(session_id, part=0)
 
@@ -125,12 +129,16 @@ async def test_a_part_longer_than_one_page_needs_paging(store: Store) -> None:
     total = 1200
     records = [UserMessage(content=f"r{i}") for i in range(total)]
     await store.append_session_records(
-        session_id, await _bounded(store, session_id, records)
+        session_id,
+        await _bounded(store, session_id, records),
     )
 
     page = await store.read_session_records(session_id, part=0, limit=1000)
     rest = await store.read_session_records(
-        session_id, part=0, after_idx=page[-1].idx, limit=1000
+        session_id,
+        part=0,
+        after_idx=page[-1].idx,
+        limit=1000,
     )
 
     assert len(page) == 1000
@@ -199,7 +207,8 @@ async def test_a_part_with_no_manifest_reads_nothing(store: Store) -> None:
     """
     session_id = await _session(store)
     await store.append_session_records(
-        session_id, _rows(session_id, [UserMessage(content="orphan")])
+        session_id,
+        _rows(session_id, [UserMessage(content="orphan")]),
     )
 
     assert not await store.read_session_records(session_id, part=0)
@@ -230,7 +239,8 @@ async def test_an_ended_session_refuses_new_records(store: Store) -> None:
 
     with pytest.raises(ConflictError, match="has ended"):
         _ = await store.append_session_records(
-            session_id, _rows(session_id, [UserMessage(content="zombie")])
+            session_id,
+            _rows(session_id, [UserMessage(content="zombie")]),
         )
 
     assert not await store.read_session_records(session_id, part=0)
@@ -257,7 +267,7 @@ async def test_a_slash_command_alone_also_respects_the_end(store: Store) -> None
             session_id,
             [],
             slash_commands=[
-                SlashCommandRow(timestamp=datetime.now(UTC), command="exit")
+                SlashCommandRow(timestamp=datetime.now(UTC), command="exit"),
             ],
         )
 
@@ -270,7 +280,8 @@ async def test_a_missing_session_is_not_found(store: Store) -> None:
     """A purged session is a 404, never a leaked constraint name."""
     with pytest.raises(NotFoundError):
         _ = await store.append_session_records(
-            uuid4(), _rows(uuid4(), [UserMessage(content="orphan")])
+            uuid4(),
+            _rows(uuid4(), [UserMessage(content="orphan")]),
         )
 
 
@@ -286,7 +297,9 @@ async def test_re_appending_the_same_records_writes_nothing(store: Store) -> Non
     """
     session_id = await _session(store)
     rows = await _bounded(
-        store, session_id, [UserMessage(content="a"), UserMessage(content="b")]
+        store,
+        session_id,
+        [UserMessage(content="a"), UserMessage(content="b")],
     )
 
     first = await store.append_session_records(session_id, rows)
@@ -307,7 +320,8 @@ async def test_restart_overwrites_because_disk_is_truth(store: Store) -> None:
     """
     session_id = await _session(store)
     await store.append_session_records(
-        session_id, await _bounded(store, session_id, [UserMessage(content="before")])
+        session_id,
+        await _bounded(store, session_id, [UserMessage(content="before")]),
     )
 
     await store.append_session_records(
@@ -330,13 +344,21 @@ async def test_parts_stay_separate(store: Store) -> None:
     await store.append_session_records(
         session_id,
         await _bounded(
-            store, session_id, [UserMessage(content="p0")], part=0, name="a.jsonl"
+            store,
+            session_id,
+            [UserMessage(content="p0")],
+            part=0,
+            name="a.jsonl",
         ),
     )
     await store.append_session_records(
         session_id,
         await _bounded(
-            store, session_id, [UserMessage(content="p1")], part=1, name="b.jsonl"
+            store,
+            session_id,
+            [UserMessage(content="p1")],
+            part=1,
+            name="b.jsonl",
         ),
     )
 
@@ -355,7 +377,8 @@ async def test_ciphertext_lands_in_its_own_table(store: Store) -> None:
     record = Thinking(content="visible", encrypted=_CIPHERTEXT)
 
     await store.append_session_records(
-        session_id, await _bounded(store, session_id, [record])
+        session_id,
+        await _bounded(store, session_id, [record]),
     )
     read = await store.read_session_records(session_id, part=0)
 
@@ -376,13 +399,16 @@ async def test_dropping_ciphertext_leaves_the_record_searchable(store: Store) ->
     await store.append_session_records(
         session_id,
         await _bounded(
-            store, session_id, [Thinking(content="findable", encrypted=_CIPHERTEXT)]
+            store,
+            session_id,
+            [Thinking(content="findable", encrypted=_CIPHERTEXT)],
         ),
     )
 
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "DELETE FROM session_ciphertext WHERE session_id = $1", session_id
+            "DELETE FROM session_ciphertext WHERE session_id = $1",
+            session_id,
         )
     read = await store.read_session_records(session_id, part=0)
 
@@ -403,7 +429,9 @@ async def test_search_never_indexes_ciphertext(store: Store) -> None:
     await store.append_session_records(
         session_id,
         await _bounded(
-            store, session_id, [Thinking(content="plaintext", encrypted=_CIPHERTEXT)]
+            store,
+            session_id,
+            [Thinking(content="plaintext", encrypted=_CIPHERTEXT)],
         ),
     )
 
@@ -521,7 +549,8 @@ async def test_a_context_naming_itself_is_accepted(store: Store) -> None:
     record = TurnContext(context_id=0, model="opus")
 
     await store.append_session_records(
-        session_id, await _bounded(store, session_id, [record])
+        session_id,
+        await _bounded(store, session_id, [record]),
     )
     read = await store.read_session_records(session_id, part=0)
 
@@ -664,7 +693,9 @@ async def test_a_slash_command_consumes_no_record_position(store: Store) -> None
     await store.append_session_records(
         session_id,
         await _bounded(
-            store, session_id, [UserMessage(content="a"), UserMessage(content="b")]
+            store,
+            session_id,
+            [UserMessage(content="a"), UserMessage(content="b")],
         ),
         slash_commands=[SlashCommandRow(timestamp=at, command="exit")],
     )

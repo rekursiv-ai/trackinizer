@@ -126,6 +126,6 @@ def parse_seq_range(text: str, *, min_seq: int = 0) -> SeqRange:
         and interval.start > interval.stop
     ):
         raise ValueError(
-            f"seq range start {interval.start} exceeds stop {interval.stop}"
+            f"seq range start {interval.start} exceeds stop {interval.stop}",
         )
     return interval

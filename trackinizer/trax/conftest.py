@@ -87,7 +87,8 @@ def _storage_view(row: dict[str, object]) -> dict[str, object]:
 
 @pytest.fixture(autouse=True)
 def tmp_config_dir(
-    tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+    tmp_path: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Isolate profile state so tests cannot touch the real config.
 
@@ -204,7 +205,7 @@ class FakeClient:
                     "title": "strong evidence",
                     "outcome": "supports",
                 },
-            ]
+            ],
         )
         self.detail: dict[str, object] = {
             "self": self.rows[0],
@@ -222,7 +223,7 @@ class FakeClient:
                         "valence": 0.7,
                         "labels": ["edge"],
                         "note": "must land first",
-                    }
+                    },
                 ],
             },
             "edges": {
@@ -253,7 +254,7 @@ class FakeClient:
                 "subject_kind": "Issue",
                 "subject_id": str(self.target_id),
                 "author": "alice",
-            }
+            },
         ]
         self.cost_payload: dict[str, float] = {"agent_usd": 1.0, "resource_usd": 2.0}
         self.next_payload: dict[str, object] | None = {
@@ -300,7 +301,8 @@ class FakeClient:
         return "Issue", ref.uuid
 
     def resolve_ids(
-        self, refs: Sequence[Ref]
+        self,
+        refs: Sequence[Ref],
     ) -> list[tuple[Inquiry.InquiryKind, uuid.UUID]]:
         """Resolve ids."""
         self.calls.append(("resolve_ids", (tuple(refs),), {}))
@@ -320,7 +322,7 @@ class FakeClient:
                 "transition_owner",
                 (target_id,),
                 {"expected_from": expected_from, "to": to, "actor": actor},
-            )
+            ),
         )
 
     def transition_status(
@@ -343,7 +345,7 @@ class FakeClient:
                     "actor": actor,
                     "reason": reason,
                 },
-            )
+            ),
         )
 
     def submit(self, kind: Inquiry.InquiryKind, body: dict[str, object]) -> uuid.UUID:
@@ -384,7 +386,7 @@ class FakeClient:
                     "seq_ranges": tuple(seq_ranges),
                     "filters": tuple(filters),
                 },
-            )
+            ),
         )
         rows = [row for row in self.rows if row.get("kind") == kind]
         if seq_ranges:
@@ -447,7 +449,7 @@ class FakeClient:
                     "seq_ranges": tuple(seq_ranges),
                     "filters": tuple(filters),
                 },
-            )
+            ),
         )
         rows: list[dict[str, Any]] = []
         offset = 0
@@ -466,7 +468,8 @@ class FakeClient:
             offset += MAX_LIST_LIMIT
 
     def get_inquiry(
-        self, ref: Ref
+        self,
+        ref: Ref,
     ) -> tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, Any]]:
         """Get inquiry."""
         self.calls.append(("get_inquiry", (ref,), {}))
@@ -536,7 +539,7 @@ class FakeClient:
                     "probe_interval_sec": probe_interval_sec,
                     "alive": alive,
                 },
-            )
+            ),
         )
 
     def recent_changes(self, *, limit: int = 50) -> list[dict[str, Any]]:
@@ -560,7 +563,7 @@ class FakeClient:
     ) -> None:
         """Edit."""
         self.calls.append(
-            ("edit", (target_id, field, value), {"actor": actor, "reason": reason})
+            ("edit", (target_id, field, value), {"actor": actor, "reason": reason}),
         )
 
     def add_cost(
@@ -574,7 +577,7 @@ class FakeClient:
     ) -> None:
         """Add cost."""
         self.calls.append(
-            ("add_cost", (target_id, field, value), {"actor": actor, "reason": reason})
+            ("add_cost", (target_id, field, value), {"actor": actor, "reason": reason}),
         )
 
     def add_edge(
@@ -607,7 +610,7 @@ class FakeClient:
                     "labels": () if labels is None else tuple(labels),
                     "reason": reason,
                 },
-            )
+            ),
         )
         # Mirror the real upsert contract: a brand-new edge is created; a repeat
         # applies any supplied annotations to the stored edge (no error). Only
@@ -649,7 +652,7 @@ class FakeClient:
     ) -> None:
         """Remove edge."""
         self.calls.append(
-            ("remove_edge", (from_id, to_id, edge_kind), {"actor": actor})
+            ("remove_edge", (from_id, to_id, edge_kind), {"actor": actor}),
         )
 
     def annotate_edge(
@@ -712,7 +715,7 @@ class FakeClient:
                     "restart": restart,
                     "slash_commands": slash_commands,
                 },
-            )
+            ),
         )
         part = self._parts.setdefault(name, len(self._parts)) if name else None
         return AppendRecordsResponse(
@@ -747,7 +750,7 @@ class FakeClient:
                     "limit": limit,
                     "plaintext_only": plaintext_only,
                 },
-            )
+            ),
         )
         return []
 
@@ -760,11 +763,13 @@ class FakeClient:
     ) -> None:
         """Set cli session id."""
         self.calls.append(
-            ("set_cli_session_id", (session_id, cli_session_id), {"actor": actor})
+            ("set_cli_session_id", (session_id, cli_session_id), {"actor": actor}),
         )
 
     def log_metrics(
-        self, experiment_id: uuid.UUID, points: Sequence[MetricPoint]
+        self,
+        experiment_id: uuid.UUID,
+        points: Sequence[MetricPoint],
     ) -> LogMetricsResponse:
         """Log metrics."""
         self.calls.append(("log_metrics", (experiment_id, points), {}))
@@ -784,7 +789,7 @@ class FakeClient:
                 "read_metrics",
                 (experiment_id,),
                 {"key": key, "limit": limit, "offset": offset},
-            )
+            ),
         )
         return []
 
@@ -802,7 +807,7 @@ class FakeClient:
                 "query_metrics",
                 (experiment_id,),
                 {"masks": tuple(masks), "sort": sort, "limit": limit},
-            )
+            ),
         )
         return []
 
@@ -819,7 +824,7 @@ class FakeClient:
                 "write_metrics_masked",
                 (experiment_id,),
                 {"masks": tuple(masks), "value": value},
-            )
+            ),
         )
         return 1
 
@@ -837,12 +842,14 @@ class FakeClient:
                 "rank_metrics",
                 (tuple(experiment_ids),),
                 {"masks": tuple(masks), "sort": sort, "limit": limit},
-            )
+            ),
         )
         return []
 
     def session_end(
-        self, session_id: uuid.UUID, body: SessionEnd | None = None
+        self,
+        session_id: uuid.UUID,
+        body: SessionEnd | None = None,
     ) -> SessionEndResponse:
         """Session end."""
         self.calls.append(("session_end", (session_id, body), {}))
@@ -854,31 +861,46 @@ class FakeClient:
         return 1
 
     def drain_inbound(
-        self, session_id: uuid.UUID, *, wait_sec: float = 0.0
+        self,
+        session_id: uuid.UUID,
+        *,
+        wait_sec: float = 0.0,
     ) -> list[tuple[str, str | None, str | None]]:
         """Drain inbound."""
         self.calls.append(("drain_inbound", (session_id,), {"wait_sec": wait_sec}))
         return []
 
     def send_message(
-        self, actor: str, text: str, *, room: str | None = None
+        self,
+        actor: str,
+        text: str,
+        *,
+        room: str | None = None,
     ) -> list[uuid.UUID]:
         """Send message."""
         self.calls.append(("send_message", (actor, text), {"room": room}))
         return [self.target_id]
 
     def add_subscriber(
-        self, target_id: uuid.UUID, subscriber: str, *, actor: str
+        self,
+        target_id: uuid.UUID,
+        subscriber: str,
+        *,
+        actor: str,
     ) -> None:
         """Add subscriber."""
         self.calls.append(("add_subscriber", (target_id, subscriber), {"actor": actor}))
 
     def remove_subscriber(
-        self, target_id: uuid.UUID, subscriber: str, *, actor: str
+        self,
+        target_id: uuid.UUID,
+        subscriber: str,
+        *,
+        actor: str,
     ) -> None:
         """Remove subscriber."""
         self.calls.append(
-            ("remove_subscriber", (target_id, subscriber), {"actor": actor})
+            ("remove_subscriber", (target_id, subscriber), {"actor": actor}),
         )
 
     def add_label(self, target_id: uuid.UUID, label: str, *, actor: str) -> None:
@@ -890,33 +912,49 @@ class FakeClient:
         self.calls.append(("remove_label", (target_id, label), {"actor": actor}))
 
     def add_issue_kind(
-        self, target_id: uuid.UUID, issue_kind: str, *, actor: str
+        self,
+        target_id: uuid.UUID,
+        issue_kind: str,
+        *,
+        actor: str,
     ) -> None:
         """Add issue kind."""
         self.calls.append(("add_issue_kind", (target_id, issue_kind), {"actor": actor}))
 
     def remove_issue_kind(
-        self, target_id: uuid.UUID, issue_kind: str, *, actor: str
+        self,
+        target_id: uuid.UUID,
+        issue_kind: str,
+        *,
+        actor: str,
     ) -> None:
         """Remove issue kind."""
         self.calls.append(
-            ("remove_issue_kind", (target_id, issue_kind), {"actor": actor})
+            ("remove_issue_kind", (target_id, issue_kind), {"actor": actor}),
         )
 
     def add_codechange(
-        self, target_id: uuid.UUID, codechange_id: uuid.UUID, *, actor: str
+        self,
+        target_id: uuid.UUID,
+        codechange_id: uuid.UUID,
+        *,
+        actor: str,
     ) -> None:
         """Add codechange."""
         self.calls.append(
-            ("add_codechange", (target_id, codechange_id), {"actor": actor})
+            ("add_codechange", (target_id, codechange_id), {"actor": actor}),
         )
 
     def remove_codechange(
-        self, target_id: uuid.UUID, codechange_id: uuid.UUID, *, actor: str
+        self,
+        target_id: uuid.UUID,
+        codechange_id: uuid.UUID,
+        *,
+        actor: str,
     ) -> None:
         """Remove codechange."""
         self.calls.append(
-            ("remove_codechange", (target_id, codechange_id), {"actor": actor})
+            ("remove_codechange", (target_id, codechange_id), {"actor": actor}),
         )
 
     def add_author(self, target_id: uuid.UUID, author: str, *, actor: str) -> None:

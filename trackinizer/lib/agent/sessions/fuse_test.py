@@ -156,7 +156,8 @@ def test_a_compaction_inside_one_part_is_not_a_seam() -> None:
     ids=["claude", "codex"],
 )
 def test_captured_sessions_survive_a_fuse_and_unfuse(
-    adapter: _Adapter, fixtures: tuple[str, ...]
+    adapter: _Adapter,
+    fixtures: tuple[str, ...],
 ) -> None:
     # The invariant the whole module rests on: joining is a view, not a merge,
     # so every part comes back as the bytes it was read from.

@@ -36,7 +36,10 @@ def test_compare_and_set_rejects_unwired_column() -> None:
     body: FieldSet[object] = FieldSet(value="x", mode="cas", expected="y")
     store, _engine = make_store()
     identity = AuthIdentity(
-        user_id=new_uuid(), api_key_id=None, email="u@x", role="writer"
+        user_id=new_uuid(),
+        api_key_id=None,
+        email="u@x",
+        role="writer",
     )
     with pytest.raises(HTTPException) as exc:
         asyncio.run(_run_compare_and_set(bogus, new_uuid(), body, store, identity))

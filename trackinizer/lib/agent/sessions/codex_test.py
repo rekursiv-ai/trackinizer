@@ -61,7 +61,8 @@ def _transcript(records: Iterable[SessionRecord]) -> tuple[TranscriptItem, ...]:
         record
         for record in records
         if isinstance(
-            record, UserMessage | AssistantMessage | Thinking | ToolCall | ToolResult
+            record,
+            UserMessage | AssistantMessage | Thinking | ToolCall | ToolResult,
         )
     )
 
@@ -145,7 +146,7 @@ def test_a_record_names_the_context_that_applied() -> None:
         + CONTEXT
         + _item(
             '{"type":"message","id":"u1","role":"user",'
-            '"content":[{"type":"input_text","text":"Hi."}]}'
+            '"content":[{"type":"input_text","text":"Hi."}]}',
         )
     )
 
@@ -164,7 +165,7 @@ def test_reasoning_normalizes_to_a_summary_beside_its_sealed_half() -> None:
     native = META + _item(
         '{"type":"reasoning","id":"r1",'
         '"summary":[{"type":"summary_text","text":"Inspecting."}],'
-        '"encrypted_content":"sealed"}'
+        '"encrypted_content":"sealed"}',
     )
 
     records = list(codex.normalize(StringIO(native)))
@@ -179,7 +180,7 @@ def test_reasoning_normalizes_to_a_summary_beside_its_sealed_half() -> None:
 def test_a_function_call_decodes_its_nested_arguments() -> None:
     native = META + _item(
         '{"type":"function_call","call_id":"c1","name":"Read",'
-        '"arguments":"{\\"path\\":\\"/a\\"}"}'
+        '"arguments":"{\\"path\\":\\"/a\\"}"}',
     )
 
     records = list(codex.normalize(StringIO(native)))
@@ -196,7 +197,7 @@ def test_a_malformed_argument_string_does_not_abort_the_file() -> None:
     # than read as an empty argument list, which would claim the call was made
     # with input it never had.
     native = META + _item(
-        '{"type":"function_call","call_id":"c1","name":"Read","arguments":"{"}'
+        '{"type":"function_call","call_id":"c1","name":"Read","arguments":"{"}',
     )
 
     records = list(codex.normalize(StringIO(native)))
@@ -209,7 +210,7 @@ def test_a_malformed_argument_string_does_not_abort_the_file() -> None:
 def test_a_custom_tool_call_keeps_its_free_form_input() -> None:
     native = META + _item(
         '{"type":"custom_tool_call","id":"i1","status":"completed",'
-        '"call_id":"c1","name":"shell","input":"ls"}'
+        '"call_id":"c1","name":"shell","input":"ls"}',
     )
 
     records = list(codex.normalize(StringIO(native)))
@@ -223,7 +224,7 @@ def test_a_custom_tool_call_keeps_its_free_form_input() -> None:
 def test_an_image_in_a_tool_result_decodes_to_its_bytes() -> None:
     native = META + _item(
         '{"type":"function_call_output","call_id":"c1","output":'
-        '[{"type":"input_image","image_url":"data:image/png;base64,aGk="}]}'
+        '[{"type":"input_image","image_url":"data:image/png;base64,aGk="}]}',
     )
 
     records = list(codex.normalize(StringIO(native)))
@@ -238,7 +239,7 @@ def test_a_developer_message_is_not_a_model_reply() -> None:
     # them assistant turns would attribute them to the model.
     native = META + _item(
         '{"type":"message","id":"d1","role":"developer",'
-        '"content":[{"type":"input_text","text":"Be brief."}]}'
+        '"content":[{"type":"input_text","text":"Be brief."}]}',
     )
 
     records = list(codex.normalize(StringIO(native)))
@@ -313,7 +314,8 @@ def test_a_foreign_subtype_is_not_written_as_a_codex_role() -> None:
     ids=["usage", "task", "world", "compaction", "command", "patch", "echo"],
 )
 def test_an_event_maps_to_its_own_record_type(
-    native: str, expected: type[SessionRecord]
+    native: str,
+    expected: type[SessionRecord],
 ) -> None:
     records = list(codex.normalize(StringIO(META + native + "\n")))
 
@@ -330,7 +332,7 @@ def test_a_peer_message_is_a_message_not_a_tool_result() -> None:
     native = META + _item(
         '{"type":"agent_message","id":"m1","author":"/root",'
         '"recipient":"/root/reviewer",'
-        '"content":[{"type":"input_text","text":"Take a look."}]}'
+        '"content":[{"type":"input_text","text":"Take a look."}]}',
     )
 
     records = list(codex.normalize(StringIO(native)))
@@ -372,7 +374,9 @@ def test_a_completed_command_keeps_its_argument_list() -> None:
     ids=["read", "write"],
 )
 def test_a_successful_command_file_operation_lifts_to_its_specific_type(
-    command: str, stdout: str, expected: type[SessionRecord]
+    command: str,
+    stdout: str,
+    expected: type[SessionRecord],
 ) -> None:
     native = META + (
         '{"type":"event_msg","payload":{"type":"item_completed","item":'
@@ -438,13 +442,13 @@ def test_an_unparsable_line_survives_verbatim() -> None:
         META
         + _item(
             '{"type":"message","role":"user",'
-            '"content":[{"type":"input_text","text":"Hi."}]}'
+            '"content":[{"type":"input_text","text":"Hi."}]}',
         ),
         META + _item('{"type":"reasoning","summary":[],"encrypted_content":""}'),
         META
         + _item(
             '{"type":"message","role":"user","content":['
-            '{"type":"input_image","image_url":"data:image/png;base64,!"}]}'
+            '{"type":"input_image","image_url":"data:image/png;base64,!"}]}',
         ),
         META + _item('{"type":"message","role":"user","content":[{}]}'),
     ],
@@ -512,11 +516,12 @@ def test_a_synthesized_session_denormalizes_to_codex_records() -> None:
     [("assistant", AssistantMessage), ("developer", SystemMessage)],
 )
 def test_non_user_message_images_survive_normalization(
-    role: str, expected: type[SessionRecord]
+    role: str,
+    expected: type[SessionRecord],
 ) -> None:
     native = META + _item(
         f'{{"type":"message","role":"{role}","content":['
-        '{"type":"input_image","image_url":"data:image/png;base64,aGk="}]}'
+        '{"type":"input_image","image_url":"data:image/png;base64,aGk="}]}',
     )
 
     message = list(codex.normalize(StringIO(native)))[-1]
@@ -529,7 +534,7 @@ def test_non_user_message_images_survive_normalization(
 def test_new_message_attachments_are_appended() -> None:
     native = META + _item(
         '{"type":"message","role":"user","content":['
-        '{"type":"input_image","image_url":"data:image/png;base64,b2xk"}]}'
+        '{"type":"input_image","image_url":"data:image/png;base64,b2xk"}]}',
     )
     records = list(codex.normalize(StringIO(native)))
     message = records[-1]
@@ -570,7 +575,7 @@ def test_new_search_rows_are_appended() -> None:
 def test_content_edits_do_not_fabricate_empty_blocks() -> None:
     native = META + _item(
         '{"type":"message","role":"user","content":['
-        '{"type":"input_text","text":"remove"},{"type":"future","x":1}]}'
+        '{"type":"input_text","text":"remove"},{"type":"future","x":1}]}',
     )
     records = list(codex.normalize(StringIO(native)))
     message = records[-1]
@@ -620,7 +625,7 @@ def test_file_edit_diff_is_emitted_when_path_is_known() -> None:
                 call_id="c",
                 path="a.py",
                 edits=parse_udiff("@@ -1 +1 @@\n-old\n+new\n"),
-            )
+            ),
         ],
         output,
     )
@@ -712,7 +717,7 @@ def test_inserting_a_record_does_not_move_timestamp_replay_state() -> None:
     )
     absent = _item(
         '{"type":"message","role":"user",'
-        '"content":[{"type":"input_text","text":"second"}]}'
+        '"content":[{"type":"input_text","text":"second"}]}',
     )
     records = list(codex.normalize(StringIO(META + malformed + absent)))
     inserted = UserMessage(content="inserted")
@@ -725,7 +730,7 @@ def test_inserting_a_record_does_not_move_timestamp_replay_state() -> None:
         == META
         + _item(
             '{"type":"message","role":"user",'
-            '"content":[{"type":"input_text","text":"inserted"}]}'
+            '"content":[{"type":"input_text","text":"inserted"}]}',
         )
         + malformed
         + absent
@@ -739,7 +744,7 @@ def test_deleting_a_record_does_not_move_timestamp_replay_state() -> None:
     )
     absent = _item(
         '{"type":"message","role":"user",'
-        '"content":[{"type":"input_text","text":"keep"}]}'
+        '"content":[{"type":"input_text","text":"keep"}]}',
     )
     records = list(codex.normalize(StringIO(META + malformed + absent)))
     output = StringIO()
@@ -1061,7 +1066,7 @@ def test_a_canonical_key_order_is_not_stored_per_record() -> None:
     # the writer falls back to it. Storing the same list on every record cost
     # 40 KB on one captured rollout -- 425 copies of 13 distinct orders.
     native = META + _item(
-        '{"type":"reasoning","id":"r1","summary":[],"encrypted_content":"s"}'
+        '{"type":"reasoning","id":"r1","summary":[],"encrypted_content":"s"}',
     )
     records = list(codex.normalize(StringIO(native)))
     record = records[-1]
@@ -1078,7 +1083,7 @@ def test_a_key_order_the_table_misses_is_still_stored() -> None:
     # The table is not a guess: a line whose keys the table cannot reproduce --
     # here ``id`` written AFTER the summary -- keeps its own order.
     native = META + _item(
-        '{"type":"reasoning","summary":[],"id":"r1","encrypted_content":"s"}'
+        '{"type":"reasoning","summary":[],"id":"r1","encrypted_content":"s"}',
     )
     records = list(codex.normalize(StringIO(native)))
     output = StringIO()
@@ -1108,7 +1113,7 @@ def test_reasoning_summary_preserves_every_member_and_block_metadata() -> None:
     native = META + _item(
         '{"type":"reasoning","summary":['
         '{"type":"summary_text","text":"Inspecting.","metadata":{"x":1}},'
-        '7,{},{"type":"future","x":1}],"encrypted_content":"sealed"}'
+        '7,{},{"type":"future","x":1}],"encrypted_content":"sealed"}',
     )
     output = StringIO()
 

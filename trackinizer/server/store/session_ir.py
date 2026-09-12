@@ -181,11 +181,11 @@ class _SessionIRMixin(_CascadeAuditMixin):
             if session["kind"] != "AgentSession":
                 raise ConflictError(
                     f"inquiry {session_id} is not an AgentSession "
-                    f"(kind={session['kind']!r}); records may only attach to a session"
+                    f"(kind={session['kind']!r}); records may only attach to a session",
                 )
             if session["agentsession_ended"] is not None:
                 raise ConflictError(
-                    f"session {session_id} has ended; cannot append records"
+                    f"session {session_id} has ended; cannot append records",
                 )
             try:
                 written = (
@@ -244,7 +244,10 @@ class _SessionIRMixin(_CascadeAuditMixin):
     # that never happened.
     @classmethod
     async def _append_slash_commands(
-        cls, conn: Conn, session_id: UUID, commands: Sequence[SlashCommandRow]
+        cls,
+        conn: Conn,
+        session_id: UUID,
+        commands: Sequence[SlashCommandRow],
     ) -> int:
         """Store typed commands, numbering them from the session's own max."""
         if not commands:
@@ -271,7 +274,8 @@ class _SessionIRMixin(_CascadeAuditMixin):
         return len(stored)
 
     async def read_session_slash_commands(
-        self, session_id: UUID
+        self,
+        session_id: UUID,
     ) -> list[SlashCommandRow]:
         """Every command typed into one session, in ``seq`` order.
 
@@ -290,7 +294,9 @@ class _SessionIRMixin(_CascadeAuditMixin):
             )
         return [
             SlashCommandRow(
-                timestamp=row["timestamp"], command=row["command"], args=row["args"]
+                timestamp=row["timestamp"],
+                command=row["command"],
+                args=row["args"],
             )
             for row in rows
         ]

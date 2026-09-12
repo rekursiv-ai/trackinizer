@@ -162,7 +162,9 @@ class _FakeClient:
     def session_start(self, body: SessionStart) -> SessionStartResponse:
         self.started.append(body)
         return SessionStartResponse(
-            id=self._id, seq=self.start_seq, actor=self.granted_actor or body.actor
+            id=self._id,
+            seq=self.start_seq,
+            actor=self.granted_actor or body.actor,
         )
 
     def append_records(
@@ -183,7 +185,9 @@ class _FakeClient:
         return AppendRecordsResponse(part=0, written=len(bodies), skipped=0)
 
     def session_end(
-        self, session_id: UUID, body: SessionEnd | None = None
+        self,
+        session_id: UUID,
+        body: SessionEnd | None = None,
     ) -> SessionEndResponse:
         self.ended.append(session_id)
         self.end_bodies.append(body)
@@ -943,7 +947,8 @@ class TestResilientSink:
         assert primary.emit_attempts == 0
 
     def test_the_record_that_triggered_the_degrade_lands_once(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         """The record whose emit failed must not be written twice.
 
@@ -964,7 +969,8 @@ class TestResilientSink:
         assert _fallback_texts(fallback_path) == ["only"]
 
     def test_a_degrade_with_nothing_buffered_still_writes_the_record(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         """The counterpart: an unbuffered failure must still reach the fallback.
 
@@ -1300,7 +1306,9 @@ class TestLockedSink:
 @pytest.mark.parametrize("destination", ["file", "server", "locked", "resilient"])
 @pytest.mark.parametrize("batch_size", [1, 2, 50])
 def test_consecutive_restart_chunks(
-    tmp_path: Path, destination: str, batch_size: int
+    tmp_path: Path,
+    destination: str,
+    batch_size: int,
 ) -> None:
     client = _FakeClient()
     output = io.StringIO()
@@ -1385,7 +1393,7 @@ def test_repeated_claude_replacement_pipeline(tmp_path: Path, *, server: bool) -
         assert positions == list(range(5)) * 3
         if server:
             assert [restart for _, _, _, restart in client.appended] == [False] * 5 + [
-                True
+                True,
             ] * 10
     finally:
         for reader in readers:
@@ -1412,9 +1420,9 @@ async def _replace_claude(root: Path, sink: Sink, readers: list[Tail]) -> None:
                 staged = root / "replacement"
                 staged.write_text(
                     json.dumps(
-                        {"type": "user", "message": {"role": "user", "content": text}}
+                        {"type": "user", "message": {"role": "user", "content": text}},
                     )
-                    + "\n"
+                    + "\n",
                 )
                 staged.replace(target)
             line = await asyncio.wait_for(anext(lines), 2)

@@ -43,7 +43,9 @@ router = APIRouter()
     dependencies=[Depends(require_role("writer"))],
 )
 async def append_session_records_route(
-    session_id: UUID, request: Request, body: AppendRecordsRequest
+    session_id: UUID,
+    request: Request,
+    body: AppendRecordsRequest,
 ) -> AppendRecordsResponse:
     """Append one file's records, resolving its part server-side.
 
@@ -94,7 +96,10 @@ async def append_session_records_route(
         ],
     )
     return AppendRecordsResponse(
-        part=part, written=written, skipped=skipped, slash_commands=slash
+        part=part,
+        written=written,
+        skipped=skipped,
+        slash_commands=slash,
     )
 
 
@@ -103,7 +108,8 @@ async def append_session_records_route(
     dependencies=[Depends(require_role("viewer"))],
 )
 async def read_session_parts_route(
-    session_id: UUID, request: Request
+    session_id: UUID,
+    request: Request,
 ) -> ReadPartsResponse:
     """List the files this session was captured from, in ``part`` order.
 
@@ -131,7 +137,7 @@ async def read_session_parts_route(
                 ir_id=m.ir_id,
             )
             for m in manifests
-        ]
+        ],
     )
 
 
@@ -172,7 +178,8 @@ async def read_session_records_route(
     """
     if limit < 1 or limit > MAX_LIST_LIMIT:
         raise HTTPException(
-            status_code=400, detail=f"limit must be in [1, {MAX_LIST_LIMIT}]"
+            status_code=400,
+            detail=f"limit must be in [1, {MAX_LIST_LIMIT}]",
         )
     if part < 0:
         raise HTTPException(status_code=400, detail="part must be >= 0")

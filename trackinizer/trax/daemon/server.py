@@ -153,7 +153,7 @@ class _Handler(socketserver.BaseRequestHandler):
                     stdout="",
                     stderr=f"trax: {mismatch}\n",
                     exit_code=_INTERNAL_ERROR_EXIT_CODE,
-                )
+                ),
             )
             return
         except (ConnectionError, ValueError):

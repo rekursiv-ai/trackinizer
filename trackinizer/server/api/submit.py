@@ -148,7 +148,8 @@ async def submit_route(
         # ``title``/``account``/``subscribers`` -- would 500 on response
         # encoding instead of returning the intended 422.
         raise HTTPException(
-            status_code=422, detail=err.errors(include_context=False)
+            status_code=422,
+            detail=err.errors(include_context=False),
         ) from err
     return {"id": str(await _submit_one(get_store(request), req, identity))}
 

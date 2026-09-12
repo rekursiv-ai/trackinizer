@@ -322,7 +322,7 @@ def _terminal_block() -> str:
     kinds = [k.lower() for k in VALID_KINDS]
     edge_keywords = list(EDGE_ALIASES)
     ref_list_fields = sorted(
-        {f.cli_name for f in FIELDS_BY_NAME.values() if f.ref_kind is not None}
+        {f.cli_name for f in FIELDS_BY_NAME.values() if f.ref_kind is not None},
     )
     # A ref-list spelling (codechange[s]) is ALSO in LIST_FIELDS; split it out so
     # REF_LIST_FIELD and LIST_FIELD name disjoint *concepts* (the productions
@@ -346,7 +346,7 @@ def _terminal_block() -> str:
             # which record classes project any searchable text, so a class
             # added upstream reaches the grammar without an edit here.
             *SESSION_RECORD_FIELDS,
-        }
+        },
     )
     lines = [
         "// ---- terminals (keyword sets; spellings overlap across classes, e.g.",
@@ -382,14 +382,18 @@ def _terminal_block() -> str:
         _literal_terminal("ASC", ["asc"]),
         _literal_terminal("DESC", ["desc"]),
         _literal_terminal(
-            "METRIC_FIELD", list(METRIC_AXES), "grid axes (key/step/value)"
+            "METRIC_FIELD",
+            list(METRIC_AXES),
+            "grid axes (key/step/value)",
         ),
         # The metric comparator set is the wire's ``METRIC_COMPARE_OPS`` -- the
         # SAME single definition the parser gates on and the store maps to SQL.
         # It excludes the regex/presence ops in FILTER_OP by construction, so the
         # grammar cannot admit an op the parser rejects (the drift-bug fix).
         _literal_terminal(
-            "METRIC_OP", list(METRIC_COMPARE_OPS), "grid comparators (is/ne/lt/...)"
+            "METRIC_OP",
+            list(METRIC_COMPARE_OPS),
+            "grid comparators (is/ne/lt/...)",
         ),
         _literal_terminal(
             "METRIC_REDUCE",
@@ -426,7 +430,7 @@ def _edge_direction_lines() -> list[str]:
     reverse: dict[str, list[str]] = {}
     for spelling, edge in EDGE_ALIASES.items():
         (reverse if edge.reverse else forward).setdefault(edge.name, []).append(
-            spelling
+            spelling,
         )
     lines: list[str] = []
     for name, fwd_spellings in forward.items():
@@ -490,13 +494,13 @@ def _verb_lines() -> list[str]:
     # ``argparse`` positionals/--as carry meaning the bare usage can't show; gloss the
     # non-obvious ones (sourced from the verbs' own help text).
     lines.append(
-        "//   ^ run --as NAME = the session's owner; doubles as its routing handle"
+        "//   ^ run --as NAME = the session's owner; doubles as its routing handle",
     )
     lines.append(
-        "//     (others address it @NAME), uniquified on collision (scientist#2)."
+        "//     (others address it @NAME), uniquified on collision (scientist#2).",
     )
     lines.append(
-        "//     send TARGET = @actor[:room] of a live session; QUERY/TEXT are free words."
+        "//     send TARGET = @actor[:room] of a live session; QUERY/TEXT are free words.",
     )
     return lines
 

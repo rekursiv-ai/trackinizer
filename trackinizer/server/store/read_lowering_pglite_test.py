@@ -75,7 +75,7 @@ async def seed(store: Store) -> None:
                 owner=owner,
                 title=title or "untitled",
                 labels=list(labels),
-            )
+            ),
         )
     # Give one row a FRACTIONAL cost. Python renders ``0.5``; a NUMERIC
     # column's ``::text`` renders ``0.500000`` and a float's drops the
@@ -87,7 +87,10 @@ async def seed(store: Store) -> None:
 
 
 async def rows_via_python(
-    store: Store, filters: Sequence[Filter], *, limit: int = 50
+    store: Store,
+    filters: Sequence[Filter],
+    *,
+    limit: int = 50,
 ) -> list[Inquiry]:
     """Run the query with lowering disabled, forcing the Python predicate."""
     return await store.list_kind("Issue", filters=filters, limit=limit, lowering=False)
@@ -202,7 +205,10 @@ CASES: tuple[tuple[FilterOp, str, str], ...] = (
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize(("op", "field", "value"), CASES)
 async def test_sql_and_python_select_the_same_rows(
-    store: Store, op: FilterOp, field: str, value: str
+    store: Store,
+    op: FilterOp,
+    field: str,
+    value: str,
 ) -> None:
     await seed(store)
     filters = (Filter(field=field, op=op, value=value),)
@@ -229,12 +235,14 @@ async def test_a_uuid_array_column_filters_against_a_real_engine(
     text[] to uuid[]`` for the negated one. A mock store cannot see either.
     """
     change_id = await store.submit_codechange(
-        SubmitCodeChange(title="commit", account="josh@rekursiv.ai", sha="a" * 40)
+        SubmitCodeChange(title="commit", account="josh@rekursiv.ai", sha="a" * 40),
     )
     await store.submit_experiment(
         SubmitExperiment(
-            title="exp", account="josh@rekursiv.ai", codechanges=[change_id]
-        )
+            title="exp",
+            account="josh@rekursiv.ai",
+            codechanges=[change_id],
+        ),
     )
 
     cases: tuple[tuple[FilterOp, str, int], ...] = (
@@ -254,10 +262,13 @@ async def test_a_uuid_array_column_filters_against_a_real_engine(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize(
-    ("op", "value"), [("is", "-0.0"), ("is", "0.0"), ("ne", "-0.0"), ("re", r"^-0\.0$")]
+    ("op", "value"),
+    [("is", "-0.0"), ("is", "0.0"), ("ne", "-0.0"), ("re", r"^-0\.0$")],
 )
 async def test_negative_zero_renders_alike_in_both_evaluators(
-    store: Store, op: FilterOp, value: str
+    store: Store,
+    op: FilterOp,
+    value: str,
 ) -> None:
     r"""``-0.0`` is a value the column accepts and the renderings disagreed on.
 
@@ -272,16 +283,19 @@ async def test_negative_zero_renders_alike_in_both_evaluators(
     a minus sign gets a different row set depending on which evaluator ran.
     """
     await store.submit_belief(
-        SubmitBelief(account="a@b.c", title="negzero", confidence=-0.0)
+        SubmitBelief(account="a@b.c", title="negzero", confidence=-0.0),
     )
     await store.submit_belief(
-        SubmitBelief(account="a@b.c", title="poszero", confidence=0.0)
+        SubmitBelief(account="a@b.c", title="poszero", confidence=0.0),
     )
     filters = (Filter(field="belief_confidence", op=op, value=value),)
 
     lowered = await store.list_kind("Belief", filters=filters, limit=50)
     in_python = await store.list_kind(
-        "Belief", filters=filters, limit=50, lowering=False
+        "Belief",
+        filters=filters,
+        limit=50,
+        lowering=False,
     )
 
     assert [row.seq for row in lowered] == [row.seq for row in in_python]
@@ -301,7 +315,9 @@ async def test_negative_zero_renders_alike_in_both_evaluators(
     ],
 )
 async def test_an_extreme_date_renders_alike_in_both_evaluators(
-    store: Store, op: FilterOp, value: str
+    store: Store,
+    op: FilterOp,
+    value: str,
 ) -> None:
     """``datetime.min`` stores as Postgres ``-infinity``, which renders NULL.
 
@@ -320,20 +336,23 @@ async def test_an_extreme_date_renders_alike_in_both_evaluators(
             account="a@b.c",
             title="ancient",
             publish_date=datetime.fromisoformat("0001-01-01T00:00:00+00:00"),
-        )
+        ),
     )
     await store.submit_paper(
         SubmitPaper(
             account="a@b.c",
             title="modern",
             publish_date=datetime.fromisoformat("2026-01-01T00:00:00+00:00"),
-        )
+        ),
     )
     filters = (Filter(field="paper_publish_date", op=op, value=value),)
 
     lowered = await store.list_kind("Paper", filters=filters, limit=50)
     in_python = await store.list_kind(
-        "Paper", filters=filters, limit=50, lowering=False
+        "Paper",
+        filters=filters,
+        limit=50,
+        lowering=False,
     )
 
     assert [row.seq for row in lowered] == [row.seq for row in in_python]
@@ -359,7 +378,8 @@ async def test_an_order_op_on_text_is_refused_by_both_paths(store: Store) -> Non
 
 
 @pytest.mark.parametrize(
-    "column", ["id", "created", "marginal_cost_agent_usd", "seq", "account"]
+    "column",
+    ["id", "created", "marginal_cost_agent_usd", "seq", "account"],
 )
 def test_a_presence_op_on_a_not_null_column_is_refused(column: str) -> None:
     """``isnull`` on a NOT-NULL column has one answer before any row is read.
@@ -429,7 +449,7 @@ async def test_text_array_membership_can_use_the_gin_index(store: Store) -> None
     async with store.engine.acquire() as conn:
         await conn.execute("CREATE TEMP TABLE filter_probe (labels TEXT[])")
         await conn.execute(
-            "CREATE INDEX filter_probe_labels_gin ON filter_probe USING gin(labels)"
+            "CREATE INDEX filter_probe_labels_gin ON filter_probe USING gin(labels)",
         )
         await conn.execute("INSERT INTO filter_probe VALUES (ARRAY['needle']::text[])")
         await conn.execute("SET enable_seqscan = off")
@@ -459,7 +479,7 @@ async def test_uuid_array_membership_preserves_parameter_typing(store: Store) ->
 
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "CREATE TEMP TABLE filter_probe (experiment_codechanges UUID[])"
+            "CREATE TEMP TABLE filter_probe (experiment_codechanges UUID[])",
         )
         await conn.execute(
             "INSERT INTO filter_probe VALUES (ARRAY[$1]::uuid[])",
@@ -483,7 +503,11 @@ async def test_paging_agrees_between_the_two_paths(store: Store, offset: int) ->
 
     lowered = await store.list_kind("Issue", filters=filters, limit=2, offset=offset)
     in_python = await store.list_kind(
-        "Issue", filters=filters, limit=2, offset=offset, lowering=False
+        "Issue",
+        filters=filters,
+        limit=2,
+        offset=offset,
+        lowering=False,
     )
 
     assert [row.seq for row in lowered] == [row.seq for row in in_python]

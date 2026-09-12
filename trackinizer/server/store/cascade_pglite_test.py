@@ -73,7 +73,7 @@ class _MissFirstReplayProbe:
 async def _submit_task(store: Store) -> uuid.UUID:
     """Create one open task Issue for field-transition tests."""
     return await store.submit_issue(
-        SubmitIssue(account="tester@example.com", title="Task: spec arm 42")
+        SubmitIssue(account="tester@example.com", title="Task: spec arm 42"),
     )
 
 
@@ -210,7 +210,7 @@ async def test_transition_owner_retry_replays_before_cas(store: Store) -> None:
 async def test_transition_judgement_retry_replays_before_cas(store: Store) -> None:
     """An identical judgement-transition retry returns its original change."""
     belief = await store.submit_belief(
-        SubmitBelief(account="tester@example.com", title="Claim")
+        SubmitBelief(account="tester@example.com", title="Claim"),
     )
     key = uuid.uuid4()
     set_client_change_id(key)
@@ -284,10 +284,10 @@ async def test_drifted_retry_reprobes_before_reference_validation(
 ) -> None:
     """A retry after an initial miss discards invalid reference drift."""
     codechange = await store.submit_codechange(
-        SubmitCodeChange(account="tester@example.com", title="Change")
+        SubmitCodeChange(account="tester@example.com", title="Change"),
     )
     experiment = await store.submit_experiment(
-        SubmitExperiment(account="tester@example.com", title="Experiment")
+        SubmitExperiment(account="tester@example.com", title="Experiment"),
     )
     key = uuid.uuid4()
     set_client_change_id(key)
@@ -459,16 +459,18 @@ async def test_list_field_drifted_retry_replays_before_reference_validation(
 ) -> None:
     """A replayed list-field edit wins before validating drifted references."""
     codechange = await store.submit_codechange(
-        SubmitCodeChange(account="tester@example.com", title="Change")
+        SubmitCodeChange(account="tester@example.com", title="Change"),
     )
     experiment = await store.submit_experiment(
-        SubmitExperiment(account="tester@example.com", title="Experiment")
+        SubmitExperiment(account="tester@example.com", title="Experiment"),
     )
     key = uuid.uuid4()
     set_client_change_id(key)
     try:
         first = await store.set_codechanges(
-            experiment, [codechange], actor="scientist1"
+            experiment,
+            [codechange],
+            actor="scientist1",
         )
     finally:
         set_client_change_id(None)
@@ -477,7 +479,9 @@ async def test_list_field_drifted_retry_replays_before_reference_validation(
     set_client_change_id(key)
     try:
         replay = await store.set_codechanges(
-            experiment, [uuid.uuid4()], actor="scientist1"
+            experiment,
+            [uuid.uuid4()],
+            actor="scientist1",
         )
     finally:
         set_client_change_id(None)
@@ -491,10 +495,10 @@ async def test_list_mutation_drifted_retry_replays_before_reference_validation(
 ) -> None:
     """A replayed list mutation wins before validating its drifted item."""
     codechange = await store.submit_codechange(
-        SubmitCodeChange(account="tester@example.com", title="Change")
+        SubmitCodeChange(account="tester@example.com", title="Change"),
     )
     experiment = await store.submit_experiment(
-        SubmitExperiment(account="tester@example.com", title="Experiment")
+        SubmitExperiment(account="tester@example.com", title="Experiment"),
     )
     key = uuid.uuid4()
     set_client_change_id(key)
@@ -507,7 +511,9 @@ async def test_list_mutation_drifted_retry_replays_before_reference_validation(
     set_client_change_id(key)
     try:
         replay = await store.add_codechange(
-            experiment, uuid.uuid4(), actor="scientist1"
+            experiment,
+            uuid.uuid4(),
+            actor="scientist1",
         )
     finally:
         set_client_change_id(None)

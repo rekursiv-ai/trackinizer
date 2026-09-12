@@ -110,7 +110,7 @@ class MetricPoint(BaseModel):
     """When the producer logged the point, on its own clock."""
 
     _reject_blank_key = field_validator("key", mode="after")(
-        staticmethod(_reject_blank_key)
+        staticmethod(_reject_blank_key),
     )
 
 

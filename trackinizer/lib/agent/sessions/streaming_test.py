@@ -122,7 +122,7 @@ def _codex_lines(count: int, *, text_chars: int) -> list[str]:
                         {
                             "type": "input_text",
                             "text": f"line {index} " + "x" * text_chars,
-                        }
+                        },
                     ],
                 },
             },
@@ -153,12 +153,15 @@ def _lines_for(adapter: _Adapter, count: int, *, text_chars: int = 200) -> list[
 # Requires exclusive tracemalloc ownership: an outer trace has one global peak that
 # cannot be sampled independently without resetting its recorded peak.
 def _write_cost(
-    adapter: _Adapter, records: Sequence[SessionRecord], *, repeats: int = 3
+    adapter: _Adapter,
+    records: Sequence[SessionRecord],
+    *,
+    repeats: int = 3,
 ) -> int:
     """Return the peak bytes ``denormalize`` allocates beyond its input."""
     if tracemalloc.is_tracing():
         raise RuntimeError(
-            "Writer allocation measurement requires exclusive tracemalloc ownership"
+            "Writer allocation measurement requires exclusive tracemalloc ownership",
         )
     costs: list[int] = []
     gc_enabled = gc.isenabled()
@@ -213,7 +216,8 @@ def test_denormalize_cost_does_not_track_the_output_it_writes(
         len(line.encode("utf-8")) for line in small
     )
     cost = _write_cost(
-        adapter, list(adapter.normalize(StringIO("".join(large))))
+        adapter,
+        list(adapter.normalize(StringIO("".join(large)))),
     ) - _write_cost(adapter, list(adapter.normalize(StringIO("".join(small)))))
 
     assert cost < grew // 4

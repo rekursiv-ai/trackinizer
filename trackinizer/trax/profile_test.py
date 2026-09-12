@@ -178,7 +178,7 @@ def test_profile_token_bootstraps_missing_profile(
     run(["profile", "token", "to", "secret"], FakeClient())
     assert (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "default").exists()
     saved = (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "default").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     )
     assert "api_key=secret" in saved
     assert "url=" in saved
@@ -255,7 +255,9 @@ def test_profile_api_key_round_trip() -> None:
     assert text == "url=http://x:1\nauthor=alice\napi_key=trax_secret_xyz\n"
     loaded = profile.read_profile("prod")
     assert loaded == Profile(
-        url="http://x:1", author="alice", api_key="trax_secret_xyz"
+        url="http://x:1",
+        author="alice",
+        api_key="trax_secret_xyz",
     )
 
 
@@ -278,7 +280,7 @@ def test_list_and_del_profiles() -> None:
     ]
     assert profile.del_profile("dev") is True
     assert profile.list_profiles() == [
-        ("prod", Profile(url="http://prod:2", author="bob"))
+        ("prod", Profile(url="http://prod:2", author="bob")),
     ]
     assert profile.del_profile("dev") is False
 
@@ -310,7 +312,8 @@ def test_del_active_profile_refused() -> None:
 
 
 def test_profile_help_for_field_subprefix(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     run(["profile", "alpha", "url", "help"], client)
     out = capsys.readouterr().out
@@ -318,7 +321,8 @@ def test_profile_help_for_field_subprefix(
 
 
 def test_profile_help_for_unknown_token_falls_through(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     run(["profile", "alpha", "beta", "help"], client)
     out = capsys.readouterr().out
@@ -326,7 +330,8 @@ def test_profile_help_for_unknown_token_falls_through(
 
 
 def test_bare_profile_lists_profiles_present(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     profile.save_profile("alpha", Profile(url="http://alpha.example", author="al"))
     profile.save_profile("beta", Profile(url="http://beta.example"))
@@ -337,7 +342,8 @@ def test_bare_profile_lists_profiles_present(
 
 
 def test_profile_show_named(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     profile.save_profile("alpha", Profile(url="http://alpha.example", author="al"))
     run(["profile", "alpha"], client)
@@ -346,7 +352,8 @@ def test_profile_show_named(
 
 
 def test_profile_read_actor(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     profile.save_profile("default", Profile(url="http://x.example", author="bob"))
     run(["profile", "actor"], client)
@@ -354,7 +361,8 @@ def test_profile_read_actor(
 
 
 def test_profile_read_token_set(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     profile.save_profile("default", Profile(url="http://x.example", api_key="secret"))
     run(["profile", "token"], client)
@@ -363,7 +371,8 @@ def test_profile_read_token_set(
 
 
 def test_profile_read_token_unset(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     profile.save_profile("default", Profile(url="http://x.example"))
     run(["profile", "token"], client)
@@ -400,34 +409,39 @@ def test_profile_set_is_one_field_per_command(client: FakeClient) -> None:
 
 
 def test_read_profile_ignores_comments_and_blank_lines(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
     (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "alpha").write_text(
-        "# comment\n\nurl=http://x.example\n", encoding="utf-8"
+        "# comment\n\nurl=http://x.example\n",
+        encoding="utf-8",
     )
     p = profile.read_profile("alpha")
     assert p.url == "http://x.example"
 
 
 def test_read_profile_missing_url_raises(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
     (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "alpha").write_text(
-        "author=bob\n", encoding="utf-8"
+        "author=bob\n",
+        encoding="utf-8",
     )
     with pytest.raises(ClientError, match="no url= line"):
         profile.read_profile("alpha")
 
 
 def test_iter_profiles_skips_non_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
     (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "subdir").mkdir()
     (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "alpha").write_text(
-        "url=http://x.example\n"
+        "url=http://x.example\n",
     )
     names = [n for n, _ in profile.list_profiles()]
     assert "subdir" not in names
@@ -435,14 +449,15 @@ def test_iter_profiles_skips_non_files(
 
 
 def test_iter_profiles_silently_drops_unreadable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _redirect_config(monkeypatch, tmp_path)
     (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "alpha").write_text(
-        "url=http://x.example\n"
+        "url=http://x.example\n",
     )
     (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "broken").write_text(
-        "not-a-profile\n"
+        "not-a-profile\n",
     )
     names = [n for n, _ in profile.list_profiles()]
     assert "alpha" in names
@@ -451,7 +466,9 @@ def test_iter_profiles_silently_drops_unreadable(
 
 @pytest.mark.parametrize("bad", ["../escape", "a/b", "..", r"a\b", "", "."])
 def test_profile_name_rejects_path_traversal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    bad: str,
 ) -> None:
     r"""A profile name with ``/``, ``\``, or ``..`` must be rejected.
 
@@ -489,7 +506,8 @@ def test_write_atomic_cleans_tmp_on_failure(tmp_path: Path) -> None:
 
 
 def test_write_atomic_uses_unique_temp_per_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Concurrent writes of one profile must not share a fixed temp name (F27).
 

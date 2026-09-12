@@ -101,7 +101,7 @@ _NON_PROPAGATING_CHANGE_KINDS: frozenset[Change.Kind] = frozenset(
         # see nothing. Listing it here also keeps ``cascade=True`` safe if a
         # caller forgets the explicit ``cascade=False``.
         "purged",
-    }
+    },
 )
 
 
@@ -192,7 +192,7 @@ async def _apply_change(
         raise ConflictError(
             f"cost_delta would drive marginal_cost negative; "
             f"agent_delta={agent_delta}, "
-            f"resource_delta={resource_delta}"
+            f"resource_delta={resource_delta}",
         )
     else:
         old_cost = Cost(
@@ -438,7 +438,7 @@ class _CascadeAuditMixin(_StoreShared):
                     )
                 raise ConflictError(
                     f"idempotency_key {client_change_id} already used "
-                    "for a different operation"
+                    "for a different operation",
                 ) from err
             else:
                 await conn.execute("RELEASE SAVEPOINT emit_change")
@@ -505,7 +505,9 @@ class _CascadeAuditMixin(_StoreShared):
         while frontier:
             cur_id, cur_kind, cur_cause, cur_edges = frontier.popleft()
             for parent_id, parent_kind, edge in await self._parent_edges(
-                conn, cur_id, cur_edges
+                conn,
+                cur_id,
+                cur_edges,
             ):
                 change_id, _ = await self.emit_change(
                     conn,
@@ -607,7 +609,7 @@ class _CascadeAuditMixin(_StoreShared):
             owner = row.get("owner")
             if owner is not None:
                 raise ConflictError(
-                    f"inquiry is owned by {owner!r}; release its owner before purge"
+                    f"inquiry is owned by {owner!r}; release its owner before purge",
                 )
             kind = row["kind"]
             parent_edges = await conn.fetch(

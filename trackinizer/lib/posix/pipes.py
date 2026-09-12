@@ -178,7 +178,8 @@ class Piped:
             os.killpg(os.getpgid(process.pid), signal.SIGTERM)
         with contextlib.suppress(TimeoutError):
             _ = await asyncio.wait_for(
-                process.wait(), timeout=self._terminate_grace_sec
+                process.wait(),
+                timeout=self._terminate_grace_sec,
             )
             return
         with contextlib.suppress(ProcessLookupError, PermissionError):

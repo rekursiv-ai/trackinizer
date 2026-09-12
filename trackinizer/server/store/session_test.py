@@ -51,7 +51,9 @@ class TestStartSession:
         with pytest.raises(ConflictError, match="could not reserve"):
             await store.start_session(
                 SubmitAgentSession(
-                    title="s", cli="codex", account="tester@example.com"
+                    title="s",
+                    cli="codex",
+                    account="tester@example.com",
                 ),
                 requested_actor="alice",
             )

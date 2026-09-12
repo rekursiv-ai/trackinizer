@@ -56,7 +56,9 @@ class TestReadParts:
         client, store, _engine = route_client
         session_id = uuid.uuid4()
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=AgentSession(cli="claude"))
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=AgentSession(cli="claude")),
         )
         monkeypatch.setattr(
             store,
@@ -79,7 +81,7 @@ class TestReadParts:
                         format="",
                         records=1,
                     ),
-                ]
+                ],
             ),
         )
 
@@ -100,7 +102,9 @@ class TestReadParts:
         """
         client, store, _engine = route_client
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=AgentSession(cli="sh"))
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=AgentSession(cli="sh")),
         )
         monkeypatch.setattr(
             store,
@@ -114,8 +118,8 @@ class TestReadParts:
                         ir_id=uuid.uuid4(),
                         format="",
                         records=2,
-                    )
-                ]
+                    ),
+                ],
             ),
         )
 
@@ -145,7 +149,9 @@ class TestReadRecords:
     ) -> None:
         client, store, _engine = route_client
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=AgentSession(cli="claude"))
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=AgentSession(cli="claude")),
         )
         monkeypatch.setattr(
             store,
@@ -173,15 +179,17 @@ class TestReadRecords:
         """
         client, store, _engine = route_client
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=AgentSession(cli="codex"))
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=AgentSession(cli="codex")),
         )
         monkeypatch.setattr(
             store,
             "read_session_records",
             AsyncMock(
                 return_value=[
-                    _row(0, record=Thinking(content="visible", encrypted=_CIPHERTEXT))
-                ]
+                    _row(0, record=Thinking(content="visible", encrypted=_CIPHERTEXT)),
+                ],
             ),
         )
 
@@ -201,7 +209,9 @@ class TestReadRecords:
         client, store, _engine = route_client
         read = AsyncMock(return_value=[])
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=AgentSession(cli="claude"))
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=AgentSession(cli="claude")),
         )
         monkeypatch.setattr(store, "read_session_records", read)
 
@@ -223,7 +233,9 @@ class TestReadRecords:
         client, store, _engine = route_client
         read = AsyncMock(return_value=[])
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=AgentSession(cli="claude"))
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=AgentSession(cli="claude")),
         )
         monkeypatch.setattr(store, "read_session_records", read)
 
@@ -243,7 +255,9 @@ class TestReadRecords:
         client, store, _engine = route_client
         read = AsyncMock(return_value=[])
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=AgentSession(cli="claude"))
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=AgentSession(cli="claude")),
         )
         monkeypatch.setattr(store, "read_session_records", read)
 

@@ -22,7 +22,7 @@ class TestSlashCommandDetector:
 
     def test_command_with_args(self) -> None:
         assert _collect(b"/model gpt-5\r") == [
-            SlashCommand(command="model", args="gpt-5")
+            SlashCommand(command="model", args="gpt-5"),
         ]
 
     def test_non_slash_line_is_ignored(self) -> None:
@@ -57,7 +57,7 @@ class TestSlashCommandDetector:
         # An outer terminal's bracketed-paste markers (ESC [ 200~ / ESC [ 201~)
         # are escape sequences, consumed rather than leaked into the command.
         assert _collect(b"/say \x1b[200~hi\x1b[201~\r") == [
-            SlashCommand(command="say", args="hi")
+            SlashCommand(command="say", args="hi"),
         ]
 
     def test_newline_inside_paste_is_not_a_submit(self) -> None:
@@ -65,7 +65,7 @@ class TestSlashCommandDetector:
         # not submit a misleading partial ``/foo`` and orphan ``bar``. The real
         # Enter (after the paste-end marker) submits the whole thing.
         assert _collect(b"\x1b[200~/foo\nbar\x1b[201~\r") == [
-            SlashCommand(command="foo", args="bar")
+            SlashCommand(command="foo", args="bar"),
         ]
 
     def test_multi_line_paste_emits_no_partial(self) -> None:
@@ -79,7 +79,7 @@ class TestSlashCommandDetector:
     def test_crlf_inside_paste_stays_literal(self) -> None:
         # Windows-style CRLF inside a paste is two literal bytes, not a submit.
         assert _collect(b"\x1b[200~/foo\r\nbar\x1b[201~\r") == [
-            SlashCommand(command="foo", args="bar")
+            SlashCommand(command="foo", args="bar"),
         ]
 
     def test_newline_outside_paste_still_submits(self) -> None:
@@ -102,7 +102,7 @@ class TestSlashCommandDetector:
     def test_word_erase_drops_last_word(self) -> None:
         # Ctrl-W erases ``gpt-4`` so the corrected arg is submitted.
         assert _collect(b"/model gpt-4\x17gpt-5\r") == [
-            SlashCommand(command="model", args="gpt-5")
+            SlashCommand(command="model", args="gpt-5"),
         ]
 
     def test_multiple_commands(self) -> None:
@@ -125,7 +125,8 @@ class TestSlashCommandDetector:
         fixed = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
         stamps: list[object] = []
         detector = SlashCommandDetector(
-            lambda _c, at: stamps.append(at), clock=lambda: fixed
+            lambda _c, at: stamps.append(at),
+            clock=lambda: fixed,
         )
         detector.feed(b"/exit\r")
         assert stamps == [fixed]

@@ -161,7 +161,8 @@ class TestResponsePayload:
 
 class TestSocketPath:
     def test_lives_under_the_user_state_dir(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The socket is per-user session state, not scratch or config."""
         monkeypatch.setenv("XDG_STATE_HOME", "/s")
@@ -173,7 +174,8 @@ class TestSocketPath:
         assert socket_path() == socket_path()
 
     def test_resolves_through_the_shared_userdirs_helper(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Re-deriving the XDG layout gets the wrong answer off Linux.
 
@@ -185,7 +187,9 @@ class TestSocketPath:
         assert socket_path().parent == state_dir() / "rekursiv-ai" / "traxd"
 
     def test_differs_when_the_config_directory_differs(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """A caller with another profile store must get another daemon.
 
@@ -201,7 +205,9 @@ class TestSocketPath:
         assert socket_path() != first
 
     def test_a_long_state_directory_still_produces_a_bindable_path(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """AF_UNIX limits the encoded address even when the filesystem does not."""
         state_root = tmp_path / ("long-state-segment-" * 12)
@@ -220,7 +226,9 @@ class TestSocketPath:
         assert path.resolve().parent == logical_parent.resolve()
 
     def test_a_long_relative_override_targets_the_callers_directory(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """A relative override must not become relative to the alias directory."""
         monkeypatch.chdir(tmp_path)
@@ -238,7 +246,9 @@ class TestSocketPath:
         assert path.resolve().parent == logical_path.parent.resolve()
 
     def test_rejects_a_runtime_root_with_group_access(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """A shared alias root would let another local user replace the socket."""
         monkeypatch.chdir(tmp_path)

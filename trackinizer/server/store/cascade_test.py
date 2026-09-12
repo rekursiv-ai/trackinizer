@@ -302,7 +302,8 @@ class TestEdgeCascadeSymmetry:
 
     @pytest.mark.asyncio
     async def test_insert_edge_and_audit_cascades_once(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         conn = make_conn()
         # ``insert_edge``'s fetchval sequence: lookup_kind(to) -> kind,
@@ -327,7 +328,8 @@ class TestEdgeCascadeSymmetry:
 
     @pytest.mark.asyncio
     async def test_set_edge_annotation_does_not_cascade(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         conn = make_conn()
         set_field_row(

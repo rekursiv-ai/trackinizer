@@ -158,7 +158,8 @@ class TestFlags:
     ) -> None:
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
         (tmp_path / "rekursiv-ai" / "trax" / "profiles").mkdir(
-            parents=True, exist_ok=True
+            parents=True,
+            exist_ok=True,
         )
         monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
         monkeypatch.delenv("TRACKINIZER_URL", raising=False)
@@ -175,7 +176,7 @@ class TestFlags:
         parser = argparse.ArgumentParser()
         cli.connect_flags(parser)
         args = parser.parse_args(
-            ["--profile", "prod", "--host", "1.2.3.4", "--port", "9000"]
+            ["--profile", "prod", "--host", "1.2.3.4", "--port", "9000"],
         )
         assert args.profile == "prod"
         assert args.host == "1.2.3.4"
@@ -195,14 +196,15 @@ class TestFlags:
     def test_from_args_partial_flags_fill_from_profile(self) -> None:
         profile.save_profile("default", Profile(url="http://defaulthost:8888"))
         host_only = cli.connect(
-            argparse.Namespace(profile=None, host="other", port=None)
+            argparse.Namespace(profile=None, host="other", port=None),
         )
         assert host_only.base_url == "http://other:8888"
         port_only = cli.connect(argparse.Namespace(profile=None, host=None, port=4242))
         assert port_only.base_url == "http://defaulthost:4242"
 
     def test_from_args_without_flags_uses_trackinizer_url(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("TRACKINIZER_URL", "http://127.0.0.1:8766/")
         client = cli.connect(argparse.Namespace())
@@ -210,7 +212,8 @@ class TestFlags:
         assert client.author == ""
 
     def test_from_args_rejects_invalid_trackinizer_url(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("TRACKINIZER_URL", "actor")
         with pytest.raises(ClientError, match="TRACKINIZER_URL has invalid URL"):
@@ -226,7 +229,8 @@ class TestFlags:
 
     def test_bare_client_reads_author_from_profile(self) -> None:
         profile.save_profile(
-            "default", Profile(url="http://defaulthost:8888", author="alice")
+            "default",
+            Profile(url="http://defaulthost:8888", author="alice"),
         )
         client = cli.connect(argparse.Namespace(profile=None, host=None, port=None))
         assert client.base_url == "http://defaulthost:8888"
@@ -239,7 +243,8 @@ class TestFlags:
 
     def test_from_args_preserves_https_scheme(self) -> None:
         profile.save_profile(
-            "prod", Profile(url="https://example.com:443", author="alice")
+            "prod",
+            Profile(url="https://example.com:443", author="alice"),
         )
         client = cli.connect(argparse.Namespace(profile="prod", host=None, port=None))
         assert client.base_url == "https://example.com:443"
@@ -253,7 +258,7 @@ class TestFlags:
     def test_from_args_host_override_keeps_profile_scheme_and_port(self) -> None:
         profile.save_profile("prod", Profile(url="https://prod.example:8443"))
         client = cli.connect(
-            argparse.Namespace(profile="prod", host="other", port=None)
+            argparse.Namespace(profile="prod", host="other", port=None),
         )
         assert client.base_url == "https://other:8443"
 
@@ -280,7 +285,7 @@ class TestRequests:
             keepalive_expiry: float,
         ) -> httpx2.Limits:
             observed.append(
-                (max_connections, max_keepalive_connections, keepalive_expiry)
+                (max_connections, max_keepalive_connections, keepalive_expiry),
             )
             return real_limits(
                 max_connections=max_connections,
@@ -411,7 +416,7 @@ class TestRequests:
         def handshake_timeout(request: httpx2.Request) -> httpx2.Response:
             del request
             raise httpx2.ConnectTimeout(
-                "_ssl.c:1063: The handshake operation timed out"
+                "_ssl.c:1063: The handshake operation timed out",
             )
 
         with Client("https://server") as client:
@@ -437,7 +442,8 @@ class TestRequests:
         assert len(StrCodec.coerce(fields.get("client_id"))) == 12
 
     def test_retries_5xx_with_same_change_id(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A 502/503/504 retries the same request body and Idempotency-Key."""
 
@@ -465,7 +471,8 @@ class TestRequests:
         )
 
     def test_retries_500_with_same_change_id(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A transient 500 retries the same body + Idempotency-Key, then succeeds.
 
@@ -523,7 +530,8 @@ class TestRequests:
         ],
     )
     def test_wraps_write_and_connect_timeouts_without_retry(
-        self, exc: httpx2.HTTPError
+        self,
+        exc: httpx2.HTTPError,
     ) -> None:
         """Write/connect-timeout errors surface as ``ClientError``, not raw httpx2.
 
@@ -726,7 +734,7 @@ class TestClientMethods:
             get_results=[
                 {"id": str(target_id)},
                 {"kind": "Issue"},
-            ]
+            ],
         )
         assert client.resolve_id(SeqRef(kind="Issue", seq=4)) == ("Issue", target_id)
         assert client.resolve_id(UuidRef(uuid=target_id)) == ("Issue", target_id)
@@ -748,7 +756,7 @@ class TestClientMethods:
                 {"id": str(target_id)},
                 [{"id": "c"}],
                 {"agent_usd": 1.0},
-            ]
+            ],
         )
         assert client.list_kind(
             "Issue",
@@ -840,7 +848,8 @@ class TestClientMethods:
             offsets.append(offset)
             if offset == "0":
                 return httpx2.Response(
-                    200, json=[{"seq": i} for i in range(MAX_LIST_LIMIT)]
+                    200,
+                    json=[{"seq": i} for i in range(MAX_LIST_LIMIT)],
                 )
             return httpx2.Response(200, json=[{"seq": MAX_LIST_LIMIT}])
 
@@ -865,7 +874,8 @@ class TestClientMethods:
             calls += 1
             if request.url.params.get("offset") == "0":
                 return httpx2.Response(
-                    200, json=[{"seq": i} for i in range(MAX_LIST_LIMIT)]
+                    200,
+                    json=[{"seq": i} for i in range(MAX_LIST_LIMIT)],
                 )
             return httpx2.Response(200, json=[])
 
@@ -878,7 +888,7 @@ class TestClientMethods:
     def test_resolve_ids_posts_bare_array(self) -> None:
         target_id = uuid.uuid4()
         client = _ClientSpy(
-            post_result={"found": {str(target_id): "Issue"}, "missing": []}
+            post_result={"found": {str(target_id): "Issue"}, "missing": []},
         )
         result = client.resolve_ids([UuidRef(uuid=target_id)])
         assert result == [("Issue", target_id)]
@@ -908,7 +918,11 @@ class TestClientMethods:
         )
         client.remove_edge(target_id, target_id, "narrows", actor="alice")
         client.add_cost(
-            target_id, "marginal_cost_agent_usd", -0.5, actor="alice", reason="fix"
+            target_id,
+            "marginal_cost_agent_usd",
+            -0.5,
+            actor="alice",
+            reason="fix",
         )
         client.purge(target_id, actor="alice", reason="bad")
         # ``submit`` POSTs to the kind-token create route; ``kind`` is the
@@ -1065,7 +1079,7 @@ class TestClientMethods:
                     "mode": "cas",
                     "expected": None,
                 },
-            )
+            ),
         ]
 
     def test_annotate_edge_is_best_effort_in_fixed_field_order(self) -> None:
@@ -1176,7 +1190,7 @@ class TestClientMethods:
 # raw HTTP verbs. The fake bypasses HTTP entirely, so these would be dead
 # on the fake.
 _FAKE_EXEMPT: frozenset[str] = frozenset(
-    {"flags", "from_args", "get", "post", "put", "patch", "delete"}
+    {"flags", "from_args", "get", "post", "put", "patch", "delete"},
 )
 
 
@@ -1219,7 +1233,7 @@ def test_fake_client_method_signatures_match_client() -> None:
         if real_sig.return_annotation != fake_sig.return_annotation:
             mismatches.append(
                 f"{name}: return real={real_sig.return_annotation!r} "
-                f"fake={fake_sig.return_annotation!r}"
+                f"fake={fake_sig.return_annotation!r}",
             )
     assert not mismatches, (
         "FakeClient method signatures diverge from Client:\n"
@@ -1292,7 +1306,9 @@ def test_request_wraps_malformed_json_on_2xx() -> None:
 
 
 def _edge_post(
-    *, created: bool, change_id: str | None
+    *,
+    created: bool,
+    change_id: str | None,
 ) -> Callable[..., Mapping[str, object]]:
     """Return a fake ``post`` returning the edge route's ``{change_id, created}``."""
 
@@ -1307,7 +1323,9 @@ def test_add_edge_reports_created(monkeypatch: pytest.MonkeyPatch) -> None:
     """A brand-new edge -> ``EdgeWrite(created=True, changed=True)``."""
     client = Client("http://example.com")
     monkeypatch.setattr(
-        client, "post", _edge_post(created=True, change_id=str(uuid.uuid4()))
+        client,
+        "post",
+        _edge_post(created=True, change_id=str(uuid.uuid4())),
     )
     result = client.add_edge(uuid.uuid4(), uuid.uuid4(), "requires", actor="a")
     assert result == EdgeWrite(created=True, changed=True)
@@ -1323,10 +1341,16 @@ def test_add_edge_existing_with_annotation_reports_changed_not_created(
     """
     client = Client("http://example.com")
     monkeypatch.setattr(
-        client, "post", _edge_post(created=False, change_id=str(uuid.uuid4()))
+        client,
+        "post",
+        _edge_post(created=False, change_id=str(uuid.uuid4())),
     )
     result = client.add_edge(
-        uuid.uuid4(), uuid.uuid4(), "proves", actor="a", note="load-bearing"
+        uuid.uuid4(),
+        uuid.uuid4(),
+        "proves",
+        actor="a",
+        note="load-bearing",
     )
     assert result == EdgeWrite(created=False, changed=True)
 
@@ -1363,7 +1387,7 @@ def test_add_edge_clear_labels_threads_through_labels_route(
     src, dst = uuid.uuid4(), uuid.uuid4()
     result = client.add_edge(src, dst, "requires", actor="a", labels=None)
     assert puts == [
-        (f"/api/edges/{src}/requires/{dst}/labels", {"value": [], "actor": "a"})
+        (f"/api/edges/{src}/requires/{dst}/labels", {"value": [], "actor": "a"}),
     ]
     assert result == EdgeWrite(created=False, changed=True)
 
@@ -1405,7 +1429,7 @@ def test_submit_batch_accepts_matching_or_absent_body_kind() -> None:
         [
             ("Issue", {"title": "a"}),  # Absent body kind.
             ("Belief", {"title": "b", "kind": "Belief"}),  # Matching body kind.
-        ]
+        ],
     )
     body = cast(dict[str, object], client.request_calls[0][2])
     items = cast(list[dict[str, object]], body["items"])

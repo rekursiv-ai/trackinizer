@@ -132,7 +132,9 @@ class _LifecycleMixin(_StoreShared):
         return identity
 
     def remember_bearer_identity(
-        self, secret: str, identity: auth.AuthIdentity
+        self,
+        secret: str,
+        identity: auth.AuthIdentity,
     ) -> None:
         """Cache one verified bearer result for :data:`auth.VERIFIED_BEARER_TTL_SEC`.
 
@@ -196,7 +198,8 @@ class _LifecycleMixin(_StoreShared):
         self._forget_bearers_where(lambda identity: identity.api_key_id == key_id)
 
     def _forget_bearers_where(
-        self, predicate: Callable[[auth.AuthIdentity], bool]
+        self,
+        predicate: Callable[[auth.AuthIdentity], bool],
     ) -> None:
         """Drop every cached bearer entry whose identity satisfies ``predicate``."""
         for digest in [
@@ -226,7 +229,10 @@ class _LifecycleMixin(_StoreShared):
             )
             for row in rows:
                 await upsert_embedding(
-                    conn, row["id"], embedder.name, await embedder.embed(row["title"])
+                    conn,
+                    row["id"],
+                    embedder.name,
+                    await embedder.embed(row["title"]),
                 )
 
     async def bootstrap(self, *, attempts: int = 6) -> None:
@@ -306,13 +312,13 @@ class _LifecycleMixin(_StoreShared):
         """One idempotent bootstrap pass; see :meth:`bootstrap`."""
         async with self.engine.acquire() as conn:
             await conn.execute(
-                "SELECT pg_advisory_lock(hashtext('trackinizer.bootstrap'))"
+                "SELECT pg_advisory_lock(hashtext('trackinizer.bootstrap'))",
             )
             try:
                 await conn.execute(
                     "CREATE TABLE IF NOT EXISTS applied_migrations ("
                     "name TEXT PRIMARY KEY, "
-                    "applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())"
+                    "applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())",
                 )
                 applied = {
                     r["name"]
@@ -321,7 +327,7 @@ class _LifecycleMixin(_StoreShared):
                 migrations = list(schema_migrations())
                 if not migrations:
                     raise RuntimeError(
-                        "schema_migrations returned no entries; SQL assets may be missing"
+                        "schema_migrations returned no entries; SQL assets may be missing",
                     )
                 baseline_name, baseline_body = migrations[0]
                 numbered_migrations = migrations[1:]
@@ -333,7 +339,7 @@ class _LifecycleMixin(_StoreShared):
                     if is_fresh_database:
                         async with tx(conn):
                             await conn.execute(
-                                substitute_schema_placeholders(baseline_body)
+                                substitute_schema_placeholders(baseline_body),
                             )
                             for name, _body in migrations:
                                 await conn.execute(
@@ -380,7 +386,7 @@ class _LifecycleMixin(_StoreShared):
                     ConnectionRefusedError,
                 ):
                     await conn.execute(
-                        "SELECT pg_advisory_unlock(hashtext('trackinizer.bootstrap'))"
+                        "SELECT pg_advisory_unlock(hashtext('trackinizer.bootstrap'))",
                     )
 
 
@@ -393,7 +399,8 @@ async def _reconcile_sequences(conn: Conn) -> None:
     """Advance each per-kind ref sequence to the maximum ``seq`` in rows."""
     for kind, seq_name in SEQ_FOR_KIND.items():
         max_seq = await conn.fetchval(
-            "SELECT MAX(seq) FROM inquiries WHERE kind = $1", kind
+            "SELECT MAX(seq) FROM inquiries WHERE kind = $1",
+            kind,
         )
         if max_seq is None:
             continue

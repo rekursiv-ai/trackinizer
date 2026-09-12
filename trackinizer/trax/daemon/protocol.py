@@ -168,7 +168,7 @@ class Request:
         version = payload.get("protocol_version")
         if version != PROTOCOL_VERSION:
             raise ProtocolVersionError(
-                f"unsupported protocol version {version!r}; expected {PROTOCOL_VERSION}"
+                f"unsupported protocol version {version!r}; expected {PROTOCOL_VERSION}",
             )
         return cls(
             argv=tuple(_str_list(_require(payload, "argv", "request"))),
@@ -477,7 +477,7 @@ def _read_exactly(conn: socket.socket, size: int) -> bytes:
         chunk = conn.recv(min(remaining, 1 << 20))
         if not chunk:
             raise ConnectionError(
-                f"connection closed with {remaining} of {size} bytes unread"
+                f"connection closed with {remaining} of {size} bytes unread",
             )
         chunks.append(chunk)
         remaining -= len(chunk)

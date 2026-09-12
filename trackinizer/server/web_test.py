@@ -156,7 +156,7 @@ class TestQueryHelpers:
 
     def test_build_term_clause(self) -> None:
         clause, params = web._build_term_clause(
-            [(None, "hello"), ("description", "re.*")]
+            [(None, "hello"), ("description", "re.*")],
         )
         # Bare tokens ILIKE with an ESCAPE clause (so user ``%``/``_`` are
         # literal); field-qualified tokens use the regex operator unchanged.
@@ -200,7 +200,7 @@ class TestSerialization:
                     websearch_query="q",
                     websearch_provider="google",
                 ),
-            )
+            ),
         )
         assert out["id"] == str(target_id)
         assert out["labels"] == ["x"]
@@ -226,7 +226,7 @@ class TestSerialization:
                     paper_google_scholar_cluster_id="vexaDfEelKEJ",
                     paper_google_scholar_cites_id="4727085927710188680",
                 ),
-            )
+            ),
         )
         assert out["google_scholar_cluster_id"] == "vexaDfEelKEJ"
         assert out["google_scholar_cites_id"] == "4727085927710188680"
@@ -242,7 +242,7 @@ class TestSerialization:
             cast(
                 Any,
                 _inquiry_row(kind="Experiment", experiment_config=cfg),
-            )
+            ),
         )
         # JSONB is decoded to a dict by the codec; surfaced verbatim, not
         # ISO-formatted or stringified.
@@ -250,7 +250,7 @@ class TestSerialization:
 
     def test_row_to_dict_omits_config_when_absent(self) -> None:
         out = web._row_to_dict(
-            cast(Any, _inquiry_row(kind="Experiment", experiment_config=None))
+            cast(Any, _inquiry_row(kind="Experiment", experiment_config=None)),
         )
         assert "config" not in out
 
@@ -267,7 +267,7 @@ class TestSerialization:
                     agentsession_ended=None,
                     agentsession_rooms=["sear", "lab"],
                 ),
-            )
+            ),
         )
         assert out["cli"] == "claude"
         assert out["cli_session_id"] == "abc-123"
@@ -299,7 +299,7 @@ class TestSerialization:
         assert out["caused_by"] == str(peer_id)
         assert cast(dict[str, object], out["old"])["labels"] == ["a"]
         assert cast(dict[str, object], out["new"])["experiment_codechanges"] == [
-            str(old_codechanges)
+            str(old_codechanges),
         ]
         assert cast(dict[str, object], out["new"])["peer_id"] == str(peer_id)
         assert cast(dict[str, object], out["new"])["marginal_cost"] == {
@@ -360,7 +360,7 @@ class TestEdgeHelpers:
                         "peer_title": "peer",
                         "peer_status": "active",
                         "peer_judgement": None,
-                    }
+                    },
                 ],
                 [
                     {
@@ -375,13 +375,15 @@ class TestEdgeHelpers:
                         "peer_title": "back",
                         "peer_status": "complete",
                         "peer_judgement": None,
-                    }
+                    },
                 ],
-            ]
+            ],
         )
         edges = await web._edges_for(cast(Any, conn), target_id, direction="outbound")
         backlinks = await web._edges_for(
-            cast(Any, conn), target_id, direction="inbound"
+            cast(Any, conn),
+            target_id,
+            direction="inbound",
         )
         edge = cast(list[dict[str, object]], edges["narrows"])[0]
         assert edge["priority"] == 10
@@ -411,7 +413,9 @@ class TestRoutes:
         request = _request(store, engine)
         assert (
             await web.web_search(
-                cast(Request, request), q="   ", identity=_TEST_IDENTITY
+                cast(Request, request),
+                q="   ",
+                identity=_TEST_IDENTITY,
             )
             == []
         )
@@ -475,14 +479,16 @@ class TestRoutes:
         engine.conn.fetch = AsyncMock(
             side_effect=[
                 asyncpg.InvalidRegularExpressionError(
-                    "invalid regular expression: invalid embedded option"
+                    "invalid regular expression: invalid embedded option",
                 ),
                 [],
-            ]
+            ],
         )
         with pytest.raises(HTTPException) as caught:
             await web.web_search(
-                cast(Request, request), q="title:(?P<n>a)", identity=_TEST_IDENTITY
+                cast(Request, request),
+                q="title:(?P<n>a)",
+                identity=_TEST_IDENTITY,
             )
         assert caught.value.status_code == 400
 
@@ -497,11 +503,13 @@ class TestRoutes:
             side_effect=[
                 asyncpg.PostgresSyntaxError('syntax error at or near "FROM"'),
                 [],
-            ]
+            ],
         )
         with pytest.raises(asyncpg.PostgresSyntaxError):
             await web.web_search(
-                cast(Request, request), q="title:^a", identity=_TEST_IDENTITY
+                cast(Request, request),
+                q="title:^a",
+                identity=_TEST_IDENTITY,
             )
 
     @pytest.mark.asyncio
@@ -511,10 +519,12 @@ class TestRoutes:
         store = _Store(engine=engine)
         request = _request(store, engine)
         engine.conn.fetch = AsyncMock(
-            return_value=[_change_row(principal="api@example.com")]
+            return_value=[_change_row(principal="api@example.com")],
         )
         recent = await web.web_recent_changes(
-            cast(Request, request), identity=_TEST_IDENTITY, limit=1
+            cast(Request, request),
+            identity=_TEST_IDENTITY,
+            limit=1,
         )
         assert recent[0]["actor"] == "alice"
         assert recent[0]["principal"] == "api@example.com"
@@ -522,7 +532,9 @@ class TestRoutes:
 
         engine.conn.fetchval = AsyncMock(return_value="Issue")
         assert await web.web_lookup(
-            target_id, cast(Request, request), identity=_TEST_IDENTITY
+            target_id,
+            cast(Request, request),
+            identity=_TEST_IDENTITY,
         ) == {
             "kind": "Issue",
             "id": str(target_id),
@@ -530,13 +542,17 @@ class TestRoutes:
         engine.conn.fetchval = AsyncMock(return_value=None)
         with pytest.raises(HTTPException):
             await web.web_lookup(
-                target_id, cast(Request, request), identity=_TEST_IDENTITY
+                target_id,
+                cast(Request, request),
+                identity=_TEST_IDENTITY,
             )
 
         engine.conn.fetchrow = AsyncMock(return_value=_inquiry_row(id=target_id))
         engine.conn.fetch = AsyncMock(side_effect=[[], [], [_change_row()]])
         detail = await web.web_get(
-            target_id, cast(Request, request), identity=_TEST_IDENTITY
+            target_id,
+            cast(Request, request),
+            identity=_TEST_IDENTITY,
         )
         assert cast(dict[str, object], detail["self"])["id"] == str(target_id)
         assert detail["edges"] == {}
@@ -545,7 +561,9 @@ class TestRoutes:
         engine.conn.fetchrow = AsyncMock(return_value=None)
         with pytest.raises(HTTPException):
             await web.web_get(
-                target_id, cast(Request, request), identity=_TEST_IDENTITY
+                target_id,
+                cast(Request, request),
+                identity=_TEST_IDENTITY,
             )
 
     @pytest.mark.asyncio
@@ -591,13 +609,15 @@ class TestRoutes:
                         "to_id": root_id,
                         "edge_kind": "favors",
                         "valence": 0.4,
-                    }
+                    },
                 ],
-            ]
+            ],
         )
         # limit=0 is the unbounded whole-graph path (two fetches: nodes, edges).
         graph = await web.web_graph(
-            cast(Request, request), identity=_TEST_IDENTITY, limit=0
+            cast(Request, request),
+            identity=_TEST_IDENTITY,
+            limit=0,
         )
         nodes = cast(list[dict[str, object]], graph["nodes"])
         edges = cast(list[dict[str, object]], graph["edges"])
@@ -621,7 +641,7 @@ class TestRoutes:
                 "to_id": str(root_id),
                 "edge_kind": "favors",
                 "valence": 0.4,
-            }
+            },
         ]
         # Nodes must be ordered by ``created`` ascending so the replay
         # animation lands them in the order they were authored.
@@ -646,15 +666,17 @@ class TestRoutes:
                         "to_id": b,
                         "edge_kind": "narrows",
                         "valence": None,
-                    }
+                    },
                 ],
-            ]
+            ],
         )
         graph = await web.web_graph(
-            cast(Request, request), identity=_TEST_IDENTITY, limit=0
+            cast(Request, request),
+            identity=_TEST_IDENTITY,
+            limit=0,
         )
         assert cast(list[dict[str, object]], graph["edges"]) == [
-            {"from_id": str(a), "to_id": str(b), "edge_kind": "narrows"}
+            {"from_id": str(a), "to_id": str(b), "edge_kind": "narrows"},
         ]
 
     @pytest.mark.asyncio
@@ -679,7 +701,7 @@ class TestRoutes:
                         "to_id": old_id,
                         "edge_kind": "proves",
                         "valence": 0.5,
-                    }
+                    },
                 ],
                 # 3. full rows for the closed set (old + recent), created ASC.
                 [
@@ -704,10 +726,12 @@ class TestRoutes:
                         "belief_confidence": 0.9,
                     },
                 ],
-            ]
+            ],
         )
         graph = await web.web_graph(
-            cast(Request, request), identity=_TEST_IDENTITY, limit=1
+            cast(Request, request),
+            identity=_TEST_IDENTITY,
+            limit=1,
         )
         nodes = cast(list[dict[str, object]], graph["nodes"])
         # The older referenced Paper is pulled in alongside the recent Belief.
@@ -728,7 +752,9 @@ class TestRoutes:
         for bad in (-1, 99_999):
             with pytest.raises(HTTPException):
                 await web.web_graph(
-                    cast(Request, request), identity=_TEST_IDENTITY, limit=bad
+                    cast(Request, request),
+                    identity=_TEST_IDENTITY,
+                    limit=bad,
                 )
 
     @pytest.mark.asyncio
@@ -738,7 +764,8 @@ class TestRoutes:
         engine.listen_messages = [json.dumps({"id": str(subject_id)})]
         request = _request(object(), engine)
         response = await web.web_subscribe(
-            cast(Request, request), identity=_TEST_IDENTITY
+            cast(Request, request),
+            identity=_TEST_IDENTITY,
         )
         chunks: list[bytes] = []
         async for chunk in response.body_iterator:
@@ -765,7 +792,8 @@ class TestRoutes:
         assert "/api/web/search" in registered_paths(app)
 
     def test_static_dir_overrides_the_bundled_static_mount(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         # The runtime --static-dir serves files written after deploy from a
         # path the source tree never sees (the demo's report.html link).
@@ -814,7 +842,8 @@ class TestRoutes:
         ]
         request = _request(object(), engine)
         response = await web.web_subscribe(
-            cast(Request, request), identity=_TEST_IDENTITY
+            cast(Request, request),
+            identity=_TEST_IDENTITY,
         )
         chunks = [chunk async for chunk in response.body_iterator]
         # Only the well-formed payload survives.
@@ -906,7 +935,9 @@ class TestFeedRoute:
         for bad in (0, 5000):
             with pytest.raises(HTTPException):
                 await web.web_feed(
-                    cast(Request, request), identity=_TEST_IDENTITY, limit=bad
+                    cast(Request, request),
+                    identity=_TEST_IDENTITY,
+                    limit=bad,
                 )
 
 
@@ -1079,7 +1110,8 @@ class TestPhase4Pages:
         assert query["next"] == ["/admin?foo=bar&x=y"]
 
     def test_admin_forbids_unauthed_without_session_config(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         app = _build_pages_app(tmp_path, with_session=False)
         _install_identity(app, None)

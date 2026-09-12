@@ -146,8 +146,8 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
                     if isinstance(record, TurnContext)
                 ),
                 json_freeze({}),
-            )
-        )
+            ),
+        ),
     )
     for record in ordered:
         # A later context supersedes: whether the file ended on a newline is
@@ -173,7 +173,8 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
             # The prompt lives on the opening clear, so the launch payload is
             # rebuilt from it rather than holding a second copy.
             _with_instructions(
-                DictCodec.coerce(declaration.get("payload", {})), ordered
+                DictCodec.coerce(declaration.get("payload", {})),
+                ordered,
             ),
             template=DictCodec.coerce(declaration.get("$outer")),
             include_timestamp=bool(declaration.get("$timestamp", True)),
@@ -238,7 +239,9 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
     if held is None:
         return
     _ = stream.write(
-        held.removesuffix("\n") if encoding.get("newline_terminated") is False else held
+        held.removesuffix("\n")
+        if encoding.get("newline_terminated") is False
+        else held,
     )
 
 
@@ -251,7 +254,8 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
 # was given, and codex keeps sending instructions after the launch line -- writing the
 # whole assembled prompt back put the skills block on a line codex never wrote it on.
 def _with_instructions(
-    payload: Mapping[str, object], records: Sequence[SessionRecord]
+    payload: Mapping[str, object],
+    records: Sequence[SessionRecord],
 ) -> dict[str, object]:
     """Return the launch payload with its prompt restored from the clear."""
     if "base_instructions" not in payload:
@@ -261,7 +265,8 @@ def _with_instructions(
     # keying on the value skipped exactly the form it had emptied.
     stencil = payload["base_instructions"]
     opening = next(
-        (record for record in records if isinstance(record, ContextClear)), None
+        (record for record in records if isinstance(record, ContextClear)),
+        None,
     )
     if opening is None or opening.system_prompt is None:
         return dict(payload)
@@ -306,7 +311,8 @@ def _grouped(records: Sequence[SessionRecord]) -> Iterator[Sequence[SessionRecor
             open_group.append(record)
             continue
         if isinstance(record, FileEditResult | FileWriteResult) and isinstance(
-            leader, FileEditResult | FileWriteResult
+            leader,
+            FileEditResult | FileWriteResult,
         ):
             # ``$codex_line`` is this reader's own note about the line, added
             # after the split, so a follower carries it and nothing else.
@@ -360,7 +366,8 @@ def _write_line(
 # records on one captured rollout stored 13 distinct orders between them, 1.5% of the
 # whole normalized size.
 def _codex_residual(
-    source: Mapping[str, object], consumed: Iterable[str] = ()
+    source: Mapping[str, object],
+    consumed: Iterable[str] = (),
 ) -> dict[str, JSONValue]:
     """Preserve residual fields while escaping provider dollar keys."""
     extra = residual(source, consumed)
@@ -407,7 +414,8 @@ def _ordered(kind: str, payload: Mapping[str, object]) -> dict[str, object]:
 # record per path -- so the writer fills every entry of the one ``changes`` map rather
 # than emitting an event per record.
 def _write_record(
-    item: SessionRecord, followers: Sequence[SessionRecord] = ()
+    item: SessionRecord,
+    followers: Sequence[SessionRecord] = (),
 ) -> list[tuple[str, dict[str, object]]]:
     """Return the rollout lines one record becomes."""
     if isinstance(item, TurnContext):
@@ -484,7 +492,7 @@ def _write_record(
                     "token_count",
                     _codex_residual({"type": "token_count", **payload}),
                 ),
-            )
+            ),
         ]
     if isinstance(item, ToolResult):
         result = _write_result(item, followers)
@@ -498,10 +506,11 @@ def _write_record(
             (
                 "event_msg",
                 _ordered("error", {"type": "error", "message": item.content} | extra),
-            )
+            ),
         ]
     if isinstance(
-        item, UserMessage | AssistantMessage | SystemMessage | Thinking | ToolCall
+        item,
+        UserMessage | AssistantMessage | SystemMessage | Thinking | ToolCall,
     ):
         return [("response_item", _write_item(item))]
     # A record with no Codex representation -- a fusion boundary, another
@@ -517,7 +526,8 @@ def _write_record(
 # item writer rather than from a stored copy -- which is what lets an edited history
 # reach the wire.
 def _write_compacted(
-    item: ContextClear, extra: dict[str, MutableJSONValue]
+    item: ContextClear,
+    extra: dict[str, MutableJSONValue],
 ) -> dict[str, object]:
     """Return the ``compacted`` line a history replacement came from."""
     markers = ListCodec.coerce(extra.pop("$history", []))
@@ -570,7 +580,10 @@ def _write_agent_message(item: AgentToAgentMessage) -> dict[str, object]:
     """Return the response item a peer message came from."""
     extra = dict(json_unfreeze(item.extra))
     blocks = _write_content(
-        item.content, item.attachments, extra, text_key="input_text"
+        item.content,
+        item.attachments,
+        extra,
+        text_key="input_text",
     )
     payload: dict[str, object] = {
         "type": "agent_message",
@@ -580,7 +593,8 @@ def _write_agent_message(item: AgentToAgentMessage) -> dict[str, object]:
         **extra,
     }
     return _ordered(
-        "agent_message", {k: v for k, v in payload.items() if v is not None}
+        "agent_message",
+        {k: v for k, v in payload.items() if v is not None},
     )
 
 
@@ -641,7 +655,8 @@ def _write_item(
 
 
 def _write_call(
-    item: ToolCall, extra: dict[str, MutableJSONValue]
+    item: ToolCall,
+    extra: dict[str, MutableJSONValue],
 ) -> dict[str, object]:
     """Return the response item a tool invocation came from."""
     spaced = bool(extra.pop("$spaced", False))
@@ -700,7 +715,8 @@ def _write_call(
 # Which of codex's several spellings wrote it is on the record: an output response item,
 # a pre-0.149 ``*_end`` event, or an ``item_completed``.
 def _write_result(
-    item: ToolResult, followers: Sequence[SessionRecord] = ()
+    item: ToolResult,
+    followers: Sequence[SessionRecord] = (),
 ) -> tuple[str, dict[str, object]] | None:
     """Return the line a tool's answer came from."""
     if isinstance(item, FileReadResult | FileWriteResult | FileEditResult):
@@ -754,7 +770,8 @@ def _write_result(
 
 
 def _write_output(
-    item: UncategorizedToolResult, extra: dict[str, MutableJSONValue]
+    item: UncategorizedToolResult,
+    extra: dict[str, MutableJSONValue],
 ) -> dict[str, object]:
     """Return the output response item a result came from."""
     kind = StrCodec.coerce(extra.get("type"), "function_call_output")
@@ -764,7 +781,10 @@ def _write_output(
     output: object = item.content or ""
     if "$parts" in extra:
         output = _write_content(
-            item.content, item.attachments, extra, text_key="input_text"
+            item.content,
+            item.attachments,
+            extra,
+            text_key="input_text",
         )
     payload: dict[str, object] = {"type": kind, "call_id": item.call_id}
     if not output_absent or item.content is not None or item.attachments:
@@ -915,7 +935,7 @@ def _write_completed(
             inner["changes"] = {
                 item.path: {"content": item.content or ""}
                 if isinstance(item, FileWriteResult)
-                else {"unified_diff": render_udiff(item.edits)}
+                else {"unified_diff": render_udiff(item.edits)},
             }
         elif isinstance(item, FileEditResult) and item.edits:
             return None
@@ -947,7 +967,8 @@ def _write_completed(
 
 
 def _write_rows(
-    item: WebSearchResults, extra: dict[str, MutableJSONValue]
+    item: WebSearchResults,
+    extra: dict[str, MutableJSONValue],
 ) -> list[object] | None:
     """Return search results with opaque members in their original positions."""
     if "$rows" not in extra:
@@ -1014,7 +1035,7 @@ def _write_content(
             if image_index >= len(attachments):
                 continue
             block = DictCodec.coerce(template) | _write_attachment(
-                attachments[image_index]
+                attachments[image_index],
             )
             blocks.append(block)
             image_index += 1
@@ -1159,8 +1180,8 @@ class _Reader:
                     # No ``ascii_escaped``: codex writes raw UTF-8 on every one
                     # of 13138 captured non-ASCII lines, so the convention is
                     # the format's, not the file's.
-                    encoding=json_freeze({"newline_terminated": True})
-                )
+                    encoding=json_freeze({"newline_terminated": True}),
+                ),
             )
             self._context_id = 0
         del emitted
@@ -1262,7 +1283,7 @@ class _Reader:
                     or None,
                     system_prompt=declared_prompt,
                     extra=json_freeze(opens),
-                )
+                ),
             )
             return
         if outer == "session_meta":
@@ -1278,13 +1299,13 @@ class _Reader:
                         payload=json_freeze(payload),
                     ),
                     record,
-                )
+                ),
             )
             return
         if outer == "turn_context":
             self._context_id = len(self._records)
             self._records.append(
-                _with_line_state(_read_context(payload, timestamp), record)
+                _with_line_state(_read_context(payload, timestamp), record),
             )
             return
         for item in _read_records(outer, payload, self._context_id, timestamp):
@@ -1307,7 +1328,8 @@ class _Reader:
             opening = self._records[self._opening]
             assert isinstance(opening, ContextClear)
             self._records[self._opening] = replace(
-                opening, system_prompt="\n".join(self._given)
+                opening,
+                system_prompt="\n".join(self._given),
             )
             return item
         if isinstance(item, UncategorizedRecord | ContextState):
@@ -1359,7 +1381,7 @@ def _read_declaration(
                 for key, value in stored.items()
             }
             if isinstance(held, Mapping | str)
-            else stored
+            else stored,
         )
     # WITHOUT the payload, which ``extra["payload"]`` above already is and
     # ``_write_line`` overwrites from anyway. Keeping it stored the launch
@@ -1368,7 +1390,7 @@ def _read_declaration(
     # The rule ``_with_line_state`` states for every other line; this was the
     # one path that skipped it.
     extra["$outer"] = json_freeze(
-        {key: value for key, value in record.items() if key != "payload"}
+        {key: value for key, value in record.items() if key != "payload"},
     )
     # No ``$launch_timestamp_raw``: a string stamp is what the metadata's own
     # field carries, so storing it here wrote every launch stamp twice. Only a
@@ -1505,7 +1527,7 @@ def _read_records(
                 timestamp=timestamp,
                 kind="world_state",
                 extra=json_freeze(_codex_residual(payload)),
-            )
+            ),
         ]
     if outer == "compacted":
         return _read_compacted(payload, context_id, timestamp)
@@ -1517,7 +1539,7 @@ def _read_records(
             timestamp=timestamp,
             kind=f"{outer}/{kind or 'root'}",
             payload=json_freeze(payload),
-        )
+        ),
     ]
 
 
@@ -1572,8 +1594,11 @@ def _read_compacted(
             continue
         kept.append(
             _read_response_item(
-                StrCodec.coerce(entry.get("type")), entry, context_id, timestamp
-            )
+                StrCodec.coerce(entry.get("type")),
+                entry,
+                context_id,
+                timestamp,
+            ),
         )
     stated = decode_or_none(str, payload.get("message"))
     consumed: set[str] = set()
@@ -1595,7 +1620,9 @@ def _read_compacted(
     # record after it.
     return [
         ContextCompaction(
-            context_id=context_id, timestamp=timestamp, extra=json_freeze(extra)
+            context_id=context_id,
+            timestamp=timestamp,
+            extra=json_freeze(extra),
         ),
         ContextClear(
             context_id=context_id,
@@ -1666,7 +1693,9 @@ def _read_response_item(
 
 
 def _read_message(
-    payload: Mapping[str, object], context_id: int | None, timestamp: str | None
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
 ) -> SessionRecord:
     """Read a message by the role that sent it."""
     role_value = payload.get("role")
@@ -1773,7 +1802,9 @@ def _stencil(block: Mapping[str, object], *held: str) -> JSONValue:
 
 
 def _read_thinking(
-    payload: Mapping[str, object], context_id: int | None, timestamp: str | None
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
 ) -> Thinking:
     """Read reasoning, whose readable part is a summary codex may split."""
     summary_value = payload.get("summary")
@@ -1813,7 +1844,9 @@ def _read_thinking(
 
 
 def _read_tool_call(
-    payload: Mapping[str, object], context_id: int | None, timestamp: str | None
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
 ) -> ToolCall | UncategorizedRecord:
     """Read a tool invocation, whose arguments are JSON inside JSON."""
     kind = StrCodec.coerce(payload.get("type"))
@@ -1878,7 +1911,9 @@ def _parse_arguments(text: str) -> dict[str, object] | None:
 # act. The ``item_completed`` event is where codex reports the act, and that reads into
 # a typed result.
 def _read_tool_result(
-    payload: Mapping[str, object], context_id: int | None, timestamp: str | None
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
 ) -> UncategorizedToolResult:
     """Read what one tool invocation returned."""
     output = payload.get("output")
@@ -1911,7 +1946,9 @@ def _read_tool_result(
 
 
 def _read_search_call(
-    payload: Mapping[str, object], context_id: int | None, timestamp: str | None
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
 ) -> ToolCall:
     """Read a web or tool search as the tool invocation it is."""
     # Both the id and the input go under different keys per search kind: a web
@@ -1938,7 +1975,7 @@ def _read_search_call(
                 "$id": id_key,
                 "$args": arg_key,
                 "$kind": StrCodec.coerce(payload.get("type")),
-            }
+            },
         ),
     )
 
@@ -1956,7 +1993,9 @@ def _read_event(
         info = _mapping_state(payload, "info")
         rate_limits = _mapping_state(payload, "rate_limits")
         usage_extra = residual(
-            payload, {"type"}, fields={"info": info, "rate_limits": rate_limits}
+            payload,
+            {"type"},
+            fields={"info": info, "rate_limits": rate_limits},
         )
         # Which of the two codex wrote as ``null``. The fields are objects, so
         # a null read back as ``{}`` and the line rewrote as one -- 1033
@@ -2037,7 +2076,7 @@ def _read_event(
             timestamp=timestamp,
             call_id=StrCodec.coerce(payload.get("call_id")),
             extra=json_freeze(
-                _stencil_changes(_echoing(payload, kind, {"call_id"}), counts)
+                _stencil_changes(_echoing(payload, kind, {"call_id"}), counts),
             ),
         )
     if kind == "web_search_end":
@@ -2058,7 +2097,7 @@ def _read_event(
                             "title": take(row, "title", str),
                             "snippet": take(row, "snippet", str),
                         },
-                    )
+                    ),
                 )
                 row_order.append("row")
             else:
@@ -2128,7 +2167,9 @@ def _mapping_state(payload: Mapping[str, object], key: str) -> FieldState[object
 # ``item_completed``; nothing on the record distinguishes them, so the reader records
 # which one it saw.
 def _echoing(
-    payload: Mapping[str, object], kind: str, consumed: Iterable[str]
+    payload: Mapping[str, object],
+    kind: str,
+    consumed: Iterable[str],
 ) -> dict[str, JSONValue]:
     """Return a residual that remembers which event spelling wrote it."""
     return _codex_residual(payload, {"type", *consumed}) | {"$echoes": kind}
@@ -2143,7 +2184,8 @@ def _echoing(
 # place that boundary survives: one path may hold SEVERAL hunks, so neither the splices
 # nor the rendered text reveals where a path ends.
 def _stencil_changes(
-    extra: dict[str, JSONValue], counts: Sequence[int] = ()
+    extra: dict[str, JSONValue],
+    counts: Sequence[int] = (),
 ) -> dict[str, JSONValue]:
     """Empty each patch entry's diff, which :attr:`edits` now holds."""
     changes = extra.get("changes")
@@ -2203,7 +2245,9 @@ def _shell_residual(payload: Mapping[str, object], kind: str) -> dict[str, JSONV
 # A patch is one record per PATH, since ``changes`` is keyed by one and a single record
 # could name only one of them.
 def _read_completed(
-    payload: Mapping[str, object], context_id: int | None, timestamp: str | None
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
 ) -> SessionRecord | list[SessionRecord]:
     """Read an ``item_completed`` event by the kind of item it completed."""
     item = DictCodec.coerce(payload.get("item"))
@@ -2341,7 +2385,8 @@ def _per_path_edits(
         # typing it by key presence made the writer fill the wrong one.
         entry = DictCodec.coerce(changes.get(path))
         added = not isinstance(entry.get("unified_diff"), str) and isinstance(
-            entry.get("content"), str
+            entry.get("content"),
+            str,
         )
         out.append(
             # An ADD states the file's whole bytes, which is what a write is --
@@ -2363,7 +2408,7 @@ def _per_path_edits(
                 path=path,
                 edits=found,
                 extra=own,
-            )
+            ),
         )
         at += count
     return out or [
@@ -2372,7 +2417,7 @@ def _per_path_edits(
             timestamp=timestamp,
             call_id=call_id,
             extra=extra,
-        )
+        ),
     ]
 
 

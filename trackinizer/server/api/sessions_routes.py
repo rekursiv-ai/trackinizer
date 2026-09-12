@@ -143,7 +143,8 @@ async def session_inbound_enqueue_route(
     session = await _require_session(get_store(request), session_id)
     if session.ended is not None:
         raise HTTPException(
-            status_code=409, detail=f"session {session_id} has ended; cannot enqueue"
+            status_code=409,
+            detail=f"session {session_id} has ended; cannot enqueue",
         )
     inbound = get_inbound(request)
     # One dedup path: route through ``send_once`` (same primitive as the
@@ -229,7 +230,7 @@ async def send_message_route(
             (
                 session_id,
                 Inbound(text=body.text, source=identity.email, room=scoped_room),
-            )
+            ),
         )
 
     # One atomic critical section dedups, enqueues every target, and records
@@ -289,7 +290,7 @@ async def session_inbound_drain_route(
     return DrainInboundResponse(
         messages=[
             InboundDrainItem(text=m.text, source=m.source, room=m.room) for m in drained
-        ]
+        ],
     )
 
 

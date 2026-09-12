@@ -39,7 +39,8 @@ def client() -> TestClient:
 
 
 def test_version_route_returns_sha_without_auth(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The probe answers with the env SHA and needs no credentials."""
     build_sha.cache_clear()

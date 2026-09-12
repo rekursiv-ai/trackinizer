@@ -45,7 +45,7 @@ def test_set_edge_annotation_rejects_unknown_field() -> None:
                 edge_kind="narrows",
                 api_key_id=None,
                 actor="u",
-            )
+            ),
         )
     assert exc.value.status_code == 500
     assert "edge-annotation setter" in exc.value.detail
@@ -192,7 +192,7 @@ class _LeakyEdgeStore:
             actor,
         )
         err = asyncpg.ForeignKeyViolationError(
-            'insert violates foreign key "secret_constraint" on column from_id'
+            'insert violates foreign key "secret_constraint" on column from_id',
         )
         raise err
 
@@ -266,7 +266,7 @@ class TestBatch:
                         "edge_kind": "narrows",
                         "actor": "u",
                     },
-                ]
+                ],
             },
         )
         assert r.status_code == 200
@@ -303,7 +303,7 @@ class TestBatch:
                         "edge_kind": "narrows",
                         "actor": "u",
                     },
-                ]
+                ],
             },
         )
         assert r.status_code == 200
@@ -343,7 +343,7 @@ class TestBatch:
                         "edge_kind": "narrows",
                         "actor": "u",
                     },
-                ]
+                ],
             },
         )
         assert r.status_code == 200
@@ -368,7 +368,7 @@ class TestBatch:
                         "edge_kind": "narrows",
                         "actor": "u",
                     },
-                ]
+                ],
             },
         )
         assert r.status_code == 200

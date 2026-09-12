@@ -45,7 +45,7 @@ def _claude_session() -> str:
 @functools.cache
 def _codex_session() -> str:
     return _first_turn(
-        (_CWD / "testdata" / "codex_main.jsonl").read_text(encoding="utf-8")
+        (_CWD / "testdata" / "codex_main.jsonl").read_text(encoding="utf-8"),
     )
 
 
@@ -66,7 +66,7 @@ def _first_turn(rollout: str) -> str:
             continue
         kept.append(line)
         if StrCodec.coerce(
-            DictCodec.coerce(record.get("payload")).get("type")
+            DictCodec.coerce(record.get("payload")).get("type"),
         ).endswith("tool_call_output"):
             return "".join(kept)
     raise AssertionError("the capture has no tool output to slice at")
@@ -74,7 +74,8 @@ def _first_turn(rollout: str) -> str:
 
 @pytest.mark.parametrize("source", ["claude", "codex"])
 def test_convert_to_json_and_back_recovers_the_native_bytes(
-    tmp_path: Path, source: str
+    tmp_path: Path,
+    source: str,
 ) -> None:
     native = _claude_session() if source == "claude" else _codex_session()
     path = tmp_path / "session.jsonl"
@@ -90,7 +91,8 @@ def test_convert_to_json_and_back_recovers_the_native_bytes(
 
 
 def test_convert_writes_stdout_and_out_dir(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     path = tmp_path / "session.jsonl"
     path.write_text(_codex_session())
@@ -107,7 +109,8 @@ def test_convert_writes_stdout_and_out_dir(
 
 
 def test_verify_reports_exactness(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     good = tmp_path / "good.jsonl"
     good.write_text(_claude_session())
@@ -115,7 +118,7 @@ def test_verify_reports_exactness(
     # Respaced, not rewritten: the record still parses to the same object, so
     # only a BYTE comparison can tell the two files apart.
     bad.write_text(
-        _claude_session().replace('"parentUuid":null', '"parentUuid" : null')
+        _claude_session().replace('"parentUuid":null', '"parentUuid" : null'),
     )
 
     assert main(["verify", str(good), "-v"]) == 0
@@ -146,7 +149,8 @@ def test_verify_does_not_truncate_the_file_named_by_output(tmp_path: Path) -> No
 
 
 def test_verify_runs_a_directory_in_parallel(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Two SESSIONS, each its own directory: files sharing a directory are one
     # session, since that is how a ``/clear`` continuation is recognized.
@@ -159,7 +163,8 @@ def test_verify_runs_a_directory_in_parallel(
 
 
 def test_workers_run_in_separate_processes(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     # ``--workers 2`` on two sessions must actually FAN OUT. Asserting only on
     # "2/2 exact" cannot fail on a pool that silently ran serial, which is the
@@ -175,7 +180,8 @@ def test_workers_run_in_separate_processes(
 
 
 def test_verify_reports_the_wire_size_against_the_source(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Byte-exactness alone cannot catch a rewrite that silently emitted
     # nothing: an empty output compares unequal, but so does a one-byte
@@ -191,14 +197,15 @@ def test_verify_reports_the_wire_size_against_the_source(
 
 
 def test_verify_reports_a_size_gap_on_a_shortened_rewrite(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     path = tmp_path / "s.jsonl"
     # A key no field holds and no residual keeps would vanish on rewrite. The
     # respacing here keeps every byte's MEANING and changes only its width, so
     # the output is smaller by exactly the spaces added.
     path.write_text(
-        _claude_session().replace('"parentUuid":null', '"parentUuid" : null')
+        _claude_session().replace('"parentUuid":null', '"parentUuid" : null'),
     )
 
     assert main(["verify", str(path), "--format", "json"]) == 1
@@ -238,14 +245,15 @@ def test_convert_reports_a_malformed_normalized_payload(tmp_path: Path) -> None:
     # wire format now is: the document parses as JSON and still cannot decode.
     path.write_text(
         '[{"py/object":"trackinizer.lib.agent.types.sessions.TurnContext",'
-        '"context_id":"seven"}]'
+        '"context_id":"seven"}]',
     )
 
     assert convert_file(path, "json", "claude", False).error
 
 
 def test_json_report_and_usage_errors(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     path = tmp_path / "s.jsonl"
     path.write_text(_claude_session())
@@ -283,14 +291,15 @@ def test_fail_fast_stops_at_the_first_failure(tmp_path: Path) -> None:
 
 
 def test_a_lossy_conversion_is_refused_then_reported(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Codex telemetry has no Claude representation, so this conversion drops
     # records. It must say so, and must not proceed unquestioned.
     path = tmp_path / "s.jsonl"
     path.write_text(
         _codex_session()
-        + '{"type":"event_msg","payload":{"type":"token_count","info":{}}}\n'
+        + '{"type":"event_msg","payload":{"type":"token_count","info":{}}}\n',
     )
     out = tmp_path / "out.jsonl"
 
@@ -347,7 +356,8 @@ def test_status_and_diff_helpers(tmp_path: Path) -> None:
     )
     assert (
         _status(
-            FileResult(path=path, source_bytes=100, output_bytes=90), verifying=True
+            FileResult(path=path, source_bytes=100, output_bytes=90),
+            verifying=True,
         )
         == "not byte-exact (100 -> 90 bytes, 0.9000x)"
     )
@@ -410,7 +420,8 @@ def test_a_named_session_directory_is_one_session(tmp_path: Path) -> None:
 
 
 def test_a_multi_file_session_is_joined_then_split_back_byte_for_byte(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     # The join is the risk the single-file tests cannot reach: the parts are
     # fused into ONE session, so a seam that lost or reordered a record shows
@@ -511,7 +522,7 @@ def test_converting_to_a_directory_writes_as_it_goes(tmp_path: Path) -> None:
                 "--out-dir",
                 str(out_dir),
                 "-q",
-            ]
+            ],
         )
         == 0
     )

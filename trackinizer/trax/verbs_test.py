@@ -108,7 +108,8 @@ def test_kind_union_lists_multiple_subjects(
 
 
 def test_kind_range_filters_seq(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     run(["issue", "4..5"], client)
     out = capsys.readouterr().out
@@ -119,7 +120,8 @@ def test_kind_range_filters_seq(
 
 
 def test_kind_csv_range_unions_disjoint_intervals(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A comma-separated selector fans out and unions disjoint intervals."""
     run(["issue", "1,5..6"], client)
@@ -131,7 +133,8 @@ def test_kind_csv_range_unions_disjoint_intervals(
 
 
 def test_kind_csv_range_dedups_overlapping_intervals(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Overlapping intervals never list a row twice."""
     run(["issue", "4..5,5..6"], client)
@@ -274,7 +277,7 @@ def test_kind_filters_match_rows_outside_default_limit_window(
             # Oldest timestamp -> sorts last under ``ORDER BY created
             # DESC`` -> only the filter pipeline can rescue it.
             "created": "2020-01-01T00:00:00",
-        }
+        },
     )
     client.rows = rows
     # FakeClient honours filters before applying ``limit``; the test
@@ -527,7 +530,8 @@ def test_relation_numeric_token_selects_peer_seq(
 
 
 def test_kind_verb_svo_edge_add_forward(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``trax belief 3 proves paper 5`` wires Belief -> Paper."""
     paper_id = uuid.uuid4()
@@ -549,7 +553,8 @@ def test_kind_verb_svo_edge_add_forward(
 
 
 def test_kind_verb_svo_edge_reverse_alias_swaps_endpoints(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``trax paper 5 proved_by belief 3`` still stores Belief -> Paper.
 
@@ -584,7 +589,9 @@ def test_kind_verb_svo_edge_reverse_alias_swaps_endpoints(
     ],
 )
 def test_favors_both_anchorings_store_artifact_to_belief(
-    argv: list[str], client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    argv: list[str],
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Both ``paper P favors belief B`` and ``belief B favored_by paper P`` store.
 
@@ -614,7 +621,8 @@ def test_favors_both_anchorings_store_artifact_to_belief(
 
 
 def test_disfavors_both_anchorings_store_artifact_to_belief(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``paper P disfavors belief B`` and ``belief B disfavored_by paper P`` both.
 
@@ -662,7 +670,8 @@ def test_edge_payload_favors_labels_match_stored_direction() -> None:
     }
     payload = Kind._edge_payload(belief_payload, paper_payload, {}, ("favors", True))
     source, target = cast(
-        tuple[dict[str, object], dict[str, object]], payload["endpoints"]
+        tuple[dict[str, object], dict[str, object]],
+        payload["endpoints"],
     )
     assert source["kind"] == "Paper"
     assert source["label"] == "citing artifact"
@@ -686,11 +695,15 @@ def test_edge_payload_negative_valence_renders_disproves_polarity() -> None:
         "changes": [],
     }
     payload = Kind._edge_payload(
-        belief_payload, paper_payload, {"valence": -0.5}, ("proves", True)
+        belief_payload,
+        paper_payload,
+        {"valence": -0.5},
+        ("proves", True),
     )
     assert payload["title"] == "disproves"
     _source, target = cast(
-        tuple[dict[str, object], dict[str, object]], payload["endpoints"]
+        tuple[dict[str, object], dict[str, object]],
+        payload["endpoints"],
     )
     assert target["label"] == "disproven claim"
 
@@ -708,7 +721,7 @@ def test_disproves_relation_filters_to_negative_valence() -> None:
             "proves": [
                 {"id": "p1", "kind": "Paper", "seq": 5, "valence": 0.7},
                 {"id": "p2", "kind": "Paper", "seq": 6, "valence": -0.4},
-            ]
+            ],
         },
     }
     all_proves = Kind._relation_rows(payload, ("proves", True))
@@ -728,11 +741,15 @@ def test_edge_payload_positive_valence_keeps_proves_polarity() -> None:
         "changes": [],
     }
     payload = Kind._edge_payload(
-        belief_payload, paper_payload, {"valence": 0.5}, ("proves", True)
+        belief_payload,
+        paper_payload,
+        {"valence": 0.5},
+        ("proves", True),
     )
     assert payload["title"] == "proves"
     _source, target = cast(
-        tuple[dict[str, object], dict[str, object]], payload["endpoints"]
+        tuple[dict[str, object], dict[str, object]],
+        payload["endpoints"],
     )
     assert target["label"] == "proven claim"
 
@@ -901,7 +918,8 @@ def test_edge_label_add_does_not_annotate(client: FakeClient) -> None:
 
 
 def test_kind_verb_edge_metadata_echo_discriminates_create(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The echo says `added:` when the metadata edge was created, `annotated:` when patched."""
     run(["belief", "3", "proves", "paper", "5", "valence", "to", "0.9"], client)
@@ -953,7 +971,8 @@ def test_kind_verb_svo_requires_complete_ref(client: FakeClient) -> None:
 
 
 def test_kind_creates_row(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     run(["issue", "title", "to", "Hi", "priority", "to", "high", "--as=alice"], client)
     items = _batch_items(client)
@@ -966,7 +985,8 @@ def test_kind_creates_row(
 
 
 def test_create_with_ref_list_resolves_typed_ref(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Creating a row with a ref-list field (`codechange to N`) resolves it.
 
@@ -992,7 +1012,8 @@ def test_create_with_ref_list_resolves_typed_ref(
 
 
 def test_session_creates_row(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     run(
         [
@@ -1023,7 +1044,8 @@ def test_session_creates_row(
 
 
 def test_kind_create_owner_defaults_to_caller(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("USER", "doe")
     run(["issue", "title", "to", "Hi"], client)
@@ -1405,7 +1427,8 @@ def test_kind_create_default_format_keeps_created_line(
 
 
 def test_kind_create_added_echo_prints_directional_triple(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The create-path ``added:`` line names both endpoints in stored order.
 
@@ -1494,7 +1517,8 @@ def test_inline_create_rejects_kind_invalid_field_before_any_submit(
 
 
 def test_row_local_inline_create_builds_nested_subtree(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A row-local edit with a DEEP inline tree creates the whole subtree.
 
@@ -1562,7 +1586,8 @@ def test_write_fields_cli_covers_every_kind() -> None:
 
 
 def test_blocks_alias_is_reverse_of_requires(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``blocks`` is the reverse alias of ``requires`` (stored from=requirer).
 
@@ -1626,7 +1651,8 @@ def test_add_codechanges_resolves_ref(client: FakeClient) -> None:
 
 
 def test_set_codechanges_replace_sends_bare_uuid(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`codechange to N` (replace) sends a bare-UUID list.
 
@@ -1652,7 +1678,8 @@ def test_set_codechanges_replace_sends_bare_uuid(
 
 
 def test_create_with_codechange_ref_list_sends_bare_uuid(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Creating an Experiment with `codechange to N` resolves to a bare UUID."""
     codechange_id = uuid.uuid4()
@@ -1670,7 +1697,8 @@ def test_create_with_codechange_ref_list_sends_bare_uuid(
 
 
 def test_inline_create_resolves_ref_list_to_wire_shape(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An inline-create edge target resolves its ref-list `to` value.
 
@@ -1713,7 +1741,8 @@ def test_inline_create_resolves_ref_list_to_wire_shape(
 
 
 def test_del_codechange_resolves_typed_ref(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`codechange del N` resolves the typed ref to a bare id (trax #419)."""
     cc_id = uuid.uuid4()
@@ -1740,7 +1769,8 @@ def test_del_row_purges_without_prompt(client: FakeClient) -> None:
 
 
 def test_del_edge_removes_edge(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``trax paper 5 proved_by belief 3 del`` removes the Belief -> Paper edge."""
     paper_id = uuid.uuid4()
@@ -1861,7 +1891,8 @@ def test_next_calls_next_issue(client: FakeClient) -> None:
 
 
 def test_version_prints_server_sha(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     run(["version"], client)
     assert any(c[0] == "version" for c in client.calls)
@@ -2217,7 +2248,8 @@ def test_bulk_apply_list_add_per_row(client: FakeClient) -> None:
 
 
 def test_bulk_apply_ref_list_add_resolves_typed_ref_per_row(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Bulk `codechange add N` resolves the typed ref for every matched row.
 
@@ -2305,7 +2337,7 @@ def test_bulk_apply_resolves_file_value(
             "seq": 1,
             "status": "active",
             "title": "row",
-        }
+        },
     ]
     run(["issue", "status", "is", "active", "description", "to", f"@{body}"], client)
     edits = [c for c in client.calls if c[0] == "edit"]
@@ -2358,7 +2390,8 @@ def test_send_undelivered_when_no_match(
 
 
 def test_flat_inline_create_edge_is_atomic_no_orphan_on_edge_failure(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A flat inline-create edge must not orphan the new row on edge failure.
 
@@ -2380,7 +2413,8 @@ def test_flat_inline_create_edge_is_atomic_no_orphan_on_edge_failure(
 
 
 def test_flat_inline_create_edge_uses_single_submit_batch(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The flat inline-create edge path flattens into one atomic batch.
 
@@ -2411,7 +2445,8 @@ def test_flat_inline_create_edge_uses_single_submit_batch(
 
 
 def test_paper_author_add_routes_to_client_add_author(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``paper N author add X`` dispatches to ``Client.add_author``.
 
@@ -2434,7 +2469,8 @@ def test_paper_author_add_routes_to_client_add_author(
 
 
 def test_paper_author_del_routes_to_client_remove_author(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``paper N author del X`` dispatches to ``Client.remove_author``."""
     paper_id = uuid.uuid4()
@@ -2642,7 +2678,8 @@ def test_anchored_inline_subtree_emits_added_echo(
 
 
 def test_create_flatten_batches_existing_ref_resolution(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``run_create`` resolves all existing-ref edge targets in one batch.
 
@@ -2653,7 +2690,8 @@ def test_create_flatten_batches_existing_ref_resolution(
     """
 
     def _resolve_one(
-        self: FakeClient, ref: Ref
+        self: FakeClient,
+        ref: Ref,
     ) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
         del self
         del ref
@@ -2703,7 +2741,8 @@ def test_limit_negative_is_rejected(client: FakeClient) -> None:
 
 
 def test_help_flag_after_positional_shows_help_page(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     # ``trax issue 7 --help`` must route to the kind HelpPage, not argparse
     # usage -- a trailing --help/-h is the same tail action as ``help``.
@@ -2829,7 +2868,8 @@ def test_metric_write_rejects_non_finite(client: FakeClient) -> None:
 def test_metric_write_rejects_non_numeric(client: FakeClient) -> None:
     with pytest.raises(ClientError, match="must be a number"):
         run(
-            ["experiment", "2", "metric", "at", "step", "is", "3", "to", "high"], client
+            ["experiment", "2", "metric", "at", "step", "is", "3", "to", "high"],
+            client,
         )
 
 
@@ -2837,7 +2877,8 @@ def test_metric_write_rejects_non_numeric(client: FakeClient) -> None:
 
 
 def test_metric_bulk_write_needs_makeitso(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A mask that resolves to >1 cell is a bulk write; without --makeitso the
     # CLI refuses after a dry read discovers the blast radius.
@@ -2878,7 +2919,8 @@ def test_metric_bulk_write_needs_makeitso(
 
 
 def test_metric_bulk_write_with_makeitso(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _two_hits(
         experiment_id: uuid.UUID,
@@ -3029,7 +3071,8 @@ def test_metric_read_renders_points(
 
 
 def test_metric_read_empty_placeholder(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     run(["experiment", "2", "metric"], client)  # FakeClient returns [].
     assert "(no metrics)" in capsys.readouterr().out
@@ -3170,7 +3213,7 @@ def test_metric_cross_experiment_renders_rank(
             MetricRankRow(
                 experiment_id=exp_id,
                 point=MetricPoint(key="loss", step=100, value=0.42),
-            )
+            ),
         ]
 
     monkeypatch.setattr(client, "rank_metrics", _rank)
@@ -3264,7 +3307,8 @@ def test_metric_create_and_log_targets_new_experiment(client: FakeClient) -> Non
 
 
 def test_experiment_help_shows_metric_section(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     run(["experiment", "help"], client)
     out = capsys.readouterr().out
@@ -3274,7 +3318,8 @@ def test_experiment_help_shows_metric_section(
 
 
 def test_issue_help_omits_metric_section(
-    client: FakeClient, capsys: pytest.CaptureFixture[str]
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     run(["issue", "help"], client)
     assert "METRIC" not in capsys.readouterr().out
@@ -3337,7 +3382,8 @@ def test_the_resume_tail_accepts_its_own_lossy_flag(client: FakeClient) -> None:
 
 
 def test_the_lossy_flag_reaches_the_conversion(
-    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Declaring the flag is not plumbing it.
 
@@ -3350,7 +3396,11 @@ def test_the_lossy_flag_reaches_the_conversion(
     seen: list[bool] = []
 
     def _prepare(
-        client: object, session_id: object, target: str, *, lossy: bool = False
+        client: object,
+        session_id: object,
+        target: str,
+        *,
+        lossy: bool = False,
     ) -> object:
         del client, session_id, target
         seen.append(lossy)

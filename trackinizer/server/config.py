@@ -111,7 +111,7 @@ class Config:
             oauth_google_client_id=os.environ.get("TRACKINIZER_GOOGLE_CLIENT_ID")
             or None,
             oauth_google_client_secret=os.environ.get(
-                "TRACKINIZER_GOOGLE_CLIENT_SECRET"
+                "TRACKINIZER_GOOGLE_CLIENT_SECRET",
             )
             or None,
             oauth_redirect_uri=os.environ.get("TRACKINIZER_OAUTH_REDIRECT_URI") or None,
@@ -143,7 +143,7 @@ class Config:
             oauth_google_client_id=os.environ.get("TRACKINIZER_GOOGLE_CLIENT_ID")
             or None,
             oauth_google_client_secret=os.environ.get(
-                "TRACKINIZER_GOOGLE_CLIENT_SECRET"
+                "TRACKINIZER_GOOGLE_CLIENT_SECRET",
             )
             or None,
             oauth_redirect_uri=os.environ.get("TRACKINIZER_OAUTH_REDIRECT_URI") or None,
@@ -176,11 +176,11 @@ def session_max_age_from_env() -> int:
         seconds = int(raw)
     except ValueError:
         raise ConfigError(
-            f"TRACKINIZER_SESSION_MAX_AGE_SECONDS must be an integer, got {raw!r}"
+            f"TRACKINIZER_SESSION_MAX_AGE_SECONDS must be an integer, got {raw!r}",
         ) from None
     if seconds < 1:
         raise ConfigError(
-            f"TRACKINIZER_SESSION_MAX_AGE_SECONDS must be >= 1, got {seconds}"
+            f"TRACKINIZER_SESSION_MAX_AGE_SECONDS must be >= 1, got {seconds}",
         )
     return seconds
 

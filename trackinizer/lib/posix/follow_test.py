@@ -59,7 +59,8 @@ def test_yields_appended_lines(tmp_path: Path, file_watch_ready: asyncio.Event) 
 
 
 def test_skips_what_was_already_there(
-    tmp_path: Path, file_watch_ready: asyncio.Event
+    tmp_path: Path,
+    file_watch_ready: asyncio.Event,
 ) -> None:
     """Lines present before the follow started are not delivered."""
     target = tmp_path / "log"
@@ -105,7 +106,8 @@ def test_holds_a_partial_line(tmp_path: Path, file_watch_ready: asyncio.Event) -
 
 
 def test_restarts_after_a_rewrite(
-    tmp_path: Path, file_watch_ready: asyncio.Event
+    tmp_path: Path,
+    file_watch_ready: asyncio.Event,
 ) -> None:
     """A file that shrinks is re-read from its new start.
 
@@ -126,7 +128,8 @@ def test_restarts_after_a_rewrite(
 
 
 def test_follows_a_file_created_later(
-    tmp_path: Path, file_watch_ready: asyncio.Event
+    tmp_path: Path,
+    file_watch_ready: asyncio.Event,
 ) -> None:
     """The file need not exist when the follow starts."""
     target = tmp_path / "log"
@@ -141,7 +144,9 @@ def test_follows_a_file_created_later(
 
 
 def test_ignores_a_sibling_file(
-    tmp_path: Path, file_watch_ready: asyncio.Event, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    file_watch_ready: asyncio.Event,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A sibling is examined but only the requested file supplies a line."""
     target = tmp_path / "log"
@@ -159,7 +164,10 @@ def test_ignores_a_sibling_file(
         async with real_watch(
             *directories,
             match=partial(
-                _matching_observed, match=match, sibling=sibling, examined=examined
+                _matching_observed,
+                match=match,
+                sibling=sibling,
+                examined=examined,
             ),
             existing=existing,
         ) as changes:
@@ -179,7 +187,8 @@ def test_ignores_a_sibling_file(
 
 
 def test_delivers_a_burst_in_order(
-    tmp_path: Path, file_watch_ready: asyncio.Event
+    tmp_path: Path,
+    file_watch_ready: asyncio.Event,
 ) -> None:
     """Several lines written at once arrive in the order written."""
     target = tmp_path / "log"
@@ -209,7 +218,10 @@ def _matching_observed(
 
 
 async def _changes_observed(
-    changes: AsyncIterator[set[Path]], *, sibling: Path, examined: asyncio.Event
+    changes: AsyncIterator[set[Path]],
+    *,
+    sibling: Path,
+    examined: asyncio.Event,
 ) -> AsyncIterator[set[Path]]:
     async for paths in changes:
         if sibling in paths:
@@ -218,7 +230,11 @@ async def _changes_observed(
 
 
 async def _take(
-    path: Path, count: int, timeout_sec: float, *, replay: bool = False
+    path: Path,
+    count: int,
+    timeout_sec: float,
+    *,
+    replay: bool = False,
 ) -> list[str]:
     """Read ``count`` lines, or return what arrived before the deadline."""
 
@@ -428,7 +444,8 @@ class TestSubdirectories:
     """
 
     def test_wakes_for_a_write_in_an_existing_subdirectory(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         leaf = tmp_path / "2026" / "08" / "25"
         leaf.mkdir(parents=True)
@@ -441,7 +458,8 @@ class TestSubdirectories:
         assert asyncio.run(run()) == {leaf / "rollout.jsonl"}
 
     def test_wakes_for_a_subdirectory_created_after_the_watch(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         """A directory born mid-run must get its own watch as it appears."""
 
@@ -465,7 +483,8 @@ class TestSubdirectories:
         assert tmp_path / "born-later" / "rollout.jsonl" in asyncio.run(run())
 
     def test_a_file_written_before_its_watch_is_still_reported(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         r"""The documented inotify race: fill a new directory instantly.
 
@@ -605,7 +624,9 @@ class TestCursor:
         _ = target.write_text("visible\n")
         cursor = follow._Cursor(target, offset=0)
         with patch.object(
-            Path, "open", side_effect=PermissionError(errno.EACCES, "permission denied")
+            Path,
+            "open",
+            side_effect=PermissionError(errno.EACCES, "permission denied"),
         ) as open_file:
             assert cursor.drain() == []
         open_file.assert_called_once_with("rb")
@@ -614,7 +635,9 @@ class TestCursor:
 
     @pytest.mark.parametrize("code", [errno.EMFILE, errno.ENFILE])
     def test_read_descriptor_exhaustion_is_reported(
-        self, tmp_path: Path, code: int
+        self,
+        tmp_path: Path,
+        code: int,
     ) -> None:
         target = tmp_path / "log"
         target.write_text("history\n")
@@ -648,7 +671,9 @@ class TestWatchFailures:
     """
 
     def test_a_descendant_vanishing_mid_walk_does_not_kill_the_watch(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A temp directory deleted between ``rglob`` and its watch is routine.
 
@@ -663,7 +688,10 @@ class TestWatchFailures:
         real_add = follow._add_watch
 
         def vanishing(
-            libc: ctypes.CDLL, fd: int, directory: Path, watches: dict[int, Path]
+            libc: ctypes.CDLL,
+            fd: int,
+            directory: Path,
+            watches: dict[int, Path],
         ) -> None:
             if directory == doomed:
                 raise FileNotFoundError(errno.ENOENT, "no such directory", str(doomed))
@@ -693,7 +721,9 @@ class TestWatchFailures:
             asyncio.run(run())
 
     def test_a_refused_adoption_is_reported_not_swallowed(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Hitting the watch limit is not "the directory vanished".
 
@@ -719,10 +749,12 @@ class TestWatchFailures:
         assert warned == [f"inotify refused a watch on {directory}"]
 
     @pytest.mark.skipif(
-        platform.system() != "Linux", reason="IN_Q_OVERFLOW is an inotify event"
+        platform.system() != "Linux",
+        reason="IN_Q_OVERFLOW is an inotify event",
     )
     def test_a_queue_overflow_rescans_rather_than_losing_the_writes(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         """``IN_Q_OVERFLOW`` means events were DROPPED, not that none happened.
 
@@ -743,7 +775,9 @@ class TestWatchFailures:
         assert existing in changed, "an overflow reported nothing was dropped"
 
     def test_a_vanished_adoption_is_not_reported(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The counterpart: a directory that really did vanish is routine.
 
@@ -779,7 +813,9 @@ class TestFollowTree:
             seen: list[tuple[Path, str]] = []
             armed = asyncio.Event()
             lines = follow.follow_tree(
-                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+                tmp_path,
+                match=lambda p: p.suffix == ".jsonl",
+                on_armed=armed.set,
             )
             task = asyncio.create_task(_collect(lines, seen, 1))
             await asyncio.wait_for(armed.wait(), 5.0)
@@ -794,7 +830,9 @@ class TestFollowTree:
             seen: list[tuple[Path, str]] = []
             armed = asyncio.Event()
             lines = follow.follow_tree(
-                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+                tmp_path,
+                match=lambda p: p.suffix == ".jsonl",
+                on_armed=armed.set,
             )
             task = asyncio.create_task(_collect(lines, seen, 1))
             await asyncio.wait_for(armed.wait(), 5.0)
@@ -812,7 +850,9 @@ class TestFollowTree:
             seen: list[tuple[Path, str]] = []
             armed = asyncio.Event()
             lines = follow.follow_tree(
-                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+                tmp_path,
+                match=lambda p: p.suffix == ".jsonl",
+                on_armed=armed.set,
             )
             task = asyncio.create_task(_collect(lines, seen, 4))
             await asyncio.wait_for(armed.wait(), 5.0)
@@ -836,7 +876,8 @@ class TestFollowTree:
         }
 
     def test_follows_a_file_in_a_subdirectory_created_later(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         """Codex's shape: the day directory is born during the run."""
 
@@ -844,7 +885,9 @@ class TestFollowTree:
             seen: list[tuple[Path, str]] = []
             armed = asyncio.Event()
             lines = follow.follow_tree(
-                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+                tmp_path,
+                match=lambda p: p.suffix == ".jsonl",
+                on_armed=armed.set,
             )
             task = asyncio.create_task(_collect(lines, seen, 1))
             await asyncio.wait_for(armed.wait(), 5.0)
@@ -875,7 +918,9 @@ class TestFollowTree:
             seen: list[follow.Line] = []
             armed = asyncio.Event()
             lines = follow.follow_tree(
-                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+                tmp_path,
+                match=lambda p: p.suffix == ".jsonl",
+                on_armed=armed.set,
             )
             task = asyncio.create_task(_collect_lines(lines, seen, 2))
             await asyncio.wait_for(armed.wait(), 5.0)
@@ -890,7 +935,8 @@ class TestFollowTree:
         assert [line.restart for line in got] == [False, True]
 
     def test_a_restart_survives_a_drain_that_finds_no_lines(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         """A rewrite seen mid-truncate must still reach the line it replaced.
 
@@ -920,7 +966,8 @@ class TestFollowTree:
         assert cursor.restarted, "the restart was lost before any line carried it"
 
     def test_a_restart_clears_once_its_lines_are_delivered(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         """Sticky until delivered, not sticky forever.
 
@@ -948,7 +995,9 @@ class TestFollowTree:
             seen: list[follow.Line] = []
             armed = asyncio.Event()
             lines = follow.follow_tree(
-                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+                tmp_path,
+                match=lambda p: p.suffix == ".jsonl",
+                on_armed=armed.set,
             )
             task = asyncio.create_task(_collect_lines(lines, seen, 2))
             await asyncio.wait_for(armed.wait(), 5.0)
@@ -969,7 +1018,9 @@ class TestFollowTree:
             seen: list[tuple[Path, str]] = []
             armed = asyncio.Event()
             lines = follow.follow_tree(
-                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+                tmp_path,
+                match=lambda p: p.suffix == ".jsonl",
+                on_armed=armed.set,
             )
             task = asyncio.create_task(_collect(lines, seen, 1))
             await asyncio.wait_for(armed.wait(), 5.0)
@@ -986,7 +1037,9 @@ class TestFollowTree:
             seen: list[tuple[Path, str]] = []
             armed = asyncio.Event()
             lines = follow.follow_tree(
-                tmp_path, match=lambda p: p.suffix == ".jsonl", on_armed=armed.set
+                tmp_path,
+                match=lambda p: p.suffix == ".jsonl",
+                on_armed=armed.set,
             )
             task = asyncio.create_task(_collect(lines, seen, 1))
             await asyncio.wait_for(armed.wait(), 5.0)
@@ -1037,10 +1090,13 @@ class TestPlatformDispatch:
     """
 
     @pytest.mark.skipif(
-        platform.system() == "Darwin", reason="native here; the real backend runs"
+        platform.system() == "Darwin",
+        reason="native here; the real backend runs",
     )
     def test_darwin_uses_the_fsevents_backend(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Off macOS, the Darwin branch still reaches FSEvents."""
         started: list[tuple[Path, ...]] = []
@@ -1051,10 +1107,13 @@ class TestPlatformDispatch:
         assert started == [(tmp_path,)]
 
     @pytest.mark.skipif(
-        platform.system() == "Linux", reason="native here; the real backend runs"
+        platform.system() == "Linux",
+        reason="native here; the real backend runs",
     )
     def test_linux_uses_the_inotify_backend(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Off Linux, the Linux branch still reaches inotify."""
         opened: list[tuple[Path, ...]] = []
@@ -1094,7 +1153,9 @@ class TestPlatformDispatch:
         assert asyncio.run(run()) == {tmp_path / "native.jsonl"}
 
     def test_a_platform_with_neither_backend_raises(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Somewhere with no supported mechanism says so, not degrades."""
         monkeypatch.setattr(platform, "system", lambda: "SunOS")
@@ -1127,7 +1188,7 @@ class TestFsEventsAdapter:
         replaced it.
         """
         emitted = _run_fsevents(
-            lambda o: o.fire(Path("/watched/tmp"), dest=Path("/watched/session.jsonl"))
+            lambda o: o.fire(Path("/watched/tmp"), dest=Path("/watched/session.jsonl")),
         )
         assert emitted == [{Path("/watched/tmp"), Path("/watched/session.jsonl")}]
 
@@ -1137,7 +1198,7 @@ class TestFsEventsAdapter:
             lambda o: (
                 o.fire(Path("/watched/subdir"), is_directory=True),
                 o.fire(Path("/watched/session.jsonl")),
-            )
+            ),
         )
         assert emitted == [{Path("/watched/session.jsonl")}]
 
@@ -1147,7 +1208,8 @@ class TestFsEventsAdapter:
 
         async def run() -> None:
             async with follow._fsevents_events(
-                observer, (Path("/first"), Path("/second"))
+                observer,
+                (Path("/first"), Path("/second")),
             ):
                 pass
 
@@ -1187,7 +1249,11 @@ class _StubEvent:
     """The three attributes the adapter reads off a watchdog event."""
 
     def __init__(
-        self, *, src_path: str, dest_path: str = "", is_directory: bool = False
+        self,
+        *,
+        src_path: str,
+        dest_path: str = "",
+        is_directory: bool = False,
     ) -> None:
         self.src_path = src_path
         self.dest_path = dest_path
@@ -1251,7 +1317,9 @@ def _run_fsevents(fire: Callable[[_StubObserver], object]) -> list[set[Path]]:
 
 
 async def _gather(
-    changed: AsyncIterator[set[Path]], into: list[set[Path]], count: int
+    changed: AsyncIterator[set[Path]],
+    into: list[set[Path]],
+    count: int,
 ) -> None:
     """Collect ``count`` wakes from ``changed``."""
     async for paths in changed:
@@ -1271,7 +1339,10 @@ async def _await_wake(woken: AsyncIterator[set[Path]], timeout_sec: float) -> se
 @pytest.mark.parametrize("existing", [False, True])
 @pytest.mark.parametrize("nested", [False, True])
 def test_tree_delivers_before_writer_closes(
-    tmp_path: Path, *, existing: bool, nested: bool
+    tmp_path: Path,
+    *,
+    existing: bool,
+    nested: bool,
 ) -> None:
     """Successive appends arrive while the same writer remains open."""
     target = tmp_path / "nested" / "log" if nested else tmp_path / "log"
@@ -1301,7 +1372,8 @@ async def _live_tree(root: Path, target: Path) -> None:
                     writer.write(text + "\n")
                     writer.flush()
                     line = await asyncio.wait_for(
-                        first if text == "one" else anext(lines), 2
+                        first if text == "one" else anext(lines),
+                        2,
                     )
                     assert line.text == text
                     assert not line.restart
@@ -1411,7 +1483,9 @@ async def _one_tree_line_matching_all(root: Path) -> follow.Line:
 @pytest.mark.skipif(platform.system() != "Darwin", reason="macOS vnode descriptors")
 @pytest.mark.parametrize("resume_excluded", [False, True])
 def test_tree_opens_only_selected_files(
-    tmp_path: Path, *, resume_excluded: bool
+    tmp_path: Path,
+    *,
+    resume_excluded: bool,
 ) -> None:
     """Rejected history consumes no vnode descriptors, even when in resume."""
     selected = tmp_path / "selected"
@@ -1431,7 +1505,10 @@ def test_tree_opens_only_selected_files(
 
 
 async def _selected_history(
-    root: Path, selected: Path, excluded: Path, resume_excluded: bool
+    root: Path,
+    selected: Path,
+    excluded: Path,
+    resume_excluded: bool,
 ) -> None:
     lines = follow.follow_tree(
         root,
@@ -1446,7 +1523,9 @@ async def _selected_history(
 
 @pytest.mark.parametrize("lines", [False, True])
 def test_case_insensitive_root_preserves_spelling(
-    tmp_path: Path, *, lines: bool
+    tmp_path: Path,
+    *,
+    lines: bool,
 ) -> None:
     physical = tmp_path / "MixedCase"
     physical.mkdir()
@@ -1489,7 +1568,9 @@ async def _write_under_watch(root: Path) -> set[Path]:
 
 @pytest.mark.parametrize("outside_exists", [False, True])
 def test_fsevents_keeps_in_root_rename_endpoint(
-    tmp_path: Path, *, outside_exists: bool
+    tmp_path: Path,
+    *,
+    outside_exists: bool,
 ) -> None:
     root = tmp_path / "watched"
     root.mkdir()
@@ -1530,7 +1611,8 @@ async def _renamed_under_roots(root: Path, alias: Path) -> set[Path]:
 
 
 def test_tree_drains_an_append_during_arming(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An append before registration needs no later event to become visible."""
     (tmp_path / "log").write_text("history\n")
@@ -1540,7 +1622,9 @@ def test_tree_drains_an_append_during_arming(
 
 @pytest.mark.parametrize("replay", [False, True])
 def test_tree_resume_preserves_history_selection(
-    tmp_path: Path, *, replay: bool
+    tmp_path: Path,
+    *,
+    replay: bool,
 ) -> None:
     """Resume replays one file; replay includes its neighbors exactly once."""
     selected = tmp_path / "a"
@@ -1614,8 +1698,10 @@ async def _selected_vnodes(root: Path) -> None:
     queue.put_nowait(selected)
     async with contextlib.aclosing(
         follow._vnode_changes(
-            follow._drain_queue(queue), watched.append, lambda path: path == selected
-        )
+            follow._drain_queue(queue),
+            watched.append,
+            lambda path: path == selected,
+        ),
     ) as changes:
         assert await anext(changes) == {selected}
         assert watched == [selected]
@@ -1628,7 +1714,11 @@ async def _selected_vnodes(root: Path) -> None:
 @pytest.mark.parametrize("drain_first", [False, True])
 @pytest.mark.parametrize("replacement", [b"same\n", b"same\nnew\n"])
 def test_cursor_new_inode_replays_shared_prefix(
-    tmp_path: Path, offset: int, replacement: bytes, *, drain_first: bool
+    tmp_path: Path,
+    offset: int,
+    replacement: bytes,
+    *,
+    drain_first: bool,
 ) -> None:
     target = tmp_path / "log"
     target.write_bytes(b"same\n")
@@ -1650,7 +1740,9 @@ def test_cursor_new_inode_replays_shared_prefix(
 @pytest.mark.parametrize("initial", [b"", "café".encode()[:-1]])
 @pytest.mark.parametrize("replacement", [b"", "café".encode()[:-1]])
 def test_cursor_new_inode_defers_restart_until_complete_line(
-    tmp_path: Path, initial: bytes, replacement: bytes
+    tmp_path: Path,
+    initial: bytes,
+    replacement: bytes,
 ) -> None:
     target = tmp_path / "log"
     target.write_bytes(initial)
@@ -1686,7 +1778,10 @@ async def _shared_prefix_replacement(root: Path, *, replay: bool) -> None:
     target.write_text("same\n")
     armed = asyncio.Event()
     lines = follow.follow_tree(
-        root, match=lambda p: p == target, replay=replay, on_armed=armed.set
+        root,
+        match=lambda p: p == target,
+        replay=replay,
+        on_armed=armed.set,
     )
     assert _is_async_generator(lines)
     async with contextlib.aclosing(lines):
@@ -1702,15 +1797,19 @@ async def _shared_prefix_replacement(root: Path, *, replay: bool) -> None:
                 writer.flush()
                 staged.replace(target)
                 assert await asyncio.wait_for(pending, 2) == follow.Line(
-                    path=target, text="same", restart=True
+                    path=target,
+                    text="same",
+                    restart=True,
                 )
                 assert await asyncio.wait_for(anext(lines), 2) == follow.Line(
-                    path=target, text="new"
+                    path=target,
+                    text="new",
                 )
                 writer.write("later\n")
                 writer.flush()
                 assert await asyncio.wait_for(anext(lines), 2) == follow.Line(
-                    path=target, text="later"
+                    path=target,
+                    text="later",
                 )
         finally:
             pending.cancel()
@@ -1721,10 +1820,12 @@ async def _shared_prefix_replacement(root: Path, *, replay: bool) -> None:
 @pytest.mark.skipif(platform.system() != "Darwin", reason="macOS vnode notifications")
 @pytest.mark.parametrize("writer_predates_follow", [False, True])
 def test_settled_writer_needs_no_close(
-    tmp_path: Path, *, writer_predates_follow: bool
+    tmp_path: Path,
+    *,
+    writer_predates_follow: bool,
 ) -> None:
     asyncio.run(
-        _settled_writer(tmp_path, writer_predates_follow=writer_predates_follow)
+        _settled_writer(tmp_path, writer_predates_follow=writer_predates_follow),
     )
 
 
@@ -1752,7 +1853,8 @@ async def _settled_writer(root: Path, *, writer_predates_follow: bool) -> None:
                     writer.write(f"append-{index}\n")
                     writer.flush()
                     line = await asyncio.wait_for(
-                        pending if index == 0 else anext(lines), 2
+                        pending if index == 0 else anext(lines),
+                        2,
                     )
                     assert line == follow.Line(path=target, text=f"append-{index}")
             finally:
@@ -1781,11 +1883,15 @@ def test_vnode_registration_error_releases_open_file(tmp_path: Path) -> None:
 async def _fail_discovered_vnode(root: Path) -> None:
     target = root / "log"
     async with follow._watch_lines(
-        root, match=lambda path: path == target, existing=set()
+        root,
+        match=lambda path: path == target,
+        existing=set(),
     ) as changed:
         target.write_text("new\n")
         with patch.object(
-            select, "kevent", side_effect=OSError(errno.ENOSPC, "registration refused")
+            select,
+            "kevent",
+            side_effect=OSError(errno.ENOSPC, "registration refused"),
         ):
             await asyncio.wait_for(anext(changed), 2)
 

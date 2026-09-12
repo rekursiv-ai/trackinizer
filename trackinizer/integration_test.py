@@ -124,7 +124,7 @@ async def _record(store: Store, session_id: UUID, *, idx: int, text: str) -> Non
                 part=0,
                 idx=idx,
                 record=UserMessage(content=text),
-            )
+            ),
         ],
     )
 
@@ -140,13 +140,13 @@ class TestIntegrationEndToEnd:
 
     async def test_per_kind_seq_is_monotonic(self, integ_store: Store) -> None:
         i1 = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="i1")
+            SubmitIssue(account="tester@example.com", title="i1"),
         )
         i2 = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="i2")
+            SubmitIssue(account="tester@example.com", title="i2"),
         )
         c1 = await integ_store.submit_belief(
-            SubmitBelief(account="tester@example.com", title="c1")
+            SubmitBelief(account="tester@example.com", title="c1"),
         )
         assert cast(Issue, await integ_store.get_inquiry(i1)).seq == 1
         assert cast(Issue, await integ_store.get_inquiry(i2)).seq == 2
@@ -159,7 +159,7 @@ class TestIntegrationEndToEnd:
         dedup key, so a retried batch is a no-op and reports ``logged=0``.
         """
         eid = await integ_store.submit_experiment(
-            SubmitExperiment(account="tester@example.com", title="run")
+            SubmitExperiment(account="tester@example.com", title="run"),
         )
         batch = [
             MetricPoint(key="loss", step=0, value=0.9),
@@ -186,7 +186,8 @@ class TestIntegrationEndToEnd:
         assert [p.step for p in loss_only] == [0, 1]
 
     async def test_log_metrics_within_batch_duplicate_first_wins(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """Two points with the same (key, step) in ONE batch: first wins.
 
@@ -197,7 +198,7 @@ class TestIntegrationEndToEnd:
         intra-batch case has subtle Postgres semantics.
         """
         eid = await integ_store.submit_experiment(
-            SubmitExperiment(account="tester@example.com", title="run")
+            SubmitExperiment(account="tester@example.com", title="run"),
         )
         logged, skipped = await integ_store.log_metrics(
             eid,
@@ -213,11 +214,12 @@ class TestIntegrationEndToEnd:
     async def test_log_metrics_timestamp_round_trips(self, integ_store: Store) -> None:
         """A tz-aware ``timestamp`` round-trips through ``TIMESTAMPTZ``."""
         eid = await integ_store.submit_experiment(
-            SubmitExperiment(account="tester@example.com", title="run")
+            SubmitExperiment(account="tester@example.com", title="run"),
         )
         ts = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
         await integ_store.log_metrics(
-            eid, [MetricPoint(key="loss", step=0, value=1.0, timestamp=ts)]
+            eid,
+            [MetricPoint(key="loss", step=0, value=1.0, timestamp=ts)],
         )
         points = await integ_store.read_metrics(eid)
         assert points[0].timestamp == ts
@@ -225,7 +227,7 @@ class TestIntegrationEndToEnd:
     async def test_read_metrics_offset_skips_rows(self, integ_store: Store) -> None:
         """``offset`` skips leading rows in (key, step) order."""
         eid = await integ_store.submit_experiment(
-            SubmitExperiment(account="tester@example.com", title="run")
+            SubmitExperiment(account="tester@example.com", title="run"),
         )
         await integ_store.log_metrics(
             eid,
@@ -235,7 +237,8 @@ class TestIntegrationEndToEnd:
         assert [(p.key, p.step) for p in page] == [("loss", 1)]
 
     async def test_log_metrics_concurrent_appenders_exact_no_loss(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """Concurrent overlapping batches: no lost writes, exact per-call counts.
 
@@ -246,7 +249,7 @@ class TestIntegrationEndToEnd:
         is race-correct (counts returned rows, not a whole-table delta).
         """
         eid = await integ_store.submit_experiment(
-            SubmitExperiment(account="tester@example.com", title="run")
+            SubmitExperiment(account="tester@example.com", title="run"),
         )
         a = [MetricPoint(key="loss", step=i, value=1.0) for i in range(100)]
         b = [MetricPoint(key="loss", step=i, value=2.0) for i in range(50, 150)]
@@ -262,7 +265,7 @@ class TestIntegrationEndToEnd:
     async def test_log_metrics_large_batch_at_cap(self, integ_store: Store) -> None:
         """A max-size batch inserts and reads back in order at scale."""
         eid = await integ_store.submit_experiment(
-            SubmitExperiment(account="tester@example.com", title="run")
+            SubmitExperiment(account="tester@example.com", title="run"),
         )
         pts = [MetricPoint(key="loss", step=i, value=float(i)) for i in range(10_000)]
         logged, skipped = await integ_store.log_metrics(eid, pts)
@@ -273,7 +276,8 @@ class TestIntegrationEndToEnd:
         assert back[-1].step == 9999
 
     async def test_experiment_config_empty_dict_round_trips(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """An empty ``config={}`` is a real value, stored/read as ``{}`` not NULL.
 
@@ -283,13 +287,14 @@ class TestIntegrationEndToEnd:
         dropped.
         """
         eid = await integ_store.submit_experiment(
-            SubmitExperiment(account="tester@example.com", title="run", config={})
+            SubmitExperiment(account="tester@example.com", title="run", config={}),
         )
         row = cast(Experiment, await integ_store.get_inquiry(eid))
         assert row.config == {}
 
     async def test_experiment_config_reorder_is_noop_edit(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """Re-setting a key-reordered but equal config is a no-op (no phantom row).
 
@@ -299,16 +304,21 @@ class TestIntegrationEndToEnd:
         """
         eid = await integ_store.submit_experiment(
             SubmitExperiment(
-                account="tester@example.com", title="run", config={"a": 1, "b": 2}
-            )
+                account="tester@example.com",
+                title="run",
+                config={"a": 1, "b": 2},
+            ),
         )
         change_id = await integ_store.set_config(
-            eid, {"b": 2, "a": 1}, actor="scientist"
+            eid,
+            {"b": 2, "a": 1},
+            actor="scientist",
         )
         assert change_id is None
 
     async def test_log_metrics_latest_value_per_key_via_join(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """The latest-value roll-up is a DISTINCT ON over the PK index.
 
@@ -317,7 +327,7 @@ class TestIntegrationEndToEnd:
         step)``.
         """
         eid = await integ_store.submit_experiment(
-            SubmitExperiment(account="tester@example.com", title="run")
+            SubmitExperiment(account="tester@example.com", title="run"),
         )
         await integ_store.log_metrics(
             eid,
@@ -342,7 +352,7 @@ class TestIntegrationEndToEnd:
         bypasses the wire cannot persist a negative step.
         """
         eid = await integ_store.submit_experiment(
-            SubmitExperiment(account="tester@example.com", title="run")
+            SubmitExperiment(account="tester@example.com", title="run"),
         )
         async with integ_store.engine.acquire() as conn:
             with pytest.raises(asyncpg.CheckViolationError):
@@ -362,7 +372,7 @@ class TestIntegrationEndToEnd:
         backstop set alongside the step / value / kind CHECKs.
         """
         eid = await integ_store.submit_experiment(
-            SubmitExperiment(account="tester@example.com", title="run")
+            SubmitExperiment(account="tester@example.com", title="run"),
         )
         async with integ_store.engine.acquire() as conn:
             for bad_key, step in (("", 0), ("   ", 1), ("x" * 513, 2)):
@@ -376,7 +386,8 @@ class TestIntegrationEndToEnd:
                     )
 
     async def test_metrics_db_rejects_non_finite_value(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """The finiteness DB CHECK backstops the wire ``allow_inf_nan=False``.
 
@@ -387,7 +398,7 @@ class TestIntegrationEndToEnd:
         alongside the ``step >= 0`` and ``kind = 'scalar'`` CHECKs.
         """
         eid = await integ_store.submit_experiment(
-            SubmitExperiment(account="tester@example.com", title="run")
+            SubmitExperiment(account="tester@example.com", title="run"),
         )
         # Each non-finite literal is a fixed SQL constant (not interpolated
         # input); one INSERT per value, distinct steps to avoid a PK collision
@@ -421,7 +432,7 @@ class TestIntegrationEndToEnd:
         the ``session_records.kind`` CHECK.
         """
         eid = await integ_store.submit_experiment(
-            SubmitExperiment(account="tester@example.com", title="run")
+            SubmitExperiment(account="tester@example.com", title="run"),
         )
         async with integ_store.engine.acquire() as conn:
             with pytest.raises(asyncpg.CheckViolationError):
@@ -433,7 +444,8 @@ class TestIntegrationEndToEnd:
                 )
 
     async def test_experiment_config_round_trips_and_edits(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """``config`` stores a JSON object, reads back as a dict, and edits.
 
@@ -447,7 +459,7 @@ class TestIntegrationEndToEnd:
             "tags": ["a"],
         }
         eid = await integ_store.submit_experiment(
-            SubmitExperiment(account="tester@example.com", title="run", config=cfg)
+            SubmitExperiment(account="tester@example.com", title="run", config=cfg),
         )
         row = cast(Experiment, await integ_store.get_inquiry(eid))
         assert row.config == cfg  # `dict` in, dict out (asyncpg jsonb codec)
@@ -466,19 +478,22 @@ class TestIntegrationEndToEnd:
     async def test_log_metrics_rejects_non_experiment(self, integ_store: Store) -> None:
         """A metric may only attach to an Experiment; other kinds 409, missing 404."""
         belief = await integ_store.submit_belief(
-            SubmitBelief(account="tester@example.com", title="b")
+            SubmitBelief(account="tester@example.com", title="b"),
         )
         with pytest.raises(ConflictError, match="not an Experiment"):
             await integ_store.log_metrics(
-                belief, [MetricPoint(key="loss", step=0, value=1.0)]
+                belief,
+                [MetricPoint(key="loss", step=0, value=1.0)],
             )
         with pytest.raises(NotFoundError, match="not found"):
             await integ_store.log_metrics(
-                new_uuid(), [MetricPoint(key="loss", step=0, value=1.0)]
+                new_uuid(),
+                [MetricPoint(key="loss", step=0, value=1.0)],
             )
 
     async def test_start_session_correlates_resume_by_cli_session_id(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """A start with a known ``cli_session_id`` re-attaches the prior session.
 
@@ -586,7 +601,8 @@ class TestIntegrationEndToEnd:
         assert a_resume == a_sid
 
     async def test_resume_no_auth_matches_by_cli_session_id_alone(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """In ``--no-auth`` (api_key_id=None) resume scopes on cli_session_id only.
 
@@ -618,7 +634,8 @@ class TestIntegrationEndToEnd:
         assert resumed == sid  # re-attached, not a fresh session.
 
     async def test_resume_applies_rooms_on_live_session(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """Resuming a still-LIVE session (not ended) also joins new rooms.
 
@@ -684,7 +701,8 @@ class TestIntegrationEndToEnd:
         assert set(row.rooms or ()) == {"a", "b"}
 
     async def test_resume_audit_attributed_to_resuming_caller(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """The re-open audit names the resuming caller, not the original owner (B3)."""
         sid, owner, _ = await integ_store.start_session(
@@ -716,7 +734,8 @@ class TestIntegrationEndToEnd:
         assert actor == "bob"
 
     async def test_start_session_fresh_when_no_cli_session_id_match(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """A null or unmatched ``cli_session_id`` opens a fresh session.
 
@@ -735,7 +754,8 @@ class TestIntegrationEndToEnd:
         assert (owner_a, owner_b) == ("scientist", "scientist#2")
 
     async def test_start_session_replay_drains_leaked_change_id(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """A ``start_session`` replay must not leak the change-id into the next write.
 
@@ -764,7 +784,7 @@ class TestIntegrationEndToEnd:
         assert replay_sid == sid
         # The leaked key must NOT survive into a subsequent keyless write.
         new_sid = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="after")
+            SubmitIssue(account="tester@example.com", title="after"),
         )
         async with integ_store.engine.acquire() as conn:
             change_id = await conn.fetchval(
@@ -774,11 +794,12 @@ class TestIntegrationEndToEnd:
         assert change_id != key
 
     async def test_end_session_replay_drains_leaked_change_id(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """An ``end_session`` replay must not leak the change-id into the next write."""
         sid = await integ_store.submit_agentsession(
-            SubmitAgentSession(account="tester@example.com", title="run", cli="codex")
+            SubmitAgentSession(account="tester@example.com", title="run", cli="codex"),
         )
         key = new_uuid()
         set_client_change_id(key)
@@ -788,7 +809,7 @@ class TestIntegrationEndToEnd:
         await integ_store.end_session(sid, ended=datetime.now(UTC), actor="u")
         # A subsequent keyless write must not consume the leaked key.
         new_sid = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="after")
+            SubmitIssue(account="tester@example.com", title="after"),
         )
         async with integ_store.engine.acquire() as conn:
             change_id = await conn.fetchval(
@@ -807,19 +828,21 @@ class TestIntegrationEndToEnd:
         desynced (ended, non-complete) row through it.
         """
         sid = await integ_store.submit_agentsession(
-            SubmitAgentSession(account="tester@example.com", title="run", cli="codex")
+            SubmitAgentSession(account="tester@example.com", title="run", cli="codex"),
         )
         await integ_store.end_session(sid, ended=datetime.now(UTC), actor="u")
         async with integ_store.engine.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT status, agentsession_ended FROM inquiries WHERE id = $1", sid
+                "SELECT status, agentsession_ended FROM inquiries WHERE id = $1",
+                sid,
             )
         assert row is not None
         assert row["status"] == "complete"
         assert row["agentsession_ended"] is not None
 
     async def test_reserve_session_actor_suffixes_across_all_sessions(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """A routing name is reserved for a session's LIFETIME, never reused.
 
@@ -834,7 +857,10 @@ class TestIntegrationEndToEnd:
         # Open a session owning "scientist".
         sid = await integ_store.submit_agentsession(
             SubmitAgentSession(
-                account="tester@example.com", title="s", cli="claude", owner="scientist"
+                account="tester@example.com",
+                title="s",
+                cli="claude",
+                owner="scientist",
             ),
             actor="scientist",
         )
@@ -858,7 +884,8 @@ class TestIntegrationEndToEnd:
         assert await integ_store.reserve_session_actor("scientist") == "scientist#3"
 
     async def test_concurrent_session_starts_get_distinct_routing_names(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """Two concurrent starts for one actor get distinct routing names.
 
@@ -870,13 +897,17 @@ class TestIntegrationEndToEnd:
         results = await asyncio.gather(
             integ_store.start_session(
                 SubmitAgentSession(
-                    account="tester@example.com", title="a", cli="codex"
+                    account="tester@example.com",
+                    title="a",
+                    cli="codex",
                 ),
                 requested_actor="scientist",
             ),
             integ_store.start_session(
                 SubmitAgentSession(
-                    account="tester@example.com", title="b", cli="codex"
+                    account="tester@example.com",
+                    title="b",
+                    cli="codex",
                 ),
                 requested_actor="scientist",
             ),
@@ -889,7 +920,8 @@ class TestIntegrationEndToEnd:
             assert row.owner == name
 
     async def test_start_session_same_key_replays_original_owner(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """A same-key start retry replays the original (id, owner), no phantom.
 
@@ -922,7 +954,8 @@ class TestIntegrationEndToEnd:
         assert retry_owner == "alice"
 
     async def test_agentsession_lifecycle_check_forbids_zombies(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """The DB CHECK ties ``ended`` to ``status='complete'`` for sessions.
 
@@ -947,7 +980,7 @@ class TestIntegrationEndToEnd:
                 )
 
         sid = await integ_store.submit_agentsession(
-            SubmitAgentSession(account="tester@example.com", title="live", cli="codex")
+            SubmitAgentSession(account="tester@example.com", title="live", cli="codex"),
         )
         # A2b: completing without stamping ended (set_status alone) -> 409.
         with pytest.raises(ConflictError, match="check constraint"):
@@ -961,7 +994,9 @@ class TestIntegrationEndToEnd:
 
         # A live session can be abandoned with ``ended`` left NULL.
         sid2 = await integ_store.submit_agentsession(
-            SubmitAgentSession(account="tester@example.com", title="aband", cli="codex")
+            SubmitAgentSession(
+                account="tester@example.com", title="aband", cli="codex"
+            ),
         )
         await integ_store.set_status(sid2, "abandoned", actor="u")
         abandoned = cast(AgentSession, await integ_store.get_inquiry(sid2))
@@ -969,7 +1004,8 @@ class TestIntegrationEndToEnd:
         assert abandoned.ended is None
 
     async def test_session_start_route_renegotiates_actor(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """``POST /api/sessions/start`` returns a live-unique granted actor."""
         app = FastAPI()
@@ -989,7 +1025,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 first = await http.post(
                     "/api/sessions/start",
@@ -1020,7 +1057,8 @@ class TestIntegrationEndToEnd:
         assert sorted(row.rooms) == ["lab", "sear"]
 
     async def test_metrics_and_config_round_trip_through_http(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """End-to-end: log metrics + read them + read config over HTTP.
 
@@ -1031,7 +1069,7 @@ class TestIntegrationEndToEnd:
         """
         cfg: dict[str, object] = {"lr": 3e-4, "batch": 32}
         eid = await integ_store.submit_experiment(
-            SubmitExperiment(account="tester@example.com", title="run", config=cfg)
+            SubmitExperiment(account="tester@example.com", title="run", config=cfg),
         )
         app = FastAPI()
         app.state.engine = integ_store.engine
@@ -1049,7 +1087,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 logged = await http.post(
                     f"/api/experiments/{eid}/metrics",
@@ -1058,7 +1097,7 @@ class TestIntegrationEndToEnd:
                             {"key": "loss", "step": 0, "value": 0.9},
                             {"key": "loss", "step": 1, "value": 0.5},
                             {"key": "acc", "step": 0, "value": 0.4},
-                        ]
+                        ],
                     },
                 )
                 assert logged.status_code == 200, logged.text
@@ -1083,10 +1122,11 @@ class TestIntegrationEndToEnd:
                 over = {
                     "points": [
                         {"key": "loss", "step": i, "value": 1.0} for i in range(10_001)
-                    ]
+                    ],
                 }
                 over_resp = await http.post(
-                    f"/api/experiments/{eid}/metrics", json=over
+                    f"/api/experiments/{eid}/metrics",
+                    json=over,
                 )
                 assert over_resp.status_code == 422, over_resp.text
                 still = await http.get(f"/api/experiments/{eid}/metrics")
@@ -1096,7 +1136,8 @@ class TestIntegrationEndToEnd:
             app.dependency_overrides.pop(web.optional_identity, None)
 
     async def test_rooms_field_edits_round_trip_through_route(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """Rooms is editable via the generated field routes (PUT/PATCH/DELETE).
 
@@ -1124,7 +1165,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 start = await http.post(
                     "/api/sessions/start",
@@ -1182,7 +1224,8 @@ class TestIntegrationEndToEnd:
         assert sorted(rows[2]["new_agentsession_rooms"]) == ["ops", "sear"]
 
     async def test_send_resolves_actor_room_to_live_session(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """``POST /api/messages`` resolves ``@actor:room`` to live sessions.
 
@@ -1205,7 +1248,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 start = await http.post(
                     "/api/sessions/start",
@@ -1240,7 +1284,8 @@ class TestIntegrationEndToEnd:
             app.dependency_overrides.pop(current_user, None)
 
     async def test_send_bare_actor_rejects_multi_room_session(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """A bare ``@actor`` send is rejected when the session spans >1 room.
 
@@ -1263,7 +1308,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 await http.post(
                     "/api/sessions/start",
@@ -1271,7 +1317,8 @@ class TestIntegrationEndToEnd:
                 )
                 # Bare send: ambiguous across rooms a and b -> 409.
                 bare = await http.post(
-                    "/api/messages", json={"actor": "multi", "text": "go"}
+                    "/api/messages",
+                    json={"actor": "multi", "text": "go"},
                 )
                 assert bare.status_code == 409, bare.text
                 assert "address one explicitly" in bare.json()["detail"]
@@ -1311,7 +1358,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 start = await http.post(
                     "/api/sessions/start",
@@ -1321,10 +1369,14 @@ class TestIntegrationEndToEnd:
                 key = str(uuid.uuid4())
                 body = {"actor": "idem", "room": "sear", "text": "once"}
                 first = await http.post(
-                    "/api/messages", json=body, headers={"Idempotency-Key": key}
+                    "/api/messages",
+                    json=body,
+                    headers={"Idempotency-Key": key},
                 )
                 replay = await http.post(
-                    "/api/messages", json=body, headers={"Idempotency-Key": key}
+                    "/api/messages",
+                    json=body,
+                    headers={"Idempotency-Key": key},
                 )
                 assert first.json()["delivered"] == [sid]
                 # Replay returns the same receipt, but does not enqueue again.
@@ -1335,7 +1387,8 @@ class TestIntegrationEndToEnd:
             app.dependency_overrides.pop(current_user, None)
 
     async def test_send_concurrent_same_key_enqueues_once(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """Two concurrent same-key sends enqueue exactly one message.
 
@@ -1362,7 +1415,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 start = await http.post(
                     "/api/sessions/start",
@@ -1373,10 +1427,14 @@ class TestIntegrationEndToEnd:
                 body = {"actor": "race", "room": "sear", "text": "once"}
                 first, second = await asyncio.gather(
                     http.post(
-                        "/api/messages", json=body, headers={"Idempotency-Key": key}
+                        "/api/messages",
+                        json=body,
+                        headers={"Idempotency-Key": key},
                     ),
                     http.post(
-                        "/api/messages", json=body, headers={"Idempotency-Key": key}
+                        "/api/messages",
+                        json=body,
+                        headers={"Idempotency-Key": key},
                     ),
                 )
                 assert first.json()["delivered"] == [sid]
@@ -1388,7 +1446,9 @@ class TestIntegrationEndToEnd:
             app.dependency_overrides.pop(current_user, None)
 
     async def test_send_skips_session_ended_after_resolve(
-        self, integ_store: Store, monkeypatch: pytest.MonkeyPatch
+        self,
+        integ_store: Store,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A session ended between resolve and enqueue is not queued to.
 
@@ -1413,7 +1473,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 start = await http.post(
                     "/api/sessions/start",
@@ -1423,11 +1484,15 @@ class TestIntegrationEndToEnd:
                 # Close via ``end_session`` (ended + status=complete together)
                 # so the AgentSession lifecycle CHECK holds.
                 await integ_store.end_session(
-                    sid, ended=datetime.now(UTC), actor="ending"
+                    sid,
+                    ended=datetime.now(UTC),
+                    actor="ending",
                 )
 
                 async def _stale(
-                    actor: str, *, room: str | None = None
+                    actor: str,
+                    *,
+                    room: str | None = None,
                 ) -> list[tuple[uuid.UUID, tuple[str, ...]]]:
                     del actor, room
                     return [(sid, ("sear",))]
@@ -1463,7 +1528,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 resp = await http.post(
                     "/api/sessions/start",
@@ -1474,7 +1540,8 @@ class TestIntegrationEndToEnd:
             app.dependency_overrides.pop(current_user, None)
 
     async def test_read_feed_interleaves_sessions_and_filters(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """The console feed interleaves turns across sessions, in time order.
 
@@ -1492,7 +1559,7 @@ class TestIntegrationEndToEnd:
                 cli="codex",
                 owner="scientist",
                 rooms=["sear"],
-            )
+            ),
         )
         eng = await integ_store.submit_agentsession(
             SubmitAgentSession(
@@ -1501,7 +1568,7 @@ class TestIntegrationEndToEnd:
                 cli="claude",
                 owner="eng",
                 rooms=["lab"],
-            )
+            ),
         )
         # Interleave appends so created-order spans both sessions.
         await _record(integ_store, sci, idx=0, text="a")
@@ -1533,7 +1600,7 @@ class TestIntegrationEndToEnd:
                 feed[0].session_id,
                 feed[0].part,
                 feed[0].seq,
-            )
+            ),
         )
         assert [f.actor for f in after_first] == ["eng", "scientist"]
 
@@ -1543,7 +1610,8 @@ class TestIntegrationEndToEnd:
         assert [f.actor for f in tail2] == ["eng", "scientist"]
 
     async def test_read_feed_composite_cursor_spans_created_ties(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """A page boundary inside a same-``created`` group skips no rows.
 
@@ -1555,13 +1623,19 @@ class TestIntegrationEndToEnd:
         """
         a = await integ_store.submit_agentsession(
             SubmitAgentSession(
-                account="tester@example.com", title="a", cli="codex", owner="a-actor"
-            )
+                account="tester@example.com",
+                title="a",
+                cli="codex",
+                owner="a-actor",
+            ),
         )
         b = await integ_store.submit_agentsession(
             SubmitAgentSession(
-                account="tester@example.com", title="b", cli="codex", owner="b-actor"
-            )
+                account="tester@example.com",
+                title="b",
+                cli="codex",
+                owner="b-actor",
+            ),
         )
         # Force an exact ``created`` tie across the two sessions (the column
         # defaults to clock_timestamp(); set it explicitly here).
@@ -1583,14 +1657,15 @@ class TestIntegrationEndToEnd:
         # Resume past the first via the composite cursor; the tied second row
         # (same created, different session) must still be returned.
         page2 = await integ_store.read_feed(
-            after=(first.created, first.session_id, first.part, first.seq)
+            after=(first.created, first.session_id, first.part, first.seq),
         )
         assert [f.session_id for f in page2] == [
             sid for sid in (a, b) if sid != first.session_id
         ]
 
     async def test_inbound_enqueue_then_drain_round_trips(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """``POST``/``GET`` ``/inbound`` round-trips; sender is route-attested.
 
@@ -1601,8 +1676,10 @@ class TestIntegrationEndToEnd:
         """
         sid = await integ_store.submit_agentsession(
             SubmitAgentSession(
-                account="tester@example.com", title="inbox", cli="claude"
-            )
+                account="tester@example.com",
+                title="inbox",
+                cli="claude",
+            ),
         )
         app = FastAPI()
         app.state.engine = integ_store.engine
@@ -1618,7 +1695,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 # A client-sent ``source`` is forbidden, not ignored.
                 forged = await http.post(
@@ -1648,7 +1726,8 @@ class TestIntegrationEndToEnd:
                 # Unknown session -> 404 on both verbs.
                 missing = uuid.uuid4()
                 r404 = await http.post(
-                    f"/api/sessions/{missing}/inbound", json={"text": "x"}
+                    f"/api/sessions/{missing}/inbound",
+                    json={"text": "x"},
                 )
                 assert r404.status_code == 404
 
@@ -1659,14 +1738,16 @@ class TestIntegrationEndToEnd:
                 # REV-31: end with no ``ended`` body still stamps a real time.
                 assert end.json()["ended"] is not None
                 rejected = await http.post(
-                    f"/api/sessions/{sid}/inbound", json={"text": "late"}
+                    f"/api/sessions/{sid}/inbound",
+                    json={"text": "late"},
                 )
                 assert rejected.status_code == 409
         finally:
             app.dependency_overrides.pop(current_user, None)
 
     async def test_web_get_surfaces_agentsession_fields(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """``/api/web/get`` projects an AgentSession's kind-specific columns.
 
@@ -1697,7 +1778,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 r = await http.get(f"/api/web/get/{sid}")
                 assert r.status_code == 200, r.text
@@ -1712,10 +1794,11 @@ class TestIntegrationEndToEnd:
             app.dependency_overrides.pop(current_user, None)
 
     async def test_session_records_cascade_on_session_purge(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         sid = await integ_store.submit_agentsession(
-            SubmitAgentSession(account="tester@example.com", title="run", cli="claude")
+            SubmitAgentSession(account="tester@example.com", title="run", cli="claude"),
         )
         await _record(integ_store, sid, idx=0, text="captured")
         await integ_store.purge(sid, actor="user")
@@ -1723,7 +1806,8 @@ class TestIntegrationEndToEnd:
         assert await integ_store.read_session_records(sid, part=0) == []
 
     async def test_session_end_retry_same_key_replays_not_409(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """A retried POST /end with the same Idempotency-Key replays 200.
 
@@ -1759,7 +1843,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 r = await http.post("/api/sessions/start", json={"cli": "codex"})
                 assert r.status_code == 201, r.text
@@ -1799,7 +1884,8 @@ class TestIntegrationEndToEnd:
             app.dependency_overrides.pop(current_user, None)
 
     async def test_session_end_with_cli_backfill_retry_replays_not_409(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """End-with-cli-backfill retry replays 200 (the K-on-cli-row case).
 
@@ -1833,7 +1919,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 # Start WITHOUT a cli_session_id so the end-time backfill is a
                 # real change (the cli emit then consumes K).
@@ -1872,7 +1959,7 @@ class TestIntegrationEndToEnd:
                 title="positive measurement",
                 codechanges=[],
                 outcome="ok",
-            )
+            ),
         )
         belief_id = await integ_store.submit_belief(
             SubmitBelief(
@@ -1882,10 +1969,12 @@ class TestIntegrationEndToEnd:
                 subscribers=["alice"],
                 proved_by=[
                     Citation(
-                        artifact_id=exp_id, artifact_kind="Experiment", valence=1.0
-                    )
+                        artifact_id=exp_id,
+                        artifact_kind="Experiment",
+                        valence=1.0,
+                    ),
                 ],
-            )
+            ),
         )
         await integ_store.set_status(exp_id, "complete", actor="user")
         belief = cast(Belief, await integ_store.get_inquiry(belief_id))
@@ -1906,7 +1995,7 @@ class TestIntegrationEndToEnd:
         integ_store: Store,
     ) -> None:
         blocker_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="first")
+            SubmitIssue(account="tester@example.com", title="first"),
         )
         await integ_store.submit_issue(
             SubmitIssue(
@@ -1929,7 +2018,9 @@ class TestIntegrationEndToEnd:
     ) -> None:
         belief_id = await integ_store.submit_belief(
             SubmitBelief(
-                account="tester@example.com", title="bare proven", judgement="proven"
+                account="tester@example.com",
+                title="bare proven",
+                judgement="proven",
             ),
         )
         assert (
@@ -1938,10 +2029,10 @@ class TestIntegrationEndToEnd:
 
     async def test_edge_cycles_are_rejected(self, integ_store: Store) -> None:
         a_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         b_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         await integ_store.add_edge(
             from_id=a_id,
@@ -1960,10 +2051,10 @@ class TestIntegrationEndToEnd:
     async def test_edge_cycle_check_is_per_kind(self, integ_store: Store) -> None:
         """Acyclicity is per-edge-kind; cross-kind paths aren't cycles."""
         issue_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="parent issue")
+            SubmitIssue(account="tester@example.com", title="parent issue"),
         )
         belief_id = await integ_store.submit_belief(
-            SubmitBelief(account="tester@example.com", title="a belief")
+            SubmitBelief(account="tester@example.com", title="a belief"),
         )
         # Issue produced_by -> Belief.
         await integ_store.add_edge(
@@ -1982,7 +2073,8 @@ class TestIntegrationEndToEnd:
         )
 
     async def test_add_edge_existing_edge_overwrites_annotations(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """Re-adding an edge applies the supplied annotations (upsert, no error).
 
@@ -1991,10 +2083,10 @@ class TestIntegrationEndToEnd:
         anywhere else. User annotations are never silently dropped.
         """
         a_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         b_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         await integ_store.add_edge(
             from_id=a_id,
@@ -2011,20 +2103,23 @@ class TestIntegrationEndToEnd:
             note="second",
         )
         edge = await integ_store.get_edge(
-            from_id=a_id, to_id=b_id, edge_kind="requires"
+            from_id=a_id,
+            to_id=b_id,
+            edge_kind="requires",
         )
         assert edge is not None
         assert edge.note == "second"
 
     async def test_set_edge_annotation_is_partial_update(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """Omitted fields stay unchanged; explicit ``""`` / ``[]`` clears."""
         a_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         b_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         await integ_store.add_edge(
             from_id=a_id,
@@ -2055,7 +2150,8 @@ class TestIntegrationEndToEnd:
         assert list(row["labels"]) == ["important"]
 
     async def test_edge_without_note_or_labels_stores_null(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """An edge created with no note/labels stores NULL, not '' / '{}'.
 
@@ -2064,13 +2160,16 @@ class TestIntegrationEndToEnd:
         change-log mirror coerces it for its presence CHECK separately).
         """
         a_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         b_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         await integ_store.add_edge(
-            from_id=a_id, to_id=b_id, edge_kind="requires", actor="u"
+            from_id=a_id,
+            to_id=b_id,
+            edge_kind="requires",
+            actor="u",
         )
         async with integ_store.engine.acquire() as conn:
             row = await conn.fetchrow(
@@ -2085,14 +2184,15 @@ class TestIntegrationEndToEnd:
         assert row["labels"] is None
 
     async def test_clearing_edge_note_and_last_label_stores_null(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """Blanking an edge note or removing its last label stores NULL."""
         a_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         b_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         await integ_store.add_edge(
             from_id=a_id,
@@ -2129,7 +2229,8 @@ class TestIntegrationEndToEnd:
         assert row["labels"] is None
 
     async def test_edge_label_add_preserves_insertion_order(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """Sequential ``label add`` keeps insertion order; it must not re-sort.
 
@@ -2139,17 +2240,24 @@ class TestIntegrationEndToEnd:
         catches that regression (A3).
         """
         a_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         b_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         await integ_store.add_edge(
-            from_id=a_id, to_id=b_id, edge_kind="requires", actor="u"
+            from_id=a_id,
+            to_id=b_id,
+            edge_kind="requires",
+            actor="u",
         )
         for label in ("zeta", "alpha", "mu"):
             await integ_store.add_edge_label(
-                from_id=a_id, to_id=b_id, edge_kind="requires", label=label, actor="u"
+                from_id=a_id,
+                to_id=b_id,
+                edge_kind="requires",
+                label=label,
+                actor="u",
             )
         async with integ_store.engine.acquire() as conn:
             labels = await conn.fetchval(
@@ -2173,7 +2281,9 @@ class TestIntegrationEndToEnd:
         """
         broader_id = await integ_store.submit_issue(
             SubmitIssue(
-                account="tester@example.com", title="goal", subscribers=["alice"]
+                account="tester@example.com",
+                title="goal",
+                subscribers=["alice"],
             ),
         )
         narrower_id = await integ_store.submit_issue(
@@ -2211,10 +2321,10 @@ class TestIntegrationEndToEnd:
         integ_store: Store,
     ) -> None:
         blocked_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="blocked")
+            SubmitIssue(account="tester@example.com", title="blocked"),
         )
         blocker_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="blocker")
+            SubmitIssue(account="tester@example.com", title="blocker"),
         )
         # Requires is stored from=requirer, to=prerequisite: the blocked issue
         # requires the blocker (prerequisite).
@@ -2314,7 +2424,9 @@ class TestIntegrationEndToEnd:
             ),
         )
         await integ_store.set_google_scholar_cluster_id(
-            paper_id, "new-id", actor="user"
+            paper_id,
+            "new-id",
+            actor="user",
         )
         async with integ_store.engine.acquire() as conn:
             row = await conn.fetchrow(
@@ -2340,7 +2452,9 @@ class TestIntegrationEndToEnd:
         """
         paper_id = await integ_store.submit_paper(
             SubmitPaper(
-                account="tester@example.com", title="p", source="arXiv:2405.16391"
+                account="tester@example.com",
+                title="p",
+                source="arXiv:2405.16391",
             ),
         )
         with pytest.raises(ConflictError, match="scheme-tagged"):
@@ -2417,7 +2531,7 @@ class TestIntegrationEndToEnd:
     ) -> None:
         """An out-of-set publication_type written directly hits the DB CHECK."""
         paper_id = await integ_store.submit_paper(
-            SubmitPaper(account="tester@example.com", title="p")
+            SubmitPaper(account="tester@example.com", title="p"),
         )
         with pytest.raises(asyncpg.exceptions.CheckViolationError):
             async with integ_store.engine.acquire() as conn:
@@ -2463,7 +2577,7 @@ class TestIntegrationEndToEnd:
             SubmitPaper(account="tester@example.com", title="n", venue="NeurIPS"),
         )
         await integ_store.submit_paper(
-            SubmitPaper(account="tester@example.com", title="i", venue="ICML")
+            SubmitPaper(account="tester@example.com", title="i", venue="ICML"),
         )
         rows = await integ_store.list_kind(
             "Paper",
@@ -2479,10 +2593,10 @@ class TestIntegrationEndToEnd:
     ) -> None:
         """Symmetric edge_added: both endpoints get a change_log row."""
         issue_a = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         issue_b = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         await integ_store.add_edge(
             from_id=issue_a,
@@ -2509,7 +2623,7 @@ class TestIntegrationEndToEnd:
                 account="tester@example.com",
                 title="root",
                 marginal_cost=Cost(agent_usd=0.01),
-            )
+            ),
         )
         await integ_store.submit_issue(
             SubmitIssue(
@@ -2517,7 +2631,7 @@ class TestIntegrationEndToEnd:
                 title="child task",
                 narrows=[(broader_issue_id, None)],
                 marginal_cost=Cost(agent_usd=0.04),
-            )
+            ),
         )
         self_only = await integ_store.cost_for(broader_issue_id, deep=False)
         assert self_only is not None
@@ -2537,7 +2651,9 @@ class TestIntegrationEndToEnd:
         """
         broader_id = await integ_store.submit_issue(
             SubmitIssue(
-                account="tester@example.com", title="goal", subscribers=["alice"]
+                account="tester@example.com",
+                title="goal",
+                subscribers=["alice"],
             ),
         )
         narrower_id = await integ_store.submit_issue(
@@ -2576,7 +2692,8 @@ class TestIntegrationEndToEnd:
         assert first != key
         async with integ_store.engine.acquire() as conn:
             inquiry_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM inquiries WHERE id = $1", first
+                "SELECT COUNT(*) FROM inquiries WHERE id = $1",
+                first,
             )
             # The idempotency_key lives on change_log.id of the
             # ``created`` event for the resulting inquiry.
@@ -2595,12 +2712,16 @@ class TestIntegrationEndToEnd:
         first, second = await asyncio.gather(
             integ_store.submit_issue(
                 SubmitIssue(
-                    account="tester@example.com", title="i1", idempotency_key=key
+                    account="tester@example.com",
+                    title="i1",
+                    idempotency_key=key,
                 ),
             ),
             integ_store.submit_issue(
                 SubmitIssue(
-                    account="tester@example.com", title="i1", idempotency_key=key
+                    account="tester@example.com",
+                    title="i1",
+                    idempotency_key=key,
                 ),
             ),
         )
@@ -2608,10 +2729,12 @@ class TestIntegrationEndToEnd:
         assert first != key  # server-minted.
         async with integ_store.engine.acquire() as conn:
             inquiry_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM inquiries WHERE id = $1", first
+                "SELECT COUNT(*) FROM inquiries WHERE id = $1",
+                first,
             )
             change_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM change_log WHERE subject_id = $1", first
+                "SELECT COUNT(*) FROM change_log WHERE subject_id = $1",
+                first,
             )
         assert inquiry_count == 1
         assert change_count == 1
@@ -2622,7 +2745,9 @@ class TestIntegrationEndToEnd:
     ) -> None:
         codechange_id = await integ_store.submit_codechange(
             SubmitCodeChange(
-                account="tester@example.com", title="commit", sha="e99c4980"
+                account="tester@example.com",
+                title="commit",
+                sha="e99c4980",
             ),
             actor="Agent",
         )
@@ -2647,7 +2772,9 @@ class TestIntegrationEndToEnd:
         with pytest.raises(ConflictError, match="not Belief"):
             await integ_store.submit_belief(
                 SubmitBelief(
-                    account="tester@example.com", title="c", idempotency_key=key
+                    account="tester@example.com",
+                    title="c",
+                    idempotency_key=key,
                 ),
             )
 
@@ -2657,10 +2784,10 @@ class TestIntegrationEndToEnd:
     ) -> None:
         """An Issue with a ``supersedes`` successor must not be scheduled."""
         old_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="old")
+            SubmitIssue(account="tester@example.com", title="old"),
         )
         new_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="new")
+            SubmitIssue(account="tester@example.com", title="new"),
         )
         await integ_store.add_edge(
             from_id=new_id,
@@ -2679,12 +2806,18 @@ class TestIntegrationEndToEnd:
         """A superseded Artifact stops counting as currently-true evidence."""
         old_exp = await integ_store.submit_experiment(
             SubmitExperiment(
-                account="tester@example.com", title="old", codechanges=[], outcome="ok"
+                account="tester@example.com",
+                title="old",
+                codechanges=[],
+                outcome="ok",
             ),
         )
         new_exp = await integ_store.submit_experiment(
             SubmitExperiment(
-                account="tester@example.com", title="new", codechanges=[], outcome="ok"
+                account="tester@example.com",
+                title="new",
+                codechanges=[],
+                outcome="ok",
             ),
         )
         await integ_store.set_status(old_exp, "complete", actor="user")
@@ -2696,8 +2829,10 @@ class TestIntegrationEndToEnd:
                 judgement="proven",
                 proved_by=[
                     Citation(
-                        artifact_id=old_exp, artifact_kind="Experiment", valence=1.0
-                    )
+                        artifact_id=old_exp,
+                        artifact_kind="Experiment",
+                        valence=1.0,
+                    ),
                 ],
             ),
         )
@@ -2738,8 +2873,10 @@ class TestIntegrationEndToEnd:
                 title="plausibly works",
                 favored_by=[
                     Citation(
-                        artifact_id=exp_id, artifact_kind="Experiment", valence=0.5
-                    )
+                        artifact_id=exp_id,
+                        artifact_kind="Experiment",
+                        valence=0.5,
+                    ),
                 ],
             ),
         )
@@ -2784,8 +2921,10 @@ class TestIntegrationEndToEnd:
                 title="probably wrong",
                 favored_by=[
                     Citation(
-                        artifact_id=exp_id, artifact_kind="Experiment", valence=-0.5
-                    )
+                        artifact_id=exp_id,
+                        artifact_kind="Experiment",
+                        valence=-0.5,
+                    ),
                 ],
             ),
         )
@@ -2811,7 +2950,7 @@ class TestIntegrationEndToEnd:
     ) -> None:
         """``Experiment.codechanges`` UUIDs are FK-free; validator catches drift."""
         issue_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="not a sha")
+            SubmitIssue(account="tester@example.com", title="not a sha"),
         )
         with pytest.raises(ConflictError, match="CodeChange"):
             await integ_store.submit_experiment(
@@ -2829,7 +2968,10 @@ class TestIntegrationEndToEnd:
     ) -> None:
         exp_id = await integ_store.submit_experiment(
             SubmitExperiment(
-                account="tester@example.com", title="e", codechanges=[], outcome=""
+                account="tester@example.com",
+                title="e",
+                codechanges=[],
+                outcome="",
             ),
         )
         bogus = new_uuid()
@@ -2843,7 +2985,10 @@ class TestIntegrationEndToEnd:
         """Wire-declared citation kind must match the actual stored kind."""
         exp_id = await integ_store.submit_experiment(
             SubmitExperiment(
-                account="tester@example.com", title="exp", codechanges=[], outcome="ok"
+                account="tester@example.com",
+                title="exp",
+                codechanges=[],
+                outcome="ok",
             ),
         )
         with pytest.raises(ConflictError, match="declared as"):
@@ -2853,7 +2998,9 @@ class TestIntegrationEndToEnd:
                     title="bad citation",
                     # Declared as Paper but actually an Experiment.
                     proved_by=[
-                        Citation(artifact_id=exp_id, artifact_kind="Paper", valence=1.0)
+                        Citation(
+                            artifact_id=exp_id, artifact_kind="Paper", valence=1.0
+                        ),
                     ],
                 ),
             )
@@ -2869,7 +3016,9 @@ class TestIntegrationEndToEnd:
         """
         issue_id = await integ_store.submit_issue(
             SubmitIssue(
-                account="tester@example.com", title="i", subscribers=["alice", "bob"]
+                account="tester@example.com",
+                title="i",
+                subscribers=["alice", "bob"],
             ),
         )
         await integ_store.set_subscribers(issue_id, ["bob"], actor="user")
@@ -2889,7 +3038,7 @@ class TestIntegrationEndToEnd:
     ) -> None:
         """``add_label`` is race-safe (the OG ``subscribe_self`` pattern)."""
         issue_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="i")
+            SubmitIssue(account="tester@example.com", title="i"),
         )
         await asyncio.gather(
             integ_store.add_label(issue_id, "x", actor="alice"),
@@ -2917,7 +3066,7 @@ class TestIntegrationEndToEnd:
         ``ConflictError``, not as a silent empty array.
         """
         issue_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="i", issue_kind=["bug"])
+            SubmitIssue(account="tester@example.com", title="i", issue_kind=["bug"]),
         )
         with pytest.raises(ConflictError, match="check constraint"):
             await integ_store.remove_issue_kind(issue_id, "bug", actor="alice")
@@ -2936,15 +3085,21 @@ class TestIntegrationEndToEnd:
     ) -> None:
         """Concurrent ``close`` + ``done`` cannot both succeed."""
         issue_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="i")
+            SubmitIssue(account="tester@example.com", title="i"),
         )
         await integ_store.transition_status(
-            issue_id, expected_from="active", to="complete", actor="alice"
+            issue_id,
+            expected_from="active",
+            to="complete",
+            actor="alice",
         )
         # Second transition from "active" fails: the row is already complete.
         with pytest.raises(ConflictError, match="expected 'active'"):
             await integ_store.transition_status(
-                issue_id, expected_from="active", to="abandoned", actor="bob"
+                issue_id,
+                expected_from="active",
+                to="abandoned",
+                actor="bob",
             )
         issue = cast(Issue, await integ_store.get_inquiry(issue_id))
         assert issue.status == "complete"
@@ -2956,10 +3111,14 @@ class TestIntegrationEndToEnd:
         """``submit_batch`` collapses N round-trips into one and returns ordered ids."""
         items: list[Any] = [
             SubmitIssue(
-                account="tester@example.com", title="issue", idempotency_key=new_uuid()
+                account="tester@example.com",
+                title="issue",
+                idempotency_key=new_uuid(),
             ),
             SubmitArtifact(
-                account="tester@example.com", title="art", idempotency_key=new_uuid()
+                account="tester@example.com",
+                title="art",
+                idempotency_key=new_uuid(),
             ),
             SubmitPaper(
                 account="tester@example.com",
@@ -2988,8 +3147,10 @@ class TestIntegrationEndToEnd:
         seeded_key = new_uuid()
         await integ_store.submit_issue(
             SubmitIssue(
-                account="tester@example.com", title="seed", idempotency_key=seeded_key
-            )
+                account="tester@example.com",
+                title="seed",
+                idempotency_key=seeded_key,
+            ),
         )
         issues_before = len(await integ_store.list_kind("Issue"))
         with pytest.raises(ConflictError, match="already created"):
@@ -3005,7 +3166,7 @@ class TestIntegrationEndToEnd:
                         title="a1",
                         idempotency_key=seeded_key,
                     ),
-                ]
+                ],
             )
         # The batch's new Issue did not persist; only the seed remains.
         assert len(await integ_store.list_kind("Issue")) == issues_before
@@ -3033,7 +3194,9 @@ class TestIntegrationEndToEnd:
         )
         root_id, blocker_id = ids
         edge = await integ_store.get_edge(
-            from_id=root_id, to_id=blocker_id, edge_kind="requires"
+            from_id=root_id,
+            to_id=blocker_id,
+            edge_kind="requires",
         )
         assert edge is not None
 
@@ -3081,13 +3244,17 @@ class TestIntegrationEndToEnd:
         # The paper was produced_by the search (deep), NOT the belief.
         assert (
             await integ_store.get_edge(
-                from_id=paper_id, to_id=search_id, edge_kind="produced_by"
+                from_id=paper_id,
+                to_id=search_id,
+                edge_kind="produced_by",
             )
             is not None
         )
         assert (
             await integ_store.get_edge(
-                from_id=paper_id, to_id=belief_id, edge_kind="produced_by"
+                from_id=paper_id,
+                to_id=belief_id,
+                edge_kind="produced_by",
             )
             is None
         )
@@ -3098,7 +3265,7 @@ class TestIntegrationEndToEnd:
     ) -> None:
         """A batch edge may point at a pre-existing row by UUID."""
         existing = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="existing")
+            SubmitIssue(account="tester@example.com", title="existing"),
         )
         ids = await integ_store.submit_batch(
             [
@@ -3106,12 +3273,14 @@ class TestIntegrationEndToEnd:
                     account="tester@example.com",
                     title="root",
                     idempotency_key=new_uuid(),
-                )
+                ),
             ],
             edges=[BatchEdge(from_index=0, to_id=existing, edge_kind="requires")],
         )
         edge = await integ_store.get_edge(
-            from_id=ids[0], to_id=existing, edge_kind="requires"
+            from_id=ids[0],
+            to_id=existing,
+            edge_kind="requires",
         )
         assert edge is not None
 
@@ -3127,10 +3296,10 @@ class TestIntegrationEndToEnd:
         annotations) instead of raising and rolling the batch back.
         """
         target = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="target")
+            SubmitIssue(account="tester@example.com", title="target"),
         )
         first = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="first")
+            SubmitIssue(account="tester@example.com", title="first"),
         )
         await integ_store.add_edge(
             from_id=first,
@@ -3145,11 +3314,11 @@ class TestIntegrationEndToEnd:
                     account="tester@example.com",
                     title="root",
                     idempotency_key=new_uuid(),
-                )
+                ),
             ],
             edges=[
                 # Reuse first->target; the duplicate upserts, the root commits.
-                BatchEdge(from_id=first, to_id=target, edge_kind="requires")
+                BatchEdge(from_id=first, to_id=target, edge_kind="requires"),
             ],
         )
         # The root row committed (one new Issue), not rolled back.
@@ -3168,20 +3337,26 @@ class TestIntegrationEndToEnd:
         re-create (no annotations) stays a no-op.
         """
         a = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         b = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         first_change, first_created = await integ_store.add_edge(
-            from_id=a, to_id=b, edge_kind="requires", actor="user"
+            from_id=a,
+            to_id=b,
+            edge_kind="requires",
+            actor="user",
         )
         assert first_created is True
         assert first_change is not None
 
         # A bare re-create is a pure no-op (nothing to set).
         bare_change, bare_created = await integ_store.add_edge(
-            from_id=a, to_id=b, edge_kind="requires", actor="user"
+            from_id=a,
+            to_id=b,
+            edge_kind="requires",
+            actor="user",
         )
         assert bare_created is False
         assert bare_change is None
@@ -3205,7 +3380,8 @@ class TestIntegrationEndToEnd:
         assert edge.priority == 3
 
     async def test_citation_create_without_valence_defaults_not_null(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """A proves/favors edge created with no valence stores the default, not NULL.
 
@@ -3214,13 +3390,16 @@ class TestIntegrationEndToEnd:
         on a citation kind stores ``CITATION_VALENCE_DEFAULT`` rather than NULL.
         """
         paper = await integ_store.submit_paper(
-            SubmitPaper(account="tester@example.com", title="p", source="arXiv:1.2")
+            SubmitPaper(account="tester@example.com", title="p", source="arXiv:1.2"),
         )
         belief = await integ_store.submit_belief(
-            SubmitBelief(account="tester@example.com", title="b")
+            SubmitBelief(account="tester@example.com", title="b"),
         )
         await integ_store.add_edge(
-            from_id=paper, to_id=belief, edge_kind="proves", actor="user"
+            from_id=paper,
+            to_id=belief,
+            edge_kind="proves",
+            actor="user",
         )
         async with integ_store.engine.acquire() as conn:
             stored = await conn.fetchval(
@@ -3232,7 +3411,8 @@ class TestIntegrationEndToEnd:
         assert stored == 0.5
 
     async def test_clearing_citation_valence_resets_to_default_not_null(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """``set_edge_annotation(valence=None)`` on a citation heals to the default.
 
@@ -3241,16 +3421,24 @@ class TestIntegrationEndToEnd:
         forbids on a citation).
         """
         paper = await integ_store.submit_paper(
-            SubmitPaper(account="tester@example.com", title="p", source="arXiv:1.3")
+            SubmitPaper(account="tester@example.com", title="p", source="arXiv:1.3"),
         )
         belief = await integ_store.submit_belief(
-            SubmitBelief(account="tester@example.com", title="b")
+            SubmitBelief(account="tester@example.com", title="b"),
         )
         await integ_store.add_edge(
-            from_id=paper, to_id=belief, edge_kind="proves", valence=0.9, actor="user"
+            from_id=paper,
+            to_id=belief,
+            edge_kind="proves",
+            valence=0.9,
+            actor="user",
         )
         await integ_store.set_edge_annotation(
-            from_id=paper, to_id=belief, edge_kind="proves", valence=None, actor="user"
+            from_id=paper,
+            to_id=belief,
+            edge_kind="proves",
+            valence=None,
+            actor="user",
         )
         async with integ_store.engine.acquire() as conn:
             stored = await conn.fetchval(
@@ -3262,7 +3450,8 @@ class TestIntegrationEndToEnd:
         assert stored == 0.5
 
     async def test_valence_on_structural_edge_annotation_raises_4xx(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """A valence on a structural edge is a clean ValidationError, not a DB 500.
 
@@ -3271,21 +3460,29 @@ class TestIntegrationEndToEnd:
         not a raw mid-transaction CHECK violation.
         """
         a = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         b = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         await integ_store.add_edge(
-            from_id=a, to_id=b, edge_kind="requires", actor="user"
+            from_id=a,
+            to_id=b,
+            edge_kind="requires",
+            actor="user",
         )
         with pytest.raises(ValidationError, match="valence"):
             await integ_store.set_edge_annotation(
-                from_id=a, to_id=b, edge_kind="requires", valence=0.5, actor="user"
+                from_id=a,
+                to_id=b,
+                edge_kind="requires",
+                valence=0.5,
+                actor="user",
             )
 
     async def test_remove_edge_label_normalizes_whitespace(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """Atomic edge-label remove canonicalizes the label, matching whole-list.
 
@@ -3294,16 +3491,24 @@ class TestIntegrationEndToEnd:
         do -- otherwise the atomic op silently no-ops on a whitespace variant.
         """
         a = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         b = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         await integ_store.add_edge(
-            from_id=a, to_id=b, edge_kind="requires", labels=["foo"], actor="user"
+            from_id=a,
+            to_id=b,
+            edge_kind="requires",
+            labels=["foo"],
+            actor="user",
         )
         change = await integ_store.remove_edge_label(
-            from_id=a, to_id=b, edge_kind="requires", label="  foo  ", actor="user"
+            from_id=a,
+            to_id=b,
+            edge_kind="requires",
+            label="  foo  ",
+            actor="user",
         )
         assert change is not None
         edge = await integ_store.get_edge(from_id=a, to_id=b, edge_kind="requires")
@@ -3311,7 +3516,8 @@ class TestIntegrationEndToEnd:
         assert edge.labels is None
 
     async def test_inline_citation_upserts_valence_on_existing_edge(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         """An inline Belief citation applies its valence to an already-present edge.
 
@@ -3320,7 +3526,7 @@ class TestIntegrationEndToEnd:
         with ``add_edge``'s create-is-upsert behavior.
         """
         paper = await integ_store.submit_paper(
-            SubmitPaper(account="tester@example.com", title="p", source="arXiv:1.4")
+            SubmitPaper(account="tester@example.com", title="p", source="arXiv:1.4"),
         )
         # First Belief stamps the proves edge with valence 0.7.
         await integ_store.submit_belief(
@@ -3328,9 +3534,9 @@ class TestIntegrationEndToEnd:
                 account="tester@example.com",
                 title="b1",
                 proved_by=[
-                    Citation(artifact_id=paper, artifact_kind="Paper", valence=0.7)
+                    Citation(artifact_id=paper, artifact_kind="Paper", valence=0.7),
                 ],
-            )
+            ),
         )
         belief1 = (await integ_store.list_kind("Belief"))[0].id
         # A second submit citing the SAME (paper -> belief1) pair with a fresh
@@ -3363,10 +3569,10 @@ class TestIntegrationEndToEnd:
         from- and to-side audit rows, not be silently dropped.
         """
         a = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         b = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         await integ_store.add_edge(
             from_id=a,
@@ -3397,13 +3603,16 @@ class TestIntegrationEndToEnd:
     ) -> None:
         """A ``set_edge_annotation``'s ``reason`` reaches both audit rows."""
         a = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         b = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         await integ_store.add_edge(
-            from_id=a, to_id=b, edge_kind="requires", actor="user"
+            from_id=a,
+            to_id=b,
+            edge_kind="requires",
+            actor="user",
         )
         await integ_store.set_edge_annotation(
             from_id=a,
@@ -3437,20 +3646,27 @@ class TestIntegrationEndToEnd:
         ``Conflict`` reserved for clashes with existing state (cycle).
         """
         a = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         b = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         # ``supersedes`` cannot carry priority -> input-invalid -> ValidationError.
         with pytest.raises(ValidationError, match="cannot carry priority"):
             await integ_store.add_edge(
-                from_id=a, to_id=b, edge_kind="supersedes", priority=0, actor="u"
+                from_id=a,
+                to_id=b,
+                edge_kind="supersedes",
+                priority=0,
+                actor="u",
             )
         # A self-loop is input-invalid -> ValidationError.
         with pytest.raises(ValidationError, match="self-loop"):
             await integ_store.add_edge(
-                from_id=a, to_id=a, edge_kind="requires", actor="u"
+                from_id=a,
+                to_id=a,
+                edge_kind="requires",
+                actor="u",
             )
 
     async def test_edge_cycle_stays_conflict_error(
@@ -3464,15 +3680,18 @@ class TestIntegrationEndToEnd:
         errors above.
         """
         a = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         b = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         await integ_store.add_edge(from_id=a, to_id=b, edge_kind="requires", actor="u")
         with pytest.raises(ConflictError, match="would create a cycle"):
             await integ_store.add_edge(
-                from_id=b, to_id=a, edge_kind="requires", actor="u"
+                from_id=b,
+                to_id=a,
+                edge_kind="requires",
+                actor="u",
             )
 
     async def test_edge_create_is_an_upsert_like_every_other_set(
@@ -3490,24 +3709,34 @@ class TestIntegrationEndToEnd:
         fails and names the principle it violated.
         """
         a = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         b = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         # First create: a change is emitted, created flag set.
         _, created1 = await integ_store.add_edge(
-            from_id=a, to_id=b, edge_kind="requires", actor="u"
+            from_id=a,
+            to_id=b,
+            edge_kind="requires",
+            actor="u",
         )
         assert created1 is True
         # Bare repeat: idempotent no-op, NO raise (the load-bearing assertion).
         change2, created2 = await integ_store.add_edge(
-            from_id=a, to_id=b, edge_kind="requires", actor="u"
+            from_id=a,
+            to_id=b,
+            edge_kind="requires",
+            actor="u",
         )
         assert (change2, created2) == (None, False)
         # Annotated repeat: applies the annotation, NO raise.
         change3, created3 = await integ_store.add_edge(
-            from_id=a, to_id=b, edge_kind="requires", actor="u", note="n"
+            from_id=a,
+            to_id=b,
+            edge_kind="requires",
+            actor="u",
+            note="n",
         )
         assert change3 is not None
         assert created3 is False
@@ -3528,7 +3757,7 @@ class TestIntegrationEndToEnd:
         through the racy whole-list edit path.
         """
         issue_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="i")
+            SubmitIssue(account="tester@example.com", title="i"),
         )
         # Parallel self-subscribes by three distinct actors.
         await asyncio.gather(
@@ -3574,7 +3803,7 @@ class TestIntegrationEndToEnd:
         )
         for i in range(30):
             await integ_store.submit_issue(
-                SubmitIssue(account="tester@example.com", title=f"noise {i}")
+                SubmitIssue(account="tester@example.com", title=f"noise {i}"),
             )
 
         rows = await integ_store.list_kind(
@@ -3607,7 +3836,7 @@ class TestIntegrationEndToEnd:
         excludes it. The same holds for the ``labels`` array column.
         """
         unowned = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="no owner here")
+            SubmitIssue(account="tester@example.com", title="no owner here"),
         )
         owned = await integ_store.submit_issue(
             SubmitIssue(
@@ -3621,25 +3850,29 @@ class TestIntegrationEndToEnd:
         # The unset owner is stored as SQL NULL, not the actor or an empty string.
         async with integ_store.engine.acquire() as conn:
             stored = await conn.fetchval(
-                "SELECT owner FROM inquiries WHERE id = $1", unowned
+                "SELECT owner FROM inquiries WHERE id = $1",
+                unowned,
             )
         assert stored is None
 
         isnull = await integ_store.list_kind(
-            "Issue", filters=(Filter(field="owner", op="isnull", value=""),)
+            "Issue",
+            filters=(Filter(field="owner", op="isnull", value=""),),
         )
         assert unowned in {r.id for r in isnull}
         assert owned not in {r.id for r in isnull}
 
         notnull = await integ_store.list_kind(
-            "Issue", filters=(Filter(field="owner", op="notnull", value=""),)
+            "Issue",
+            filters=(Filter(field="owner", op="notnull", value=""),),
         )
         assert owned in {r.id for r in notnull}
         assert unowned not in {r.id for r in notnull}
 
         # The array column behaves identically: no labels -> NULL -> isnull.
         labels_isnull = await integ_store.list_kind(
-            "Issue", filters=(Filter(field="labels", op="isnull", value=""),)
+            "Issue",
+            filters=(Filter(field="labels", op="isnull", value=""),),
         )
         assert unowned in {r.id for r in labels_isnull}
         assert owned not in {r.id for r in labels_isnull}
@@ -3657,7 +3890,10 @@ class TestIntegrationEndToEnd:
         """
         rid = await integ_store.submit_issue(
             SubmitIssue(
-                account="tester@example.com", title="s", description="d", labels=["x"]
+                account="tester@example.com",
+                title="s",
+                description="d",
+                labels=["x"],
             ),
         )
         await integ_store.set_labels(rid, None, actor="u")
@@ -3666,7 +3902,8 @@ class TestIntegrationEndToEnd:
 
         async with integ_store.engine.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT owner, description, labels FROM inquiries WHERE id = $1", rid
+                "SELECT owner, description, labels FROM inquiries WHERE id = $1",
+                rid,
             )
         assert row is not None
         assert row["labels"] is None
@@ -3676,7 +3913,8 @@ class TestIntegrationEndToEnd:
         # ``isnull`` now matches the cleared row on every column.
         for field in ("labels", "description", "owner"):
             rows = await integ_store.list_kind(
-                "Issue", filters=(Filter(field=field, op="isnull", value=""),)
+                "Issue",
+                filters=(Filter(field=field, op="isnull", value=""),),
             )
             assert rid in {r.id for r in rows}, field
 
@@ -3692,14 +3930,15 @@ class TestIntegrationEndToEnd:
         never the ``()`` sentinel that contradicts storage.
         """
         rid = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="s")
+            SubmitIssue(account="tester@example.com", title="s"),
         )
         # Already-unset labels; a blank-only set is a no-op.
         change_id = await integ_store.set_labels(rid, ["", "  "], actor="u")
         assert change_id is None
         async with integ_store.engine.acquire() as conn:
             stored = await conn.fetchval(
-                "SELECT labels FROM inquiries WHERE id = $1", rid
+                "SELECT labels FROM inquiries WHERE id = $1",
+                rid,
             )
         assert stored is None
 
@@ -3711,7 +3950,8 @@ class TestIntegrationEndToEnd:
         async with integ_store.engine.acquire() as conn:
             row = await conn.fetchrow("SELECT labels FROM inquiries WHERE id = $1", rid)
             new_labels = await conn.fetchval(
-                "SELECT new_labels FROM change_log WHERE id = $1", change_id
+                "SELECT new_labels FROM change_log WHERE id = $1",
+                change_id,
             )
         assert row is not None
         assert row["labels"] is None
@@ -3749,13 +3989,14 @@ class TestIntegrationEndToEnd:
         blanking an already-NULL source changes nothing.
         """
         pid = await integ_store.submit_paper(
-            SubmitPaper(account="tester@example.com", title="p")
+            SubmitPaper(account="tester@example.com", title="p"),
         )
         change_id = await integ_store.set_source(pid, "  ", actor="u")
         assert change_id is None
         async with integ_store.engine.acquire() as conn:
             stored = await conn.fetchval(
-                "SELECT paper_source FROM inquiries WHERE id = $1", pid
+                "SELECT paper_source FROM inquiries WHERE id = $1",
+                pid,
             )
         assert stored is None
 
@@ -3782,7 +4023,8 @@ class TestIntegrationEndToEnd:
                 },
             )
             stored = await conn.fetchval(
-                "SELECT labels FROM inquiries WHERE id = $1", rid
+                "SELECT labels FROM inquiries WHERE id = $1",
+                rid,
             )
         assert stored is None
 
@@ -3797,7 +4039,7 @@ class TestIntegrationEndToEnd:
         must record ``old_labels IS NULL``, not ``'{}'``.
         """
         rid = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="s")
+            SubmitIssue(account="tester@example.com", title="s"),
         )
         change_id = await integ_store.set_labels(rid, ["x"], actor="u")
         assert change_id is not None
@@ -3826,11 +4068,13 @@ class TestIntegrationEndToEnd:
         await integ_store.remove_label(rid, "only", actor="u")
         async with integ_store.engine.acquire() as conn:
             stored = await conn.fetchval(
-                "SELECT labels FROM inquiries WHERE id = $1", rid
+                "SELECT labels FROM inquiries WHERE id = $1",
+                rid,
             )
         assert stored is None
         rows = await integ_store.list_kind(
-            "Issue", filters=(Filter(field="labels", op="isnull", value=""),)
+            "Issue",
+            filters=(Filter(field="labels", op="isnull", value=""),),
         )
         assert rid in {r.id for r in rows}
 
@@ -3892,7 +4136,8 @@ class TestIntegrationEndToEnd:
         await integ_store.set_source(rid, "", actor="u")
         async with integ_store.engine.acquire() as conn:
             stored = await conn.fetchval(
-                "SELECT paper_source FROM inquiries WHERE id = $1", rid
+                "SELECT paper_source FROM inquiries WHERE id = $1",
+                rid,
             )
         assert stored is None
 
@@ -3907,7 +4152,8 @@ class TestIntegrationEndToEnd:
         await integ_store.set_owner(rid, "   ", actor="u")
         async with integ_store.engine.acquire() as conn:
             stored = await conn.fetchval(
-                "SELECT owner FROM inquiries WHERE id = $1", rid
+                "SELECT owner FROM inquiries WHERE id = $1",
+                rid,
             )
         assert stored is None
 
@@ -3926,7 +4172,7 @@ class TestIntegrationEndToEnd:
             SubmitIssue(account="tester@example.com", title="costs money"),
         )
         await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="free")
+            SubmitIssue(account="tester@example.com", title="free"),
         )
         await integ_store.add_cost(
             priced_id,
@@ -3979,7 +4225,7 @@ class TestIntegrationEndToEnd:
         )
         for i in range(50):
             await integ_store.submit_issue(
-                SubmitIssue(account="tester@example.com", title=f"noise {i}")
+                SubmitIssue(account="tester@example.com", title=f"noise {i}"),
             )
 
         app = FastAPI()
@@ -4010,7 +4256,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 # 1. regex filter against title: the original bug.
                 r = await http.get(
@@ -4077,7 +4324,8 @@ class TestIntegrationEndToEnd:
                 # row so it must be absent. Proves the recency window
                 # really would have hidden the needle (Issue#256).
                 r = await http.get(
-                    "/api/inquiries", params={"kind": "Issue", "limit": "5"}
+                    "/api/inquiries",
+                    params={"kind": "Issue", "limit": "5"},
                 )
                 assert r.status_code == 200, r.text
                 ids = [row["id"] for row in r.json()]
@@ -4158,7 +4406,10 @@ class TestIntegrationEndToEnd:
         )
         # Proves is stored Artifact(citer) -> claim: the Paper proves the Belief.
         await integ_store.add_edge(
-            from_id=paper_id, to_id=belief_id, edge_kind="proves", actor="u"
+            from_id=paper_id,
+            to_id=belief_id,
+            edge_kind="proves",
+            actor="u",
         )
 
         app = FastAPI()
@@ -4175,7 +4426,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 # The Paper detail: own fields surface bare, and the
                 # outbound ``proves`` edge joins the Belief peer (the Paper is
@@ -4211,7 +4463,9 @@ class TestIntegrationEndToEnd:
                 # path, exercising _snapshot_to_dict on a real prefixed
                 # mirror column.
                 await integ_store.set_judgement(
-                    belief_id, "disproven", actor="reviewer"
+                    belief_id,
+                    "disproven",
+                    actor="reviewer",
                 )
                 r = await http.get("/api/web/recent_changes", params={"limit": "20"})
                 assert r.status_code == 200, r.text
@@ -4238,7 +4492,7 @@ class TestIntegrationEndToEnd:
             SubmitIssue(account="tester@example.com", title="literal percent % here"),
         )
         await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="ordinary issue")
+            SubmitIssue(account="tester@example.com", title="ordinary issue"),
         )
 
         app = FastAPI()
@@ -4254,7 +4508,8 @@ class TestIntegrationEndToEnd:
         transport = httpx2.ASGITransport(app=app)
         try:
             async with httpx2.AsyncClient(
-                transport=transport, base_url="http://testserver"
+                transport=transport,
+                base_url="http://testserver",
             ) as http:
                 r = await http.get("/api/web/search", params={"q": "%"})
                 assert r.status_code == 200, r.text
@@ -4278,13 +4533,16 @@ class TestIntegrationEndToEnd:
         read-modify-write, mirroring the inquiry list path.
         """
         src = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="src")
+            SubmitIssue(account="tester@example.com", title="src"),
         )
         dst = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="dst")
+            SubmitIssue(account="tester@example.com", title="dst"),
         )
         await integ_store.add_edge(
-            from_id=src, to_id=dst, edge_kind="requires", actor="u"
+            from_id=src,
+            to_id=dst,
+            edge_kind="requires",
+            actor="u",
         )
         await asyncio.gather(
             integ_store.add_edge_label(
@@ -4329,7 +4587,10 @@ class TestIntegrationAuth:
                 "Alice",
             )
             _key_id, secret, _prefix, _role = await create_api_key(
-                conn, user_id=user_id, name="laptop", ceiling="admin"
+                conn,
+                user_id=user_id,
+                name="laptop",
+                ceiling="admin",
             )
         # The dependency must round-trip the secret straight back to
         # the same principal.
@@ -4349,7 +4610,8 @@ class TestIntegrationAuth:
         # ``last_used_at`` actually persisted.
         async with integ_store.engine.acquire() as conn:
             last_used = await conn.fetchval(
-                "SELECT last_used_at FROM api_keys WHERE user_id = $1", user_id
+                "SELECT last_used_at FROM api_keys WHERE user_id = $1",
+                user_id,
             )
         assert last_used is not None
 
@@ -4364,7 +4626,10 @@ class TestIntegrationAuth:
                 "Bob",
             )
             key_id, secret, _prefix, _role = await create_api_key(
-                conn, user_id=user_id, name="ci", ceiling="admin"
+                conn,
+                user_id=user_id,
+                name="ci",
+                ceiling="admin",
             )
             revoked = await revoke_api_key(conn, key_id=key_id, user_id=user_id)
             assert revoked is True
@@ -4398,7 +4663,7 @@ class TestIntegrationAuth:
             # A second call must be a no-op (idempotent rerun semantics).
             await bootstrap_admin(conn)
             rows = await conn.fetch(
-                "SELECT email_or_pattern, role, added_by FROM allowlist"
+                "SELECT email_or_pattern, role, added_by FROM allowlist",
             )
             user_rows = await conn.fetch(
                 "SELECT email, role, status FROM users WHERE email = $1",
@@ -4448,7 +4713,10 @@ class TestIntegrationAuth:
                 "Doomed",
             )
             key_id, _secret, _prefix, _role = await create_api_key(
-                conn, user_id=user_id, name="laptop", ceiling="admin"
+                conn,
+                user_id=user_id,
+                name="laptop",
+                ceiling="admin",
             )
             # An audit row stamped with this key id -- the kind the
             # bearer-auth path emits in production.
@@ -4466,7 +4734,8 @@ class TestIntegrationAuth:
             await conn.execute("DELETE FROM users WHERE id = $1", user_id)
             # Keys gone (CASCADE on api_keys.user_id).
             remaining_keys = await conn.fetchval(
-                "SELECT count(*) FROM api_keys WHERE user_id = $1", user_id
+                "SELECT count(*) FROM api_keys WHERE user_id = $1",
+                user_id,
             )
             # Audit row survives with api_key_id nulled (SET NULL on
             # change_log.api_key_id).
@@ -4495,7 +4764,7 @@ class TestClientChangeIdReplay:
         integ_store: Store,
     ) -> None:
         issue_id = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="i")
+            SubmitIssue(account="tester@example.com", title="i"),
         )
         client_id = uuid.uuid4()
         # First edit: client_id becomes change_log.id.
@@ -4529,10 +4798,10 @@ class TestClientChangeIdReplay:
         integ_store: Store,
     ) -> None:
         issue_a = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="a")
+            SubmitIssue(account="tester@example.com", title="a"),
         )
         issue_b = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="b")
+            SubmitIssue(account="tester@example.com", title="b"),
         )
         client_id = uuid.uuid4()
 
@@ -4565,22 +4834,24 @@ class TestClientChangeIdReplay:
         # First header-only submit: slot set, no body idempotency_key.
         set_client_change_id(key)
         first = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="header-only")
+            SubmitIssue(account="tester@example.com", title="header-only"),
         )
         # Retry with the same header key, still no body key. Must replay the
         # original row, not assert/500.
         set_client_change_id(key)
         second = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="header-only")
+            SubmitIssue(account="tester@example.com", title="header-only"),
         )
         assert first == second
         assert first != key  # server-minted.
         async with integ_store.engine.acquire() as conn:
             inquiry_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM inquiries WHERE id = $1", first
+                "SELECT COUNT(*) FROM inquiries WHERE id = $1",
+                first,
             )
             change_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM change_log WHERE subject_id = $1", first
+                "SELECT COUNT(*) FROM change_log WHERE subject_id = $1",
+                first,
             )
         assert inquiry_count == 1
         assert change_count == 1
@@ -4600,21 +4871,26 @@ class TestFirstEdgeInfersProduced:
 
     @classmethod
     async def _set_created(
-        cls, store: Store, target_id: uuid.UUID, when: datetime
+        cls,
+        store: Store,
+        target_id: uuid.UUID,
+        when: datetime,
     ) -> None:
         """Pin a row's ``created`` so older/younger ordering is deterministic."""
         async with store.engine.acquire() as conn:
             await conn.execute(
-                "UPDATE inquiries SET created = $2 WHERE id = $1", target_id, when
+                "UPDATE inquiries SET created = $2 WHERE id = $1",
+                target_id,
+                when,
             )
 
     async def _two_issues(self, store: Store) -> tuple[uuid.UUID, uuid.UUID]:
         """Create an older and a younger Issue with pinned, distinct created."""
         older = await store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="older")
+            SubmitIssue(account="tester@example.com", title="older"),
         )
         younger = await store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="younger")
+            SubmitIssue(account="tester@example.com", title="younger"),
         )
         await self._set_created(store, older, datetime(2020, 1, 1, tzinfo=UTC))
         await self._set_created(store, younger, datetime(2020, 1, 2, tzinfo=UTC))
@@ -4624,27 +4900,35 @@ class TestFirstEdgeInfersProduced:
         """Create an older (cited) and younger (citing) Paper, pinned created."""
         older = await store.submit_paper(
             SubmitPaper(
-                account="tester@example.com", title="cited", source="arXiv:2001.00001"
-            )
+                account="tester@example.com",
+                title="cited",
+                source="arXiv:2001.00001",
+            ),
         )
         younger = await store.submit_paper(
             SubmitPaper(
-                account="tester@example.com", title="citing", source="arXiv:2401.00001"
-            )
+                account="tester@example.com",
+                title="citing",
+                source="arXiv:2401.00001",
+            ),
         )
         await self._set_created(store, older, datetime(2020, 1, 1, tzinfo=UTC))
         await self._set_created(store, younger, datetime(2024, 1, 2, tzinfo=UTC))
         return older, younger
 
     async def test_first_requires_edge_infers_produced_older_to_younger(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         older, younger = await self._two_issues(integ_store)
         # The younger requires the older (stored requirer=younger -> prerequisite=
         # older). This is the pair's first edge, so the older produced the
         # younger -- regardless of the requires edge's own direction.
         await integ_store.add_edge(
-            from_id=younger, to_id=older, edge_kind="requires", actor="alice"
+            from_id=younger,
+            to_id=older,
+            edge_kind="requires",
+            actor="alice",
         )
         older_row = cast(Issue, await integ_store.get_inquiry(older))
         younger_row = cast(Issue, await integ_store.get_inquiry(younger))
@@ -4652,13 +4936,17 @@ class TestFirstEdgeInfersProduced:
         assert older_row.id in {e.id for e in younger_row.produced_by}
 
     async def test_reverse_direction_edge_still_infers_older_produced_younger(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         older, younger = await self._two_issues(integ_store)
         # Edge written older -> younger (older requires younger). Provenance still
         # follows age, not edge direction: older produced younger.
         await integ_store.add_edge(
-            from_id=older, to_id=younger, edge_kind="requires", actor="alice"
+            from_id=older,
+            to_id=younger,
+            edge_kind="requires",
+            actor="alice",
         )
         older_row = cast(Issue, await integ_store.get_inquiry(older))
         younger_row = cast(Issue, await integ_store.get_inquiry(younger))
@@ -4666,28 +4954,39 @@ class TestFirstEdgeInfersProduced:
         assert older in {e.id for e in younger_row.produced_by}
 
     async def test_inferred_produced_target_can_be_issue(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         # The widened produced_by edge (Inquiry -> Inquiry) lets an Issue be the
         # produced row, which the pre-widen schema forbade.
         older, younger = await self._two_issues(integ_store)
         await integ_store.add_edge(
-            from_id=older, to_id=younger, edge_kind="narrows", actor="alice"
+            from_id=older,
+            to_id=younger,
+            edge_kind="narrows",
+            actor="alice",
         )
         older_row = cast(Issue, await integ_store.get_inquiry(older))
         assert younger in {e.id for e in older_row.produces}
         assert "Issue" in {e.kind for e in older_row.produces}
 
     async def test_second_edge_between_pair_does_not_restamp(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         older, younger = await self._two_issues(integ_store)
         await integ_store.add_edge(
-            from_id=younger, to_id=older, edge_kind="requires", actor="alice"
+            from_id=younger,
+            to_id=older,
+            edge_kind="requires",
+            actor="alice",
         )
         # A second edge between the same pair must not add another produced_by edge.
         await integ_store.add_edge(
-            from_id=older, to_id=younger, edge_kind="narrows", actor="alice"
+            from_id=older,
+            to_id=younger,
+            edge_kind="narrows",
+            actor="alice",
         )
         async with integ_store.engine.acquire() as conn:
             produced = await conn.fetchval(
@@ -4699,13 +4998,17 @@ class TestFirstEdgeInfersProduced:
         assert produced == 1
 
     async def test_explicit_produced_by_edge_does_not_self_infer(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         older, younger = await self._two_issues(integ_store)
         # Recording provenance directly (younger produced_by older) must not
         # trigger a second inferred edge.
         await integ_store.add_edge(
-            from_id=younger, to_id=older, edge_kind="produced_by", actor="alice"
+            from_id=younger,
+            to_id=older,
+            edge_kind="produced_by",
+            actor="alice",
         )
         async with integ_store.engine.acquire() as conn:
             produced = await conn.fetchval(
@@ -4717,12 +5020,13 @@ class TestFirstEdgeInfersProduced:
         assert produced == 1
 
     async def test_birth_coincident_inline_create_infers_produced(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         # The motivating case: anchor exists, a new row is born as an edge target
         # in one atomic batch. The anchor (older) produced the newborn (younger).
         anchor = await integ_store.submit_issue(
-            SubmitIssue(account="tester@example.com", title="anchor")
+            SubmitIssue(account="tester@example.com", title="anchor"),
         )
         ids = await integ_store.submit_batch(
             [SubmitIssue(account="tester@example.com", title="newborn")],
@@ -4731,7 +5035,7 @@ class TestFirstEdgeInfersProduced:
                     from_id=anchor,
                     to_index=0,
                     edge_kind="narrows",
-                )
+                ),
             ],
         )
         newborn = ids[0]
@@ -4745,7 +5049,10 @@ class TestFirstEdgeInfersProduced:
         # other kind. Supersession is not a separate exception.
         older, younger = await self._two_issues(integ_store)
         await integ_store.add_edge(
-            from_id=younger, to_id=older, edge_kind="supersedes", actor="alice"
+            from_id=younger,
+            to_id=older,
+            edge_kind="supersedes",
+            actor="alice",
         )
         async with integ_store.engine.acquire() as conn:
             produced = await conn.fetchrow(
@@ -4759,7 +5066,8 @@ class TestFirstEdgeInfersProduced:
         assert (produced["from_id"], produced["to_id"]) == (younger, older)
 
     async def test_cites_paper_round_trips_into_projection(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         # A cites_paper edge (citing younger -> cited older) fills the citing
         # paper's forward ``cites`` and the cited paper's inverse ``cited_by``,
@@ -4779,7 +5087,8 @@ class TestFirstEdgeInfersProduced:
         assert citing in {e.id for e in cited_row.cited_by}
 
     async def test_lone_cites_paper_infers_no_produced_by(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         # Provenance-neutrality: a historical citation is NOT a provenance claim.
         # cites_paper is absent from PRODUCED_INFERENCE_PRECEDENCE, so a pair whose
@@ -4787,7 +5096,10 @@ class TestFirstEdgeInfersProduced:
         # citing a 2020 paper must not be recorded as "produced by" it).
         cited, citing = await self._two_papers(integ_store)
         await integ_store.add_edge(
-            from_id=citing, to_id=cited, edge_kind="cites_paper", actor="alice"
+            from_id=citing,
+            to_id=cited,
+            edge_kind="cites_paper",
+            actor="alice",
         )
         async with integ_store.engine.acquire() as conn:
             produced = await conn.fetchval(
@@ -4805,14 +5117,14 @@ class TestFirstEdgeInfersProduced:
     async def _paper_and_belief(self, store: Store) -> tuple[uuid.UUID, uuid.UUID]:
         """Create an older Belief (claim) and a younger Paper (evidence)."""
         belief = await store.submit_belief(
-            SubmitBelief(account="tester@example.com", title="claim")
+            SubmitBelief(account="tester@example.com", title="claim"),
         )
         paper = await store.submit_paper(
             SubmitPaper(
                 account="tester@example.com",
                 title="evidence",
                 source="arXiv:2401.00002",
-            )
+            ),
         )
         await self._set_created(store, belief, datetime(2020, 1, 1, tzinfo=UTC))
         await self._set_created(store, paper, datetime(2024, 1, 2, tzinfo=UTC))
@@ -4820,7 +5132,9 @@ class TestFirstEdgeInfersProduced:
 
     @pytest.mark.parametrize("edge_kind", ["favors", "proves"])
     async def test_lone_citation_of_belief_infers_no_produced_by(
-        self, integ_store: Store, edge_kind: Edge.Kind
+        self,
+        integ_store: Store,
+        edge_kind: Edge.Kind,
     ) -> None:
         # Epistemic-neutrality: a Paper favoring/proving a Belief is a CITATION,
         # not a provenance claim. proves/favors are absent from
@@ -4831,7 +5145,10 @@ class TestFirstEdgeInfersProduced:
         # every piece of evidence marshalled to support it.
         belief, paper = await self._paper_and_belief(integ_store)
         await integ_store.add_edge(
-            from_id=paper, to_id=belief, edge_kind=edge_kind, actor="alice"
+            from_id=paper,
+            to_id=belief,
+            edge_kind=edge_kind,
+            actor="alice",
         )
         async with integ_store.engine.acquire() as conn:
             produced = await conn.fetchval(
@@ -4855,10 +5172,16 @@ class TestFirstEdgeInfersProduced:
         # per-kind cycle ConflictError that DAG kinds (narrows/requires/...) get.
         a, b = await self._two_papers(integ_store)
         await integ_store.add_edge(
-            from_id=a, to_id=b, edge_kind="cites_paper", actor="alice"
+            from_id=a,
+            to_id=b,
+            edge_kind="cites_paper",
+            actor="alice",
         )
         await integ_store.add_edge(
-            from_id=b, to_id=a, edge_kind="cites_paper", actor="alice"
+            from_id=b,
+            to_id=a,
+            edge_kind="cites_paper",
+            actor="alice",
         )
         a_row = cast(Paper, await integ_store.get_inquiry(a))
         b_row = cast(Paper, await integ_store.get_inquiry(b))
@@ -4868,11 +5191,15 @@ class TestFirstEdgeInfersProduced:
         # cannot cite itself (from_id <> to_id, enforced before the policy skip).
         with pytest.raises(ValidationError):
             await integ_store.add_edge(
-                from_id=a, to_id=a, edge_kind="cites_paper", actor="alice"
+                from_id=a,
+                to_id=a,
+                edge_kind="cites_paper",
+                actor="alice",
             )
 
     async def test_precedence_requires_outranks_supersedes_in_one_batch(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         # A batch links the same pair with supersedes FIRST then requires.
         # Inference is universal -- either kind alone would infer produced_by --
@@ -4890,7 +5217,8 @@ class TestFirstEdgeInfersProduced:
         assert younger in {e.id for e in older_row.produces}
 
     async def test_inferred_produced_by_audit_is_chained_to_trigger(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         # The inferred produced_by audit chains to the edge that triggered it via
         # caused_by, and carries the stable inferred-provenance reason prefix.
@@ -4898,7 +5226,10 @@ class TestFirstEdgeInfersProduced:
         # the younger row is the audit subject.
         older, younger = await self._two_issues(integ_store)
         await integ_store.add_edge(
-            from_id=younger, to_id=older, edge_kind="requires", actor="alice"
+            from_id=younger,
+            to_id=older,
+            edge_kind="requires",
+            actor="alice",
         )
         async with integ_store.engine.acquire() as conn:
             trigger = await conn.fetchval(
@@ -4918,14 +5249,18 @@ class TestFirstEdgeInfersProduced:
         assert inferred["reason"].startswith(INFERRED_PROVENANCE_REASON)
 
     async def test_inferred_produced_by_creation_does_not_cascade(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         # cascade=False on the inferred edge: its own creation emits no
         # dependency_changed. Any dependency_changed in this run must be caused by
         # the user-driven requires edge, never by the inferred produced_by edge.
         older, younger = await self._two_issues(integ_store)
         await integ_store.add_edge(
-            from_id=younger, to_id=older, edge_kind="requires", actor="alice"
+            from_id=younger,
+            to_id=older,
+            edge_kind="requires",
+            actor="alice",
         )
         async with integ_store.engine.acquire() as conn:
             inferred_id = await conn.fetchval(
@@ -4943,7 +5278,8 @@ class TestFirstEdgeInfersProduced:
         assert caused_by_inferred == 0
 
     async def test_lone_proves_of_belief_infers_no_produced_by(
-        self, integ_store: Store
+        self,
+        integ_store: Store,
     ) -> None:
         # A ``proves`` edge is a CITATION (Artifact -> claim), not provenance: a
         # WebSearch proving a Belief was NOT produced by that Belief -- the search
@@ -4952,17 +5288,20 @@ class TestFirstEdgeInfersProduced:
         # (A Belief genuinely producing a search it spawned is recorded by an
         # explicit produced_by edge, not inferred from a citation.)
         belief = await integ_store.submit_belief(
-            SubmitBelief(account="tester@example.com", title="claim")
+            SubmitBelief(account="tester@example.com", title="claim"),
         )
         search = await integ_store.submit_websearch(
-            SubmitWebSearch(account="tester@example.com", title="search", query="q")
+            SubmitWebSearch(account="tester@example.com", title="search", query="q"),
         )
         await self._set_created(integ_store, belief, datetime(2020, 1, 1, tzinfo=UTC))
         await self._set_created(integ_store, search, datetime(2020, 1, 2, tzinfo=UTC))
         # Proves stores Artifact -> {Belief, Experiment}: the WebSearch (citing
         # artifact) points up to the older Belief it bears on.
         await integ_store.add_edge(
-            from_id=search, to_id=belief, edge_kind="proves", actor="alice"
+            from_id=search,
+            to_id=belief,
+            edge_kind="proves",
+            actor="alice",
         )
         belief_row = cast(Belief, await integ_store.get_inquiry(belief))
         assert belief_row.produces == ()

@@ -335,7 +335,7 @@ class TestAuthCallbackHappyPath:
         engine.conn.fetchval = AsyncMock(return_value="admin")
         user_id = uuid.uuid4()
         engine.conn.fetchrow = AsyncMock(
-            return_value={"id": user_id, "status": "active"}
+            return_value={"id": user_id, "status": "active"},
         )
         _install_http_mock(monkeypatch, _google_handler_factory())
         state = _start_login(client)
@@ -356,10 +356,11 @@ class TestAuthCallbackHappyPath:
         user_id = uuid.uuid4()
         engine.conn.fetchval = AsyncMock(return_value="writer")
         engine.conn.fetchrow = AsyncMock(
-            return_value={"id": user_id, "status": "active"}
+            return_value={"id": user_id, "status": "active"},
         )
         _install_http_mock(
-            monkeypatch, _google_handler_factory(email="bob@rekursiv.ai")
+            monkeypatch,
+            _google_handler_factory(email="bob@rekursiv.ai"),
         )
         state = _start_login(client)
         response = client.get(f"/auth/callback?code=auth-code-123&state={state}")
@@ -403,7 +404,7 @@ class TestAuthCallbackHappyPath:
         engine.conn.fetchval = AsyncMock(return_value="writer")
         user_id = uuid.uuid4()
         engine.conn.fetchrow = AsyncMock(
-            return_value={"id": user_id, "status": "disabled"}
+            return_value={"id": user_id, "status": "disabled"},
         )
         _install_http_mock(monkeypatch, _google_handler_factory())
         state = _start_login(client)
@@ -425,7 +426,7 @@ class TestAuthCallbackHappyPath:
         engine.conn.fetchval = AsyncMock(return_value="writer")
         user_id = uuid.uuid4()
         engine.conn.fetchrow = AsyncMock(
-            return_value={"id": user_id, "status": "disabled"}
+            return_value={"id": user_id, "status": "disabled"},
         )
         _install_http_mock(monkeypatch, _google_handler_factory())
         state = _start_login(client)
@@ -454,10 +455,11 @@ class TestAuthCallbackEmailNormalization:
         engine = _install_oauth_state()
         engine.conn.fetchval = AsyncMock(return_value="admin")
         engine.conn.fetchrow = AsyncMock(
-            return_value={"id": uuid.uuid4(), "status": "active"}
+            return_value={"id": uuid.uuid4(), "status": "active"},
         )
         _install_http_mock(
-            monkeypatch, _google_handler_factory(email="Alice@Example.com")
+            monkeypatch,
+            _google_handler_factory(email="Alice@Example.com"),
         )
         state = _start_login(client)
         response = client.get(f"/auth/callback?code=c&state={state}")
@@ -475,7 +477,7 @@ class TestAuthCallbackEmailNormalization:
         engine = _install_oauth_state()
         engine.conn.fetchval = AsyncMock(return_value="writer")
         engine.conn.fetchrow = AsyncMock(
-            return_value={"id": uuid.uuid4(), "status": "active"}
+            return_value={"id": uuid.uuid4(), "status": "active"},
         )
         _install_http_mock(monkeypatch, _google_handler_factory(name="New Name"))
         state = _start_login(client)
@@ -812,7 +814,7 @@ class TestBootstrapAdminFirstLogin:
         engine.conn.fetchval = AsyncMock(return_value="admin")
         user_id = uuid.uuid4()
         engine.conn.fetchrow = AsyncMock(
-            return_value={"id": user_id, "status": "active"}
+            return_value={"id": user_id, "status": "active"},
         )
         _install_http_mock(
             monkeypatch,
@@ -877,8 +879,8 @@ class TestInstallOAuthStateWiresStore:
                     "user_role": "viewer",
                     "key_role": "viewer",
                     "status": "active",
-                }
-            ]
+                },
+            ],
         )
         target_id = uuid.uuid4()
         response = client.get(

@@ -164,8 +164,8 @@ class TestListTokens:
                     "created_at": datetime(2025, 1, 1, tzinfo=UTC),
                     "last_used_at": None,
                     "revoked_at": None,
-                }
-            ]
+                },
+            ],
         )
         r = client.get("/api/me/tokens")
         assert r.status_code == 200, r.text

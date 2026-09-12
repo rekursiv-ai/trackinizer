@@ -145,7 +145,7 @@ class _ConnGuard:
         if self._lock.locked() and _lock_owner(self._lock) is asyncio.current_task():
             raise RuntimeError(
                 "Reentrant acquire on the single PGlite connection would "
-                "deadlock: the current task already holds the connection lock."
+                "deadlock: the current task already holds the connection lock.",
             )
         await self._lock.acquire()
         _set_lock_owner(self._lock, asyncio.current_task())
@@ -287,7 +287,9 @@ class PGliteEngine:
             )
             if self._persist:
                 _write_persistent_manager_js_tcp(
-                    workdir, port=port, extensions=self._extensions
+                    workdir,
+                    port=port,
+                    extensions=self._extensions,
                 )
         else:
             # Unix domain socket (default): the path is unique per instance, so
@@ -577,7 +579,10 @@ class _LocalBus:
                 q.put_nowait(payload)
 
     async def subscribe(
-        self, channel: str, *, queue_maxsize: int = 1024
+        self,
+        channel: str,
+        *,
+        queue_maxsize: int = 1024,
     ) -> AsyncGenerator[str, None]:
         """Subscribe to ``channel`` and yield messages until the consumer exits.
 
@@ -666,7 +671,7 @@ _INSTALL_LOCK_STALE_SECONDS: Final = 900.0
 # ``assert``, which ``-O`` strips) so a future edit that inverts them fails loud.
 if _INSTALL_LOCK_STALE_SECONDS <= _INSTALL_TIMEOUT_SECONDS:
     raise RuntimeError(
-        "PGlite install lock stale window must exceed the install timeout"
+        "PGlite install lock stale window must exceed the install timeout",
     )
 
 
@@ -755,7 +760,7 @@ def _run_npm_ci(root: Path) -> None:
     """Copy the vendored manifest + lockfile into ``root`` and ``npm ci``."""
     (root / "package.json").write_bytes((_CWD / "pglite-package.json").read_bytes())
     (root / "package-lock.json").write_bytes(
-        (_CWD / "pglite-package-lock.json").read_bytes()
+        (_CWD / "pglite-package-lock.json").read_bytes(),
     )
     subprocess.run(
         ["npm", "ci", "--no-audit", "--no-fund"],  # noqa: S607 -- fixed args, no shell
@@ -952,7 +957,7 @@ def _persist_js_extension_parts(extensions: Sequence[str]) -> tuple[str, str]:
     for name in extensions:
         if name not in _EXTENSION_JS:
             raise ValueError(
-                f"unknown pglite extension {name!r}; add it to _EXTENSION_JS"
+                f"unknown pglite extension {name!r}; add it to _EXTENSION_JS",
             )
         symbol, module = _EXTENSION_JS[name]
         ext_requires.append(f"const {{ {symbol} }} = require('{module}');")

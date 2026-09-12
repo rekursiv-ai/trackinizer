@@ -401,7 +401,7 @@ async def create_api_key(
     final_role: Role = max_role if role is None else role
     if ROLE_ORDER.index(final_role) > ROLE_ORDER.index(max_role):
         raise RoleCeilingError(
-            f"requested role {final_role!r} exceeds ceiling {max_role!r}"
+            f"requested role {final_role!r} exceeds ceiling {max_role!r}",
         )
     key_id = uuid.uuid4()
     secret, prefix = generate_token()
@@ -638,7 +638,8 @@ async def assert_account_active(engine: DatabaseEngine, account: str) -> None:
     """
     async with engine.acquire() as conn:
         live = await conn.fetchval(
-            "SELECT 1 FROM users WHERE email = $1 AND status = 'active'", account
+            "SELECT 1 FROM users WHERE email = $1 AND status = 'active'",
+            account,
         )
     if live is None:
         raise HTTPException(
@@ -712,7 +713,10 @@ async def bootstrap_admin(conn: Conn) -> None:
             # The seed provisions an admin user with no presented credential,
             # so the ceiling is the admin role it is creating.
             _key_id, secret, _prefix, _role = await create_api_key(
-                conn, user_id=user_id, name="bootstrap", ceiling="admin"
+                conn,
+                user_id=user_id,
+                name="bootstrap",
+                ceiling="admin",
             )
             _stage_bootstrap_token(token_path, secret)
     if seeded:

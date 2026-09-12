@@ -261,7 +261,7 @@ def run(config: RunConfig) -> int:
     factory = _ADAPTERS.get(config.cli_name)
     if factory is None:
         raise ValueError(
-            f"unsupported CLI {config.cli_name!r}; choose one of {sorted(_ADAPTERS)}"
+            f"unsupported CLI {config.cli_name!r}; choose one of {sorted(_ADAPTERS)}",
         )
     adapter = factory()
 
@@ -423,7 +423,7 @@ def main(
             client=client_factory() if syncing and client_factory else None,
             resume_path=resume_path,
             cli_session_id=cli_session_id,
-        )
+        ),
     )
 
 
@@ -504,7 +504,7 @@ def _spawn_and_drain(
     # serialize with file-sourced events rather than racing the sink.
     slash_queue: deque[tuple[SlashCommand, datetime]] = deque()
     detector = SlashCommandDetector(
-        lambda command, at: slash_queue.append((command, at))
+        lambda command, at: slash_queue.append((command, at)),
     )
 
     # Lines framed off the PTY stream (IO-stream runs) land here from the
@@ -546,7 +546,7 @@ def _spawn_and_drain(
         # starts. Say so, since the alternative is a silently empty transcript.
         sys.stderr.write(
             f"[trax run] session-log watch not ready within {_ARM_TIMEOUT_SEC:.0f}s; "
-            "starting the CLI anyway (early output may not be captured)\n"
+            "starting the CLI anyway (early output may not be captured)\n",
         )
 
     # A stream adapter names no binary of its own: the command is the ``--``
@@ -563,7 +563,7 @@ def _spawn_and_drain(
             drain_thread.join(timeout=1.0)
             raise SystemExit(
                 f"trax run {adapter.name}: no command given; "
-                f"usage: trax run {adapter.name} -- CMD [ARGS...]"
+                f"usage: trax run {adapter.name} -- CMD [ARGS...]",
             )
         argv = list(config.cli_args)
         stream_capture = LineCapture(partial(_enqueue_stream_line, stream_queue, stats))
@@ -659,14 +659,17 @@ def _spawn_and_drain(
 # left rather than hanging ``trax run`` forever, and ``LockedSink.close`` then declines
 # to block on the lock that straggler still holds.
 def _join_with_watchdog(
-    thread: threading.Thread, name: str, *, deadline: float
+    thread: threading.Thread,
+    name: str,
+    *,
+    deadline: float,
 ) -> None:
     """Join ``thread`` until ``deadline``, warning if it outlives it."""
     thread.join(timeout=max(0.0, deadline - time.monotonic()))
     if thread.is_alive():
         sys.stderr.write(
             f"[trax run] {name} thread did not stop before the teardown "
-            "deadline; proceeding to close\n"
+            "deadline; proceeding to close\n",
         )
 
 
@@ -738,7 +741,7 @@ def _inbound_poll_loop(
             if not warned:
                 sys.stderr.write(
                     "[trax run] inbound delivery failed; messages will not be "
-                    "delivered until it recovers\n"
+                    "delivered until it recovers\n",
                 )
                 warned = True
             _logger.debug("inbound wait failed", exc_info=True)
@@ -823,7 +826,9 @@ def _envelope_agent_message(text: str) -> str | None:
 # ``None`` -- a ``--no-sync`` / ``--out`` / ``--dry-run`` run with no collision arbiter
 # -- the requested ``config.actor`` is exported as-is.
 def _routing_env(
-    config: RunConfig, *, granted_actor: str | None = None
+    config: RunConfig,
+    *,
+    granted_actor: str | None = None,
 ) -> dict[str, str]:
     """Return the routing identity to export into the wrapped CLI's environment."""
     env: dict[str, str] = {}
@@ -850,7 +855,8 @@ def _prepare_session_dirs(adapter: Adapter) -> None:
 # continue it, so excluding it would drop the very transcript being resumed -- every
 # turn the CLI appends would be captured while the ones it was handed were not.
 def _existing_session_files(
-    adapter: Adapter, config: RunConfig | None = None
+    adapter: Adapter,
+    config: RunConfig | None = None,
 ) -> frozenset[Path]:
     """Snapshot the matching session files present before the run starts."""
     found: set[Path] = set()
@@ -908,7 +914,7 @@ def _drain_filesystem_loop(
             slash_queue=slash_queue,
             stream_queue=stream_queue,
             armed=armed,
-        )
+        ),
     )
 
 
@@ -942,7 +948,7 @@ async def _drain_until_stopped(
                     else frozenset()
                 ),
                 armed=armed,
-            )
+            ),
         )
         if watched
         else None
@@ -1121,7 +1127,7 @@ async def _watch_session_files(
                     path=followed.path,
                     raw=followed.text.encode(),
                     restart=followed.restart,
-                )
+                ),
             )
     except asyncio.CancelledError:
         raise
@@ -1147,7 +1153,9 @@ async def _watch_session_files(
 # unchanged while the turn is new. Only the digest is kept -- a session file grows to
 # megabytes, and every one of them would otherwise be held for the life of the run.
 def _queue_body(
-    path: Path, lines: asyncio.Queue[_Captured], bodies: dict[Path, str]
+    path: Path,
+    lines: asyncio.Queue[_Captured],
+    bodies: dict[Path, str],
 ) -> None:
     """Queue a whole-file session's body, skipping empty, unreadable, or unchanged."""
     body = _read_bytes(path)
@@ -1357,6 +1365,6 @@ def _dry_run_drain(
                 slash_queue=deque(),
                 stream_queue=None,
                 replay=True,
-            )
+            ),
         )
     return 0

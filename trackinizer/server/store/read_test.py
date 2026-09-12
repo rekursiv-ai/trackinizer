@@ -135,7 +135,10 @@ class TestStoreReads:
 
 class TestCoverageStoreReads:
     def _row(
-        self, *, kind: Inquiry.InquiryKind = "Issue", **extra: object
+        self,
+        *,
+        kind: Inquiry.InquiryKind = "Issue",
+        **extra: object,
     ) -> dict[str, object]:
         now = datetime.now(UTC)
         row: dict[str, object] = {
@@ -190,7 +193,7 @@ class TestCoverageStoreReads:
                     "old_marginal_cost_resource_usd": 0.0,
                     "new_marginal_cost_agent_usd": 0.0,
                     "new_marginal_cost_resource_usd": 0.0,
-                }
+                },
             ],
         ]
         queue_field_rows(
@@ -266,7 +269,8 @@ class TestListKindFilterLowering:
         store, _engine = make_store(conn)
 
         await store.list_kind(
-            "Issue", filters=(Filter(field="account", op="is", value="josh"),)
+            "Issue",
+            filters=(Filter(field="account", op="is", value="josh"),),
         )
 
         sql, *params = conn.fetch.call_args_list[0].args
@@ -320,7 +324,9 @@ class TestListKindFilterLowering:
         store, _engine = make_store(conn)
 
         await store.list_kind(
-            "Issue", limit=5, filters=(Filter(field="owner", op="isnull", value=""),)
+            "Issue",
+            limit=5,
+            filters=(Filter(field="owner", op="isnull", value=""),),
         )
 
         sql, *params = conn.fetch.call_args_list[0].args
@@ -398,7 +404,9 @@ class TestUnboundableRegexRefusal:
     @pytest.mark.parametrize("lowering", [True, False])
     def test_a_lowerable_column_is_allowed_in_either_mode(self, lowering: bool) -> None:
         read._partition_filters(
-            (Filter(field="title", op="re", value="^a"),), [], lowering=lowering
+            (Filter(field="title", op="re", value="^a"),),
+            [],
+            lowering=lowering,
         )
 
 

@@ -61,7 +61,8 @@ def _transcript(records: Iterable[SessionRecord]) -> tuple[TranscriptItem, ...]:
         record
         for record in records
         if isinstance(
-            record, UserMessage | AssistantMessage | Thinking | ToolCall | ToolResult
+            record,
+            UserMessage | AssistantMessage | Thinking | ToolCall | ToolResult,
         )
     )
 
@@ -96,7 +97,9 @@ def test_a_user_turn_normalizes_to_a_user_message() -> None:
 def test_a_session_declares_its_context_first() -> None:
     # Every record names its settings by index, so the context has to lead.
     native = _line(
-        type='"user"', message='{"role":"user","content":"Hi."}', uuid='"u1"'
+        type='"user"',
+        message='{"role":"user","content":"Hi."}',
+        uuid='"u1"',
     )
 
     records = list(claude.normalize(StringIO(native)))
@@ -238,7 +241,8 @@ def test_an_image_result_decodes_to_its_bytes() -> None:
     ids=["attachment", "system", "queue", "ai-title"],
 )
 def test_a_record_outside_the_transcript_maps_to_its_own_type(
-    native: str, expected: type[SessionRecord]
+    native: str,
+    expected: type[SessionRecord],
 ) -> None:
     # A line only claude writes -- its queue, its identity lines -- stays
     # uncategorized: a type for it would be one no other provider can fill.
@@ -262,7 +266,9 @@ def test_a_record_outside_the_transcript_maps_to_its_own_type(
     ids=["bash", "read", "write", "edit", "search", "fetch", "agent", "uncategorized"],
 )
 def test_a_result_is_typed_by_what_its_tool_did(
-    tool: str, result: str, expected: type[SessionRecord]
+    tool: str,
+    result: str,
+    expected: type[SessionRecord],
 ) -> None:
     # Dispatch is on the tool NAME, which only the call carries -- so the
     # result two lines later can only be typed by looking back at it.
@@ -683,7 +689,7 @@ def test_reused_call_ids_correlate_with_the_preceding_call() -> None:
     results = [
         record
         for record in claude.normalize(
-            StringIO(first_call + first_result + second_call + second_result)
+            StringIO(first_call + first_result + second_call + second_result),
         )
         if isinstance(record, FileReadResult)
     ]
@@ -704,7 +710,7 @@ def test_a_foreign_lifted_read_uses_its_semantic_content() -> None:
                 "$shell": {
                     "command": ["/bin/bash", "-lc", "/bin/cat a.txt"],
                     "exit_code": 0,
-                }
+                },
             },
         ),
     )
@@ -800,7 +806,8 @@ def test_an_explicit_tool_payload_round_trips(payload: str) -> None:
     ids=["present field changes", "missing field stays missing"],
 )
 def test_tool_result_replay_uses_current_values_only_for_stated_fields(
-    payload: str, expected_payload: str
+    payload: str,
+    expected_payload: str,
 ) -> None:
     native = _line(
         type='"assistant"',
@@ -1304,7 +1311,8 @@ def test_provider_dollar_key_after_envelope_stays_after_envelope() -> None:
 def test_mixed_unicode_escaping_is_preserved_per_line() -> None:
     escaped = "caf\\u00e9"  # codespell:ignore caf.
     native = _line(
-        type='"user"', message=f'{{"role":"user","content":"{escaped}"}}'
+        type='"user"',
+        message=f'{{"role":"user","content":"{escaped}"}}',
     ) + _line(type='"user"', message='{"role":"user","content":"café"}')
 
     records = list(claude.normalize(StringIO(native)))

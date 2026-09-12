@@ -116,14 +116,14 @@ _ASCII_DIGITS: Final[frozenset[str]] = frozenset("0123456789")
 _NUMERIC_DIGITS: Final = r"[0-9](?:_?[0-9])*"
 _NUMERIC_OPERAND: Final[re.Pattern[str]] = re.compile(
     rf"\A[-+]?(?:(?:{_NUMERIC_DIGITS})(?:\.(?:{_NUMERIC_DIGITS})?)?"
-    rf"|\.(?:{_NUMERIC_DIGITS}))(?:[eE][-+]?{_NUMERIC_DIGITS})?\Z"
+    rf"|\.(?:{_NUMERIC_DIGITS}))(?:[eE][-+]?{_NUMERIC_DIGITS})?\Z",
 )
 
 # ``numeric`` also takes these by name, case-insensitively -- live PG16 parses
 # ``inf``, ``INFINITY`` and ``NaN``. ``nan`` is refused separately for
 # ORDERING, because the two engines sort it differently.
 _NUMERIC_NAMES: Final[frozenset[str]] = frozenset(
-    {"nan", "inf", "-inf", "+inf", "infinity", "-infinity", "+infinity"}
+    {"nan", "inf", "-inf", "+inf", "infinity", "-infinity", "+infinity"},
 )
 
 # The two escapes both engines accept while MEANING different things, each
@@ -303,7 +303,7 @@ VALUELESS_FILTER_OPS: Final[frozenset[FilterOp]] = frozenset({"isnull", "notnull
 # Identity/housekeeping columns the schema declares NOT NULL directly; they
 # carry no ColumnSpec, so they can't be derived from the spec metadata below.
 IDENTITY_COLUMNS: Final[frozenset[str]] = frozenset(
-    {"id", "kind", "seq", "created", "modified"}
+    {"id", "kind", "seq", "created", "modified"},
 )
 
 

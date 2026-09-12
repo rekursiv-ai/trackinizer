@@ -116,7 +116,8 @@ else:
     from wrapt import lazy_import
 
     MetricMaskClause = lazy_import(
-        "trackinizer.wire.wire_metrics_query", "MetricMaskClause"
+        "trackinizer.wire.wire_metrics_query",
+        "MetricMaskClause",
     )
 
 
@@ -303,7 +304,7 @@ class Kind(Command):
         """
         if len(tokens) > 1:
             raise ClientError(
-                f"unexpected positional after relation index: {tokens[1:]!r}"
+                f"unexpected positional after relation index: {tokens[1:]!r}",
             )
         client = client_factory()
         _kind, _target_id, payload = client.get_inquiry(ref)
@@ -396,7 +397,7 @@ class Kind(Command):
         ref, consumed = consume_ref(before, 0, kind_hint="AgentSession")
         if before[consumed:]:
             raise ClientError(
-                f"unexpected tokens before 'run': {list(before[consumed:])}"
+                f"unexpected tokens before 'run': {list(before[consumed:])}",
             )
         client = client_factory()
         _kind, session_id = client.resolve_id(ref)
@@ -408,7 +409,7 @@ class Kind(Command):
             raise ClientError(str(err)) from err
         except CiphertextDroppedError as err:
             raise ClientError(
-                f"{err} (its records remain searchable; only the replay is lost)"
+                f"{err} (its records remain searchable; only the replay is lost)",
             ) from err
         del args
         echo(f"resuming {ref} as {target} from {written.path}")
@@ -431,7 +432,7 @@ class Kind(Command):
         ref, consumed = consume_ref(before, 0, kind_hint="Experiment")
         if consumed != len(before):
             raise ClientError(
-                f"unexpected tokens before metric: {list(before[consumed:])!r}"
+                f"unexpected tokens before metric: {list(before[consumed:])!r}",
             )
         client = client_factory()
         _kind, exp_id = client.resolve_id(ref)
@@ -459,7 +460,9 @@ class Kind(Command):
         if action.write is not None:
             raise ClientError("a cross-experiment metric tail cannot write; name a ref")
         query = parse_list_query("Experiment", before) or ListQuery(
-            kinds=("Experiment",), ranges={}, filters=()
+            kinds=("Experiment",),
+            ranges={},
+            filters=(),
         )
         client = client_factory()
         rows = _query_rows(query, client, limit=MAX_LIST_LIMIT)
@@ -487,7 +490,7 @@ class Kind(Command):
         if action.write is None:
             raise ClientError(
                 "create+log requires a metric write (a 'to' value); "
-                "read an existing experiment by ref instead"
+                "read an existing experiment by ref instead",
             )
         actions = _resolve_stdin_actions(parse_actions(before))
         # ``run_create`` returns the server-minted id of the row it just created,
@@ -526,13 +529,15 @@ class Kind(Command):
             hits = client.query_metrics(exp_id, masks=masks, sort=None, limit=None)
             if len(hits) > 1:
                 raise ClientError(
-                    f"would write {len(hits)} cells; pass --makeitso for a bulk write"
+                    f"would write {len(hits)} cells; pass --makeitso for a bulk write",
                 )
         return client.write_metrics_masked(exp_id, masks=masks, value=value)
 
     @classmethod
     def _render_metric_points(
-        cls, points: Sequence[MetricPoint], args: argparse.Namespace
+        cls,
+        points: Sequence[MetricPoint],
+        args: argparse.Namespace,
     ) -> None:
         """Print masked cells in ``(key, step)`` order, or JSON."""
         if args.format_ == "json":
@@ -564,7 +569,7 @@ class Kind(Command):
                             **r.point.model_dump(mode="json"),
                         }
                         for r in ranked
-                    ]
+                    ],
                 ),
                 nl=False,
             )
@@ -579,7 +584,7 @@ class Kind(Command):
             seq = seq_by_id.get(str(r.experiment_id), "?")
             echo(
                 f"experiment {seq!s:>4}  {r.point.key:20} "
-                f"{r.point.step:>10} {r.point.value:>16.6g}"
+                f"{r.point.step:>10} {r.point.value:>16.6g}",
             )
 
     @classmethod
@@ -597,7 +602,7 @@ class Kind(Command):
                 Sequence[dict[str, object]],
                 cast(Mapping[str, object], payload.get(bucket) or {}).get(edge_kind)
                 or (),
-            )
+            ),
         )
         if against:
             # A ``dis*`` spelling selects the negative-valence (against) subset of
@@ -618,10 +623,13 @@ class Kind(Command):
     ) -> None:
         _subject_kind, _subject_id, subject_payload = client.get_inquiry(subject)
         _peer_kind, _peer_id, peer_payload = client.get_inquiry(
-            UuidRef(uuid=uuid.UUID(str(peer_row["id"])))
+            UuidRef(uuid=uuid.UUID(str(peer_row["id"]))),
         )
         edge_payload = cls._edge_payload(
-            subject_payload, peer_payload, peer_row, relation
+            subject_payload,
+            peer_payload,
+            peer_row,
+            relation,
         )
         if args.format_ == "json":
             echo(render.format_json(edge_payload), nl=False)
@@ -662,7 +670,8 @@ class Kind(Command):
         changes = [
             change
             for change in cast(
-                Sequence[dict[str, object]], source_payload.get("changes") or ()
+                Sequence[dict[str, object]],
+                source_payload.get("changes") or (),
             )
             if any(
                 cast(Mapping[str, object], snapshot or {}).get("peer_edge_kind")
@@ -692,7 +701,9 @@ class Kind(Command):
             return sorted(rows, key=lambda row: int(cast(int, row.get("seq") or 0)))
         if sort == "recent":
             return sorted(
-                rows, key=lambda row: str(row.get("created") or ""), reverse=True
+                rows,
+                key=lambda row: str(row.get("created") or ""),
+                reverse=True,
             )
         if sort == "oldest":
             return sorted(rows, key=lambda row: str(row.get("created") or ""))
@@ -723,7 +734,7 @@ class Kind(Command):
     ) -> dict[str, object]:
         if not token.isdigit():
             raise ClientError(
-                f"relation index must be a positive integer, got {token!r}"
+                f"relation index must be a positive integer, got {token!r}",
             )
         seq_matches = [row for row in rows if str(row.get("seq") or "") == token]
         if len(seq_matches) == 1:
@@ -731,7 +742,7 @@ class Kind(Command):
         index = int(token)
         if index < 1 or index > len(rows):
             raise ClientError(
-                f"relation index {index} out of range; {len(rows)} {edge_kind} rows"
+                f"relation index {index} out of range; {len(rows)} {edge_kind} rows",
             )
         return rows[index - 1]
 
@@ -744,7 +755,7 @@ class Kind(Command):
         hydrated: list[dict[str, object]] = []
         for row in rows:
             _kind, _target_id, payload = client.get_inquiry(
-                UuidRef(uuid=uuid.UUID(str(row["id"])))
+                UuidRef(uuid=uuid.UUID(str(row["id"]))),
             )
             self_row = cast(dict[str, object], payload["self"])
             hydrated.append(dict(self_row, **cls._relation_edge_metadata(row)))
@@ -805,7 +816,8 @@ class Kind(Command):
         # affect the stored direction.
         target_id = str(src_id if relation[1] else tgt_id)
         peer = next(
-            (row for row in rows if str(row.get("id") or "") == target_id), None
+            (row for row in rows if str(row.get("id") or "") == target_id),
+            None,
         )
         if peer is not None:
             cls._print_edge_payload(client, subject, peer, relation, args)
@@ -911,7 +923,7 @@ class Kind(Command):
         # a `begin ... end` group fans out. The whole create commits or rolls back
         # together, so a failed edge or target can never orphan the root.
         items: list[tuple[Inquiry.InquiryKind, Mapping[str, object]]] = [
-            (kind, cls._create_body(kind, create_actions, actor, client))
+            (kind, cls._create_body(kind, create_actions, actor, client)),
         ]
         edges: list[dict[str, object]] = []
         # The edges in flatten (creation) order, each tagged with its SOURCE node's
@@ -929,7 +941,7 @@ class Kind(Command):
         resolved = iter(
             target_id
             for _kind, target_id in client.resolve_ids(
-                cls._collect_existing_refs(edge_actions)
+                cls._collect_existing_refs(edge_actions),
             )
         )
         cls._flatten_inline_tree(
@@ -1049,7 +1061,7 @@ class Kind(Command):
                 cost_actions.append(action)
             else:
                 raise ClientError(
-                    "create supports field/list actions, edge actions, and cost adds"
+                    "create supports field/list actions, edge actions, and cost adds",
                 )
         return body_actions, edge_actions, cost_actions
 
@@ -1097,12 +1109,13 @@ class Kind(Command):
             if isinstance(action.target, InlineCreate):
                 target = action.target
                 validate_writable_fields(
-                    target.kind, tuple(f.field for f in target.fields)
+                    target.kind,
+                    tuple(f.field for f in target.fields),
                 )
                 items.append((target.kind, _inline_create_body(target, actor, client)))
                 new_index = len(items) - 1
                 edges.append(
-                    cls._batch_edge(action, from_index=from_index, to_index=new_index)
+                    cls._batch_edge(action, from_index=from_index, to_index=new_index),
                 )
                 flat_edges.append((action, from_index, None))
                 deferred_costs.extend((new_index, cost) for cost in target.costs)
@@ -1120,7 +1133,7 @@ class Kind(Command):
             else:
                 target_id = next(resolved)
                 edges.append(
-                    cls._batch_edge(action, from_index=from_index, to_id=target_id)
+                    cls._batch_edge(action, from_index=from_index, to_id=target_id),
                 )
                 flat_edges.append((action, from_index, action.target))
 
@@ -1143,7 +1156,7 @@ class Kind(Command):
                 spec = FIELDS_BY_NAME[action.field]
                 if spec.ref_kind is not None:
                     raise ClientError(
-                        f"create does not support {spec.cli_name} add/del; use to"
+                        f"create does not support {spec.cli_name} add/del; use to",
                     )
                 values = list(cast(Sequence[str], body.get(spec.payload_key) or ()))
                 if isinstance(action, AddList):
@@ -1201,7 +1214,10 @@ class Kind(Command):
         _, src_id = client.resolve_id(source)
         _, tgt_id = client.resolve_id(target)
         client.remove_edge(
-            src_id, tgt_id, edge_kind, actor=resolve_actor(args.actor, client)
+            src_id,
+            tgt_id,
+            edge_kind,
+            actor=resolve_actor(args.actor, client),
         )
         echo(f"removed: {source} {edge_kind} {target}")
 
@@ -1277,11 +1293,11 @@ class Kind(Command):
         validate_writable_fields(target.kind, tuple(f.field for f in target.fields))
 
         items: list[tuple[Inquiry.InquiryKind, Mapping[str, object]]] = [
-            (target.kind, _inline_create_body(target, actor, client))
+            (target.kind, _inline_create_body(target, actor, client)),
         ]
         # The anchor edge: existing subject (by id) -> the inline target (item 0).
         edges: list[dict[str, object]] = [
-            cls._batch_edge(action, from_id=anchor_id, to_index=0)
+            cls._batch_edge(action, from_id=anchor_id, to_index=0),
         ]
         deferred_costs: list[tuple[int, AddCost]] = [(0, cost) for cost in target.costs]
         # Nested edges of the inline target descend through the shared flatten
@@ -1290,7 +1306,7 @@ class Kind(Command):
         resolved = iter(
             target_id
             for _kind, target_id in client.resolve_ids(
-                cls._collect_existing_refs(target.edges)
+                cls._collect_existing_refs(target.edges),
             )
         )
         cls._flatten_inline_tree(
@@ -1344,7 +1360,10 @@ class Kind(Command):
 
     @classmethod
     def _echo_anchor_edge(
-        cls, subject: Ref, action: EdgeAction, target_ref: Ref
+        cls,
+        subject: Ref,
+        action: EdgeAction,
+        target_ref: Ref,
     ) -> None:
         """Echo the ``added:`` line for the anchor edge subject -> inline target."""
         source, target = (
@@ -2001,7 +2020,8 @@ Examples:
             prerequisites = [
                 pid
                 for ref in cast(
-                    Sequence[Mapping[str, object]], row.get("requires") or ()
+                    Sequence[Mapping[str, object]],
+                    row.get("requires") or (),
                 )
                 if (pid := str(ref.get("id")))
                 and status_by_id.get(pid, "active") == "active"
@@ -2023,7 +2043,7 @@ Examples:
                 f"issue {row.get('seq', '?')!s:>4}  "
                 f"[{('' if priority is None else priority)!s:>8}]  "
                 f"{str(row.get('title', '') or '')[:50]:<50}  "
-                f"requires: {prereq_refs}"
+                f"requires: {prereq_refs}",
             )
 
 
@@ -2135,7 +2155,7 @@ Options:
         echo(
             f"{'  ' * depth}issue {seq} "
             f"[{row.get('status') or '?'!s}] "
-            f"{str(row.get('title', '') or '')[:50]}"
+            f"{str(row.get('title', '') or '')[:50]}",
         )
         children = _ref_ids(row.get("requires"))
         if row_id in rendered and children:
@@ -2202,7 +2222,10 @@ Options:
 
     @classmethod
     def render(
-        cls, rows: Sequence[Mapping[str, object]], *, width: int | None = None
+        cls,
+        rows: Sequence[Mapping[str, object]],
+        *,
+        width: int | None = None,
     ) -> None:
         """Render rows for the terminal.
 
@@ -2382,7 +2405,7 @@ def _parse_target(target: str) -> tuple[str, str | None]:
     if sep and not room:
         raise ClientError(
             f"empty room after ':' in target '{target}'; "
-            "drop the ':' or name a room (e.g. @scientist:sear)"
+            "drop the ':' or name a room (e.g. @scientist:sear)",
         )
     return actor, (room or None)
 
@@ -2412,7 +2435,8 @@ def _positive_int(value: str) -> int:
 # ``src`` becomes a ``to_*`` key and the ``to_*`` key on ``peer`` a ``from_*`` key,
 # preserving whichever (index vs id) form each carried.
 def _swap_edge_endpoints(
-    src: Mapping[str, object], peer: Mapping[str, object]
+    src: Mapping[str, object],
+    peer: Mapping[str, object],
 ) -> tuple[dict[str, object], dict[str, object]]:
     """Swap a ``from_*``/``to_*`` endpoint pair for a reverse-alias edge."""
     rename = {
@@ -2449,7 +2473,7 @@ def _resolve_stdin_actions(actions: Sequence[Action]) -> tuple[Action, ...]:
                     metadata=action.metadata,
                     remove=action.remove,
                     annotate=action.annotate,
-                )
+                ),
             )
         else:
             resolved.append(action)
@@ -2479,7 +2503,8 @@ def _resolve_inline_create_values(
     for action in target.edges:
         if isinstance(action.target, InlineCreate):
             inner, inner_used = _resolve_inline_create_values(
-                action.target, used_stdin=used_stdin or used
+                action.target,
+                used_stdin=used_stdin or used,
             )
             used = used or inner_used
             nested.append(
@@ -2489,7 +2514,7 @@ def _resolve_inline_create_values(
                     metadata=action.metadata,
                     remove=action.remove,
                     annotate=action.annotate,
-                )
+                ),
             )
         else:
             nested.append(action)
@@ -2516,7 +2541,8 @@ def _resolve_field_value(field: SetField, *, used_stdin: bool) -> tuple[SetField
         if used_stdin:
             raise ClientError("stdin value can only be used once per command")
         return SetField(
-            field=field.field, value=field_value(field.field, sys.stdin.read())
+            field=field.field,
+            value=field_value(field.field, sys.stdin.read()),
         ), True
     if field.value.startswith("@"):
         path = field.value[1:]
@@ -2533,7 +2559,9 @@ def _resolve_field_value(field: SetField, *, used_stdin: bool) -> tuple[SetField
 
 
 def _inline_create_body(
-    target: InlineCreate, actor: Inquiry.Actor, client: Client
+    target: InlineCreate,
+    actor: Inquiry.Actor,
+    client: Client,
 ) -> dict[str, object]:
     """Build an inline-create row body, resolving ref-list fields and defaults."""
     body: dict[str, object] = {"owner": actor}
@@ -2659,7 +2687,7 @@ def _query_rows(
                 limit=remaining,
                 seq_ranges=query.ranges.get(kind, ()),
                 filters=query.filters,
-            )
+            ),
         )
     return rows
 

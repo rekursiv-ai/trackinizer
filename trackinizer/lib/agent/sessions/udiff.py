@@ -103,7 +103,7 @@ def parse_udiff(diff: str) -> tuple[Splice, ...]:
                 if prior.startswith("-")
                 else "trail"
                 if removed or added
-                else "lead"
+                else "lead",
             )
             continue
         if line.startswith(("-", "+")):
@@ -180,7 +180,7 @@ def render_udiff(edits: Sequence[Splice]) -> str:
         out.extend(_marked("+", splice.after, terminate="after" in splice.bare))
         trail = splice.trail or ""
         out.append(
-            f"{trail}\n{_NO_NEWLINE}\n" if "trail" in splice.bare and trail else trail
+            f"{trail}\n{_NO_NEWLINE}\n" if "trail" in splice.bare and trail else trail,
         )
     return "".join(out)
 
@@ -247,7 +247,7 @@ def _close(
             start=start if removed or added else None,
             count=len(removed) if (removed or added) else None,
             bare=frozenset(bare & {"before", "after", "trail"}),
-        )
+        ),
     )
 
 

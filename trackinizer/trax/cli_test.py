@@ -145,7 +145,7 @@ def test_global_flag_not_peeled_from_field_value() -> None:
 def test_global_flag_peeled_before_verb() -> None:
     """A global flag BEFORE the verb is still peeled (the prefix is its home)."""
     top, leftover = cli._peel_top_flags(
-        ["--show-ids", "issue", "7", "title", "to", "x"]
+        ["--show-ids", "issue", "7", "title", "to", "x"],
     )
     assert top.show_ids is True
     assert leftover == ["issue", "7", "title", "to", "x"]
@@ -154,7 +154,7 @@ def test_global_flag_peeled_before_verb() -> None:
 def test_global_value_flag_before_verb_consumes_its_value() -> None:
     """``--host H`` before the verb peels both flag and value off the prefix."""
     top, leftover = cli._peel_top_flags(
-        ["--host", "example", "issue", "title", "to", "x"]
+        ["--host", "example", "issue", "title", "to", "x"],
     )
     assert top.host == "example"
     assert leftover == ["issue", "title", "to", "x"]

@@ -229,7 +229,7 @@ def _positive_session_ttl(value: str) -> int:
     seconds = int(value)
     if seconds < 1:
         raise argparse.ArgumentTypeError(
-            f"session TTL must be >= 1 second, got {seconds}"
+            f"session TTL must be >= 1 second, got {seconds}",
         )
     return seconds
 

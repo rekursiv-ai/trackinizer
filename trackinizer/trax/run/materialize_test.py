@@ -211,7 +211,8 @@ class TestCiphertext:
             )
 
     def test_nothing_is_written_when_the_ciphertext_is_missing(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         """A half-written file would be captured as this run's own transcript."""
         with pytest.raises(CiphertextDroppedError):
@@ -381,7 +382,7 @@ class TestMaterializingCodex:
         )
 
         assert "CAISsgIKpgEIERgCKkBjy88X" not in written.path.read_text(
-            encoding="utf-8"
+            encoding="utf-8",
         )
 
     def test_an_unparsed_line_is_not_replayed_into_another_format(self) -> None:
@@ -498,9 +499,9 @@ class TestMaterializingCodex:
                         "thread_source": "user",
                         "model_provider": "openai",
                         "timestamp": "2026-01-01T00:00:00.000Z",
-                    }
-                }
-            )
+                    },
+                },
+            ),
         )
 
         written = materialize(
@@ -512,7 +513,7 @@ class TestMaterializingCodex:
         payload = DictCodec.coerce(
             json.loads(written.path.read_text(encoding="utf-8").splitlines()[0])[
                 "payload"
-            ]
+            ],
         )
         assert payload["cwd"] == "/elsewhere"
         assert payload["id"] == str(written.cli_session_id)

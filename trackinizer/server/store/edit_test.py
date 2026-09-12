@@ -263,7 +263,8 @@ class TestCoverageStoreEdits:
         # set arithmetic would delete both Smiths.
         conn = make_conn()
         set_field_row(
-            conn, {"paper_authors": ["Smith", "Jones", "Smith"], "kind": "Paper"}
+            conn,
+            {"paper_authors": ["Smith", "Jones", "Smith"], "kind": "Paper"},
         )
         store, _engine = make_store(conn)
         await store.remove_author(new_uuid(), "Smith", actor="alice")
@@ -294,7 +295,9 @@ class TestCoverageStoreEdits:
         set_field_row(conn, {"paper_authors": ["x"], "kind": "Paper"})
         store, _engine = make_store(conn)
         await store.set_authors(
-            new_uuid(), (" Smith ", "Jones", "Smith"), actor="alice"
+            new_uuid(),
+            (" Smith ", "Jones", "Smith"),
+            actor="alice",
         )
         update = next(
             c

@@ -248,8 +248,8 @@ def test_an_unrecognized_kind_is_named_not_absorbed() -> None:
     # UncategorizedRecord, never quietly shaped into a plausible neighbour.
     codex_records = list(
         codex.normalize(
-            StringIO('{"type":"event_msg","payload":{"type":"brand_new_thing"}}\n')
-        )
+            StringIO('{"type":"event_msg","payload":{"type":"brand_new_thing"}}\n'),
+        ),
     )
     claude_records = list(claude.normalize(StringIO('{"type":"brand-new-thing"}\n')))
 
@@ -265,9 +265,9 @@ def test_an_unrecognized_completed_item_is_named_by_its_inner_type() -> None:
         codex.normalize(
             StringIO(
                 '{"type":"event_msg","payload":{"type":"item_completed",'
-                '"item":{"type":"FutureThing"}}}\n'
-            )
-        )
+                '"item":{"type":"FutureThing"}}}\n',
+            ),
+        ),
     )
 
     assert _unmapped(records) == ["event_msg/item_completed/FutureThing"]

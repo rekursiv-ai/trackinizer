@@ -38,7 +38,8 @@ def test_no_filterable_column_routes_a_regex_to_python() -> None:
         for op in ("re", "nre"):
             try:
                 _, remaining = _partition_filters(
-                    (Filter(field=column, op=op, value="x"),), []
+                    (Filter(field=column, op=op, value="x"),),
+                    [],
                 )
             except ValidationError:
                 continue

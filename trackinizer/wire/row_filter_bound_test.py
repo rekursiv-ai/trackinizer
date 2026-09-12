@@ -100,7 +100,8 @@ class TestOrderOpsAreRefusedWhereOrderIsUndefined:
         # answer differently, so neither may run it.
         with pytest.raises(ValidationError, match="title"):
             match_filter(
-                {"title": "9"}, _BareFilter(field="title", op="gt", value="10")
+                {"title": "9"},
+                _BareFilter(field="title", op="gt", value="10"),
             )
 
     def test_a_uuid_column_is_refused(self) -> None:
@@ -231,7 +232,8 @@ class TestTheWireTypeRefusesTheSameThings:
         ],
     )
     def test_ascii_case_folding_and_bare_non_ascii_still_construct(
-        self, pattern: str
+        self,
+        pattern: str,
     ) -> None:
         # ASCII folds agree exactly, and a non-ASCII pattern WITHOUT ``(?i)``
         # never folds at all.
@@ -283,10 +285,12 @@ class TestTheWireTypeRefusesTheSameThings:
             Filter(field="title", op="re", value=pattern)
 
     @pytest.mark.parametrize(
-        "pattern", ["[abc]", "[0-9]", "[^a]", "[]a]", r"[\[]", "[[]"]
+        "pattern",
+        ["[abc]", "[0-9]", "[^a]", "[]a]", r"[\[]", "[[]"],
     )
     def test_an_ordinary_bracket_expression_still_constructs(
-        self, pattern: str
+        self,
+        pattern: str,
     ) -> None:
         # ``[[]`` is the literal-``[`` class. Python WARNS about it ("Possible
         # nested set") though both engines agree -- live PG16 matches ``'a[b'``
@@ -317,7 +321,8 @@ class TestTheEvaluatorEnforcesTheWholeContract:
     def test_an_ambiguous_escape_is_refused(self) -> None:
         with pytest.raises(ValidationError, match=r"\\b"):
             match_filter(
-                {"title": "x"}, _BareFilter(field="title", op="re", value=r"\bbar")
+                {"title": "x"},
+                _BareFilter(field="title", op="re", value=r"\bbar"),
             )
 
     def test_a_presence_operand_is_refused(self) -> None:
@@ -476,7 +481,8 @@ class TestARegexOnlyOneEngineCanRun:
             Filter(field="title", op="re", value=r"(?L)\w")
 
     @pytest.mark.parametrize(
-        "pattern", [r"\N{LATIN SMALL LETTER E WITH ACUTE}", r"a\Nb", r"x\N{BULLET}y"]
+        "pattern",
+        [r"\N{LATIN SMALL LETTER E WITH ACUTE}", r"a\Nb", r"x\N{BULLET}y"],
     )
     def test_a_named_character_escape_is_refused(self, pattern: str) -> None:
         # ``\N{NAME}`` names a codepoint in Python and is an "invalid escape \
@@ -498,7 +504,8 @@ class TestARegexOnlyOneEngineCanRun:
 
     @pytest.mark.parametrize("pattern", ["a{", "a{,", "a{x", "a{1}", "a{1,2}", "{key}"])
     def test_a_brace_that_opens_no_repetition_still_constructs(
-        self, pattern: str
+        self,
+        pattern: str,
     ) -> None:
         # Without a digit after it the brace is literal text to BOTH engines --
         # live PG16 runs every one of these -- so refusing them would remove
@@ -506,7 +513,8 @@ class TestARegexOnlyOneEngineCanRun:
         assert Filter(field="title", op="re", value=pattern).value == pattern
 
     @pytest.mark.parametrize(
-        "pattern", [r"\x41", r"\u0041", r"\U00000041", r"\101", r"\0"]
+        "pattern",
+        [r"\x41", r"\u0041", r"\U00000041", r"\101", r"\0"],
     )
     def test_the_other_codepoint_escapes_still_construct(self, pattern: str) -> None:
         # Live PG16 runs each of these, so refusing them alongside ``\N``
@@ -627,7 +635,8 @@ class TestExpandedModeCommentsAreNotSyntax:
         ],
     )
     def test_the_same_text_outside_a_comment_is_still_refused(
-        self, pattern: str
+        self,
+        pattern: str,
     ) -> None:
         with pytest.raises(ValueError, match="possessive"):
             Filter(field="title", op="re", value=pattern)
@@ -646,7 +655,8 @@ class TestCaseFoldingAgainstANonAsciiRow:
     def test_a_non_ascii_value_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="case-fold"):
             match_filter(
-                {"title": "\u0130"}, Filter(field="title", op="re", value="(?i)i")
+                {"title": "\u0130"},
+                Filter(field="title", op="re", value="(?i)i"),
             )
 
     def test_an_ascii_value_still_evaluates(self) -> None:
@@ -724,7 +734,8 @@ class TestAnUnknownFilterFieldIsRefused:
         # break every CLI filter.
         assert isinstance(
             match_filter(
-                {"issue_priority": 5}, Filter(field="priority", op="is", value="5")
+                {"issue_priority": 5},
+                Filter(field="priority", op="is", value="5"),
             ),
             bool,
         )
@@ -746,7 +757,8 @@ class TestAnOperandTheTemplateCannotTake:
 
     @pytest.mark.parametrize("value", ["abc", "", "1,5", "0x10"])
     def test_a_non_numeric_operand_is_refused_on_a_numeric_column(
-        self, value: str
+        self,
+        value: str,
     ) -> None:
         with pytest.raises(ValidationError, match="numeric"):
             match_filter({"seq": 5}, _BareFilter(field="seq", op="lt", value=value))
@@ -761,7 +773,8 @@ class TestAnOperandTheTemplateCannotTake:
 
     @pytest.mark.parametrize("value", ["1e-400", "-1e-400"])
     def test_an_operand_too_small_for_a_float_column_is_refused(
-        self, value: str
+        self,
+        value: str,
     ) -> None:
         # The mirror of the overflow case, and the one a ceiling check alone
         # misses: live PG16 answers 22003 for ``1e-400`` too, while Python
@@ -786,7 +799,8 @@ class TestAnOperandTheTemplateCannotTake:
 
     @pytest.mark.parametrize("value", ["1e400", "-1e400", "1e309"])
     def test_an_operand_too_large_for_a_float_column_is_refused(
-        self, value: str
+        self,
+        value: str,
     ) -> None:
         # ``belief_confidence`` is DOUBLE PRECISION, so its template compares
         # ``{col}::float8``: live PG16 answers "out of range for type double
@@ -835,15 +849,21 @@ class TestAnOperandTheTemplateCannotTake:
         ],
     )
     def test_a_high_precision_operand_compares_as_postgres_does(
-        self, row_value: int, op: FilterOp, operand: str, postgres_says: bool
+        self,
+        row_value: int,
+        op: FilterOp,
+        operand: str,
+        postgres_says: bool,
     ) -> None:
         got = match_filter(
-            {"seq": row_value}, _BareFilter(field="seq", op=op, value=operand)
+            {"seq": row_value},
+            _BareFilter(field="seq", op=op, value=operand),
         )
         assert got is postgres_says
 
     @pytest.mark.parametrize(
-        "value", ["\uff11", "\u0661", "1_", "_1", "1__0", "5e", "1.2.3"]
+        "value",
+        ["\uff11", "\u0661", "1_", "_1", "1__0", "5e", "1.2.3"],
     )
     def test_an_operand_postgres_cannot_parse_is_refused(self, value: str) -> None:
         # ``float()`` accepts every one; live PG16 rejects every one with
@@ -882,7 +902,8 @@ class TestAnOperandTheTemplateCannotTake:
         )
 
     @pytest.mark.parametrize(
-        "value", ["\u00a05", "5\u00a0", "\u20075", "\u20035", "\u30005"]
+        "value",
+        ["\u00a05", "5\u00a0", "\u20075", "\u20035", "\u30005"],
     )
     def test_unicode_padding_is_refused(self, value: str) -> None:
         # ``str.strip()`` removes these four alongside the six ASCII ones, so
@@ -914,7 +935,11 @@ class TestOpsThatStillEvaluate:
         ],
     )
     def test_a_bounded_regex_is_not_refused(
-        self, field: str, value: str, pattern: str, expected: bool
+        self,
+        field: str,
+        value: str,
+        pattern: str,
+        expected: bool,
     ) -> None:
         # The refusal is about the PATTERN's cost, not about regex: a pattern
         # whose match is bounded runs as it always did.
@@ -942,7 +967,8 @@ class TestOpsThatStillEvaluate:
     @pytest.mark.parametrize("op", ["isnull", "notnull"])
     def test_presence_ops_are_unaffected(self, op: FilterOp) -> None:
         assert isinstance(
-            match_filter({"owner": None}, Filter(field="owner", op=op, value="")), bool
+            match_filter({"owner": None}, Filter(field="owner", op=op, value="")),
+            bool,
         )
 
 

@@ -205,7 +205,8 @@ async def web_lookup(
     del identity
     async with get_store(request).engine.acquire() as conn:
         kind = await conn.fetchval(
-            "SELECT kind FROM inquiries WHERE id = $1", target_id
+            "SELECT kind FROM inquiries WHERE id = $1",
+            target_id,
         )
     if kind is None:
         raise HTTPException(status_code=404, detail="id not found")
@@ -298,10 +299,10 @@ async def web_graph(
                     "SELECT ",
                     _GRAPH_NODE_COLS,
                     " FROM inquiries ORDER BY created ASC, id ASC",
-                )
+                ),
             )
             edge_rows = await conn.fetch(
-                "SELECT from_id, to_id, edge_kind, valence FROM edges"
+                "SELECT from_id, to_id, edge_kind, valence FROM edges",
             )
             return {
                 "nodes": [_graph_node(r) for r in node_rows],
@@ -441,7 +442,10 @@ async def web_feed(
         )
     elif after is not None:
         next_after = FeedCursor(
-            created=after[0], session_id=after[1], part=after[2], seq=after[3]
+            created=after[0],
+            session_id=after[1],
+            part=after[2],
+            seq=after[3],
         )
     else:
         next_after = None
@@ -737,7 +741,7 @@ def _build_term_clause(
             params.append(f"%{escaped}%")
             ph = f"${len(params)}"
             clauses.append(
-                f"(title ILIKE {ph} ESCAPE '\\' OR description ILIKE {ph} ESCAPE '\\')"
+                f"(title ILIKE {ph} ESCAPE '\\' OR description ILIKE {ph} ESCAPE '\\')",
             )
         else:
             try:

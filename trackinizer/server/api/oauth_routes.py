@@ -173,7 +173,10 @@ async def auth_callback_route(
                 ),
             )
         user_id, status = await _upsert_user_on_login(
-            conn, email=email, name=name, role=role
+            conn,
+            email=email,
+            name=name,
+            role=role,
         )
     if status != "active":
         raise HTTPException(
@@ -293,7 +296,9 @@ async def _exchange_code_for_tokens(
         )
     if response.status_code != 200:
         _log_google_failure(
-            "token exchange", endpoint=GOOGLE_TOKEN_URL, response=response
+            "token exchange",
+            endpoint=GOOGLE_TOKEN_URL,
+            response=response,
         )
         raise HTTPException(
             status_code=400,
@@ -312,7 +317,8 @@ async def _fetch_userinfo(*, access_token: object) -> dict[str, object]:
     """Fetch Google's userinfo endpoint using the bearer access token."""
     if not isinstance(access_token, str):
         raise HTTPException(
-            status_code=400, detail="google access_token is not a string"
+            status_code=400,
+            detail="google access_token is not a string",
         )
     async with _http_client() as client:
         response = await client.get(
@@ -321,7 +327,9 @@ async def _fetch_userinfo(*, access_token: object) -> dict[str, object]:
         )
     if response.status_code != 200:
         _log_google_failure(
-            "userinfo fetch", endpoint=GOOGLE_USERINFO_URL, response=response
+            "userinfo fetch",
+            endpoint=GOOGLE_USERINFO_URL,
+            response=response,
         )
         raise HTTPException(
             status_code=400,

@@ -111,7 +111,7 @@ _CLAUDE_LINE = json.dumps(
         "message": {"role": "user", "content": "hi"},
         "uuid": "33333333-3333-3333-3333-333333333333",
         "timestamp": "2026-01-01T00:00:00Z",
-    }
+    },
 )
 
 
@@ -138,7 +138,7 @@ def test_every_offered_target_lands_a_file(tmp_path: Path, target: str) -> None:
             str(out_dir),
             "-q",
             "--lossy",
-        ]
+        ],
     )
 
     assert code == 0
@@ -153,7 +153,7 @@ def test_a_gemini_document_is_found_when_a_tree_is_walked(tmp_path: Path) -> Non
     directory of them reported no session files at all.
     """
     _ = (tmp_path / "s.json").write_text(
-        '{"sessionId":"s1","messages":[{"type":"user","content":"hi"}]}'
+        '{"sessionId":"s1","messages":[{"type":"user","content":"hi"}]}',
     )
 
     assert [path.name for path in _session_files([tmp_path])] == ["s.json"]
@@ -178,7 +178,8 @@ def test_a_conversion_that_only_renumbers_contexts_is_not_lossy() -> None:
 
 @pytest.mark.parametrize("body", [b"\xff\xfe\x00binary", b"{}"], ids=["binary", "text"])
 def test_an_unreadable_json_does_not_abort_the_walk(
-    tmp_path: Path, body: bytes
+    tmp_path: Path,
+    body: bytes,
 ) -> None:
     """Discovery must survive a file it cannot read, not die on it.
 

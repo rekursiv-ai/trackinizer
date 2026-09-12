@@ -205,7 +205,11 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
 # capture runs in a throwaway workspace on a fixed script, so there is nothing for a
 # tool to damage.
 def _capture_claude(
-    root: Path, out: Path, *, turn_sec: float, timeout_sec: int
+    root: Path,
+    out: Path,
+    *,
+    turn_sec: float,
+    timeout_sec: int,
 ) -> list[Path]:
     """Drive one claude session and return the fixture paths written."""
     home, work = _prepare(root, real_home=Path.home() / ".claude")  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-lint: ignore[xdg-literal] -- vendor CLI's fixed home path, not ours (AGENTS.md rule 3)
@@ -236,7 +240,11 @@ def _capture_claude(
 # ``summary[].text``; without it the thinking record is encrypted-only and the fixture
 # cannot exercise readable thinking.
 def _capture_codex(
-    root: Path, out: Path, *, turn_sec: float, timeout_sec: int
+    root: Path,
+    out: Path,
+    *,
+    turn_sec: float,
+    timeout_sec: int,
 ) -> list[Path]:
     """Drive one codex session and return the fixture paths written."""
     home, work = _prepare(root, real_home=Path.home() / ".codex")  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-lint: ignore[xdg-literal] -- vendor CLI's fixed home path, not ours (AGENTS.md rule 3)
@@ -395,7 +403,7 @@ def _completed_turns(root: Path) -> int:
         if path.parent.name == "subagents":
             continue  # A subagent's turns are not the session's turns.
         total += path.read_text(encoding="utf-8", errors="replace").count(
-            '"subtype":"turn_duration"'
+            '"subtype":"turn_duration"',
         )
     return total
 
@@ -447,7 +455,7 @@ def _seed_onboarding(home: Path, work: Path, *, real_home: Path) -> None:
             "hasTrustDialogAccepted": True,
             "hasCompletedProjectOnboarding": True,
             "projectOnboardingSeenCount": 1,
-        }
+        },
     }
     (home / ".claude.json").write_text(json.dumps(seeded), encoding="utf-8")
 
@@ -496,7 +504,7 @@ _SECRETS: Final = (
     re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/-]{20,}"),
     re.compile(
         r"(?i)\"?(api[_-]?key|auth[_-]?token|access[_-]?token|client[_-]?secret"
-        r"|secret|password|token)\"?\s*[:=]\s*\"[^\"]{20,}\""
+        r"|secret|password|token)\"?\s*[:=]\s*\"[^\"]{20,}\"",
     ),
 )
 
@@ -580,7 +588,7 @@ def _reject_secrets(text: str, *, source: Path) -> None:
                 continue
             raise ValueError(
                 f"{source}: credential-shaped text survived redaction "
-                f"({found.group()[:12]}...); fixture not written"
+                f"({found.group()[:12]}...); fixture not written",
             )
 
 

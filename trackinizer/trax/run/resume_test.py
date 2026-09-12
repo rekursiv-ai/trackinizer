@@ -70,17 +70,24 @@ class _FakeClient:
                 records=len(self.records),
                 metadata=self.encoding,
                 ir_id=uuid4(),
-            )
+            ),
         ]
 
     def read_session_records(
-        self, session_id: UUID, *, part: int = 0, **_: object
+        self,
+        session_id: UUID,
+        *,
+        part: int = 0,
+        **_: object,
     ) -> list[RecordBody]:
         return [
             RecordBody.of(
                 SessionRecordRow.of(
-                    session_id=session_id, part=part, idx=idx, record=record
-                )
+                    session_id=session_id,
+                    part=part,
+                    idx=idx,
+                    record=record,
+                ),
             )
             for idx, record in enumerate(self.records)
         ]
@@ -221,7 +228,7 @@ class TestLossyConversion:
         rebuilt = Counter(
             type(record).__name__
             for record in codex.normalize(
-                StringIO(written.path.read_text(encoding="utf-8"))
+                StringIO(written.path.read_text(encoding="utf-8")),
             )
         )
         records, _ = _read_part(cast_client(client), uuid4(), 0)

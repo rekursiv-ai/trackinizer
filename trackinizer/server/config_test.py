@@ -42,7 +42,9 @@ class TestPureFunctions:
         assert isinstance(engine, PGliteEngine)
 
     def testbuild_engine_pglite_defaults_to_unix_socket(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """PGlite defaults to a Unix socket (no port race) unless TCP is opted in."""
         monkeypatch.setenv("TRACKINIZER_ENGINE", "pglite")
@@ -53,7 +55,9 @@ class TestPureFunctions:
         assert engine._use_tcp is False
 
     def testbuild_engine_pglite_tcp_opt_in(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """``TRACKINIZER_PGLITE_TCP=1`` opens PGlite on a TCP port instead."""
         monkeypatch.setenv("TRACKINIZER_ENGINE", "pglite")
@@ -64,7 +68,9 @@ class TestPureFunctions:
         assert engine._use_tcp is True
 
     def test_ephemeral_gets_unique_workdir_per_call(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """Two ephemeral servers (no --datadir) never share a workdir.
 
@@ -84,7 +90,9 @@ class TestPureFunctions:
         assert a._persist is False
 
     def test_ephemeral_explicit_datadir_wins(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """An explicit --datadir is honored even under --ephemeral."""
         _patch_data_dir(monkeypatch, tmp_path)
@@ -94,7 +102,9 @@ class TestPureFunctions:
         assert engine._workdir == chosen
 
     def test_persistent_uses_shared_default_datadir(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """A persistent server keeps the single shared datadir (survives restarts)."""
         _patch_data_dir(monkeypatch, tmp_path)
@@ -132,33 +142,38 @@ class TestSessionMaxAge:
     """``session_max_age_seconds`` is configurable from env and CLI."""
 
     def test_from_env_reads_session_max_age(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", "60")
         assert Config.from_env().session_max_age_seconds == 60
 
     def test_from_env_defaults_session_max_age(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", raising=False)
         assert Config.from_env().session_max_age_seconds == 30 * 24 * 60 * 60
 
     def test_from_args_reads_session_max_age(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", raising=False)
         config = Config.from_args(_server_args(session_max_age_seconds=120))
         assert config.session_max_age_seconds == 120
 
     def test_from_env_non_integer_raises_config_error(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", "notanint")
         with pytest.raises(ConfigError):
             Config.from_env()
 
     def test_from_env_non_positive_raises_config_error(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", "0")
         with pytest.raises(ConfigError):

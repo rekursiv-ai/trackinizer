@@ -159,7 +159,9 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         # (null-id) runs never correlate to each other.
         if req.cli_session_id is not None:
             resumed = await self._resume_session(
-                req, api_key_id=api_key_id, actor=requested_actor
+                req,
+                api_key_id=api_key_id,
+                actor=requested_actor,
             )
             if resumed is not None:
                 return resumed
@@ -170,13 +172,16 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         if effective_key is not None:
             async with self.engine.acquire() as conn:
                 existing = await self._lookup_existing_by_change(
-                    effective_key, "AgentSession", conn
+                    effective_key,
+                    "AgentSession",
+                    conn,
                 )
                 if existing is not None:
                     owner = cast(
                         str,
                         await conn.fetchval(
-                            "SELECT owner FROM inquiries WHERE id = $1", existing
+                            "SELECT owner FROM inquiries WHERE id = $1",
+                            existing,
                         ),
                     )
                     next_seq = await self._next_event_seq(conn, existing)
@@ -218,7 +223,8 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 owner = cast(
                     str,
                     await conn.fetchval(
-                        "SELECT owner FROM inquiries WHERE id = $1", session_id
+                        "SELECT owner FROM inquiries WHERE id = $1",
+                        session_id,
                     ),
                 )
                 next_seq = await self._next_event_seq(conn, session_id)
@@ -227,7 +233,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         # leak or a bare loop-exit. The chained cause keeps the diagnostic.
         raise ConflictError(
             f"could not reserve a routing name for {requested_actor!r} after "
-            f"{max_reserve_attempts} attempts"
+            f"{max_reserve_attempts} attempts",
         ) from last_error
 
     # It reported the legacy event log's continuation point, which a resumed run seeded
@@ -275,7 +281,11 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
     # like a plain field edit -- never revalidates it. Resume inherits the stamp as-is;
     # this is the consistent behavior, not a carve-out.
     async def _resume_session(
-        self, req: SubmitAgentSession, *, api_key_id: UUID | None, actor: Inquiry.Actor
+        self,
+        req: SubmitAgentSession,
+        *,
+        api_key_id: UUID | None,
+        actor: Inquiry.Actor,
     ) -> tuple[UUID, str, int] | None:
         """Re-attach (and re-open if ended) the session for this CLI session id."""
         async with (
@@ -344,7 +354,10 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             return session_id, owner, next_seq
 
     async def resolve_live_sessions(
-        self, actor: str, *, room: str | None = None
+        self,
+        actor: str,
+        *,
+        room: str | None = None,
     ) -> list[tuple[UUID, tuple[str, ...]]]:
         """Live ``AgentSession`` ids + rooms owned by ``actor`` (optionally scoped).
 
@@ -434,7 +447,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             n = len(params)
             clauses.append(
                 f"(e.created, e.session_id, e.part, e.idx) > "
-                f"(${n - 3}, ${n - 2}, ${n - 1}, ${n})"
+                f"(${n - 3}, ${n - 2}, ${n - 1}, ${n})",
             )
         if since is not None:
             params.append(since)
@@ -561,7 +574,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             if row["kind"] != "AgentSession":
                 raise ConflictError(
                     f"inquiry {session_id} is a {row['kind']}; "
-                    "only an AgentSession can be ended"
+                    "only an AgentSession can be ended",
                 )
             if row["agentsession_ended"] is not None:
                 # Already ended. A retry that reuses the *same* idempotency
@@ -599,14 +612,17 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 # unconditionally so neither outcome leaks the key forward.
                 set_client_change_id(None)
                 raise ConflictError(
-                    f"session {session_id} has already ended; cannot end again"
+                    f"session {session_id} has already ended; cannot end again",
                 )
             if (
                 cli_session_id is not None
                 and cli_session_id != row["agentsession_cli_session_id"]
             ):
                 await self._update_field(
-                    conn, session_id, "agentsession_cli_session_id", cli_session_id
+                    conn,
+                    session_id,
+                    "agentsession_cli_session_id",
+                    cli_session_id,
                 )
                 await self._emit_field_change(
                     conn,
@@ -614,7 +630,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                     "AgentSession",
                     "agentsession_cli_session_id",
                     Snapshot(
-                        agentsession_cli_session_id=row["agentsession_cli_session_id"]
+                        agentsession_cli_session_id=row["agentsession_cli_session_id"],
                     ),
                     new=Snapshot(agentsession_cli_session_id=cli_session_id),
                     api_key_id=api_key_id,

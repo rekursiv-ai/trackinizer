@@ -241,7 +241,13 @@ type _EdgeEndpoint = Literal["from", "to"]
 
 
 type KindGroup = Literal[
-    "issue", "inquiry", "artifact", "belief", "experiment", "claimable", "paper"
+    "issue",
+    "inquiry",
+    "artifact",
+    "belief",
+    "experiment",
+    "claimable",
+    "paper",
 ]
 """A named set of inquiry kinds an edge endpoint admits. Resolved to the
 concrete kind tuple by :func:`kind_group_members`; the schema's edge-validity
@@ -267,10 +273,12 @@ def kind_group_members(group: KindGroup) -> tuple[Inquiry.InquiryKind, ...]:
 
     """
     inquiry: tuple[Inquiry.InquiryKind, ...] = cast(
-        tuple[Inquiry.InquiryKind, ...], get_args(Inquiry.InquiryKind.__value__)
+        tuple[Inquiry.InquiryKind, ...],
+        get_args(Inquiry.InquiryKind.__value__),
     )
     artifact: tuple[Inquiry.InquiryKind, ...] = cast(
-        tuple[Inquiry.InquiryKind, ...], get_args(Artifact.Kind.__value__)
+        tuple[Inquiry.InquiryKind, ...],
+        get_args(Artifact.Kind.__value__),
     )
     match group:
         case "issue":
@@ -458,7 +466,7 @@ EDGE_POLICIES: Mapping[Edge.Kind, EdgeKindPolicy] = MappingProxyType(
             to_kinds="paper",
             enforces_acyclicity=False,
         ),
-    }
+    },
 )
 """The full ``edge_kind -> EdgeKindPolicy`` table; the single source of truth
 for every per-edge-kind behavior AND relation label.
@@ -524,7 +532,7 @@ PRODUCED_INFERENCE_SUPPRESSED: frozenset[Edge.Kind] = frozenset({"produced_by"})
 # every kind either ranks in the inference or is explicitly neutral, so a new
 # kind cannot silently fall through with undefined provenance behavior.
 PRODUCED_INFERENCE_NEUTRAL: frozenset[Edge.Kind] = frozenset(
-    {"cites_paper", "proves", "favors"}
+    {"cites_paper", "proves", "favors"},
 )
 
 
@@ -573,5 +581,5 @@ _MISSING_POLICY = set(get_args(Edge.Kind.__value__)) - set(EDGE_POLICIES)
 if _MISSING_POLICY:
     raise RuntimeError(
         f"EDGE_POLICIES missing an entry for {sorted(_MISSING_POLICY)}; every "
-        "Edge.Kind needs a policy (labels + endpoints + behavior)."
+        "Edge.Kind needs a policy (labels + endpoints + behavior).",
     )

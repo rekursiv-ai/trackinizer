@@ -51,7 +51,8 @@ __all__ = [
 
 
 def seq_range_clause(
-    params: list[object], seq_ranges: Sequence[SeqRange]
+    params: list[object],
+    seq_ranges: Sequence[SeqRange],
 ) -> str | None:
     """Lower a seq-range union to one parenthesized ``OR`` group, or ``None``.
 
@@ -219,7 +220,8 @@ class _ReadMixin(_StoreShared):
                 ]
                 window = kept[offset : offset + limit]
                 outbound, inbound = await fetch_edges_bulk(
-                    conn, [r["id"] for r in window]
+                    conn,
+                    [r["id"] for r in window],
                 )
             return [materialize(row, outbound, inbound) for row in window]
         params.extend([limit, offset])
@@ -277,7 +279,8 @@ class _ReadMixin(_StoreShared):
         """
         async with self.engine.acquire() as conn:
             exists = await conn.fetchval(
-                "SELECT 1 FROM inquiries WHERE id = $1", subject_id
+                "SELECT 1 FROM inquiries WHERE id = $1",
+                subject_id,
             )
             if exists is None:
                 return None
@@ -432,7 +435,8 @@ class _ReadMixin(_StoreShared):
         """
         async with self.engine.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT * FROM change_log WHERE id = $1", change_id
+                "SELECT * FROM change_log WHERE id = $1",
+                change_id,
             )
         return None if row is None else Change.from_row(row)
 
@@ -491,7 +495,8 @@ class _ReadMixin(_StoreShared):
                 # smaller ones (UUID order is unrelated to ``created``). Look
                 # up the cursor row's ``created`` and bind both halves.
                 cursor_created = await conn.fetchval(
-                    "SELECT created FROM change_log WHERE id = $1", after_id
+                    "SELECT created FROM change_log WHERE id = $1",
+                    after_id,
                 )
                 if cursor_created is None:
                     # An unknown cursor would make ``(created, id) < (NULL, ...)``
@@ -543,7 +548,9 @@ def _lower_filter(filt: RowFilter, params: list[object]) -> str | None:
 # row it is about to filter -- rather than a rewritten row, which would lose the
 # ``Record`` that ``materialize`` needs.
 async def _record_texts(
-    conn: Conn, ids: Sequence[UUID], filters: Sequence[RowFilter]
+    conn: Conn,
+    ids: Sequence[UUID],
+    filters: Sequence[RowFilter],
 ) -> dict[UUID, dict[str, object]]:
     """One session's IR record texts per id, for the record clauses in ``filters``."""
     kinds = {
@@ -565,7 +572,7 @@ async def _record_texts(
     texts: dict[UUID, dict[str, object]] = {}
     for record in found:
         texts.setdefault(record["session_id"], {})[kinds[record["kind"]]] = list(
-            record["texts"]
+            record["texts"],
         )
     return texts
 
@@ -574,7 +581,10 @@ async def _record_texts(
 # ``remaining`` is empty: a predicate still evaluated in Python must run before the
 # window, or matches past the limit are dropped unseen (Issue#256).
 def _partition_filters(
-    filters: Sequence[RowFilter], params: list[object], *, lowering: bool = True
+    filters: Sequence[RowFilter],
+    params: list[object],
+    *,
+    lowering: bool = True,
 ) -> tuple[Sequence[str], Sequence[RowFilter]]:
     """Split ``filters`` into SQL clauses and clauses Python must still run."""
     # Screened BEFORE lowering, not only when lowering declines: a NaN operand

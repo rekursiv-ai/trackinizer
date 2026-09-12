@@ -289,10 +289,10 @@ class FileSink(Sink):
                         "timestamp": at.isoformat(),
                         "command": command.command,
                         "args": command.args,
-                    }
-                }
+                    },
+                },
             )
-            + "\n"
+            + "\n",
         )
 
     @override
@@ -438,7 +438,8 @@ class TrackinizerSink(Sink):
         # Reused positions must never share an ingest request with older versions.
         self._flush()
         self._overwrite_until[path] = max(
-            self._overwrite_until.get(path, 0), self._next_idx.get(path, 0)
+            self._overwrite_until.get(path, 0),
+            self._next_idx.get(path, 0),
         )
         self._next_idx[path] = 0
         self._restarted.add(path)
@@ -449,7 +450,7 @@ class TrackinizerSink(Sink):
         if not self._buffer and not self._slash:
             self._oldest_buffered_at = self._clock()
         self._slash.append(
-            SlashCommandBody(timestamp=at, command=command.command, args=command.args)
+            SlashCommandBody(timestamp=at, command=command.command, args=command.args),
         )
 
     @override
@@ -501,7 +502,7 @@ class TrackinizerSink(Sink):
                 # (the CLI has not written its file), so this is null there
                 # and the id is backfilled at close instead.
                 cli_session_id=self._cli_session_id,
-            )
+            ),
         )
         self._session_id = resp.id
         # ``resp.seq`` is deliberately unread. It continued the legacy event
@@ -515,7 +516,7 @@ class TrackinizerSink(Sink):
         if resp.actor and resp.actor != self._actor:
             sys.stderr.write(
                 f"[trax run] routing name '{self._actor}' was taken; "
-                f"using '{resp.actor}'\n"
+                f"using '{resp.actor}'\n",
             )
 
     @override
@@ -631,7 +632,10 @@ def _record_body(idx: int, event: Event) -> RecordBody:
     # ``session_id`` is the server's to assign; the row type needs one, and
     # only its projections are read here.
     row = SessionRecordRow.of(
-        session_id=UUID(int=0), part=0, idx=idx, record=event.record
+        session_id=UUID(int=0),
+        part=0,
+        idx=idx,
+        record=event.record,
     )
     return RecordBody.of(row)
 
@@ -760,7 +764,7 @@ class ResilientSink(Sink):
         assert primary is not None, "degrade is only reachable with a live primary"
         sys.stderr.write(
             f"[trax run] sync failed ({err}); "
-            f"falling back to local capture at {self._fallback_path}\n"
+            f"falling back to local capture at {self._fallback_path}\n",
         )
         fallback = self._ensure_fallback()
         pending = primary.drain_pending()
@@ -871,7 +875,7 @@ class LockedSink(Sink):
             sys.stderr.write(
                 "[trax run] sink close could not acquire the lock within "
                 f"{self._CLOSE_LOCK_TIMEOUT_SEC:.0f}s (a worker is wedged); "
-                "skipping locked teardown\n"
+                "skipping locked teardown\n",
             )
             return
         try:

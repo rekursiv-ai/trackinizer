@@ -30,7 +30,9 @@ class TestClaudeProjectsDir:
     """The projects root honors ``$CLAUDE_CONFIG_DIR`` (hermetic launchers)."""
 
     def test_claude_config_dir_env_locates_sessions(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A run under ``CLAUDE_CONFIG_DIR=<dir>`` must discover its projects.
 
@@ -47,7 +49,9 @@ class TestClaudeProjectsDir:
         assert adapter.matches_session_file(fixture)
 
     def test_falls_back_to_home_claude_without_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -56,7 +60,9 @@ class TestClaudeProjectsDir:
         assert tuple(adapter.session_dirs()) == (tmp_path / ".claude" / "projects",)
 
     def test_watches_the_root_so_a_new_project_is_covered(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The projects ROOT is returned, not the per-project subdirectories.
 

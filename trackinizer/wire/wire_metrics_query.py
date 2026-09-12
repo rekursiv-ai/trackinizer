@@ -70,7 +70,8 @@ this wire model types ``op`` with it, and the store's operator map covers
 exactly it -- so the three cannot drift into disagreement."""
 
 METRIC_COMPARE_OPS: tuple[MetricCompareOp, ...] = cast(
-    tuple[MetricCompareOp, ...], get_args(MetricCompareOp.__value__)
+    tuple[MetricCompareOp, ...],
+    get_args(MetricCompareOp.__value__),
 )
 """Runtime tuple of every metric comparator, derived from the type so the tuple
 and the ``Literal`` never diverge."""

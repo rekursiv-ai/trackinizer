@@ -507,11 +507,11 @@ class TestVerifiedBearerCache:
 
         monkeypatch.setattr(auth, "verify_secret", _spy)
         first = await current_user(
-            _request_with(engine, f"Bearer {secret}", store=store)
+            _request_with(engine, f"Bearer {secret}", store=store),
         )
         for _ in range(4):
             repeat = await current_user(
-                _request_with(engine, f"Bearer {secret}", store=store)
+                _request_with(engine, f"Bearer {secret}", store=store),
             )
             assert repeat == first
         # Only the first request paid a scrypt round.
@@ -652,7 +652,7 @@ class TestVerifiedBearerCache:
         for _ in range(3):
             with pytest.raises(HTTPException):
                 await current_user(
-                    _request_with(engine, f"Bearer {secret}", store=store)
+                    _request_with(engine, f"Bearer {secret}", store=store),
                 )
         assert len(verifies) == 3
 
@@ -785,7 +785,9 @@ class TestBootstrapAdmin:
 
     @pytest.mark.asyncio
     async def test_seeds_admin_when_users_empty(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         monkeypatch.setenv(BOOTSTRAP_ADMIN_ENV, "admin@example.com")
         monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, str(tmp_path / "bt"))
@@ -807,7 +809,9 @@ class TestBootstrapAdmin:
 
     @pytest.mark.asyncio
     async def test_lost_race_skips_api_key_and_token(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         # The empty-users probe cleared, but a concurrent server committed the
         # admin first: the ``INSERT INTO users ... ON CONFLICT DO NOTHING
@@ -848,7 +852,8 @@ class TestBootstrapAdmin:
 
     @pytest.mark.asyncio
     async def test_skips_when_users_present(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Once any user exists the seed must no-op -- the path is
         # "first run only", not "every startup".
@@ -898,7 +903,9 @@ class TestBootstrapAdmin:
 
     @pytest.mark.asyncio
     async def test_idempotent_on_rerun(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         # Two back-to-back calls with the same env var. The second
         # call sees a "user already exists" world (in real life: the
@@ -1169,7 +1176,7 @@ class TestBootstrapAdminRace:
 
         async with integ_engine.acquire() as conn:
             admin_count = await conn.fetchval(
-                "SELECT count(*) FROM users WHERE email = 'race@example.com'"
+                "SELECT count(*) FROM users WHERE email = 'race@example.com'",
             )
         assert admin_count == 1
 
@@ -1254,7 +1261,8 @@ class TestSessionCookieRoundTrip:
             max_age_seconds=600,
         )
         monkeypatch.setattr(
-            "itsdangerous.timed.time.time", lambda: 1_000_000.0 + 10_000.0
+            "itsdangerous.timed.time.time",
+            lambda: 1_000_000.0 + 10_000.0,
         )
         assert (
             read_session_cookie(
@@ -1351,7 +1359,7 @@ class TestCurrentUserSession:
                 "email": "u@example.com",
                 "role": "writer",
                 "status": "active",
-            }
+            },
         )
         request = _request_with(
             engine,
@@ -1376,7 +1384,7 @@ class TestCurrentUserSession:
                 "email": "u@example.com",
                 "role": "writer",
                 "status": "disabled",
-            }
+            },
         )
         request = _request_with(
             engine,
@@ -1408,7 +1416,9 @@ class TestCurrentUserSession:
         # No bearer header, no session cookie -- the canonical 401 path.
         engine = FakeEngine()
         request = _request_with(
-            engine, authorization=None, config=_config_with_session_secret("s")
+            engine,
+            authorization=None,
+            config=_config_with_session_secret("s"),
         )
         with pytest.raises(HTTPException) as exc_info:
             await current_user(request)
@@ -1441,7 +1451,8 @@ class TestCurrentUserSession:
             authorization=f"Bearer {secret_token}",
             cookies={
                 SESSION_COOKIE_NAME: _session_cookie_value(
-                    session_user_id, "session-secret"
+                    session_user_id,
+                    "session-secret",
                 ),
             },
             config=_config_with_session_secret("session-secret"),
@@ -1467,7 +1478,8 @@ class TestCurrentUserSession:
             authorization=f"bEaReR {secret_token}",
             cookies={
                 SESSION_COOKIE_NAME: _session_cookie_value(
-                    uuid.uuid4(), "session-secret"
+                    uuid.uuid4(),
+                    "session-secret",
                 ),
             },
             config=_config_with_session_secret("session-secret"),
@@ -1486,7 +1498,8 @@ class TestCurrentUserSession:
             authorization="Bearer    ",
             cookies={
                 SESSION_COOKIE_NAME: _session_cookie_value(
-                    uuid.uuid4(), "session-secret"
+                    uuid.uuid4(),
+                    "session-secret",
                 ),
             },
             config=_config_with_session_secret("session-secret"),
@@ -1593,7 +1606,10 @@ class TestCreateApiKey:
         user_id = uuid.uuid4()
         # A non-binding admin ceiling: the default still caps at the user role.
         _key_id, _secret, _prefix, role = await create_api_key(
-            conn, user_id=user_id, name="laptop", ceiling="admin"
+            conn,
+            user_id=user_id,
+            name="laptop",
+            ceiling="admin",
         )
         assert role == "writer"
         # The INSERT must carry the inferred role as the 6th bind.
@@ -1609,7 +1625,11 @@ class TestCreateApiKey:
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value="admin")
         _key_id, _secret, _prefix, role = await create_api_key(
-            conn, user_id=uuid.uuid4(), name="ro", role="viewer", ceiling="admin"
+            conn,
+            user_id=uuid.uuid4(),
+            name="ro",
+            role="viewer",
+            ceiling="admin",
         )
         assert role == "viewer"
 
@@ -1619,7 +1639,11 @@ class TestCreateApiKey:
         conn.fetchval = AsyncMock(return_value="writer")
         with pytest.raises(RoleCeilingError):
             await create_api_key(
-                conn, user_id=uuid.uuid4(), name="bad", role="admin", ceiling="writer"
+                conn,
+                user_id=uuid.uuid4(),
+                name="bad",
+                role="admin",
+                ceiling="writer",
             )
         # And no INSERT fires when the ceiling check rejects.
         sqls = [c.args[0] for c in conn.execute.call_args_list]
@@ -1641,7 +1665,11 @@ class TestCreateApiKey:
         conn.fetchval = AsyncMock(return_value="admin")
         with pytest.raises(RoleCeilingError):
             await create_api_key(
-                conn, user_id=uuid.uuid4(), name="bad", role="admin", ceiling="viewer"
+                conn,
+                user_id=uuid.uuid4(),
+                name="bad",
+                role="admin",
+                ceiling="viewer",
             )
         sqls = [c.args[0] for c in conn.execute.call_args_list]
         assert not any("INSERT INTO api_keys" in s for s in sqls)
@@ -1653,7 +1681,10 @@ class TestCreateApiKey:
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value="admin")
         _key_id, _secret, _prefix, role = await create_api_key(
-            conn, user_id=uuid.uuid4(), name="scoped", ceiling="viewer"
+            conn,
+            user_id=uuid.uuid4(),
+            name="scoped",
+            ceiling="viewer",
         )
         assert role == "viewer"
 

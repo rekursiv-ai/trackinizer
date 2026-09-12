@@ -30,7 +30,7 @@ _SNAPSHOT_TUPLE_FIELDS: frozenset[str] = frozenset(
         "edge_labels",
         "agentsession_rooms",
         "paper_authors",
-    }
+    },
 )
 
 

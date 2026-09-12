@@ -50,7 +50,8 @@ async def scratch_engine(pg_dsn: str) -> AsyncIterator[postgres.PostgresEngine]:
     finally:
         await setup.close()
     async with postgres.PostgresEngine(
-        dsn=f"{base}/{name}", listen_channel=NOTIFY_CHANNEL
+        dsn=f"{base}/{name}",
+        listen_channel=NOTIFY_CHANNEL,
     ) as engine:
         yield engine
     admin = await asyncpg.connect(pg_dsn)
@@ -81,7 +82,7 @@ async def test_non_nullable_columns_match_rendered_schema(
             for r in await conn.fetch(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_schema = 'public' AND table_name = 'inquiries' "
-                "AND is_nullable = 'NO'"
+                "AND is_nullable = 'NO'",
             )
         }
     assert set(NON_NULLABLE_COLUMNS) == schema_not_null
@@ -202,7 +203,7 @@ async def test_the_console_feed_reads_an_index_not_the_whole_table(
                 "EXPLAIN SELECT e.session_id, e.part, e.idx, e.created "
                 "FROM session_records e JOIN inquiries i ON i.id = e.session_id "
                 "WHERE i.kind = 'AgentSession' "
-                "ORDER BY e.created, e.session_id, e.part, e.idx LIMIT 200"
+                "ORDER BY e.created, e.session_id, e.part, e.idx LIMIT 200",
             )
         )
     assert "idx_session_records_created_session_part_idx" in plan, (

@@ -48,8 +48,8 @@ class TestBasicFormats:
                     "title": "do work",
                     "labels": ["x", "y"],
                     "marginal_cost": {"agent_usd": 1.25, "resource_usd": 0.75},
-                }
-            ]
+                },
+            ],
         )
         assert "Issue#4" in text
         assert "x,y" in text
@@ -70,8 +70,8 @@ class TestBasicFormats:
                     "title": "Test issue",
                     "labels": [],
                     "marginal_cost": {"agent_usd": 0, "resource_usd": 0},
-                }
-            ]
+                },
+            ],
         )
         assert "REF" in text
         assert "STATUS" in text
@@ -98,7 +98,7 @@ class TestBasicFormats:
                     "edge_labels": ["edge"],
                     "edge_note": "context",
                     "marginal_cost": {"agent_usd": 1.25, "resource_usd": 0},
-                }
+                },
             ],
             width=200,
         )
@@ -139,7 +139,7 @@ class TestBasicFormats:
                     "title": "summary " * 20,
                     "description": "description " * 20,
                     "validation": "validation " * 20,
-                }
+                },
             ],
         )
 
@@ -168,7 +168,7 @@ class TestBasicFormats:
                     "status": "active",
                     "title": "summary " * 20,
                     "validation": "validation " * 20,
-                }
+                },
             ],
         )
 
@@ -196,7 +196,7 @@ class TestBasicFormats:
                     "title": "summary " * 20,
                     "description": "description " * 20,
                     "validation": "validation " * 20,
-                }
+                },
             ],
             width=80,
         )
@@ -242,7 +242,7 @@ class TestBasicFormats:
                     "edge_valence": 0.7,
                     "edge_labels": ["edge"],
                     "edge_note": "must land first",
-                }
+                },
             ],
             width=80,
         )
@@ -260,7 +260,7 @@ class TestBasicFormats:
                     "title": "summary " * 20,
                     "description": "description " * 20,
                     "validation": "validation " * 20,
-                }
+                },
             ],
             width=180,
         )
@@ -288,7 +288,7 @@ class TestBasicFormats:
                     "status": "active",
                     "title": "summary",
                     "validation": "validation " * 20,
-                }
+                },
             ],
             width=0,
         )
@@ -360,7 +360,7 @@ class TestDetailFormats:
                             "edge_note": None,
                             "edge_labels": [],
                         },
-                    }
+                    },
                 ],
             },
             changes=True,
@@ -385,9 +385,9 @@ class TestDetailFormats:
                 # ``requires`` is stored from=requirer, so on the requirer this
                 # edge is OUTBOUND and renders as "requires".
                 "edges": {
-                    "requires": [{"kind": "Issue", "seq": 4, "title": "prerequisite"}]
+                    "requires": [{"kind": "Issue", "seq": 4, "title": "prerequisite"}],
                 },
-            }
+            },
         )
         assert "requires:" in text
         assert "Issue#4" in text
@@ -432,7 +432,7 @@ class TestDetailFormats:
                     "proves": [{"kind": "Experiment", "seq": 4, "title": "evidence"}],
                     "favors": [{"kind": "Paper", "seq": 1, "title": "context"}],
                 },
-            }
+            },
         )
         assert "proved_by:" in text
         assert "favored_by:" in text
@@ -451,7 +451,7 @@ class TestDetailFormats:
                 },
                 # On the citing Artifact the proves edge is OUTBOUND, read proves.
                 "edges": {"proves": [{"kind": "Belief", "seq": 5, "title": "finding"}]},
-            }
+            },
         )
         assert "proves:" in text
         assert "proved_by:" not in text
@@ -465,8 +465,8 @@ class TestDetailFormats:
                     "seq": 1,
                     "status": "active",
                     "title": "x",
-                }
-            }
+                },
+            },
         )
         assert "owner:       (unassigned)" in text
 
@@ -483,8 +483,8 @@ class TestDetailFormats:
                     "labels": [],
                     "subscribers": [],
                     "marginal_cost": {"agent_usd": 0, "resource_usd": 0},
-                }
-            }
+                },
+            },
         )
         assert "validation" not in text
         assert "labels" not in text
@@ -502,8 +502,8 @@ class TestDetailFormats:
                     "status": "active",
                     "title": "x",
                     "issue_kind": ["task", "bug"],
-                }
-            }
+                },
+            },
         )
         assert "kind       : task,bug" in text
         assert "issue_kind" not in text
@@ -525,7 +525,7 @@ class TestDetailFormats:
                     "edge_labels": ["edge"],
                     "edge_note": "must land first",
                 },
-            }
+            },
         )
         assert "Selected edge:" in text
         assert "priority  : 0" in text
@@ -547,8 +547,8 @@ class TestDetailFormats:
                     "principal": "cli@example.com",
                     "old": {"status": "active"},
                     "new": {"status": "complete"},
-                }
-            ]
+                },
+            ],
         )
         expected = datetime(2026, 5, 18, 12, 34, 56, tzinfo=UTC).astimezone()
         assert expected.strftime("%Y-%m-%d %H:%M:%S") in text
@@ -565,8 +565,8 @@ class TestDetailFormats:
                     "subject_kind": "Issue",
                     "subject_id": "abcdef123456",
                     "actor": "alice",
-                }
-            ]
+                },
+            ],
         )
         expected = datetime(2026, 5, 18, 12, 34, 56, tzinfo=UTC).astimezone()
         assert expected.strftime("%Y-%m-%d %H:%M:%S") in text
@@ -603,8 +603,8 @@ def _show_payload() -> dict[str, object]:
                     "note": "context",
                     "valence": 0.5,
                     "labels": ["edge"],
-                }
-            ]
+                },
+            ],
         },
         "backlinks": {"requires": [{"kind": "Issue", "seq": 2, "title": "back"}]},
         "changes": [
@@ -612,7 +612,7 @@ def _show_payload() -> dict[str, object]:
                 "created": "2026-05-18T00:00:00",
                 "kind": "created",
                 "actor": "system",
-            }
+            },
         ],
     }
 
@@ -646,10 +646,10 @@ def test_edge_annotation_includes_peer_priority() -> None:
             },
             "edges": {
                 "requires": [
-                    {"kind": "Issue", "seq": 4, "title": "prerequisite", "priority": 0}
-                ]
+                    {"kind": "Issue", "seq": 4, "title": "prerequisite", "priority": 0},
+                ],
             },
-        }
+        },
     )
     assert "prio=0" in text
 
@@ -675,7 +675,7 @@ def test_format_edge_includes_changes_section() -> None:
                 "actor": "alice",
                 "old": {},
                 "new": {"priority": 10},
-            }
+            },
         ],
     }
     text = format_edge(view, changes=True)

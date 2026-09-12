@@ -79,7 +79,9 @@ class TestSendMessageIdempotency:
             AsyncMock(return_value=[(session_id, ("sear",))]),
         )
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=_live_session())
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
         )
         r2 = client.post(
             "/api/messages",
@@ -106,7 +108,9 @@ class TestSendMessageIdempotency:
             AsyncMock(return_value=[(session_id, ("sear",))]),
         )
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=_live_session())
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
         )
 
         r1 = client.post(
@@ -142,7 +146,9 @@ class TestSessionEndAtomicity:
         inbound.enqueue(session_id, Inbound(text="pending steering"))
 
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=_live_session())
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
         )
         monkeypatch.setattr(
             store,
@@ -171,7 +177,9 @@ class TestSessionEndAtomicity:
         inbound.enqueue(session_id, Inbound(text="pending steering"))
 
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=_live_session())
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
         )
         # ``end_session`` now returns the committed ``ended`` the route echoes.
         monkeypatch.setattr(
@@ -202,7 +210,9 @@ class TestInboundEnqueueRejectsSource:
         app.state.inbound = InboundQueue()
         session_id = uuid.uuid4()
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=_live_session())
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
         )
         r = client.post(
             f"/api/sessions/{session_id}/inbound",
@@ -223,7 +233,9 @@ class TestInboundEnqueueRejectsSource:
         app.state.inbound = InboundQueue()
         session_id = uuid.uuid4()
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=_live_session())
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
         )
         r = client.post(
             f"/api/sessions/{session_id}/inbound",
@@ -241,7 +253,9 @@ class TestInboundEnqueueRejectsSource:
         app.state.inbound = inbound
         session_id = uuid.uuid4()
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=_live_session())
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
         )
         r = client.post(
             f"/api/sessions/{session_id}/inbound",
@@ -264,7 +278,9 @@ class TestInboundEnqueueRejectsSource:
         app.state.inbound = inbound
         session_id = uuid.uuid4()
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=_live_session())
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
         )
         key = str(uuid.uuid4())
         first = client.post(
@@ -328,7 +344,9 @@ class TestSessionStartAccountValidation:
 
         monkeypatch.setattr(store, "start_session", start_session)
         monkeypatch.setattr(
-            store, "get_inquiry", AsyncMock(return_value=_live_session())
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
         )
         r = client.post(
             "/api/sessions/start",

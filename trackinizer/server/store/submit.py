@@ -251,7 +251,9 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 raise
             async with self.engine.acquire() as probe_conn:
                 existing = await self._lookup_existing_by_change(
-                    effective_key, kind, probe_conn
+                    effective_key,
+                    kind,
+                    probe_conn,
                 )
             if existing is None:
                 raise
@@ -338,7 +340,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         if not req.account:
             raise ValueError(
                 "submit requires a resolved account; the route resolves it from "
-                "the authenticated identity before calling the Store"
+                "the authenticated identity before calling the Store",
             )
         account = req.account
         try:
@@ -413,12 +415,12 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         if row["change_kind"] != "created":
             raise ConflictError(
                 f"idempotency_key {idempotency_key} already names a "
-                f"{row['change_kind']} event, not a submit"
+                f"{row['change_kind']} event, not a submit",
             )
         if row["subject_kind"] != kind:
             raise ConflictError(
                 f"idempotency_key {idempotency_key} already created a "
-                f"{row['subject_kind']}, not {kind}"
+                f"{row['subject_kind']}, not {kind}",
             )
         subject_id = row["subject_id"]
         assert subject_id is None or isinstance(subject_id, UUID)
@@ -433,7 +435,11 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         conn: Conn | None = None,
     ) -> UUID:
         return await self._submit_generic(
-            req, kind="Artifact", api_key_id=api_key_id, actor=actor, conn=conn
+            req,
+            kind="Artifact",
+            api_key_id=api_key_id,
+            actor=actor,
+            conn=conn,
         )
 
     async def submit_experiment(
@@ -446,7 +452,9 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
     ) -> UUID:
         async def pre_insert(conn: Conn) -> None:
             await validate_list_references(
-                conn, req.codechanges or (), column="experiment_codechanges"
+                conn,
+                req.codechanges or (),
+                column="experiment_codechanges",
             )
 
         return await self._submit_generic(
@@ -672,7 +680,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                         # single-submit route's ``req.actor or email``.
                         actor=item.actor or actor,
                         conn=conn,
-                    )
+                    ),
                 )
             for edge in edges:
                 await self._add_edge_on_conn(

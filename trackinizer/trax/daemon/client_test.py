@@ -116,7 +116,7 @@ class TestShouldDelegate:
 
     def test_refuses_the_resume_tail_after_global_flags(self) -> None:
         assert not should_delegate(
-            ["--profile", "localhost", "agentsession", "1", "run", "codex", "--lossy"]
+            ["--profile", "localhost", "agentsession", "1", "run", "codex", "--lossy"],
         )
 
     def test_delegates_a_row_whose_title_ends_in_run(self) -> None:
@@ -187,7 +187,9 @@ class TestDelegate:
         )
 
     def test_falls_back_when_a_long_socket_alias_cannot_be_secured(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
     ) -> None:
         """Optional delegation must not replace a working in-process CLI."""
         monkeypatch.chdir(tmp_path)
@@ -216,7 +218,8 @@ class TestDelegate:
         )
 
     def test_raises_when_a_delivered_request_loses_its_response(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         """A request that reached the daemon must never fall back in-process.
 
@@ -270,7 +273,8 @@ class TestDelegate:
         )
 
     def test_returns_none_when_the_daemon_reports_stale_code(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         """A daemon running older source must not serve this request.
 
@@ -281,7 +285,10 @@ class TestDelegate:
         with serving(sock, version="v1"):
             assert (
                 delegate(
-                    ["issue"], socket_override=sock, source_version="v2", spawn=False
+                    ["issue"],
+                    socket_override=sock,
+                    source_version="v2",
+                    spawn=False,
                 )
                 is None
             )

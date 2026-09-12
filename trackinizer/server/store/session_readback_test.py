@@ -106,7 +106,10 @@ async def _ingest(store: Store, path: Path, session_id: UUID) -> int:
         session_id,
         [
             SessionRecordRow.of(
-                session_id=session_id, part=part, idx=idx, record=record
+                session_id=session_id,
+                part=part,
+                idx=idx,
+                record=record,
             )
             for idx, record in enumerate(records)
         ],
@@ -123,7 +126,9 @@ async def _materialize(store: Store, session_id: UUID, part: int) -> str:
         m for m in await store.read_session_manifests(session_id) if m.part == part
     )
     rows = await store.read_session_records(
-        session_id, part=part, limit=manifest.records + 1
+        session_id,
+        part=part,
+        limit=manifest.records + 1,
     )
     # Narrowed from the store's own wider vocabulary: these rows came from a
     # claude or codex file, so a stream record here would mean the fixture was
@@ -142,7 +147,8 @@ async def _materialize(store: Store, session_id: UUID, part: int) -> str:
     # begin at its own ``idx`` 0, so nothing else carries it.
     out = StringIO()
     _adapter_for(manifest.name).denormalize(
-        [TurnContext(encoding=manifest.metadata), *records], out
+        [TurnContext(encoding=manifest.metadata), *records],
+        out,
     )
     return out.getvalue()
 
@@ -156,7 +162,8 @@ def _fixtures() -> Sequence[str]:
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize("name", _fixtures())
 async def test_a_captured_session_reads_back_byte_identical(
-    store: Store, name: str
+    store: Store,
+    name: str,
 ) -> None:
     """What ingest stored rewrites to the bytes the CLI wrote.
 
@@ -177,7 +184,8 @@ async def test_a_captured_session_reads_back_byte_identical(
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.parametrize("name", _fixtures())
 async def test_re_ingesting_a_session_writes_nothing_new(
-    store: Store, name: str
+    store: Store,
+    name: str,
 ) -> None:
     """A whole file fed twice stores one copy, because ``idx`` is derived.
 
@@ -259,10 +267,10 @@ async def test_two_parts_each_denormalize_to_their_own_file(store: Store) -> Non
 
     assert part_a != part_b
     assert await _materialize(store, session_id, part_a) == first.read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     )
     assert await _materialize(store, session_id, part_b) == second.read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     )
 
 

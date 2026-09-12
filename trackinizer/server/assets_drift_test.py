@@ -184,7 +184,8 @@ def test_spa_edge_display_names_derive_from_topology() -> None:
     html = (_CWD / "assets" / "index.html").read_text()
     block = html[
         html.index("function edgeDisplayName") : html.index(
-            "}", html.index("function edgeDisplayName")
+            "}",
+            html.index("function edgeDisplayName"),
         )
     ]
     assert "EDGE_TOPOLOGY[edgeKind]" in block, (

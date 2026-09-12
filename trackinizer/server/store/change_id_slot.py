@@ -39,7 +39,8 @@ class _ChangeIdSlot:
 
 
 _CLIENT_CHANGE_ID: ContextVar[_ChangeIdSlot | None] = ContextVar(
-    "trackinizer_client_change_id", default=None
+    "trackinizer_client_change_id",
+    default=None,
 )
 
 

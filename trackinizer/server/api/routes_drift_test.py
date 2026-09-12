@@ -145,7 +145,7 @@ def _expected_edge_field_verbs() -> set[tuple[str, str]]:
 
 def test_server_edge_field_routes_match_wire_table() -> None:
     registered = _registered_mutations_under(
-        "/api/edges/{from_id}/{edge_kind}/{to_id}/"
+        "/api/edges/{from_id}/{edge_kind}/{to_id}/",
     )
     expected = _expected_edge_field_verbs()
     assert registered == expected, (
@@ -191,7 +191,7 @@ def test_metrics_api_paths_are_registered_routes() -> None:
     all_metric_paths = (*METRICS_API_PATHS, *METRICS_QUERY_API_PATHS)
     missing = sorted(p for p in all_metric_paths if p not in registered)
     assert not missing, "metrics-family routes with no registered route:\n" + "\n".join(
-        missing
+        missing,
     )
 
 

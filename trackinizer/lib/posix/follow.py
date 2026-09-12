@@ -110,7 +110,9 @@ async def follow_file(path: Path, *, replay: bool = False) -> AsyncIterator[str]
     # a write landing in between: the watch reports only what follows it, so
     # that line would wait for an unrelated later change.
     async with _watch_lines(
-        path.parent, match=lambda candidate: candidate == path, existing={path}
+        path.parent,
+        match=lambda candidate: candidate == path,
+        existing={path},
     ) as changed:
         for line in state.drain():
             yield line
@@ -184,7 +186,9 @@ async def follow_tree(
     for path in existing:
         cursors[path] = _Cursor(path, offset=0 if replay else _size(path))
     async with _watch_lines(
-        *directories, match=match, existing=existing | resume
+        *directories,
+        match=match,
+        existing=existing | resume,
     ) as changed:
         if on_armed is not None:
             on_armed()
@@ -233,7 +237,7 @@ if sys.platform == "darwin":
                     if match(path):
                         vnodes.watch(path)
                 async with aclosing(
-                    _vnode_changes(changed, vnodes.watch, match)
+                    _vnode_changes(changed, vnodes.watch, match),
                 ) as lines:
                     yield lines
 
@@ -401,7 +405,7 @@ async def follow_dir(*directories: Path) -> AsyncGenerator[AsyncIterator[set[Pat
     if system != "Linux":
         raise NotImplementedError(
             f"{system} has no supported watch mechanism; "
-            "a recursive backend is needed here"
+            "a recursive backend is needed here",
         )
     fd, watches = _inotify_fd(*directories)
     try:
@@ -472,7 +476,7 @@ def _fsevents_observer() -> _Observer:
     except ImportError as err:
         raise NotImplementedError(
             "watchdog's FSEvents backend is unavailable; "
-            "it ships only on macOS, where watchdog provides the extension"
+            "it ships only on macOS, where watchdog provides the extension",
         ) from err
 
 
@@ -507,7 +511,10 @@ class _FsEventsHandler:
     """Map native paths back to the spelling of this watch's root."""
 
     def __init__(
-        self, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue[Path], root: Path
+        self,
+        loop: asyncio.AbstractEventLoop,
+        queue: asyncio.Queue[Path],
+        root: Path,
     ) -> None:
         self._loop = loop
         self._queue = queue
@@ -583,7 +590,10 @@ def _inotify_fd(*directories: Path) -> tuple[int, dict[int, Path]]:
 # descriptor and lose the root watch too, disabling capture over a directory nobody
 # needed.
 def _watch_tree(
-    libc: ctypes.CDLL, fd: int, directory: Path, watches: dict[int, Path]
+    libc: ctypes.CDLL,
+    fd: int,
+    directory: Path,
+    watches: dict[int, Path],
 ) -> None:
     """Watch ``directory`` and every subdirectory below it."""
     _add_watch(libc, fd, directory, watches)
@@ -602,7 +612,10 @@ def _watch_tree(
 
 
 def _add_watch(
-    libc: ctypes.CDLL, fd: int, directory: Path, watches: dict[int, Path]
+    libc: ctypes.CDLL,
+    fd: int,
+    directory: Path,
+    watches: dict[int, Path],
 ) -> None:
     """Register one directory; record which watch descriptor names it."""
     descriptor = int(libc.inotify_add_watch(fd, str(directory).encode(), _WATCH_MASK))
@@ -615,7 +628,8 @@ def _add_watch(
 
 
 async def _inotify_events(
-    fd: int, watches: dict[int, Path]
+    fd: int,
+    watches: dict[int, Path],
 ) -> AsyncIterator[set[Path]]:
     """Yield the set of changed paths each time the kernel reports one."""
     libc = _libc()
@@ -653,7 +667,10 @@ def _read_inotify(libc: ctypes.CDLL, fd: int, watches: dict[int, Path]) -> set[P
 # before that watch existed is named by no later event, so the listing is the only thing
 # that can report it (``inotify(7)``).
 def _read_events(
-    raw: bytes, libc: ctypes.CDLL, fd: int, watches: dict[int, Path]
+    raw: bytes,
+    libc: ctypes.CDLL,
+    fd: int,
+    watches: dict[int, Path],
 ) -> set[Path]:
     """Decode one read's worth of ``struct inotify_event``s into paths."""
     changed: set[Path] = set()
@@ -705,7 +722,10 @@ def _rescan(watches: dict[int, Path]) -> set[Path]:
 # writer may already have filled it, and those files are named by no event the kernel
 # will ever send.
 def _adopt(
-    libc: ctypes.CDLL, fd: int, directory: Path, watches: dict[int, Path]
+    libc: ctypes.CDLL,
+    fd: int,
+    directory: Path,
+    watches: dict[int, Path],
 ) -> set[Path]:
     """Watch a directory that just appeared; report what it already holds."""
     try:

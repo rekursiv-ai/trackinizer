@@ -76,7 +76,7 @@ class TestPureFunctions:
             return_value=[
                 {"id": a, "kind": "WebResult"},
                 {"id": b, "kind": "Paper"},
-            ]
+            ],
         )
         kinds = await lookup_kinds(cast(Conn, conn), [a, b])
         assert kinds == {a: "WebResult", b: "Paper"}
@@ -89,7 +89,9 @@ class TestPureFunctions:
         conn.fetch = AsyncMock(return_value=[])
         with pytest.raises(ConflictError, match="not found"):
             await validate_list_references(
-                cast(Conn, conn), [missing], column="experiment_codechanges"
+                cast(Conn, conn),
+                [missing],
+                column="experiment_codechanges",
             )
 
     @pytest.mark.asyncio
@@ -107,7 +109,9 @@ class TestPureFunctions:
         conn.fetch = AsyncMock(return_value=[])
         with pytest.raises(NotFoundError, match="not found"):
             await validate_list_references(
-                cast(Conn, conn), [new_uuid()], column="experiment_codechanges"
+                cast(Conn, conn),
+                [new_uuid()],
+                column="experiment_codechanges",
             )
 
     @pytest.mark.asyncio
@@ -123,14 +127,18 @@ class TestPureFunctions:
             return_value=[
                 {"id": good_id, "kind": "CodeChange"},
                 {"id": bad_id, "kind": "Issue"},
-            ]
+            ],
         )
         await validate_list_references(
-            cast(Conn, conn), [good_id], column="experiment_codechanges"
+            cast(Conn, conn),
+            [good_id],
+            column="experiment_codechanges",
         )
         with pytest.raises(ConflictError, match="Issue"):
             await validate_list_references(
-                cast(Conn, conn), [bad_id], column="experiment_codechanges"
+                cast(Conn, conn),
+                [bad_id],
+                column="experiment_codechanges",
             )
 
     @pytest.mark.asyncio
@@ -147,7 +155,9 @@ class TestPureFunctions:
             return_value=[{"id": rid, "kind": "CodeChange"}],
         )
         await validate_list_references(
-            cast(Conn, conn), [rid], column="experiment_codechanges"
+            cast(Conn, conn),
+            [rid],
+            column="experiment_codechanges",
         )
         (sql, _ids), _kwargs = conn.fetch.call_args
         assert "FOR SHARE" in sql
@@ -237,7 +247,7 @@ class TestCLIHelpers:
                     from_id=target,
                     to_id=target,
                     edge_kind="narrows",
-                )
+                ),
             )
 
 

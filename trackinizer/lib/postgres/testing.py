@@ -60,7 +60,8 @@ def pglite_workdir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def pglite_engine(
-    pglite_engine_cache: _EngineCache, request: pytest.FixtureRequest
+    pglite_engine_cache: _EngineCache,
+    request: pytest.FixtureRequest,
 ) -> PGliteEngine:
     """One started PGlite server, shared across the session.
 
@@ -114,7 +115,7 @@ async def reset_schema(engine: PGliteEngine) -> None:
         # ``relation already exists``. Resolved by lookup because ``pg_temp`` is
         # a per-session alias that ``DROP SCHEMA`` silently matches nothing for.
         temp_schema = await conn.fetchval(
-            "SELECT nspname FROM pg_namespace WHERE oid = pg_my_temp_schema()"
+            "SELECT nspname FROM pg_namespace WHERE oid = pg_my_temp_schema()",
         )
         if temp_schema:
             await conn.execute(f'DROP SCHEMA "{temp_schema}" CASCADE')

@@ -27,13 +27,13 @@ class TestMetricMaskClause:
         # constructor, mirroring ``test_rejects_extra_field`` below.
         with pytest.raises(ValidationError):
             MetricMaskClause.model_validate(
-                {"axis": "bogus", "op": "is", "value": "loss"}
+                {"axis": "bogus", "op": "is", "value": "loss"},
             )
 
     def test_rejects_unknown_op(self) -> None:
         with pytest.raises(ValidationError):
             MetricMaskClause.model_validate(
-                {"axis": "step", "op": "bogus", "value": "3"}
+                {"axis": "step", "op": "bogus", "value": "3"},
             )
 
     @pytest.mark.parametrize("op", ["re", "nre", "isnull", "notnull"])
@@ -49,14 +49,14 @@ class TestMetricMaskClause:
     def test_rejects_extra_field(self) -> None:
         with pytest.raises(ValidationError):
             MetricMaskClause.model_validate(
-                {"axis": "step", "op": "is", "value": "3", "extra": 1}
+                {"axis": "step", "op": "is", "value": "3", "extra": 1},
             )
 
 
 class TestMetricQueryRequest:
     def test_read_request_defaults(self) -> None:
         req = MetricQueryRequest(
-            masks=[MetricMaskClause(axis="key", op="is", value="loss")]
+            masks=[MetricMaskClause(axis="key", op="is", value="loss")],
         )
         assert req.write is None
         assert req.sort is None

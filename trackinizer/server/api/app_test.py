@@ -60,13 +60,13 @@ class TestCLIHelpers:
         """
         req = cast(Any, Mock())
         fk_response = asyncio.run(
-            fk_violation_handler(req, asyncpg.ForeignKeyViolationError("boom"))
+            fk_violation_handler(req, asyncpg.ForeignKeyViolationError("boom")),
         )
         check_response = asyncio.run(
-            check_violation_handler(req, asyncpg.CheckViolationError("boom"))
+            check_violation_handler(req, asyncpg.CheckViolationError("boom")),
         )
         unique_response = asyncio.run(
-            unique_violation_handler(req, asyncpg.UniqueViolationError("boom"))
+            unique_violation_handler(req, asyncpg.UniqueViolationError("boom")),
         )
         for response, prefix in [
             (fk_response, "foreign key"),
@@ -215,12 +215,17 @@ class TestAuthDisabledWarning:
     # replaced so the body runs hermetically (no real DB).
     @classmethod
     def _run_lifespan(
-        cls, monkeypatch: pytest.MonkeyPatch, *, auth_disabled: bool
+        cls,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        auth_disabled: bool,
     ) -> None:
         """Drive the real ``lifespan`` once with engine/store/embedder stubbed."""
         store, engine = make_store()
         monkeypatch.setattr(
-            trackinizer.server.api.app, "build_engine", Mock(return_value=engine)
+            trackinizer.server.api.app,
+            "build_engine",
+            Mock(return_value=engine),
         )
         monkeypatch.setattr(
             trackinizer.server.api.app,
@@ -228,7 +233,9 @@ class TestAuthDisabledWarning:
             Mock(return_value=object()),
         )
         monkeypatch.setattr(
-            trackinizer.server.api.app, "Store", Mock(return_value=store)
+            trackinizer.server.api.app,
+            "Store",
+            Mock(return_value=store),
         )
         monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
         app = cast(FastAPI, Mock())
@@ -242,7 +249,9 @@ class TestAuthDisabledWarning:
         asyncio.run(_drive())
 
     def test_warns_when_auth_disabled(
-        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # ``--no-auth`` makes every request a synthetic admin; the operator
         # must be loudly told at startup, never let it slip silently into a
@@ -254,7 +263,9 @@ class TestAuthDisabledWarning:
         assert "auth" in records[0].getMessage().lower()
 
     def test_silent_when_auth_enabled(
-        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         with caplog.at_level(logging.WARNING):
             self._run_lifespan(monkeypatch, auth_disabled=False)
@@ -262,12 +273,17 @@ class TestAuthDisabledWarning:
 
     @classmethod
     def _seeded_no_auth_user(
-        cls, monkeypatch: pytest.MonkeyPatch, *, auth_disabled: bool
+        cls,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        auth_disabled: bool,
     ) -> bool:
         """Drive the lifespan and report whether the no-auth user was seeded."""
         store, engine = make_store()
         monkeypatch.setattr(
-            trackinizer.server.api.app, "build_engine", Mock(return_value=engine)
+            trackinizer.server.api.app,
+            "build_engine",
+            Mock(return_value=engine),
         )
         monkeypatch.setattr(
             trackinizer.server.api.app,
@@ -275,7 +291,9 @@ class TestAuthDisabledWarning:
             Mock(return_value=object()),
         )
         monkeypatch.setattr(
-            trackinizer.server.api.app, "Store", Mock(return_value=store)
+            trackinizer.server.api.app,
+            "Store",
+            Mock(return_value=store),
         )
         monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
         app = cast(FastAPI, Mock())
@@ -293,7 +311,8 @@ class TestAuthDisabledWarning:
         )
 
     def test_seeds_no_auth_user_when_disabled(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # The synthetic no-auth principal must exist as an active user so its
         # submits pass the account-attribution gate; demo mode is otherwise

@@ -57,7 +57,8 @@ def _actor_of(body: ActorMixin, identity: AuthIdentity) -> str:
 # ``change_id`` is ``None`` for a no-op: the field already held the target value, so no
 # ``change_log`` row was written.
 def _mutation_response(
-    target_id: uuid.UUID, change_id: uuid.UUID | None
+    target_id: uuid.UUID,
+    change_id: uuid.UUID | None,
 ) -> MutableJSON:
     """Build the ``{id, change_id}`` mutation response."""
     return {
@@ -78,11 +79,20 @@ def _make_put(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON]]
         store = get_store(request)
         if body.mode == "cas":
             change_id = await _run_compare_and_set(
-                route, target_id, body, store, identity
+                route,
+                target_id,
+                body,
+                store,
+                identity,
             )
         else:
             change_id = await _set_value(
-                route, target_id, body.value, body, store, identity=identity
+                route,
+                target_id,
+                body.value,
+                body,
+                store,
+                identity=identity,
             )
         return _mutation_response(target_id, change_id)
 
@@ -173,7 +183,11 @@ async def _set_value(
     method = cast(_SetterMethod, getattr(store, str(route.set_method)))
     extra = {"reason": reason} if route.supports_reason else {}
     return await method(
-        target_id, value, api_key_id=identity.api_key_id, actor=actor, **extra
+        target_id,
+        value,
+        api_key_id=identity.api_key_id,
+        actor=actor,
+        **extra,
     )
 
 
@@ -206,7 +220,10 @@ async def _run_patch(
         )
     element = cast(_ElementMethod, getattr(store, method_name))
     return await element(
-        target_id, body.value, api_key_id=identity.api_key_id, actor=actor
+        target_id,
+        body.value,
+        api_key_id=identity.api_key_id,
+        actor=actor,
     )
 
 

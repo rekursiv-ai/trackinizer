@@ -436,7 +436,9 @@ def _operand(command: str, path: str) -> str:
 
 
 def _matched_row(
-    parts: Sequence[_BashNode], *, quoted: tuple[str, str] | None
+    parts: Sequence[_BashNode],
+    *,
+    quoted: tuple[str, str] | None,
 ) -> MatchedRow | None:
     """Return the table row one parsed command matches, path as written."""
     if any(part.kind not in {"word", "redirect"} for part in parts):
@@ -700,7 +702,8 @@ def _write_content(executable: str, arguments: Sequence[str]) -> str | None:
 # bytes are unknown either way. A ``write`` would have to state them, and stating ``""``
 # would claim the command emptied the file.
 def _tee_operation(
-    argv: Sequence[str], nodes: Sequence[_BashNode]
+    argv: Sequence[str],
+    nodes: Sequence[_BashNode],
 ) -> MatchedRow | None:
     """Return what ``tee`` did. TABLE ROWS: ``tee F`` and ``tee -a F``."""
     flags = [word for word in argv[1:] if word.startswith("-")]
@@ -745,7 +748,8 @@ def _in_place(arguments: Sequence[str]) -> bool:
 # the record states its path and no content, exactly as ``tee`` and ``patch`` do. The
 # command that transformed it rides in ``$shell``, which is what a replay puts back.
 def _in_place_operation(
-    argv: Sequence[str], nodes: Sequence[_BashNode]
+    argv: Sequence[str],
+    nodes: Sequence[_BashNode],
 ) -> MatchedRow | None:
     """Return the edit an in-place rewrite performed."""
     operands = [
@@ -777,7 +781,9 @@ def _in_place_operation(
 # is right there in the command -- the heredoc holds the diff -- so the record carries
 # it rather than leaving :attr:`edits` empty.
 def _patch_heredoc(
-    parts: Sequence[_BashNode], *, body: str | None
+    parts: Sequence[_BashNode],
+    *,
+    body: str | None,
 ) -> MatchedRow | None:
     """Return the edit ``patch F << 'EOF'`` applied, diff included."""
     if body is None:
@@ -796,7 +802,9 @@ def _patch_heredoc(
 # inline; a ``patch < f.diff`` reads a file this reader has never seen, so it names no
 # edit it can describe.
 def _patch_operation(
-    argv: Sequence[str], nodes: Sequence[_BashNode], redirects: Sequence[_BashNode]
+    argv: Sequence[str],
+    nodes: Sequence[_BashNode],
+    redirects: Sequence[_BashNode],
 ) -> MatchedRow | None:
     """Return the edit ``patch`` applied. TABLE ROW: ``patch ... F``."""
     if redirects:
@@ -826,7 +834,9 @@ def _nl_operation(argv: Sequence[str], nodes: Sequence[_BashNode]) -> MatchedRow
 # returned lines 1-20, and a record without that says the whole file came back. A SIGNED
 # count names a different window entirely, which :func:`_line_range` resolves.
 def _line_reader_operation(
-    utility: str, argv: Sequence[str], nodes: Sequence[_BashNode]
+    utility: str,
+    argv: Sequence[str],
+    nodes: Sequence[_BashNode],
 ) -> MatchedRow | None:
     """Return the bounded read ``head`` or ``tail`` performed."""
     if len(argv) == 2:
@@ -880,7 +890,8 @@ def _line_range(utility: str, count: str) -> tuple[int | None, int | None]:
 # tuple: each clause contributes its own pair, and the gaps between them were never
 # read.
 def _sed_operation(
-    argv: Sequence[str], nodes: Sequence[_BashNode]
+    argv: Sequence[str],
+    nodes: Sequence[_BashNode],
 ) -> MatchedRow | None:
     """Return the bounded read a ``sed -n`` script performed."""
     if len(argv) != 4:
@@ -941,7 +952,8 @@ def _sed_range(first: str, last: str | None) -> tuple[int | None, int | None]:
 
 
 def _stencil_command(
-    command: tuple[str, ...] | None, result: FileResult
+    command: tuple[str, ...] | None,
+    result: FileResult,
 ) -> tuple[str, ...] | None:
     """Rewrite changed semantic fields into the original command stencil."""
     if command is None:

@@ -60,8 +60,8 @@ def test_a_gemini_turn_splits_prose_from_its_tool_calls() -> None:
                 "type": "gemini",
                 "content": "running",
                 "toolCalls": [{"id": "t1", "name": "read_file", "args": {"p": "x"}}],
-            }
-        )
+            },
+        ),
     )
 
     assert [type(r) for r in records] == [
@@ -115,7 +115,8 @@ def test_re_reading_a_rewritten_document_yields_what_it_now_holds() -> None:
     """
     first = _document({"type": "user", "content": "one"})
     second = _document(
-        {"type": "user", "content": "one"}, {"type": "user", "content": "two"}
+        {"type": "user", "content": "one"},
+        {"type": "user", "content": "two"},
     )
 
     before = [r for r in _read(first) if isinstance(r, UserMessage)]
@@ -160,7 +161,7 @@ def test_a_leading_tool_call_writes_a_turn_rather_than_crashing() -> None:
             "type": "gemini",
             "content": "",
             "toolCalls": [{"id": "t1", "name": "read_file", "args": {}}],
-        }
+        },
     ]
 
 
@@ -235,7 +236,7 @@ def test_a_timestamp_survives_the_gemini_round_trip() -> None:
 
     back = _read(out.getvalue())
     assert [r.timestamp for r in back if isinstance(r, UserMessage)] == [
-        "2026-01-01T00:00:00Z"
+        "2026-01-01T00:00:00Z",
     ]
 
 

@@ -244,7 +244,8 @@ class AppendRecordsRequest(BaseModel):
     records: list[RecordBody] = Field(default_factory=list, max_length=MAX_RECORD_BATCH)
 
     slash_commands: list[SlashCommandBody] = Field(
-        default_factory=list, max_length=MAX_RECORD_BATCH
+        default_factory=list,
+        max_length=MAX_RECORD_BATCH,
     )
     """Commands typed since the last batch, committed with these records.
 

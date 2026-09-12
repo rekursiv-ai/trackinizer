@@ -43,7 +43,7 @@ class TestSubmit:
     async def test_submit_issue_notifies(self) -> None:
         store, engine = make_store()
         issue_id = await store.submit_issue(
-            SubmitIssue(title="t", account="tester@example.com")
+            SubmitIssue(title="t", account="tester@example.com"),
         )
         assert len(engine.notify_calls) == 1
         ch, payload = engine.notify_calls[0]
@@ -92,7 +92,7 @@ class TestSubmit:
             del args
             if "INSERT INTO change_log" in sql:
                 exc = asyncpg.UniqueViolationError(
-                    "duplicate key value violates unique constraint"
+                    "duplicate key value violates unique constraint",
                 )
                 # The recovery path classifies by constraint: this simulates a
                 # change_log PK collision (the idempotency-replay case).
@@ -107,7 +107,7 @@ class TestSubmit:
                 title="t",
                 idempotency_key=idempotency_key,
                 account="tester@example.com",
-            )
+            ),
         )
         assert issue_id == winner_subject_id
 
@@ -129,7 +129,7 @@ class TestSubmit:
             del args
             if "INSERT INTO inquiries" in sql:
                 exc = asyncpg.UniqueViolationError(
-                    "duplicate key value violates unique constraint"
+                    "duplicate key value violates unique constraint",
                 )
                 # A live routing-name collision, NOT a change_log PK replay.
                 exc.constraint_name = "uq_inquiries_live_session_owner"
@@ -146,7 +146,7 @@ class TestSubmit:
                     owner="alice",
                     idempotency_key=idempotency_key,
                     account="tester@example.com",
-                )
+                ),
             )
         assert caught.value.constraint_name == "uq_inquiries_live_session_owner"
 
@@ -166,7 +166,7 @@ class TestSubmit:
                 title="t",
                 requires=[prerequisite_id],
                 account="tester@example.com",
-            )
+            ),
         )
         # Edge INSERT now uses fetchval (RETURNING); covered via fetchval calls.
         assert any(
@@ -188,11 +188,13 @@ class TestSubmit:
                 title="c",
                 proved_by=[
                     Citation(
-                        artifact_id=evidence_id, artifact_kind="Experiment", valence=0.8
-                    )
+                        artifact_id=evidence_id,
+                        artifact_kind="Experiment",
+                        valence=0.8,
+                    ),
                 ],
                 account="tester@example.com",
-            )
+            ),
         )
         sqls = executed_sql(conn)
         edge_inserts = [
@@ -223,7 +225,7 @@ class TestSubmit:
         store, _engine = make_store(conn)
         with pytest.raises(NotFoundError, match="not found"):
             await store.submit_experiment(
-                SubmitExperiment(title="e", codechanges=[bad_ref])
+                SubmitExperiment(title="e", codechanges=[bad_ref]),
             )
         sqls = executed_sql(conn)
         assert not any("INSERT INTO inquiries" in s for s in sqls)
@@ -263,7 +265,7 @@ class TestSubmit:
                 title="p",
                 authors=[" Ada ", "Ada", "", "Grace"],
                 account="tester@example.com",
-            )
+            ),
         )
         insert = next(
             c
@@ -320,11 +322,11 @@ class TestIdempotentShortCircuitConsumesChangeId:
         )
         store, _engine = make_store(conn)
         returned = await store.submit_issue(
-            SubmitIssue(title="a", idempotency_key=prior_key)
+            SubmitIssue(title="a", idempotency_key=prior_key),
         )
         assert returned == winner_subject_id
         await store.submit_artifact(
-            SubmitArtifact(title="b", account="tester@example.com")
+            SubmitArtifact(title="b", account="tester@example.com"),
         )
         change_ids = [
             call.args[1]  # ``id`` is the first column in ``emit_change``.
@@ -366,11 +368,11 @@ class TestIdempotentShortCircuitConsumesChangeId:
         store, _engine = make_store(conn)
         set_client_change_id(external_key)
         returned = await store.submit_issue(
-            SubmitIssue(title="a", idempotency_key=replay_key)
+            SubmitIssue(title="a", idempotency_key=replay_key),
         )
         assert returned == winner_subject_id
         await store.submit_artifact(
-            SubmitArtifact(title="b", account="tester@example.com")
+            SubmitArtifact(title="b", account="tester@example.com"),
         )
         change_ids = [
             call.args[1]
@@ -418,7 +420,7 @@ class TestIdempotentShortCircuitConsumesChangeId:
             if "INSERT INTO change_log" in sql and not raised:
                 raised.append(True)
                 exc = asyncpg.UniqueViolationError(
-                    "duplicate key value violates unique constraint"
+                    "duplicate key value violates unique constraint",
                 )
                 # Classified by constraint: a change_log PK collision (replay).
                 exc.constraint_name = "change_log_pkey"
@@ -429,12 +431,14 @@ class TestIdempotentShortCircuitConsumesChangeId:
         store, _engine = make_store(conn)
         returned = await store.submit_issue(
             SubmitIssue(
-                title="a", idempotency_key=racer_key, account="tester@example.com"
-            )
+                title="a",
+                idempotency_key=racer_key,
+                account="tester@example.com",
+            ),
         )
         assert returned == winner_subject_id
         await store.submit_artifact(
-            SubmitArtifact(title="b", account="tester@example.com")
+            SubmitArtifact(title="b", account="tester@example.com"),
         )
         change_ids = [
             call.args[1]
@@ -486,7 +490,7 @@ class TestSubmitExceptionDrainsHeaderSlot:
         set_client_change_id(header_key)
         with pytest.raises(RuntimeError, match="boom"):
             await store.submit_issue(
-                SubmitIssue(title="t", account="tester@example.com")
+                SubmitIssue(title="t", account="tester@example.com"),
             )
         assert _peek_client_change_id() is None, (
             f"submit left the externally-set Idempotency-Key {header_key} in "
@@ -516,7 +520,7 @@ class _BeginRecordingEmbedder:
             any(
                 call.args and call.args[0] == "BEGIN"
                 for call in self._conn.execute.call_args_list
-            )
+            ),
         )
         return [0.0] * self.dim
 
@@ -570,7 +574,7 @@ class TestSubmitBatch:
                     idempotency_key=new_uuid(),
                     account="tester@example.com",
                 ),
-            ]
+            ],
         )
         assert len(ids) == 2
         verbs = _tx_verbs(conn)
@@ -607,7 +611,7 @@ class TestSubmitBatch:
                         idempotency_key=new_uuid(),
                         account="tester@example.com",
                     ),
-                ]
+                ],
             )
         verbs = _tx_verbs(conn)
         assert verbs.count("BEGIN") == 1
@@ -643,7 +647,7 @@ class TestSubmitBatch:
                     idempotency_key=new_uuid(),
                     account="tester@example.com",
                 ),
-            ]
+            ],
         )
         assert len(ids) == 2
         verbs = _tx_verbs(conn)

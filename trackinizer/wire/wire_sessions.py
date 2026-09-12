@@ -104,7 +104,11 @@ class SessionStart(BaseModel):
     returns the original session id without minting a duplicate."""
 
     _reject_blank_scalars = field_validator(
-        "cli", "cli_session_id", "actor", "account", mode="after"
+        "cli",
+        "cli_session_id",
+        "actor",
+        "account",
+        mode="after",
     )(staticmethod(_reject_blank))
 
     # A room name must be a single clean token: non-blank (matched verbatim against
@@ -303,7 +307,7 @@ class SendMessage(BaseModel):
     """The message body to inject into each matched session."""
 
     _validate_scalars = field_validator("actor", "room", mode="after")(
-        staticmethod(_reject_blank)
+        staticmethod(_reject_blank),
     )
 
 
@@ -328,7 +332,7 @@ class SessionEnd(BaseModel):
     actor: str | None = None
 
     _reject_blank_scalars = field_validator("cli_session_id", "actor", mode="after")(
-        staticmethod(_reject_blank)
+        staticmethod(_reject_blank),
     )
 
 

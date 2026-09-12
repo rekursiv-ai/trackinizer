@@ -42,7 +42,10 @@ async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
 
 
 async def _session_with(
-    store: Store, records: Sequence[SessionRecord], *, title: str = "s"
+    store: Store,
+    records: Sequence[SessionRecord],
+    *,
+    title: str = "s",
 ) -> UUID:
     """Return an AgentSession holding ``records``, numbered by stream position."""
     session_id = uuid4()
@@ -67,7 +70,10 @@ async def _session_with(
 async def _matching(store: Store, *filters: Filter, lowering: bool = True) -> set[UUID]:
     """Return the AgentSession ids ``filters`` select."""
     rows = await store.list_kind(
-        "AgentSession", filters=list(filters), limit=500, lowering=lowering
+        "AgentSession",
+        filters=list(filters),
+        limit=500,
+        lowering=lowering,
     )
     return {row.id for row in rows if isinstance(row, AgentSession)}
 
@@ -83,7 +89,8 @@ async def test_a_phrase_in_a_tool_result_matches(store: Store) -> None:
     miss = await _session_with(store, [UserMessage(content="unrelated")])
 
     found = await _matching(
-        store, Filter(field="shell_command_result", op="re", value="advisory")
+        store,
+        Filter(field="shell_command_result", op="re", value="advisory"),
     )
 
     assert hit in found
@@ -100,7 +107,8 @@ async def test_the_same_phrase_in_ciphertext_does_not_match(store: Store) -> Non
     a filter cannot reach it even before retention runs.
     """
     sealed = await _session_with(
-        store, [Thinking(encrypted="c2VjcmV0cGhyYXNlaGVyZQ==", content="")]
+        store,
+        [Thinking(encrypted="c2VjcmV0cGhyYXNlaGVyZQ==", content="")],
     )
 
     found = await _matching(store, Filter(field="thinking", op="re", value="c2VjcmV0"))
@@ -145,7 +153,8 @@ async def test_context_compaction_notnull_finds_a_compacted_session(
     plain = await _session_with(store, [UserMessage(content="hello")])
 
     found = await _matching(
-        store, Filter(field="context_compaction", op="notnull", value="")
+        store,
+        Filter(field="context_compaction", op="notnull", value=""),
     )
 
     assert compacted in found
@@ -159,10 +168,14 @@ async def test_a_record_filter_composes_with_an_inquiries_filter(
 ) -> None:
     """Both clauses AND into one WHERE, over different tables."""
     wanted = await _session_with(
-        store, [UserMessage(content="deploy the thing")], title="keep"
+        store,
+        [UserMessage(content="deploy the thing")],
+        title="keep",
     )
     other = await _session_with(
-        store, [UserMessage(content="deploy the thing")], title="drop"
+        store,
+        [UserMessage(content="deploy the thing")],
+        title="drop",
     )
 
     found = await _matching(
@@ -229,11 +242,13 @@ async def test_a_pattern_with_no_word_characters_still_matches(store: Store) -> 
 async def test_a_record_kind_scopes_the_match(store: Store) -> None:
     """The field names ONE kind: a phrase under another does not satisfy it."""
     session_id = await _session_with(
-        store, [UserMessage(content="findme"), ToolCall(call_id="c", name="Read")]
+        store,
+        [UserMessage(content="findme"), ToolCall(call_id="c", name="Read")],
     )
 
     as_user = await _matching(
-        store, Filter(field="user_message", op="re", value="findme")
+        store,
+        Filter(field="user_message", op="re", value="findme"),
     )
     as_tool = await _matching(store, Filter(field="tool_call", op="re", value="findme"))
 

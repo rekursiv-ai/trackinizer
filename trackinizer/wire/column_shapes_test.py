@@ -72,13 +72,15 @@ class TestTheNumericVocabularyIsComplete:
     """
 
     @pytest.mark.parametrize(
-        "sql_type", ["DOUBLE PRECISION", "FLOAT", "FLOAT4", "FLOAT8", "REAL"]
+        "sql_type",
+        ["DOUBLE PRECISION", "FLOAT", "FLOAT4", "FLOAT8", "REAL"],
     )
     def test_a_real_spelling_classifies_as_real(self, sql_type: str) -> None:
         assert _is_real_sql(sql_type) is True
 
     @pytest.mark.parametrize(
-        "sql_type", ["INTEGER", "INT", "INT2", "INT4", "INT8", "BIGINT", "SMALLINT"]
+        "sql_type",
+        ["INTEGER", "INT", "INT2", "INT4", "INT8", "BIGINT", "SMALLINT"],
     )
     def test_an_integer_spelling_classifies_as_integer(self, sql_type: str) -> None:
         assert _is_integer_sql(sql_type) is True
@@ -110,10 +112,10 @@ class TestEveryShapeMatchesTheDeclaredType:
         ColumnShape.TEXT_ARRAY: frozenset({"TEXT[]"}),
         ColumnShape.UUID_ARRAY: frozenset({"UUID[]"}),
         ColumnShape.INTEGER: frozenset(
-            {"INTEGER", "INT", "INT2", "INT4", "INT8", "BIGINT", "SMALLINT"}
+            {"INTEGER", "INT", "INT2", "INT4", "INT8", "BIGINT", "SMALLINT"},
         ),
         ColumnShape.REAL: frozenset(
-            {"NUMERIC", "DECIMAL", "REAL", "FLOAT", "FLOAT4", "FLOAT8", "DOUBLE"}
+            {"NUMERIC", "DECIMAL", "REAL", "FLOAT", "FLOAT4", "FLOAT8", "DOUBLE"},
         ),
         ColumnShape.RENDERED: frozenset({"UUID"}),
         ColumnShape.TIMESTAMP: frozenset({"TIMESTAMPTZ"}),
@@ -155,7 +157,8 @@ class TestEveryShapeMatchesTheDeclaredType:
         sorted(c for c, s in COLUMN_SHAPES.items() if s is ColumnShape.REAL),
     )
     def test_a_real_column_cannot_hold_a_value_the_renderer_misformats(
-        self, column: str
+        self,
+        column: str,
     ) -> None:
         r"""A REAL column must be too narrow to reach 16 integer digits.
 

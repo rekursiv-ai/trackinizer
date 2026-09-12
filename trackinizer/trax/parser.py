@@ -103,7 +103,9 @@ def parse_list_query(
     """
     if not tokens:
         return ListQuery(
-            kinds=VALID_KINDS if kind is None else (kind,), ranges={}, filters=()
+            kinds=VALID_KINDS if kind is None else (kind,),
+            ranges={},
+            filters=(),
         )
     if starts_with_ref(tokens):
         return None
@@ -137,7 +139,7 @@ def parse_list_query(
             ):
                 raise ClientError(
                     f"unknown filter operator {clause.bad_filter_op!r} "
-                    f"after field {clause.token!r}"
+                    f"after field {clause.token!r}",
                 )
             return None
     if kinds:
@@ -152,7 +154,7 @@ def parse_list_query(
     for field, op, value in cli_filters:
         try:
             filters.append(
-                Filter(field=canonical_filter_field(field), op=op, value=value)
+                Filter(field=canonical_filter_field(field), op=op, value=value),
             )
         except ValueError as err_obj:
             # ``Filter`` validates the whole clause -- length, regex dialect,
@@ -294,10 +296,10 @@ def parse_bulk_apply(
             if clause.bad_filter_op:
                 raise ClientError(
                     f"unknown filter operator {clause.bad_filter_op!r} "
-                    f"after field {clause.token!r}"
+                    f"after field {clause.token!r}",
                 )
             raise ClientError(
-                f"bulk apply supports only field mutations; got {clause.token!r}"
+                f"bulk apply supports only field mutations; got {clause.token!r}",
             )
         else:
             # No selector yet, and this token is not one: the tokens are a
@@ -341,7 +343,7 @@ def parse_actions(tokens: Sequence[str]) -> list[Action]:
         if word == "del":
             if index + 1 < len(tokens):
                 raise ClientError(
-                    f"'del' must be the last token; got {tokens[index + 1]!r} after"
+                    f"'del' must be the last token; got {tokens[index + 1]!r} after",
                 )
             actions.append(DeleteRow())
             index += 1
@@ -350,7 +352,7 @@ def parse_actions(tokens: Sequence[str]) -> list[Action]:
             if isinstance(action, SetField):
                 if action.field in set_fields:
                     raise ClientError(
-                        f"scalar field {action.field!r} set more than once"
+                        f"scalar field {action.field!r} set more than once",
                     )
                 set_fields.add(action.field)
             actions.append(action)
@@ -420,12 +422,14 @@ def parse_metric_action(tokens: Sequence[str]) -> MetricAction:
             index += 2
         elif word == "sort":
             sort = _parse_metric_sort(
-                required_token(tokens, index + 1, "'sort' requires asc or desc")
+                required_token(tokens, index + 1, "'sort' requires asc or desc"),
             )
             index += 2
         elif word == "limit":
             limit = _parse_metric_limit(
-                required_token(tokens, index + 1, "'limit' requires a positive integer")
+                required_token(
+                    tokens, index + 1, "'limit' requires a positive integer"
+                ),
             )
             index += 2
         else:
@@ -466,7 +470,9 @@ def starts_with_ref(tokens: Sequence[str]) -> bool:
 
 
 def parse_subject_list(
-    tokens: Sequence[str], *, default_kind: Inquiry.InquiryKind
+    tokens: Sequence[str],
+    *,
+    default_kind: Inquiry.InquiryKind,
 ) -> list[Ref] | None:
     """Return a list of refs when ``tokens`` is purely a ref sequence.
 
@@ -511,7 +517,7 @@ def parse_subject_list(
 
 
 _EDGE_METADATA_FIELDS: frozenset[str] = frozenset(
-    {"priority", "note", "valence", "label", "labels"}
+    {"priority", "note", "valence", "label", "labels"},
 )
 
 # The subset of edge-metadata words that are NOT also row fields, so they carry
@@ -526,7 +532,9 @@ _SAFE_INLINE_META_FIELDS: frozenset[str] = _EDGE_METADATA_FIELDS - (
 
 
 def edge_metadata(
-    tokens: Sequence[str], *, allow_bare_collision: bool = False
+    tokens: Sequence[str],
+    *,
+    allow_bare_collision: bool = False,
 ) -> tuple[Mapping[str, object], int]:
     """Parse edge-metadata actions, stopping at the first non-metadata token.
 
@@ -567,7 +575,7 @@ def edge_metadata(
             if marked:
                 raise ClientError(
                     f"'edge' must be followed by an edge field "
-                    f"({', '.join(sorted(_EDGE_METADATA_FIELDS))}), got {field!r}"
+                    f"({', '.join(sorted(_EDGE_METADATA_FIELDS))}), got {field!r}",
                 )
             break
         # A collision word (also a row field) needs the ``edge`` marker to mean the
@@ -580,10 +588,14 @@ def edge_metadata(
         ):
             break
         op = required_token(
-            tokens, field_index + 1, f"expected operation for edge metadata {field}"
+            tokens,
+            field_index + 1,
+            f"expected operation for edge metadata {field}",
         ).lower()
         value = required_token(
-            tokens, field_index + 2, f"expected value for edge metadata {field}"
+            tokens,
+            field_index + 2,
+            f"expected value for edge metadata {field}",
         )
         if field == "priority":
             if op != "to":
@@ -603,7 +615,7 @@ def edge_metadata(
                 # raw ValueError leaking a Python traceback to the CLI (mirrors
                 # ``priority``'s int check).
                 raise ClientError(
-                    f"edge valence must be a number, got {value!r}"
+                    f"edge valence must be a number, got {value!r}",
                 ) from None
         else:
             # ``label`` / ``labels``: the membership check above leaves
@@ -677,7 +689,7 @@ def consume_ref(
                 expected_kind=parse_kind(head),
             ), 2
         raise ClientError(
-            f"expected seq number or uuid after kind {head!r}, got {seq_token!r}"
+            f"expected seq number or uuid after kind {head!r}, got {seq_token!r}",
         )
     raise ClientError(f"cannot parse reference at {head!r}")
 
@@ -732,7 +744,7 @@ def consume_edge_target(args: Sequence[str], pos: int = 0) -> tuple[EdgeTarget, 
         ):
             raise ClientError(
                 f"inline create for {head!r} must lead with a field, not "
-                f"{next_tok!r}; write a field (e.g. 'title to ...') first"
+                f"{next_tok!r}; write a field (e.g. 'title to ...') first",
             )
     return consume_ref(args, pos)
 
@@ -753,7 +765,10 @@ def consume_edge_target(args: Sequence[str], pos: int = 0) -> tuple[EdgeTarget, 
 # When ``grouped`` (inside ``begin ... end``) it also stops at ``end`` so the parent can
 # fan out. At least one field is required.
 def _consume_inline_create(
-    args: Sequence[str], pos: int, *, grouped: bool = False
+    args: Sequence[str],
+    pos: int,
+    *,
+    grouped: bool = False,
 ) -> tuple[InlineCreate, int]:
     """Consume ``kind`` then the node's fields, costs, metadata, and edges."""
     # Bounds + kind validity: reached via ``begin <kind> ...`` and the inline
@@ -808,7 +823,7 @@ def _consume_inline_create(
                 raise ClientError(
                     f"inline create field {word!r} appears after an edge; a node's "
                     f"fields must precede its outgoing edges -- move {word!r} before "
-                    f"the edge"
+                    f"the edge",
                 )
             cursor = _consume_inline_field(args, cursor, fields)
             continue
@@ -834,7 +849,7 @@ def _consume_inline_create(
 
     if not fields:
         raise ClientError(
-            f"inline create for {args[pos]!r} requires at least one field"
+            f"inline create for {args[pos]!r} requires at least one field",
         )
     return InlineCreate(
         kind=kind,
@@ -850,7 +865,9 @@ def _consume_inline_create(
 # ``kind seq`` ref. A scalar re-set, or a list re-seeded with ``to`` after it holds
 # values, is the author clobbering their own input and raises.
 def _consume_inline_field(
-    args: Sequence[str], cursor: int, fields: list[SetField]
+    args: Sequence[str],
+    cursor: int,
+    fields: list[SetField],
 ) -> int:
     """Consume one inline-create field at ``cursor``; return the new cursor."""
     field = args[cursor].lower()
@@ -874,7 +891,9 @@ def _consume_inline_field(
         fields[:] = _append_inline_list_value(fields, parsed_field, ref, existing)
         return cursor + 2 + consumed
     value = required_token(
-        args, cursor + 2, f"expected value for inline create field {field}"
+        args,
+        cursor + 2,
+        f"expected value for inline create field {field}",
     )
     if is_list_field:
         fields[:] = _append_inline_list_value(fields, parsed_field, value, existing)
@@ -942,7 +961,8 @@ def _scan_clauses(tokens: Sequence[str]) -> Iterator[_Clause]:
         op_next = token(tokens, index + 1)
         op_next_lower = op_next.lower() if op_next is not None else None
         if token_text in KIND_LOWER and not _is_mutation_head(
-            token_text, op_next_lower
+            token_text,
+            op_next_lower,
         ):
             # A token that is both a kind keyword and a list field (only
             # ``codechange``) is a bare kind ONLY when no mutation operator
@@ -963,10 +983,12 @@ def _scan_clauses(tokens: Sequence[str]) -> Iterator[_Clause]:
             else:
                 if index + 2 >= len(tokens):
                     raise ClientError(
-                        f"expected value for filter field {tokens[index]!r}"
+                        f"expected value for filter field {tokens[index]!r}",
                     )
                 yield _FilterClause(
-                    field=token_text, op=op_value, value=tokens[index + 2]
+                    field=token_text,
+                    op=op_value,
+                    value=tokens[index + 2],
                 )
                 index += 3
         elif _is_mutation_head(token_text, op_next_lower):
@@ -1000,7 +1022,7 @@ def _as_bulk_action(action: Action) -> SetField | AddList | RemoveList:
     if isinstance(action, SetField | AddList | RemoveList):
         return action
     raise ClientError(
-        "bulk apply supports only field mutations (FIELD to/add/del VALUE)"
+        "bulk apply supports only field mutations (FIELD to/add/del VALUE)",
     )
 
 
@@ -1019,7 +1041,9 @@ def _parse_metric_mask(tokens: Sequence[str], index: int) -> tuple[MetricMask, i
         return MetricMask(field="key", op="is", value=head), index + 1
     field = cast(Literal["key", "step", "value"], head.lower())
     op = required_token(
-        tokens, index + 1, f"expected an operator after {field!r}"
+        tokens,
+        index + 1,
+        f"expected an operator after {field!r}",
     ).lower()
     # Step-axis reductions: highest/lowest step per key ("final"/"first"). They
     # take no value and apply only to the ``step`` axis (metric-grammar.md
@@ -1055,7 +1079,7 @@ def _parse_metric_limit(token_text: str) -> int:
         limit = int(token_text)
     except ValueError:
         raise ClientError(
-            f"limit must be a positive integer, got {token_text!r}"
+            f"limit must be a positive integer, got {token_text!r}",
         ) from None
     if limit <= 0:
         raise ClientError(f"limit must be a positive integer, got {token_text!r}")
@@ -1123,13 +1147,15 @@ def _kinds_owning(
     if not kinds:
         raise ClientError(
             "no kind carries every filtered field: "
-            + ", ".join(repr(field) for field, _op, _value in filters)
+            + ", ".join(repr(field) for field, _op, _value in filters),
         )
     return kinds
 
 
 def _parse_scalar_action(
-    tokens: Sequence[str], index: int, field: str
+    tokens: Sequence[str],
+    index: int,
+    field: str,
 ) -> tuple[Action, int]:
     op = token(tokens, index + 1)
     op_lower = op.lower() if op is not None else None
@@ -1144,7 +1170,9 @@ def _parse_scalar_action(
 
 
 def _parse_cost_action(
-    tokens: Sequence[str], index: int, field: str
+    tokens: Sequence[str],
+    index: int,
+    field: str,
 ) -> tuple[Action, int]:
     op = token(tokens, index + 1)
     if op is None:
@@ -1163,7 +1191,9 @@ def _parse_cost_action(
 
 
 def _parse_list_action(
-    tokens: Sequence[str], index: int, field: str
+    tokens: Sequence[str],
+    index: int,
+    field: str,
 ) -> tuple[Action, int]:
     op = token(tokens, index + 1)
     op_lower = op.lower() if op is not None else None
@@ -1214,7 +1244,7 @@ def _parse_relation_or_edge(
     edge = EDGE_ALIASES.get(word)
     if edge is None:
         raise ClientError(
-            f"{word!r} is a relation, not an edge; it does not accept a ref"
+            f"{word!r} is a relation, not an edge; it does not accept a ref",
         )
     return _parse_edge_action(tokens, index, edge)
 
@@ -1229,7 +1259,8 @@ def _parse_edge_action(
     # collision words are accepted bare here. ``narrows priority to high issue 3``
     # == ``narrows issue 3 edge priority to high``.
     pre_meta, pre_consumed = edge_metadata(
-        tokens[index + 1 :], allow_bare_collision=True
+        tokens[index + 1 :],
+        allow_bare_collision=True,
     )
     target_start = index + 1 + pre_consumed
     target, consumed = consume_edge_target(tokens, target_start)
@@ -1241,7 +1272,10 @@ def _parse_edge_action(
         if pre_meta:
             raise ClientError("cannot combine edge metadata with 'del'")
         return EdgeAction(
-            edge=edge, target=target, metadata={}, remove=True
+            edge=edge,
+            target=target,
+            metadata={},
+            remove=True,
         ), pre_consumed + consumed + 2
     # An inline-create target captures metadata written right after its fields as
     # THIS edge's annotation (the edge that produced the node -- the deepest edge so
@@ -1287,7 +1321,7 @@ def _apply_valence_alias(edge: Edge, metadata: dict[str, object]) -> dict[str, o
         polarity = "'dis...'" if edge.valence_negate else "a citation"
         raise ClientError(
             f"{polarity} edge takes a non-negative valence "
-            f"(the spelling sets the for/against polarity); got {value}"
+            f"(the spelling sets the for/against polarity); got {value}",
         )
     metadata["valence"] = -value if edge.valence_negate else value
     return metadata

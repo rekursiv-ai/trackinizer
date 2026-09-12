@@ -222,7 +222,7 @@ def _try_once(argv: Sequence[str], path: Path, source_version: str) -> Response 
             return Response.from_json(read_frame(conn))
         except (OSError, ValueError, ConnectionError) as err:
             raise DaemonRequestLostError(
-                f"the daemon accepted this command but did not report its result: {err}"
+                f"the daemon accepted this command but did not report its result: {err}",
             ) from err
     finally:
         conn.close()

@@ -182,11 +182,11 @@ class TestSubmitModels:
         for bad in (math.nan, math.inf, -math.inf):
             with pytest.raises(ValidationError, match="finite"):
                 SubmitIssue.model_validate(
-                    {"title": "x", "marginal_cost": {"agent_usd": bad}}
+                    {"title": "x", "marginal_cost": {"agent_usd": bad}},
                 )
             with pytest.raises(ValidationError, match="finite"):
                 SubmitIssue.model_validate(
-                    {"title": "x", "marginal_cost": {"resource_usd": bad}}
+                    {"title": "x", "marginal_cost": {"resource_usd": bad}},
                 )
 
     def test_blank_optional_scalars_clear_to_none(self) -> None:
@@ -358,7 +358,7 @@ class TestSubmitBatch:
                 items=[
                     SubmitIssue(title="a", idempotency_key=key),
                     SubmitIssue(title="b", idempotency_key=key),
-                ]
+                ],
             )
 
     def test_reports_duplicate_idempotency_key_indexes(self) -> None:
@@ -376,7 +376,7 @@ class TestSubmitBatch:
                     SubmitIssue(title="b", idempotency_key=key),
                     SubmitIssue(title="c", idempotency_key=new_uuid()),
                     SubmitIssue(title="d", idempotency_key=key),
-                ]
+                ],
             )
 
     def test_accepts_distinct_idempotency_keys(self) -> None:
@@ -384,7 +384,7 @@ class TestSubmitBatch:
             items=[
                 SubmitIssue(title="a", idempotency_key=new_uuid()),
                 SubmitIssue(title="b", idempotency_key=new_uuid()),
-            ]
+            ],
         )
         assert len(batch.items) == 2
 
