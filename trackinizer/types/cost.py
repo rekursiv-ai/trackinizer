@@ -160,7 +160,8 @@ class TokenCount:
             input_tokens=max(0, self.input_tokens - other.input_tokens),
             output_tokens=max(0, self.output_tokens - other.output_tokens),
             cache_creation_tokens=max(
-                0, self.cache_creation_tokens - other.cache_creation_tokens
+                0,
+                self.cache_creation_tokens - other.cache_creation_tokens,
             ),
             cache_read_tokens=max(0, self.cache_read_tokens - other.cache_read_tokens),
         )

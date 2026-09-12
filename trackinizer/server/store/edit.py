@@ -82,13 +82,19 @@ class _EditMixin(_CascadeAuditMixin):
             tx(conn),
         ):
             replay = await self._replay_field_change(
-                conn, target_id, "title", actor=actor
+                conn,
+                target_id,
+                "title",
+                actor=actor,
             )
             if replay is not None:
                 return replay
             row = await self._read_field(conn, target_id, "title")
             replay = await self._replay_field_change(
-                conn, target_id, "title", actor=actor
+                conn,
+                target_id,
+                "title",
+                actor=actor,
             )
             if replay is not None:
                 return replay
@@ -123,7 +129,9 @@ class _EditMixin(_CascadeAuditMixin):
         """Read ``<column>, kind`` for one inquiry under a row lock."""
         row = await conn.fetchrow(
             vetted_sql(
-                "SELECT ", column, ", kind FROM inquiries WHERE id = $1 FOR UPDATE"
+                "SELECT ",
+                column,
+                ", kind FROM inquiries WHERE id = $1 FOR UPDATE",
             ),
             target_id,
         )
@@ -132,7 +140,7 @@ class _EditMixin(_CascadeAuditMixin):
         if expected_kinds is not None and row["kind"] not in expected_kinds:
             raise ConflictError(
                 f"inquiry {target_id} is a {row['kind']}; "
-                f"{column} is only valid on {sorted(expected_kinds)}"
+                f"{column} is only valid on {sorted(expected_kinds)}",
             )
         return row
 
@@ -166,7 +174,7 @@ class _EditMixin(_CascadeAuditMixin):
         ):
             return client_change_id
         raise ConflictError(
-            f"idempotency_key {client_change_id} already used for a different operation"
+            f"idempotency_key {client_change_id} already used for a different operation",
         )
 
     # Re-enforces ``ColumnSpec.immutable`` at the root write path so any future setter
@@ -184,7 +192,7 @@ class _EditMixin(_CascadeAuditMixin):
         if spec.immutable:
             raise ConflictError(
                 f"{column!r} is immutable; correct by supersession "
-                "(submit a fresh row), not in-place edit"
+                "(submit a fresh row), not in-place edit",
             )
         # The one place "unset is NULL" is enforced for every UPDATE path:
         # _set_field, the list add/remove path, and set_source all funnel
@@ -276,7 +284,7 @@ class _EditMixin(_CascadeAuditMixin):
         if spec.immutable:
             raise ConflictError(
                 f"{column!r} is immutable; correct by supersession "
-                "(submit a fresh row), not in-place edit"
+                "(submit a fresh row), not in-place edit",
             )
         hooks = RUNTIME_HOOKS.get(column, NO_HOOKS)
         expected = (
@@ -315,15 +323,24 @@ class _EditMixin(_CascadeAuditMixin):
             tx(conn),
         ):
             replay = await self._replay_field_change(
-                conn, target_id, cast(Change.Kind, column), actor=actor
+                conn,
+                target_id,
+                cast(Change.Kind, column),
+                actor=actor,
             )
             if replay is not None:
                 return replay
             row = await self._read_field(
-                conn, target_id, column, expected_kinds=expected
+                conn,
+                target_id,
+                column,
+                expected_kinds=expected,
             )
             replay = await self._replay_field_change(
-                conn, target_id, cast(Change.Kind, column), actor=actor
+                conn,
+                target_id,
+                cast(Change.Kind, column),
+                actor=actor,
             )
             if replay is not None:
                 return replay
@@ -336,7 +353,7 @@ class _EditMixin(_CascadeAuditMixin):
                 await self._update_field(conn, target_id, column, storage_value)
             except asyncpg.CheckViolationError as exc:
                 raise ConflictError(
-                    f"check constraint violated: {exc.detail or exc!s}"
+                    f"check constraint violated: {exc.detail or exc!s}",
                 ) from exc
             # ``old_value`` is None when subscribers was unset (NULL); the
             # notify fan-out wants the concrete pre-edit set, so coalesce.
@@ -402,7 +419,8 @@ class _EditMixin(_CascadeAuditMixin):
 
         """
         expected_owner = cast(
-            Inquiry.Actor | None, empty_optional_to_none(expected_from)
+            Inquiry.Actor | None,
+            empty_optional_to_none(expected_from),
         )
         new_owner = cast(Inquiry.Actor | None, empty_optional_to_none(to))
         async with (
@@ -411,13 +429,19 @@ class _EditMixin(_CascadeAuditMixin):
             tx(conn),
         ):
             replay = await self._replay_field_change(
-                conn, target_id, "owner", actor=actor
+                conn,
+                target_id,
+                "owner",
+                actor=actor,
             )
             if replay is not None:
                 return replay
             row = await self._read_field(conn, target_id, "owner")
             replay = await self._replay_field_change(
-                conn, target_id, "owner", actor=actor
+                conn,
+                target_id,
+                "owner",
+                actor=actor,
             )
             if replay is not None:
                 return replay
@@ -425,7 +449,7 @@ class _EditMixin(_CascadeAuditMixin):
             if current != expected_owner:
                 raise ConflictError(
                     f"owner transition rejected: expected {expected_owner!r}, "
-                    f"found {current!r}"
+                    f"found {current!r}",
                 )
             if current == new_owner:
                 return None
@@ -543,13 +567,19 @@ class _EditMixin(_CascadeAuditMixin):
             tx(conn),
         ):
             replay = await self._replay_field_change(
-                conn, target_id, "status", actor=actor
+                conn,
+                target_id,
+                "status",
+                actor=actor,
             )
             if replay is not None:
                 return replay
             row = await self._read_field(conn, target_id, "status")
             replay = await self._replay_field_change(
-                conn, target_id, "status", actor=actor
+                conn,
+                target_id,
+                "status",
+                actor=actor,
             )
             if replay is not None:
                 return replay
@@ -557,7 +587,7 @@ class _EditMixin(_CascadeAuditMixin):
             if current != expected_from:
                 raise ConflictError(
                     f"status transition rejected: expected {expected_from!r}, "
-                    f"found {current!r}"
+                    f"found {current!r}",
                 )
             if expected_from == to:
                 return None
@@ -630,7 +660,10 @@ class _EditMixin(_CascadeAuditMixin):
             tx(conn),
         ):
             replay = await self._replay_field_change(
-                conn, target_id, "belief_judgement", actor=actor
+                conn,
+                target_id,
+                "belief_judgement",
+                actor=actor,
             )
             if replay is not None:
                 return replay
@@ -641,7 +674,10 @@ class _EditMixin(_CascadeAuditMixin):
                 expected_kinds=frozenset({"Belief"}),
             )
             replay = await self._replay_field_change(
-                conn, target_id, "belief_judgement", actor=actor
+                conn,
+                target_id,
+                "belief_judgement",
+                actor=actor,
             )
             if replay is not None:
                 return replay
@@ -649,7 +685,7 @@ class _EditMixin(_CascadeAuditMixin):
             if current != expected_from:
                 raise ConflictError(
                     f"judgement transition rejected: expected {expected_from!r}, "
-                    f"found {current!r}"
+                    f"found {current!r}",
                 )
             if expected_from == to:
                 return None
@@ -886,13 +922,19 @@ class _EditMixin(_CascadeAuditMixin):
             else None
         )
         replay = await self._replay_field_change(
-            conn, target_id, cast(Change.Kind, column), actor=actor
+            conn,
+            target_id,
+            cast(Change.Kind, column),
+            actor=actor,
         )
         if replay is not None:
             return replay
         row = await self._read_field(conn, target_id, column, expected_kinds=expected)
         replay = await self._replay_field_change(
-            conn, target_id, cast(Change.Kind, column), actor=actor
+            conn,
+            target_id,
+            cast(Change.Kind, column),
+            actor=actor,
         )
         if replay is not None:
             return replay
@@ -951,7 +993,7 @@ class _EditMixin(_CascadeAuditMixin):
             )
         except asyncpg.CheckViolationError as exc:
             raise ConflictError(
-                f"check constraint violated: {exc.detail or exc!s}"
+                f"check constraint violated: {exc.detail or exc!s}",
             ) from exc
         extra_subs = working if hooks.notify_old_subscribers else ()
         change_id, _ = await self._emit_field_change(
@@ -1093,7 +1135,7 @@ class _EditMixin(_CascadeAuditMixin):
         if value is not None and value.strip() and not is_valid_source(value):
             raise ConflictError(
                 "source must be a scheme-tagged identifier '<scheme>:<rest>' "
-                f"(e.g. arXiv:2405.16391, doi:10.1/x); got {value!r}"
+                f"(e.g. arXiv:2405.16391, doi:10.1/x); got {value!r}",
             )
         return await self._set_field(
             target_id,
@@ -1445,7 +1487,9 @@ class _EditMixin(_CascadeAuditMixin):
             actor=actor,
             include=True,
             validate_item=lambda conn: validate_list_references(
-                conn, [codechange_id], column="experiment_codechanges"
+                conn,
+                [codechange_id],
+                column="experiment_codechanges",
             ),
         )
 
@@ -1663,7 +1707,10 @@ class _EditMixin(_CascadeAuditMixin):
             tx(conn),
         ):
             replay = await self._replay_field_change(
-                conn, target_id, "marginal_cost", actor=actor
+                conn,
+                target_id,
+                "marginal_cost",
+                actor=actor,
             )
             if replay is not None:
                 return replay
@@ -1677,7 +1724,10 @@ class _EditMixin(_CascadeAuditMixin):
             if kind is None:
                 raise NotFoundError(f"inquiry {target_id} not found")
             replay = await self._replay_field_change(
-                conn, target_id, "marginal_cost", actor=actor
+                conn,
+                target_id,
+                "marginal_cost",
+                actor=actor,
             )
             if replay is not None:
                 return replay
@@ -1736,7 +1786,10 @@ class _EditMixin(_CascadeAuditMixin):
             tx(conn),
         ):
             replay = await self._replay_field_change(
-                conn, target_id, "marginal_cost", actor=actor
+                conn,
+                target_id,
+                "marginal_cost",
+                actor=actor,
             )
             if replay is not None:
                 return replay
@@ -1751,7 +1804,10 @@ class _EditMixin(_CascadeAuditMixin):
             if row is None:
                 raise NotFoundError("inquiry not found")
             replay = await self._replay_field_change(
-                conn, target_id, "marginal_cost", actor=actor
+                conn,
+                target_id,
+                "marginal_cost",
+                actor=actor,
             )
             if replay is not None:
                 return replay

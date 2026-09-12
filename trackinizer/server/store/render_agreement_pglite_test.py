@@ -121,7 +121,10 @@ def _timestamps() -> tuple[datetime, ...]:
 # for that row -- which is the whole claim, and is not the same object for
 # ``±infinity``, where asyncpg returns a naive datetime.
 async def _rendered(
-    engine: PGliteEngine, sql_type: str, template: str, values: Sequence[object]
+    engine: PGliteEngine,
+    sql_type: str,
+    template: str,
+    values: Sequence[object],
 ) -> list[tuple[object, str | None]]:
     """Render every value through ``template`` on a real engine."""
     async with engine.acquire() as conn:

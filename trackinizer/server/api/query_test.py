@@ -118,7 +118,8 @@ class TestRoutes:
         r = client.get("/api/inquiries", params={"kind": "Issue", "seq_range": "0.."})
         assert r.status_code == 400
         r = client.get(
-            "/api/inquiries", params={"kind": "Issue", "seq_range": "foo..5"}
+            "/api/inquiries",
+            params={"kind": "Issue", "seq_range": "foo..5"},
         )
         assert r.status_code == 400
         r = client.get("/api/inquiries", params={"kind": "Issue", "seq_range": ".."})
@@ -295,7 +296,8 @@ class TestRoutes:
         client, _store, _engine = route_client
         # Non-JSON body.
         r = client.get(
-            "/api/inquiries", params=[("kind", "Issue"), ("filter", "not-json")]
+            "/api/inquiries",
+            params=[("kind", "Issue"), ("filter", "not-json")],
         )
         assert r.status_code == 400, r.text
         # Unknown op.
@@ -520,7 +522,7 @@ class TestRoutes:
             return_value=[
                 {"id": a, "kind": "WebResult"},
                 {"id": b, "kind": "Paper"},
-            ]
+            ],
         )
         r = client.post("/api/inquiries/lookup", json=[str(a), str(b)])
         assert r.status_code == 200
@@ -608,7 +610,10 @@ class TestRoutes:
 
 class TestCoverageRoutesAndCli:
     def _row(
-        self, target_id: uuid.UUID, *, kind: Inquiry.InquiryKind = "Issue"
+        self,
+        target_id: uuid.UUID,
+        *,
+        kind: Inquiry.InquiryKind = "Issue",
     ) -> dict[str, Any]:
         now = datetime.now(UTC)
         row: dict[str, Any] = {
@@ -765,7 +770,7 @@ _QUERY_VALUES = st.sampled_from(
         "Belief",
         "NotAKind",
         "",
-    ]
+    ],
 )
 
 

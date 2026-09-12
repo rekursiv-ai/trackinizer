@@ -107,13 +107,17 @@ async def read_metrics_route(
     """
     if limit < 1 or limit > MAX_LIST_LIMIT:
         raise HTTPException(
-            status_code=400, detail=f"limit must be in [1, {MAX_LIST_LIMIT}]"
+            status_code=400,
+            detail=f"limit must be in [1, {MAX_LIST_LIMIT}]",
         )
     if offset < 0:
         raise HTTPException(status_code=400, detail="offset must be >= 0")
     store = get_store(request)
     points = await store.read_metrics(
-        experiment_id, key=key, limit=limit, offset=offset
+        experiment_id,
+        key=key,
+        limit=limit,
+        offset=offset,
     )
     return ReadMetricsResponse(points=points)
 
@@ -140,7 +144,10 @@ async def query_metrics_route(
     """
     store = get_store(request)
     rows = await store.query_metrics(
-        [experiment_id], masks=body.masks, sort=body.sort, limit=body.limit
+        [experiment_id],
+        masks=body.masks,
+        sort=body.sort,
+        limit=body.limit,
     )
     return MetricQueryResponse(points=[point for _eid, point in rows])
 
@@ -172,7 +179,9 @@ async def write_metrics_route(
         raise HTTPException(status_code=400, detail="write requires a 'to' value")
     store = get_store(request)
     written = await store.write_metrics_masked(
-        experiment_id, masks=body.masks, value=body.write
+        experiment_id,
+        masks=body.masks,
+        value=body.write,
     )
     return MetricWriteResponse(written=written)
 
@@ -203,5 +212,5 @@ async def rank_metrics_route(
         limit=body.query.limit,
     )
     return MetricRankResponse(
-        rows=[MetricRankRow(experiment_id=eid, point=point) for eid, point in rows]
+        rows=[MetricRankRow(experiment_id=eid, point=point) for eid, point in rows],
     )

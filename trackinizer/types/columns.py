@@ -246,7 +246,8 @@ def flat_column_specs(cls: type[DataclassInstance]) -> dict[str, FlatColumn]:
             continue
         for axis, axis_type in _resolved_annotations(spec.flatten).items():
             out[f"{spec.flatten_prefix}{axis}"] = FlatColumn(
-                spec=spec, value_type=axis_type
+                spec=spec,
+                value_type=axis_type,
             )
     return out
 

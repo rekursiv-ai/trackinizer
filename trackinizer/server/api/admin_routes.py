@@ -92,7 +92,7 @@ async def admin_list_users_route(
     async with engine.acquire() as conn:
         rows = await conn.fetch(
             "SELECT id, email, name, role, status, created_at, last_login "
-            "FROM users ORDER BY created_at DESC, id DESC"
+            "FROM users ORDER BY created_at DESC, id DESC",
         )
     return {"users": [_serialize_user(dict(row)) for row in rows]}
 
@@ -282,7 +282,7 @@ async def admin_list_allowlist_route(
     async with engine.acquire() as conn:
         rows = await conn.fetch(
             "SELECT email_or_pattern, role, added_by, added_at "
-            "FROM allowlist ORDER BY added_at DESC, email_or_pattern"
+            "FROM allowlist ORDER BY added_at DESC, email_or_pattern",
         )
     return {"entries": [_serialize_allowlist(dict(row)) for row in rows]}
 

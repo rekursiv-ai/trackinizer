@@ -89,7 +89,8 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
             _ = stream.write(record.text)
         return
     declared = next(
-        (record for record in ordered if isinstance(record, TurnContext)), TurnContext()
+        (record for record in ordered if isinstance(record, TurnContext)),
+        TurnContext(),
     )
     stored = dict(json_unfreeze(declared.extra))
     compact = bool(stored.pop("$compact", False))
@@ -129,19 +130,21 @@ def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
                 content=StrCodec.coerce(message.get("content")),
                 timestamp=decode_or_none(str, message.get("$timestamp")),
                 extra=json_freeze(residual(message, ("type", "content", "$timestamp"))),
-            )
+            ),
         ]
     if kind != "gemini":
         return [
             UncategorizedRecord(
                 kind=kind,
                 payload=json_freeze(DictCodec.coerce(message)),
-            )
+            ),
         ]
     calls = ListCodec.coerce(message.get("toolCalls"))
     stamp = decode_or_none(str, message.get("$timestamp"))
     kept = dict(
-        json_unfreeze(residual(message, ("type", "content", "toolCalls", "$timestamp")))
+        json_unfreeze(
+            residual(message, ("type", "content", "toolCalls", "$timestamp"))
+        ),
     )
     if "toolCalls" in message and not calls:
         # Axiom 2: an empty list is a VALUE, not absence. The writer rebuilds
@@ -161,10 +164,10 @@ def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
                 name=StrCodec.coerce(DictCodec.coerce(call).get("name")),
                 timestamp=stamp,
                 arguments=json_freeze(
-                    DictCodec.coerce(DictCodec.coerce(call).get("args"))
+                    DictCodec.coerce(DictCodec.coerce(call).get("args")),
                 ),
                 extra=json_freeze(
-                    residual(DictCodec.coerce(call), ("id", "name", "args"))
+                    residual(DictCodec.coerce(call), ("id", "name", "args")),
                 ),
             )
             for call in calls
@@ -191,7 +194,7 @@ def _write_messages(records: Iterable[SessionRecord]) -> list[dict[str, JSONValu
                             {"$timestamp": record.timestamp} if record.timestamp else {}
                         ),
                         **json_unfreeze(record.extra),
-                    }
+                    },
                 )
             case AssistantMessage():
                 extra = dict(json_unfreeze(record.extra))
@@ -205,7 +208,7 @@ def _write_messages(records: Iterable[SessionRecord]) -> list[dict[str, JSONValu
                         ),
                         **extra,
                         **({"toolCalls": []} if empty_calls else {}),
-                    }
+                    },
                 )
             case ToolCall():
                 # A call belongs to the turn that made it: gemini nests them,
@@ -286,7 +289,8 @@ def _read(text: str) -> list[SessionRecord]:
         json.dumps(decoded, ensure_ascii=False, separators=(",", ":")) == text
     )
     out[0] = TurnContext(
-        encoding=json_freeze({"newline_terminated": True}), extra=json_freeze(extra)
+        encoding=json_freeze({"newline_terminated": True}),
+        extra=json_freeze(extra),
     )
     for message in messages:
         out.extend(_read_message(DictCodec.coerce(message)))

@@ -469,7 +469,7 @@ class Inquiry:
         missing = [col for col in base_row_columns if col not in row]
         if missing:
             raise ValueError(
-                f"{cls.__name__}.from_row: row missing base columns {missing}"
+                f"{cls.__name__}.from_row: row missing base columns {missing}",
             )
         kwargs: dict[str, Any] = {
             "id": row["id"],
@@ -541,7 +541,7 @@ _TUPLE_COLUMNS: frozenset[str] = frozenset(
         "issue_kind",
         "rooms",
         "authors",
-    }
+    },
 )
 
 

@@ -53,7 +53,7 @@ class TestTx:
                     Notification(
                         engine=cast(DatabaseEngine, engine),
                         subject_id=new_uuid(),
-                    )
+                    ),
                 )
                 raise ValueError("boom")
 
@@ -73,8 +73,8 @@ class TestTx:
                 Notification(
                     engine=cast(DatabaseEngine, engine),
                     subject_id=new_uuid(),
-                )
-            ]
+                ),
+            ],
         )
 
     @pytest.mark.asyncio
@@ -95,7 +95,7 @@ class TestTx:
                 Notification(engine=cast(DatabaseEngine, engine), subject_id=a),
                 Notification(engine=cast(DatabaseEngine, engine), subject_id=b),
                 Notification(engine=cast(DatabaseEngine, engine), subject_id=a),
-            ]
+            ],
         )
         published = {json.loads(payload)["id"] for _, payload in engine.notify_calls}
         assert published == {str(a), str(b)}
@@ -107,7 +107,8 @@ class TestTx:
 class TestSseEvents:
     @pytest.mark.asyncio
     async def test_malformed_payload_is_logged_not_silently_dropped(
-        self, caplog: pytest.LogCaptureFixture
+        self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         # A malformed NOTIFY payload (not JSON, or missing ``id``) is dropped
         # so one bad row can't kill the stream -- but it must be LOGGED, not

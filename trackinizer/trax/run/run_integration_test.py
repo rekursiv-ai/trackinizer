@@ -129,7 +129,9 @@ def _build_app(workdir: Path) -> FastAPI:
         app.state.startup_error = None
         try:
             async with PGliteEngine(
-                workdir=workdir, persist=False, extensions=("pgvector",)
+                workdir=workdir,
+                persist=False,
+                extensions=("pgvector",),
             ) as engine:
                 store = Store(engine, embed=StubEmbedder())
                 await store.bootstrap()
@@ -163,7 +165,10 @@ def _build_app(workdir: Path) -> FastAPI:
 
     async def _identity() -> AuthIdentity:
         return AuthIdentity(
-            user_id=uuid.uuid4(), api_key_id=None, email="ci@test", role="writer"
+            user_id=uuid.uuid4(),
+            api_key_id=None,
+            email="ci@test",
+            role="writer",
         )
 
     app.dependency_overrides[current_user] = _identity
@@ -312,7 +317,9 @@ def server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
 # ``fakeline`` / ``claude`` / ``codex``), keeping "latest" unambiguous instead of
 # picking up another test's session.
 def _latest_session_row(
-    base_url: str, *, cli: str | None = None
+    base_url: str,
+    *,
+    cli: str | None = None,
 ) -> dict[str, object] | None:
     """Return the most recently created AgentSession inquiry row, or ``None``."""
     with httpx2.Client(base_url=base_url, timeout=30.0) as http:
@@ -320,7 +327,8 @@ def _latest_session_row(
         # a small page (not limit=1) so the client-side ``cli`` filter has rows
         # to match even when a sibling test's session sorts newest.
         listing = http.get(
-            "/api/inquiries", params={"kind": "AgentSession", "limit": 50}
+            "/api/inquiries",
+            params={"kind": "AgentSession", "limit": 50},
         )
         listing.raise_for_status()
         rows = cast(list[dict[str, object]], listing.json())
@@ -338,7 +346,9 @@ def _latest_session_row(
 # Returns the raw record bodies so the caller asserts on ``kind`` / ``text`` without a
 # domain import.
 def _latest_session_records(
-    base_url: str, *, cli: str | None = None
+    base_url: str,
+    *,
+    cli: str | None = None,
 ) -> list[dict[str, object]]:
     """Read the most recently created session's IR records back over HTTP."""
     row = _latest_session_row(base_url, cli=cli)
@@ -495,7 +505,7 @@ def _skip_if_cli_unauthenticated(cli: str, rc: int, base_url: str) -> None:
         pytest.skip(
             f"{cli} exited {rc} with no model turn (commonly unauthenticated: "
             f"'{cli} login' required); the capture wiring is exercised by the "
-            "authenticated path and the fake-adapter unit tiers"
+            "authenticated path and the fake-adapter unit tiers",
         )
 
 
@@ -538,7 +548,8 @@ class _LineAdapter:
 
 @pytest.mark.cli_python_subprocess
 def test_capture_streams_incrementally_before_close(
-    server: str, tmp_path: Path
+    server: str,
+    tmp_path: Path,
 ) -> None:
     """Buffered events reach the server mid-run, not only at ``close``.
 
@@ -552,7 +563,9 @@ def test_capture_streams_incrementally_before_close(
     session_root.mkdir()
     adapter = _LineAdapter(session_root)
     sink = TrackinizerSink(
-        Client(base_url=server), adapter.name, flush_interval_sec=0.2
+        Client(base_url=server),
+        adapter.name,
+        flush_interval_sec=0.2,
     )
     stats = _Stats()
     config = RunConfig(cli_name=adapter.name, quiesce_seconds=0.5)
@@ -642,7 +655,12 @@ def test_inbound_injection_reaches_child_end_to_end(server: str) -> None:
     stop = threading.Event()
     poller = threading.Thread(
         target=lambda: _inbound_poll_loop(
-            client, sink, relay, stop, poll_interval=0.2, wait_sec=0.1
+            client,
+            sink,
+            relay,
+            stop,
+            poll_interval=0.2,
+            wait_sec=0.1,
         ),
         daemon=True,
     )
@@ -722,7 +740,7 @@ def _drive_real_cli_injection(
         out_r, out_w = os.pipe()
         resources.callback(os.close, out_r)
         output = resources.enter_context(
-            os.fdopen(out_w, "w", buffering=1, errors="replace")
+            os.fdopen(out_w, "w", buffering=1, errors="replace"),
         )
         stdin_r, stdin_w = os.pipe()
         resources.callback(os.close, stdin_w)
@@ -754,7 +772,12 @@ def _drive_real_cli_injection(
             threading.Thread(target=drain_out, daemon=True),
             threading.Thread(
                 target=lambda: _inbound_poll_loop(
-                    client, sink, relay, stop, poll_interval=0.3, wait_sec=0.1
+                    client,
+                    sink,
+                    relay,
+                    stop,
+                    poll_interval=0.3,
+                    wait_sec=0.1,
                 ),
                 daemon=True,
             ),
@@ -805,7 +828,8 @@ def _drive_real_cli_injection(
 
 @pytest.mark.parametrize("failure", ["", "enqueue", "session_start"])
 def test_injection_closes_resources_on_every_exit(
-    monkeypatch: pytest.MonkeyPatch, failure: str
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
 ) -> None:
     """Release pipe endpoints and workers, including partially completed setup."""
     client = Mock(spec=Client)
@@ -850,7 +874,9 @@ def test_injection_closes_resources_on_every_exit(
     real_thread = threading.Thread
 
     def record_thread(
-        *, target: Callable[[], object], daemon: bool
+        *,
+        target: Callable[[], object],
+        daemon: bool,
     ) -> threading.Thread:
         workers.append(real_thread(target=target, daemon=daemon))
         return workers[-1]
@@ -863,7 +889,12 @@ def test_injection_closes_resources_on_every_exit(
         with pytest.raises(RuntimeError, match=failure) if failure else nullcontext():
             assert (
                 _drive_real_cli_injection(
-                    "fake", [], "http://unused", "prompt", "reply", deadline_sec=0.0
+                    "fake",
+                    [],
+                    "http://unused",
+                    "prompt",
+                    "reply",
+                    deadline_sec=0.0,
                 )
                 is _InjectionResult.INCONCLUSIVE
             )
@@ -904,11 +935,11 @@ def _assert_injection_or_skip(cli: str, result: _InjectionResult) -> None:
     if result is _InjectionResult.UNAUTHENTICATED:
         pytest.skip(
             f"{cli} is unauthenticated ('{cli} login' required); the injection "
-            "wiring is exercised whenever the CLI can actually reply"
+            "wiring is exercised whenever the CLI can actually reply",
         )
     pytest.skip(
         f"{cli} produced no model turn before the deadline (slow or unavailable "
-        "model); the injection wiring is exercised whenever the CLI can reply"
+        "model); the injection wiring is exercised whenever the CLI can reply",
     )
 
 

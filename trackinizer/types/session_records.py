@@ -212,7 +212,8 @@ class SessionRecordRow:
 
         """
         return DataclassCodec.from_json(
-            _class_for(self.kind), json_unfreeze(self.payload)
+            _class_for(self.kind),
+            json_unfreeze(self.payload),
         )
 
 

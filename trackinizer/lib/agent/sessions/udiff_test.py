@@ -74,7 +74,8 @@ def diffs() -> tuple[tuple[str, str], ...]:
 
 
 @pytest.mark.parametrize(
-    "diff", [pytest.param(diff, id=name) for name, diff in diffs()]
+    "diff",
+    [pytest.param(diff, id=name) for name, diff in diffs()],
 )
 def test_a_diff_rebuilds_from_its_splices(diff: str) -> None:
     assert render_udiff(parse_udiff(diff)) == diff
@@ -177,7 +178,8 @@ def test_a_no_newline_marker_on_trailing_context_stays_there() -> None:
     ids=["insert", "delete", "two-lines", "terminated"],
 )
 def test_text_renders_with_the_termination_it_carries(
-    splice: Splice, rendered: str
+    splice: Splice,
+    rendered: str,
 ) -> None:
     r"""A last line lacking its newline is still a line, and stays that way.
 

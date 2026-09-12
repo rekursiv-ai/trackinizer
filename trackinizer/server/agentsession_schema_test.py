@@ -55,7 +55,8 @@ async def _sequence_exists(store: Store, name: str) -> bool:
     async with store.engine.acquire() as conn:
         return (
             await conn.fetchval(
-                "SELECT 1 FROM pg_class WHERE relkind = 'S' AND relname = $1", name
+                "SELECT 1 FROM pg_class WHERE relkind = 'S' AND relname = $1",
+                name,
             )
             is not None
         )
@@ -86,7 +87,9 @@ async def test_agentsession_lifecycle_writes_succeed(store: Store) -> None:
     """
     session_id = await store.submit_agentsession(
         SubmitAgentSession(
-            title="claude session", cli="claude", account="tester@example.com"
+            title="claude session",
+            cli="claude",
+            account="tester@example.com",
         ),
         api_key_id=None,
         actor="ci",
@@ -101,7 +104,7 @@ async def test_agentsession_lifecycle_writes_succeed(store: Store) -> None:
                 part=0,
                 idx=0,
                 record=UserMessage(content="hi"),
-            )
+            ),
         ],
     )
     assert written == 1
@@ -142,7 +145,9 @@ async def test_submit_agentsession_stamps_opening_api_key(store: Store) -> None:
         )
     session_id = await store.submit_agentsession(
         SubmitAgentSession(
-            title="claude session", cli="claude", account="tester@example.com"
+            title="claude session",
+            cli="claude",
+            account="tester@example.com",
         ),
         api_key_id=opener,
         actor="ci",
@@ -167,7 +172,9 @@ async def test_create_time_status_is_persisted(store: Store) -> None:
     """
     done = await store.submit_issue(
         SubmitIssue(
-            title="already done", status="complete", account="tester@example.com"
+            title="already done",
+            status="complete",
+            account="tester@example.com",
         ),
         api_key_id=None,
         actor="ci",

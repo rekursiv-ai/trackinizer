@@ -62,7 +62,7 @@ def _policy_exclude_clauses(
                 " AND p.edge_kind IN (",
                 kindset,
                 "))",
-            )
+            ),
         )
     return " ".join(clauses)
 
@@ -102,7 +102,8 @@ PROVES_BELIEF_SQL: Final[str] = vetted_sql(
     "    OR (t.kind NOT IN ('Belief', 'Experiment') AND t.status = 'active')"
     "  ) ",
     _policy_exclude_clauses(
-        subject_alias="t.id", policy_attr="invalidates_currency_on"
+        subject_alias="t.id",
+        policy_attr="invalidates_currency_on",
     ),
     " ORDER BY t.created",
 )

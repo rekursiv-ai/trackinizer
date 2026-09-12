@@ -91,7 +91,10 @@ class _StubStore:
         return [(c, self.subject_seq) for c in rows[:limit]]
 
     async def resolve_live_sessions(
-        self, actor: str, *, room: str | None = None
+        self,
+        actor: str,
+        *,
+        room: str | None = None,
     ) -> list[tuple[UUID, tuple[str, ...]]]:
         del room
         return [(sid, ()) for sid in self._live.get(actor, [])]
@@ -112,7 +115,7 @@ async def _run_sweep_until(
             inbound,
             page_size=page_size,
             sweep_interval_sec=0.01,
-        )
+        ),
     )
     try:
         deadline = asyncio.get_running_loop().time() + timeout_sec
@@ -150,7 +153,8 @@ class TestPushChanges:
 
     @pytest.mark.asyncio
     async def test_delivery_is_logged_for_diagnosis(
-        self, caplog: pytest.LogCaptureFixture
+        self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Each subscriber delivery emits one INFO naming change + subscriber.
 
@@ -165,7 +169,9 @@ class TestPushChanges:
 
         with caplog.at_level("INFO", logger="trackinizer.server.subscriber"):
             await _run_sweep_until(
-                store, inbound, lambda: inbound.pending(session_id) > 0
+                store,
+                inbound,
+                lambda: inbound.pending(session_id) > 0,
             )
 
         delivered = [r for r in caplog.records if "delivered change" in r.message]
@@ -276,7 +282,8 @@ class TestPushChanges:
                 return [(c, self.subject_seq) for c in self.changes]
 
         store = _StuckCursorStore(
-            changes=[change], live_sessions={"alice": [session_id]}
+            changes=[change],
+            live_sessions={"alice": [session_id]},
         )
         inbound = InboundQueue()
 
@@ -319,7 +326,9 @@ class TestPushChanges:
                     self.query_count += 1
                     raise RuntimeError("transient query failure")
                 return await super().what_changed_for_anyone(
-                    since, after_id=after_id, limit=limit
+                    since,
+                    after_id=after_id,
+                    limit=limit,
                 )
 
         store = _FlakyStore(changes=[_change()], live_sessions={"alice": [session_id]})
@@ -369,7 +378,7 @@ async def _run_failing_sweep(
             InboundQueue(),
             sweep_interval_sec=0.5,
             max_backoff_sec=max_backoff_sec,
-        )
+        ),
     )
     try:
         deadline = asyncio.get_running_loop().time() + 5.0
@@ -398,7 +407,8 @@ class TestFailureBackoff:
 
     @pytest.mark.asyncio
     async def test_repeated_failure_backs_off_exponentially(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Each consecutive failure must wait longer than the last."""
         store = _AlwaysFailingStore(changes=[], live_sessions={})
@@ -416,14 +426,19 @@ class TestFailureBackoff:
         store = _AlwaysFailingStore(changes=[], live_sessions={})
 
         delays = await _run_failing_sweep(
-            store, monkeypatch, attempts=12, max_backoff_sec=8.0
+            store,
+            monkeypatch,
+            attempts=12,
+            max_backoff_sec=8.0,
         )
 
         assert max(delays) <= 8.0, f"backoff exceeded its cap: {max(delays)}"
 
     @pytest.mark.asyncio
     async def test_one_traceback_per_outage(
-        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The stack is identical every attempt; only the first is diagnostic.
 
@@ -443,7 +458,8 @@ class TestFailureBackoff:
 
     @pytest.mark.asyncio
     async def test_recovery_is_announced(
-        self, caplog: pytest.LogCaptureFixture
+        self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Silence is ambiguous: suppressed failures look like health.
 
@@ -465,17 +481,22 @@ class TestFailureBackoff:
                     self.query_count += 1
                     raise ConnectionRefusedError(111, "Connection refused")
                 return await super().what_changed_for_anyone(
-                    since, after_id=after_id, limit=limit
+                    since,
+                    after_id=after_id,
+                    limit=limit,
                 )
 
         store = _RecoveringStore(
-            changes=[_change()], live_sessions={"alice": [session_id]}
+            changes=[_change()],
+            live_sessions={"alice": [session_id]},
         )
         inbound = InboundQueue()
 
         with caplog.at_level("INFO", logger="trackinizer.server.subscriber"):
             await _run_sweep_until(
-                store, inbound, lambda: inbound.pending(session_id) > 0
+                store,
+                inbound,
+                lambda: inbound.pending(session_id) > 0,
             )
 
         assert any("recovered" in r.getMessage() for r in caplog.records), (

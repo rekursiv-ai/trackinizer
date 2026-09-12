@@ -48,7 +48,8 @@ def rendered(fixture: Path) -> str:
     adapter: _Adapter = claude if fixture.name.startswith("claude") else codex
     stream = StringIO()
     normalized.denormalize(
-        adapter.normalize(StringIO(fixture.read_text(encoding="utf-8"))), stream
+        adapter.normalize(StringIO(fixture.read_text(encoding="utf-8"))),
+        stream,
     )
     return stream.getvalue()
 

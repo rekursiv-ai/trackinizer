@@ -39,7 +39,7 @@ def _statement_timeout_ms() -> int:
     timeout_ms = int(raw)
     if timeout_ms < 1:
         raise ValueError(
-            f"TRACKINIZER_SEARCH_TIMEOUT_MS must be a positive integer, got {raw!r}"
+            f"TRACKINIZER_SEARCH_TIMEOUT_MS must be a positive integer, got {raw!r}",
         )
     return timeout_ms
 

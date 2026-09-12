@@ -28,7 +28,7 @@ from trackinizer.trax.run.adapters.tail import Tail
 
 _ROLLOUT_NAME: Final = re.compile(
     r"rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-"
-    r"(?P<session_id>[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})"
+    r"(?P<session_id>[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})",
 )
 """A rollout's name: ``rollout-<ISO>-<uuid>``, the uuid being codex's own id."""
 

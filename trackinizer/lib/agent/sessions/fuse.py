@@ -89,7 +89,9 @@ def fuse(
             yield from stream
             continue
         prefix, boundary = _boundary(
-            stream, names[index] if index < len(names) else "", seam=seam
+            stream,
+            names[index] if index < len(names) else "",
+            seam=seam,
         )
         yield boundary
         yield from prefix
@@ -97,7 +99,9 @@ def fuse(
 
 
 def unfuse(
-    records: Iterable[SessionRecord], *, seam: str = "$seam"
+    records: Iterable[SessionRecord],
+    *,
+    seam: str = "$seam",
 ) -> Iterator[Iterator[SessionRecord]]:
     """Split a fused stream back into the files it was joined from.
 
@@ -163,7 +167,9 @@ def names_of(records: Iterable[SessionRecord], *, seam: str = "$seam") -> list[s
 
 
 def chain(
-    parts: Iterable[Sequence[SessionRecord]], *, forked_from: str = "forked_from_id"
+    parts: Iterable[Sequence[SessionRecord]],
+    *,
+    forked_from: str = "forked_from_id",
 ) -> list[Sequence[SessionRecord]]:
     """Return parts ordered by which one continues which.
 
@@ -231,7 +237,10 @@ def _declared(part: Sequence[SessionRecord]) -> dict[str, object]:
 
 
 def _named(
-    part: Iterator[SessionRecord], name: str, *, seam: str
+    part: Iterator[SessionRecord],
+    name: str,
+    *,
+    seam: str,
 ) -> Iterator[SessionRecord]:
     """Yield a part with its file name on the settings it opens with."""
     for index, record in enumerate(part):

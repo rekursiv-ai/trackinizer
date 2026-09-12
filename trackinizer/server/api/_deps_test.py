@@ -72,7 +72,7 @@ def _sample(annotation: object) -> object:
         # Reached only via a nested annotation (a tuple of optionals, say);
         # ``_samples`` is what expands a union at the field level.
         return _sample(
-            next(a for a in typing.get_args(annotation) if a is not type(None))
+            next(a for a in typing.get_args(annotation) if a is not type(None)),
         )
     if origin is tuple:
         return (_sample(typing.get_args(annotation)[0]),)
@@ -91,7 +91,7 @@ def _sample(annotation: object) -> object:
                 "n": 1,
                 "s": "x",
                 "none": None,
-            }
+            },
         }
     if origin is typing.Literal:
         return typing.get_args(annotation)[0]
@@ -119,7 +119,7 @@ def _sample(annotation: object) -> object:
             **{
                 field.name: _sample(field.type)
                 for field in dataclasses.fields(annotation)
-            }
+            },
         )
     raise AssertionError(f"no sample value for annotation {annotation!r}")
 
@@ -137,7 +137,7 @@ def _populated[T: Inquiry](subclass: type[T]) -> T:
                 field.name: _sample(hints[field.name])
                 for field in dataclasses.fields(subclass)
             },
-        )
+        ),
     )
 
 
@@ -214,12 +214,12 @@ class TestTagKind:
         # conversion leaves dataclass objects that json.dumps then rejects.
         peer = uuid4()
         issue = _issue(
-            produces=(InquiryEdge(id=peer, kind="Experiment", note=None, labels=None),)
+            produces=(InquiryEdge(id=peer, kind="Experiment", note=None, labels=None),),
         )
         payload = tag_kind(issue)
         assert payload is not None
         assert payload["produces"] == [
-            {"id": str(peer), "kind": "Experiment", "note": None, "labels": None}
+            {"id": str(peer), "kind": "Experiment", "note": None, "labels": None},
         ]
 
     @pytest.mark.parametrize("subclass", _KINDS)

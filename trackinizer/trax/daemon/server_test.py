@@ -105,7 +105,8 @@ class TestHandle:
         assert seen == [100]
 
     def test_applies_the_client_environment(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Identity resolves from the caller's env, never the daemon's."""
         monkeypatch.setenv("USER", "daemon-user")
@@ -118,7 +119,8 @@ class TestHandle:
         assert seen == ["caller"]
 
     def test_leaves_the_process_environment_untouched(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A request binds a ContextVar overlay; it never writes ``os.environ``.
 
@@ -131,7 +133,8 @@ class TestHandle:
         assert os.environ["USER"] == "daemon-user"
 
     def test_falls_back_to_the_process_environment_for_unforwarded_names(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Only a few names are forwarded; the rest still resolve normally."""
         monkeypatch.setenv("HOME", "/home/somebody")
@@ -161,7 +164,8 @@ class TestStreamCapture:
 
     def test_captures_an_argparse_error(self) -> None:
         response = handle(
-            make_request(["issue", "--format", "bogus"]), run=parse_and_run
+            make_request(["issue", "--format", "bogus"]),
+            run=parse_and_run,
         )
 
         assert response.exit_code != 0
@@ -203,7 +207,8 @@ class TestForwardedEnvironment:
     """
 
     def test_an_unset_forwarded_name_reads_as_unset(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("TRACKINIZER_PROFILE", "daemon-shell-profile")
         seen: list[str | None] = []
@@ -218,7 +223,8 @@ class TestForwardedEnvironment:
         )
 
     def test_an_unforwarded_name_still_falls_back(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``HOME`` and friends are process-wide by nature."""
         monkeypatch.setenv("HOME", "/home/somebody")
@@ -269,7 +275,8 @@ class TestConcurrentRequests:
         )
 
     def test_cwd_does_not_leak_between_concurrent_requests(
-        self, tmp_path_factory: pytest.TempPathFactory
+        self,
+        tmp_path_factory: pytest.TempPathFactory,
     ) -> None:
         """``field to @relative/path`` resolves against the caller's cwd."""
         dirs = [str(tmp_path_factory.mktemp(name)) for name in _ACTORS]

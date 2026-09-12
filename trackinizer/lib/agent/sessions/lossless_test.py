@@ -195,7 +195,7 @@ def test_codex_survives_a_malformed_nested_arguments_string() -> None:
         CODEX_META
         + "\n"
         + _codex_item(
-            '{"type":"function_call","call_id":"c","name":"n","arguments":"{"}'
+            '{"type":"function_call","call_id":"c","name":"n","arguments":"{"}',
         )
     )
 
@@ -218,7 +218,7 @@ def test_codex_keeps_the_spacing_of_a_nested_argument_string(arguments: str) -> 
         + "\n"
         + _codex_item(
             '{"type":"function_call","name":"n",'
-            '"arguments":"' + arguments + '","call_id":"c"}'
+            '"arguments":"' + arguments + '","call_id":"c"}',
         )
     )
 
@@ -235,7 +235,8 @@ def test_codex_keeps_the_spacing_of_a_nested_argument_string(arguments: str) -> 
     ],
 )
 def test_the_normalized_json_form_preserves_every_native_byte(
-    adapter: _Adapter, native: str
+    adapter: _Adapter,
+    native: str,
 ) -> None:
     # Native -> records -> JSON -> records -> native, the conversion path the
     # CLI exposes. Whatever the native adapters keep, JSON must keep too.
@@ -274,7 +275,7 @@ def test_codex_writes_raw_utf8(text: str) -> None:
         + "\n"
         + _codex_item(
             '{"type":"message","id":"u","role":"user",'
-            '"content":[{"type":"input_text","text":"' + text + '"}]}'
+            '"content":[{"type":"input_text","text":"' + text + '"}]}',
         )
     )
 
@@ -408,7 +409,7 @@ def test_codex_preserves_provider_dollar_keys() -> None:
         + "\n"
         + _codex_item(
             '{"type":"message","role":"user","content":[],'
-            '"$order":"provider","$parts":[99],"$foreign":true}'
+            '"$order":"provider","$parts":[99],"$foreign":true}',
         )
     )
 

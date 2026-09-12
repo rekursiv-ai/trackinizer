@@ -302,7 +302,7 @@ class _EdgeMixin(_CascadeAuditMixin):
         to_kind = from_kind if cite_peer_as_from else store_to_kind
         if require_to_kind is not None and to_kind != require_to_kind:
             raise ConflictError(
-                f"citation {to_id} declared as {require_to_kind} but is a {to_kind}"
+                f"citation {to_id} declared as {require_to_kind} but is a {to_kind}",
             )
         if not inserted:
             # The edge already exists: a submit-time citation always carries a

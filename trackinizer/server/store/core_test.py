@@ -316,7 +316,8 @@ class TestStoreBootstrap:
 
     @pytest.mark.asyncio
     async def test_bootstrap_retries_transient_connection_death(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A connection dropped mid-bootstrap retries on a fresh acquire.
 
@@ -326,7 +327,10 @@ class TestStoreBootstrap:
         reconnects, and the idempotent pass replays. Without the retry the first
         ``ConnectionDoesNotExistError`` propagates and bootstrap fails.
         """
-        monkeypatch.setattr("trackinizer.server.store.core.asyncio.sleep", AsyncMock())
+        monkeypatch.setattr(
+            "trackinizer.server.store.core.asyncio.sleep",
+            AsyncMock(),
+        )
         conn = make_conn()
         calls = {"n": 0}
         first_real_execute = conn.execute.side_effect
@@ -338,7 +342,7 @@ class TestStoreBootstrap:
             # healthy connection.
             if calls["n"] == 1:
                 raise asyncpg.exceptions.ConnectionDoesNotExistError(
-                    "connection was closed in the middle of operation"
+                    "connection was closed in the middle of operation",
                 )
             if first_real_execute is not None:
                 return await first_real_execute(sql, *args)
@@ -363,7 +367,7 @@ class TestStoreBootstrap:
         """
         conn = make_conn()
         conn.execute = AsyncMock(
-            side_effect=asyncpg.exceptions.SyntaxOrAccessError("bad DDL")
+            side_effect=asyncpg.exceptions.SyntaxOrAccessError("bad DDL"),
         )
         store, _engine = make_store(conn)
 
@@ -373,7 +377,8 @@ class TestStoreBootstrap:
 
     @pytest.mark.asyncio
     async def test_bootstrap_does_not_retry_missing_schema_asset(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A missing schema asset is deterministic and surfaces on the first pass.
 
@@ -388,7 +393,10 @@ class TestStoreBootstrap:
             calls["n"] += 1
             raise FileNotFoundError("schema.sql missing")
 
-        monkeypatch.setattr("trackinizer.server.store.core.schema_migrations", boom)
+        monkeypatch.setattr(
+            "trackinizer.server.store.core.schema_migrations",
+            boom,
+        )
         store, _engine = make_store()
 
         with pytest.raises(FileNotFoundError):
@@ -407,7 +415,7 @@ class TestStoreBootstrap:
         """
         conn = make_conn()
         conn.execute = AsyncMock(
-            side_effect=asyncpg.InterfaceError("another operation is in progress")
+            side_effect=asyncpg.InterfaceError("another operation is in progress"),
         )
         store, _engine = make_store(conn)
 
@@ -417,7 +425,8 @@ class TestStoreBootstrap:
 
     @pytest.mark.asyncio
     async def test_bootstrap_retries_connection_closed_interface_error(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A connection-closed ``InterfaceError`` is transient and retried.
 
@@ -425,7 +434,10 @@ class TestStoreBootstrap:
         ``InterfaceError('connection is closed')``), so it must still retry --
         narrowing by message must not lose the case the retry exists for.
         """
-        monkeypatch.setattr("trackinizer.server.store.core.asyncio.sleep", AsyncMock())
+        monkeypatch.setattr(
+            "trackinizer.server.store.core.asyncio.sleep",
+            AsyncMock(),
+        )
         conn = make_conn()
         calls = {"n": 0}
         first_real = conn.execute.side_effect

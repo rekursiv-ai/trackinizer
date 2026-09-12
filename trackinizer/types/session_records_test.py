@@ -79,7 +79,7 @@ def test_tool_call_indexes_name_and_string_arguments() -> None:
             call_id="c1",
             name="Bash",
             arguments={"command": "rm -rf /tmp/x", "timeout": 5},
-        )
+        ),
     )
 
     assert "Bash" in text
@@ -95,7 +95,7 @@ def test_shell_result_indexes_command_and_both_streams() -> None:
             stdout="",
             stderr="No such file or directory",
             exit_code=2,
-        )
+        ),
     )
 
     assert "ls" in text
@@ -113,7 +113,7 @@ def test_file_edit_indexes_each_splice() -> None:
             call_id="c1",
             path="a/b.py",
             edits=(Splice(before="old_name", after="new_name"),),
-        )
+        ),
     )
 
     assert "a/b.py" in text
@@ -131,7 +131,7 @@ def test_web_search_indexes_query_and_every_row() -> None:
                 WebSearchResult(title="TOAST", snippet="oversized attributes"),
                 WebSearchResult(title="Storage", snippet="EXTERNAL vs EXTENDED"),
             ),
-        )
+        ),
     )
 
     assert "postgres toast" in text
@@ -172,13 +172,16 @@ def test_metadata_records_index_nothing(record: object) -> None:
             id="UncategorizedToolResult",
         ),
         pytest.param(
-            FileReadResult(call_id="c", path="p", content="hello"), id="FileRead"
+            FileReadResult(call_id="c", path="p", content="hello"),
+            id="FileRead",
         ),
         pytest.param(
-            FileWriteResult(call_id="c", path="p", content="hello"), id="FileWrite"
+            FileWriteResult(call_id="c", path="p", content="hello"),
+            id="FileWrite",
         ),
         pytest.param(
-            WebFetchResult(call_id="c", url="u", content="hello"), id="WebFetch"
+            WebFetchResult(call_id="c", url="u", content="hello"),
+            id="WebFetch",
         ),
         pytest.param(
             AgentStatusResult(call_id="c", prompt="p", content="hello"),
@@ -243,7 +246,10 @@ def test_row_strips_ciphertext_from_its_payload() -> None:
 def test_a_record_without_ciphertext_reports_none() -> None:
     """Only a ``Thinking`` carrying ciphertext yields a ciphertext row."""
     row = SessionRecordRow.of(
-        session_id=uuid4(), part=0, idx=0, record=UserMessage(content="hi")
+        session_id=uuid4(),
+        part=0,
+        idx=0,
+        record=UserMessage(content="hi"),
     )
 
     assert row.ciphertext is None

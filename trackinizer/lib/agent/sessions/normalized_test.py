@@ -133,7 +133,8 @@ def test_session_json_is_a_bare_array_of_tagged_records() -> None:
     ids=["claude-main", "claude-sidechain", "codex-main"],
 )
 def test_a_captured_session_survives_the_json_round_trip(
-    adapter: _Adapter, fixture: str
+    adapter: _Adapter,
+    fixture: str,
 ) -> None:
     # The conversion path the CLI exposes, over bytes a real CLI wrote:
     # native -> records -> JSON -> records -> native.

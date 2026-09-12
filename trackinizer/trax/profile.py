@@ -189,7 +189,7 @@ Fields: url actor token
         # adjacency, no multi-pair.
         if len(tokens) != 3 or tokens[1] != "to":
             raise ClientError(
-                f"expected '{tokens[0]} to VALUE'; profile set is 'field to value'"
+                f"expected '{tokens[0]} to VALUE'; profile set is 'field to value'",
             )
         cls.run_set(name, field=tokens[0], value=tokens[2])
 
@@ -341,7 +341,9 @@ def switch_profile(name: str) -> None:
     """
     _validate_profile_name(name)
     _write_atomic(
-        config_dir() / "rekursiv-ai" / "trax" / "current", name + "\n", mode=0o600
+        config_dir() / "rekursiv-ai" / "trax" / "current",
+        name + "\n",
+        mode=0o600,
     )
 
 

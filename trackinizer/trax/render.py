@@ -249,7 +249,7 @@ def format_edge(view: Mapping[str, object], *, changes: bool = False) -> str:
         lines.append(f"{endpoint['label']}:")
         lines.append(
             f"  {endpoint.get('kind')}#{endpoint.get('seq')}  "
-            f"{endpoint.get('title') or ''}"
+            f"{endpoint.get('title') or ''}",
         )
     lines.append("")
     lines.append("edge:")
@@ -323,7 +323,7 @@ def format_show(
         )
         if (
             value := _row_value(
-                self_view.get("issue_kind" if extra == "kind" else extra)
+                self_view.get("issue_kind" if extra == "kind" else extra),
             )
         )
     )
@@ -378,7 +378,7 @@ def format_changes(rows: Sequence[dict[str, Any]]) -> str:
             f"{_format_local_time(change.get('created'))}  "
             f"{change.get('kind'):25}  "
             f"{change.get('subject_kind')}#{str(change.get('subject_id', ''))[:8]}  "
-            f"{_format_actor(change)}"
+            f"{_format_actor(change)}",
         )
         lines.extend(f"  {line}" for line in _format_change_delta(change))
     return "\n".join(lines) + "\n"
@@ -454,7 +454,8 @@ def _table_widths(
         if not candidates:
             break
         index = max(
-            candidates, key=lambda candidate: natural[candidate] - widths[candidate]
+            candidates,
+            key=lambda candidate: natural[candidate] - widths[candidate],
         )
         widths[index] += 1
     return widths
@@ -507,7 +508,7 @@ def _format_change_lines(changes: Sequence[Mapping[str, object]]) -> list[str]:
     for change in changes:
         lines.append(
             f"  {_format_local_time(change.get('created'))}  "
-            f"{change.get('kind'):25}  {_format_actor(change)}"
+            f"{change.get('kind'):25}  {_format_actor(change)}",
         )
         lines.extend(f"    {line}" for line in _format_change_delta(change))
     return lines
@@ -522,7 +523,7 @@ def _format_actor(change: Mapping[str, object]) -> str:
 
 
 _CHANGE_DELTA_HIDDEN_KEYS: frozenset[str] = frozenset(
-    {"marginal_cost", "updated_at", "modified", "revision"}
+    {"marginal_cost", "updated_at", "modified", "revision"},
 )
 
 
@@ -559,7 +560,9 @@ def _format_local_time(value: object) -> str:
 
 
 def _format_relations(
-    edges: Mapping[str, list[dict[str, Any]]], *, inbound: bool
+    edges: Mapping[str, list[dict[str, Any]]],
+    *,
+    inbound: bool,
 ) -> list[str]:
     lines: list[str] = []
     for edge_kind, refs in edges.items():

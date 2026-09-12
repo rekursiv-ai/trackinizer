@@ -35,7 +35,7 @@ _NON_COLUMN_ORDER_SNAPSHOT_FIELDS = frozenset(
         "edge_valence",
         "edge_labels",
         "marginal_cost",
-    }
+    },
 )
 
 

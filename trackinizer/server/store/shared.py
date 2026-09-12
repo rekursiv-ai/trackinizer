@@ -71,13 +71,13 @@ class _StoreShared:
         duplicates = sorted({n for n in names if names.count(n) > 1})
         if duplicates:
             raise ValueError(
-                f"Embedder names must be unique; duplicates: {duplicates}."
+                f"Embedder names must be unique; duplicates: {duplicates}.",
             )
         bad_dim = [(e.name, e.dim) for e in self.embedders if e.dim != EMBEDDING_DIM]
         if bad_dim:
             raise ValueError(
                 f"All embedders must have dim={EMBEDDING_DIM}; got"
-                f" mismatched (name, dim) pairs: {bad_dim}."
+                f" mismatched (name, dim) pairs: {bad_dim}.",
             )
         self.engine = engine
         # Throttle for ``api_keys.last_used_at`` UPDATE coalescing; see

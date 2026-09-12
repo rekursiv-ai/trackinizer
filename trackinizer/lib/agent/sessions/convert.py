@@ -141,7 +141,8 @@ def main(
     if lossy and not args.lossy:
         for result in lossy:
             print(  # noqa: T201 -- CLI report.
-                f"{result.path}: drops {', '.join(result.dropped)}", file=sys.stderr
+                f"{result.path}: drops {', '.join(result.dropped)}",
+                file=sys.stderr,
             )
         parser.error("conversion drops records; pass --lossy to accept")
     _write(results, output=args.output, out_dir=args.out_dir, stream=sys.stdout)
@@ -329,7 +330,9 @@ def _adapter(name: Format) -> _Adapter:
 
 
 def _add_arguments(
-    parser: argparse.ArgumentParser, *, formats: tuple[Format, ...]
+    parser: argparse.ArgumentParser,
+    *,
+    formats: tuple[Format, ...],
 ) -> None:
     """Register flags on ``parser``."""
     parser.add_argument(
@@ -338,10 +341,15 @@ def _add_arguments(
         help="convert writes the target format; verify checks exact recovery.",
     )
     parser.add_argument(
-        "paths", nargs="+", type=Path, help="Session files or directories."
+        "paths",
+        nargs="+",
+        type=Path,
+        help="Session files or directories.",
     )
     parser.add_argument(
-        "--to", choices=formats, help="Output format (required by convert)."
+        "--to",
+        choices=formats,
+        help="Output format (required by convert).",
     )
     parser.add_argument(
         "--source",
@@ -351,7 +359,9 @@ def _add_arguments(
     )
     parser.add_argument("-o", "--output", type=Path, help="Write to this file.")
     parser.add_argument(
-        "--out-dir", type=Path, help="Write each converted file into this directory."
+        "--out-dir",
+        type=Path,
+        help="Write each converted file into this directory.",
     )
     parser.add_argument(
         "-w",
@@ -378,16 +388,26 @@ def _add_arguments(
         help="Allow a conversion that drops records the target cannot express.",
     )
     parser.add_argument(
-        "--fail-fast", action="store_true", help="Stop after the first failure."
+        "--fail-fast",
+        action="store_true",
+        help="Stop after the first failure.",
     )
     parser.add_argument(
-        "--diff", action="store_true", help="Show the first differing lines."
+        "--diff",
+        action="store_true",
+        help="Show the first differing lines.",
     )
     parser.add_argument(
-        "-q", "--quiet", action="store_true", help="Omit the summary line."
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Omit the summary line.",
     )
     parser.add_argument(
-        "-v", "--verbose", action="store_true", help="Report every file."
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Report every file.",
     )
 
 
@@ -444,7 +464,9 @@ def _convert_all(
 def _die_with_parent(launcher: int, poll_sec: float) -> None:
     """Exit this worker when the run that started it goes away."""
     threading.Thread(
-        target=_watch_launcher, args=(launcher, poll_sec), daemon=True
+        target=_watch_launcher,
+        args=(launcher, poll_sec),
+        daemon=True,
     ).start()
 
 
@@ -540,7 +562,7 @@ def _write(
             "codex": ".jsonl",
             "gemini": ".json",
             "json": ".json",
-        }
+        },
     ),
 ) -> None:
     """Write converted text to the chosen destination."""
@@ -573,7 +595,8 @@ def _write(
                 continue
             suffix = suffixes[result.target or "json"]
             (out_dir / f"{result.path.stem}{suffix}").write_text(
-                result.text, encoding="utf-8"
+                result.text,
+                encoding="utf-8",
             )
         return
     # No destination and a single input: stdout is the conversion's output.
@@ -617,7 +640,7 @@ def _report(
                     "files": len(results),
                     "ok": sum(_ok(r, verifying=verifying) for r in results),
                     "results": [_as_json(r) for r in results],
-                }
+                },
             ),
             file=sys.stderr,
         )
@@ -626,7 +649,8 @@ def _report(
         if _ok(result, verifying=verifying) and not verbose:
             continue
         print(  # noqa: T201 -- CLI report.
-            f"{result.path}: {_status(result, verifying=verifying)}", file=sys.stderr
+            f"{result.path}: {_status(result, verifying=verifying)}",
+            file=sys.stderr,
         )
         if result.diff:
             print(result.diff, file=sys.stderr)  # noqa: T201 -- CLI report.
@@ -720,7 +744,12 @@ def _compared(
         # before anything reaches disk -- which a streamed write would have
         # already broken by the time the gate reads the result.
         return _streamed(
-            path, records, parts, detected=detected, into=into, out_dir=out_dir
+            path,
+            records,
+            parts,
+            detected=detected,
+            into=into,
+            out_dir=out_dir,
         )
     names = names_of(records)
     written: list[tuple[str, str]] = []
@@ -812,7 +841,7 @@ def _streamed(
             "codex": ".jsonl",
             "gemini": ".json",
             "json": ".json",
-        }
+        },
     ),
 ) -> FileResult:
     """Write one conversion to ``out_dir``, holding no copy of its text."""
@@ -911,7 +940,9 @@ class _Comparing(TextIO):
 
 
 def _rewrites(
-    records: Sequence[SessionRecord], path: Path, target: Format
+    records: Sequence[SessionRecord],
+    path: Path,
+    target: Format,
 ) -> tuple[bool, int]:
     """Whether writing ``records`` reproduces ``path``, and the bytes it wrote."""
     sink = _Comparing(path)
@@ -1008,7 +1039,9 @@ def _ordered(paths: Iterable[Path]) -> list[Path]:
 # record population compared to the source's. Provider-native metadata lives in
 # ``extra`` and does not change the normalized meaning.
 def _dropped(
-    records: Sequence[SessionRecord], text: str, target: Format
+    records: Sequence[SessionRecord],
+    text: str,
+    target: Format,
 ) -> tuple[str, ...]:
     """Return the semantic records the target format could not carry."""
     try:
@@ -1043,7 +1076,7 @@ def _semantic_value(value: object) -> object:
     if isinstance(value, Mapping):
         mapping = cast(Mapping[object, object], value)
         return tuple(
-            sorted((repr(key), _semantic_value(item)) for key, item in mapping.items())
+            sorted((repr(key), _semantic_value(item)) for key, item in mapping.items()),
         )
     if isinstance(value, (list, tuple)):
         sequence = cast(list[object] | tuple[object, ...], value)

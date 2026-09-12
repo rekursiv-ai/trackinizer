@@ -37,7 +37,9 @@ class _FailingInsertClient(Client):
 
     @override
     def submit(
-        self, kind: Inquiry.InquiryKind, body: Mapping[str, object]
+        self,
+        kind: Inquiry.InquiryKind,
+        body: Mapping[str, object],
     ) -> uuid.UUID:
         self.submitted.append((kind, body))
         raise ClientError(f"POST /api/inquiries/{kind.lower()} failed: [Errno 61]")
@@ -46,7 +48,9 @@ class _FailingInsertClient(Client):
 class _MixedInsertClient(_FailingInsertClient):
     @override
     def submit(
-        self, kind: Inquiry.InquiryKind, body: Mapping[str, object]
+        self,
+        kind: Inquiry.InquiryKind,
+        body: Mapping[str, object],
     ) -> uuid.UUID:
         self.submitted.append((kind, body))
         if kind == "Issue":
@@ -132,7 +136,7 @@ def test_insert_chunk_keeps_successes_after_diagnostic_fallback() -> None:
     )
 
     assert id_map == {
-        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa": "11111111-1111-1111-1111-111111111111"
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa": "11111111-1111-1111-1111-111111111111",
     }
 
 
@@ -161,7 +165,8 @@ def test_detail_order_key_uses_source_created_then_id() -> None:
     new["self"]["created"] = "2026-01-02T00:00:00+00:00"
 
     ordered = sorted(
-        [new, old_high_id, old_low_id], key=replay_live_graph._detail_order_key
+        [new, old_high_id, old_low_id],
+        key=replay_live_graph._detail_order_key,
     )
 
     assert [d["self"]["id"] for d in ordered] == [

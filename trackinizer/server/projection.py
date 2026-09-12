@@ -135,7 +135,9 @@ def materialize(
     base = cls.from_row(row)
     rid = row["id"]
     return project_relationships(
-        base, outbound_buckets.get(rid, []), inbound_buckets.get(rid, [])
+        base,
+        outbound_buckets.get(rid, []),
+        inbound_buckets.get(rid, []),
     )
 
 
@@ -163,19 +165,31 @@ def project_relationships(
         base,
         # Supersedes stored successor(child) -> predecessor(parent).
         supersedes=_inquiry_edges(
-            outbound, edge_kind="supersedes", id_col="to_id", kind_col="to_kind"
+            outbound,
+            edge_kind="supersedes",
+            id_col="to_id",
+            kind_col="to_kind",
         ),
         superseded_by=_inquiry_edges(
-            inbound, edge_kind="supersedes", id_col="from_id", kind_col="from_kind"
+            inbound,
+            edge_kind="supersedes",
+            id_col="from_id",
+            kind_col="from_kind",
         ),
         # produced_by stored produced(child) -> producer(parent). The forward
         # ``produced_by`` lists this vertex's producer parents (outbound to-side);
         # the inverse ``produces`` lists what it produced (inbound from-side).
         produced_by=_inquiry_edges(
-            outbound, edge_kind="produced_by", id_col="to_id", kind_col="to_kind"
+            outbound,
+            edge_kind="produced_by",
+            id_col="to_id",
+            kind_col="to_kind",
         ),
         produces=_inquiry_edges(
-            inbound, edge_kind="produced_by", id_col="from_id", kind_col="from_kind"
+            inbound,
+            edge_kind="produced_by",
+            id_col="from_id",
+            kind_col="from_kind",
         ),
     )
     if isinstance(base, Issue):
@@ -186,17 +200,29 @@ def project_relationships(
             # to-side); the inverse ``narrowed_by`` lists its narrower children
             # (inbound from-side).
             narrows=_issue_edges(
-                outbound, edge_kind="narrows", id_col="to_id", kind_col="to_kind"
+                outbound,
+                edge_kind="narrows",
+                id_col="to_id",
+                kind_col="to_kind",
             ),
             narrowed_by=_issue_edges(
-                inbound, edge_kind="narrows", id_col="from_id", kind_col="from_kind"
+                inbound,
+                edge_kind="narrows",
+                id_col="from_id",
+                kind_col="from_kind",
             ),
             # Requires stored requirer(child) -> prerequisite(parent).
             requires=_issue_edges(
-                outbound, edge_kind="requires", id_col="to_id", kind_col="to_kind"
+                outbound,
+                edge_kind="requires",
+                id_col="to_id",
+                kind_col="to_kind",
             ),
             required_by=_issue_edges(
-                inbound, edge_kind="requires", id_col="from_id", kind_col="from_kind"
+                inbound,
+                edge_kind="requires",
+                id_col="from_id",
+                kind_col="from_kind",
             ),
         )
     if isinstance(base, Artifact):
@@ -206,10 +232,16 @@ def project_relationships(
         base = replace(
             base,
             proves=_artifact_edges(
-                outbound, edge_kind="proves", id_col="to_id", kind_col="to_kind"
+                outbound,
+                edge_kind="proves",
+                id_col="to_id",
+                kind_col="to_kind",
             ),
             favors=_artifact_edges(
-                outbound, edge_kind="favors", id_col="to_id", kind_col="to_kind"
+                outbound,
+                edge_kind="favors",
+                id_col="to_id",
+                kind_col="to_kind",
             ),
         )
     if isinstance(base, Belief | Experiment):
@@ -218,10 +250,16 @@ def project_relationships(
         base = replace(
             base,
             proved_by=_artifact_edges(
-                inbound, edge_kind="proves", id_col="from_id", kind_col="from_kind"
+                inbound,
+                edge_kind="proves",
+                id_col="from_id",
+                kind_col="from_kind",
             ),
             favored_by=_artifact_edges(
-                inbound, edge_kind="favors", id_col="from_id", kind_col="from_kind"
+                inbound,
+                edge_kind="favors",
+                id_col="from_id",
+                kind_col="from_kind",
             ),
         )
     if isinstance(base, Paper):
@@ -232,17 +270,24 @@ def project_relationships(
         base = replace(
             base,
             cites=_inquiry_edges(
-                outbound, edge_kind="cites_paper", id_col="to_id", kind_col="to_kind"
+                outbound,
+                edge_kind="cites_paper",
+                id_col="to_id",
+                kind_col="to_kind",
             ),
             cited_by=_inquiry_edges(
-                inbound, edge_kind="cites_paper", id_col="from_id", kind_col="from_kind"
+                inbound,
+                edge_kind="cites_paper",
+                id_col="from_id",
+                kind_col="from_kind",
             ),
         )
     return base
 
 
 def _matching(
-    rows: Sequence[asyncpg.Record], edge_kind: Edge.Kind
+    rows: Sequence[asyncpg.Record],
+    edge_kind: Edge.Kind,
 ) -> list[asyncpg.Record]:
     """Edge rows of one kind, in fetch order."""
     return [r for r in rows if r["edge_kind"] == edge_kind]

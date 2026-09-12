@@ -86,7 +86,8 @@ __all__ = [
 
 
 VALID_KINDS: tuple[Inquiry.InquiryKind, ...] = cast(
-    tuple[Inquiry.InquiryKind, ...], get_args(Inquiry.InquiryKind.__value__)
+    tuple[Inquiry.InquiryKind, ...],
+    get_args(Inquiry.InquiryKind.__value__),
 )
 KIND_LOWER: Mapping[str, Inquiry.InquiryKind] = {k.lower(): k for k in VALID_KINDS}
 
@@ -280,7 +281,7 @@ class InlineCreate:
     costs: tuple[AddCost, ...] = ()
 
     inbound_meta: Mapping[str, object] = dataclass_field(
-        default_factory=lambda: cast(dict[str, object], {})
+        default_factory=lambda: cast(dict[str, object], {}),
     )
 
 
@@ -370,10 +371,14 @@ EDGE_ALIASES: Mapping[str, Edge] = {
     # lives in the valence sign, not a separate edge kind).
     "proves": Edge(name="proves", valence_default=CITATION_VALENCE_DEFAULT),
     "proved_by": Edge(
-        name="proves", reverse=True, valence_default=CITATION_VALENCE_DEFAULT
+        name="proves",
+        reverse=True,
+        valence_default=CITATION_VALENCE_DEFAULT,
     ),
     "disproves": Edge(
-        name="proves", valence_default=-CITATION_VALENCE_DEFAULT, valence_negate=True
+        name="proves",
+        valence_default=-CITATION_VALENCE_DEFAULT,
+        valence_negate=True,
     ),
     "disproved_by": Edge(
         name="proves",
@@ -383,10 +388,14 @@ EDGE_ALIASES: Mapping[str, Edge] = {
     ),
     "favors": Edge(name="favors", valence_default=CITATION_VALENCE_DEFAULT),
     "favored_by": Edge(
-        name="favors", reverse=True, valence_default=CITATION_VALENCE_DEFAULT
+        name="favors",
+        reverse=True,
+        valence_default=CITATION_VALENCE_DEFAULT,
     ),
     "disfavors": Edge(
-        name="favors", valence_default=-CITATION_VALENCE_DEFAULT, valence_negate=True
+        name="favors",
+        valence_default=-CITATION_VALENCE_DEFAULT,
+        valence_negate=True,
     ),
     "disfavored_by": Edge(
         name="favors",
@@ -405,7 +414,8 @@ EDGE_ALIASES: Mapping[str, Edge] = {
     "cited_by": Edge(name="cites_paper", reverse=True),
 }
 ISSUE_KINDS: tuple[Issue.Kind, ...] = cast(
-    tuple[Issue.Kind, ...], get_args(Issue.Kind.__value__)
+    tuple[Issue.Kind, ...],
+    get_args(Issue.Kind.__value__),
 )
 PRIORITY_ALIASES: Final[Mapping[str, int]] = {
     "critical": 0,
@@ -455,7 +465,7 @@ RELATION_ALIASES: Final[Mapping[str, tuple[str, bool]]] = {
 # shared stored kind. ``trax belief 5 disproves`` lists only the proves edges
 # with valence < 0, where ``trax belief 5 proves`` lists them all.
 AGAINST_RELATION_SPELLINGS: frozenset[str] = frozenset(
-    {"disproves", "disproved_by", "disfavors", "disfavored_by"}
+    {"disproves", "disproved_by", "disfavors", "disfavored_by"},
 )
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -878,7 +888,7 @@ COST_FIELDS: tuple[str, ...] = tuple(f.cli_name for f in _FIELDS if f.shape == "
 # ``server/api/query.py::_IDENTITY_COLUMNS`` minus ``kind`` (the row
 # discriminator; the CLI ``kind`` alias routes to ``issue_kind`` instead).
 _IDENTITY_FILTER_COLUMNS: frozenset[str] = frozenset(
-    {"seq", "id", "created", "modified"}
+    {"seq", "id", "created", "modified"},
 )
 
 
@@ -957,7 +967,8 @@ WRITE_FIELDS_CLI: Mapping[Inquiry.InquiryKind, frozenset[str]] = {
 
 
 def validate_writable_fields(
-    kind: Inquiry.InquiryKind, fields: tuple[str, ...]
+    kind: Inquiry.InquiryKind,
+    fields: tuple[str, ...],
 ) -> None:
     """Reject any CLI write field not valid on ``kind`` before any request.
 

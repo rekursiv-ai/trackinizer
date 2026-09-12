@@ -93,7 +93,8 @@ class TestPureFunctions:
         assert remaining == []
 
     def test_session_ttl_env_typo_exits_cleanly(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A bad env TTL must exit like every other config error, not traceback.
 
@@ -107,18 +108,21 @@ class TestPureFunctions:
             _ = _parse_args(argparse.ArgumentParser(), [])
 
     def test_session_ttl_rejects_non_positive(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Zero expires every session instantly; the env path already says so."""
         monkeypatch.delenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", raising=False)
 
         with pytest.raises(SystemExit):
             _ = _parse_args(
-                argparse.ArgumentParser(), ["--session-max-age-seconds", "0"]
+                argparse.ArgumentParser(),
+                ["--session-max-age-seconds", "0"],
             )
 
     def test_session_ttl_defaults_to_the_shared_constant(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", raising=False)
 
@@ -127,7 +131,8 @@ class TestPureFunctions:
         assert args.session_max_age_seconds == 30 * 24 * 60 * 60
 
     def test_session_ttl_reads_the_environment(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", "600")
 
@@ -244,7 +249,8 @@ class TestMainAppliesEveryStartupInvariant:
     """
 
     def test_configures_the_app_before_serving(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Uvicorn gets the app object, already carrying its config."""
         served: dict[str, object] = {}
@@ -266,7 +272,8 @@ class TestMainAppliesEveryStartupInvariant:
         assert app.state.config.dsn == "postgres://probe/db"
 
     def test_rejects_unrecognized_arguments(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr("sys.argv", ["trackinizer", "--bogus-flag"])
 
@@ -274,7 +281,9 @@ class TestMainAppliesEveryStartupInvariant:
             main()
 
     def test_rejects_a_worker_count_flag(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A stale unit drop-in passing ``--workers`` must fail loudly.
 
@@ -285,7 +294,8 @@ class TestMainAppliesEveryStartupInvariant:
         operator's config claims and the server does not have.
         """
         monkeypatch.setattr(
-            "sys.argv", ["trackinizer", "--engine", "pglite", "--workers", "4"]
+            "sys.argv",
+            ["trackinizer", "--engine", "pglite", "--workers", "4"],
         )
 
         with pytest.raises(SystemExit):
@@ -294,7 +304,8 @@ class TestMainAppliesEveryStartupInvariant:
         assert "--workers" in capsys.readouterr().err
 
     def test_applies_the_requested_log_level(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``--log-level`` must reach this package's logger, not just uvicorn's."""
         monkeypatch.setattr(uvicorn, "run", _ignore_run)
@@ -310,7 +321,8 @@ class TestMainAppliesEveryStartupInvariant:
         assert logger.level == logging.DEBUG
 
     def test_installs_the_shutdown_noise_filter(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Shutdown emits the ERROR the filter suppresses.
 
@@ -331,7 +343,8 @@ class TestMainAppliesEveryStartupInvariant:
         assert any(_is_noise_filter(f) for f in error_logger.filters)
 
     def test_installs_the_filter_exactly_once(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Re-entry must not stack duplicates onto the process-wide logger."""
         error_logger = logging.getLogger("uvicorn.error")
@@ -378,14 +391,16 @@ class TestSuppressZeroTaskCancel:
         # The exact message uvicorn emits when graceful-shutdown expires with no
         # tasks (timeout_graceful_shutdown=0 trips this on every clean exit).
         rec = self._record(
-            "Cancel %s running task(s), timeout graceful shutdown exceeded", 0
+            "Cancel %s running task(s), timeout graceful shutdown exceeded",
+            0,
         )
         assert filt.filter(rec) is False
 
     def test_keeps_real_cancel(self) -> None:
         filt = _SuppressZeroTaskCancel()
         rec = self._record(
-            "Cancel %s running task(s), timeout graceful shutdown exceeded", 3
+            "Cancel %s running task(s), timeout graceful shutdown exceeded",
+            3,
         )
         assert filt.filter(rec) is True
 
@@ -428,7 +443,8 @@ class TestMainRejectsBadInvocations:
 
 class TestCoverageRoutesAndCli:
     def test_main_web_branch_and_engine_errors(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         called: dict[str, object] = {}
 

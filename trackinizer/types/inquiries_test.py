@@ -187,8 +187,9 @@ class TestModels:
         with pytest.raises(KeyError, match="'subject_id'"):
             Change.from_row(
                 cast(
-                    Any, {"id": new_uuid(), "created": datetime.now(UTC), "actor": "x"}
-                )
+                    Any,
+                    {"id": new_uuid(), "created": datetime.now(UTC), "actor": "x"},
+                ),
             )
         with pytest.raises(KeyError, match="'from_id'"):
             Edge.from_row(cast(Any, {}))

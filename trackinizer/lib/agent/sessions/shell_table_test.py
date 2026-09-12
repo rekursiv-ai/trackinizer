@@ -108,7 +108,7 @@ def _claude_native(command: str, stdout: str) -> str:
                     "id": "c1",
                     "name": "Bash",
                     "input": {"command": command},
-                }
+                },
             ],
         },
         "uuid": "u1",
@@ -125,7 +125,7 @@ def _claude_native(command: str, stdout: str) -> str:
         "message": {
             "role": "user",
             "content": [
-                {"type": "tool_result", "tool_use_id": "c1", "content": stdout}
+                {"type": "tool_result", "tool_use_id": "c1", "content": stdout},
             ],
         },
         "uuid": "u2",
@@ -222,7 +222,8 @@ def test_every_table_row_is_harvested(
 @pytest.mark.parametrize("command", [pytest.param(row[1], id=row[0]) for row in rows()])
 @pytest.mark.parametrize("provider", ["claude", "codex"])
 def test_every_table_row_replays_to_the_original_bytes(
-    provider: str, command: str
+    provider: str,
+    command: str,
 ) -> None:
     # Lifting is a VIEW of the command, not a replacement for it: whatever the
     # classifier made of the line, writing the session back must reproduce the
@@ -246,7 +247,8 @@ def test_every_table_row_replays_to_the_original_bytes(
     [pytest.param(row[1], row[2], id=row[0]) for row in rows()],
 )
 def test_editing_a_lifted_path_rewrites_the_replayed_command(
-    command: str, expected: type[object]
+    command: str,
+    expected: type[object],
 ) -> None:
     """A lifted record is editable, and the edit reaches the command.
 
@@ -262,7 +264,8 @@ def test_editing_a_lifted_path_rewrites_the_replayed_command(
     edited = replace(lifted, path="renamed.txt")
     output = StringIO()
     claude.denormalize(
-        [edited if record is lifted else record for record in records], output
+        [edited if record is lifted else record for record in records],
+        output,
     )
 
     replayed = _replayed_command(output.getvalue())
@@ -278,7 +281,7 @@ def _replayed_command(native: str) -> str:
         for block in ListCodec.mappings(message.get("content")):
             if StrCodec.coerce(block.get("name")) == "Bash":
                 return StrCodec.coerce(
-                    DictCodec.coerce(block.get("input")).get("command")
+                    DictCodec.coerce(block.get("input")).get("command"),
                 )
     return ""
 

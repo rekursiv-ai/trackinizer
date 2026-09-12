@@ -354,7 +354,8 @@ def test_parse_list_query_unknown_op_after_filter_reports_op() -> None:
     """
     with pytest.raises(ClientError, match="unknown filter operator 'not'"):
         parse_bulk_apply(
-            "Issue", ["status", "is", "active", "owner", "not", "re", "Dan"]
+            "Issue",
+            ["status", "is", "active", "owner", "not", "re", "Dan"],
         )
 
 
@@ -381,7 +382,8 @@ def test_parse_list_query_committed_then_bad_op_raises() -> None:
     """
     with pytest.raises(ClientError, match="unknown filter operator 'not'"):
         parse_list_query(
-            "Issue", ["status", "is", "active", "owner", "not", "re", "Dan"]
+            "Issue",
+            ["status", "is", "active", "owner", "not", "re", "Dan"],
         )
 
 
@@ -417,7 +419,8 @@ def test_parse_bulk_apply_ref_list_add_accepts_typed_ref() -> None:
     token and raised before `parse_actions` could attach the parsed `Ref`.
     """
     bulk = parse_bulk_apply(
-        "Experiment", ["outcome", "is", "ok", "codechange", "add", "codechange", "1"]
+        "Experiment",
+        ["outcome", "is", "ok", "codechange", "add", "codechange", "1"],
     )
     assert bulk is not None
     assert bulk.actions == (
@@ -437,7 +440,8 @@ def test_bulk_apply_codechange_field_not_swallowed_as_kind() -> None:
         ``to``/``add``/``del``, so the next token disambiguates cleanly.
     """
     bulk = parse_bulk_apply(
-        "Experiment", ["outcome", "is", "ok", "codechange", "add", "7"]
+        "Experiment",
+        ["outcome", "is", "ok", "codechange", "add", "7"],
     )
     assert bulk is not None
     assert bulk.actions == (
@@ -544,7 +548,7 @@ def test_inline_create_accumulates_list_field() -> None:
             "author",
             "add",
             "Grace Hopper",
-        ]
+        ],
     )
     inline = cast(InlineCreate, cast(EdgeAction, actions[0]).target)
     authors = next(f for f in inline.fields if f.field == "authors")
@@ -553,7 +557,7 @@ def test_inline_create_accumulates_list_field() -> None:
 
 def test_edge_metadata_case_insensitive_field_and_op() -> None:
     actions = parse_actions(
-        ["blocked_by", "issue", "5", "EDGE", "PRIORITY", "TO", "high"]
+        ["blocked_by", "issue", "5", "EDGE", "PRIORITY", "TO", "high"],
     )
     edge = actions[0]
     assert isinstance(edge, EdgeAction)
@@ -577,7 +581,7 @@ def test_edge_metadata_labels_del_removes_value() -> None:
             "blocked_by", "issue", "5",
             "edge", "labels", "add", "a",
             "edge", "labels", "del", "a",
-        ]
+        ],
     )  # fmt: skip
     edge = actions[0]
     assert isinstance(edge, EdgeAction)
@@ -590,7 +594,7 @@ def test_edge_metadata_labels_del_resolves_csv() -> None:
             "blocked_by", "issue", "5",
             "edge", "labels", "add", "a,b,c",
             "edge", "labels", "del", "a,c",
-        ]
+        ],
     )  # fmt: skip
     edge = actions[0]
     assert isinstance(edge, EdgeAction)
@@ -650,7 +654,7 @@ def test_config_bare_token_reads_field() -> None:
 def test_config_sentinel_values_pass_through_uncoerced() -> None:
     """``@path`` and ``-`` defer coercion until the verb layer reads them."""
     assert parse_actions(["config", "to", "@cfg.json"]) == [
-        SetField(field="config", value="@cfg.json")
+        SetField(field="config", value="@cfg.json"),
     ]
     assert parse_actions(["config", "to", "-"]) == [SetField(field="config", value="-")]
 
@@ -900,7 +904,7 @@ def test_inline_create_carries_nested_edge_deep() -> None:
             "title",
             "to",
             "p",
-        ]
+        ],
     )
     assert len(actions) == 1, "the whole chain is ONE tail (deep), not two siblings"
     outer = actions[0]
@@ -943,7 +947,7 @@ def test_begin_end_group_pops_cursor_for_siblings() -> None:
             "to",
             "p2",
             "end",
-        ]
+        ],
     )
     assert len(actions) == 1
     ws = actions[0]
@@ -972,7 +976,7 @@ def test_inline_create_carries_own_cost_deep() -> None:
             "produced", "websearch", "query", "to", "q",
             "agent-cost", "add", "0.89",
             "produced", "paper", "title", "to", "p",
-        ]
+        ],
     )  # fmt: skip
     assert len(actions) == 1, "one tail: the cost rides the websearch, not the root"
     outer = actions[0]
@@ -1000,7 +1004,7 @@ def test_node_note_binds_to_its_producer_edge_without_grouping() -> None:
             "note", "to", "verdict",
             "produced", "paper", "title", "to", "p",
             "favors", "belief", belief, "note", "to", "w",
-        ]
+        ],
     )  # fmt: skip
     assert len(actions) == 1, "one belief->websearch producer edge (deep spine)"
     outer = actions[0]
@@ -1035,7 +1039,7 @@ def test_two_papers_need_begin_end_only_for_width() -> None:
             "disfavors", "belief", belief, "note", "to", "n1", "end",
             "produced", "begin", "paper", "title", "to", "p2",
             "disfavors", "belief", belief, "note", "to", "n2", "end",
-        ]
+        ],
     )  # fmt: skip
     assert len(actions) == 1
     outer = actions[0]
@@ -1067,7 +1071,7 @@ def test_inline_create_fields_metadata_cost_interleave_in_any_order() -> None:
             "produced", "websearch", "query", "to", "q",
             "status", "to", "complete", "agent-cost", "add", "0.5",
             "note", "to", "n", "favors", "belief", belief,
-        ]
+        ],
     )  # fmt: skip
     # A create must LEAD with a field (the dispatch recognizes a create by a
     # field right after the kind); after that first field, note/cost/fields
@@ -1077,7 +1081,7 @@ def test_inline_create_fields_metadata_cost_interleave_in_any_order() -> None:
             "produced", "websearch", "query", "to", "q",
             "note", "to", "n", "agent-cost", "add", "0.5",
             "status", "to", "complete", "favors", "belief", belief,
-        ]
+        ],
     )  # fmt: skip
     for actions in (fields_first, meta_first):
         outer = actions[0]
@@ -1107,7 +1111,7 @@ def test_inline_create_field_after_edge_is_rejected() -> None:
             [
                 "produced", "paper", "title", "to", "p",
                 "favors", "belief", belief, "status", "to", "complete",
-            ]
+            ],
         )  # fmt: skip
 
 
@@ -1124,7 +1128,7 @@ def test_inline_create_cost_then_field_interleaves() -> None:
             "produced", "websearch", "query", "to", "q",
             "agent-cost", "add", "0.5",
             "status", "to", "complete",
-        ]
+        ],
     )  # fmt: skip
     assert len(actions) == 1
     outer = actions[0]
@@ -1177,7 +1181,7 @@ def test_unambiguous_meta_needs_no_marker_after_ref() -> None:
     """`note`/`valence` are edge-only, so bare works after a ref (no footgun)."""
     belief = "00000000-0000-4000-8000-000000000001"
     actions = parse_actions(
-        ["favors", "belief", belief, "note", "to", "adjacent", "valence", "to", "0.5"]
+        ["favors", "belief", belief, "note", "to", "adjacent", "valence", "to", "0.5"],
     )  # fmt: skip
     act = actions[0]
     assert isinstance(act, EdgeAction)
@@ -1189,7 +1193,7 @@ def test_edge_marker_also_accepted_on_unambiguous_meta() -> None:
     """`edge note` is accepted too -- writing `edge` is never wrong."""
     belief = "00000000-0000-4000-8000-000000000001"
     actions = parse_actions(
-        ["favors", "belief", belief, "edge", "note", "to", "adjacent"]
+        ["favors", "belief", belief, "edge", "note", "to", "adjacent"],
     )  # fmt: skip
     act = actions[0]
     assert isinstance(act, EdgeAction)
@@ -1199,7 +1203,7 @@ def test_edge_marker_also_accepted_on_unambiguous_meta() -> None:
 def test_collision_word_in_create_body_is_a_vertex_field() -> None:
     """Bare `priority` in a create BODY is the new row's field (vertex)."""
     actions = parse_actions(
-        ["produced", "issue", "title", "to", "X", "priority", "to", "high"]
+        ["produced", "issue", "title", "to", "X", "priority", "to", "high"],
     )  # fmt: skip
     outer = actions[0]
     assert isinstance(outer, EdgeAction)
@@ -1216,7 +1220,7 @@ def test_edge_marker_in_create_body_sets_the_producer_edge() -> None:
         [
             "produced", "issue", "title", "to", "X",
             "edge", "priority", "to", "high",
-        ]
+        ],
     )  # fmt: skip
     outer = actions[0]
     assert isinstance(outer, EdgeAction)
@@ -1252,7 +1256,7 @@ def test_edge_metadata_before_target_is_unambiguous_edge() -> None:
 def test_edge_metadata_before_and_after_target_merge() -> None:
     """Pre-target and post-target metadata on the same edge merge."""
     actions = parse_actions(
-        ["favors", "note", "to", "n", "belief", "3", "valence", "to", "0.5"]
+        ["favors", "note", "to", "n", "belief", "3", "valence", "to", "0.5"],
     )  # fmt: skip
     act = actions[0]
     assert isinstance(act, EdgeAction)
@@ -1290,14 +1294,14 @@ def test_edge_metadata_pre_and_post_merge_post_wins_same_key() -> None:
     # Priority high (=10) pre-target, critical (=0) post-target via the marker.
     act = parse_actions(
         ["narrows", "priority", "to", "high",
-         "issue", "3", "edge", "priority", "to", "critical"]
+         "issue", "3", "edge", "priority", "to", "critical"],
     )[0]  # fmt: skip
     assert isinstance(act, EdgeAction)
     assert act.metadata.get("priority") == 0, "post-target priority wins the tie"
 
     # Distinct keys union across the boundary.
     act2 = parse_actions(
-        ["favors", "note", "to", "n", "belief", belief, "valence", "to", "0.5"]
+        ["favors", "note", "to", "n", "belief", belief, "valence", "to", "0.5"],
     )[0]
     assert isinstance(act2, EdgeAction)
     assert act2.metadata.get("note") == "n"
@@ -1331,7 +1335,7 @@ def test_confidence_non_number_is_clean_client_error() -> None:
     """
     with pytest.raises(ClientError, match="confidence must be a number"):
         parse_actions(
-            ["produced", "belief", "title", "to", "X", "confidence", "to", "abc"]
+            ["produced", "belief", "title", "to", "X", "confidence", "to", "abc"],
         )
 
 
@@ -1390,7 +1394,7 @@ _ALPHABET: list[str] = sorted(
         # Values of each shape the coercers care about.
         "0.5", "-0.5", "abc", "high", "0", "3",
         "00000000-0000-4000-8000-000000000001",
-    }
+    },
 )  # fmt: skip
 
 
@@ -1523,41 +1527,41 @@ class TestParseMetricAction:
     def test_bareword_key_shorthand(self) -> None:
         # `at loss` == `at key is loss` (spec Read: loss's whole series).
         assert parse_metric_action(["at", "loss"]) == MetricAction(
-            masks=(MetricMask(field="key", op="is", value="loss"),)
+            masks=(MetricMask(field="key", op="is", value="loss"),),
         )
 
     def test_explicit_key_is(self) -> None:
         assert parse_metric_action(["at", "key", "is", "loss"]) == MetricAction(
-            masks=(MetricMask(field="key", op="is", value="loss"),)
+            masks=(MetricMask(field="key", op="is", value="loss"),),
         )
 
     def test_step_is(self) -> None:
         # ``spec`` Read: every key at step 3.
         assert parse_metric_action(["at", "step", "is", "3"]) == MetricAction(
-            masks=(MetricMask(field="step", op="is", value="3"),)
+            masks=(MetricMask(field="step", op="is", value="3"),),
         )
 
     def test_value_gt(self) -> None:
         # ``spec`` Read: cells with value > 0.9.
         assert parse_metric_action(["at", "value", "gt", "0.9"]) == MetricAction(
-            masks=(MetricMask(field="value", op="gt", value="0.9"),)
+            masks=(MetricMask(field="value", op="gt", value="0.9"),),
         )
 
     def test_two_masks_and_together_read(self) -> None:
         # ``spec`` Read: loss cells, step > 3.
         assert parse_metric_action(
-            ["at", "key", "is", "loss", "at", "step", "gt", "3"]
+            ["at", "key", "is", "loss", "at", "step", "gt", "3"],
         ) == MetricAction(
             masks=(
                 MetricMask(field="key", op="is", value="loss"),
                 MetricMask(field="step", op="gt", value="3"),
-            )
+            ),
         )
 
     def test_single_cell_write(self) -> None:
         # ``spec`` Write: one cell (key + step pinned, then `to`).
         assert parse_metric_action(
-            ["at", "key", "is", "loss", "at", "step", "is", "3", "to", "0.5"]
+            ["at", "key", "is", "loss", "at", "step", "is", "3", "to", "0.5"],
         ) == MetricAction(
             masks=(
                 MetricMask(field="key", op="is", value="loss"),
@@ -1569,7 +1573,7 @@ class TestParseMetricAction:
     def test_write_with_bareword_key_and_step(self) -> None:
         # `at step is 4 at loss to 0.5` -> step mask + bareword-key mask, write.
         assert parse_metric_action(
-            ["at", "step", "is", "4", "at", "loss", "to", "0.5"]
+            ["at", "step", "is", "4", "at", "loss", "to", "0.5"],
         ) == MetricAction(
             masks=(
                 MetricMask(field="step", op="is", value="4"),
@@ -1581,7 +1585,7 @@ class TestParseMetricAction:
     def test_bulk_write_step_gt(self) -> None:
         # ``spec`` Write bulk: set every loss cell with step > 3 to 0.5.
         assert parse_metric_action(
-            ["at", "key", "is", "loss", "at", "step", "gt", "3", "to", "0.5"]
+            ["at", "key", "is", "loss", "at", "step", "gt", "3", "to", "0.5"],
         ) == MetricAction(
             masks=(
                 MetricMask(field="key", op="is", value="loss"),
@@ -1593,7 +1597,7 @@ class TestParseMetricAction:
     def test_read_sort_desc_limit(self) -> None:
         # ``spec`` Read: loss's 5 largest.
         assert parse_metric_action(
-            ["at", "key", "is", "loss", "sort", "desc", "limit", "5"]
+            ["at", "key", "is", "loss", "sort", "desc", "limit", "5"],
         ) == MetricAction(
             masks=(MetricMask(field="key", op="is", value="loss"),),
             sort="desc",
@@ -1603,7 +1607,7 @@ class TestParseMetricAction:
     def test_read_bareword_sort_limit(self) -> None:
         # `at loss sort desc limit 5` -- bareword key plus read options.
         assert parse_metric_action(
-            ["at", "loss", "sort", "desc", "limit", "5"]
+            ["at", "loss", "sort", "desc", "limit", "5"],
         ) == MetricAction(
             masks=(MetricMask(field="key", op="is", value="loss"),),
             sort="desc",
@@ -1612,18 +1616,19 @@ class TestParseMetricAction:
 
     def test_sort_asc(self) -> None:
         assert parse_metric_action(["sort", "asc"]) == MetricAction(
-            masks=(), sort="asc"
+            masks=(),
+            sort="asc",
         )
 
     def test_step_max_reduction(self) -> None:
         # ``spec`` Cross-experiment: final per experiment; max takes NO value.
         assert parse_metric_action(["at", "step", "max"]) == MetricAction(
-            masks=(MetricMask(field="step", op="max", value=""),)
+            masks=(MetricMask(field="step", op="max", value=""),),
         )
 
     def test_step_min_reduction(self) -> None:
         assert parse_metric_action(["at", "step", "min"]) == MetricAction(
-            masks=(MetricMask(field="step", op="min", value=""),)
+            masks=(MetricMask(field="step", op="min", value=""),),
         )
 
     def test_bareword_key_then_step_max(self) -> None:
@@ -1632,24 +1637,24 @@ class TestParseMetricAction:
             masks=(
                 MetricMask(field="key", op="is", value="loss"),
                 MetricMask(field="step", op="max", value=""),
-            )
+            ),
         )
 
     def test_cross_experiment_loss_at_step(self) -> None:
         # ``spec`` Cross-experiment: loss@100 across all experiments.
         assert parse_metric_action(
-            ["at", "loss", "at", "step", "is", "100"]
+            ["at", "loss", "at", "step", "is", "100"],
         ) == MetricAction(
             masks=(
                 MetricMask(field="key", op="is", value="loss"),
                 MetricMask(field="step", op="is", value="100"),
-            )
+            ),
         )
 
     def test_cross_experiment_ranked(self) -> None:
         # ``spec`` Cross-experiment: top 5 experiments by loss@100.
         assert parse_metric_action(
-            ["at", "loss", "at", "step", "is", "100", "sort", "desc", "limit", "5"]
+            ["at", "loss", "at", "step", "is", "100", "sort", "desc", "limit", "5"],
         ) == MetricAction(
             masks=(
                 MetricMask(field="key", op="is", value="loss"),
@@ -1661,13 +1666,13 @@ class TestParseMetricAction:
 
     def test_ne_op(self) -> None:
         assert parse_metric_action(["at", "key", "ne", "acc"]) == MetricAction(
-            masks=(MetricMask(field="key", op="ne", value="acc"),)
+            masks=(MetricMask(field="key", op="ne", value="acc"),),
         )
 
     def test_write_value_is_kept_raw_string(self) -> None:
         # Structural only: NaN is not float-validated here (a later layer does).
         action = parse_metric_action(
-            ["at", "step", "is", "3", "at", "loss", "to", "NaN"]
+            ["at", "step", "is", "3", "at", "loss", "to", "NaN"],
         )
         assert action.write == "NaN"
 

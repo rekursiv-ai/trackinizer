@@ -69,7 +69,7 @@ def _split_command(body: str, *, line_no: int) -> list[str]:
     tokens = shlex.split(body)
     if not tokens or tokens[0] != "trax":
         raise AssertionError(
-            f"GRAMMAR.md:{line_no}: example must start with 'trax'; got {body!r}"
+            f"GRAMMAR.md:{line_no}: example must start with 'trax'; got {body!r}",
         )
     return tokens[1:]
 
@@ -88,7 +88,7 @@ def _examples() -> list[tuple[int, list[str]]]:
                 (
                     block_line + 1 + offset,
                     _split_command(stripped, line_no=block_line + 1 + offset),
-                )
+                ),
             )
     return out
 
@@ -109,7 +109,7 @@ def _counterexamples() -> list[tuple[int, str, list[str]]]:
                     block_line + 1 + offset,
                     code,
                     _split_command(stripped, line_no=block_line + 1 + offset),
-                )
+                ),
             )
     return out
 
@@ -158,7 +158,7 @@ def _example_params() -> list[Any]:
                     line_no,
                     argv,
                     marks=_xfail_mark(_KNOWN_FAILING_EXAMPLES[key]),
-                )
+                ),
             )
         else:
             out.append(pytest.param(line_no, argv))
@@ -176,7 +176,7 @@ def _counterexample_params() -> list[Any]:
                     code,
                     argv,
                     marks=_xfail_mark(_KNOWN_FAILING_COUNTEREXAMPLES[key]),
-                )
+                ),
             )
         else:
             out.append(pytest.param(line_no, code, argv))
@@ -215,7 +215,7 @@ def test_grammar_sequence_parses(line_no: int, commands: list[list[str]]) -> Non
         except ClientError as err:
             pytest.fail(
                 f"GRAMMAR.md:{line_no} sequence command #{offset + 1}"
-                f" ({' '.join(argv)}) rejected: {err}"
+                f" ({' '.join(argv)}) rejected: {err}",
             )
 
 
@@ -423,14 +423,17 @@ def test_narrowed_by_produced_by_superseded_by_are_writable_reverses() -> None:
     kind (from=produced -> to=producer); ``produces`` is its reverse.
     """
     assert grammar.EDGE_ALIASES["narrowed_by"] == grammar.Edge(
-        name="narrows", reverse=True
+        name="narrows",
+        reverse=True,
     )
     assert grammar.EDGE_ALIASES["produced_by"] == grammar.Edge(name="produced_by")
     assert grammar.EDGE_ALIASES["produces"] == grammar.Edge(
-        name="produced_by", reverse=True
+        name="produced_by",
+        reverse=True,
     )
     assert grammar.EDGE_ALIASES["superseded_by"] == grammar.Edge(
-        name="supersedes", reverse=True
+        name="supersedes",
+        reverse=True,
     )
 
 
@@ -448,10 +451,12 @@ def test_taxonomy_edge_has_all_four_verb_forms() -> None:
     assert grammar.EDGE_ALIASES["broadened_by"] == grammar.Edge(name="narrows")
     # Parent on the from-side (reverse storage):
     assert grammar.EDGE_ALIASES["narrowed_by"] == grammar.Edge(
-        name="narrows", reverse=True
+        name="narrows",
+        reverse=True,
     )
     assert grammar.EDGE_ALIASES["broadens"] == grammar.Edge(
-        name="narrows", reverse=True
+        name="narrows",
+        reverse=True,
     )
 
 

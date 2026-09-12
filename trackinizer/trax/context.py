@@ -34,7 +34,8 @@ When bound, the overlay is AUTHORITATIVE for the names the caller claims --
 see :func:`env`."""
 
 OVERLAID_NAMES: ContextVar[frozenset[str] | None] = ContextVar(
-    "trax_overlaid_names", default=None
+    "trax_overlaid_names",
+    default=None,
 )
 """Names the overlay speaks for, whether or not the caller had them set.
 

@@ -262,7 +262,7 @@ class SubmitPaper(SubmitBase):
             raise ValueError(
                 "source must be a scheme-tagged identifier '<scheme>:<rest>' "
                 "(e.g. arXiv:2405.16391, doi:10.1/x, https://example.com/p); "
-                f"got {value!r}"
+                f"got {value!r}",
             )
         return value
 
@@ -415,7 +415,9 @@ def _validate_room_names(value: list[str]) -> list[str]:
 # per parent is the stored truth, so a repeated reference is a client redundancy to
 # collapse, not an error.
 def _dedupe_preserving_order[T](
-    value: list[T], *, key: Callable[[T], object]
+    value: list[T],
+    *,
+    key: Callable[[T], object],
 ) -> list[T]:
     """Drop later duplicates by ``key``, keeping the first occurrence's order."""
     seen: set[object] = set()
@@ -511,7 +513,7 @@ class SubmitBatch(BaseModel):
         if missing:
             raise ValueError(
                 "submit_batch items require idempotency_key for retry-safe "
-                f"idempotent replay; missing indexes {missing}"
+                f"idempotent replay; missing indexes {missing}",
             )
         return value
 
@@ -523,7 +525,8 @@ class SubmitBatch(BaseModel):
     @field_validator("items", mode="after")
     @classmethod
     def _reject_duplicate_idempotency_keys(
-        cls, value: list[SubmitItem]
+        cls,
+        value: list[SubmitItem],
     ) -> list[SubmitItem]:
         """Reject items sharing one idempotency_key, naming the dup indexes."""
         seen: dict[uuid.UUID, int] = {}
@@ -539,7 +542,7 @@ class SubmitBatch(BaseModel):
         if duplicates:
             raise ValueError(
                 "submit_batch items must each carry a distinct "
-                f"idempotency_key; duplicate idempotency_key at indexes {duplicates}"
+                f"idempotency_key; duplicate idempotency_key at indexes {duplicates}",
             )
         return value
 
@@ -553,7 +556,7 @@ class SubmitBatch(BaseModel):
             ):
                 if idx is not None and idx >= n:
                     raise ValueError(
-                        f"edge {i} {which}={idx} out of range for {n} items"
+                        f"edge {i} {which}={idx} out of range for {n} items",
                     )
             self._check_new_row_endpoint_kinds(i, edge)
         return self
@@ -586,7 +589,7 @@ class SubmitBatch(BaseModel):
         if kind not in allowed:
             raise ValueError(
                 f"edge {i} {side}_index={idx} is a {kind}, but edge_kind "
-                f"{edge.edge_kind!r} requires its {side}-side in {list(allowed)}"
+                f"{edge.edge_kind!r} requires its {side}-side in {list(allowed)}",
             )
 
 
@@ -665,7 +668,7 @@ class FieldSet[T](FieldMutation):
         if self.mode == "set" and has_expected:
             raise ValueError(
                 "'expected' is only valid with mode='cas'; "
-                "omit it for a blind set or pass mode='cas'"
+                "omit it for a blind set or pass mode='cas'",
             )
         return self
 

@@ -151,7 +151,8 @@ CORPUS: tuple[Case, ...] = (
         tokens="issue owner to Josh status is active",
     ),
     Case(
-        label="bulk, range selector + list mutation", tokens="issue 3..10 label add hot"
+        label="bulk, range selector + list mutation",
+        tokens="issue 3..10 label add hot",
     ),
     # -- class (a): a leading mutation run = create/bulk-or-tail -------------
     Case(label="bare scalar set", tokens="issue owner to Josh", ambiguous=True),
@@ -178,7 +179,8 @@ CORPUS: tuple[Case, ...] = (
     ),
     # -- inline create: single create + ref target are unambiguous ----------
     Case(
-        label="edge inline deep create", tokens="issue 7 produced belief title to claim"
+        label="edge inline deep create",
+        tokens="issue 7 produced belief title to claim",
     ),
     Case(
         label="edge to ref then sibling edge",
@@ -422,23 +424,23 @@ def main() -> int:
         except LarkError as exc:
             if not case.rejects:
                 failures.append(
-                    f"{case.label!r} does not parse: {case.tokens!r}\n    {exc}"
+                    f"{case.label!r} does not parse: {case.tokens!r}\n    {exc}",
                 )
             continue
         if case.rejects:
             failures.append(
                 f"{case.label!r} was expected to be REJECTED but parsed: "
-                f"{case.tokens!r}"
+                f"{case.tokens!r}",
             )
         elif case.ambiguous and count == 0:
             failures.append(
                 f"{case.label!r} was expected ambiguous but parsed uniquely "
-                f"-- an intended maximal-munch overlap changed: {case.tokens!r}"
+                f"-- an intended maximal-munch overlap changed: {case.tokens!r}",
             )
         elif not case.ambiguous and count > 0:
             failures.append(
                 f"{case.label!r} parsed ambiguously ({count} _ambig nodes) "
-                f"-- an UNINTENDED ambiguity was introduced: {case.tokens!r}"
+                f"-- an UNINTENDED ambiguity was introduced: {case.tokens!r}",
             )
 
     if failures:

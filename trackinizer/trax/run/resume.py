@@ -46,7 +46,11 @@ __all__ = ["prepare_resume"]
 
 
 def prepare_resume(
-    client: Client, session_id: UUID, target: str, *, lossy: bool = False
+    client: Client,
+    session_id: UUID,
+    target: str,
+    *,
+    lossy: bool = False,
 ) -> Materialized:
     """Stamp the server, materialize the newest part, return where it landed.
 
@@ -73,7 +77,7 @@ def prepare_resume(
             f"{target!r} cannot resume a stored session: it has no stable "
             "per-session id to re-enter with. "
             f"Resumable: {', '.join(sorted(RESUMABLE_TARGETS))}. "
-            "The session is still downloadable in its own format."
+            "The session is still downloadable in its own format.",
         )
     parts = client.read_session_parts(session_id)
     # The NEWEST part carrying a native format. A part whose format is empty
@@ -83,7 +87,7 @@ def prepare_resume(
     if not native:
         raise NotResumableError(
             f"session {session_id} has no part with a native format, so there "
-            "is no transcript to hand back to a CLI"
+            "is no transcript to hand back to a CLI",
         )
     part = native[-1]
     records, sealed = _read_part(client, session_id, part.part)
@@ -94,7 +98,7 @@ def prepare_resume(
         raise LossyConversionError(
             f"resuming a {part.format!r} session as {target!r} drops "
             f"{', '.join(dropped)}; pass --lossy to accept a shortened "
-            "transcript"
+            "transcript",
         )
     # The id is minted here and stamped BEFORE the runner opens its session,
     # so the resumed run re-attaches this row rather than forking a new one.
@@ -135,7 +139,9 @@ def prepare_resume(
 # A session resumed in the format it was captured in converts nothing, so it can lose
 # nothing and the round trip is skipped.
 def _undroppable(
-    records: Sequence[SessionRecord], source: str, target: str
+    records: Sequence[SessionRecord],
+    source: str,
+    target: str,
 ) -> tuple[str, ...]:
     """Acts writing as ``target`` would lose, measured by rewriting."""
     if source == target:
@@ -166,7 +172,9 @@ def _acts(records: Iterable[SessionRecord]) -> Counter[str]:
 # part -- so the narrowing is a real invariant rather than a cast, and it is asserted so
 # a future part that breaks it fails here instead of inside the claude writer.
 def _read_part(
-    client: Client, session_id: UUID, part: int
+    client: Client,
+    session_id: UUID,
+    part: int,
 ) -> tuple[Sequence[SessionRecord], Sequence[str | None]]:
     """Every record of one part, and the ciphertext each carried."""
     records: list[SessionRecord] = []

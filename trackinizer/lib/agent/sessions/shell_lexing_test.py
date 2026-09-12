@@ -37,7 +37,7 @@ def _lift(script: str, *, stdout: str = "", exit_code: int = 0) -> object:
             command=("/bin/bash", "-lc", script),
             stdout=stdout,
             exit_code=exit_code,
-        )
+        ),
     )
 
 
@@ -241,7 +241,9 @@ def test_a_refused_form_lifts_nothing(script: str) -> None:
     ids=["echo", "heredoc", "printf"],
 )
 def test_an_append_states_a_splice_that_replaces_nothing(
-    script: str, before: str, after: str
+    script: str,
+    before: str,
+    after: str,
 ) -> None:
     """An append inserts, which the shape spells as an empty ``before``.
 
@@ -312,7 +314,8 @@ def test_a_rewrite_states_no_splice_it_cannot_know(script: str) -> None:
     ids=["tee", "tee-a", "cat", "sed-i", "sed-i-e"],
 )
 def test_a_file_named_after_its_utility_rewrites_the_operand(
-    script: str, rewritten: str
+    script: str,
+    rewritten: str,
 ) -> None:
     """A path equal to another word must still be replaced where it SITS."""
     assert (
@@ -322,7 +325,9 @@ def test_a_file_named_after_its_utility_rewrites_the_operand(
 
 
 @pytest.mark.parametrize(
-    "script", ["sed -n '0p' a.txt", "sed -n '0,3p' a.txt"], ids=["single", "span"]
+    "script",
+    ["sed -n '0p' a.txt", "sed -n '0,3p' a.txt"],
+    ids=["single", "span"],
 )
 def test_a_sed_address_of_line_zero_is_no_read(script: str) -> None:
     """``sed -n '0p'`` is an error, not a read: files start at line 1.

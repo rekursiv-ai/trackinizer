@@ -56,7 +56,7 @@ from trackinizer.types.inquiries import (
 # ``title`` / ``account`` are ordinary required columns and flow through
 # ``values`` like any other; only ``status`` needs bespoke SQL (the COALESCE).
 _INSERT_EXPLICIT_COLUMNS: frozenset[str] = frozenset(
-    {"id", "kind", "seq", "status", "marginal_cost"}
+    {"id", "kind", "seq", "status", "marginal_cost"},
 )
 
 
@@ -239,7 +239,7 @@ async def validate_list_references(
     permitted = COLUMN_SPECS[column].references
     if not permitted:  # pragma: no cover -- defensive: callers gate on metadata.
         raise AssertionError(
-            f"validate_list_references called for {column!r} with no references"
+            f"validate_list_references called for {column!r} with no references",
         )
     pairs: list[tuple[UUID, str | None]] = []
     for elt in value:
@@ -255,11 +255,11 @@ async def validate_list_references(
             raise NotFoundError(f"{column} target {uid} not found")
         if actual not in permitted:
             raise ConflictError(
-                f"{column} target {uid} is a {actual}; entries must be {permitted_str}"
+                f"{column} target {uid} is a {actual}; entries must be {permitted_str}",
             )
         if declared is not None and declared != actual:
             raise ConflictError(
-                f"{column} target {uid} declared as {declared} but is a {actual}"
+                f"{column} target {uid} declared as {declared} but is a {actual}",
             )
 
 
@@ -399,7 +399,8 @@ async def infer_produced_endpoints(
         )
     }
     winner: Edge.Kind | None = next(
-        (kind for kind in PRODUCED_INFERENCE_PRECEDENCE if kind in kinds), None
+        (kind for kind in PRODUCED_INFERENCE_PRECEDENCE if kind in kinds),
+        None,
     )
     if winner is None or winner in PRODUCED_INFERENCE_SUPPRESSED:
         return None
@@ -542,7 +543,7 @@ async def _reject_edge_cycle(
     )
     if cycle:
         raise ConflictError(
-            f"{edge_kind} edge {from_id} -> {to_id} would create a cycle"
+            f"{edge_kind} edge {from_id} -> {to_id} would create a cycle",
         )
 
 

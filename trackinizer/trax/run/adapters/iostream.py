@@ -38,7 +38,7 @@ __all__ = ["IOStreamAdapter", "LineCapture"]
 _ANSI_ESCAPES: Final = re.compile(
     rb"\x1b\[[0-9;?]*[a-zA-Z]"  # CSI.
     rb"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC, BEL- or ST-terminated.
-    rb"|\x1b[PX^_][^\x1b]*\x1b\\"  # DCS/SOS/PM/APC, ST-terminated.
+    rb"|\x1b[PX^_][^\x1b]*\x1b\\",  # DCS/SOS/PM/APC, ST-terminated.
 )
 
 # One captured line's byte cap. Enforced at INGEST (``LineCapture.feed``),
@@ -198,5 +198,6 @@ class LineCapture:
             self._emit(raw)
         except Exception:
             logging.getLogger(__name__).warning(
-                "stream capture: dropping unparseable line", exc_info=True
+                "stream capture: dropping unparseable line",
+                exc_info=True,
             )

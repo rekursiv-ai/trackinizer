@@ -63,7 +63,9 @@ class TestTerminalSize:
         master, slave = pty.openpty()
         try:
             _ = fcntl.ioctl(
-                slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0)
+                slave,
+                termios.TIOCSWINSZ,
+                struct.pack("HHHH", 40, 120, 0, 0),
             )
             assert terminal_size(slave) == (40, 120)
         finally:
@@ -91,7 +93,9 @@ class TestRelayRoundTrip:
             "sys.stdout.write('GOT:' + line); sys.stdout.flush()"
         )
         seen, status = _drive(
-            [sys.executable, "-c", child], typed=b"hello\n", needle=b"GOT:hello"
+            [sys.executable, "-c", child],
+            typed=b"hello\n",
+            needle=b"GOT:hello",
         )
         assert b"GOT:hello" in seen
         assert status == 0
@@ -317,7 +321,7 @@ class TestTerminalHandback:
             os.write(master, b"Z" * 4096)
             _restore(borrowed, before)
             assert termios.tcgetattr(borrowed) == before
-            """
+            """,
         )
         completed = subprocess.run(  # noqa: S603 -- internal literal source.
             [sys.executable, "-c", source],
@@ -400,7 +404,9 @@ class TestSignalHandling:
             await terminal.start()
             try:
                 _ = fcntl.ioctl(
-                    slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0)
+                    slave,
+                    termios.TIOCSWINSZ,
+                    struct.pack("HHHH", 40, 120, 0, 0),
                 )
                 relay._resize(slave)
                 packed = fcntl.ioctl(

@@ -92,7 +92,7 @@ TERMINAL_RESET: Final = b"".join(
         b"\x1b[?7h",  # Autowrap back on.
         b"\x1b[?25h",  # Cursor visible.
         b"\x1b[0m",  # Default colors and attributes.
-    )
+    ),
 )
 
 
@@ -539,7 +539,9 @@ class Terminal:
             return True
         try:
             exited = os.waitid(
-                os.P_PID, self._pid, os.WEXITED | os.WNOHANG | os.WNOWAIT
+                os.P_PID,
+                self._pid,
+                os.WEXITED | os.WNOHANG | os.WNOWAIT,
             )
         except ChildProcessError:
             return True

@@ -34,7 +34,9 @@ def engine_of(request: Request) -> DatabaseEngine:
 
 
 def parse_seq_ranges(
-    raw: Sequence[str] | None, *, min_seq: int
+    raw: Sequence[str] | None,
+    *,
+    min_seq: int,
 ) -> tuple[SeqRange, ...]:
     """Decode repeated ``seq_range=a..b`` params into a union, raising 400.
 

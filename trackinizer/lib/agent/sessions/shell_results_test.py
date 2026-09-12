@@ -224,7 +224,9 @@ def test_an_append_lifts_to_the_lines_it_added(script: str, udiff: str) -> None:
     honest rendering. Verified against ``/bin/bash`` for each form.
     """
     shell = ShellCommandResult(
-        call_id="c1", command=("/bin/bash", "-lc", script), exit_code=0
+        call_id="c1",
+        command=("/bin/bash", "-lc", script),
+        exit_code=0,
     )
 
     lifted = lift_shell_result(shell)
@@ -272,7 +274,8 @@ def test_an_append_lifts_to_the_lines_it_added(script: str, udiff: str) -> None:
     ],
 )
 def test_a_read_reports_the_lines_it_returned(
-    script: str, ranges: tuple[tuple[int | None, int | None], ...]
+    script: str,
+    ranges: tuple[tuple[int | None, int | None], ...],
 ) -> None:
     """A bounded read states WHICH lines came back, not just the file.
 
@@ -280,7 +283,10 @@ def test_a_read_reports_the_lines_it_returned(
     returned, which is wrong for the most common read agents write.
     """
     shell = ShellCommandResult(
-        call_id="c1", command=("/bin/bash", "-lc", script), stdout="x\n", exit_code=0
+        call_id="c1",
+        command=("/bin/bash", "-lc", script),
+        stdout="x\n",
+        exit_code=0,
     )
 
     lifted = lift_shell_result(shell)
@@ -309,7 +315,8 @@ def test_a_read_reports_the_lines_it_returned(
     ids=["tail-from", "tail-from-zero", "head-drop", "tail-negative"],
 )
 def test_a_signed_count_names_the_lines_that_utility_prints(
-    script: str, ranges: tuple[tuple[int | None, int | None], ...]
+    script: str,
+    ranges: tuple[tuple[int | None, int | None], ...],
 ) -> None:
     """A sign changes WHICH lines come back, not merely how many.
 
@@ -318,7 +325,10 @@ def test_a_signed_count_names_the_lines_that_utility_prints(
     unknown start -- neither of which the command printed.
     """
     shell = ShellCommandResult(
-        call_id="c1", command=("/bin/bash", "-lc", script), stdout="x\n", exit_code=0
+        call_id="c1",
+        command=("/bin/bash", "-lc", script),
+        stdout="x\n",
+        exit_code=0,
     )
 
     lifted = lift_shell_result(shell)
@@ -438,7 +448,8 @@ def test_a_utility_from_an_unexpected_directory_returns_none() -> None:
     ids=["echo", "printf"],
 )
 def test_a_shell_consumed_escape_lifts_to_what_the_shell_wrote(
-    script: str, written: str
+    script: str,
+    written: str,
 ) -> None:
     """The guard rejects a LITERAL backslash, not one the shell already ate.
 
@@ -447,7 +458,9 @@ def test_a_shell_consumed_escape_lifts_to_what_the_shell_wrote(
     covered the single-backslash form the guard is phrased against.
     """
     shell = ShellCommandResult(
-        call_id="c1", command=("/bin/bash", "-lc", script), exit_code=0
+        call_id="c1",
+        command=("/bin/bash", "-lc", script),
+        exit_code=0,
     )
 
     lifted = lift_shell_result(shell)

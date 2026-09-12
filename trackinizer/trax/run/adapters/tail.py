@@ -159,7 +159,9 @@ class Tail:
         # blocked for a line that never comes, and a non-daemon thread there
         # would hold the whole process open at exit.
         self._reader = threading.Thread(
-            target=self._read, args=(self._lines, self._produced), daemon=True
+            target=self._read,
+            args=(self._lines, self._produced),
+            daemon=True,
         )
         self._reader.start()
 

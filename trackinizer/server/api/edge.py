@@ -68,7 +68,9 @@ async def get_edge_route(
     """
     del identity
     edge = await get_store(request).get_edge(
-        from_id=from_id, to_id=to_id, edge_kind=edge_kind
+        from_id=from_id,
+        to_id=to_id,
+        edge_kind=edge_kind,
     )
     if edge is None:
         raise HTTPException(status_code=404, detail="edge not found")
@@ -317,7 +319,9 @@ def _edge_json(edge: Edge) -> MutableJSON:
 # an upserted (annotation-applied) existing one, so the CLI can echo "added" vs
 # "annotated" without a second round-trip.
 def _edge_response(
-    change_id: uuid.UUID | None, *, created: bool = False
+    change_id: uuid.UUID | None,
+    *,
+    created: bool = False,
 ) -> MutableJSON:
     """Build the edge-mutation response."""
     return {

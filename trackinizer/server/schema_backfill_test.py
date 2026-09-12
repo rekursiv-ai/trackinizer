@@ -106,7 +106,7 @@ async def _run_backfill(store: Store) -> None:
     """Execute 020 exactly as ``_bootstrap_once`` would."""
     async with store.engine.acquire() as conn:
         await conn.execute(
-            (_CWD / "assets" / "schema.020.sql").read_text(encoding="utf-8")
+            (_CWD / "assets" / "schema.020.sql").read_text(encoding="utf-8"),
         )
 
 
@@ -171,7 +171,7 @@ def test_the_dotted_tag_matches_what_the_codec_emits() -> None:
         == "trackinizer.lib.agent.types.sessions.UncategorizedRecord"
     )
     assert str(emitted["py/object"]) in (_CWD / "assets" / "schema.020.sql").read_text(
-        encoding="utf-8"
+        encoding="utf-8",
     )
 
 
@@ -323,7 +323,7 @@ async def test_a_mixed_session_keeps_its_parts_separate(store: Store) -> None:
                 kind="UserMessage",
                 payload=json_freeze({"py/object": "x"}),
                 text="native turn",
-            )
+            ),
         ],
     )
 

@@ -60,7 +60,8 @@ class TestRegexFailuresAs400:
         ],
     )
     def test_a_bad_order_operand_becomes_400(
-        self, cls: type[asyncpg.PostgresError]
+        self,
+        cls: type[asyncpg.PostgresError],
     ) -> None:
         # SQLSTATE 22P02 / 22003. The order templates cast the operand
         # (``col < $1::numeric``), so caller text is parsed at query time and
@@ -74,7 +75,8 @@ class TestRegexFailuresAs400:
         # 400 would hide a server fault behind a client error.
         with pytest.raises(asyncpg.PostgresSyntaxError), regex_failures_as_400():
             raise _postgres_error(
-                asyncpg.PostgresSyntaxError, 'syntax error at or near "FROM"'
+                asyncpg.PostgresSyntaxError,
+                'syntax error at or near "FROM"',
             )
 
     def test_unrelated_exception_propagates(self) -> None:
@@ -111,7 +113,8 @@ async def test_real_engine_rejection_is_a_400(store: Store, pattern: str) -> Non
     await store.submit_issue(SubmitIssue(account="a@b.c", title="alpha"))
     with pytest.raises(HTTPException) as caught, regex_failures_as_400():
         await store.list_kind(
-            "Issue", filters=(Filter(field="title", op="re", value=pattern),)
+            "Issue",
+            filters=(Filter(field="title", op="re", value=pattern),),
         )
     assert caught.value.status_code == 400
 

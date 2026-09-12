@@ -83,7 +83,8 @@ class TestPythonNamedGroups:
     """
 
     @pytest.mark.parametrize(
-        "pattern", ["(?P<x>a)", "a(?P<n>b)", "(?P=x)", "[a](?P<n>b)"]
+        "pattern",
+        ["(?P<x>a)", "a(?P<n>b)", "(?P=x)", "[a](?P<n>b)"],
     )
     def test_a_real_named_group_is_detected(self, pattern: str) -> None:
         assert has_python_named_group(pattern) is True
@@ -171,7 +172,7 @@ class TestExpandedModeComments:
         # The comment spans the ``#`` to the newline; the space before it is
         # ordinary (insignificant) whitespace, not comment.
         assert matchable_indices("(?x)a # zz\nb") == frozenset(
-            {0, 1, 2, 3, 4, 5, 10, 11}
+            {0, 1, 2, 3, 4, 5, 10, 11},
         )
 
     def test_a_hash_comment_body_is_not_live_syntax(self) -> None:
@@ -258,7 +259,8 @@ class TestPosixBracketConstructs:
         assert has_posix_bracket_construct(pattern) is True
 
     @pytest.mark.parametrize(
-        "pattern", ["[abc]", "[0-9]", "[^a]", "[]a]", r"[\[]", "[[]", "a[b]c", ""]
+        "pattern",
+        ["[abc]", "[0-9]", "[^a]", "[]a]", r"[\[]", "[[]", "a[b]c", ""],
     )
     def test_an_ordinary_bracket_is_not_one(self, pattern: str) -> None:
         assert has_posix_bracket_construct(pattern) is False

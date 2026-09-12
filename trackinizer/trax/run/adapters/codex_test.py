@@ -16,7 +16,9 @@ class TestCodexSessionsDir:
     """The sessions root honors ``$CODEX_HOME`` (hermetic launchers set it)."""
 
     def test_codex_home_env_locates_sessions(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A run under ``CODEX_HOME=<dir>`` must discover ``<dir>/sessions``.
 
@@ -34,7 +36,9 @@ class TestCodexSessionsDir:
         assert adapter.matches_session_file(fixture)
 
     def test_falls_back_to_home_codex_without_env(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.delenv("CODEX_HOME", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -54,8 +58,8 @@ class TestCodexSessionId:
     def test_the_trailing_uuid_is_the_session_id(self) -> None:
         found = CodexAdapter().session_id_from_path(
             Path(
-                "rollout-2026-09-01T13-57-15-01a05ec3-08b9-7542-9870-2839ffdbf7f3.jsonl"
-            )
+                "rollout-2026-09-01T13-57-15-01a05ec3-08b9-7542-9870-2839ffdbf7f3.jsonl",
+            ),
         )
 
         assert found == "01a05ec3-08b9-7542-9870-2839ffdbf7f3"
@@ -71,8 +75,8 @@ class TestCodexSessionId:
         """The timestamp holds digits and dashes too, so anchoring matters."""
         found = CodexAdapter().session_id_from_path(
             Path(
-                "rollout-2026-09-01T13-57-15-01a06088-22fc-7121-9c25-263a54eaf330.jsonl"
-            )
+                "rollout-2026-09-01T13-57-15-01a06088-22fc-7121-9c25-263a54eaf330.jsonl",
+            ),
         )
 
         assert found == "01a06088-22fc-7121-9c25-263a54eaf330"

@@ -222,7 +222,7 @@ class Relay:
         """Record a relay-level signal and tear the child down for it."""
         self._interrupted = signum
         self._teardown = asyncio.get_running_loop().create_task(
-            self._terminal.terminate()
+            self._terminal.terminate(),
         )
 
     # The child's output ends the relay: on a pty the master reads EIO when the slave
@@ -381,7 +381,10 @@ class ThreadedRelay:
     # so there is nothing left to submit to or signal. Closing the coroutine keeps that
     # from surfacing as an un-awaited warning.
     def _on_loop(
-        self, work: Coroutine[None, None, object], *, timeout_sec: float
+        self,
+        work: Coroutine[None, None, object],
+        *,
+        timeout_sec: float,
     ) -> None:
         """Run ``work`` on the serving loop from this thread; wait for it."""
         loop = self._loop

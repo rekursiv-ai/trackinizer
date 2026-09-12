@@ -51,7 +51,8 @@ def regex_failures_as_400() -> Generator[None]:
         # ``(?P<x>a)`` kept reaching FastAPI as a 500 while a unit test built
         # on the wrong class passed.
         raise HTTPException(
-            status_code=400, detail=f"invalid regex for Postgres: {exc!s}"
+            status_code=400,
+            detail=f"invalid regex for Postgres: {exc!s}",
         ) from exc
     except asyncpg.QueryCanceledError as exc:
         # The timeout wraps the whole statement, not the regex alone -- a slow
@@ -78,5 +79,6 @@ def regex_failures_as_400() -> Generator[None]:
         # decide without the schema; these two need the column, so only the
         # engine can raise them. Unmapped, each reached the caller as a 500.
         raise HTTPException(
-            status_code=400, detail=f"invalid filter operand for Postgres: {exc!s}"
+            status_code=400,
+            detail=f"invalid filter operand for Postgres: {exc!s}",
         ) from exc

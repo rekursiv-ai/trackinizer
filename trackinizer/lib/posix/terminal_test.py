@@ -54,7 +54,8 @@ class TestWriteAll:
     """The short-write loop that keeps framed bytes whole."""
 
     def test_short_write_delivers_every_byte(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A destination writing one byte per call still receives all of them.
 
@@ -76,7 +77,8 @@ class TestWriteAll:
         assert bytes(delivered) == payload
 
     def test_zero_write_does_not_spin_forever(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A 0-byte write is a dead destination, not a reason to loop.
 
@@ -156,7 +158,8 @@ class TestPlainLineSubmit:
 
         async def run() -> bytes:
             async with Terminal(
-                [sys.executable, "-u", "-c", child], bracketed_paste=False
+                [sys.executable, "-u", "-c", child],
+                bracketed_paste=False,
             ) as term:
                 _ = await term.submit("hello")
                 return await _read_until(term, b"GOT:hello", 5.0)
@@ -179,7 +182,8 @@ class TestPlainLineSubmit:
 
         async def run() -> bytes:
             async with Terminal(
-                [sys.executable, "-u", "-c", child], bracketed_paste=False
+                [sys.executable, "-u", "-c", child],
+                bracketed_paste=False,
             ) as term:
                 _ = await term.submit("secret-echo-probe")
                 # The child exits after its read, ending the stream; whatever
@@ -203,7 +207,8 @@ class TestPlainLineSubmit:
 
         async def run() -> bytes:
             async with Terminal(
-                [sys.executable, "-u", "-c", child], bracketed_paste=False
+                [sys.executable, "-u", "-c", child],
+                bracketed_paste=False,
             ) as term:
                 _ = await term.submit("alpha\nbeta")
                 return await _read_until(term, b"GOT:", 5.0)
@@ -228,7 +233,8 @@ class TestPlainLineSubmit:
 
         async def run() -> bytes:
             async with Terminal(
-                [sys.executable, "-u", "-c", child], bracketed_paste=False
+                [sys.executable, "-u", "-c", child],
+                bracketed_paste=False,
             ) as term:
                 _ = await term.submit(payload)
                 return await _read_until(term, b"LEN:", 10.0)
@@ -485,7 +491,8 @@ class TestLifecycle:
 
         async def run() -> tuple[int, bool]:
             async with Terminal(
-                [sys.executable, "-c", deaf], terminate_grace_sec=0.05
+                [sys.executable, "-c", deaf],
+                terminate_grace_sec=0.05,
             ) as term:
                 assert b"DEAF" in await _read_until(term, b"DEAF", 5.0)
                 await term.terminate()
@@ -507,7 +514,8 @@ class TestLifecycle:
 
         async def run() -> float:
             async with Terminal(
-                [sys.executable, "-c", deaf], terminate_grace_sec=0.1
+                [sys.executable, "-c", deaf],
+                terminate_grace_sec=0.1,
             ) as term:
                 assert b"DEAF" in await _read_until(term, b"DEAF", 5.0)
                 loop = asyncio.get_running_loop()
@@ -634,7 +642,8 @@ class TestLifecycle:
 
         async def run() -> int:
             async with Terminal(
-                [sys.executable, "-c", child], env={"WHO": "scientist"}
+                [sys.executable, "-c", child],
+                env={"WHO": "scientist"},
             ) as term:
                 return await term.wait()
 
@@ -673,7 +682,8 @@ class TestLifecycle:
 
         async def run() -> int:
             async with Terminal(
-                [sys.executable, "-c", child], winsize=(40, 120)
+                [sys.executable, "-c", child],
+                winsize=(40, 120),
             ) as term:
                 return await term.wait()
 
@@ -750,7 +760,8 @@ class TestWriteFailures:
         assert asyncio.run(run()) is False
 
     def test_write_stops_on_a_zero_length_write(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A 0-byte write is a dead master, not a reason to spin forever."""
 
@@ -774,7 +785,8 @@ class TestWriteFailures:
         assert asyncio.run(run()) is False
 
     def test_write_retries_when_the_master_is_full(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A full non-blocking master yields and retries rather than dropping.
 

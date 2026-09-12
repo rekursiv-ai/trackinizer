@@ -132,7 +132,7 @@ class _MetricsMixin(_StoreShared):
                 raise ConflictError(
                     f"inquiry {experiment_id} is not an Experiment "
                     f"(kind={experiment['kind']!r}); "
-                    "metrics may only attach to an experiment"
+                    "metrics may only attach to an experiment",
                 )
             # A single ``unnest`` INSERT (not ``executemany``, which cannot
             # RETURNING) makes the accounting exact and race-free: a concurrent
@@ -280,7 +280,7 @@ class _MetricsMixin(_StoreShared):
         if len(experiment_ids) > max_query_experiments:
             raise ConflictError(
                 f"too many experiments ({len(experiment_ids)}); "
-                f"cap is {max_query_experiments}"
+                f"cap is {max_query_experiments}",
             )
         params: list[object] = [list(experiment_ids)]
         predicates: list[str] = []
@@ -303,10 +303,14 @@ class _MetricsMixin(_StoreShared):
         )
         cols = "experiment_id, key, step, value, kind, timestamp"
         inner = vetted_sql(
-            select, cols, " FROM experiment_metrics WHERE ", where, inner_order
+            select,
+            cols,
+            " FROM experiment_metrics WHERE ",
+            where,
+            inner_order,
         )
         params.append(
-            min(limit if limit is not None else DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT)
+            min(limit if limit is not None else DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT),
         )
         limit_pos = len(params)
         # A reduction already carries a DISTINCT ON ordering; a value ``sort``
@@ -387,7 +391,7 @@ class _MetricsMixin(_StoreShared):
             if mask.op in ("max", "min"):
                 raise ConflictError(
                     "reduction max/min is a read-only step selection; "
-                    "a write cannot reduce"
+                    "a write cannot reduce",
                 )
             if mask.op not in _OP_TO_SQL:
                 raise ConflictError(f"op {mask.op!r} not supported on metric axis")
@@ -412,15 +416,22 @@ class _MetricsMixin(_StoreShared):
                 raise ConflictError(
                     f"inquiry {experiment_id} is not an Experiment "
                     f"(kind={experiment['kind']!r}); "
-                    "metrics may only attach to an experiment"
+                    "metrics may only attach to an experiment",
                 )
             if single_cell:
                 status = await self._upsert_single_cell(
-                    conn, experiment_id, pins["key"][0], pins["step"][0], value
+                    conn,
+                    experiment_id,
+                    pins["key"][0],
+                    pins["step"][0],
+                    value,
                 )
             else:
                 status = await self._update_masked_cells(
-                    conn, experiment_id, masks, value
+                    conn,
+                    experiment_id,
+                    masks,
+                    value,
                 )
         return _rowcount(status)
 
@@ -429,7 +440,7 @@ class _MetricsMixin(_StoreShared):
         """Return the ``DISTINCT ON`` step direction for a max/min reduction."""
         if mask.axis != "step":
             raise ConflictError(
-                f"reduction {mask.op} applies only to the step axis, not {mask.axis!r}"
+                f"reduction {mask.op} applies only to the step axis, not {mask.axis!r}",
             )
         return "DESC" if mask.op == "max" else "ASC"
 
@@ -494,11 +505,12 @@ class _MetricsMixin(_StoreShared):
                     str(len(params)),
                     "::",
                     _AXIS_CAST[mask.axis],
-                )
+                ),
             )
         where = " AND ".join(["experiment_id = $1", *predicates])
         sql = vetted_sql(
-            "UPDATE experiment_metrics SET value = $2::float8 WHERE ", where
+            "UPDATE experiment_metrics SET value = $2::float8 WHERE ",
+            where,
         )
         return await conn.execute(sql, *params)
 
@@ -514,7 +526,7 @@ def _coerce_operand(mask: MetricMaskClause) -> object:
         return int(mask.value) if mask.axis == "step" else float(mask.value)
     except ValueError as exc:
         raise ConflictError(
-            f"{mask.axis} operand {mask.value!r} is not numeric"
+            f"{mask.axis} operand {mask.value!r} is not numeric",
         ) from exc
 
 

@@ -145,7 +145,8 @@ async def list_inquiries_route(
     offset: int = 0,
     seq_range: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
     filter_: Annotated[
-        list[str] | None, Query(alias="filter", max_length=MAX_LIST_LIMIT)
+        list[str] | None,
+        Query(alias="filter", max_length=MAX_LIST_LIMIT),
     ] = None,
 ) -> list[MutableJSON]:
     """List inquiries across one or more ``kind`` query params.
@@ -175,7 +176,8 @@ async def list_inquiries_route(
     del identity
     if limit < 1 or limit > MAX_LIST_LIMIT:
         raise HTTPException(
-            status_code=400, detail=f"limit must be in [1, {MAX_LIST_LIMIT}]"
+            status_code=400,
+            detail=f"limit must be in [1, {MAX_LIST_LIMIT}]",
         )
     if offset < 0:
         raise HTTPException(status_code=400, detail="offset must be >= 0")
@@ -303,7 +305,9 @@ async def by_seq_route(
     del identity
     async with get_store(request).engine.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id FROM inquiries WHERE kind = $1 AND seq = $2", kind, seq
+            "SELECT id FROM inquiries WHERE kind = $1 AND seq = $2",
+            kind,
+            seq,
         )
         if row is None:
             raise HTTPException(status_code=404, detail=f"{kind}#{seq} not found")
@@ -435,7 +439,8 @@ async def list_change_log_route(
     del identity
     if limit < 1 or limit > MAX_LIST_LIMIT:
         raise HTTPException(
-            status_code=400, detail=f"limit must be in [1, {MAX_LIST_LIMIT}]"
+            status_code=400,
+            detail=f"limit must be in [1, {MAX_LIST_LIMIT}]",
         )
     return await get_store(request).list_changes(
         since=since,
@@ -478,7 +483,8 @@ def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
         payload = cast(object, json.loads(raw))
     except json.JSONDecodeError as err:
         raise HTTPException(
-            status_code=400, detail=f"filter is not valid JSON: {err}"
+            status_code=400,
+            detail=f"filter is not valid JSON: {err}",
         ) from err
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="filter must be a JSON object")

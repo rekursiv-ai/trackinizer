@@ -140,7 +140,7 @@ def materialize(
     if spec is None:
         raise NotResumableError(
             f"{target!r} cannot be materialized: no writer names a session it "
-            f"could re-enter. Resumable: {', '.join(sorted(_TARGETS))}."
+            f"could re-enter. Resumable: {', '.join(sorted(_TARGETS))}.",
         )
     minted = session_id or uuid4()
     spliced = identified(
@@ -166,7 +166,9 @@ def materialize(
 
 
 def identified(
-    target: str, records: Sequence[SessionRecord], session_id: UUID
+    target: str,
+    records: Sequence[SessionRecord],
+    session_id: UUID,
 ) -> list[SessionRecord]:
     """State ``session_id`` the way ``target``'s own format states identity.
 
@@ -294,7 +296,8 @@ def _codex_filename(session_id: UUID) -> str:
 # ``session_meta`` line, and a rollout that never states its own id is one the CLI
 # cannot resume however it is named.
 def _codex_identified(
-    records: Sequence[SessionRecord], session_id: UUID
+    records: Sequence[SessionRecord],
+    session_id: UUID,
 ) -> list[SessionRecord]:
     """State ``session_id`` on the launch settings codex declares itself with."""
     at = _stamp()
@@ -384,7 +387,9 @@ def _codex_declared(record: TurnContext, session_id: UUID) -> TurnContext:
     # two copies of one rollout differing in this field alone, null was refused
     # and the ISO string resumed.
     return replace(
-        record, timestamp=record.timestamp or _stamp(), extra=json_freeze(extra)
+        record,
+        timestamp=record.timestamp or _stamp(),
+        extra=json_freeze(extra),
     )
 
 
@@ -483,7 +488,9 @@ _TARGETS: Mapping[str, _Target] = MappingProxyType(
                 _renamed(record, session_id) for record in records
             ],
             write=lambda records, stream, session_id: claude.denormalize(
-                records, stream, seed=session_id
+                records,
+                stream,
+                seed=session_id,
             ),
             # Claude scans its project directory, so the file IS the
             # announcement.
@@ -496,11 +503,12 @@ _TARGETS: Mapping[str, _Target] = MappingProxyType(
             # Codex states identity once, on the launch line ``_codex_declared``
             # writes, so its writer needs no id.
             write=lambda records, stream, _session_id: codex.denormalize(
-                records, stream
+                records,
+                stream,
             ),
             announce=_codex_indexed,
         ),
-    }
+    },
 )
 
 
@@ -523,7 +531,9 @@ _TARGETS: Mapping[str, _Target] = MappingProxyType(
 # An unparsable record is judged separately, by :func:`_writable`: one that cannot be a
 # line is dropped whether or not a crossing is happening.
 def _crossed(
-    records: Sequence[SessionRecord], source: str | None, target: str
+    records: Sequence[SessionRecord],
+    source: str | None,
+    target: str,
 ) -> list[SessionRecord]:
     """Strip what only the CAPTURING provider could replay."""
     crossing = source is not None and source != target
@@ -574,7 +584,8 @@ def _one_line(text: str) -> bool:
 # Checked BEFORE anything is written: a partially-materialized file left on disk would
 # be discovered by the runner's watch as this run's own capture.
 def _spliced(
-    records: Sequence[SessionRecord], sealed: Sequence[str | None]
+    records: Sequence[SessionRecord],
+    sealed: Sequence[str | None],
 ) -> list[SessionRecord]:
     """Rejoin each record with its ciphertext, or refuse if any is missing."""
     out: list[SessionRecord] = []
@@ -600,7 +611,7 @@ def _spliced(
             raise CiphertextDroppedError(
                 f"record {idx} is sealed reasoning whose ciphertext is no "
                 "longer stored; the provider rejects a transcript with an "
-                "empty 'encrypted' field, so this session cannot be resumed"
+                "empty 'encrypted' field, so this session cannot be resumed",
             )
         out.append(record)
     return out

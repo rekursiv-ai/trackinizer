@@ -97,7 +97,12 @@ async def push_changes_to_live_subscribers(
     )
     while True:
         since, after_id, ok = await _drain_pending_changes(
-            store, inbound, since, after_id, page_size=page_size, failures=failures
+            store,
+            inbound,
+            since,
+            after_id,
+            page_size=page_size,
+            failures=failures,
         )
         if ok:
             if failures:
@@ -136,7 +141,9 @@ async def _drain_pending_changes(
     while True:
         try:
             changes = await store.what_changed_for_anyone(
-                since, after_id=after_id, limit=page_size
+                since,
+                after_id=after_id,
+                limit=page_size,
             )
         except Exception as exc:
             if failures == 0:

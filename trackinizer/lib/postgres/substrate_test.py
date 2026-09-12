@@ -116,7 +116,7 @@ async def test_pglite_acquire_restarts_manager_when_node_died(tmp_path: Path) ->
     dead_manager = MagicMock()
     dead_manager.is_running.return_value = False
     dead_manager.get_asyncpg_uri.side_effect = RuntimeError(
-        "PGlite server is not running. Call start() first."
+        "PGlite server is not running. Call start() first.",
     )
     engine._manager = dead_manager
     engine._conn = cast("asyncpg.Connection[asyncpg.Record]", _make_conn())
@@ -132,7 +132,8 @@ async def test_pglite_acquire_restarts_manager_when_node_died(tmp_path: Path) ->
             MagicMock(return_value=fresh_manager),
         )
         monkeypatch.setattr(
-            "trackinizer.lib.postgres.substrate._drain_node_stdout", MagicMock()
+            "trackinizer.lib.postgres.substrate._drain_node_stdout",
+            MagicMock(),
         )
         monkeypatch.setattr(
             "trackinizer.lib.postgres.substrate._ensure_shared_node_modules",
@@ -225,7 +226,8 @@ async def test_postgres_engine_aenter_closes_pool_when_listener_setup_fails(
 
 
 def test_shared_node_modules_installs_once_then_reuses(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The shared PGlite install runs ``npm ci`` once, then is reused.
 
@@ -246,7 +248,8 @@ def test_shared_node_modules_installs_once_then_reuses(
 
 
 def test_warm_cache_preserves_superseded_keys_that_may_still_be_live(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A ready cache must not delete a tree another live process may use.
 
@@ -299,7 +302,8 @@ def test_install_lock_held_when_fresh(tmp_path: Path) -> None:
 
 
 def test_boot_semaphore_caps_concurrent_holders(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The cold-start gate admits at most ``_max_concurrent_boots`` at once.
 
@@ -338,7 +342,8 @@ def test_boot_semaphore_caps_concurrent_holders(
 
 
 def test_boot_slot_reclaimed_when_stale(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A slot orphaned by a killed booter is reclaimed once it ages out.
 
@@ -360,7 +365,8 @@ def test_boot_slot_reclaimed_when_stale(
 
 
 def test_release_does_not_delete_a_reclaimed_slots_new_owner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A slow holder's release must not delete the slot a reclaimer now owns.
 
@@ -387,7 +393,8 @@ def test_release_does_not_delete_a_reclaimed_slots_new_owner(
 
 
 def test_release_does_not_delete_recreated_slot_after_owner_check(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A release/reclaim race must not delete a new owner of the same slot name."""
     monkeypatch.setattr(substrate, "cache_dir", _cache_dir_under(tmp_path))
@@ -414,7 +421,8 @@ def test_release_does_not_delete_recreated_slot_after_owner_check(
 
 @pytest.mark.asyncio
 async def test_node_modules_warmed_before_boot_slot(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The one-time npm install runs OUTSIDE the held boot slot.
 
@@ -455,7 +463,8 @@ async def test_node_modules_warmed_before_boot_slot(
 
 @pytest.mark.asyncio
 async def test_start_retries_past_transient_boot_runtimeerror(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A transient boot ``RuntimeError`` is retried, not surfaced as a hard fail.
 
@@ -490,7 +499,8 @@ async def test_start_retries_past_transient_boot_runtimeerror(
 
 @pytest.mark.asyncio
 async def test_start_surfaces_deterministic_boot_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A boot failure that recurs on every attempt surfaces after the retries.
 
@@ -570,13 +580,16 @@ async def test_pglite_exit_terminates_client_socket(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_link_shared_node_modules_symlinks_to_shared_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A fresh workdir symlinks ``node_modules`` at the shared install."""
     shared = tmp_path / "shared-node-modules"
     shared.mkdir()
     monkeypatch.setattr(
-        substrate, "_ensure_shared_node_modules", MagicMock(return_value=shared)
+        substrate,
+        "_ensure_shared_node_modules",
+        MagicMock(return_value=shared),
     )
     workdir = tmp_path / "wd"
     workdir.mkdir()
@@ -589,7 +602,8 @@ async def test_link_shared_node_modules_symlinks_to_shared_cache(
 
 
 def test_link_shared_node_modules_leaves_existing_tree(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A pre-existing ``node_modules`` is never replaced by the shared link."""
     ensure = MagicMock()

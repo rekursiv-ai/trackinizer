@@ -19,7 +19,9 @@ class TestSessionDiscovery:
     """What the adapter watches and what it claims off that watch."""
 
     def test_the_watch_is_the_tmp_root_not_each_project_leaf(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Gemini mints ``<sha>/chats`` AFTER the watch is armed.
 
@@ -30,7 +32,9 @@ class TestSessionDiscovery:
         assert tuple(GeminiAdapter().session_dirs()) == (tmp_path / ".gemini" / "tmp",)
 
     def test_the_watch_root_is_returned_before_it_exists(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The runner mints these; withholding an absent root disables capture."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -46,7 +50,9 @@ class TestSessionDiscovery:
         assert not adapter.matches_session_file(tmp_path / "chats" / "session-a.jsonl")
 
     def test_the_scope_is_the_hash_of_the_resolved_cwd(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The CLI hashes what IT resolved.
 

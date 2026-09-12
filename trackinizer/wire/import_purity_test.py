@@ -31,7 +31,7 @@ _FORBIDDEN_INTERNAL: frozenset[str] = frozenset(
     {
         "server",
         "trax",
-    }
+    },
 )
 _FORBIDDEN_THIRD_PARTY: frozenset[str] = frozenset(
     {
@@ -39,7 +39,7 @@ _FORBIDDEN_THIRD_PARTY: frozenset[str] = frozenset(
         "asyncpg",
         "uvicorn",
         "starlette",
-    }
+    },
 )
 
 # ``client`` legitimately uses httpx2; ``wire`` and ``types`` do not, but

@@ -67,7 +67,7 @@ async def _captured(store: Store, name: str) -> tuple[UUID, int]:
             records.extend(reader.feed(line))
     records.extend(reader.close())
     session_id = await store.submit_agentsession(
-        SubmitAgentSession(title=f"resume {name}", cli="claude", account="t@e")
+        SubmitAgentSession(title=f"resume {name}", cli="claude", account="t@e"),
     )
     part = await store.upsert_session_manifest(
         session_id,
@@ -84,7 +84,10 @@ async def _captured(store: Store, name: str) -> tuple[UUID, int]:
         session_id,
         [
             SessionRecordRow.of(
-                session_id=session_id, part=part, idx=idx, record=record
+                session_id=session_id,
+                part=part,
+                idx=idx,
+                record=record,
             )
             for idx, record in enumerate(records)
         ],
@@ -97,7 +100,9 @@ async def _captured(store: Store, name: str) -> tuple[UUID, int]:
 # Asserted rather than cast, so a fixture that broke the invariant would fail here
 # instead of inside the claude writer.
 async def _read_back(
-    store: Store, session_id: UUID, part: int
+    store: Store,
+    session_id: UUID,
+    part: int,
 ) -> tuple[Sequence[SessionRecord], Sequence[str | None]]:
     """One part's records and ciphertext, as a resume reads them."""
     rows = await store.read_session_records(session_id, part=part, limit=100_000)
@@ -123,7 +128,9 @@ async def test_a_claude_session_resumes_to_its_stored_records(store: Store) -> N
     manifests = await store.read_session_manifests(session_id)
 
     written = materialize_claude(
-        records=records, encoding=manifests[0].metadata, sealed=sealed
+        records=records,
+        encoding=manifests[0].metadata,
+        sealed=sealed,
     )
     with written.path.open(encoding="utf-8") as handle:
         reread = list(claude.normalize(handle))
@@ -146,9 +153,9 @@ def _without_session_id(records: Sequence[TraxRecord]) -> list[TraxRecord]:
             replace(
                 record,
                 extra=json_freeze(
-                    {k: v for k, v in residual.items() if k != "sessionId"}
+                    {k: v for k, v in residual.items() if k != "sessionId"},
                 ),
-            )
+            ),
         )
     return out
 
@@ -166,7 +173,9 @@ async def test_a_codex_capture_resumes_as_claude(store: Store) -> None:
     manifests = await store.read_session_manifests(session_id)
 
     written = materialize_claude(
-        records=records, encoding=manifests[0].metadata, sealed=sealed
+        records=records,
+        encoding=manifests[0].metadata,
+        sealed=sealed,
     )
 
     assert written.path.exists()
@@ -190,7 +199,9 @@ async def test_the_materialized_file_names_the_minted_id(store: Store) -> None:
     manifests = await store.read_session_manifests(session_id)
 
     written = materialize_claude(
-        records=records, encoding=manifests[0].metadata, sealed=sealed
+        records=records,
+        encoding=manifests[0].metadata,
+        sealed=sealed,
     )
 
     declared = {
@@ -227,7 +238,10 @@ async def test_stamping_the_id_re_attaches_rather_than_forking(store: Store) -> 
 
     resumed, _actor, _seq = await store.start_session(
         SubmitAgentSession(
-            title="resumed", cli="claude", account="t@e", cli_session_id=str(minted)
+            title="resumed",
+            cli="claude",
+            account="t@e",
+            cli_session_id=str(minted),
         ),
         requested_actor="agent",
     )
@@ -265,7 +279,8 @@ async def test_dropped_ciphertext_refuses_the_resume(store: Store) -> None:
     session_id, part = await _captured(store, "codex_main.jsonl")
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "DELETE FROM session_ciphertext WHERE session_id = $1", session_id
+            "DELETE FROM session_ciphertext WHERE session_id = $1",
+            session_id,
         )
     records, sealed = await _read_back(store, session_id, part)
     manifests = await store.read_session_manifests(session_id)
@@ -273,7 +288,9 @@ async def test_dropped_ciphertext_refuses_the_resume(store: Store) -> None:
     assert any(isinstance(r, Thinking) for r in records), "fixture carries no thinking"
     with pytest.raises(CiphertextDroppedError):
         materialize_claude(
-            records=records, encoding=manifests[0].metadata, sealed=sealed
+            records=records,
+            encoding=manifests[0].metadata,
+            sealed=sealed,
         )
 
 
@@ -290,7 +307,8 @@ async def test_the_session_stays_searchable_without_its_ciphertext(
     session_id, part = await _captured(store, "codex_main.jsonl")
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "DELETE FROM session_ciphertext WHERE session_id = $1", session_id
+            "DELETE FROM session_ciphertext WHERE session_id = $1",
+            session_id,
         )
 
     rows = await store.read_session_records(session_id, part=part, limit=100_000)

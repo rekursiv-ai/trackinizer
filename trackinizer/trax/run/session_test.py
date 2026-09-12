@@ -235,7 +235,9 @@ class _PoisonAdapter(_FakeAdapter):
 
 
 def _always_found(
-    cmd: str, mode: int = os.F_OK | os.X_OK, path: str | None = None
+    cmd: str,
+    mode: int = os.F_OK | os.X_OK,
+    path: str | None = None,
 ) -> str:
     """Return a ``shutil.which`` that resolves anything: the binary is never exec'd."""
     del mode, path
@@ -391,7 +393,9 @@ class TestSessionScoping:
         assert stats.counts == {}
 
     def test_a_concurrent_run_starting_later_is_not_drained(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A sibling run's file, created AFTER the watch, must not be captured.
 
@@ -414,7 +418,7 @@ class TestSessionScoping:
                         "type": "user",
                         "uuid": text,
                         "message": {"role": "user", "content": text},
-                    }
+                    },
                 )
                 + "\n"
             )
@@ -443,7 +447,8 @@ class TestSessionScoping:
 
 class TestAppendedLineDrain:
     def test_rotation_discards_the_previous_files_partial_line(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         """A truncated file starts a new byte stream with an empty buffer.
 
@@ -494,7 +499,9 @@ class TestProjectDirectoryBornMidRun:
         assert expected.is_dir()
 
     def test_claude_captures_a_project_directory_created_after_the_watch(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         projects = tmp_path / "projects"
@@ -514,9 +521,9 @@ class TestProjectDirectoryBornMidRun:
                         "type": "user",
                         "uuid": "u1",
                         "message": {"role": "user", "content": "captured"},
-                    }
+                    },
                 )
-                + "\n"
+                + "\n",
             )
 
         _stats, sink = _drain_once(cast(Adapter, ClaudeAdapter()), write)
@@ -525,7 +532,9 @@ class TestProjectDirectoryBornMidRun:
         assert texts == ["captured"], "a new project directory captured nothing"
 
     def test_gemini_captures_a_project_directory_created_after_the_watch(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         tmp = tmp_path / ".gemini" / "tmp"
@@ -543,8 +552,8 @@ class TestProjectDirectoryBornMidRun:
                     {
                         "sessionId": "sess-A",
                         "messages": [{"type": "user", "content": "captured"}],
-                    }
-                )
+                    },
+                ),
             )
 
         _stats, sink = _drain_once(cast(Adapter, GeminiAdapter()), write)
@@ -553,7 +562,9 @@ class TestProjectDirectoryBornMidRun:
         assert texts == ["captured"], "a new project directory captured nothing"
 
     def test_a_missing_claude_projects_root_is_created_before_the_watch(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``_prepare_session_dirs`` must MINT the root, not skip it.
 
@@ -570,7 +581,9 @@ class TestProjectDirectoryBornMidRun:
         assert expected.is_dir()
 
     def test_a_missing_gemini_tmp_root_is_created_before_the_watch(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Gemini has the same shape: an absent root reports no directories."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -581,7 +594,9 @@ class TestProjectDirectoryBornMidRun:
         assert expected.is_dir()
 
     def test_claude_captures_when_no_project_directory_exists_yet(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A first-ever run has no project dir at all when the watch arms.
 
@@ -602,9 +617,9 @@ class TestProjectDirectoryBornMidRun:
                         "type": "user",
                         "uuid": "u1",
                         "message": {"role": "user", "content": "captured"},
-                    }
+                    },
                 )
-                + "\n"
+                + "\n",
             )
 
         _stats, sink = _drain_once(cast(Adapter, ClaudeAdapter()), write)
@@ -673,7 +688,8 @@ class TestWholeFileDrain:
         assert texts == ["b"]
 
     def test_a_body_that_returns_after_a_change_is_emitted_again(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
     ) -> None:
         """Only the LAST body is remembered, never every body ever seen.
 
@@ -708,7 +724,9 @@ class TestGeminiMultiFileDrain:
     """
 
     def test_two_session_files_both_fully_drained(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         # Both files belong to THIS run, so both sit under its own project
@@ -724,8 +742,8 @@ class TestGeminiMultiFileDrain:
                     {
                         "sessionId": session_id,
                         "messages": [{"type": "user", "content": m} for m in msgs],
-                    }
-                )
+                    },
+                ),
             )
 
         def write() -> None:
@@ -757,7 +775,9 @@ class TestDrainSurvivesParseError:
         assert stats.counts == {"UserMessage": 2}
 
     def test_parse_failure_logs_with_traceback(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The swallowed parse error must log a traceback, not an opaque line.
 
@@ -797,7 +817,9 @@ class TestTheWatchIsArmedBeforeTheChildSpawns:
     """
 
     def test_a_write_racing_the_spawn_is_still_captured(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         scope = ClaudeAdapter().session_scope()
@@ -819,9 +841,9 @@ class TestTheWatchIsArmedBeforeTheChildSpawns:
                             "type": "user",
                             "uuid": "u1",
                             "message": {"role": "user", "content": "first"},
-                        }
+                        },
                     )
-                    + "\n"
+                    + "\n",
                 )
                 return 0
 
@@ -853,7 +875,9 @@ class TestFollowerRearmsAfterAFailure:
     """
 
     def test_a_watch_that_raises_once_is_rearmed(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         log = tmp_path / "session.jsonl"
         adapter = _FakeAdapter(tmp_path)
@@ -991,7 +1015,9 @@ class TestStreamQueueIsBounded:
         assert queue[-1] == f"{overfill - 1}\n".encode()
 
     def test_spawn_constructs_a_bounded_queue(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The queue handed to the drain must carry the production cap."""
         limits: list[int | None] = []
@@ -1022,7 +1048,8 @@ class TestStreamQueueIsBounded:
         assert limits == [session._STREAM_QUEUE_MAX]
 
     def test_overflow_is_counted_and_warned(
-        self, caplog: pytest.LogCaptureFixture
+        self,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """An eviction must be visible: stats counter + one WARN per run.
 
@@ -1164,7 +1191,9 @@ class TestDrainIsWakeDriven:
         )
 
     def test_does_not_walk_every_session_directory(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Discovery happens once, not per wake.
 
@@ -1342,7 +1371,7 @@ def _uuid_line(marker: str) -> bytes:
                 "type": "user",
                 "uuid": f"uuid-{marker}",
                 "message": {"role": "user", "content": marker},
-            }
+            },
         )
         + "\n"
     ).encode()
@@ -1393,7 +1422,9 @@ class TestMissingBinary:
         adapter = _FakeAdapter(tmp_path)
         adapter.cli_binary = "definitely-not-a-real-binary-xyz"
         config = RunConfig(
-            cli_name=adapter.name, sync=False, out_path=tmp_path / "o.jsonl"
+            cli_name=adapter.name,
+            sync=False,
+            out_path=tmp_path / "o.jsonl",
         )
         session._ADAPTERS[adapter.name] = lambda: cast(Adapter, adapter)
         try:
@@ -1408,7 +1439,7 @@ class TestRoutingEnv:
 
     def test_actor_and_rooms_exported(self) -> None:
         env = _routing_env(
-            RunConfig(cli_name="codex", actor="scientist", rooms=("sear", "lab"))
+            RunConfig(cli_name="codex", actor="scientist", rooms=("sear", "lab")),
         )
         assert env == {"TRAX_ACTOR": "scientist", "TRAX_ROOMS": "sear,lab"}
 
@@ -1430,7 +1461,8 @@ class TestRoutingEnv:
         # Local / --no-sync runs have no collision arbiter, so no granted name;
         # the requested actor is exported as-is.
         env = _routing_env(
-            RunConfig(cli_name="codex", actor="scientist"), granted_actor=None
+            RunConfig(cli_name="codex", actor="scientist"),
+            granted_actor=None,
         )
         assert env == {"TRAX_ACTOR": "scientist"}
 
@@ -1446,7 +1478,7 @@ class TestEmitSlashCommands:
             [
                 (SlashCommand(command="exit"), at),
                 (SlashCommand(command="model", args="gpt-5"), at),
-            ]
+            ],
         )
         _emit_slash_commands(
             cast(Adapter, _FakeAdapter(Path())),
@@ -1569,7 +1601,9 @@ class TestTeardownRunsEvenWhenTheRelayRaises:
     """
 
     def test_a_raising_relay_still_stops_the_drain(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         class _ExplodingRelay:
             def __init__(self, argv: object, **kwargs: object) -> None:
@@ -1770,7 +1804,10 @@ class _BatchClient:
         self.drains = 0
 
     def drain_inbound(
-        self, session_id: uuid.UUID, *, wait_sec: float = 0.0
+        self,
+        session_id: uuid.UUID,
+        *,
+        wait_sec: float = 0.0,
     ) -> list[tuple[str, str | None, str | None]]:
         del session_id, wait_sec
         self.drains += 1
@@ -1823,7 +1860,10 @@ class _WaitingClient:
         self.waits: list[float] = []
 
     def drain_inbound(
-        self, session_id: uuid.UUID, *, wait_sec: float = 0.0
+        self,
+        session_id: uuid.UUID,
+        *,
+        wait_sec: float = 0.0,
     ) -> list[tuple[str, str | None, str | None]]:
         del session_id
         self.waits.append(wait_sec)
@@ -1841,7 +1881,10 @@ class _FailingClient:
         self.attempts = 0
 
     def drain_inbound(
-        self, session_id: uuid.UUID, *, wait_sec: float = 0.0
+        self,
+        session_id: uuid.UUID,
+        *,
+        wait_sec: float = 0.0,
     ) -> list[tuple[str, str | None, str | None]]:
         del session_id, wait_sec
         self.attempts += 1
@@ -1870,7 +1913,7 @@ _ENVELOPE = json.dumps(
         "kind": "status",
         "subject_ref": "issue 42",
         "row": "trax issue 42",
-    }
+    },
 )
 
 

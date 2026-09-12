@@ -70,7 +70,7 @@ class InboundQueue:
     max_seen_keys: int = 4_096
 
     _queues: dict[UUID, deque[Inbound]] = field(
-        default_factory=lambda: defaultdict(deque)
+        default_factory=lambda: defaultdict(deque),
     )
 
     _seen_sends: OrderedDict[UUID, list[UUID]] = field(default_factory=OrderedDict)
@@ -79,7 +79,7 @@ class InboundQueue:
     # per session: two waiters must both wake, or the second hangs to its
     # timeout because the first consumed the only wakeup.
     _waiters: dict[UUID, list[_Waiter]] = field(
-        default_factory=lambda: defaultdict(list)
+        default_factory=lambda: defaultdict(list),
     )
 
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -178,7 +178,10 @@ class InboundQueue:
             return list(queue) if queue else []
 
     async def await_messages(
-        self, session_id: UUID, *, timeout_sec: float
+        self,
+        session_id: UUID,
+        *,
+        timeout_sec: float,
     ) -> list[Inbound]:
         """Drain ``session_id``, waiting up to ``timeout_sec`` for a message.
 

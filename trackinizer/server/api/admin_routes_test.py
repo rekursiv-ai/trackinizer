@@ -404,7 +404,7 @@ class TestLastAdminGuard:
             return_value={
                 "target_is_admin_active": True,
                 "other_admins": others,
-            }
+            },
         )
 
     def test_demote_last_admin_409(
@@ -472,7 +472,7 @@ class TestLastAdminGuard:
             return_value={
                 "target_is_admin_active": False,
                 "other_admins": 0,
-            }
+            },
         )
         r = client.put(
             f"/api/admin/users/{uuid.uuid4()}/role",
@@ -587,7 +587,7 @@ class TestLastAdminGuard:
         install_identity(make_test_identity(role="admin"))
         engine.conn.execute = AsyncMock(return_value="UPDATE 0")
         engine.conn.fetchrow = AsyncMock(
-            return_value={"target_is_admin_active": False, "other_admins": 0}
+            return_value={"target_is_admin_active": False, "other_admins": 0},
         )
         r = client.put(
             f"/api/admin/users/{uuid.uuid4()}/role",
@@ -607,7 +607,7 @@ class TestLastAdminGuard:
         install_identity(make_test_identity(role="admin"))
         engine.conn.execute = AsyncMock(return_value="DELETE 0")
         engine.conn.fetchrow = AsyncMock(
-            return_value={"target_is_admin_active": False, "other_admins": 0}
+            return_value={"target_is_admin_active": False, "other_admins": 0},
         )
         r = client.delete(f"/api/admin/users/{uuid.uuid4()}")
         assert r.status_code == 404
@@ -702,7 +702,7 @@ class TestAdminAllowlist:
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
         engine.conn.fetch = AsyncMock(
-            return_value=[_allowlist_row(email_or_pattern="*@example.com")]
+            return_value=[_allowlist_row(email_or_pattern="*@example.com")],
         )
         r = client.get("/api/admin/allowlist")
         assert r.status_code == 200, r.text
@@ -820,8 +820,8 @@ class TestAdminAllowlist:
         install_identity(make_test_identity(role="admin"))
         engine.conn.execute = AsyncMock(
             side_effect=asyncpg.UniqueViolationError(
-                "duplicate key value violates unique constraint"
-            )
+                "duplicate key value violates unique constraint",
+            ),
         )
         r = client.post(
             "/api/admin/allowlist",
@@ -965,7 +965,7 @@ class TestProfileRoute:
             return_value={
                 "name": "Alice",
                 "last_login": datetime(2026, 1, 1, tzinfo=UTC),
-            }
+            },
         )
         r = client.get("/api/me/profile")
         assert r.status_code == 200, r.text

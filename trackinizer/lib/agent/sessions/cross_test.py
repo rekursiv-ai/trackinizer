@@ -105,7 +105,9 @@ def _codex_meta() -> str:
     ids=["read", "write"],
 )
 def test_a_claude_file_result_reaches_the_codex_wire(
-    native: str, source: type[object], expected: type[object]
+    native: str,
+    source: type[object],
+    expected: type[object],
 ) -> None:
     """A typed file result must not vanish crossing to codex.
 
@@ -229,7 +231,8 @@ def _codex_search_line() -> str:
     ids=["edit", "search"],
 )
 def test_a_codex_act_keeps_its_type_crossing_to_claude(
-    payload: str, expected: type[object]
+    payload: str,
+    expected: type[object],
 ) -> None:
     """A typed act must still be typed on the other side (axiom 9).
 
@@ -429,7 +432,8 @@ def test_a_session_whose_fork_link_cycles_is_still_ordered() -> None:
     ids=["claude", "codex"],
 )
 def test_a_gemini_session_crosses_to_the_other_providers(
-    target: str, reader: object
+    target: str,
+    reader: object,
 ) -> None:
     """Gemini is a source like any other, so its acts must reach both wires.
 
@@ -447,7 +451,7 @@ def test_a_gemini_session_crosses_to_the_other_providers(
                     "type": "gemini",
                     "content": "running",
                     "toolCalls": [
-                        {"id": "t1", "name": "read_file", "args": {"p": "x"}}
+                        {"id": "t1", "name": "read_file", "args": {"p": "x"}},
                     ],
                 },
             ],

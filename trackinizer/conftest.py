@@ -137,7 +137,7 @@ class FakeEngine:
             if self._held:
                 raise RuntimeError(
                     "Reentrant acquire on the single connection would "
-                    "deadlock: this task already holds the connection."
+                    "deadlock: this task already holds the connection.",
                 )
             self._held = True
             try:
@@ -242,7 +242,8 @@ def pg_dsn(request: pytest.FixtureRequest) -> Iterator[str]:
     """
     try:
         postgresql_proc = cast(
-            PostgreSQLExecutor, request.getfixturevalue("postgresql_proc")
+            PostgreSQLExecutor,
+            request.getfixturevalue("postgresql_proc"),
         )
     except ExecutableMissingException as exc:
         pytest.skip(f"PostgreSQL toolchain unavailable: {exc}")

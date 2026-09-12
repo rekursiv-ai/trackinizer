@@ -58,7 +58,8 @@ class TestUnboundableRegexIsRefused:
     def test_canonical_jsonb_column_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="experiment_config"):
             read._partition_filters(
-                (_BareFilter(field="experiment_config", op="re", value=EVIL),), []
+                (_BareFilter(field="experiment_config", op="re", value=EVIL),),
+                [],
             )
 
     def test_the_alias_is_refused_too(self) -> None:
@@ -67,20 +68,23 @@ class TestUnboundableRegexIsRefused:
         # alias hole without a second spelling table to keep in step.
         with pytest.raises(ValidationError):
             read._partition_filters(
-                (_BareFilter(field="config", op="re", value=EVIL),), []
+                (_BareFilter(field="config", op="re", value=EVIL),),
+                [],
             )
 
     def test_negated_regex_is_refused(self) -> None:
         with pytest.raises(ValidationError):
             read._partition_filters(
-                (_BareFilter(field="experiment_config", op="nre", value=EVIL),), []
+                (_BareFilter(field="experiment_config", op="nre", value=EVIL),),
+                [],
             )
 
     def test_regex_on_a_lowering_column_is_allowed(self) -> None:
         # ``title`` lowers to ``~``; Postgres and the statement timeout bound
         # it. The restriction is about reachability, not about regex.
         clauses, remaining = read._partition_filters(
-            (_BareFilter(field="title", op="re", value=EVIL),), []
+            (_BareFilter(field="title", op="re", value=EVIL),),
+            [],
         )
         assert clauses
         assert not remaining
@@ -93,7 +97,9 @@ class TestUnboundableRegexIsRefused:
         _, remaining = read._partition_filters(
             (
                 _BareFilter(
-                    field="experiment_config", op=cast(FilterOp, op), value=value
+                    field="experiment_config",
+                    op=cast(FilterOp, op),
+                    value=value,
                 ),
             ),
             [],
@@ -117,7 +123,9 @@ class TestUnboundableRegexIsRefused:
             read._partition_filters(
                 (
                     _BareFilter(
-                        field="experiment_config", op=cast(FilterOp, op), value="x"
+                        field="experiment_config",
+                        op=cast(FilterOp, op),
+                        value="x",
                     ),
                 ),
                 [],
@@ -130,7 +138,8 @@ class TestUnboundableRegexIsRefused:
         # Python answers false. A guard on the declined branch never saw it.
         with pytest.raises(ValidationError, match="NaN"):
             read._partition_filters(
-                (_BareFilter(field="seq", op=cast(FilterOp, op), value="nan"),), []
+                (_BareFilter(field="seq", op=cast(FilterOp, op), value="nan"),),
+                [],
             )
 
     def test_lowering_disabled_still_refuses_an_unboundable_column(self) -> None:
@@ -151,7 +160,9 @@ class TestUnboundableRegexIsRefused:
         # equivalence suite's own regex cases unrunnable -- it never showed
         # because ``db_pglite`` is deselected by default.
         clauses, remaining = read._partition_filters(
-            (_BareFilter(field="title", op="re", value=EVIL),), [], lowering=False
+            (_BareFilter(field="title", op="re", value=EVIL),),
+            [],
+            lowering=False,
         )
         assert not clauses
         assert remaining

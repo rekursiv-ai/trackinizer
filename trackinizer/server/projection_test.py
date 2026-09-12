@@ -112,7 +112,10 @@ class TestProjection:
                 Any,
                 [
                     _edge(
-                        "narrows", from_id=narrower_id, from_kind="Issue", priority=20
+                        "narrows",
+                        from_id=narrower_id,
+                        from_kind="Issue",
+                        priority=20,
                     ),
                     _edge("requires", from_id=requirer_id, from_kind="Issue"),
                 ],
@@ -140,7 +143,10 @@ class TestProjection:
                 [
                     _edge("proves", to_id=proved_id, to_kind="Belief", valence=0.8),
                     _edge(
-                        "favors", to_id=favored_id, to_kind="Experiment", valence=-0.5
+                        "favors",
+                        to_id=favored_id,
+                        to_kind="Experiment",
+                        valence=-0.5,
                     ),
                 ],
             ),
@@ -165,7 +171,10 @@ class TestProjection:
                 Any,
                 [
                     _edge(
-                        "proves", from_id=prover_id, from_kind="Experiment", valence=0.9
+                        "proves",
+                        from_id=prover_id,
+                        from_kind="Experiment",
+                        valence=0.9,
                     ),
                     _edge("favors", from_id=favorer_id, from_kind="Paper"),
                 ],
@@ -207,7 +216,7 @@ class TestProjection:
                         priority=5,
                         note="decomposes the auth epic",
                         labels=("auth",),
-                    )
+                    ),
                 ],
             ),
             cast(Any, []),
@@ -243,7 +252,7 @@ class TestProjection:
                         to_kind="Paper",
                         note="see \u00a73",
                         labels=("prior-art",),
-                    )
+                    ),
                 ],
             ),
             cast(Any, []),
@@ -258,7 +267,10 @@ class TestProjection:
         assert isinstance(cited, Paper)
         assert citing.cites == (
             InquiryEdge(
-                id=cited_id, kind="Paper", note="see \u00a73", labels=("prior-art",)
+                id=cited_id,
+                kind="Paper",
+                note="see \u00a73",
+                labels=("prior-art",),
             ),
         )
         assert cited.cited_by == (InquiryEdge(id=citing_id, kind="Paper"),)

@@ -64,7 +64,8 @@ class TestLogMetrics:
         store, _engine = make_store(conn)
         with pytest.raises(ConflictError, match="not an Experiment"):
             await store.log_metrics(
-                uuid.uuid4(), [MetricPoint(key="loss", step=0, value=1.0)]
+                uuid.uuid4(),
+                [MetricPoint(key="loss", step=0, value=1.0)],
             )
 
     @pytest.mark.asyncio
@@ -74,7 +75,8 @@ class TestLogMetrics:
         store, _engine = make_store(conn)
         with pytest.raises(NotFoundError, match="not found"):
             await store.log_metrics(
-                uuid.uuid4(), [MetricPoint(key="loss", step=0, value=1.0)]
+                uuid.uuid4(),
+                [MetricPoint(key="loss", step=0, value=1.0)],
             )
 
     @pytest.mark.asyncio
@@ -98,7 +100,8 @@ class TestLogMetrics:
         conn.fetch = AsyncMock(side_effect=fetch)
         with pytest.raises(NotFoundError, match="not found"):
             await store.log_metrics(
-                uuid.uuid4(), [MetricPoint(key="loss", step=0, value=1.0)]
+                uuid.uuid4(),
+                [MetricPoint(key="loss", step=0, value=1.0)],
             )
 
 
@@ -115,12 +118,12 @@ class TestReadMetrics:
                     "value": 0.9,
                     "kind": "scalar",
                     "timestamp": None,
-                }
-            ]
+                },
+            ],
         )
         points = await store.read_metrics(uuid.uuid4())
         assert [(p.key, p.step, p.value, p.kind) for p in points] == [
-            ("loss", 0, 0.9, "scalar")
+            ("loss", 0, 0.9, "scalar"),
         ]
 
     @pytest.mark.asyncio
@@ -296,7 +299,7 @@ class TestQueryMetrics:
         conn = make_conn()
         store, _engine = make_store(conn)
         conn.fetch = AsyncMock(
-            return_value=[_row(experiment_id=eid, key="loss", step=7, value=0.3)]
+            return_value=[_row(experiment_id=eid, key="loss", step=7, value=0.3)],
         )
         result = await store.query_metrics([eid], masks=[])
         assert len(result) == 1
@@ -344,7 +347,9 @@ class TestWriteMetricsMasked:
         set_field_row(conn, {"kind": "Experiment"})
         conn.execute = AsyncMock(return_value="INSERT 0 1")
         written = await store.write_metrics_masked(
-            uuid.uuid4(), masks=self._pinned(), value=0.5
+            uuid.uuid4(),
+            masks=self._pinned(),
+            value=0.5,
         )
         assert written == 1
         upsert = next(
@@ -395,7 +400,9 @@ class TestWriteMetricsMasked:
         for bad in (float("nan"), float("inf"), float("-inf")):
             with pytest.raises(ConflictError, match="finite"):
                 await store.write_metrics_masked(
-                    uuid.uuid4(), masks=self._pinned(), value=bad
+                    uuid.uuid4(),
+                    masks=self._pinned(),
+                    value=bad,
                 )
 
     @pytest.mark.asyncio
@@ -421,7 +428,9 @@ class TestWriteMetricsMasked:
         store, _engine = make_store(conn)
         with pytest.raises(ConflictError, match="not an Experiment"):
             await store.write_metrics_masked(
-                uuid.uuid4(), masks=self._pinned(), value=0.5
+                uuid.uuid4(),
+                masks=self._pinned(),
+                value=0.5,
             )
 
     @pytest.mark.asyncio
@@ -431,7 +440,9 @@ class TestWriteMetricsMasked:
         store, _engine = make_store(conn)
         with pytest.raises(NotFoundError, match="not found"):
             await store.write_metrics_masked(
-                uuid.uuid4(), masks=self._pinned(), value=0.5
+                uuid.uuid4(),
+                masks=self._pinned(),
+                value=0.5,
             )
 
 

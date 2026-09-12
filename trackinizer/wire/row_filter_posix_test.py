@@ -50,7 +50,10 @@ class TestTranslationsStillApply:
         ],
     )
     def test_boundaries_translate(
-        self, pattern: str, subject: str, expected: bool
+        self,
+        pattern: str,
+        subject: str,
+        expected: bool,
     ) -> None:
         assert (re.search(posix_pattern(pattern), subject) is not None) is expected
 
@@ -90,7 +93,10 @@ class TestDigitAndSpaceAreAsciiInBothEngines:
         ],
     )
     def test_it_matches_the_engine(
-        self, pattern: str, subject: str, postgres_says: bool
+        self,
+        pattern: str,
+        subject: str,
+        postgres_says: bool,
     ) -> None:
         found = re.search(posix_pattern(pattern), subject) is not None
         assert found is postgres_says
@@ -114,7 +120,7 @@ class TestTheWhitespaceClassIsExact:
     #: Postgres).
     POSTGRES_SPACE = frozenset(
         {9, 10, 11, 12, 13, 32, 5760, *range(8192, 8199), 8200, 8201, 8202}
-        | {8232, 8233, 8287, 12_288}
+        | {8232, 8233, 8287, 12_288},
     )
 
     @classmethod
@@ -173,7 +179,10 @@ class TestDotMatchesNewlineLikePostgres:
         ],
     )
     def test_it_matches_the_engine(
-        self, pattern: str, subject: str, postgres_says: bool
+        self,
+        pattern: str,
+        subject: str,
+        postgres_says: bool,
     ) -> None:
         found = re.search(posix_pattern(pattern), subject) is not None
         assert found is postgres_says
@@ -216,7 +225,10 @@ class TestDollarIsEndOfStringLikePostgres:
         ],
     )
     def test_it_matches_the_engine(
-        self, pattern: str, subject: str, postgres_says: bool
+        self,
+        pattern: str,
+        subject: str,
+        postgres_says: bool,
     ) -> None:
         found = re.search(posix_pattern(pattern), subject) is not None
         assert found is postgres_says
@@ -244,7 +256,10 @@ class TestNonAsciiAgreesWithPostgres:
         ],
     )
     def test_word_class_matches_the_engine(
-        self, pattern: str, subject: str, postgres_says: bool
+        self,
+        pattern: str,
+        subject: str,
+        postgres_says: bool,
     ) -> None:
         found = re.search(posix_pattern(pattern), subject) is not None
         assert found is postgres_says

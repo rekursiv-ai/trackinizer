@@ -68,7 +68,7 @@ class TestRoutes:
                         "title": "a1",
                         "idempotency_key": second_key,
                     },
-                ]
+                ],
             },
         )
         assert r.status_code == 200
@@ -107,7 +107,7 @@ class TestRoutes:
                         "title": "a1",
                         "idempotency_key": "22222222-2222-2222-2222-222222222222",
                     },
-                ]
+                ],
             },
         )
         assert r.status_code == 200, r.text
@@ -125,7 +125,9 @@ class TestRoutes:
         # per item -- a per-item probe is a needless N-connection fan-out.
         client, store, engine = route_client
         monkeypatch.setattr(
-            store, "submit_batch", AsyncMock(return_value=[uuid.uuid4()] * 20)
+            store,
+            "submit_batch",
+            AsyncMock(return_value=[uuid.uuid4()] * 20),
         )
         probe_calls = 0
         base = engine.conn.fetchval
@@ -206,7 +208,7 @@ class TestRoutes:
                             "title": "a1",
                             "idempotency_key": "22222222-2222-2222-2222-222222222222",
                         },
-                    ]
+                    ],
                 },
             )
         verbs = [s for s in executed_sql(conn) if s in ("BEGIN", "COMMIT", "ROLLBACK")]
@@ -297,7 +299,7 @@ class TestRoutes:
                         "title": "a1",
                         "idempotency_key": "22222222-2222-2222-2222-222222222222",
                     },
-                ]
+                ],
             },
         )
         # The app maps a UniqueViolation to 409; the batch's single tx rolls
@@ -355,7 +357,7 @@ class TestRoutes:
                         "title": "a1",
                         "idempotency_key": "22222222-2222-2222-2222-222222222222",
                     },
-                ]
+                ],
             },
         )
         assert r.status_code == 200

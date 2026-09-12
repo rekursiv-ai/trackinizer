@@ -54,7 +54,9 @@ def test_failed_reader_cannot_end_the_replacement(
 
 @pytest.mark.parametrize("finish_in_feed", [False, True])
 def test_terminal_result_waits_for_reader_exit(
-    monkeypatch: pytest.MonkeyPatch, *, finish_in_feed: bool
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    finish_in_feed: bool,
 ) -> None:
     reader = tail.Tail(_records)
     produced = _PausingQueue(lambda item: item is tail._ENDED)
@@ -161,7 +163,8 @@ def _observe_join(
 
 
 def _returned(
-    progress: queue.SimpleQueue[str], completed: Future[list[TraxRecord]]
+    progress: queue.SimpleQueue[str],
+    completed: Future[list[TraxRecord]],
 ) -> None:
     del completed
     progress.put("returned")

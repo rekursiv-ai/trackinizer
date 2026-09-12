@@ -174,7 +174,7 @@ def _source_client(source_url: str) -> Client:
     profile = load_profile()
     if not profile.api_key:
         raise SystemExit(
-            "no api_key in the active trax profile; cannot read the source server"
+            "no api_key in the active trax profile; cannot read the source server",
         )
     url = source_url or profile.url
     if not url:
@@ -228,7 +228,8 @@ def _node_from_row(row: dict[str, Any], kind: str) -> dict[str, Any]:
 # report the same row from the other endpoint), so the set is naturally deduplicated
 # across nodes.
 def _pull_edges(
-    source: Client, node_ids: list[str]
+    source: Client,
+    node_ids: list[str],
 ) -> list[tuple[str, str, str, float | None]]:
     """Outbound edges for each node, as ``(from_id, to_id, kind, valence)``."""
     valid_kinds = set(get_args(Edge.Kind.__value__))
@@ -372,7 +373,8 @@ def _detail_label(detail: dict[str, Any]) -> str:
 
 
 def _insert_one_by_one(
-    target: Client, chunk: list[dict[str, Any]]
+    target: Client,
+    chunk: list[dict[str, Any]],
 ) -> list[object | None]:
     """Per-row insert fallback; ``None`` for a row the target rejects."""
     out: list[object | None] = []

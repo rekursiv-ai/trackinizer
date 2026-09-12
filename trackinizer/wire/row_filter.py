@@ -162,7 +162,7 @@ def reject_inadmissible(filt: RowFilter) -> None:
     if column not in FILTERABLE_COLUMNS:
         raise ValidationError(
             f"unknown filter field {filt.field!r}: no column answers it, so "
-            "SQL would error where this evaluator reads every row as NULL"
+            "SQL would error where this evaluator reads every row as NULL",
         )
     if filt.op in REGEX_OPS | ORDER_OPS and not lowers_into_sql(column, filt.op):
         detail = (
@@ -173,7 +173,7 @@ def reject_inadmissible(filt: RowFilter) -> None:
         )
         raise ValidationError(
             f"filter op {filt.op!r} is not supported on {column!r}: {detail}. "
-            "Use 'is' / 'ne', or apply it to a column whose SQL declares the op."
+            "Use 'is' / 'ne', or apply it to a column whose SQL declares the op.",
         )
     # Only a template that CASTS the operand constrains it. Ordering a
     # timestamp compares text, where every operand is well defined in both
@@ -184,14 +184,14 @@ def reject_inadmissible(filt: RowFilter) -> None:
         raise ValidationError(
             f"filter value {filt.value!r} is NaN, which orders as the largest "
             "value in Postgres and compares false in Python, so the two "
-            "evaluators would select different rows"
+            "evaluators would select different rows",
         )
     if (parsed := as_numeric(filt.value)) is None:
         raise ValidationError(
             f"filter value {filt.value!r} is not a number Postgres can read, "
             f"but ordering {column!r} casts the operand to numeric: Postgres "
             "rejects it outright (SQLSTATE 22P02), which no handler maps, "
-            "while Python compares it as text"
+            "while Python compares it as text",
         )
     # Parsing as ``numeric`` is not enough: the COLUMN's type decides what it
     # can hold. A float8 column compares ``{col}::float8 < $1::numeric``, so
@@ -205,7 +205,7 @@ def reject_inadmissible(filt: RowFilter) -> None:
         raise ValidationError(
             f"filter value {filt.value!r} is out of range for {column!r}, "
             "whose SQL compares it as double precision: Postgres rejects it "
-            "(SQLSTATE 22003) while Python silently rounds it"
+            "(SQLSTATE 22003) while Python silently rounds it",
         )
 
 
@@ -274,7 +274,7 @@ def _reject_non_ascii_fold(value: object, pattern: str) -> None:
                 "regex flag 'i' case-folds non-ASCII text differently in the "
                 "two engines, which both answer rather than error, and this "
                 "row carries non-ASCII text. Drop '(?i)', or compare with "
-                "'is' / 'ne'"
+                "'is' / 'ne'",
             )
 
 

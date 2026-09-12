@@ -118,7 +118,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         _logger.critical(
             "AUTH IS DISABLED: every request resolves to a synthetic admin. "
             "This is for local demos only -- never expose this server to an "
-            "untrusted network."
+            "untrusted network.",
         )
     async with build_engine(config) as engine:
         app.state.engine = engine
@@ -140,7 +140,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         # Subscriber push: copies committed change rows into subscribers'
         # live-session inbound queues (doorbell-driven; see subscriber_push).
         push_task = asyncio.create_task(
-            push_changes_to_live_subscribers(app.state.store, app.state.inbound)
+            push_changes_to_live_subscribers(app.state.store, app.state.inbound),
         )
         try:
             yield

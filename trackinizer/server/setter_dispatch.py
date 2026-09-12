@@ -184,7 +184,7 @@ def _column_specs_for(*classes: type[DataclassInstance]) -> dict[str, ColumnSpec
                 col in merged and merged[col] != spec
             ):  # pragma: no cover -- defensive consistency check across the hierarchy.
                 raise AssertionError(
-                    f"inconsistent ColumnSpec for {col!r}: {merged[col]!r} vs {spec!r}"
+                    f"inconsistent ColumnSpec for {col!r}: {merged[col]!r} vs {spec!r}",
                 )
             merged[col] = spec
     return merged

@@ -133,7 +133,7 @@ def server_url(raw: str, source: str) -> str:
         raise ClientError(f"{source} has invalid URL {raw!r}")
     if parsed.username or parsed.password:
         raise ClientError(
-            f"{source} URL must not embed credentials; use api_key instead"
+            f"{source} URL must not embed credentials; use api_key instead",
         )
     if parsed.query or parsed.fragment:
         raise ClientError(f"{source} URL must not contain query or fragment")
@@ -229,7 +229,10 @@ class Client:
         self.close()
 
     def get(
-        self, path: str, *, params: Mapping[str, object] | None = None
+        self,
+        path: str,
+        *,
+        params: Mapping[str, object] | None = None,
     ) -> JSONValue:
         """Send a GET request."""
         return self._request("GET", path, params=params)
@@ -274,12 +277,13 @@ class Client:
         kind = cast(Inquiry.InquiryKind, _require_field(self.get(where), "kind", where))
         if ref.expected_kind is not None and ref.expected_kind != kind:
             raise ClientError(
-                f"ref {ref.expected_kind} {ref.uuid} resolves to a {kind} row"
+                f"ref {ref.expected_kind} {ref.uuid} resolves to a {kind} row",
             )
         return kind, ref.uuid
 
     def resolve_ids(
-        self, refs: Sequence[Ref]
+        self,
+        refs: Sequence[Ref],
     ) -> list[tuple[Inquiry.InquiryKind, uuid.UUID]]:
         """Resolve many refs in one go.
 
@@ -322,7 +326,7 @@ class Client:
             kind = cast(Inquiry.InquiryKind, kind_str)
             if ref.expected_kind is not None and ref.expected_kind != kind:
                 raise ClientError(
-                    f"ref {ref.expected_kind} {ref.uuid} resolves to a {kind} row"
+                    f"ref {ref.expected_kind} {ref.uuid} resolves to a {kind} row",
                 )
             out.append((kind, ref.uuid))
         return out
@@ -529,7 +533,7 @@ class Client:
                     return
                 if alive is not None and not alive():
                     raise ClientError(
-                        "server process died before becoming ready"
+                        "server process died before becoming ready",
                     ) from err
                 if time.monotonic() >= deadline:
                     raise
@@ -626,7 +630,7 @@ class Client:
             if body_kind is not None and body_kind != kind:
                 raise ClientError(
                     f"submit_batch item {index}: body kind {body_kind!r} "
-                    f"conflicts with tuple kind {kind!r}"
+                    f"conflicts with tuple kind {kind!r}",
                 )
             payload["kind"] = kind
             if payload.get("idempotency_key") is None:
@@ -945,9 +949,20 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Add codechange."""
+        """Link one CodeChange to a node, race-free.
+
+        Args:
+          target_id: Node receiving the link.
+          codechange_id: CodeChange to link.
+          actor: Actor recorded on the event.
+
+        """
         self._patch_field(
-            target_id, "codechanges", "add", str(codechange_id), actor=actor
+            target_id,
+            "codechanges",
+            "add",
+            str(codechange_id),
+            actor=actor,
         )
 
     def remove_codechange(
@@ -957,9 +972,20 @@ class Client:
         *,
         actor: Inquiry.Actor,
     ) -> None:
-        """Remove codechange."""
+        """Unlink one CodeChange from a node, race-free.
+
+        Args:
+          target_id: Node losing the link.
+          codechange_id: CodeChange to unlink.
+          actor: Actor recorded on the event.
+
+        """
         self._patch_field(
-            target_id, "codechanges", "sub", str(codechange_id), actor=actor
+            target_id,
+            "codechanges",
+            "sub",
+            str(codechange_id),
+            actor=actor,
         )
 
     def add_author(
@@ -1092,7 +1118,9 @@ class Client:
         if body.idempotency_key is None:
             body = body.model_copy(update={"idempotency_key": uuid.uuid4()})
         response = self._request(
-            "POST", wire_sessions.SESSION_START_PATH, body=body.model_dump(mode="json")
+            "POST",
+            wire_sessions.SESSION_START_PATH,
+            body=body.model_dump(mode="json"),
         )
         return _validate_model(
             wire_sessions.SessionStartResponse,
@@ -1304,12 +1332,16 @@ class Client:
 
         """
         req = wire_metrics_query.MetricQueryRequest(
-            masks=list(masks), sort=sort, limit=limit
+            masks=list(masks),
+            sort=sort,
+            limit=limit,
         )
         where = wire_metrics_query.experiment_metric_query_path(experiment_id)
         response = self._request("POST", where, body=req.model_dump(mode="json"))
         return _validate_model(
-            wire_metrics_query.MetricQueryResponse, response, where
+            wire_metrics_query.MetricQueryResponse,
+            response,
+            where,
         ).points
 
     def write_metrics_masked(
@@ -1334,7 +1366,9 @@ class Client:
         where = wire_metrics_query.experiment_metric_write_path(experiment_id)
         response = self._request("POST", where, body=req.model_dump(mode="json"))
         return _validate_model(
-            wire_metrics_query.MetricWriteResponse, response, where
+            wire_metrics_query.MetricWriteResponse,
+            response,
+            where,
         ).written
 
     def rank_metrics(
@@ -1358,15 +1392,20 @@ class Client:
 
         """
         query = wire_metrics_query.MetricQueryRequest(
-            masks=list(masks), sort=sort, limit=limit
+            masks=list(masks),
+            sort=sort,
+            limit=limit,
         )
         req = wire_metrics_query.MetricRankRequest(
-            experiment_ids=list(experiment_ids), query=query
+            experiment_ids=list(experiment_ids),
+            query=query,
         )
         where = wire_metrics_query.METRIC_RANK_PATH
         response = self._request("POST", where, body=req.model_dump(mode="json"))
         return _validate_model(
-            wire_metrics_query.MetricRankResponse, response, where
+            wire_metrics_query.MetricRankResponse,
+            response,
+            where,
         ).rows
 
     def session_end(
@@ -1411,7 +1450,9 @@ class Client:
         where = wire_sessions.session_inbound_path(session_id)
         response = self._request("POST", where, body=body)
         return _validate_model(
-            wire_sessions.InboundEnqueueResponse, response, where
+            wire_sessions.InboundEnqueueResponse,
+            response,
+            where,
         ).queued
 
     def drain_inbound(
@@ -1474,11 +1515,13 @@ class Client:
 
         """
         body = wire_sessions.SendMessage(actor=actor, room=room, text=text).model_dump(
-            mode="json"
+            mode="json",
         )
         response = self._request("POST", wire_sessions.SEND_MESSAGE_PATH, body=body)
         return _validate_model(
-            wire_sessions.SendMessageResponse, response, wire_sessions.SEND_MESSAGE_PATH
+            wire_sessions.SendMessageResponse,
+            response,
+            wire_sessions.SEND_MESSAGE_PATH,
         ).delivered
 
     def _patch_field(
@@ -1610,7 +1653,7 @@ class Client:
             return cast(JSONValue, response.json())
         except ValueError as err:
             raise ClientError(
-                f"{method} {path}: malformed JSON in server response"
+                f"{method} {path}: malformed JSON in server response",
             ) from err
 
     def _log_transport_failure(
@@ -1707,7 +1750,9 @@ def _require_uuid(value: object, where: str) -> uuid.UUID:
 # A malformed session-route response would otherwise leak a raw
 # ``pydantic.ValidationError`` past the ClientError contract.
 def _validate_model[M: pydantic.BaseModel](
-    model: type[M], response: object, where: str
+    model: type[M],
+    response: object,
+    where: str,
 ) -> M:
     """Validate ``response`` into ``model``, wrapping pydantic errors."""
     try:
