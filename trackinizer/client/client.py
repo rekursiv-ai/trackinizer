@@ -215,6 +215,7 @@ class Client:
         self._http.close()
 
     def __enter__(self) -> Self:
+        """Enter the context manager."""
         return self
 
     def __exit__(
@@ -223,6 +224,7 @@ class Client:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        """Exit the context manager, closing the connection."""
         self.close()
 
     def get(

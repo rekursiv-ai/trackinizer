@@ -33,6 +33,7 @@ class SeqRange:
     stop: int | None = None
 
     def __post_init__(self) -> None:
+        """Validate that the range has at least one bound."""
         # A fully-open range lowers to an empty bound list, and
         # ``seq_range_clause`` would emit ``()`` -- a SQL syntax error. The
         # wire parser already rejects bare ``..``, but a direct Store caller

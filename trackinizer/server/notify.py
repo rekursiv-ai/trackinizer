@@ -47,6 +47,8 @@ NOTIFY_CHANNEL: Final = "trackinizer"
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Notification:
+    """A notification event for database changes."""
+
     engine: DatabaseEngine
     subject_id: UUID
 

@@ -413,6 +413,7 @@ class Filter:
     value: str
 
     def __post_init__(self) -> None:
+        """Validate the filter clause after dataclass construction."""
         if (err := validate_clause(self.field, self.op, self.value)) is not None:
             raise ValueError(err)
 
