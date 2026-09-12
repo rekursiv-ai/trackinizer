@@ -269,6 +269,7 @@ class FakeClient:
         """Release held resources."""
 
     def __enter__(self) -> Self:
+        """Enter the context manager."""
         return self
 
     def __exit__(
@@ -277,6 +278,7 @@ class FakeClient:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        """Exit the context manager, closing resources."""
         del exc_type, exc, tb
         self.close()
 

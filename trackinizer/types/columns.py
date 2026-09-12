@@ -26,8 +26,14 @@ class Row(Protocol):
     satisfy this, so the row mappers never care which one they got.
     """
 
-    def __getitem__(self, key: str, /) -> Any: ...  # noqa: ANN401 -- mirrors asyncpg.Record, whose column values are untyped.
-    def __contains__(self, x: object, /) -> bool: ...
+    def __getitem__(self, key: str, /) -> Any:  # noqa: ANN401 -- mirrors asyncpg.Record, whose column values are untyped.
+        """Get a column value by name."""
+        ...
+
+    def __contains__(self, x: object, /) -> bool:
+        """Check if a column name exists."""
+        ...
+
     @overload
     def get(self, key: str) -> Any | None: ...  # noqa: ANN401 -- mirrors asyncpg.Record, whose column values are untyped.
     @overload
@@ -131,6 +137,7 @@ class ColumnSpec(UserDict[str, "ColumnSpec"]):
     data: dict[str, ColumnSpec] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        """Initialize the data dictionary after dataclass construction."""
         # A default_factory cannot reference self, so set the payload here
         # via the frozen-dataclass escape hatch.
         object.__setattr__(self, "data", {"colspec": self})
