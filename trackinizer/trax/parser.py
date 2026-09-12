@@ -183,7 +183,9 @@ class _FilterClause:
     """A ``field op value`` predicate in raw CLI spelling."""
 
     field: str
+
     op: FilterOp
+
     value: str
 
 
@@ -225,6 +227,7 @@ class _UnknownClause:
     """
 
     token: str
+
     bad_filter_op: str | None = None
 
 
@@ -433,14 +436,30 @@ def parse_metric_action(tokens: Sequence[str]) -> MetricAction:
 
 
 def ref_text(ref: Ref) -> str:
-    """CLI spelling for ``ref``: seq number or UUID."""
+    """CLI spelling for ``ref``: seq number or UUID.
+
+    Args:
+      ref: Ref.
+
+    Returns:
+      result: The str.
+
+    """
     if isinstance(ref, SeqRef):
         return str(ref.seq)
     return str(ref.uuid)
 
 
 def starts_with_ref(tokens: Sequence[str]) -> bool:
-    """Whether the first token is a seq number or UUID."""
+    """Whether the first token is a seq number or UUID.
+
+    Args:
+      tokens: Tokens.
+
+    Returns:
+      result: The bool.
+
+    """
     return bool(tokens) and (
         tokens[0].isdigit() or UUID_RE.match(tokens[0]) is not None
     )
@@ -606,7 +625,17 @@ def edge_metadata(
 
 
 def required_token(tokens: Sequence[str], index: int, message: str) -> str:
-    """``tokens[index]`` if in range, else raise ``ClientError(message)``."""
+    """``tokens[index]`` if in range, else raise ``ClientError(message)``.
+
+    Args:
+      tokens: Tokens.
+      index: Index.
+      message: Message.
+
+    Returns:
+      result: The str.
+
+    """
     if index >= len(tokens):
         raise ClientError(message)
     return tokens[index]

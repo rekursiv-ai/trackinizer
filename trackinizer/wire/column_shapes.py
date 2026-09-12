@@ -321,7 +321,16 @@ def requires_numeric_operand(column: str, op: str) -> bool:
 
 
 def lowers_into_sql(column: str, op: str) -> bool:
-    """Whether ``(column, op)`` has a SQL form, so both evaluators agree."""
+    """Whether ``(column, op)`` has a SQL form, so both evaluators agree.
+
+    Args:
+      column: Column.
+      op: Op.
+
+    Returns:
+      result: The bool.
+
+    """
     return sql_template(column, op) is not None
 
 

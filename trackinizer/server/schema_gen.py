@@ -368,12 +368,22 @@ def generate_edge_metadata_columns() -> str:
 
 
 def generate_edge_metadata_mirror_old() -> str:
-    """Render old-side change_log edge metadata mirrors from :class:`Edge`."""
+    """Render old-side change_log edge metadata mirrors from :class:`Edge`.
+
+    Returns:
+      result: The str.
+
+    """
     return _generate_edge_metadata_mirror("old")
 
 
 def generate_edge_metadata_mirror_new() -> str:
-    """Render new-side change_log edge metadata mirrors from :class:`Edge`."""
+    """Render new-side change_log edge metadata mirrors from :class:`Edge`.
+
+    Returns:
+      result: The str.
+
+    """
     return _generate_edge_metadata_mirror("new")
 
 

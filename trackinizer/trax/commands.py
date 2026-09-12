@@ -18,10 +18,15 @@ class HelpPage:
     """A plain-text help page for one command or grammar topic."""
 
     usage: str
+
     summary: str
+
     arguments: tuple[tuple[str, str], ...] = ()
+
     options: tuple[tuple[str, str], ...] = ()
+
     examples: tuple[str, ...] = ()
+
     notes: tuple[str, ...] = ()
 
     def render(self) -> str:
@@ -78,16 +83,30 @@ class Command:
     """Base class for one trax command's grammar and dispatch."""
 
     names: ClassVar[tuple[str, ...]]
+
     help: ClassVar[str | HelpPage] = ""
 
     @classmethod
     def matches(cls, verb: str) -> bool:
-        """Whether this command handles ``verb``."""
+        """Whether this command handles ``verb``.
+
+        Args:
+          verb: Verb.
+
+        Returns:
+          result: The bool.
+
+        """
         return verb in cls.names
 
     @classmethod
     def make_parser(cls) -> argparse.ArgumentParser:
-        """Build this command's argparse parser."""
+        """Build this command's argparse parser.
+
+        Returns:
+          result: The argparse.ArgumentParser.
+
+        """
         raise NotImplementedError
 
     @classmethod
@@ -128,13 +147,25 @@ class Command:
         args: argparse.Namespace,
         client_factory: Callable[[], Client],
     ) -> None:
-        """Execute the parsed args."""
+        """Execute the parsed args.
+
+        Args:
+          verb: Verb.
+          args: Args.
+          client_factory: Client factory.
+
+        """
         del verb, args, client_factory
         raise NotImplementedError
 
     @classmethod
     def help_text(cls) -> str:
-        """Help text for this command's first name."""
+        """Help text for this command's first name.
+
+        Returns:
+          result: The str.
+
+        """
         return cls.help_text_for(next(iter(cls.names)))
 
     @classmethod

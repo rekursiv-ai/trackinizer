@@ -65,7 +65,15 @@ def empty_optional_to_none(value: object) -> object:
 
 
 def vec_to_text(vec: Sequence[float]) -> str:
-    """Format a vector as the pgvector text input form: ``[v1,v2,...]``."""
+    """Format a vector as the pgvector text input form: ``[v1,v2,...]``.
+
+    Args:
+      vec: Vec.
+
+    Returns:
+      result: The str.
+
+    """
     return "[" + ",".join(repr(x) for x in vec) + "]"
 
 

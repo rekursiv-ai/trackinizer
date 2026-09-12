@@ -105,7 +105,13 @@ class Sink(Protocol):
         ...
 
     def emit(self, adapter_name: str, event: Event) -> None:
-        """Record one record; call ``restart`` before a replacement's first record."""
+        """Record one record; call ``restart`` before a replacement's first record.
+
+        Args:
+          adapter_name: Adapter name.
+          event: Event.
+
+        """
         ...
 
     def restart(self, path: Path) -> None:

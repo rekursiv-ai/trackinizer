@@ -19,12 +19,28 @@ if TYPE_CHECKING:
 
 
 def get_store(request: Request) -> Store:
-    """Return the Store held on the FastAPI app state."""
+    """Return the Store held on the FastAPI app state.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The Store.
+
+    """
     return cast(Store, request.app.state.store)
 
 
 def get_inbound(request: Request) -> InboundQueue:
-    """Return the inbound-message queue held on the FastAPI app state."""
+    """Return the inbound-message queue held on the FastAPI app state.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The InboundQueue.
+
+    """
     return cast(InboundQueue, request.app.state.inbound)
 
 

@@ -20,7 +20,15 @@ RoleLiteral = Literal["viewer", "writer", "admin"]
 
 
 def engine_of(request: Request) -> DatabaseEngine:
-    """Return the DatabaseEngine held on app state."""
+    """Return the DatabaseEngine held on app state.
+
+    Args:
+      request: Request.
+
+    Returns:
+      engine: The DatabaseEngine.
+
+    """
     engine: DatabaseEngine = request.app.state.engine
     return engine
 

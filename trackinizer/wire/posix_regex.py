@@ -259,7 +259,15 @@ def has_python_named_group(pattern: str) -> bool:
 
 
 def escapes(pattern: str) -> Iterator[Escape]:
-    """Yield only the escapes from the shared scan."""
+    """Yield only the escapes from the shared scan.
+
+    Args:
+      pattern: Pattern.
+
+    Returns:
+      result: The Iterator[Escape].
+
+    """
     return (found for found in _scan(pattern) if isinstance(found, Escape))
 
 

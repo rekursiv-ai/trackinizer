@@ -109,8 +109,11 @@ class Edge:
     """
 
     name: str
+
     reverse: bool = False
+
     valence_default: float | None = None
+
     valence_negate: bool = False
 
 
@@ -134,6 +137,7 @@ class SetField:
     """
 
     field: str
+
     value: object
 
 
@@ -146,7 +150,9 @@ class AddList:
     """
 
     field: str
+
     value: str
+
     ref: Ref | None = None
 
 
@@ -159,7 +165,9 @@ class RemoveList:
     """
 
     field: str
+
     value: str
+
     ref: Ref | None = None
 
 
@@ -168,6 +176,7 @@ class AddCost:
     """Parsed signed cost delta."""
 
     field: str
+
     value: float
 
 
@@ -181,7 +190,9 @@ class RelationAction:
     """
 
     relation: tuple[str, bool]
+
     index: str = ""
+
     against: bool = False
 
 
@@ -201,7 +212,9 @@ class MetricMask:
     """
 
     field: Literal["key", "step", "value"]
+
     op: str
+
     value: str
 
 
@@ -216,8 +229,11 @@ class MetricAction:
     """
 
     masks: tuple[MetricMask, ...]
+
     write: str | None = None
+
     sort: Literal["asc", "desc"] | None = None
+
     limit: int | None = None
 
 
@@ -256,9 +272,13 @@ class InlineCreate:
     """
 
     kind: Inquiry.InquiryKind
+
     fields: tuple[SetField, ...]
+
     edges: tuple[EdgeAction, ...] = ()
+
     costs: tuple[AddCost, ...] = ()
+
     inbound_meta: Mapping[str, object] = dataclass_field(
         default_factory=lambda: cast(dict[str, object], {})
     )
@@ -282,7 +302,9 @@ class ListQuery:
     """
 
     kinds: tuple[Inquiry.InquiryKind, ...]
+
     ranges: Mapping[Inquiry.InquiryKind, tuple[SeqRange, ...]]
+
     filters: tuple[Filter, ...]
 
 
@@ -298,6 +320,7 @@ class BulkApply:
     """
 
     query: ListQuery
+
     actions: tuple[SetField | AddList | RemoveList, ...]
 
     def __post_init__(self) -> None:
@@ -467,16 +490,31 @@ class Field:
     """
 
     cli_name: str
+
     payload_key: str
+
     shape: Literal["scalar", "list", "cost"]
+
     help: str = ""
+
     list_add: str = ""
+
     list_remove: str = ""
+
     filterable: bool = True
+
     ref_kind: Inquiry.InquiryKind | None = None
 
     def coerce(self, value: str) -> object:
-        """Coerce a string token to its wire value."""
+        """Coerce a string token to its wire value.
+
+        Args:
+          value: Value.
+
+        Returns:
+          result: The object.
+
+        """
         return _COERCE.get(self.cli_name, _coerce_identity)(value)
 
 
@@ -939,7 +977,15 @@ def validate_writable_fields(
 
 
 def is_issue_kind(token: str) -> TypeGuard[Issue.Kind]:
-    """Whether ``token`` is an issue-kind literal."""
+    """Whether ``token`` is an issue-kind literal.
+
+    Args:
+      token: Token.
+
+    Returns:
+      result: The TypeGuard[Issue.Kind].
+
+    """
     return token in ISSUE_KINDS
 
 
@@ -988,7 +1034,15 @@ def parse_kind(value: str) -> Inquiry.InquiryKind:
 
 
 def cost_key(field: str) -> str:
-    """Canonical SQL column for a CLI cost field."""
+    """Canonical SQL column for a CLI cost field.
+
+    Args:
+      field: Field.
+
+    Returns:
+      result: The str.
+
+    """
     spec = FIELDS_BY_NAME.get(field)
     if spec is None or spec.shape != "cost":
         raise ClientError(f"unknown cost field {field!r}")
@@ -1016,6 +1070,14 @@ def field_value(field: str, value: str) -> object:
 
 
 def list_payload_field(field: str) -> str:
-    """Canonical SQL column for a CLI list field."""
+    """Canonical SQL column for a CLI list field.
+
+    Args:
+      field: Field.
+
+    Returns:
+      result: The str.
+
+    """
     spec = FIELDS_BY_NAME.get(field)
     return field if spec is None else spec.payload_key

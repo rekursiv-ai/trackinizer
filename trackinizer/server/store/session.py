@@ -536,6 +536,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         Returns:
           ended: The committed agentsession_ended timestamp (just-stamped or replayed).
 
+
         Raises:
           NotFoundError: session_id does not exist.
           ConflictError: Row is not an AgentSession, or already ended by a different key.
