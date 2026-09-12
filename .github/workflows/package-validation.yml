@@ -44,9 +44,11 @@ jobs:
             echo "apt-get update stalled (attempt $attempt)" >&2
             sleep $((attempt * 10))
           done
-          timeout 300 sudo apt-get install -y --no-install-recommends ripgrep fd-find postgresql
-          PG_MAJOR="$(apt-cache depends postgresql | grep -m1 -oP 'postgresql-\K\d+' || true)"
-          if [ -n "$PG_MAJOR" ]; then sudo apt-get install -y --no-install-recommends "postgresql-${PG_MAJOR}-pgvector"; fi
+          timeout 300 sudo apt-get install -y --no-install-recommends ripgrep fd-find
+          sudo apt-get install -y --no-install-recommends postgresql-common ca-certificates curl gnupg
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          timeout 120 sudo apt-get update
+          timeout 300 sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-client-18 postgresql-18-pgvector
       - name: Validate package
         run: |
           # Lint/type/test checks come from this package's own .pre-commit-config.yaml.
