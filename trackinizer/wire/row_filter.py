@@ -256,7 +256,7 @@ def _matches_affirmative(row: _Row, op: FilterOp, filt: RowFilter) -> bool:
     if op == "re":
         return _matches_regex(value, filt.value)
     if op == "is":
-        return _matches_eq(value, filt.value)
+        return any(str(item) == filt.value for item in _candidate_items(value))
     return _matches_order(value, op, filt.value)
 
 
@@ -309,10 +309,6 @@ def _compiled(pattern: str) -> re.Pattern[str]:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
         return re.compile(posix_pattern(pattern))
-
-
-def _matches_eq(value: object, expected: str) -> bool:
-    return any(str(item) == expected for item in _candidate_items(value))
 
 
 # A scalar stands alone. A flat list (``labels``, ``subscribers``, ``codechanges``)

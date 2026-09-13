@@ -273,11 +273,6 @@ def _codex_scope() -> Path:
 # The whole stem, not the bare uuid: codex lists ``rollout-*`` and
 # ``CodexAdapter.matches_session_file`` requires the same prefix, so a file named by the
 # id alone is invisible to the CLI and to our own capture.
-def _codex_filename(session_id: UUID) -> str:
-    """``rollout-<ISO>-<uuid>.jsonl``, the shape codex globs for."""
-    return f"rollout-{datetime.now(UTC):%Y-%m-%dT%H-%M-%S}-{session_id}.jsonl"
-
-
 # ONE record, unlike claude's per-line ``sessionId``: codex declares its identity once,
 # on the ``session_meta`` line, which the IR carries as the ``payload`` residual of the
 # opening :class:`TurnContext`. A rollout whose payload still names the captured session
@@ -498,7 +493,10 @@ _TARGETS: Mapping[str, _Target] = MappingProxyType(
         ),
         "codex": _Target(
             scope=_codex_scope,
-            filename=_codex_filename,
+            # ``rollout-<ISO>-<uuid>.jsonl``, the shape codex globs for.
+            filename=lambda session_id: (
+                f"rollout-{datetime.now(UTC):%Y-%m-%dT%H-%M-%S}-{session_id}.jsonl"
+            ),
             identify=_codex_identified,
             # Codex states identity once, on the launch line ``_codex_declared``
             # writes, so its writer needs no id.

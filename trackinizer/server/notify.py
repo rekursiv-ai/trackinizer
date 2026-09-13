@@ -179,7 +179,7 @@ async def _publish_notifications(
         try:
             await notification.engine.notify(
                 NOTIFY_CHANNEL,
-                _notify_payload(notification.subject_id),
+                json.dumps({"id": str(notification.subject_id)}),
             )
         except Exception as exc:  # noqa: BLE001 -- best-effort post-commit fanout.
             logging.getLogger(__name__).warning(
@@ -187,8 +187,3 @@ async def _publish_notifications(
                 notification.subject_id,
                 exc,
             )
-
-
-def _notify_payload(subject_id: UUID) -> str:
-    """JSON payload broadcast on ``NOTIFY_CHANNEL`` per inquiry change."""
-    return json.dumps({"id": str(subject_id)})

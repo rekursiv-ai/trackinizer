@@ -92,7 +92,11 @@ def should_delegate(argv: Sequence[str]) -> bool:
         return False
     if _spawns_a_terminal(argv):
         return False
-    return not _reads_stdin(argv)
+    return not any(
+        token == _STDIN_SENTINEL and argv[index - 1].lower() in _VALUE_OPERATORS
+        for index, token in enumerate(argv)
+        if index > 0
+    )
 
 
 def delegate(
@@ -184,15 +188,6 @@ def _verb(argv: Sequence[str]) -> str:
             index += 1
         index += 1
     return ""
-
-
-def _reads_stdin(argv: Sequence[str]) -> bool:
-    """Whether ``argv`` carries the ``-`` sentinel in a value position."""
-    return any(
-        token == _STDIN_SENTINEL and argv[index - 1].lower() in _VALUE_OPERATORS
-        for index, token in enumerate(argv)
-        if index > 0
-    )
 
 
 # Returns ``None`` only while nothing has been delivered. Once the request is on the

@@ -1611,7 +1611,9 @@ def _read_compacted(
     # list rather than inventing one. Axiom 2: an empty list is a value.
     if "replacement_history" in consumed:
         extra["$history"] = [
-            cast(JSONValue, value) for value in entries if _is_sealed_marker(value)
+            cast(JSONValue, value)
+            for value in entries
+            if StrCodec.coerce(DictCodec.coerce(value).get("type")) == "compaction"
         ]
     # TWO records: the event, then the window it opened. What a compaction
     # PRODUCED -- the summary and the turns that survived -- is the next
@@ -1632,11 +1634,6 @@ def _read_compacted(
             extra=json_freeze({"$opens": True}),
         ),
     ]
-
-
-def _is_sealed_marker(value: object) -> bool:
-    """Whether one ``replacement_history`` entry is the sealed summary."""
-    return StrCodec.coerce(DictCodec.coerce(value).get("type")) == "compaction"
 
 
 def _read_response_item(

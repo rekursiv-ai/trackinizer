@@ -367,15 +367,6 @@ def _column_shapes() -> dict[str, ColumnShape]:
 # is filterable and has no shape, so classifying is the wrong question to ask about a
 # field's EXISTENCE. Deriving both from one walk is what keeps them from disagreeing
 # about which columns are real.
-def _filterable_columns() -> frozenset[str]:
-    """Every column a filter may name, whether or not it lowers."""
-    return frozenset(COLUMN_SHAPES) | {
-        storage_name(name, flat.spec)
-        for source in INQUIRY_CLASSES
-        for name, flat in flat_column_specs(source).items()
-    }
-
-
 # A flattened axis (the ``marginal_cost_*`` pair) carries the COMPOSITE's empty
 # ``sql_type``, so the declared type says nothing; its Python annotation does, and both
 # axes are floats.
@@ -471,5 +462,9 @@ def _is_valued(annotation: object, target: type) -> bool:
 
 COLUMN_SHAPES: Final[dict[str, ColumnShape]] = _column_shapes()
 
-FILTERABLE_COLUMNS: Final[frozenset[str]] = _filterable_columns()
+FILTERABLE_COLUMNS: Final[frozenset[str]] = frozenset(COLUMN_SHAPES) | {
+    storage_name(name, flat.spec)
+    for source in INQUIRY_CLASSES
+    for name, flat in flat_column_specs(source).items()
+}
 """Every column a filter may name; a superset of :data:`COLUMN_SHAPES`."""

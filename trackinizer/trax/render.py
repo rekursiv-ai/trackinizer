@@ -425,12 +425,16 @@ def _table_widths(
     width: int,
 ) -> list[int]:
     natural = [
-        _capped_column_width(
-            name,
-            max(
-                len(_column_heading(name)),
-                max((len(row[index]) for row in cells), default=0),
-            ),
+        (
+            min(
+                max(
+                    len(_column_heading(name)),
+                    max((len(row[index]) for row in cells), default=0),
+                ),
+                {"description": 40, "validation": 40, "note": 80}.get(
+                    name, natural_unbounded_width()
+                ),
+            )
         )
         for index, (name, _) in enumerate(columns)
     ]
@@ -679,15 +683,3 @@ def _minimum_column_width(name: str) -> int:
         "description": 16,
         "validation": 16,
     }.get(name, len(name))
-
-
-def _capped_column_width(name: str, natural_width: int) -> int:
-    return min(natural_width, _max_column_width(name))
-
-
-def _max_column_width(name: str) -> int:
-    return {
-        "description": 40,
-        "validation": 40,
-        "note": 80,
-    }.get(name, natural_unbounded_width())

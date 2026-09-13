@@ -465,10 +465,6 @@ def _bare_field(col: str, spec: ColumnSpec) -> str:
     return col.removeprefix(prefix)
 
 
-def _quote_values(values: frozenset[str]) -> str:
-    return ", ".join(f"'{v}'" for v in sorted(values))
-
-
 def _edge_column_check_body(
     col: str,
     spec: ColumnSpec,
@@ -478,9 +474,7 @@ def _edge_column_check_body(
     body = column_check_body(col, spec)
     if spec.applies_to_edge_kinds is None:
         return body
-    edge_kind_check = (
-        f"{edge_kind_col} IN ({_quote_values(spec.applies_to_edge_kinds)})"
-    )
+    edge_kind_check = f"{edge_kind_col} IN ({', '.join(f"'{v}'" for v in sorted(spec.applies_to_edge_kinds))})"
     if not body:
         return edge_kind_check
     return f"{body} AND {edge_kind_check}"

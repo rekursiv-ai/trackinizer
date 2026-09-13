@@ -274,7 +274,9 @@ def parse_bulk_apply(
             # tokens stay a create, never an unbounded bulk apply.
             query_tokens.append(clause.kind)
         elif isinstance(clause, _RangeClause):
-            query_tokens.append(_range_text(clause.ranges))
+            query_tokens.append(
+                ",".join(format_interval(interval) for interval in clause.ranges)
+            )
             has_selector = True
         elif isinstance(clause, _FilterClause):
             # A valueless op (isnull/notnull) re-emits as two tokens, mirroring
@@ -1009,11 +1011,6 @@ def _scan_clauses(tokens: Sequence[str]) -> Iterator[_Clause]:
 # half is re-emitted as one token that :func:`parse_list_query` re-parses. Each interval
 # uses the wire spelling (a single-row interval renders ``n..n``), which
 # :func:`_parse_interval` accepts identically to the bare ``n`` the user may have typed.
-def _range_text(ranges: tuple[SeqRange, ...]) -> str:
-    """Render parsed ranges back to their comma-separated selector token."""
-    return ",".join(format_interval(interval) for interval in ranges)
-
-
 # ``_is_mutation_head`` already gates the mutation tokens to scalar and list fields, so
 # this never fires in practice; it is the tripwire that keeps the two in lockstep if
 # either changes.

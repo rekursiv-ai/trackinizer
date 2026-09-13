@@ -164,11 +164,6 @@ class _SubmitMethod(Protocol):
     ) -> Awaitable[UUID]: ...
 
 
-def _resolve_actor(req: SubmitBase, identity: AuthIdentity) -> str:
-    """Pick the audit actor: the request override, else the caller's email."""
-    return req.actor or identity.email
-
-
 # The default is the authenticated ``identity.email`` -- never the spoofable ``actor``
 # override -- so an unspecified account always attributes the row to the real submitter.
 def _resolve_account(req: SubmitBase, identity: AuthIdentity) -> str:
@@ -187,5 +182,5 @@ async def _submit_one(
     return await method(
         req.model_copy(update={"account": account}),
         api_key_id=identity.api_key_id,
-        actor=_resolve_actor(req, identity),
+        actor=req.actor or identity.email,
     )

@@ -49,7 +49,6 @@ from typing import Final, get_args
 import argparse
 
 from trackinizer.trax.cli import DISPATCHERS
-from trackinizer.trax.commands import Command
 from trackinizer.trax.grammar import (
     COST_FIELDS,
     EDGE_ALIASES,
@@ -486,7 +485,7 @@ def _verb_lines() -> list[str]:
         verb = next((n for n in dispatcher.names if n not in kinds), None)
         if verb is None or dispatcher is Profiles:
             continue  # `kind` dispatcher, or profile (handled below)
-        lines.append(_verb_usage(verb, _verb_parser(dispatcher)))
+        lines.append(_verb_usage(verb, dispatcher.make_parser()))
     lines.append(_verb_usage("run", build_parser()))
     # Profile parses ``rest`` by hand; its sub-grammar is fixed, stated directly.
     lines.append("//   profile [NAME] [ url|actor|token [to V] | current NAME | del ]")
@@ -503,11 +502,6 @@ def _verb_lines() -> list[str]:
         "//     send TARGET = @actor[:room] of a live session; QUERY/TEXT are free words.",
     )
     return lines
-
-
-def _verb_parser(dispatcher: type[Command]) -> argparse.ArgumentParser:
-    """Return the argparse parser a verb dispatcher builds (its ``make_parser``)."""
-    return dispatcher.make_parser()
 
 
 # Every list is sourced from the live tables.

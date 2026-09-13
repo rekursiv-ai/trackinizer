@@ -10,7 +10,6 @@ consistently.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import Final, Literal, cast
 
 from trackinizer.server.values import vetted_sql
@@ -26,11 +25,6 @@ __all__ = [
 
 # Only consumed by trusted-internal SQL builders below; the strings come from
 # :data:`Edge.Kind`, a closed set.
-def _quote_kinds(kinds: Iterable[str]) -> str:
-    """Render an iterable of edge-kind names as a SQL IN-list body."""
-    return ", ".join(f"'{k}'" for k in sorted(kinds))
-
-
 # Used by the ``next_issue`` and ``proves_belief`` queries to drop endpoints that an
 # edge marks as scheduler-excluded or currency-invalidated. ``subject_alias`` is the
 # inquiry alias the NOT EXISTS subquery joins against (``issue.id`` for next_issue,
@@ -52,7 +46,7 @@ def _policy_exclude_clauses(
         if not kinds:
             continue
         column = "from_id" if side == "from" else "to_id"
-        kindset = _quote_kinds(kinds)
+        kindset = ", ".join(f"'{kind}'" for kind in sorted(kinds))
         clauses.append(
             vetted_sql(
                 "AND NOT EXISTS (SELECT 1 FROM edges p WHERE p.",

@@ -525,7 +525,7 @@ class Field:
           result: The object.
 
         """
-        return _COERCE.get(self.cli_name, _coerce_identity)(value)
+        return _COERCE.get(self.cli_name, lambda value: value)(value)
 
 
 def _coerce_priority(value: str) -> int:
@@ -607,10 +607,6 @@ _COERCE: Mapping[str, Callable[[str], object]] = {
     "publication_type": _coerce_publication_type,
     "config": _coerce_config,
 }
-
-
-def _coerce_identity(value: str) -> object:
-    return value
 
 
 # The one place every CLI field is declared.

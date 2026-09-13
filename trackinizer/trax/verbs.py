@@ -720,7 +720,9 @@ class Kind(Command):
                 # A P0 row has priority 0, which is falsy -- ``0 or 20`` would
                 # sort it as medium, below P1 (F33). Only an absent/None priority
                 # defaults to 20; an explicit 0 is preserved.
-                _priority_or_default(row.get("priority")),
+                20
+                if row.get("priority") is None
+                else IntCodec.coerce(row.get("priority"), 0),
                 int(cast(int, row.get("seq") or 0)),
             ),
         )
@@ -2573,11 +2575,6 @@ def _inline_create_body(
 
 # An explicit priority ``0`` (P0) is preserved -- the falsy-``or`` idiom would mis-map
 # it to the medium default and sort/show a critical row as ordinary (F33).
-def _priority_or_default(priority: object, *, default: int = 20) -> int:
-    """Issue priority for sorting/display, defaulting only absent/None to 20."""
-    return default if priority is None else IntCodec.coerce(priority, 0)
-
-
 # These are convenience defaults so a bare ``trax issue title to X`` lands a usable row,
 # not server requirements -- ``priority`` / ``judgement`` / ``confidence`` are all
 # nullable columns.

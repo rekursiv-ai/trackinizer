@@ -1673,13 +1673,15 @@ class _Reader:
         if self._context is None or updated != replace(self._context, context_id=None):
             self._context = replace(updated, context_id=len(self._records))
             self._records.append(self._context)
-        produced = _with_context(
-            [
+        produced = [
+            item
+            if isinstance(item, IncompleteRecord)
+            else replace(item, context_id=self._context.context_id)
+            for item in [
                 _without_turn_envelope(r, self._context)
                 for r in _read_record(record, self._tools)
-            ],
-            self._context.context_id,
-        )
+            ]
+        ]
         for item in produced:
             self._records.extend(self._opened(item))
         _update_tools(record, self._tools)
@@ -1843,19 +1845,6 @@ def _read_line_context(
         permission=permission,
         extra=json_freeze(prior_extra),
     )
-
-
-def _with_context(
-    records: Sequence[SessionRecord],
-    context_id: int | None,
-) -> list[SessionRecord]:
-    """Return line records naming the settings state that applied."""
-    return [
-        record
-        if isinstance(record, IncompleteRecord)
-        else replace(record, context_id=context_id)
-        for record in records
-    ]
 
 
 def _parse(line: str) -> dict[str, object] | None:

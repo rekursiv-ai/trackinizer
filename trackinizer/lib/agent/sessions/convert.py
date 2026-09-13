@@ -527,7 +527,11 @@ def _roots(path: Path) -> list[Path]:
         return []
     if not path.is_dir():
         return [path]
-    if _transcripts(path):
+    if _ordered(
+        candidate
+        for candidate in path.glob("*.jsonl")
+        if candidate.is_file() and not candidate.name.startswith("._")
+    ):
         return [path]
     # ``.json`` too: a gemini session is ONE object rather than a line stream,
     # so a walk that globbed only ``*.jsonl`` reported a directory of them as
@@ -639,7 +643,19 @@ def _report(
                 {
                     "files": len(results),
                     "ok": sum(_ok(r, verifying=verifying) for r in results),
-                    "results": [_as_json(r) for r in results],
+                    "results": [
+                        {
+                            "path": str(r.path),
+                            "source": r.source,
+                            "target": r.target,
+                            "byte_exact": r.byte_exact,
+                            "source_bytes": r.source_bytes,
+                            "output_bytes": r.output_bytes,
+                            "dropped": list(r.dropped),
+                            "error": r.error,
+                        }
+                        for r in results
+                    ],
                 },
             ),
             file=sys.stderr,
@@ -672,28 +688,6 @@ def _ok(result: FileResult, *, verifying: bool) -> bool:
     return result.ok and (result.byte_exact or not verifying)
 
 
-def _as_json(result: FileResult) -> dict[str, object]:
-    """Return one result as a JSON-serializable mapping."""
-    return {
-        "path": str(result.path),
-        "source": result.source,
-        "target": result.target,
-        "byte_exact": result.byte_exact,
-        "source_bytes": result.source_bytes,
-        "output_bytes": result.output_bytes,
-        "dropped": list(result.dropped),
-        "error": result.error,
-    }
-
-
-def _sized(result: FileResult) -> str:
-    """Return one result's source and output sizes, with their ratio."""
-    return (
-        f"{result.source_bytes} -> {result.output_bytes} bytes, "
-        f"{_ratio(result.source_bytes, result.output_bytes)}"
-    )
-
-
 def _ratio(source_bytes: int, output_bytes: int) -> str:
     """Return output size as a multiple of source size."""
     return f"{output_bytes / source_bytes:.4f}x" if source_bytes else "n/a"
@@ -704,7 +698,10 @@ def _status(result: FileResult, *, verifying: bool) -> str:
     if result.error is not None:
         return result.error
     if verifying and not result.byte_exact:
-        return f"not byte-exact ({_sized(result)})"
+        return (
+            f"not byte-exact ({result.source_bytes} -> {result.output_bytes} bytes, "
+            f"{_ratio(result.source_bytes, result.output_bytes)})"
+        )
     if result.dropped:
         return f"{result.source} -> {result.target} (drops {', '.join(result.dropped)})"
     return f"{result.source} -> {result.target}"
@@ -1010,15 +1007,6 @@ def _parts_of(path: Path) -> list[Path]:
 # Not recursive, which is the whole distinction: "holds transcripts" is the test for
 # being a session, and a recursive answer is true of every ancestor up to the root --
 # which is how a whole corpus once fused into one object.
-def _transcripts(directory: Path) -> list[Path]:
-    """Transcripts sitting DIRECTLY in ``directory``, oldest first."""
-    return _ordered(
-        path
-        for path in directory.glob("*.jsonl")
-        if path.is_file() and not path.name.startswith("._")
-    )
-
-
 def _beneath(directory: Path) -> list[Path]:
     """Every transcript under ``directory``, nesting included, oldest first."""
     return _ordered(

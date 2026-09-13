@@ -465,18 +465,13 @@ def _tiny_png() -> bytes:
     header = struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0)
     pixels = zlib.compress(b"\x00\xff\x00\x00\x00\x00\xff\x00\xff\x00\x00\xff")
     return b"\x89PNG\r\n\x1a\n" + b"".join(
-        _png_chunk(tag, body)
+        (
+            struct.pack(">I", len(body))
+            + tag
+            + body
+            + struct.pack(">I", zlib.crc32(tag + body))
+        )
         for tag, body in ((b"IHDR", header), (b"IDAT", pixels), (b"IEND", b""))
-    )
-
-
-def _png_chunk(tag: bytes, body: bytes) -> bytes:
-    """Return one length-prefixed, CRC-suffixed PNG chunk."""
-    return (
-        struct.pack(">I", len(body))
-        + tag
-        + body
-        + struct.pack(">I", zlib.crc32(tag + body))
     )
 
 

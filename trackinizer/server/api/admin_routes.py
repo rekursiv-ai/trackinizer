@@ -94,7 +94,20 @@ async def admin_list_users_route(
             "SELECT id, email, name, role, status, created_at, last_login "
             "FROM users ORDER BY created_at DESC, id DESC",
         )
-    return {"users": [_serialize_user(dict(row)) for row in rows]}
+    return {
+        "users": [
+            {
+                "id": str(row["id"]),
+                "email": str(row["email"]),
+                "name": str(row["name"]),
+                "role": cast(Role, row["role"]),
+                "status": str(row["status"]),
+                "created_at": iso_format(row["created_at"]),
+                "last_login": iso_format(row["last_login"]),
+            }
+            for row in rows
+        ]
+    }
 
 
 @router.put("/api/admin/users/{user_id}/role")
@@ -426,19 +439,6 @@ async def _refuse_last_admin_loss(conn: Conn, target_id: uuid.UUID) -> None:
         status_code=409,
         detail="last_admin: refusing to leave the org without an active admin.",
     )
-
-
-def _serialize_user(row: dict[str, object]) -> MutableJSON:
-    """Build the wire shape for one ``users`` row."""
-    return {
-        "id": str(row["id"]),
-        "email": str(row["email"]),
-        "name": str(row["name"]),
-        "role": cast(Role, row["role"]),
-        "status": str(row["status"]),
-        "created_at": iso_format(row["created_at"]),
-        "last_login": iso_format(row["last_login"]),
-    }
 
 
 def _serialize_allowlist(row: dict[str, object]) -> MutableJSON:

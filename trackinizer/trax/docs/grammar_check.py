@@ -73,7 +73,6 @@ failure.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import sys
 
@@ -83,10 +82,6 @@ from trackinizer.trax.docs.grammar_gen import (
     grammar_path,
     render_grammar,
 )
-
-
-if TYPE_CHECKING:
-    from lark import Token, Tree
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -418,7 +413,10 @@ def main() -> int:
             # return is a concrete ``Tree[Token]``. Stubbing the whole class for
             # this one doc utility is disproportionate.
             tree = parser.parse(case.tokens)
-            count = _ambiguity_count(tree)
+            # ``iter_subtrees`` yields only ``Tree`` nodes (terminals are not
+            # walked), so every node carries ``.data``; Earley tags each
+            # ambiguous fork ``_ambig``.
+            count = sum(1 for node in tree.iter_subtrees() if node.data == "_ambig")
         except LarkError as exc:
             if not case.rejects:
                 failures.append(
@@ -449,13 +447,6 @@ def main() -> int:
 
     print("grammar.lark: current, accepts the corpus, no unexpected ambiguity.")
     return 0
-
-
-def _ambiguity_count(tree: Tree[Token]) -> int:
-    """Count the ``_ambig`` nodes Earley emitted for a parse (0 = unambiguous)."""
-    # ``iter_subtrees`` yields only ``Tree`` nodes (terminals are not walked), so
-    # every node carries ``.data``; Earley tags each ambiguous fork ``_ambig``.
-    return sum(1 for node in tree.iter_subtrees() if node.data == "_ambig")
 
 
 if __name__ == "__main__":
