@@ -363,6 +363,10 @@ children by ref.
 
 ## Recovery
 
+- If `trax` fails silently or exits 75, try a read with `TRAX_NO_DAEMON=1`.
+  If it succeeds, restart the local trax daemon and retry normally once.
+  Notify the user of the restart and result. Before repeating a failed write,
+  check whether it already applied.
 - Server unreachable or auth error: `trax profile`, then `trax profile url to
   ...` / `trax profile token to ...` / `trax profile current <name>`. Ask the
   user before changing profile settings on a shared host.
