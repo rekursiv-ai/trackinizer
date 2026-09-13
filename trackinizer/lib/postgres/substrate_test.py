@@ -399,8 +399,8 @@ def test_release_does_not_delete_recreated_slot_after_owner_check(
     """A release/reclaim race must not delete a new owner of the same slot name."""
     monkeypatch.setattr(substrate, "cache_dir", _cache_dir_under(tmp_path))
 
-    first = substrate._BootSlot(path=tmp_path / "slot-0", token="first")  # noqa: S106 -- test token, not a secret
-    second = substrate._BootSlot(path=tmp_path / "slot-0", token="second")  # noqa: S106 -- test token, not a secret
+    first = substrate._BootSlot(path=tmp_path / "slot-0", token="first")  # noqa: S106 -- Test credentials are fixed fixtures and never real secrets.
+    second = substrate._BootSlot(path=tmp_path / "slot-0", token="second")  # noqa: S106 -- Test credentials are fixed fixtures and never real secrets.
     first.path.mkdir()
     substrate._boot_owner_path(first).touch()
     original_unlink = Path.unlink
@@ -438,7 +438,7 @@ async def test_node_modules_warmed_before_boot_slot(
         "_ensure_shared_node_modules",
         MagicMock(side_effect=lambda: order.append("install")),
     )
-    slot = substrate._BootSlot(path=tmp_path / "slot", token="t")  # noqa: S106 -- test token, not a secret
+    slot = substrate._BootSlot(path=tmp_path / "slot", token="t")  # noqa: S106 -- Test credentials are fixed fixtures and never real secrets.
     monkeypatch.setattr(
         substrate,
         "_acquire_boot_slot",
@@ -475,7 +475,7 @@ async def test_start_retries_past_transient_boot_runtimeerror(
     next attempt. First attempt raises, second succeeds.
     """
     monkeypatch.setattr(substrate, "_ensure_shared_node_modules", MagicMock())
-    slot = substrate._BootSlot(path=tmp_path / "slot", token="t")  # noqa: S106 -- test token
+    slot = substrate._BootSlot(path=tmp_path / "slot", token="t")  # noqa: S106 -- Test credentials are fixed fixtures and never real secrets.
     monkeypatch.setattr(substrate, "_acquire_boot_slot", MagicMock(return_value=slot))
     monkeypatch.setattr(substrate, "_release_boot_slot", MagicMock())
     engine = substrate.PGliteEngine(workdir=tmp_path / "wd", extensions=())
@@ -509,7 +509,7 @@ async def test_start_surfaces_deterministic_boot_failure(
     swallowing the error.
     """
     monkeypatch.setattr(substrate, "_ensure_shared_node_modules", MagicMock())
-    slot = substrate._BootSlot(path=tmp_path / "slot", token="t")  # noqa: S106 -- test token
+    slot = substrate._BootSlot(path=tmp_path / "slot", token="t")  # noqa: S106 -- Test credentials are fixed fixtures and never real secrets.
     monkeypatch.setattr(substrate, "_acquire_boot_slot", MagicMock(return_value=slot))
     monkeypatch.setattr(substrate, "_release_boot_slot", MagicMock())
     engine = substrate.PGliteEngine(workdir=tmp_path / "wd", extensions=())

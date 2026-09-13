@@ -9,12 +9,10 @@ through each item so a mixed-kind batch commits or rolls back atomically.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import UUID
 
 import uuid
-
-import asyncpg
 
 from trackinizer.lib.custom_json import IntCodec
 from trackinizer.lib.postgres import Conn
@@ -48,6 +46,14 @@ from trackinizer.wire.bodies import (
     SubmitWebResult,
     SubmitWebSearch,
 )
+
+
+if TYPE_CHECKING:
+    import asyncpg
+else:
+    from wrapt import lazy_import
+
+    asyncpg = lazy_import("asyncpg")
 
 
 __all__ = [

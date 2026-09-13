@@ -30,7 +30,7 @@ class TestSessionStart:
     def test_requires_cli(self) -> None:
         with pytest.raises(ValidationError):
             # Intentionally omit the required ``cli`` to assert the validator.
-            SessionStart()  # ty: ignore[missing-argument]  # pyright: ignore[reportCallIssue] -- negative test: the missing required field IS the input under test
+            SessionStart()  # ty: ignore[missing-argument] -- The test omits the required field to verify validation.  # pyright: ignore[reportCallIssue] -- The test omits the required field to verify validation.
 
     def test_minimal_start(self) -> None:
         body = SessionStart(cli="codex")
@@ -160,7 +160,7 @@ class TestRoomValidation:
         # client-sent ``room`` is a 422 (extra="forbid"), not an accepted-then-
         # dropped field -- the request shape carries only what the server uses.
         with pytest.raises(ValidationError):
-            InboundEnqueueRequest(text="hi", room="lab")  # ty: ignore[unknown-argument] -- test proves extra="forbid" rejects room; the arg is unknown by design  # pyright: ignore[reportCallIssue]
+            InboundEnqueueRequest(text="hi", room="lab")  # ty: ignore[unknown-argument] -- The test passes an extra field to verify rejection.  # pyright: ignore[reportCallIssue] -- The test passes an extra field to verify rejection.
         # The bare request still constructs.
         assert InboundEnqueueRequest(text="hi").text == "hi"
 

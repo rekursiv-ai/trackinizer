@@ -60,9 +60,6 @@ __all__ = ["Line", "follow_dir", "follow_file", "follow_tree"]
 
 _logger = logging.getLogger(__name__)
 
-# Bound teardown if watchdog's observer thread does not exit.
-_OBSERVER_JOIN_SEC: Final = 5.0
-
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Line:
@@ -339,6 +336,7 @@ is detected independently, even when its contents are identical.
 """
 
 
+# The inotify mask bits the watch subscribes to, spelled as Linux does.
 _IN_MODIFY: Final = 0x0000_0002
 _IN_CREATE: Final = 0x0000_0100
 _IN_MOVED_TO: Final = 0x0000_0080
@@ -504,7 +502,8 @@ async def _fsevents_events(
         yield _drain_queue(queue)
     finally:
         observer.stop()
-        await asyncio.to_thread(observer.join, _OBSERVER_JOIN_SEC)
+        # Bound teardown if watchdog's observer thread does not exit.
+        await asyncio.to_thread(observer.join, 5.0)
 
 
 class _FsEventsHandler:

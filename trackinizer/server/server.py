@@ -14,13 +14,19 @@ Usage::
 from __future__ import annotations
 
 from pathlib import Path
-from typing import override
+from typing import TYPE_CHECKING, override
 
 import argparse
 import logging
 import os
 
-import uvicorn
+
+if TYPE_CHECKING:
+    import uvicorn
+else:
+    from wrapt import lazy_import
+
+    uvicorn = lazy_import("uvicorn")  # ~90 ms; main() launches the server.
 
 from trackinizer.lib.userdirs import data_dir
 from trackinizer.server import web

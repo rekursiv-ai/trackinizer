@@ -86,16 +86,10 @@ __all__ = [
 _SCRYPT_N: Final[int] = 2**14
 _SCRYPT_R: Final[int] = 8
 _SCRYPT_P: Final[int] = 1
-_SCRYPT_DKLEN: Final[int] = 32
-_SCRYPT_SALT_BYTES: Final[int] = 16
-_SCRYPT_MAX_N: Final[int] = 2**20
-_SCRYPT_MAX_R: Final[int] = 128
-_SCRYPT_MAX_P: Final[int] = 128
 
 # Entropy bytes in a freshly minted secret; 32 gives ~43 base64 chars.
 # The ``trax_`` prefix tags leaked tokens so they're greppable in logs.
-_TOKEN_BYTES: int = 32  # config-globals: ignore -- token entropy size (security parameter), shared by 2 call sites
-_TOKEN_LABEL: Final[str] = "trax_"  # noqa: S105 -- not a hardcoded password.
+_TOKEN_BYTES: int = 32  # house-ignore[globals] -- Token entropy size (security parameter), shared by 2 call sites.
 
 # Visible prefix stored per api_keys row. Drives UI display and scopes
 # scrypt-verify to the rows sharing that prefix.
@@ -109,8 +103,8 @@ BOOTSTRAP_TOKEN_FILE_ENV: Final[str] = "TRACKINIZER_BOOTSTRAP_TOKEN_FILE"  # noq
 # the UI shows at minute granularity. Each Store caps the write to one per
 # key per interval. The entry cap bounds memory under a flood of distinct
 # keys, evicting the oldest tracked entry when full.
-LAST_USED_BUMP_INTERVAL_SEC: float = 60.0  # config-globals: ignore -- shared default consumed by store/core.py; threading would cross the module boundary
-LAST_USED_BUMPED_AT_MAX_ENTRIES: int = 10_000  # config-globals: ignore -- shared default consumed by store/core.py; threading would cross the module boundary
+LAST_USED_BUMP_INTERVAL_SEC: float = 60.0  # house-ignore[globals] -- Shared default consumed by store/core.py; threading would cross the module boundary.
+LAST_USED_BUMPED_AT_MAX_ENTRIES: int = 10_000  # house-ignore[globals] -- Shared default consumed by store/core.py; threading would cross the module boundary.
 
 # Lifetime of a verified bearer result. scrypt is deliberately ~30ms
 # (:data:`_SCRYPT_N`), which is correct for a login form and ruinous for an
@@ -121,8 +115,8 @@ LAST_USED_BUMPED_AT_MAX_ENTRIES: int = 10_000  # config-globals: ignore -- share
 # The TTL is the revocation lag: a revoked key or disabled user keeps working
 # until its entry expires. 60s matches the ``last_used_at`` interval above, so
 # an expiry also re-runs the bump and neither clock needs the other.
-VERIFIED_BEARER_TTL_SEC: float = 60.0  # config-globals: ignore -- shared default consumed by store/core.py; threading would cross the module boundary
-VERIFIED_BEARER_MAX_ENTRIES: int = 10_000  # config-globals: ignore -- shared default consumed by store/core.py; threading would cross the module boundary
+VERIFIED_BEARER_TTL_SEC: float = 60.0  # house-ignore[globals] -- Shared default consumed by store/core.py; threading would cross the module boundary.
+VERIFIED_BEARER_MAX_ENTRIES: int = 10_000  # house-ignore[globals] -- Shared default consumed by store/core.py; threading would cross the module boundary.
 # Module-level so tests can monkeypatch the throttle's clock.
 monotonic_clock = time.monotonic
 
@@ -208,14 +202,14 @@ def hash_secret(secret: str) -> str:
       result: Self-describing scrypt hash with embedded parameters and salt.
 
     """
-    salt = secrets.token_bytes(_SCRYPT_SALT_BYTES)
+    salt = secrets.token_bytes(16)
     key = hashlib.scrypt(
         secret.encode("utf-8"),
         salt=salt,
         n=_SCRYPT_N,
         r=_SCRYPT_R,
         p=_SCRYPT_P,
-        dklen=_SCRYPT_DKLEN,
+        dklen=32,
     )
     return (
         f"scrypt${_SCRYPT_N}${_SCRYPT_R}${_SCRYPT_P}"
@@ -249,15 +243,7 @@ def verify_secret(secret: str, encoded: str) -> bool:
         expected = _b64decode(parts[5])
     except (ValueError, binascii.Error):
         return False
-    if (
-        n < 2
-        or n > _SCRYPT_MAX_N
-        or n & (n - 1) != 0
-        or r < 1
-        or r > _SCRYPT_MAX_R
-        or p < 1
-        or p > _SCRYPT_MAX_P
-    ):
+    if n < 2 or n > 2**20 or n & (n - 1) != 0 or r < 1 or r > 128 or p < 1 or p > 128:
         return False
     try:
         candidate = hashlib.scrypt(
@@ -284,7 +270,7 @@ def generate_token() -> tuple[str, str]:
       result: Tuple of (full_secret, prefix_for_storage); secret shown once.
 
     """
-    secret = _TOKEN_LABEL + secrets.token_urlsafe(_TOKEN_BYTES)
+    secret = "trax_" + secrets.token_urlsafe(_TOKEN_BYTES)
     return secret, secret[:TOKEN_PREFIX_LEN]
 
 
@@ -769,7 +755,9 @@ def _stage_bootstrap_token(token_path: Path, secret: str) -> None:
         f.flush()
         os.fsync(f.fileno())
     # The target is the caller's chosen path; 0o600 is the token's contract.
-    tmp_path.chmod(0o600)  # house-lint: ignore[mkdir-mode]
+    tmp_path.chmod(
+        0o600
+    )  # house-ignore[mkdir-mode] -- The caller chose the path; 0o600 is the token's contract.
 
 
 # Runs after the transaction commits. The POSIX rename is atomic (no partial file ever

@@ -42,7 +42,7 @@ class ConfigError(Exception):
 
 _DEFAULT_SESSION_MAX_AGE_SECONDS: int = (
     30 * 24 * 60 * 60
-)  # config-globals: ignore -- shared default; threading would duplicate across the Config field default and the env-parse fallback
+)  # house-ignore[globals] -- Shared default; threading would duplicate across the Config field default and the env-parse fallback.
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

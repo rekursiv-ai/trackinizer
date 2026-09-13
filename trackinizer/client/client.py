@@ -47,7 +47,6 @@ import time
 import uuid
 
 import httpx2
-import pydantic
 
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.absent import ABSENT, Absent
@@ -67,6 +66,8 @@ logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
+    import pydantic
+
     from trackinizer.wire import (
         wire_metrics,
         wire_metrics_query,
@@ -109,6 +110,7 @@ else:
     # touch it, so its pydantic-model build stays off the cold-start path.
     wire_metrics = lazy_import("trackinizer.wire.wire_metrics")
     wire_metrics_query = lazy_import("trackinizer.wire.wire_metrics_query")
+    pydantic = lazy_import("pydantic")
 
 
 def server_url(raw: str, source: str) -> str:

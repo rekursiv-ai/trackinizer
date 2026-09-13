@@ -98,7 +98,7 @@ def _make_put(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON]]
 
     handler.__name__ = f"set_{route.column}_route"
     handler.__qualname__ = handler.__name__
-    handler.__annotations__["body"] = FieldSet[route.value_type]  # ty: ignore[invalid-type-form] -- a runtime value cannot appear in a type expression, and `types.GenericAlias` is NOT a substitute: `FieldSet` is a pydantic model whose `__class_getitem__` builds a real parametrized model class, which FastAPI requires
+    handler.__annotations__["body"] = FieldSet[route.value_type]  # ty: ignore[invalid-type-form] -- The pydantic model is parameterized dynamically for FastAPI's runtime schema.
     return handler
 
 
@@ -117,7 +117,7 @@ def _make_patch(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON
 
     handler.__name__ = f"patch_{route.column}_route"
     handler.__qualname__ = handler.__name__
-    handler.__annotations__["body"] = FieldOp[route.element_type]  # ty: ignore[invalid-type-form] -- see `_make_put`: the pydantic subscript is load-bearing
+    handler.__annotations__["body"] = FieldOp[route.element_type]  # ty: ignore[invalid-type-form] -- The pydantic model is parameterized dynamically for FastAPI's runtime schema.
     return handler
 
 

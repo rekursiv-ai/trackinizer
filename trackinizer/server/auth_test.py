@@ -1043,7 +1043,7 @@ class TestBootstrapAdmin:
         # Any sibling that survived must wear the ``.tmp`` suffix --
         # operator tooling that reads the final-named file can never
         # surface an orphan secret as a live credential.
-        leftovers = [p.name for p in tmp_path.iterdir() if p.is_file()]  # noqa: ASYNC240 - sync iterdir on tmp_path is fine in a test
+        leftovers = [p.name for p in tmp_path.iterdir() if p.is_file()]  # noqa: ASYNC240 -- The authentication test uses a blocking fixture to model the server boundary..
         assert all(name.endswith(".tmp") for name in leftovers), leftovers
 
     @pytest.mark.asyncio

@@ -100,9 +100,6 @@ _POSTGRES_FLAGS: Final[frozenset[str]] = frozenset("ismnxwbeq")
 # "unknown extension ?n").
 _PYTHON_FLAGS: Final[frozenset[str]] = frozenset("ismx")
 
-# The whitespace Postgres' ``numeric`` parser accepts as padding, measured
-# against live PG16: the six ASCII characters and nothing wider.
-_ASCII_WHITESPACE: Final = " \t\n\r\v\f"
 
 # Repetition bounds are ASCII digits, not anything ``str.isdigit()`` accepts.
 _ASCII_DIGITS: Final[frozenset[str]] = frozenset("0123456789")
@@ -240,7 +237,9 @@ def as_numeric(value: str) -> Decimal | None:
     # input syntax for type numeric" for each, where the stripped operand
     # parsed here and compared. Postgres takes exactly the six ASCII
     # whitespace characters, so the set is spelled rather than inherited.
-    stripped = value.strip(_ASCII_WHITESPACE)
+    # The whitespace Postgres' ``numeric`` parser accepts as padding, measured
+    # against live PG16: the six ASCII characters and nothing wider.
+    stripped = value.strip(" \t\n\r\v\f")
     if stripped.lower() in _NUMERIC_NAMES:
         return Decimal(stripped)
     if not stripped.isascii() or _NUMERIC_OPERAND.match(stripped) is None:

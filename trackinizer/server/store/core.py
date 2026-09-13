@@ -10,13 +10,19 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import suppress
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 import asyncio
 import hashlib
 
-import asyncpg
+
+if TYPE_CHECKING:
+    import asyncpg
+else:
+    from wrapt import lazy_import
+
+    asyncpg = lazy_import("asyncpg")  # ~60 ms; Store retry paths need it.
 
 from trackinizer.lib.postgres import Conn
 from trackinizer.server import auth

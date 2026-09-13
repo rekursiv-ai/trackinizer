@@ -10,7 +10,7 @@ Runnable wrapper for the trackinizer server; the implementation lives in
 
 # The exec line above omits ``--no-sync`` on purpose: a remote redeploy pulls
 # new source and relies on ``uv run`` syncing the venv on first start.
-# house-lint: ignore[cli-shape]
+# house-ignore[cli-shape] -- Deliberately omits --no-sync so a redeploy syncs on first start.
 
 from __future__ import annotations
 

@@ -221,7 +221,7 @@ type HttpVerb = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 # ``DEFAULT_LIST_LIMIT`` applies when a caller omits ``limit``;
 # ``MAX_LIST_LIMIT`` is the ceiling the server enforces on any supplied
 # ``limit``.
-DEFAULT_LIST_LIMIT = 50  # config-globals: ignore -- shared default; threading would duplicate across N call sites
+DEFAULT_LIST_LIMIT = 50  # house-ignore[globals] -- Shared default; threading would duplicate across N call sites.
 MAX_LIST_LIMIT: Final = 1000
 
 

@@ -763,7 +763,7 @@ def _run_npm_ci(root: Path) -> None:
         (_CWD / "pglite-package-lock.json").read_bytes(),
     )
     subprocess.run(
-        ["npm", "ci", "--no-audit", "--no-fund"],  # noqa: S607 -- fixed args, no shell
+        ["npm", "ci", "--no-audit", "--no-fund"],  # noqa: S607 -- The command is the fixed npm CLI required to provision the local PGlite package.
         cwd=root,
         capture_output=True,
         check=True,
@@ -857,12 +857,9 @@ class _BootSlot:
         return self.path.name
 
 
-_BOOT_OWNER_PREFIX: Final = "owner-"
-
-
 def _boot_owner_path(slot: _BootSlot) -> Path:
     """Return this slot claim's token-scoped owner path."""
-    return slot.path / f"{_BOOT_OWNER_PREFIX}{slot.token}"
+    return slot.path / f"owner-{slot.token}"
 
 
 # Polls the fixed pool of ``slot-<i>`` dirs, claiming the first via atomic ``mkdir``

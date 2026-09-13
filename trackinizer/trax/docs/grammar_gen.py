@@ -464,13 +464,13 @@ def _verb_usage(verb: str, parser: argparse.ArgumentParser) -> str:
     """One ``verb POSITIONALS [--flags]`` usage line from an argparse parser."""
     positionals = [
         _arg_token(a)
-        for a in parser._actions  # noqa: SLF001 -- argparse exposes args only here
-        if not a.option_strings and not isinstance(a, argparse._HelpAction)  # noqa: SLF001
+        for a in parser._actions  # noqa: SLF001 -- The grammar generator inspects the parser's private construction seam.
+        if not a.option_strings and not isinstance(a, argparse._HelpAction)  # noqa: SLF001 -- The grammar generator inspects the parser's private construction seam.
     ]
     options = [
         _arg_token(a)
-        for a in parser._actions  # noqa: SLF001
-        if a.option_strings and not isinstance(a, argparse._HelpAction)  # noqa: SLF001
+        for a in parser._actions  # noqa: SLF001 -- The grammar generator inspects the parser's private construction seam.
+        if a.option_strings and not isinstance(a, argparse._HelpAction)  # noqa: SLF001 -- The grammar generator inspects the parser's private construction seam.
     ]
     parts = [verb, *positionals, *options]
     return f"//   {' '.join(parts)}"

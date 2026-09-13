@@ -793,17 +793,6 @@ class Experiment(Artifact):
     for-vs-against. Mirrors :attr:`Belief.favored_by`."""
 
 
-# A scheme-tagged ``Paper.source`` identifier: an RFC-3986 scheme (a letter then
-# letters/digits/+/-/.), a ``:``, and a remainder carrying at least one
-# non-whitespace character. The scheme set is OPEN
-# (arXiv/doi/http(s)/isbn/pmid/...): the shape is enforced, the scheme name is
-# not, so any well-formed identifier passes but a bare value that drops the
-# scheme -- or one whose remainder is only whitespace (``"doi: "``) -- is
-# rejected. ``\s*\S`` requires that non-whitespace character; a bare ``.+``
-# would accept a lone space.
-_SOURCE_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:\s*\S")
-
-
 def is_valid_source(value: str) -> bool:
     """Whether ``value`` is a well-formed scheme-tagged ``Paper.source``.
 
@@ -818,7 +807,15 @@ def is_valid_source(value: str) -> bool:
       valid: True if value matches ``<scheme>:<non-empty-rest>`` pattern.
 
     """
-    return _SOURCE_SCHEME_RE.match(value) is not None
+    # A scheme-tagged ``Paper.source`` identifier: an RFC-3986 scheme (a letter then
+    # letters/digits/+/-/.), a ``:``, and a remainder carrying at least one
+    # non-whitespace character. The scheme set is OPEN
+    # (arXiv/doi/http(s)/isbn/pmid/...): the shape is enforced, the scheme name is
+    # not, so any well-formed identifier passes but a bare value that drops the
+    # scheme -- or one whose remainder is only whitespace (``"doi: "``) -- is
+    # rejected. ``\s*\S`` requires that non-whitespace character; a bare ``.+``
+    # would accept a lone space.
+    return re.match(r"^[A-Za-z][A-Za-z0-9+.\-]*:\s*\S", value) is not None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

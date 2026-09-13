@@ -17,11 +17,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import json
-
-import asyncpg
 
 from trackinizer.lib.custom_json import (
     JSON,
@@ -36,6 +35,14 @@ from trackinizer.server.store.cascade import _CascadeAuditMixin
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.session_records import SessionRecordRow
+
+
+if TYPE_CHECKING:
+    import asyncpg
+else:
+    from wrapt import lazy_import
+
+    asyncpg = lazy_import("asyncpg")
 
 
 __all__ = ["SessionManifest", "SlashCommandRow", "_SessionIRMixin"]

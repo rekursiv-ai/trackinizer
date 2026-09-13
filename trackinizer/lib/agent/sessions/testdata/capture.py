@@ -212,7 +212,7 @@ def _capture_claude(
     timeout_sec: int,
 ) -> list[Path]:
     """Drive one claude session and return the fixture paths written."""
-    home, work = _prepare(root, real_home=Path.home() / ".claude")  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-lint: ignore[xdg-literal] -- vendor CLI's fixed home path, not ours (AGENTS.md rule 3)
+    home, work = _prepare(root, real_home=Path.home() / ".claude")  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
     _drive(
         ["claude", "--permission-mode", "bypassPermissions"],
         cwd=work,
@@ -247,7 +247,7 @@ def _capture_codex(
     timeout_sec: int,
 ) -> list[Path]:
     """Drive one codex session and return the fixture paths written."""
-    home, work = _prepare(root, real_home=Path.home() / ".codex")  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-lint: ignore[xdg-literal] -- vendor CLI's fixed home path, not ours (AGENTS.md rule 3)
+    home, work = _prepare(root, real_home=Path.home() / ".codex")  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
     _drive(
         [
             "codex",
@@ -443,7 +443,7 @@ def _prepare(root: Path, *, real_home: Path) -> tuple[Path, Path]:
 # identically (both measured).
 def _seed_onboarding(home: Path, work: Path, *, real_home: Path) -> None:
     """Pre-answer claude's startup dialogs in a throwaway config root."""
-    source = Path.home() / ".claude.json"  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-lint: ignore[xdg-literal] -- vendor CLI's fixed home path, not ours (AGENTS.md rule 3)
+    source = Path.home() / ".claude.json"  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
     if real_home.name != ".claude" or not source.is_file():
         return
     real = DictCodec.coerce(json.loads(source.read_text(encoding="utf-8")))
@@ -535,7 +535,7 @@ def _emit(source: Path, target: Path, *, home: Path, work: Path) -> Path:
     for original, replacement in (
         (str(work), "/workspace"),
         (str(home), "/config"),
-        (str(Path.home()), "/home/user"),  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-lint: ignore[xdg-literal] -- vendor CLI's fixed home path, not ours (AGENTS.md rule 3)
+        (str(Path.home()), "/home/user"),  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
     ):
         text = text.replace(original, replacement)
     # Claude flattens the workspace path into a scratch directory name under

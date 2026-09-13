@@ -469,16 +469,13 @@ def _write_atomic(path: Path, content: str, *, mode: int) -> None:
         raise
 
 
-_PROFILE_NAME_RE = re.compile(r"\A[A-Za-z0-9._-]+\Z")
-
-
 # A name is a single path segment, so anything outside ``[A-Za-z0-9._-]`` (path
 # separators, ``..`` traversal) is refused before it reaches ``config_dir() / "rekursiv-
 # ai" / "trax" / "profiles" / name``. ``.`` and ``..`` match the character class but are
 # still directory references, so they are rejected explicitly.
 def _validate_profile_name(name: str) -> None:
     """Reject a profile name that could escape the profiles directory."""
-    if name in {".", ".."} or not _PROFILE_NAME_RE.match(name):
+    if name in {".", ".."} or not re.match(r"\A[A-Za-z0-9._-]+\Z", name):
         raise ClientError(f"invalid profile name {name!r}")
 
 
@@ -497,6 +494,8 @@ def _explicit_profile() -> str | None:
 # a cycle.
 def _invalidate_clients() -> None:
     """Drop cached clients after a profile write."""
-    from trackinizer.trax.cli import close_clients  # noqa: PLC0415
+    from trackinizer.trax.cli import (  # noqa: PLC0415 -- Breaks the import cycle with trackinizer.trax.cli.
+        close_clients,
+    )
 
     close_clients()

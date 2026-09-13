@@ -11,12 +11,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 import json
 
-import asyncpg
+
+if TYPE_CHECKING:
+    import asyncpg
+else:
+    from wrapt import lazy_import
+
+    asyncpg = lazy_import("asyncpg")  # ~60 ms; only start_session() needs it.
 
 from trackinizer.lib.custom_json import (
     DictCodec,

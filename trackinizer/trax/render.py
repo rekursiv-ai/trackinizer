@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextvars import ContextVar
 from datetime import datetime
-from typing import Any, Final, cast
+from typing import Any, cast
 
 import argparse
 import json
@@ -125,9 +125,6 @@ def resolve_labels(labels: Sequence[str] | None) -> list[str]:
     return out
 
 
-_BAR: Final = "─"
-
-
 type _RowFn = Callable[[dict[str, Any]], str]
 """Renders one row's cell for a given table column."""
 
@@ -216,7 +213,7 @@ def format_table(rows: Sequence[dict[str, Any]], *, width: int | None = None) ->
             _truncate_cell(_column_heading(name), w).ljust(w)
             for (name, _), w in zip(columns, widths, strict=True)
         ),
-        "  ".join(_BAR * w for w in widths),
+        "  ".join("─" * w for w in widths),
     ]
     lines.extend(
         "  ".join(

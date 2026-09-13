@@ -3975,7 +3975,7 @@ class TestIntegrationEndToEnd:
             # the normalize-to-empty path against the min_items CHECK.
             await integ_store.set_issue_kind(
                 rid,
-                ["", "  "],  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType] -- negative test: blank-only kinds canonicalize to (), hitting the min_items CHECK
+                ["", "  "],  # ty: ignore[invalid-argument-type] -- The integration fixture passes a dynamically-shaped request payload.  # pyright: ignore[reportArgumentType] -- The integration fixture passes a dynamically-shaped request payload.
                 actor="u",
             )
 

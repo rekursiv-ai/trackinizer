@@ -306,7 +306,7 @@ class TestTheWireTypeRefusesTheSameThings:
 
     def test_an_unknown_op_is_refused(self) -> None:
         with pytest.raises(ValueError, match="unknown filter op"):
-            Filter(field="seq", op="bogus", value="3")  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType] -- negative test: the invalid op IS the input under test
+            Filter(field="seq", op="bogus", value="3")  # ty: ignore[invalid-argument-type] -- The invalid operation is the negative-test input under test.  # pyright: ignore[reportArgumentType] -- The invalid operation is the negative-test input under test.
 
 
 class TestTheEvaluatorEnforcesTheWholeContract:
@@ -350,7 +350,7 @@ class TestTheEvaluatorEnforcesTheWholeContract:
         with pytest.raises(ValidationError, match="unknown filter op"):
             match_filter(
                 {"seq": 5},
-                _BareFilter(field="seq", op="bogus", value="3"),  # ty: ignore[invalid-argument-type]  # pyright: ignore[reportArgumentType] -- negative test: the invalid op IS the input under test
+                _BareFilter(field="seq", op="bogus", value="3"),  # ty: ignore[invalid-argument-type] -- The negative test deliberately passes an invalid operation.  # pyright: ignore[reportArgumentType] -- The negative test deliberately passes an invalid operation.
             )
 
 

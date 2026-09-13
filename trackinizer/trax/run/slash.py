@@ -23,7 +23,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Final
 
 import logging
 
@@ -62,17 +61,8 @@ class SlashCommand:
 # printable (>= 0x20, outside an escape sequence) is appended as line text.
 _ENTER = frozenset((0x0D, 0x0A))  # CR submits; LF too, except inside a paste.
 _BACKSPACE = frozenset((0x7F, 0x08))  # DEL and BS both erase one char.
-_WORD_ERASE: Final = 0x17
 _CLEAR_LINE = frozenset((0x15, 0x03))  # Ctrl-U (line-kill) / Ctrl-C (abandon).
-_ESC: Final = 0x1B
 _ESC_INTRODUCERS = frozenset((0x5B, 0x4F))  # ``[`` (CSI) / ``O`` (SS3).
-
-# Bracketed-paste markers, sans the leading ESC (which the accumulator strips
-# before classifying). The terminal brackets pasted text in these so a TUI can
-# treat it as one atomic block; the detector uses them to keep an embedded
-# newline literal rather than a submit.
-_PASTE_START: Final = b"[200~"
-_PASTE_END: Final = b"[201~"
 
 
 class SlashCommandDetector:
@@ -122,7 +112,7 @@ class SlashCommandDetector:
         if self._in_escape:
             self._consume_escape(byte)
             return
-        if byte == _ESC:
+        if byte == 0x1B:
             self._in_escape = True
             self._escape = bytearray()  # Accumulate the sequence to classify it.
         elif byte in _ENTER:
@@ -139,7 +129,7 @@ class SlashCommandDetector:
                 self._line.pop()
         elif byte in _CLEAR_LINE:
             self._line.clear()
-        elif byte == _WORD_ERASE:
+        elif byte == 0x17:
             self._erase_word()
         elif byte >= 0x20:  # Printable; other low control bytes are ignored.
             self._line.append(byte)
@@ -163,9 +153,13 @@ class SlashCommandDetector:
 
     def _end_escape(self) -> None:
         """Finish an escape sequence, toggling paste mode on the paste markers."""
-        if bytes(self._escape) == _PASTE_START:
+        # Bracketed-paste markers, sans the leading ESC (which the accumulator strips
+        # before classifying). The terminal brackets pasted text in these so a TUI can
+        # treat it as one atomic block; the detector uses them to keep an embedded
+        # newline literal rather than a submit.
+        if bytes(self._escape) == b"[200~":
             self._in_paste = True
-        elif bytes(self._escape) == _PASTE_END:
+        elif bytes(self._escape) == b"[201~":
             self._in_paste = False
         self._in_escape = False
         self._escape = bytearray()

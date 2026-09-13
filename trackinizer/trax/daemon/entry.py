@@ -44,7 +44,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         # Deferred: importing the server pulls in the whole CLI, which is
         # exactly the ~145ms a delegating invocation must not pay. Hoisting
         # either of these imports to module scope defeats the daemon.
-        from trackinizer.trax.daemon.server import serve  # noqa: PLC0415
+        from trackinizer.trax.daemon.server import (  # noqa: PLC0415 -- Daemon-only dependencies are loaded only in the executable entry path.
+            serve,
+        )
 
         serve()
         return 0
@@ -62,7 +64,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stderr.write(response.stderr)
             return response.exit_code
     # No daemon, or a verb that must run here: the original path, unchanged.
-    from trackinizer.trax import cli  # noqa: PLC0415
+    from trackinizer.trax import (  # noqa: PLC0415 -- Daemon-only dependencies are loaded only in the executable entry path.
+        cli,
+    )
 
     return cli.main(args)
 

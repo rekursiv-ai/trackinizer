@@ -63,12 +63,7 @@ GOOGLE_AUTHORIZE_URL: Final[str] = "https://accounts.google.com/o/oauth2/v2/auth
 GOOGLE_TOKEN_URL: Final[str] = "https://oauth2.googleapis.com/token"  # noqa: S105 -- OAuth endpoint URL.
 GOOGLE_USERINFO_URL: Final[str] = "https://openidconnect.googleapis.com/v1/userinfo"
 
-# email/profile populate the userinfo fields inserted into users; openid
-# is required by the OIDC spec.
-_OAUTH_SCOPE: Final[str] = "openid email profile"
-
 # Where to land after login when no ?next= was given or the cookie was lost.
-_DEFAULT_NEXT_URL: Final[str] = "/"
 
 
 @router.get("/auth/login")
@@ -92,13 +87,15 @@ async def auth_login_route(request: Request, next: str = "/") -> RedirectRespons
 
     """
     settings = _resolve_oauth_settings(request)
-    safe_next = next if _same_origin_path(next) else _DEFAULT_NEXT_URL
+    safe_next = next if _same_origin_path(next) else "/"
     state = secrets.token_urlsafe(32)
+    # email/profile populate the userinfo fields inserted into users; openid
+    # is required by the OIDC spec.
     params = {
         "client_id": settings.client_id,
         "redirect_uri": settings.redirect_uri,
         "response_type": "code",
-        "scope": _OAUTH_SCOPE,
+        "scope": "openid email profile",
         "state": state,
         # Let a multi-account user pick which Google identity to use;
         # without it Google silently picks the first signed-in account.

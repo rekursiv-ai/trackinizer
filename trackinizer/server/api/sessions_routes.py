@@ -12,7 +12,7 @@ The mutating routes require the ``writer`` role; the read requires
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Final, cast
+from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -42,11 +42,6 @@ from trackinizer.wire.wire_sessions import (
 
 
 router = APIRouter()
-
-# Ceiling on how long the inbound drain holds a request open. Long enough that
-# a waiting caller re-arms rarely, short enough to stay under the idle timeout
-# of an intermediary that would otherwise cut the connection mid-wait.
-_MAX_INBOUND_WAIT_SEC: Final = 30.0
 
 
 @router.post("/api/sessions/start", status_code=201)
@@ -281,7 +276,10 @@ async def session_inbound_drain_route(
     """
     await _require_session(get_store(request), session_id)
     inbound = get_inbound(request)
-    held = min(max(wait_sec, 0.0), _MAX_INBOUND_WAIT_SEC)
+    # Ceiling on how long the inbound drain holds a request open. Long enough that
+    # a waiting caller re-arms rarely, short enough to stay under the idle timeout
+    # of an intermediary that would otherwise cut the connection mid-wait.
+    held = min(max(wait_sec, 0.0), 30.0)
     drained = (
         await inbound.await_messages(session_id, timeout_sec=held)
         if held

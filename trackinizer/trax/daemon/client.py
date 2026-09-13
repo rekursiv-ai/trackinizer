@@ -238,7 +238,7 @@ def _request(argv: Sequence[str], source_version: str) -> Request:
         # 2.2ms, and only a terminal ever needs the width -- the piped and
         # daemon-spawned paths that dominate agent traffic would pay it for a
         # value they discard.
-        import shutil  # noqa: PLC0415
+        import shutil  # noqa: PLC0415 -- The daemon dependency is imported only when the command starts.
 
         columns = shutil.get_terminal_size(fallback=(120, 24)).columns
     else:
@@ -274,7 +274,7 @@ def _spawn(path: Path) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     # 3.2ms, paid only on the once-per-daemon-lifetime spawn. Every other
     # invocation connects to a daemon that is already up.
-    import subprocess  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415 -- The daemon dependency is imported only when the command starts.
 
     try:
         subprocess.Popen(  # noqa: S603 -- fixed interpreter and module path.

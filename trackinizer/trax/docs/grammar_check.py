@@ -77,8 +77,7 @@ from typing import TYPE_CHECKING
 
 import sys
 
-from lark import Lark
-from lark.exceptions import LarkError
+from lark import Lark, LarkError
 
 from trackinizer.trax.docs.grammar_gen import (
     grammar_path,
@@ -87,8 +86,7 @@ from trackinizer.trax.docs.grammar_gen import (
 
 
 if TYPE_CHECKING:
-    from lark import Token
-    from lark.tree import Tree
+    from lark import Token, Tree
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

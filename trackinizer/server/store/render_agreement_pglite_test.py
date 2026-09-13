@@ -129,7 +129,7 @@ async def _rendered(
     """Render every value through ``template`` on a real engine."""
     async with engine.acquire() as conn:
         rows = await conn.fetch(
-            f"SELECT val, {template.format(col='val')} AS rendered "  # noqa: S608
+            f"SELECT val, {template.format(col='val')} AS rendered "  # noqa: S608 -- The test exercises the controlled SQL template rendering path.
             f"FROM unnest($1::{sql_type}[]) AS val",
             list(values),
         )

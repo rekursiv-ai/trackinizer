@@ -1000,9 +1000,6 @@ def is_issue_kind(token: str) -> TypeGuard[Issue.Kind]:
     return token in ISSUE_KINDS
 
 
-_KIND_HASH_RE = re.compile(r"^([A-Za-z]+)#(\d+)$")
-
-
 def parse_ref(value: str) -> Ref:
     """Parse a UUID or ``Kind#seq`` reference; raise ``ValueError`` otherwise.
 
@@ -1018,7 +1015,7 @@ def parse_ref(value: str) -> Ref:
         raise ValueError("empty reference")
     if UUID_RE.match(value):
         return UuidRef(uuid=uuid.UUID(value))
-    if (match := _KIND_HASH_RE.match(value)) is not None:
+    if (match := re.match(r"^([A-Za-z]+)#(\d+)$", value)) is not None:
         name, seq = match.group(1).lower(), int(match.group(2))
         if name not in KIND_LOWER:
             raise ValueError(f"unknown kind {name!r} in reference {value!r}")

@@ -100,7 +100,9 @@ def tmp_config_dir(
     """
     root = cast(Any, tmp_path)
     # A test fixture repointing userdirs.
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(root))  # house-lint: ignore[xdg-literal]
+    monkeypatch.setenv(
+        "XDG_CONFIG_HOME", str(root)
+    )  # house-ignore[xdg-literal] -- A test fixture repointing userdirs.
     (root / "rekursiv-ai" / "trax" / "profiles").mkdir(parents=True, exist_ok=True)
     monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
     monkeypatch.delenv("TRACKINIZER_URL", raising=False)

@@ -25,7 +25,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, fields
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Final, Literal, cast, get_args
+from typing import TYPE_CHECKING, Annotated, Final, Literal, cast, get_args
 from urllib.parse import quote
 from uuid import UUID
 
@@ -41,13 +41,6 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
-
-
-# Only ``asyncpg.Record`` annotations remain; the regex error classes moved to
-# ``api._regex_guard``. Kept a runtime import rather than TYPE_CHECKING-only
-# because the module is imported unconditionally by every path that reaches
-# here, so deferring it buys nothing and splits one import across two forms.
-import asyncpg  # noqa: TC002 -- see above.
 
 from trackinizer.lib.custom_json import IntCodec
 from trackinizer.lib.postgres import Conn, DatabaseEngine
@@ -65,6 +58,10 @@ from trackinizer.types.change_log import Snapshot
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.wire_sessions import FeedCursor, FeedResponse
+
+
+if TYPE_CHECKING:
+    import asyncpg
 
 
 _CWD: Final = Path(__file__).resolve().parent

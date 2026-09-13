@@ -13,8 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lark import Lark
-from lark.exceptions import LarkError
+from lark import Lark, LarkError
 
 import pytest
 

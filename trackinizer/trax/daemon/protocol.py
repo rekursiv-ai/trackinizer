@@ -384,7 +384,7 @@ def _aliased_socket_path(logical_path: Path) -> Path:
     # Imported only for the exceptional long-path case. Importing tempfile on
     # every thin-client invocation would consume part of the latency the daemon
     # exists to remove.
-    import tempfile  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415 -- Protocol-only dependencies are loaded on the daemon execution path.
 
     alias_root = Path(tempfile.gettempdir()) / f"t-{os.getuid():x}"
     alias_root.mkdir(mode=0o700, exist_ok=True)
