@@ -15,27 +15,14 @@ import pytest
 from trackinizer.lib.posix.pipes import Piped, Stream
 
 
-def _collect(argv: list[str], *, stdin: bytes = b"") -> list[tuple[Stream, str]]:
-    """Run a child to completion, returning its chunks as decoded text."""
-
-    async def run() -> list[tuple[Stream, str]]:
-        async with Piped(argv) as child:
-            if stdin:
-                _ = await child.write(stdin)
-            child.close_stdin()
-            return [(name, data.decode()) async for name, data in child.output()]
-
-    return asyncio.run(run())
-
-
 def test_stdout_and_stderr_arrive_on_their_own_streams() -> None:
     """The separation a pty structurally cannot provide.
 
     On a pty both streams are the same slave tty, so the kernel interleaves
     them before any reader sees a byte and no later step can undo it.
     """
-    chunks = _collect(
-        ["sh", "-c", "printf 'to-out\\n'; printf 'to-err\\n' >&2"],
+    chunks = asyncio.run(
+        _collect(["sh", "-c", "printf 'to-out\\n'; printf 'to-err\\n' >&2"]),
     )
 
     joined = {name: "".join(t for n, t in chunks if n == name) for name, _ in chunks}
@@ -52,7 +39,7 @@ def test_a_child_flooding_one_stream_does_not_deadlock() -> None:
     """
     script = "printf 'x%.0s' $(seq 1 70000) >&2; printf 'done\\n'"
 
-    chunks = _collect(["sh", "-c", script])
+    chunks = asyncio.run(_collect(["sh", "-c", script]))
 
     assert "".join(t for n, t in chunks if n == "stdout") == "done\n"
     assert len("".join(t for n, t in chunks if n == "stderr")) == 70_000
@@ -60,7 +47,7 @@ def test_a_child_flooding_one_stream_does_not_deadlock() -> None:
 
 def test_input_reaches_the_child() -> None:
     """Bytes written to stdin come back out, which is what makes it a session."""
-    chunks = _collect(["sh", "-c", "cat"], stdin=b"echoed\n")
+    chunks = asyncio.run(_collect(["sh", "-c", "cat"], stdin=b"echoed\n"))
 
     assert "".join(t for n, t in chunks if n == "stdout") == "echoed\n"
 
@@ -92,12 +79,33 @@ def test_a_child_holding_its_buffer_yields_nothing_until_it_flushes() -> None:
     never flushes produces NOTHING until it exits -- and one killed first loses
     it. The fix is the child's (``python -u``); there is none on this side.
     """
-    script = "import time; print('held'); time.sleep(0.2)"
+    script = (
+        "import sys; print('held'); "
+        "print('ready', file=sys.stderr, flush=True); sys.stdin.read(1)"
+    )
 
-    chunks = _collect([sys.executable, "-c", script])
+    assert asyncio.run(_read_buffered_child(script)) == b"held\n"
 
-    # It does arrive -- at exit, all at once, rather than when printed.
-    assert "".join(t for n, t in chunks if n == "stdout") == "held\n"
+
+async def _collect(argv: list[str], *, stdin: bytes = b"") -> list[tuple[Stream, str]]:
+    """Run a child to completion, returning its chunks as decoded text."""
+    async with Piped(argv) as child:
+        if stdin:
+            _ = await child.write(stdin)
+        child.close_stdin()
+        return [(name, data.decode()) async for name, data in child.output()]
+
+
+async def _read_buffered_child(script: str) -> bytes:
+    """Release the child after stderr proves it has buffered stdout."""
+    # The gate's PYTHONUNBUFFERED must not disable this fixture's buffering.
+    async with Piped([sys.executable, "-E", "-c", script]) as child:
+        output = child.output()
+        # The child is blocked on stdin with stdout still buffered.
+        assert await asyncio.wait_for(anext(output), 5.0) == ("stderr", b"ready\n")
+        assert await child.write(b"x")
+        child.close_stdin()
+        return b"".join([data async for name, data in output if name == "stdout"])
 
 
 if __name__ == "__main__":

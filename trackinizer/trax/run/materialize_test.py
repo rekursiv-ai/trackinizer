@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Final
+from unittest.mock import patch
+
+import subprocess
 
 import pytest
 
@@ -25,6 +28,7 @@ from trackinizer.trax.run.errors import (
 )
 from trackinizer.trax.run.materialize import (
     RESUMABLE_TARGETS,
+    _codex_cli_version,
     materialize,
     materialize_claude,
 )
@@ -71,6 +75,10 @@ def local_session_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    monkeypatch.setattr(
+        "trackinizer.trax.run.materialize._codex_cli_version",
+        lambda: "0.999.0",
+    )
 
 
 class TestTheFileIsThisMachinesOwn:
@@ -343,6 +351,7 @@ class TestMaterializingCodex:
             "timestamp",
         }
         assert payload["cwd"] == str(Path.cwd())
+        assert payload["cli_version"] == "0.999.0"
 
     def test_a_record_with_no_timestamp_field_still_materializes(self) -> None:
         """Two members of the union declare no fields the others share.
@@ -573,6 +582,61 @@ class TestMaterializingCodex:
                 records=[UserMessage(content="hi")],
                 encoding=json_freeze({}),
             )
+
+
+class TestCodexCliVersion:
+    """Version discovery is independent of the serialization tests' installed CLI."""
+
+    @pytest.mark.parametrize(
+        ("stdout", "returncode", "expected"),
+        [
+            ("codex-cli 0.123.0\n", 0, "0.123.0"),
+            ("", 0, "0.150.1"),
+            ("codex-cli 0.123.0\n", 1, "0.150.1"),
+        ],
+    )
+    def test_the_installed_binary_reports_its_version(
+        self,
+        stdout: str,
+        returncode: int,
+        expected: str,
+    ) -> None:
+        with (
+            patch("shutil.which", return_value="/test/bin/codex"),
+            patch(
+                "subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=["/test/bin/codex", "--version"],
+                    returncode=returncode,
+                    stdout=stdout,
+                ),
+            ) as run,
+        ):
+            assert _codex_cli_version() == expected
+        run.assert_called_once_with(
+            ["/test/bin/codex", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+    def test_an_absent_binary_uses_the_verified_floor(self) -> None:
+        with patch("shutil.which", return_value=None), patch("subprocess.run") as run:
+            assert _codex_cli_version() == "0.150.1"
+        run.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "error", [OSError(), subprocess.TimeoutExpired("codex", 10)]
+    )
+    def test_an_unavailable_binary_uses_the_verified_floor(
+        self, error: Exception
+    ) -> None:
+        with (
+            patch("shutil.which", return_value="/test/bin/codex"),
+            patch("subprocess.run", side_effect=error),
+        ):
+            assert _codex_cli_version() == "0.150.1"
 
 
 if __name__ == "__main__":

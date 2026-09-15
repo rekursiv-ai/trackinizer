@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from concurrent.futures import ThreadPoolExecutor
+from typing import override
 
 import asyncio
 import threading
 import time
 import uuid
 
+import pytest
+
 from trackinizer.server.inbound import Inbound, InboundQueue
-
-
-if TYPE_CHECKING:
-    import pytest
 
 
 class TestInboundQueue:
@@ -91,6 +90,68 @@ class TestAwaitMessages:
 
         assert [m.text for m in drained] == ["already here"]
         assert time.monotonic() - started < 0.5, "waited despite a pending message"
+        assert not queue._waiters
+
+    def test_enqueue_after_initial_drain_is_not_missed(self) -> None:
+        """An enqueue in the drain-to-wait gap must wake the same poll."""
+        drained = threading.Event()
+        sent = threading.Event()
+        session = uuid.uuid4()
+
+        class PausedDrainQueue(InboundQueue):
+            @override
+            def drain(self, session_id: uuid.UUID) -> list[Inbound]:
+                messages = super().drain(session_id)
+                drained.set()
+                assert sent.wait(timeout=5)
+                return messages
+
+        queue = PausedDrainQueue()
+        message = Inbound(text="arrived after the initial drain")
+
+        def send() -> None:
+            assert drained.wait(timeout=5)
+            queue.enqueue(session, message)
+            sent.set()
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            sender = executor.submit(send)
+            received = asyncio.run(queue.await_messages(session, timeout_sec=0.02))
+            sender.result(timeout=5)
+
+        assert received == [message]
+        assert queue.pending(session) == 0
+        assert not queue._waiters
+
+    def test_cancellation_releases_the_waiter(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+
+        async def run() -> None:
+            waiter = asyncio.create_task(queue.await_messages(session, timeout_sec=5))
+            await asyncio.sleep(0)
+            assert queue._waiters[session]
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+
+        asyncio.run(run())
+        assert not queue._waiters
+
+    @pytest.mark.parametrize("error_type", [RuntimeError, TimeoutError])
+    def test_initial_drain_error_releases_the_waiter(
+        self,
+        error_type: type[Exception],
+    ) -> None:
+        class FailedDrainQueue(InboundQueue):
+            @override
+            def drain(self, session_id: uuid.UUID) -> list[Inbound]:
+                raise error_type(f"drain failed for {session_id}")
+
+        queue = FailedDrainQueue()
+        with pytest.raises(error_type, match="drain failed"):
+            asyncio.run(queue.await_messages(uuid.uuid4(), timeout_sec=5))
+        assert not queue._waiters
 
     def test_wakes_on_an_enqueue_from_another_thread(self) -> None:
         """The wait ends when the message arrives, not when a timer expires."""
@@ -99,20 +160,25 @@ class TestAwaitMessages:
 
         async def run() -> tuple[list[str], float]:
             loop = asyncio.get_running_loop()
-
-            def send_soon() -> None:
-                time.sleep(0.1)
-                _ = queue.enqueue(session, Inbound(text="from elsewhere"))
-
-            threading.Thread(target=send_soon, daemon=True).start()
             started = loop.time()
-            drained = await queue.await_messages(session, timeout_sec=10.0)
+            waiter = asyncio.create_task(
+                queue.await_messages(session, timeout_sec=10.0),
+            )
+            # Run the waiter through registration before the sending thread starts.
+            await asyncio.sleep(0)
+            sender = threading.Thread(
+                target=queue.enqueue,
+                args=(session, Inbound(text="from elsewhere")),
+                daemon=True,
+            )
+            sender.start()
+            drained = await waiter
+            sender.join()
             return ([m.text for m in drained], loop.time() - started)
 
         texts, elapsed = asyncio.run(run())
         assert texts == ["from elsewhere"]
-        # Woken by the enqueue: far below the timeout, above the send delay.
-        assert elapsed < 2.0, f"waited {elapsed:.2f}s for a message sent at 0.1s"
+        assert elapsed < 2.0, f"waited {elapsed:.2f}s despite an enqueued message"
 
     def test_returns_empty_at_the_timeout(self) -> None:
         """A quiet session returns empty so the caller can re-arm.
@@ -123,10 +189,11 @@ class TestAwaitMessages:
         queue = InboundQueue()
 
         started = time.monotonic()
-        drained = asyncio.run(queue.await_messages(uuid.uuid4(), timeout_sec=0.2))
+        drained = asyncio.run(queue.await_messages(uuid.uuid4(), timeout_sec=0.01))
 
         assert drained == []
-        assert time.monotonic() - started >= 0.2
+        assert time.monotonic() - started >= 0.01
+        assert not queue._waiters
 
     def test_a_second_waiter_does_not_steal_the_first_wake(self) -> None:
         """Two waiters on one session both see the queue drained once.
@@ -140,9 +207,9 @@ class TestAwaitMessages:
         async def run() -> list[list[str]]:
             first = asyncio.create_task(queue.await_messages(session, timeout_sec=2.0))
             second = asyncio.create_task(queue.await_messages(session, timeout_sec=2.0))
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0)
             _ = queue.enqueue(session, Inbound(text="one message"))
-            both = await asyncio.gather(first, second)
+            both = await asyncio.wait_for(asyncio.gather(first, second), timeout=0.5)
             return [[m.text for m in drained] for drained in both]
 
         results = asyncio.run(run())

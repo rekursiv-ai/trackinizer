@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from functools import partial
+from functools import partial, partialmethod
 from pathlib import Path
 from typing import TypeGuard
 from unittest.mock import patch
@@ -41,6 +41,18 @@ def file_watch_ready(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
 
     monkeypatch.setattr(follow, "_watch_lines", armed_watch)
     return ready
+
+
+@pytest.fixture
+def partial_line_read(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
+    """Signal when a real cursor has read an unterminated fragment."""
+    read = asyncio.Event()
+    monkeypatch.setattr(
+        follow._Cursor,
+        "drain",
+        partialmethod(_observed_drain, real_drain=follow._Cursor.drain, read=read),
+    )
+    return read
 
 
 def test_yields_appended_lines(tmp_path: Path, file_watch_ready: asyncio.Event) -> None:
@@ -87,7 +99,11 @@ def test_replays_from_the_start_when_asked(tmp_path: Path) -> None:
     assert asyncio.run(run()) == ["old"]
 
 
-def test_holds_a_partial_line(tmp_path: Path, file_watch_ready: asyncio.Event) -> None:
+def test_holds_a_partial_line(
+    tmp_path: Path,
+    file_watch_ready: asyncio.Event,
+    partial_line_read: asyncio.Event,
+) -> None:
     """A line split across writes is delivered once, whole."""
     target = tmp_path / "log"
     _ = target.write_text("")
@@ -98,7 +114,8 @@ def test_holds_a_partial_line(tmp_path: Path, file_watch_ready: asyncio.Event) -
         with target.open("a") as handle:
             _ = handle.write("split")
             handle.flush()
-            await asyncio.sleep(0.1)
+            await asyncio.wait_for(partial_line_read.wait(), 5.0)
+            assert not task.done(), "an unterminated fragment was delivered"
             _ = handle.write("-line\n")
         return await task
 
@@ -468,7 +485,11 @@ class TestSubdirectories:
             async with follow_dir(tmp_path) as changed:
                 leaf = tmp_path / "born-later"
                 leaf.mkdir()
-                await asyncio.sleep(0.2)
+                # Draining a first file proves discovery adopted this directory.
+                probe = leaf / "probe"
+                probe.write_text("ready\n")
+                while probe not in await asyncio.wait_for(anext(changed), 5.0):
+                    pass
                 _ = (leaf / "rollout.jsonl").write_text("{}\n")
                 deadline = asyncio.get_running_loop().time() + 5.0
                 while asyncio.get_running_loop().time() < deadline:
@@ -854,18 +875,18 @@ class TestFollowTree:
                 match=lambda p: p.suffix == ".jsonl",
                 on_armed=armed.set,
             )
-            task = asyncio.create_task(_collect(lines, seen, 4))
+            task = asyncio.create_task(_collect(lines, seen, 2))
             await asyncio.wait_for(armed.wait(), 5.0)
             first = tmp_path / "a.jsonl"
             second = tmp_path / "b.jsonl"
             _ = first.write_text("a1\n")
             _ = second.write_text("b1\n")
-            await asyncio.sleep(0.2)
+            await asyncio.wait_for(task, 5.0)
             with first.open("a") as handle:
                 _ = handle.write("a2\n")
             with second.open("a") as handle:
                 _ = handle.write("b2\n")
-            await asyncio.wait_for(task, 5.0)
+            await asyncio.wait_for(_collect(lines, seen, 4), 5.0)
             return set(seen)
 
         assert asyncio.run(run()) == {
@@ -922,12 +943,12 @@ class TestFollowTree:
                 match=lambda p: p.suffix == ".jsonl",
                 on_armed=armed.set,
             )
-            task = asyncio.create_task(_collect_lines(lines, seen, 2))
+            task = asyncio.create_task(_collect_lines(lines, seen, 1))
             await asyncio.wait_for(armed.wait(), 5.0)
             _ = target.write_text("first\n")
-            await asyncio.sleep(0.2)
-            _ = target.write_text("rewritten\n")
             await asyncio.wait_for(task, 5.0)
+            _ = target.write_text("rewritten\n")
+            await asyncio.wait_for(_collect_lines(lines, seen, 2), 5.0)
             return seen
 
         got = asyncio.run(run())
@@ -999,13 +1020,13 @@ class TestFollowTree:
                 match=lambda p: p.suffix == ".jsonl",
                 on_armed=armed.set,
             )
-            task = asyncio.create_task(_collect_lines(lines, seen, 2))
+            task = asyncio.create_task(_collect_lines(lines, seen, 1))
             await asyncio.wait_for(armed.wait(), 5.0)
             _ = target.write_text("one\n")
-            await asyncio.sleep(0.2)
+            await asyncio.wait_for(task, 5.0)
             with target.open("a") as handle:
                 _ = handle.write("two\n")
-            await asyncio.wait_for(task, 5.0)
+            await asyncio.wait_for(_collect_lines(lines, seen, 2), 5.0)
             return seen
 
         assert [line.restart for line in asyncio.run(run())] == [False, False]
@@ -1030,7 +1051,11 @@ class TestFollowTree:
 
         assert asyncio.run(run()) == [(tmp_path / "new.jsonl", "fresh")]
 
-    def test_holds_a_partial_line_per_file(self, tmp_path: Path) -> None:
+    def test_holds_a_partial_line_per_file(
+        self,
+        tmp_path: Path,
+        partial_line_read: asyncio.Event,
+    ) -> None:
         """A line split across writes is delivered once, whole."""
 
         async def run() -> list[tuple[Path, str]]:
@@ -1047,7 +1072,8 @@ class TestFollowTree:
             with target.open("a") as handle:
                 _ = handle.write("split")
                 handle.flush()
-                await asyncio.sleep(0.2)
+                await asyncio.wait_for(partial_line_read.wait(), 5.0)
+                assert not task.done(), "an unterminated fragment was delivered"
                 _ = handle.write("-line\n")
             await asyncio.wait_for(task, 5.0)
             return seen
@@ -1940,6 +1966,19 @@ def test_overflow_rescan_tolerates_vanished_directory(tmp_path: Path) -> None:
     target = tmp_path / "log"
     target.write_text("line\n")
     assert follow._rescan({1: tmp_path, 2: tmp_path / "absent"}) == {target}
+
+
+def _observed_drain(
+    cursor: follow._Cursor,
+    *,
+    real_drain: Callable[[follow._Cursor], list[str]],
+    read: asyncio.Event,
+) -> list[str]:
+    """Signal partial input after draining the real cursor."""
+    lines = real_drain(cursor)
+    if cursor._partial:
+        read.set()
+    return lines
 
 
 if __name__ == "__main__":

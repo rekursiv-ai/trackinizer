@@ -115,7 +115,7 @@ async def _run_sweep_until(
             cast(Store, store),
             inbound,
             page_size=page_size,
-            sweep_interval_sec=0.01,
+            sweep_interval_sec=0.001,
         ),
     )
     try:
@@ -125,9 +125,13 @@ async def _run_sweep_until(
                 "sweep never produced the expected deliveries"
             )
             await asyncio.sleep(0.005)
-        # One extra beat so an over-delivering bug has a chance to surface
-        # before the assertions run.
-        await asyncio.sleep(0.05)
+        # Observe repeated sweeps, even when scheduling is slower than expected.
+        final_query_count = store.query_count + 5
+        while store.query_count < final_query_count:
+            assert asyncio.get_running_loop().time() < deadline, (
+                "sweep stopped after producing the expected deliveries"
+            )
+            await asyncio.sleep(0.001)
     finally:
         task.cancel()
         with suppress(asyncio.CancelledError):

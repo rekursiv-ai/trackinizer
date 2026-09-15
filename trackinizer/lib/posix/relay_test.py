@@ -125,7 +125,8 @@ class TestRelayRoundTrip:
         async def run() -> None:
             stdin_r, stdin_w = os.pipe()
             out_r, out_w = os.pipe()
-            terminal = Terminal([sys.executable, "-u", "-c", child])
+            # This echo child has no TUI paste-Enter suppression window.
+            terminal = Terminal([sys.executable, "-u", "-c", child], enter_delay_sec=0)
             relay = Relay(
                 terminal,
                 stdin=os.fdopen(stdin_r),
@@ -173,7 +174,8 @@ class TestRelayRoundTrip:
         async def run() -> None:
             stdin_r, stdin_w = os.pipe()
             out_r, out_w = os.pipe()
-            terminal = Terminal([sys.executable, "-u", "-c", child])
+            # This echo child has no TUI paste-Enter suppression window.
+            terminal = Terminal([sys.executable, "-u", "-c", child], enter_delay_sec=0)
             relay = Relay(
                 terminal,
                 stdin=os.fdopen(stdin_r),

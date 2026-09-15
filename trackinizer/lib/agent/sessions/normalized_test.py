@@ -124,9 +124,17 @@ def test_session_json_is_a_bare_array_of_tagged_records() -> None:
 @pytest.mark.parametrize(
     ("adapter", "fixture"),
     [
-        (claude, "claude_main.jsonl"),
+        pytest.param(
+            claude,
+            "claude_main.jsonl",
+            marks=pytest.mark.compute_large_fixture,
+        ),
         (claude, "claude_sidechain.jsonl"),
-        (codex, "codex_main.jsonl"),
+        pytest.param(
+            codex,
+            "codex_main.jsonl",
+            marks=pytest.mark.compute_large_fixture,
+        ),
     ],
     ids=["claude-main", "claude-sidechain", "codex-main"],
 )

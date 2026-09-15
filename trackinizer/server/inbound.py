@@ -202,16 +202,18 @@ class InboundQueue:
           messages: Everything queued, oldest first; empty on timeout.
 
         """
-        pending = self.drain(session_id)
-        if pending:
-            return pending
         waiter = _Waiter(loop=asyncio.get_running_loop())
         with self._lock:
             self._waiters[session_id].append(waiter)
         try:
-            await asyncio.wait_for(waiter.event.wait(), timeout_sec)
-        except TimeoutError:
-            return []
+            # Register first so an enqueue after the drain cannot miss this poll.
+            pending = self.drain(session_id)
+            if pending:
+                return pending
+            try:
+                await asyncio.wait_for(waiter.event.wait(), timeout_sec)
+            except TimeoutError:
+                return []
         finally:
             self._release(session_id, waiter)
         return self.drain(session_id)

@@ -505,6 +505,7 @@ class TestLifecycle:
 
     def test_terminate_escalation_is_bounded_by_the_grace(self) -> None:
         """The KILL lands after the grace, not after the child's own lifetime."""
+        grace_sec = 0.02
         deaf = (
             "import signal,sys,time; "
             "signal.signal(signal.SIGTERM, lambda *_: None); "
@@ -515,7 +516,7 @@ class TestLifecycle:
         async def run() -> float:
             async with Terminal(
                 [sys.executable, "-c", deaf],
-                terminate_grace_sec=0.1,
+                terminate_grace_sec=grace_sec,
             ) as term:
                 assert b"DEAF" in await _read_until(term, b"DEAF", 5.0)
                 loop = asyncio.get_running_loop()
@@ -524,7 +525,7 @@ class TestLifecycle:
                 return loop.time() - started
 
         elapsed = asyncio.run(run())
-        assert elapsed >= 0.1
+        assert elapsed >= grace_sec
         assert elapsed < 2.0
 
     def test_terminate_kills_a_child_not_yet_in_its_own_group(self) -> None:
@@ -713,7 +714,8 @@ class TestLifecycle:
                 return await term.wait()
 
         assert asyncio.run(run()) == 0
-        assert out.read_text().startswith("/dev/pts/")
+        prefix = "/dev/ttys" if sys.platform == "darwin" else "/dev/pts/"
+        assert out.read_text().startswith(prefix)
 
     def test_set_winsize_on_a_released_terminal_is_harmless(self) -> None:
         Terminal(["cat"]).set_winsize(40, 120)
@@ -828,6 +830,9 @@ def _cat() -> Terminal:
 
 def _still_running(pid: int) -> bool:
     """Whether ``pid`` is alive, without consuming its exit status."""
+    unsupported = sys.platform == "darwin" and sys.version_info < (3, 13)
+    if unsupported:
+        pytest.skip("macOS waitid requires Python 3.13 or newer")
     try:
         exited = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
     except ChildProcessError:

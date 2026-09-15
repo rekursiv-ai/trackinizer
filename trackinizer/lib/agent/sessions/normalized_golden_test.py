@@ -58,7 +58,19 @@ def rendered(fixture: Path) -> str:
     return stream.getvalue()
 
 
-@pytest.mark.parametrize("fixture", fixtures(), ids=fixture_id)
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        pytest.param(
+            path,
+            marks=pytest.mark.compute_large_fixture
+            if path.stem.endswith("_main")
+            else (),
+        )
+        for path in fixtures()
+    ],
+    ids=fixture_id,
+)
 def test_a_fixture_normalizes_to_its_frozen_bytes(fixture: Path) -> None:
     wire = rendered(fixture)
 
@@ -68,7 +80,19 @@ def test_a_fixture_normalizes_to_its_frozen_bytes(fixture: Path) -> None:
     assert wire == golden_path(fixture).read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("fixture", fixtures(), ids=fixture_id)
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        pytest.param(
+            path,
+            marks=pytest.mark.compute_large_fixture
+            if path.stem.endswith("_main")
+            else (),
+        )
+        for path in fixtures()
+    ],
+    ids=fixture_id,
+)
 def test_the_frozen_bytes_still_rebuild_the_provider_file(fixture: Path) -> None:
     # A golden nothing can read back would freeze a broken format. Reading the
     # STORED bytes -- not a fresh encode -- is what proves an archived session
@@ -82,7 +106,19 @@ def test_the_frozen_bytes_still_rebuild_the_provider_file(fixture: Path) -> None
     assert rebuilt.getvalue() == fixture.read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("fixture", fixtures(), ids=fixture_id)
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        pytest.param(
+            path,
+            marks=pytest.mark.compute_large_fixture
+            if path.stem.endswith("_main")
+            else (),
+        )
+        for path in fixtures()
+    ],
+    ids=fixture_id,
+)
 def test_normalizing_twice_produces_the_same_bytes(fixture: Path) -> None:
     # The IR is a mapping from the source, so reading one file twice must give
     # one answer. A session id defaulting to ``uuid4()`` that no adapter

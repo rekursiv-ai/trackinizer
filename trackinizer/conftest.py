@@ -18,8 +18,10 @@ from contextlib import asynccontextmanager
 from typing import Final, Self, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import os
 import uuid
 
+from pytest_postgresql.config import get_config
 from pytest_postgresql.exceptions import ExecutableMissingException
 from pytest_postgresql.executors.proc import PostgreSQLExecutor
 from pytest_postgresql.janitor import DatabaseJanitor
@@ -245,6 +247,13 @@ def pg_dsn(request: pytest.FixtureRequest) -> Iterator[str]:
     absent -- as on machines without a system Postgres -- these
     integration tests skip cleanly instead of erroring at setup.
     """
+    # Seeded workers can choose the same ports while their peers are between
+    # reservation and server startup. The plugin's five retries cannot cover
+    # six such peers; allow a collision for every other worker's reservation.
+    request.config.option.postgresql_port_search_count = max(
+        get_config(request).port_search_count,
+        int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1")) - 1,
+    )
     try:
         postgresql_proc = cast(
             PostgreSQLExecutor,

@@ -108,6 +108,10 @@ def local_session_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    monkeypatch.setattr(
+        "trackinizer.trax.run.materialize._codex_cli_version",
+        lambda: "0.999.0",
+    )
 
 
 class TestWhichTargetsResume:
@@ -133,6 +137,7 @@ class TestWhichTargetsResume:
 
         assert written.path.exists()
 
+    @pytest.mark.compute_large_fixture
     def test_codex_resumes(self) -> None:
         """``codex resume <uuid>`` re-enters a rollout, so codex is a target."""
         client = _FakeClient("codex_main.jsonl", session_format="codex")
@@ -193,6 +198,7 @@ class TestLossyConversion:
 
         assert prepare_resume(cast_client(client), uuid4(), "claude").path.exists()
 
+    @pytest.mark.compute_large_fixture
     def test_a_lossy_cross_format_resume_is_refused_without_the_flag(self) -> None:
         """Measured by rewriting, not predicted from the format pair.
 
@@ -204,6 +210,7 @@ class TestLossyConversion:
         with pytest.raises(LossyConversionError, match="--lossy"):
             prepare_resume(cast_client(client), uuid4(), "claude")
 
+    @pytest.mark.compute_large_fixture
     def test_the_flag_accepts_the_loss(self) -> None:
         client = _FakeClient("codex_main.jsonl", session_format="codex")
 
@@ -273,6 +280,7 @@ class TestLossyConversion:
         assert "UncategorizedRecord" in dropped
         assert "UserMessage" not in dropped
 
+    @pytest.mark.compute_large_fixture
     def test_a_refused_resume_stamps_nothing(self) -> None:
         """The gate runs BEFORE the stamp, so a refusal leaves the row alone.
 

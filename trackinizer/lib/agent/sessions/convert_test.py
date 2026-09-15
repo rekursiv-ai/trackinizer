@@ -148,6 +148,7 @@ def test_verify_does_not_truncate_the_file_named_by_output(tmp_path: Path) -> No
     assert output.read_text() == "PREEXISTING"
 
 
+@pytest.mark.cli_python_subprocess
 def test_verify_runs_a_directory_in_parallel(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -162,6 +163,7 @@ def test_verify_runs_a_directory_in_parallel(
     assert "2/2 exact" in capsys.readouterr().err
 
 
+@pytest.mark.cli_python_subprocess
 def test_workers_run_in_separate_processes(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -384,6 +386,7 @@ def test_status_and_diff_helpers(tmp_path: Path) -> None:
     assert _diff("a\n", "b\n").startswith("--- original")
 
 
+@pytest.mark.cli_python_subprocess
 def test_module_entry_point_runs(tmp_path: Path) -> None:
     path = tmp_path / "session.jsonl"
     path.write_text(_codex_session())
@@ -466,6 +469,7 @@ def test_a_session_keeps_the_subagents_nested_under_it(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason="POSIX signals only")
+@pytest.mark.cli_python_subprocess
 def test_killing_the_run_takes_its_workers_with_it(tmp_path: Path) -> None:
     # A SIGKILLed parent runs no cleanup, and the pool's workers are spawned by
     # a forkserver whose argv does not name this program -- so ``pkill -f`` on
@@ -548,12 +552,19 @@ def test_converting_to_a_directory_writes_as_it_goes(tmp_path: Path) -> None:
     assert written[0].output_bytes > 0
 
 
+@pytest.mark.compute_large_fixture
 def test_converting_a_session_does_not_hold_many_copies_of_it(
     tmp_path: Path,
 ) -> None:
     # Measured, not assumed: a 273 MB session peaked at 4.3 GB, because the
     # source text, the parsed records, and the rewritten text were all held at
     # once. A whole corpus of them took 21 GB and thrashed the machine.
+    # Prime ABC caches with one small session before measuring: their first-use
+    # cost depends on the classes imported during collection (313 KiB in the
+    # full suite), not on how many copies of this session the converter holds.
+    warmup = _session(tmp_path / "warmup" / "s.jsonl", _claude_session())
+    assert convert_file(warmup, "auto", None, False).byte_exact
+
     session = _session(tmp_path / "big" / "s.jsonl", _claude_session() * 50)
     size = session.stat().st_size
     tracemalloc.start()
