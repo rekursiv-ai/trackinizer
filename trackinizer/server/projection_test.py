@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import cast
 from uuid import UUID
 
+import asyncpg
 import pytest
 
 from trackinizer.conftest import make_conn, new_uuid
@@ -38,9 +39,9 @@ def _edge(
     valence: float | None = None,
     note: str | None = None,
     labels: tuple[str, ...] | None = None,
-) -> object:
+) -> asyncpg.Record:
     """Return a full edge row, every selected column present, as the projection sees."""
-    return {
+    row = {
         "edge_kind": edge_kind,
         "from_id": from_id,
         "from_kind": from_kind,
@@ -51,6 +52,7 @@ def _edge(
         "note": note,
         "labels": labels,
     }
+    return cast(asyncpg.Record, row)
 
 
 class TestProjection:
@@ -65,14 +67,14 @@ class TestProjection:
         # This vertex is the produced child: its producer parent is OUTBOUND.
         produced = project_relationships(
             Belief(),
-            cast(Any, [_edge("produced_by", to_id=producer_id, to_kind="Issue")]),
-            cast(Any, []),
+            [_edge("produced_by", to_id=producer_id, to_kind="Issue")],
+            [],
         )
         # This vertex is the producer: what it produced is INBOUND.
         producer = project_relationships(
             Issue(),
-            cast(Any, []),
-            cast(Any, [_edge("produced_by", from_id=child_id, from_kind="Belief")]),
+            [],
+            [_edge("produced_by", from_id=child_id, from_kind="Belief")],
         )
         assert produced.produced_by == (InquiryEdge(id=producer_id, kind="Issue"),)
         assert producer.produces == (InquiryEdge(id=child_id, kind="Belief"),)
@@ -82,14 +84,14 @@ class TestProjection:
         # Successor (child): its predecessor parent is OUTBOUND.
         succ = project_relationships(
             Belief(),
-            cast(Any, [_edge("supersedes", to_id=pred_id, to_kind="Belief")]),
-            cast(Any, []),
+            [_edge("supersedes", to_id=pred_id, to_kind="Belief")],
+            [],
         )
         # Predecessor (parent): its successor is INBOUND.
         pred = project_relationships(
             Belief(),
-            cast(Any, []),
-            cast(Any, [_edge("supersedes", from_id=succ_id, from_kind="Belief")]),
+            [],
+            [_edge("supersedes", from_id=succ_id, from_kind="Belief")],
         )
         assert succ.supersedes == (InquiryEdge(id=pred_id, kind="Belief"),)
         assert pred.superseded_by == (InquiryEdge(id=succ_id, kind="Belief"),)
@@ -100,26 +102,20 @@ class TestProjection:
         issue = project_relationships(
             Issue(),
             # OUTBOUND: this issue narrows a broader parent and requires a prereq.
-            cast(
-                Any,
-                [
-                    _edge("narrows", to_id=broader_id, to_kind="Issue", priority=10),
-                    _edge("requires", to_id=prereq_id, to_kind="Issue"),
-                ],
-            ),
+            [
+                _edge("narrows", to_id=broader_id, to_kind="Issue", priority=10),
+                _edge("requires", to_id=prereq_id, to_kind="Issue"),
+            ],
             # INBOUND: a narrower child decomposes it; a requirer waits on it.
-            cast(
-                Any,
-                [
-                    _edge(
-                        "narrows",
-                        from_id=narrower_id,
-                        from_kind="Issue",
-                        priority=20,
-                    ),
-                    _edge("requires", from_id=requirer_id, from_kind="Issue"),
-                ],
-            ),
+            [
+                _edge(
+                    "narrows",
+                    from_id=narrower_id,
+                    from_kind="Issue",
+                    priority=20,
+                ),
+                _edge("requires", from_id=requirer_id, from_kind="Issue"),
+            ],
         )
         assert isinstance(issue, Issue)
         assert issue.narrows == (IssueEdge(id=broader_id, kind="Issue", priority=10),)
@@ -138,19 +134,16 @@ class TestProjection:
         proved_id, favored_id = new_uuid(), new_uuid()
         paper = project_relationships(
             inquiries.Paper(),
-            cast(
-                Any,
-                [
-                    _edge("proves", to_id=proved_id, to_kind="Belief", valence=0.8),
-                    _edge(
-                        "favors",
-                        to_id=favored_id,
-                        to_kind="Experiment",
-                        valence=-0.5,
-                    ),
-                ],
-            ),
-            cast(Any, []),
+            [
+                _edge("proves", to_id=proved_id, to_kind="Belief", valence=0.8),
+                _edge(
+                    "favors",
+                    to_id=favored_id,
+                    to_kind="Experiment",
+                    valence=-0.5,
+                ),
+            ],
+            [],
         )
         assert isinstance(paper, inquiries.Paper)
         assert paper.proves == (ArtifactEdge(id=proved_id, kind="Belief", valence=0.8),)
@@ -166,19 +159,16 @@ class TestProjection:
         prover_id, favorer_id = new_uuid(), new_uuid()
         belief = project_relationships(
             Belief(),
-            cast(Any, []),
-            cast(
-                Any,
-                [
-                    _edge(
-                        "proves",
-                        from_id=prover_id,
-                        from_kind="Experiment",
-                        valence=0.9,
-                    ),
-                    _edge("favors", from_id=favorer_id, from_kind="Paper"),
-                ],
-            ),
+            [],
+            [
+                _edge(
+                    "proves",
+                    from_id=prover_id,
+                    from_kind="Experiment",
+                    valence=0.9,
+                ),
+                _edge("favors", from_id=favorer_id, from_kind="Paper"),
+            ],
         )
         assert isinstance(belief, Belief)
         assert belief.proved_by == (
@@ -193,11 +183,8 @@ class TestProjection:
         prover_id = new_uuid()
         exp = project_relationships(
             Experiment(),
-            cast(Any, []),
-            cast(
-                Any,
-                [_edge("proves", from_id=prover_id, from_kind="Paper", valence=0.7)],
-            ),
+            [],
+            [_edge("proves", from_id=prover_id, from_kind="Paper", valence=0.7)],
         )
         assert isinstance(exp, Experiment)
         assert exp.proved_by == (ArtifactEdge(id=prover_id, kind="Paper", valence=0.7),)
@@ -206,20 +193,17 @@ class TestProjection:
         peer_id = new_uuid()
         issue = project_relationships(
             Issue(),
-            cast(
-                Any,
-                [
-                    _edge(
-                        "narrows",
-                        to_id=peer_id,
-                        to_kind="Issue",
-                        priority=5,
-                        note="decomposes the auth epic",
-                        labels=("auth",),
-                    ),
-                ],
-            ),
-            cast(Any, []),
+            [
+                _edge(
+                    "narrows",
+                    to_id=peer_id,
+                    to_kind="Issue",
+                    priority=5,
+                    note="decomposes the auth epic",
+                    labels=("auth",),
+                ),
+            ],
+            [],
         )
         assert isinstance(issue, Issue)
         (ref,) = issue.narrows
@@ -243,25 +227,22 @@ class TestProjection:
         # The citing paper (child): its cited parent is OUTBOUND.
         citing = project_relationships(
             Paper(),
-            cast(
-                Any,
-                [
-                    _edge(
-                        "cites_paper",
-                        to_id=cited_id,
-                        to_kind="Paper",
-                        note="see \u00a73",
-                        labels=("prior-art",),
-                    ),
-                ],
-            ),
-            cast(Any, []),
+            [
+                _edge(
+                    "cites_paper",
+                    to_id=cited_id,
+                    to_kind="Paper",
+                    note="see \u00a73",
+                    labels=("prior-art",),
+                ),
+            ],
+            [],
         )
         # The cited paper (parent): its citing child is INBOUND.
         cited = project_relationships(
             Paper(),
-            cast(Any, []),
-            cast(Any, [_edge("cites_paper", from_id=citing_id, from_kind="Paper")]),
+            [],
+            [_edge("cites_paper", from_id=citing_id, from_kind="Paper")],
         )
         assert isinstance(citing, Paper)
         assert isinstance(cited, Paper)
@@ -287,7 +268,8 @@ class TestProjection:
         conn = make_conn()
         subject_id = new_uuid()
         await fetch_edges(cast(Conn, conn), subject_id)
-        inbound_sql = cast(tuple[str, ...], conn.fetch.call_args_list[1].args)[0]
+        inbound_sql = conn.fetch.call_args_list[1].args[0]
+        assert isinstance(inbound_sql, str)
         assert "priority" in inbound_sql
         assert "valence" in inbound_sql
 

@@ -12,6 +12,7 @@ wake the console fanout).
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from math import isfinite
 from typing import TYPE_CHECKING, Final, Literal
 from uuid import UUID
@@ -222,16 +223,29 @@ class _MetricsMixin(_StoreShared):
         )
         async with self.engine.acquire() as conn:
             fetched = await conn.fetch(sql, *params)
-        return [
-            MetricPoint(
-                key=r["key"],
-                step=r["step"],
-                value=r["value"],
-                kind=r["kind"],
-                timestamp=r["timestamp"],
+        result: list[MetricPoint] = []
+        for row in fetched:
+            key_value: object = row["key"]
+            step_value: object = row["step"]
+            value_value: object = row["value"]
+            kind_value: object = row["kind"]
+            timestamp_value: object = row["timestamp"]
+            assert isinstance(key_value, str)
+            assert isinstance(step_value, int)
+            assert isinstance(value_value, float)
+            assert kind_value == "scalar"
+            kind: Literal["scalar"] = "scalar"
+            assert timestamp_value is None or isinstance(timestamp_value, datetime)
+            result.append(
+                MetricPoint(
+                    key=key_value,
+                    step=step_value,
+                    value=value_value,
+                    kind=kind,
+                    timestamp=timestamp_value,
+                ),
             )
-            for r in fetched
-        ]
+        return result
 
     async def query_metrics(
         self,
@@ -337,19 +351,34 @@ class _MetricsMixin(_StoreShared):
             sql = vetted_sql(inner, " LIMIT $", str(limit_pos))
         async with self.engine.acquire() as conn:
             fetched = await conn.fetch(sql, *params)
-        return [
-            (
-                r["experiment_id"],
-                MetricPoint(
-                    key=r["key"],
-                    step=r["step"],
-                    value=r["value"],
-                    kind=r["kind"],
-                    timestamp=r["timestamp"],
+        result: list[tuple[UUID, MetricPoint]] = []
+        for row in fetched:
+            experiment_id_value: object = row["experiment_id"]
+            key_value: object = row["key"]
+            step_value: object = row["step"]
+            value_value: object = row["value"]
+            kind_value: object = row["kind"]
+            timestamp_value: object = row["timestamp"]
+            assert isinstance(experiment_id_value, UUID)
+            assert isinstance(key_value, str)
+            assert isinstance(step_value, int)
+            assert isinstance(value_value, float)
+            assert kind_value == "scalar"
+            kind: Literal["scalar"] = "scalar"
+            assert timestamp_value is None or isinstance(timestamp_value, datetime)
+            result.append(
+                (
+                    experiment_id_value,
+                    MetricPoint(
+                        key=key_value,
+                        step=step_value,
+                        value=value_value,
+                        kind=kind,
+                        timestamp=timestamp_value,
+                    ),
                 ),
             )
-            for r in fetched
-        ]
+        return result
 
     async def write_metrics_masked(
         self,

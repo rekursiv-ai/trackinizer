@@ -13,7 +13,7 @@ other layers and are tested elsewhere.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Final, cast, get_args
+from typing import Final, cast, get_args
 
 import functools
 import re
@@ -21,6 +21,7 @@ import shlex
 
 import pytest
 
+from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli, grammar
 from trackinizer.trax.conftest import FakeClient
@@ -148,8 +149,8 @@ def _xfail_mark(reason: str) -> pytest.MarkDecorator:
     return pytest.mark.xfail(reason=reason, strict=True, raises=BaseException)
 
 
-def _example_params() -> list[Any]:
-    out: list[Any] = []
+def _example_params() -> list[object]:
+    out: list[object] = []
     for line_no, argv in _examples():
         key = " ".join(argv)
         if key in _KNOWN_FAILING_EXAMPLES:
@@ -165,8 +166,8 @@ def _example_params() -> list[Any]:
     return out
 
 
-def _counterexample_params() -> list[Any]:
-    out: list[Any] = []
+def _counterexample_params() -> list[object]:
+    out: list[object] = []
     for line_no, code, argv in _counterexamples():
         key = " ".join(argv)
         if key in _KNOWN_FAILING_COUNTEREXAMPLES:
@@ -192,7 +193,7 @@ def test_grammar_example_parses(line_no: int, argv: list[str]) -> None:
     """Every fenced ``trax`` example in GRAMMAR.md parses and runs."""
     client = FakeClient()
     try:
-        cli.parse_and_run(argv, client_factory=lambda: cast(Any, client))
+        cli.parse_and_run(argv, client_factory=lambda: cast(Client, client))
     except ClientError as err:
         pytest.fail(f"GRAMMAR.md:{line_no} example rejected: {err}")
 
@@ -211,7 +212,7 @@ def test_grammar_sequence_parses(line_no: int, commands: list[list[str]]) -> Non
     client = FakeClient()
     for offset, argv in enumerate(commands):
         try:
-            cli.parse_and_run(argv, client_factory=lambda: cast(Any, client))
+            cli.parse_and_run(argv, client_factory=lambda: cast(Client, client))
         except ClientError as err:
             pytest.fail(
                 f"GRAMMAR.md:{line_no} sequence command #{offset + 1}"
@@ -240,7 +241,7 @@ def test_grammar_counterexample_rejects(
     del code, line_no
     client = FakeClient()
     with pytest.raises(ClientError):
-        cli.parse_and_run(argv, client_factory=lambda: cast(Any, client))
+        cli.parse_and_run(argv, client_factory=lambda: cast(Client, client))
 
 
 # Coverage for grammar.py's single-value coerce/lookup helpers.
@@ -378,7 +379,9 @@ def _table_sources() -> dict[str, set[str]]:
         "List fields (`LIST_FIELDS`)": set(grammar.LIST_FIELDS),
         "Cost fields (`COST_FIELDS`)": set(grammar.COST_FIELDS),
         "Edge keywords (`EDGE_ALIASES`)": set(grammar.EDGE_ALIASES),
-        "Statuses (`Inquiry.Status`)": set(get_args(Inquiry.Status.__value__)),
+        "Statuses (`Inquiry.Status`)": set(
+            get_args(cast(object, Inquiry.Status.__value__))
+        ),
         "Sort choices (`SORT_CHOICES`)": set(grammar.SORT_CHOICES),
         "Filter ops (`FILTER_OPS`)": set(FILTER_OPS),
     }
@@ -411,7 +414,7 @@ def test_every_edge_kind_has_both_writable_directions() -> None:
     """
     forward = {e.name for e in grammar.EDGE_ALIASES.values() if not e.reverse}
     reverse = {e.name for e in grammar.EDGE_ALIASES.values() if e.reverse}
-    kinds = set(get_args(Edge.Kind.__value__))
+    kinds = set(get_args(cast(object, Edge.Kind.__value__)))
     assert kinds <= forward, f"no forward writable alias for {sorted(kinds - forward)}"
     assert kinds <= reverse, f"no reverse writable alias for {sorted(kinds - reverse)}"
 

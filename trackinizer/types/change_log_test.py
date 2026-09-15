@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import fields
 from datetime import UTC, datetime
-from typing import Any, cast, get_args
+from typing import cast, get_args
 
 import pytest
 
@@ -47,7 +47,7 @@ class TestChangeKindAlignment:
     )
 
     def test_every_storage_name_is_a_change_kind(self) -> None:
-        valid = set(get_args(Change.Kind.__value__))
+        valid = set(get_args(cast(object, Change.Kind.__value__)))
         for cls in self.INQUIRY_CLASSES:
             for name, spec in column_specs(cls).items():
                 # Immutable columns are set once at submit and never edited, so
@@ -74,26 +74,23 @@ class TestRowConverters:
     def test_row_to_change_with_judgement_delta(self) -> None:
         ev_id, sid, prior = new_uuid(), new_uuid(), new_uuid()
         ts = datetime.now(UTC)
-        row = cast(
-            Any,
-            {
-                "id": ev_id,
-                "created": ts,
-                "actor": "librarian",
-                "api_key_id": None,
-                "subject_id": sid,
-                "subject_kind": "Belief",
-                "kind": "belief_judgement",
-                "caused_by": prior,
-                "reason": "",
-                "old_belief_judgement": "unproven",
-                "new_belief_judgement": "proven",
-                "old_marginal_cost_agent_usd": 1.00,
-                "old_marginal_cost_resource_usd": 2.50,
-                "new_marginal_cost_agent_usd": 1.02,
-                "new_marginal_cost_resource_usd": 4.00,
-            },
-        )
+        row = {
+            "id": ev_id,
+            "created": ts,
+            "actor": "librarian",
+            "api_key_id": None,
+            "subject_id": sid,
+            "subject_kind": "Belief",
+            "kind": "belief_judgement",
+            "caused_by": prior,
+            "reason": "",
+            "old_belief_judgement": "unproven",
+            "new_belief_judgement": "proven",
+            "old_marginal_cost_agent_usd": 1.00,
+            "old_marginal_cost_resource_usd": 2.50,
+            "new_marginal_cost_agent_usd": 1.02,
+            "new_marginal_cost_resource_usd": 4.00,
+        }
         e = Change.from_row(row)
         assert e.caused_by == prior
         assert e.old.belief_judgement == "unproven"
@@ -103,45 +100,39 @@ class TestRowConverters:
         assert e.marginal_cost.resource_usd == pytest.approx(1.50)
 
     def test_row_to_change_accepts_negative_cost_delta(self) -> None:
-        row = cast(
-            Any,
-            {
-                "id": new_uuid(),
-                "created": datetime.now(UTC),
-                "actor": "system",
-                "api_key_id": None,
-                "subject_id": new_uuid(),
-                "subject_kind": "Issue",
-                "kind": "marginal_cost",
-                "caused_by": None,
-                "reason": "correction",
-                "old_marginal_cost_agent_usd": 1.0,
-                "old_marginal_cost_resource_usd": 0.0,
-                "new_marginal_cost_agent_usd": 0.5,
-                "new_marginal_cost_resource_usd": 0.0,
-            },
-        )
+        row = {
+            "id": new_uuid(),
+            "created": datetime.now(UTC),
+            "actor": "system",
+            "api_key_id": None,
+            "subject_id": new_uuid(),
+            "subject_kind": "Issue",
+            "kind": "marginal_cost",
+            "caused_by": None,
+            "reason": "correction",
+            "old_marginal_cost_agent_usd": 1.0,
+            "old_marginal_cost_resource_usd": 0.0,
+            "new_marginal_cost_agent_usd": 0.5,
+            "new_marginal_cost_resource_usd": 0.0,
+        }
         assert Change.from_row(row).marginal_cost.agent_usd == pytest.approx(-0.5)
 
     def test_row_to_change_no_cause(self) -> None:
-        row = cast(
-            Any,
-            {
-                "id": new_uuid(),
-                "created": datetime.now(UTC),
-                "actor": "system",
-                "api_key_id": None,
-                "subject_id": new_uuid(),
-                "subject_kind": "Issue",
-                "kind": "created",
-                "caused_by": None,
-                "reason": "",
-                "old_marginal_cost_agent_usd": 0.0,
-                "old_marginal_cost_resource_usd": 0.0,
-                "new_marginal_cost_agent_usd": 0.0,
-                "new_marginal_cost_resource_usd": 0.0,
-            },
-        )
+        row = {
+            "id": new_uuid(),
+            "created": datetime.now(UTC),
+            "actor": "system",
+            "api_key_id": None,
+            "subject_id": new_uuid(),
+            "subject_kind": "Issue",
+            "kind": "created",
+            "caused_by": None,
+            "reason": "",
+            "old_marginal_cost_agent_usd": 0.0,
+            "old_marginal_cost_resource_usd": 0.0,
+            "new_marginal_cost_agent_usd": 0.0,
+            "new_marginal_cost_resource_usd": 0.0,
+        }
         assert Change.from_row(row).caused_by is None
 
 

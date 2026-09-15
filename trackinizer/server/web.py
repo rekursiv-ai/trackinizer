@@ -25,7 +25,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, fields
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Final, Literal, cast, get_args
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, cast, get_args
 from urllib.parse import quote
 from uuid import UUID
 
@@ -42,7 +42,7 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 
-from trackinizer.lib.custom_json import IntCodec
+from trackinizer.lib.custom_json import FloatCodec, IntCodec, ListCodec
 from trackinizer.lib.postgres import Conn, DatabaseEngine
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.auth import (
@@ -75,7 +75,7 @@ router = APIRouter()
 
 def get_store(request: Request) -> Store:
     """Return the process-wide store."""
-    return cast(Store, request.app.state.store)
+    return _state(request).store
 
 
 # -- Read routes -------------------------------------------------------------
@@ -362,7 +362,7 @@ async def web_subscribe(
 
     """
     del identity
-    engine = cast(DatabaseEngine, request.app.state.engine)
+    engine = _state(request).engine
     return StreamingResponse(iter_sse_events(engine), media_type="text/event-stream")
 
 
@@ -461,8 +461,8 @@ def graph_legend() -> dict[str, list[str]]:
 
     """
     return {
-        "node_kinds": list(get_args(Inquiry.InquiryKind.__value__)),
-        "edge_kinds": list(get_args(Edge.Kind.__value__)),
+        "node_kinds": list(get_args(Inquiry.InquiryKind)),
+        "edge_kinds": list(get_args(Edge.Kind)),
     }
 
 
@@ -512,7 +512,7 @@ async def optional_identity(request: Request) -> AuthIdentity | None:
       identity: Authenticated principal, or None if missing/invalid credentials.
 
     """
-    if not hasattr(request.app.state, "engine"):
+    if not hasattr(_state(request), "engine"):
         return None
     try:
         return await current_user(request)
@@ -653,8 +653,8 @@ def _redirect_when_unauthed(
     """Return a 302 to ``/auth/login_page`` when the request is unauthed."""
     if identity is not None:
         return None
-    config = getattr(request.app.state, "config", None)
-    session_secret = getattr(config, "session_secret", None) if config else None
+    config: object = getattr(_state(request), "config", None)
+    session_secret: object = getattr(config, "session_secret", None)
     if not session_secret:
         return None
     next_url = request.url.path
@@ -680,20 +680,14 @@ def _feed_cursor(
     seq: int | None,
 ) -> tuple[datetime, UUID, int, int] | None:
     """Assemble the composite feed cursor, or ``None`` when unset."""
-    required = (created, session_id, seq)
-    if all(p is None for p in required) and part is None:
+    if created is None and session_id is None and seq is None and part is None:
         return None
-    if any(p is None for p in required):
+    if created is None or session_id is None or seq is None:
         raise HTTPException(
             status_code=400,
             detail="after_created, after_session, after_seq must be given together",
         )
-    return (
-        cast(datetime, created),
-        cast(UUID, session_id),
-        IntCodec.coerce(part, 0),
-        IntCodec.coerce(seq, 0),
-    )
+    return (created, session_id, IntCodec.coerce(part, 0), seq)
 
 
 # Fields: ``title``, ``description``. Bare tokens search both.
@@ -758,12 +752,12 @@ def _build_term_clause(
 def _graph_node(row: asyncpg.Record) -> WebView:
     """Light node projection for the graph view."""
     out: WebView = {
-        "id": str(row["id"]),
-        "kind": row["kind"],
-        "seq": row["seq"],
+        "id": str(_record_uuid(row, "id")),
+        "kind": _record_str(row, "kind"),
+        "seq": _record_int(row, "seq"),
         "title": row["title"] or "",
-        "status": row["status"],
-        "created": _isoformat(row["created"]),
+        "status": _record_str(row, "status"),
+        "created": _isoformat(_record_datetime(row, "created")),
     }
     if row["belief_judgement"] is not None:
         out["judgement"] = row["belief_judgement"]
@@ -777,12 +771,13 @@ def _graph_node(row: asyncpg.Record) -> WebView:
 def _graph_edge(row: asyncpg.Record) -> WebView:
     """Typed directed link for the graph view."""
     out: WebView = {
-        "from_id": str(row["from_id"]),
-        "to_id": str(row["to_id"]),
-        "edge_kind": row["edge_kind"],
+        "from_id": str(_record_uuid(row, "from_id")),
+        "to_id": str(_record_uuid(row, "to_id")),
+        "edge_kind": _record_str(row, "edge_kind"),
     }
-    if row["valence"] is not None:
-        out["valence"] = row["valence"]
+    valence = row["valence"]
+    if valence is not None:
+        out["valence"] = valence
     return out
 
 
@@ -791,22 +786,22 @@ def _graph_edge(row: asyncpg.Record) -> WebView:
 def _row_to_dict(row: asyncpg.Record) -> WebView:
     """Flatten an ``inquiries`` row to JSON for the SPA."""
     out: WebView = {
-        "id": str(row["id"]),
-        "kind": row["kind"],
-        "seq": row["seq"],
+        "id": str(_record_uuid(row, "id")),
+        "kind": _record_str(row, "kind"),
+        "seq": _record_int(row, "seq"),
         "owner": row["owner"] or "",
         "account": row["account"],
-        "status": row["status"],
+        "status": _record_str(row, "status"),
         "title": row["title"] or "",
         "description": row["description"] or "",
-        "labels": list(row["labels"] or []),
-        "subscribers": list(row["subscribers"] or []),
+        "labels": ListCodec.coerce(row["labels"], str),
+        "subscribers": ListCodec.coerce(row["subscribers"], str),
         "marginal_cost": {
-            "agent_usd": float(row["marginal_cost_agent_usd"]),
-            "resource_usd": float(row["marginal_cost_resource_usd"]),
+            "agent_usd": FloatCodec.coerce(row["marginal_cost_agent_usd"], None),
+            "resource_usd": FloatCodec.coerce(row["marginal_cost_resource_usd"], None),
         },
-        "created": _isoformat(row["created"]),
-        "modified": _isoformat(row["modified"]),
+        "created": _isoformat(_record_datetime(row, "created")),
+        "modified": _isoformat(_record_datetime(row, "modified")),
     }
     # (bare wire key, prefixed storage column). The SPA detail view is
     # kind-scoped, so it speaks the bare field name; the column is the
@@ -844,11 +839,13 @@ def _row_to_dict(row: asyncpg.Record) -> WebView:
         if column in row and row[column] is not None:
             out[key] = _isoformat(row[column])
     if "agentsession_rooms" in row and row["agentsession_rooms"] is not None:
-        out["rooms"] = list(row["agentsession_rooms"])
+        out["rooms"] = ListCodec.coerce(row["agentsession_rooms"], str)
     if "paper_authors" in row and row["paper_authors"] is not None:
-        out["authors"] = list(row["paper_authors"])
+        out["authors"] = ListCodec.coerce(row["paper_authors"], str)
     if "experiment_codechanges" in row and row["experiment_codechanges"] is not None:
-        out["codechanges"] = [str(uid) for uid in row["experiment_codechanges"]]
+        out["codechanges"] = [
+            str(uid) for uid in ListCodec.coerce(row["experiment_codechanges"], UUID)
+        ]
     # ``experiment_config`` is JSONB -> the registered codec already decoded it
     # to a dict; surface it verbatim (unlike the scalar columns above, it is not
     # ISO-formatted). Only present on Experiment rows.
@@ -862,16 +859,17 @@ def _row_to_dict(row: asyncpg.Record) -> WebView:
 def _change_to_dict(row: asyncpg.Record) -> WebView:
     """Flatten a ``change_log`` row to JSON."""
     api_key_id = row.get("api_key_id")
+    caused_by = row["caused_by"]
     out: WebView = {
-        "id": str(row["id"]),
-        "created": _isoformat(row["created"]),
-        "actor": row["actor"],
+        "id": str(_record_uuid(row, "id")),
+        "created": _isoformat(_record_datetime(row, "created")),
+        "actor": _record_str(row, "actor"),
         "principal": row.get("principal") or "",
         "api_key_id": (None if api_key_id is None else str(api_key_id)),
-        "subject_id": str(row["subject_id"]),
-        "subject_kind": row["subject_kind"],
-        "kind": row["kind"],
-        "caused_by": str(row["caused_by"]) if row["caused_by"] else None,
+        "subject_id": str(_record_uuid(row, "subject_id")),
+        "subject_kind": _record_str(row, "subject_kind"),
+        "kind": _record_str(row, "kind"),
+        "caused_by": str(caused_by) if caused_by else None,
         "reason": row["reason"] or "",
     }
     out["old"] = _snapshot_to_dict(row, prefix="old_")
@@ -885,8 +883,12 @@ def _snapshot_to_dict(row: asyncpg.Record, *, prefix: str) -> WebView:
     for column in _SNAPSHOT_COLUMNS:
         if column == "marginal_cost":
             out["marginal_cost"] = {
-                "agent_usd": float(row[prefix + "marginal_cost_agent_usd"] or 0),
-                "resource_usd": float(row[prefix + "marginal_cost_resource_usd"] or 0),
+                "agent_usd": FloatCodec.coerce(
+                    row[prefix + "marginal_cost_agent_usd"],
+                ),
+                "resource_usd": FloatCodec.coerce(
+                    row[prefix + "marginal_cost_resource_usd"],
+                ),
             }
             continue
         row_column = prefix + column
@@ -896,9 +898,9 @@ def _snapshot_to_dict(row: asyncpg.Record, *, prefix: str) -> WebView:
         if value is None:
             continue
         if column in ("labels", "subscribers", "issue_kind"):
-            out[column] = list(cast(list[str], value))
+            out[column] = ListCodec.coerce(value, str)
         elif column == "experiment_codechanges":
-            out[column] = [str(uid) for uid in cast(list[UUID], value)]
+            out[column] = [str(uid) for uid in ListCodec.coerce(value, UUID)]
         elif isinstance(value, UUID):
             out[column] = str(value)
         else:
@@ -910,10 +912,10 @@ def _peer_ref(row: asyncpg.Record, peer_id: UUID) -> WebView:
     """Build a UI ref ``{id, kind, seq, title, status, judgement?}``."""
     out: WebView = {
         "id": str(peer_id),
-        "kind": row["peer_kind"],
-        "seq": row["peer_seq"],
+        "kind": _record_str(row, "peer_kind"),
+        "seq": _record_int(row, "peer_seq"),
         "title": row["peer_title"] or "",
-        "status": row["peer_status"],
+        "status": _record_str(row, "peer_status"),
     }
     if row["peer_judgement"] is not None:
         out["judgement"] = row["peer_judgement"]
@@ -946,9 +948,9 @@ async def _edges_for(
     )
     groups: dict[str, list[WebView]] = {}
     for row in rows:
-        ref = _peer_ref(row, cast(UUID, row[peer_col]))
+        ref = _peer_ref(row, _record_uuid(row, peer_col))
         _add_edge_annotation(ref, row)
-        groups.setdefault(row["edge_kind"], []).append(ref)
+        groups.setdefault(_record_str(row, "edge_kind"), []).append(ref)
     out: WebView = {**groups}
     return out
 
@@ -962,7 +964,51 @@ def _add_edge_annotation(ref: WebView, row: asyncpg.Record) -> None:
     if row["valence"] is not None:
         ref["valence"] = row["valence"]
     if row["labels"]:
-        ref["labels"] = list(row["labels"])
+        ref["labels"] = ListCodec.coerce(row["labels"], str)
+
+
+class _AppState(Protocol):
+    store: Store
+    engine: DatabaseEngine
+
+
+class _AppLike(Protocol):
+    state: _AppState
+
+
+def _state(request: Request) -> _AppState:
+    """Return the dynamically populated FastAPI application state."""
+    # Structural, not ``isinstance(app, FastAPI)``: web_test drives these
+    # handlers with a duck-typed request a nominal check would reject.
+    return cast(_AppLike, request.app).state
+
+
+def _record_str(row: asyncpg.Record, key: str) -> str:
+    """Read a required text column from an asyncpg record."""
+    value = row[key]
+    assert isinstance(value, str)
+    return value
+
+
+def _record_int(row: asyncpg.Record, key: str) -> int:
+    """Read a required integer column from an asyncpg record."""
+    value = row[key]
+    assert isinstance(value, int)
+    return value
+
+
+def _record_datetime(row: asyncpg.Record, key: str) -> datetime:
+    """Read a required timestamp column from an asyncpg record."""
+    value = row[key]
+    assert isinstance(value, datetime)
+    return value
+
+
+def _record_uuid(row: asyncpg.Record, key: str) -> UUID:
+    """Read a required UUID column from an asyncpg record."""
+    value = row[key]
+    assert isinstance(value, UUID)
+    return value
 
 
 def _isoformat(value: object) -> str:

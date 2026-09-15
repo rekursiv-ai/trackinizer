@@ -7,7 +7,7 @@ guards.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final, get_args
+from typing import Final, cast, get_args
 
 import re
 import subprocess
@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 import pytest
 
+from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec, loads
 from trackinizer.server.api import meta_routes
 from trackinizer.server.version import build_sha
 from trackinizer.types.edges import (
@@ -63,13 +64,25 @@ def test_enums_route_reflects_the_type_literals(client: TestClient) -> None:
     """
     r = client.get("/api/meta/enums")
     assert r.status_code == 200
-    body = r.json()
-    assert body["status"] == list(get_args(Issue.Status.__value__))
-    assert body["judgement"] == list(get_args(Belief.Judgement.__value__))
-    assert body["issue_kind"] == list(get_args(Issue.Kind.__value__))
-    assert body["publication_type"] == list(get_args(Paper.PublicationType.__value__))
-    assert body["edge_kind"] == list(get_args(Edge.Kind.__value__))
-    assert body["inquiry_kind_all"] == list(get_args(Inquiry.InquiryKind.__value__))
+    body = DictCodec.coerce(loads(r.content))
+    assert ListCodec.coerce(body["status"], str) == list(
+        map(str, get_args(cast(object, Issue.Status.__value__)))
+    )
+    assert ListCodec.coerce(body["judgement"], str) == list(
+        map(str, get_args(cast(object, Belief.Judgement.__value__)))
+    )
+    assert ListCodec.coerce(body["issue_kind"], str) == list(
+        map(str, get_args(cast(object, Issue.Kind.__value__)))
+    )
+    assert ListCodec.coerce(body["publication_type"], str) == list(
+        map(str, get_args(cast(object, Paper.PublicationType.__value__)))
+    )
+    assert ListCodec.coerce(body["edge_kind"], str) == list(
+        map(str, get_args(cast(object, Edge.Kind.__value__)))
+    )
+    assert ListCodec.coerce(body["inquiry_kind_all"], str) == list(
+        map(str, get_args(cast(object, Inquiry.InquiryKind.__value__)))
+    )
 
 
 def test_fields_route_matches_server_route_table(client: TestClient) -> None:
@@ -82,13 +95,14 @@ def test_fields_route_matches_server_route_table(client: TestClient) -> None:
     """
     r = client.get("/api/meta/fields")
     assert r.status_code == 200
-    assert r.json() == field_owner_kind()
+    body = DictCodec.coerce(loads(r.content))
+    assert body == field_owner_kind()
     # The fields that actually drifted must be present and correctly owned.
     # ``ended`` is intentionally NOT a field route: it is stamped only by
     # ``end_session`` (with ``status``), so the lifecycle CHECK can't desync.
     for f in ("cli", "cli_session_id", "started", "rooms"):
-        assert r.json()[f] == "agentsession"
-    assert "ended" not in r.json()
+        assert body[f] == "agentsession"
+    assert "ended" not in body
 
 
 def test_edges_route_serves_topology_and_labels(client: TestClient) -> None:
@@ -103,21 +117,25 @@ def test_edges_route_serves_topology_and_labels(client: TestClient) -> None:
     """
     r = client.get("/api/meta/edges")
     assert r.status_code == 200
-    body = r.json()
+    body = DictCodec.coerce(loads(r.content))
     # The payload is topology merged with labels, one entry per kind.
     for kind, topo in edge_topology().items():
-        assert body[kind]["from_kinds"] == topo["from_kinds"]
-        assert body[kind]["to_kinds"] == topo["to_kinds"]
+        entry = DictCodec.coerce(body[kind])
+        assert ListCodec.coerce(entry["from_kinds"], str) == topo["from_kinds"]
+        assert ListCodec.coerce(entry["to_kinds"], str) == topo["to_kinds"]
     for kind, lab in edge_labels().items():
-        assert body[kind]["forward"] == lab["forward"]
-        assert body[kind]["inverse"] == lab["inverse"]
+        entry = DictCodec.coerce(body[kind])
+        assert StrCodec.coerce(entry["forward"]) == lab["forward"]
+        assert StrCodec.coerce(entry["inverse"]) == lab["inverse"]
     # Citations are Artifact -> {Belief, Experiment}; both directions agree.
     for kind in ("proves", "favors"):
-        assert body[kind]["to_kinds"] == ["Belief", "Experiment"]
-        assert "Paper" in body[kind]["from_kinds"]
+        entry = DictCodec.coerce(body[kind])
+        assert ListCodec.coerce(entry["to_kinds"], str) == ["Belief", "Experiment"]
+        assert "Paper" in ListCodec.coerce(entry["from_kinds"], str)
     # cites_paper labels are the CLI aliases, not the raw storage kind.
-    assert body["cites_paper"]["forward"] == "cites"
-    assert body["cites_paper"]["inverse"] == "cited_by"
+    cites_paper = DictCodec.coerce(body["cites_paper"])
+    assert StrCodec.coerce(cites_paper["forward"]) == "cites"
+    assert StrCodec.coerce(cites_paper["inverse"]) == "cited_by"
     # The dropped dis-edge kinds carry no entry (valence sign now).
     for gone in ("disproves", "disfavors", "refutes_experiment"):
         assert gone not in body

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
+from typing import Final
 
 import pytest
 import pytest_asyncio
@@ -47,8 +48,9 @@ async def engine(pglite_engine: PGliteEngine) -> AsyncIterator[PGliteEngine]:
 # narrow band of the domain, so coverage is what finds it.
 def _spread(count: int) -> Iterator[float]:
     """``count`` points spread over ``[0, 1)``, deterministically."""
+    golden_ratio_minus_one: Final = (5.0**0.5 - 1.0) / 2.0
     for index in range(count):
-        yield float((index * ((5.0**0.5 - 1.0) / 2.0)) % 1.0)
+        yield float((index * golden_ratio_minus_one) % 1.0)
 
 
 # The boundaries are the values that have produced a bug or sit one step from one: both
@@ -133,7 +135,13 @@ async def _rendered(
             f"FROM unnest($1::{sql_type}[]) AS val",
             list(values),
         )
-    return [(row["val"], row["rendered"]) for row in rows]
+    rendered: list[tuple[object, str | None]] = []
+    for row in rows:
+        value = row["val"]
+        text = row["rendered"]
+        assert isinstance(text, str | None)
+        rendered.append((value, text))
+    return rendered
 
 
 @pytest.mark.db_pglite

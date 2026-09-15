@@ -44,7 +44,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Final, get_args
+from typing import Final, Literal, cast, get_args
 
 import argparse
 
@@ -396,7 +396,11 @@ def _terminal_block() -> str:
         ),
         _literal_terminal(
             "METRIC_REDUCE",
-            list(get_args(MetricReduce.__value__)),
+            list(
+                get_args(
+                    cast(Literal["max", "min"], MetricReduce.__value__),
+                ),
+            ),
             "step-axis reductions: final/first",
         ),
         _PATTERN_TERMINALS,
@@ -507,10 +511,33 @@ def _verb_lines() -> list[str]:
 # Every list is sourced from the live tables.
 def _semantics_block() -> str:
     """Return the ``// SEMANTICS`` section: rules the grammar shape cannot carry."""
-    status = " ".join(get_args(Inquiry.Status.__value__))
-    judgement = " ".join(get_args(Belief.Judgement.__value__))
-    issue_kind = " ".join(get_args(Issue.Kind.__value__))
-    pub_type = " ".join(get_args(Paper.PublicationType.__value__))
+    status = " ".join(
+        get_args(
+            cast(
+                Literal["active", "complete", "abandoned", "invalid"],
+                Inquiry.Status.__value__,
+            )
+        )
+    )
+    judgement = " ".join(
+        get_args(
+            cast(
+                Literal["proven", "disproven", "unproven", "undecidable"],
+                Belief.Judgement.__value__,
+            )
+        )
+    )
+    issue_kind = " ".join(
+        get_args(cast(Literal["feature", "bug", "task"], Issue.Kind.__value__))
+    )
+    pub_type = " ".join(
+        get_args(
+            cast(
+                Literal["article", "book", "dataset", "software", "other"],
+                Paper.PublicationType.__value__,
+            )
+        )
+    )
     priority = " ".join(f"{a}={v}" for a, v in PRIORITY_ALIASES.items())
     lines = [
         "// ==== SEMANTICS: rules the shape accepts but the tool enforces (generated) ====",

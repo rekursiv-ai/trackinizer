@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, TextIO, cast, override
+from typing import TextIO, cast, override
 
 import json
 import os
@@ -23,13 +23,16 @@ import uuid
 
 import pytest
 
+from trackinizer.client.client import Client
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
     IncompleteRecord,
     SessionRecord,
     UserMessage,
 )
+from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
 from trackinizer.lib.posix.follow import follow_tree
+from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.trax.run import session
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
@@ -171,8 +174,8 @@ def _poison_records(stream: TextIO) -> Iterator[SessionRecord]:
 # position it already held rather than the reader having to remember what it emitted.
 def _document_records(stream: TextIO) -> Iterator[SessionRecord]:
     """Every message a whole document holds, re-read from its start."""
-    obj = cast(dict[str, list[str]], json.loads(stream.read()))
-    for text in obj.get("messages") or []:
+    obj = DictCodec.coerce(loads(stream.read()))
+    for text in ListCodec.coerce(obj.get("messages"), str):
         yield UserMessage(content=text)
 
 
@@ -342,7 +345,7 @@ class TestSessionScoping:
         assert old in baseline
 
         stats, sink = _drain_once(
-            cast(Adapter, adapter),
+            adapter,
             lambda: _write(tmp_path / "new.jsonl", lines=3),
             baseline=baseline,
             expected=3,
@@ -359,7 +362,7 @@ class TestSessionScoping:
         baseline = _existing_session_files(adapter)
 
         stats, sink = _drain_once(
-            cast(Adapter, adapter),
+            adapter,
             lambda: None,
             baseline=baseline,
             expected=0,
@@ -384,7 +387,7 @@ class TestSessionScoping:
         os.utime(others, (past, past))
 
         stats, sink = _drain_once(
-            cast(Adapter, adapter),
+            adapter,
             lambda: None,
             expected=0,
         )
@@ -429,7 +432,7 @@ class TestSessionScoping:
 
         adapter = ClaudeAdapter()
         monkeypatch.setattr(adapter, "session_scope", lambda: mine)
-        _stats, sink = _drain_once(cast(Adapter, adapter), write)
+        _stats, sink = _drain_once(adapter, write)
 
         texts = _texts(sink)
         assert texts == ["mine"], f"a concurrent run's file was swept in: {texts}"
@@ -438,7 +441,7 @@ class TestSessionScoping:
         """A file created after the watch is armed IS this run's."""
         adapter = _FakeAdapter(tmp_path)
         stats, _sink = _drain_once(
-            cast(Adapter, adapter),
+            adapter,
             lambda: _write(tmp_path / "mine.jsonl", lines=3),
             expected=3,
         )
@@ -468,7 +471,7 @@ class TestAppendedLineDrain:
             _wait_for_events(sink, 1)
             log.write_bytes(b"fresh\n")
 
-        _drain_once(cast(Adapter, adapter), write, expected=2, sink=sink)
+        _drain_once(adapter, write, expected=2, sink=sink)
 
         texts = _texts(sink)
         assert texts == ["first", "fresh"]
@@ -526,7 +529,7 @@ class TestProjectDirectoryBornMidRun:
                 + "\n",
             )
 
-        _stats, sink = _drain_once(cast(Adapter, ClaudeAdapter()), write)
+        _stats, sink = _drain_once(ClaudeAdapter(), write)
 
         texts = _texts(sink)
         assert texts == ["captured"], "a new project directory captured nothing"
@@ -556,7 +559,7 @@ class TestProjectDirectoryBornMidRun:
                 ),
             )
 
-        _stats, sink = _drain_once(cast(Adapter, GeminiAdapter()), write)
+        _stats, sink = _drain_once(GeminiAdapter(), write)
 
         texts = _texts(sink)
         assert texts == ["captured"], "a new project directory captured nothing"
@@ -622,7 +625,7 @@ class TestProjectDirectoryBornMidRun:
                 + "\n",
             )
 
-        _stats, sink = _drain_once(cast(Adapter, ClaudeAdapter()), write)
+        _stats, sink = _drain_once(ClaudeAdapter(), write)
 
         texts = _texts(sink)
         assert texts == ["captured"], "a first-ever run captured nothing"
@@ -636,7 +639,7 @@ class TestWholeFileDrain:
         log = tmp_path / "session-x.json"
 
         stats, sink = _drain_once(
-            cast(Adapter, adapter),
+            adapter,
             lambda: log.write_text(json.dumps({"messages": ["hello"]})),
         )
 
@@ -659,7 +662,7 @@ class TestWholeFileDrain:
             _wait_for_events(sink, 1)
             log.write_text(json.dumps({"messages": ["b"]}))
 
-        _drain_once(cast(Adapter, adapter), write, expected=2, sink=sink)
+        _drain_once(adapter, write, expected=2, sink=sink)
 
         texts = _texts(sink)
         assert texts == ["a", "b"]
@@ -679,7 +682,7 @@ class TestWholeFileDrain:
         sink = _RecordingSink()
 
         _drain_once(
-            cast(Adapter, adapter),
+            adapter,
             partial(_rewrite_identically, log, body, sink),
             sink=sink,
         )
@@ -709,7 +712,7 @@ class TestWholeFileDrain:
                 log.write_text(json.dumps({"messages": [text]}))
                 _wait_for_events(sink, count)
 
-        _drain_once(cast(Adapter, adapter), write, expected=3, sink=sink)
+        _drain_once(adapter, write, expected=3, sink=sink)
 
         texts = _texts(sink)
         assert texts == ["a", "b", "a"], "a returning body was swallowed"
@@ -750,7 +753,7 @@ class TestGeminiMultiFileDrain:
             _session("session-1.json", "sess-A", ["a-q", "a-r"])
             _session("session-2.json", "sess-B", ["b-q", "b-r"])
 
-        _stats, sink = _drain_once(cast(Adapter, GeminiAdapter()), write, expected=4)
+        _stats, sink = _drain_once(GeminiAdapter(), write, expected=4)
 
         texts = sorted(_texts(sink))
         assert texts == ["a-q", "a-r", "b-q", "b-r"]
@@ -764,7 +767,7 @@ class TestDrainSurvivesParseError:
         adapter = _PoisonAdapter(tmp_path)
 
         stats, sink = _drain_once(
-            cast(Adapter, adapter),
+            adapter,
             lambda: log.write_bytes(b"alpha\nboom\nomega\n"),
             expected=2,
         )
@@ -796,7 +799,7 @@ class TestDrainSurvivesParseError:
 
         _process_chunk(
             session._Captured(path=tmp_path / "s.jsonl", raw=b"boom"),
-            cast(Adapter, adapter),
+            adapter,
             sink,
             _Stats(),
             RunConfig(cli_name="poison"),
@@ -856,7 +859,7 @@ class TestTheWatchIsArmedBeforeTheChildSpawns:
         rc = session._spawn_and_drain(
             RunConfig(cli_name="claude", quiesce_seconds=0.05),
             ClaudeAdapter(),
-            cast(Any, sink),
+            sink,
             _Stats(),
         )
 
@@ -890,7 +893,23 @@ class TestFollowerRearmsAfterAFailure:
             if len(attempts) == 1:
                 raise OSError("inotify instance limit reached")
             kwargs["on_armed"] = rearmed.set
-            return real_follow(*directories, **cast(Any, kwargs))
+            match = cast(Callable[[Path], bool], kwargs.pop("match"))
+            replay = cast(bool, kwargs.pop("replay"))
+            resume = cast(frozenset[Path], kwargs.pop("resume"))
+            on_armed = kwargs.pop("on_armed")
+            assert on_armed is not None
+
+            def armed() -> None:
+                assert callable(on_armed)
+                on_armed()
+
+            return real_follow(
+                *directories,
+                match=match,
+                replay=replay,
+                resume=resume,
+                on_armed=armed,
+            )
 
         monkeypatch.setattr(session, "follow_tree", flaky)
 
@@ -900,7 +919,7 @@ class TestFollowerRearmsAfterAFailure:
             log.write_bytes(b"recovered\n")
 
         _stats, sink = _drain_once(
-            cast(Adapter, adapter),
+            adapter,
             write_after_rearm,
             expected=1,
         )
@@ -1092,7 +1111,7 @@ class TestDrainLoopSurvivesTransientError:
 
         def _run() -> None:
             _drain_filesystem_loop(
-                cast(Adapter, adapter),
+                adapter,
                 sink,
                 stats,
                 config,
@@ -1160,7 +1179,7 @@ class TestDrainIsWakeDriven:
         def _run() -> None:
             drain_thread.append(threading.get_ident())
             _drain_filesystem_loop(
-                cast(Adapter, adapter),
+                adapter,
                 sink,
                 stats,
                 config,
@@ -1215,7 +1234,7 @@ class TestDrainIsWakeDriven:
 
         def _run() -> None:
             _drain_filesystem_loop(
-                cast(Adapter, adapter),
+                adapter,
                 sink,
                 _Stats(),
                 RunConfig(cli_name="fake"),
@@ -1265,7 +1284,7 @@ class TestWholeFileAdapterIsDrainedWhole:
 
         def _run() -> None:
             _drain_filesystem_loop(
-                cast(Adapter, adapter),
+                adapter,
                 sink,
                 _Stats(),
                 RunConfig(cli_name="wholefile"),
@@ -1315,7 +1334,7 @@ class TestCompactionReDerivesPositions:
 
         def _run() -> None:
             _drain_filesystem_loop(
-                cast(Adapter, adapter),
+                adapter,
                 sink,
                 _Stats(),
                 RunConfig(cli_name="uuids"),
@@ -1380,8 +1399,8 @@ def _uuid_line(marker: str) -> bytes:
 def _uuid_records(stream: TextIO) -> Iterator[SessionRecord]:
     """Read the claude-shaped fixture lines ``_uuid_line`` writes."""
     for line in stream:
-        obj = cast(dict[str, object], json.loads(line))
-        message = cast(dict[str, object], obj["message"])
+        obj = DictCodec.coerce(loads(line))
+        message = DictCodec.coerce(obj["message"])
         yield UserMessage(content=str(message["content"]))
 
 
@@ -1426,7 +1445,7 @@ class TestMissingBinary:
             sync=False,
             out_path=tmp_path / "o.jsonl",
         )
-        session._ADAPTERS[adapter.name] = lambda: cast(Adapter, adapter)
+        session._ADAPTERS[adapter.name] = lambda: adapter
         try:
             with pytest.raises(SystemExit, match="not found in PATH"):
                 run(config)
@@ -1481,7 +1500,7 @@ class TestEmitSlashCommands:
             ],
         )
         _emit_slash_commands(
-            cast(Adapter, _FakeAdapter(Path())),
+            _FakeAdapter(Path()),
             sink,
             stats,
             RunConfig(cli_name="fake"),
@@ -1501,7 +1520,7 @@ class TestEmitSlashCommands:
     def test_empty_queue_is_a_noop(self) -> None:
         sink = _RecordingSink()
         _emit_slash_commands(
-            cast(Adapter, _FakeAdapter(Path())),
+            _FakeAdapter(Path()),
             sink,
             _Stats(),
             RunConfig(cli_name="fake"),
@@ -1530,7 +1549,7 @@ class TestDryRunDrain:
         stop.set()
         rc = session._dry_run_drain(
             RunConfig(cli_name="wholefile"),
-            cast(Adapter, adapter),
+            adapter,
             sink,
             stats,
             stop=stop,
@@ -1546,7 +1565,7 @@ class TestDryRunDrain:
         stop.set()  # Already stopped: the loop runs one final sweep and returns.
         rc = session._dry_run_drain(
             RunConfig(cli_name="fake"),
-            cast(Adapter, adapter),
+            adapter,
             _RecordingSink(),
             _Stats(),
             stop=stop,
@@ -1567,26 +1586,33 @@ class _BorrowedClient:
 class TestRunPreservesClient:
     """A ``trax run`` must not close the daemon's shared client."""
 
-    def test_run_leaves_config_client_open(self) -> None:
+    def test_run_leaves_config_client_open(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """The CLI cache, not one run, owns the supplied transport.
 
         The daemon reuses this client across requests. Closing it here leaves
         the closed instance cached, so the next invocation cannot send.
         """
         client = _BorrowedClient()
-        config = RunConfig(cli_name="codex", dry_run=True, client=cast(Any, client))
+        config = RunConfig(cli_name="codex", dry_run=True, client=cast(Client, client))
 
         # Stub the drain so no session files are scanned and the run returns at
         # once; the client ownership boundary is the only thing under test.
-        def _fake_dry_run(*_a: object, **_k: object) -> int:
+        def _fake_dry_run(
+            config: RunConfig,
+            adapter: Adapter,
+            sink: Sink,
+            stats: _Stats,
+            *,
+            stop: threading.Event | None = None,
+        ) -> int:
+            del config, adapter, sink, stats, stop
             return 0
 
-        original = session._dry_run_drain
-        session._dry_run_drain = cast(Any, _fake_dry_run)
-        try:
-            rc = run(config)
-        finally:
-            session._dry_run_drain = original
+        monkeypatch.setattr(session, "_dry_run_drain", _fake_dry_run)
+        rc = run(config)
         assert rc == 0
         assert client.close_calls == 0
 
@@ -1633,7 +1659,7 @@ class TestTeardownRunsEvenWhenTheRelayRaises:
             _ = session._spawn_and_drain(
                 RunConfig(cli_name="claude", quiesce_seconds=0.0),
                 ClaudeAdapter(),
-                cast(Any, _RecordingSink()),
+                _RecordingSink(),
                 _Stats(),
             )
 
@@ -1657,9 +1683,9 @@ class TestInboundIsWaitDriven:
 
         worker = threading.Thread(
             target=lambda: _inbound_poll_loop(
-                cast(Any, client),
-                cast(Any, _SessionSink()),
-                cast(Any, _RecordingRelay()),
+                cast(Client, client),
+                cast(Sink, _SessionSink()),
+                cast(ThreadedRelay, _RecordingRelay()),
                 stop,
             ),
             daemon=True,
@@ -1698,9 +1724,9 @@ class TestInboundIsWaitDriven:
         def _run() -> None:
             drain_thread.append(threading.get_ident())
             _inbound_poll_loop(
-                cast(Any, client),
-                cast(Any, _SessionSink()),
-                cast(Any, _RecordingRelay()),
+                cast(Client, client),
+                cast(Sink, _SessionSink()),
+                cast(ThreadedRelay, _RecordingRelay()),
                 stop,
             )
 
@@ -1732,9 +1758,9 @@ class TestInboundIsWaitDriven:
 
         worker = threading.Thread(
             target=lambda: _inbound_poll_loop(
-                cast(Any, client),
-                cast(Any, _SessionSink()),
-                cast(Any, _RecordingRelay()),
+                cast(Client, client),
+                cast(Sink, _SessionSink()),
+                cast(ThreadedRelay, _RecordingRelay()),
                 stop,
                 poll_interval=0.05,
             ),
@@ -1774,9 +1800,9 @@ class TestInboundBatchSurvivesOneBadMessage:
 
         worker = threading.Thread(
             target=lambda: _inbound_poll_loop(
-                cast(Any, client),
-                cast(Any, _SessionSink()),
-                cast(Any, relay),
+                cast(Client, client),
+                cast(Sink, _SessionSink()),
+                cast(ThreadedRelay, relay),
                 stop,
                 poll_interval=0.01,
             ),

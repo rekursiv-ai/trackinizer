@@ -7,6 +7,7 @@ from typing import Self
 
 import math
 
+from trackinizer.lib.custom_json import FloatCodec
 from trackinizer.types.columns import Row
 
 
@@ -105,9 +106,9 @@ class Cost:
         agent_col = prefix + "marginal_cost_agent_usd"
         resource_col = prefix + "marginal_cost_resource_usd"
         return cls(
-            agent_usd=float(row[agent_col] or 0) if agent_col in row else 0.0,
+            agent_usd=FloatCodec.coerce(row[agent_col]) if agent_col in row else 0.0,
             resource_usd=(
-                float(row[resource_col] or 0) if resource_col in row else 0.0
+                FloatCodec.coerce(row[resource_col]) if resource_col in row else 0.0
             ),
         )
 

@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
 import asyncio
-import json
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 import asyncpg
 
@@ -21,6 +20,7 @@ from trackinizer.lib.custom_json import (
     IntCodec,
     SchemaError,
     StrCodec,
+    loads,
 )
 from trackinizer.server.api.app import (
     check_violation_handler,
@@ -58,7 +58,7 @@ class TestCLIHelpers:
         invoke the handlers directly. Verifies the JSON shape consumers
         rely on.
         """
-        req = cast(Any, Mock())
+        req = cast(Request, Mock())
         fk_response = asyncio.run(
             fk_violation_handler(req, asyncpg.ForeignKeyViolationError("boom")),
         )
@@ -76,63 +76,61 @@ class TestCLIHelpers:
             assert response.status_code == 409
             # ``response.body`` is ``bytes | memoryview``; coerce to
             # ``bytes`` for json.loads's narrower type signature.
-            body = json.loads(bytes(response.body))
-            assert prefix in body["detail"]
+            body = DictCodec.coerce(loads(bytes(response.body)))
+            assert prefix in StrCodec.coerce(body["detail"])
 
     def test_handlers_do_not_leak_constraint_detail(self) -> None:
         # ``asyncpg`` ``detail`` carries internal column / constraint names
         # (e.g. ``Key (from_id)=(...) is not present``); the client-facing
         # body must NOT echo it -- only a generic message (REV-OPUS-03).
-        req = cast(Any, Mock())
+        req = cast(Request, Mock())
         leak = 'Key (from_id)=(deadbeef) is not present in table "inquiries"'
         constraint = "edges_from_id_fkey"
-        cases = [
-            fk_violation_handler,
-            check_violation_handler,
-            unique_violation_handler,
-        ]
-        exc_types = [
-            asyncpg.ForeignKeyViolationError,
-            asyncpg.CheckViolationError,
-            asyncpg.UniqueViolationError,
-        ]
-        for handler, exc_type in zip(cases, exc_types, strict=True):
-            exc = exc_type(constraint)
-            # ``asyncpg`` exposes ``detail`` from the server error fields; set it
-            # so the handler sees a realistic leaky value.
+        fk_exc = asyncpg.ForeignKeyViolationError(constraint)
+        check_exc = asyncpg.CheckViolationError(constraint)
+        unique_exc = asyncpg.UniqueViolationError(constraint)
+        # ``asyncpg`` exposes ``detail`` from the server error fields; set it
+        # so the handler sees a realistic leaky value.
+        for exc in (fk_exc, check_exc, unique_exc):
             object.__setattr__(exc, "detail", leak)
-            response = asyncio.run(handler(req, cast(Any, exc)))
-            body = json.loads(bytes(response.body))
+        responses = [
+            asyncio.run(fk_violation_handler(req, fk_exc)),
+            asyncio.run(check_violation_handler(req, check_exc)),
+            asyncio.run(unique_violation_handler(req, unique_exc)),
+        ]
+        for response in responses:
+            body = DictCodec.coerce(loads(bytes(response.body)))
             assert response.status_code == 409
-            assert leak not in body["detail"]
-            assert "from_id" not in body["detail"]
-            assert constraint not in body["detail"]
+            detail = StrCodec.coerce(body["detail"])
+            assert leak not in detail
+            assert "from_id" not in detail
+            assert constraint not in detail
 
     def test_conflict_handler_emits_error_code(self) -> None:
-        req = cast(Any, Mock())
+        req = cast(Request, Mock())
         response = asyncio.run(conflict_handler(req, ConflictError("clash")))
-        body = json.loads(bytes(response.body))
+        body = DictCodec.coerce(loads(bytes(response.body)))
         assert response.status_code == 409
         assert body == {"detail": "clash", "code": "conflict"}
 
     def test_not_found_handler_emits_404_and_code(self) -> None:
-        req = cast(Any, Mock())
+        req = cast(Request, Mock())
         response = asyncio.run(not_found_handler(req, NotFoundError("gone")))
-        body = json.loads(bytes(response.body))
+        body = DictCodec.coerce(loads(bytes(response.body)))
         assert response.status_code == 404
         assert body == {"detail": "gone", "code": "not_found"}
 
     def test_validation_handler_emits_422_and_code(self) -> None:
-        req = cast(Any, Mock())
+        req = cast(Request, Mock())
         response = asyncio.run(validation_handler(req, ValidationError("bad input")))
-        body = json.loads(bytes(response.body))
+        body = DictCodec.coerce(loads(bytes(response.body)))
         assert response.status_code == 422
         assert body == {"detail": "bad input", "code": "validation"}
 
     def test_schema_handler_emits_422_and_code(self) -> None:
-        req = cast(Any, Mock())
+        req = cast(Request, Mock())
         response = asyncio.run(schema_handler(req, SchemaError("stray key")))
-        body = json.loads(bytes(response.body))
+        body = DictCodec.coerce(loads(bytes(response.body)))
         assert response.status_code == 422
         assert body == {"detail": "stray key", "code": "schema"}
 
@@ -238,8 +236,7 @@ class TestAuthDisabledWarning:
             Mock(return_value=store),
         )
         monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
-        app = cast(FastAPI, Mock())
-        app.state = Mock()
+        app = FastAPI()
         app.state.config = Config(auth_disabled=auth_disabled)
 
         async def _drive() -> None:
@@ -296,8 +293,7 @@ class TestAuthDisabledWarning:
             Mock(return_value=store),
         )
         monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
-        app = cast(FastAPI, Mock())
-        app.state = Mock()
+        app = FastAPI()
         app.state.config = Config(auth_disabled=auth_disabled)
 
         async def _drive() -> None:
@@ -306,7 +302,9 @@ class TestAuthDisabledWarning:
 
         asyncio.run(_drive())
         return any(
-            "INSERT INTO users" in c.args[0] and "no-auth@localhost" in c.args
+            isinstance(c.args[0], str)
+            and "INSERT INTO users" in c.args[0]
+            and "no-auth@localhost" in c.args
             for c in engine.conn.execute.call_args_list
         )
 

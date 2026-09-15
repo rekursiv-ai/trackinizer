@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
+from typing import cast
 
 import inspect
 import json
@@ -90,7 +91,9 @@ def test_every_offered_format_resolves_to_an_adapter() -> None:
     and rewrite a session into the wrong shape. Read off ``main``'s own
     default so the list under test is the one users are given.
     """
-    offered = inspect.signature(main).parameters["formats"].default
+    offered = cast(
+        tuple[str, ...], inspect.signature(main).parameters["formats"].default
+    )
 
     for name in offered:
         adapter = _adapter(name)

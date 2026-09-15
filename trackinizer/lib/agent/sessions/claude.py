@@ -79,6 +79,7 @@ from trackinizer.lib.custom_json import (
     decode_or_none,
     json_freeze,
     json_unfreeze,
+    loads,
     replay,
     residual,
     same_json_value,
@@ -1586,7 +1587,7 @@ def _split(content: str | None, parts: int) -> list[str]:
 
 def _effort(wire: str) -> ThinkingEffort | None:
     """Read a reported effort level."""
-    if wire not in get_args(ThinkingEffort.__value__):
+    if wire not in get_args(ThinkingEffort.__value__):  # pyright: ignore[reportAny] -- PEP 695 alias values are exposed as Any by the typing stub.
         return None
     return cast(ThinkingEffort, wire)
 
@@ -1852,7 +1853,7 @@ def _parse(line: str) -> dict[str, object] | None:
     if not line.strip():
         return None
     try:
-        parsed: object = json.loads(line)
+        parsed = loads(line)
     except json.JSONDecodeError:
         return None
     narrowed = DictCodec.coerce(parsed)

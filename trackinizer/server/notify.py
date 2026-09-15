@@ -14,6 +14,7 @@ import logging
 
 import asyncpg
 
+from trackinizer.lib.custom_json import DictCodec, StrCodec, loads
 from trackinizer.lib.postgres import Conn, DatabaseEngine
 
 
@@ -146,7 +147,8 @@ async def iter_sse_events(engine: DatabaseEngine) -> AsyncIterator[bytes]:
     """
     async for payload in engine.listen(NOTIFY_CHANNEL):
         try:
-            subject_id = json.loads(payload)["id"]
+            payload_data = DictCodec.coerce(loads(payload))
+            subject_id = StrCodec.coerce(payload_data["id"])
         except (json.JSONDecodeError, KeyError, TypeError):
             # Drop one bad payload rather than kill the stream, but LOG it: a
             # silent ``continue`` would hide a payload-shape regression (the

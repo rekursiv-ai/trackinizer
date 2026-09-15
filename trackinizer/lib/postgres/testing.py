@@ -54,7 +54,6 @@ def pglite_workdir(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
     """
     workdir = tmp_path_factory.mktemp("pglite-shared")
-    assert isinstance(workdir, Path)
     return workdir
 
 

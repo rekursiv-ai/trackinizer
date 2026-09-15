@@ -14,7 +14,7 @@ Usage::
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Protocol, cast, override
 
 import argparse
 import logging
@@ -34,6 +34,7 @@ from trackinizer.server.api.app import app
 from trackinizer.server.config import (
     Config,
     ConfigError,
+    ConfigFlags,
     session_max_age_from_env,
 )
 
@@ -59,10 +60,10 @@ def main() -> int:
         description=(__doc__ or "").strip(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    args, remaining = _parse_args(parser)
+    flags, remaining = _parse_args(parser)
     if remaining:
         parser.error(f"unrecognized arguments: {' '.join(remaining)}")
-    log_level = _configure_logging(args.log_level)
+    log_level = _configure_logging(flags.log_level)
     # Silence uvicorn's spurious zero-task cancel ERROR on every clean shutdown
     # (a consequence of timeout_graceful_shutdown=0); a real N>0 cancel still logs.
     # Guarded because the logger is process-wide: uvicorn's reloader and any
@@ -70,11 +71,11 @@ def main() -> int:
     error_logger = logging.getLogger("uvicorn.error")
     if not any(isinstance(f, _SuppressZeroTaskCancel) for f in error_logger.filters):
         error_logger.addFilter(_SuppressZeroTaskCancel())
-    _configure_app(args)
+    _configure_app(flags)
     uvicorn.run(
         app,
-        host=args.host,
-        port=args.port,
+        host=flags.host,
+        port=flags.port,
         # Also sets the level of ``uvicorn.access``, which logs one INFO line
         # per request. Without this the flag configures only this package's
         # logger and uvicorn keeps its own INFO default, so an operator who
@@ -82,7 +83,7 @@ def main() -> int:
         # proxy that is a duplicate of the proxy's log, with the proxy's IP
         # instead of the caller's, and it fills the log partition.
         log_level=log_level,
-        timeout_keep_alive=args.timeout_keep_alive,
+        timeout_keep_alive=flags.timeout_keep_alive,
         # Force-close connections immediately on shutdown instead of waiting for
         # them to drain. Without this, uvicorn's default (wait indefinitely) made
         # SIGTERM hang on a held connection (e.g. an open Web UI tab) until the
@@ -94,22 +95,33 @@ def main() -> int:
     return 0
 
 
-def _configure_app(args: argparse.Namespace) -> None:
+class _Flags(ConfigFlags, Protocol):
+    """Parsed command-line flags."""
+
+    host: str
+    port: int
+    timeout_keep_alive: int
+    static_dir: Path | None
+    log_level: str | None
+
+
+def _configure_app(flags: _Flags) -> None:
     """Attach config (and the web UI) to the module-level app."""
     try:
-        app.state.config = Config.from_args(args)
+        app.state.config = Config.from_args(flags)
     except ConfigError as err:
         # Library code raises ConfigError (a plain Exception); the CLI is
         # the one place that turns a bad config into a clean process exit.
         raise SystemExit(str(err)) from err
-    if args.web:
-        web.attach(app, static_dir=args.static_dir)
+    if flags.web:
+        web.attach(app, static_dir=flags.static_dir)
 
 
 def _parse_args(
     parser: argparse.ArgumentParser,
     argv: list[str] | None = None,
-) -> tuple[argparse.Namespace, list[str]]:
+) -> tuple[_Flags, list[str]]:
+    """Register this layer's flags; return ``(parsed, leftover)``."""
     parser.add_argument(
         "--engine",
         default="pglite",
@@ -217,7 +229,8 @@ def _parse_args(
         default=None,
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
     )
-    return parser.parse_known_args(argv)
+    flags, remaining = parser.parse_known_args(argv)
+    return cast(_Flags, flags), remaining
 
 
 def _session_ttl_default() -> int:

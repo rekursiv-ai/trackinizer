@@ -6,8 +6,6 @@ from io import StringIO
 from pathlib import Path
 from typing import Final
 
-import json
-
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex, normalized
@@ -30,7 +28,7 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedToolResult,
     UserMessage,
 )
-from trackinizer.lib.custom_json import ListCodec, StrCodec
+from trackinizer.lib.custom_json import ListCodec, StrCodec, loads
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -117,7 +115,7 @@ def test_session_json_is_a_bare_array_of_tagged_records() -> None:
 
     text = stream.getvalue()
     assert text.endswith("\n")
-    document = ListCodec.mappings(json.loads(text))
+    document = ListCodec.mappings(loads(text))
     assert [
         StrCodec.coerce(entry.get("py/object")).rpartition(".")[2] for entry in document
     ] == ["TurnContext", "UserMessage"]

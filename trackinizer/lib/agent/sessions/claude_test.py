@@ -8,7 +8,6 @@ from io import StringIO
 from unittest.mock import patch
 
 import base64
-import json
 
 import pytest
 
@@ -41,7 +40,7 @@ from trackinizer.lib.agent.types.sessions import (
     WebSearchResult,
     WebSearchResults,
 )
-from trackinizer.lib.custom_json import DictCodec, ListCodec
+from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
 
 
 ENVELOPE = (
@@ -597,7 +596,7 @@ def test_deleting_one_call_does_not_move_another_across_prose() -> None:
 
 def _content_blocks(native: str) -> list[dict[str, object]]:
     """Return the message content blocks of a written line."""
-    record = DictCodec.coerce(json.loads(native.splitlines()[0]))
+    record = DictCodec.coerce(loads(native.splitlines()[0]))
     message = DictCodec.coerce(record.get("message"))
     return list(ListCodec.mappings(message.get("content")))
 

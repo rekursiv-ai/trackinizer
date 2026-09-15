@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Final, cast
 
 import argparse
 import subprocess
@@ -10,6 +10,7 @@ import sys
 
 import pytest
 
+from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli, profile
 from trackinizer.trax.conftest import FakeClient, run
@@ -138,7 +139,8 @@ def test_global_flag_not_peeled_from_field_value() -> None:
     not set (TRAX-CLI-001).
     """
     top, leftover = cli._peel_top_flags(["issue", "7", "title", "to", "--show-ids"])
-    assert top.show_ids is False
+    flags = cast(cli._TopFlags, top)
+    assert flags.show_ids is False
     assert leftover == ["issue", "7", "title", "to", "--show-ids"]
 
 
@@ -147,7 +149,8 @@ def test_global_flag_peeled_before_verb() -> None:
     top, leftover = cli._peel_top_flags(
         ["--show-ids", "issue", "7", "title", "to", "x"],
     )
-    assert top.show_ids is True
+    flags = cast(cli._TopFlags, top)
+    assert flags.show_ids is True
     assert leftover == ["issue", "7", "title", "to", "x"]
 
 
@@ -156,7 +159,8 @@ def test_global_value_flag_before_verb_consumes_its_value() -> None:
     top, leftover = cli._peel_top_flags(
         ["--host", "example", "issue", "title", "to", "x"],
     )
-    assert top.host == "example"
+    flags = cast(cli._TopFlags, top)
+    assert flags.host == "example"
     assert leftover == ["issue", "title", "to", "x"]
 
 
@@ -367,7 +371,7 @@ def test_create_hides_uuid_by_default(
     """``created:`` omits the UUID unless ``--show-ids`` is set."""
     cli.parse_and_run(
         ["issue", "title", "to", "hi"],
-        client_factory=lambda: cast(Any, client),
+        client_factory=lambda: cast(Client, client),
     )
     out = capsys.readouterr().out
     assert out.strip() == "created: Issue#1"
@@ -380,7 +384,7 @@ def test_create_shows_uuid_with_flag(
     """``--show-ids`` surfaces the UUID on ``created:`` lines."""
     cli.parse_and_run(
         ["--show-ids", "issue", "title", "to", "hi"],
-        client_factory=lambda: cast(Any, client),
+        client_factory=lambda: cast(Client, client),
     )
     out = capsys.readouterr().out
     assert out.startswith("created: Issue#1 ")
@@ -394,7 +398,7 @@ def test_help_topic_unknown_verb_raises(
     with pytest.raises(ClientError, match="unknown verb"):
         cli.parse_and_run(
             ["help", "notaverb"],
-            client_factory=lambda: cast(Any, client),
+            client_factory=lambda: cast(Client, client),
         )
 
 
@@ -426,7 +430,7 @@ def test_leading_dash_help_with_no_other_args(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """``trax --help`` (no other args) prints top-level help."""
-    cli.parse_and_run(["--help"], client_factory=lambda: cast(Any, client))
+    cli.parse_and_run(["--help"], client_factory=lambda: cast(Client, client))
     out = capsys.readouterr().out
     assert "Usage: trax COMMAND" in out
 
@@ -461,18 +465,24 @@ def test_run_shim_resolves_client_from_active_profile(
     profile.switch_profile("rprof")
     captured: dict[str, object] = {}
 
-    def fake_run_main(argv: Sequence[str], *, client_factory: object = None) -> int:
+    def fake_run_main(
+        argv: Sequence[str],
+        *,
+        client_factory: Callable[[], Client] | None = None,
+    ) -> int:
         captured["argv"] = list(argv)
         # The factory resolves the active profile only when invoked, mirroring
         # the sync path; ``--no-sync`` never calls it.
-        captured["client"] = cast(Any, client_factory)()
+        assert client_factory is not None
+        captured["client"] = client_factory()
         return 0
 
     monkeypatch.setattr("trackinizer.trax.run.session.main", fake_run_main)
     cli.parse_and_run(["run", "claude", "--", "hi"])
 
     assert captured["argv"] == ["claude", "--", "hi"]
-    resolved = cast(Any, captured["client"])
+    resolved = captured["client"]
+    assert isinstance(resolved, Client)
     try:
         assert str(resolved.base_url) == "http://rhost:9100"
         assert resolved.author == "bob"

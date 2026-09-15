@@ -39,9 +39,10 @@ class TestClientChangeIdGather:
             store.add_cost(new_uuid(), Cost(agent_usd=1.0), actor="bob"),
         )
         change_ids = [
-            call.args[1]  # ``id`` is the first column in ``emit_change``.
+            call.args[1]
             for call in conn.execute.call_args_list
-            if "INSERT INTO change_log" in call.args[0]
+            if isinstance(call.args[0], str)
+            and "INSERT INTO change_log" in call.args[0]
         ]
         assert len(change_ids) == 2
         # Without coordination both siblings see client_id and use it

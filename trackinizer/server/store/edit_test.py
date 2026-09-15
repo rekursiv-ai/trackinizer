@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
-from unittest.mock import AsyncMock
+from typing import cast
+from unittest.mock import AsyncMock, _Call
 
 import asyncio
-import uuid
 
 import pytest
 
@@ -17,6 +16,7 @@ from trackinizer.conftest import (
     new_uuid,
     set_field_row,
 )
+from trackinizer.lib.postgres import Conn
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.inquiries import Inquiry
@@ -132,9 +132,7 @@ class TestCoverageStoreEdits:
         store, _engine = make_store(conn)
         await getattr(store, method)(new_uuid(), new, actor="alice")
         update = next(
-            c
-            for c in conn.execute.call_args_list
-            if "UPDATE inquiries SET" in c.args[0]
+            c for c in conn.execute.call_args_list if "UPDATE inquiries SET" in _sql(c)
         )
         assert update.args[1] == stored
 
@@ -145,9 +143,7 @@ class TestCoverageStoreEdits:
         store, _engine = make_store(conn)
         await store.add_label(new_uuid(), "  x  ", actor="alice")
         update = next(
-            c
-            for c in conn.execute.call_args_list
-            if "UPDATE inquiries SET" in c.args[0]
+            c for c in conn.execute.call_args_list if "UPDATE inquiries SET" in _sql(c)
         )
         assert update.args[1] == ["x"]
 
@@ -237,7 +233,7 @@ class TestCoverageStoreEdits:
         update = next(
             c
             for c in conn.execute.call_args_list
-            if c.args and "UPDATE inquiries SET paper_authors" in c.args[0]
+            if c.args and "UPDATE inquiries SET paper_authors" in _sql(c)
         )
         assert update.args[1] == ("Smith", "Smith")
 
@@ -253,7 +249,7 @@ class TestCoverageStoreEdits:
         update = next(
             c
             for c in conn.execute.call_args_list
-            if c.args and "UPDATE inquiries SET paper_authors" in c.args[0]
+            if c.args and "UPDATE inquiries SET paper_authors" in _sql(c)
         )
         assert update.args[1] == ("Smith", "Smith")
 
@@ -271,7 +267,7 @@ class TestCoverageStoreEdits:
         update = next(
             c
             for c in conn.execute.call_args_list
-            if c.args and "UPDATE inquiries SET paper_authors" in c.args[0]
+            if c.args and "UPDATE inquiries SET paper_authors" in _sql(c)
         )
         assert update.args[1] == ("Jones", "Smith")
 
@@ -302,7 +298,7 @@ class TestCoverageStoreEdits:
         update = next(
             c
             for c in conn.execute.call_args_list
-            if c.args and "UPDATE inquiries SET paper_authors" in c.args[0]
+            if c.args and "UPDATE inquiries SET paper_authors" in _sql(c)
         )
         # Each element stripped; order and the Smith duplicate both kept.
         # paper_authors has no list-encode hook, so the tuple is passed
@@ -350,7 +346,7 @@ class TestCoverageStoreEdits:
         conn = make_conn()
         if method == "set_codechanges":
             # set_codechanges validates each UUID via lookup_kinds.
-            target_uuid = cast(uuid.UUID, new[0])
+            target_uuid = new[0]
             conn.fetch.side_effect = [
                 [{"id": target_uuid, "kind": "CodeChange"}],
                 [],
@@ -381,7 +377,7 @@ class TestAddCostFloor:
         # presence probe in a single snapshot.
         conn.fetchval.return_value = "Issue"
 
-        async def fetchrow(sql: str, *args: Any) -> Any:  # noqa: ANN401 -- forwarded to an upstream Any.
+        async def fetchrow(sql: str, *args: object) -> object:
             if "marginal_cost_agent_usd" in sql and "RETURNING" in sql:
                 # Mirror Postgres: the modifying CTE's WHERE rejects
                 # rows whose new total would be negative; the outer
@@ -390,8 +386,8 @@ class TestAddCostFloor:
                 # ``existing_id`` reports the row present. Starting
                 # balance is zero, so any negative delta misses the
                 # predicate and produces this floor-refused shape.
-                agent = float(args[0])
-                resource = float(args[1])
+                agent = float(cast(float, args[0]))
+                resource = float(cast(float, args[1]))
                 subject_id = args[2]
                 if agent < 0 or resource < 0:
                     return {
@@ -426,10 +422,10 @@ class TestAddCostFloor:
         conn = make_conn()
         conn.fetchval.return_value = "Issue"
 
-        async def fetchrow(sql: str, *args: Any) -> Any:  # noqa: ANN401 -- forwarded to an upstream Any.
+        async def fetchrow(sql: str, *args: object) -> object:
             if "marginal_cost_agent_usd" in sql and "RETURNING" in sql:
-                agent = float(args[0])
-                resource = float(args[1])
+                agent = float(cast(float, args[0]))
+                resource = float(cast(float, args[1]))
                 subject_id = args[2]
                 if agent < 0 or resource < 0:
                     return {
@@ -493,8 +489,12 @@ class TestArtifactLocatorFields:
     async def test_update_field_allows_artifact_locator_columns(self) -> None:
         conn = make_conn()
         store, _engine = make_store(conn)
-        await store._update_field(conn, new_uuid(), "codechange_sha", "new_sha")
-        await store._update_field(conn, new_uuid(), "webresult_url", "https://b")
+        await store._update_field(
+            cast(Conn, conn), new_uuid(), "codechange_sha", "new_sha"
+        )
+        await store._update_field(
+            cast(Conn, conn), new_uuid(), "webresult_url", "https://b"
+        )
         sqls = executed_sql(conn)
         assert any(
             sql.startswith("UPDATE inquiries SET codechange_sha") for sql in sqls
@@ -514,7 +514,7 @@ class TestSetSourceWhitespace:
         update = next(
             c
             for c in conn.execute.call_args_list
-            if c.args and "UPDATE inquiries SET paper_source" in c.args[0]
+            if c.args and "UPDATE inquiries SET paper_source" in _sql(c)
         )
         # "   " is absence: it must store SQL NULL, mirroring the submit
         # boundary's whitespace->None coercion, not the raw "   ".
@@ -544,6 +544,13 @@ class TestAddCostZeroDelta:
         store, _engine = make_store(conn)
         with pytest.raises(NotFoundError, match="not found"):
             await store.add_cost(new_uuid(), Cost(), actor="alice")
+
+
+def _sql(call: _Call) -> str:
+    """Narrow a recorded mock argument to the SQL statements under test."""
+    sql = call.args[0]
+    assert isinstance(sql, str)
+    return sql
 
 
 if __name__ == "__main__":

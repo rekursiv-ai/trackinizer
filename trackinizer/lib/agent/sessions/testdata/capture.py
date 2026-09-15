@@ -42,7 +42,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Final
+from typing import Final, Protocol, cast
 
 import argparse
 import json
@@ -56,7 +56,7 @@ import threading
 import time
 import zlib
 
-from trackinizer.lib.custom_json import DictCodec
+from trackinizer.lib.custom_json import DictCodec, loads
 from trackinizer.lib.posix.relay import ThreadedRelay
 
 
@@ -121,8 +121,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
-    args = parser.parse_args(argv)
-    args.out.mkdir(parents=True, exist_ok=True)
+    flags = cast(_Flags, parser.parse_args(argv))
+    flags.out.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     # House-authorized deviation from "no generated data in the checkout":
     # the scratch tree lives beside the fixtures, under a .gitignore, rather
@@ -130,26 +130,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     # root and workspace to read, and a self-deleting temp dir destroys
     # exactly the evidence needed to tell a swallowed turn from a refused
     # one. Nothing here is committed; ``--out`` still redirects the fixtures.
-    root = args.out / "scratch"
+    root = flags.out / "scratch"
     shutil.rmtree(root, ignore_errors=True)
     # ``_drive`` chdirs into each capture's workspace, so the original cwd
     # is restored between CLIs; otherwise the second capture inherits the
     # first's directory.
     origin = Path.cwd()
-    if args.cli in ("claude", "both"):
+    if flags.cli in ("claude", "both"):
         written += _capture_claude(
             root / "claude",
-            args.out,
-            turn_sec=args.turn_sec,
-            timeout_sec=args.timeout_sec,
+            flags.out,
+            turn_sec=flags.turn_sec,
+            timeout_sec=flags.timeout_sec,
         )
         os.chdir(origin)
-    if args.cli in ("codex", "both"):
+    if flags.cli in ("codex", "both"):
         written += _capture_codex(
             root / "codex",
-            args.out,
-            turn_sec=args.turn_sec,
-            timeout_sec=args.timeout_sec,
+            flags.out,
+            turn_sec=flags.turn_sec,
+            timeout_sec=flags.timeout_sec,
         )
         os.chdir(origin)
     for path in written:
@@ -446,7 +446,7 @@ def _seed_onboarding(home: Path, work: Path, *, real_home: Path) -> None:
     source = Path.home() / ".claude.json"  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
     if real_home.name != ".claude" or not source.is_file():
         return
-    real = DictCodec.coerce(json.loads(source.read_text(encoding="utf-8")))
+    real = DictCodec.coerce(loads(source.read_text(encoding="utf-8")))
     seeded: dict[str, object] = {
         key: value for key, value in real.items() if key != "projects"
     }
@@ -585,6 +585,13 @@ def _reject_secrets(text: str, *, source: Path) -> None:
                 f"{source}: credential-shaped text survived redaction "
                 f"({found.group()[:12]}...); fixture not written",
             )
+
+
+class _Flags(Protocol):
+    cli: str
+    out: Path
+    timeout_sec: int
+    turn_sec: float
 
 
 if __name__ == "__main__":

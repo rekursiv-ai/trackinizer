@@ -11,7 +11,7 @@ hand-maintained copy of the enums, field-owner map, or edge topology.
 
 from __future__ import annotations
 
-from typing import get_args
+from typing import Protocol, cast, get_args
 
 from fastapi import APIRouter
 
@@ -61,16 +61,18 @@ def enum_values() -> dict[str, list[str]]:
 
     """
     return {
-        "status": list(get_args(Issue.Status.__value__)),
-        "judgement": list(get_args(Belief.Judgement.__value__)),
-        "issue_kind": list(get_args(Issue.Kind.__value__)),
-        "publication_type": list(get_args(Paper.PublicationType.__value__)),
-        "edge_kind": list(get_args(Edge.Kind.__value__)),
+        "status": _literal_values(_literal_alias_value(Issue.Status)),
+        "judgement": _literal_values(_literal_alias_value(Belief.Judgement)),
+        "issue_kind": _literal_values(_literal_alias_value(Issue.Kind)),
+        "publication_type": _literal_values(
+            _literal_alias_value(Paper.PublicationType)
+        ),
+        "edge_kind": _literal_values(_literal_alias_value(Edge.Kind)),
         # The inquiry-kind taxonomy the SPA needs for its kind dropdowns,
         # short-ref (Kind#seq) parser, and edge/supersede pickers. Mirrored
         # from the type Literals so the SPA never hand-types them (the
         # favors-flip drift class -- a hand-typed JS copy that lags Python).
-        "inquiry_kind_all": list(get_args(Inquiry.InquiryKind.__value__)),
+        "inquiry_kind_all": _literal_values(_literal_alias_value(Inquiry.InquiryKind)),
     }
 
 
@@ -125,3 +127,23 @@ async def edges_route() -> dict[str, dict[str, list[str] | str]]:
     topology = edge_topology()
     labels = edge_labels()
     return {kind: {**topology[kind], **labels[kind]} for kind in topology}
+
+
+class _LiteralAlias(Protocol):
+    __value__: object
+
+
+def _literal_alias_value(value: object) -> object:
+    """Read a reflected alias through the typed slice used by this module."""
+    return cast(_LiteralAlias, value).__value__
+
+
+def _literal_values(value: object) -> list[str]:
+    """Return string members from a reflected Literal alias."""
+    values: list[str] = []
+    members = cast(tuple[object, ...], get_args(value))
+    for member in members:
+        if not isinstance(member, str):
+            raise TypeError(f"Literal member is not a string: {member!r}")
+        values.append(member)
+    return values

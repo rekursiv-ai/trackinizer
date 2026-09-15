@@ -116,7 +116,7 @@ async def push_changes_to_live_subscribers(
             failures += 1
             # Doubling from the base interval, capped: a 12-hour outage costs
             # ~720 attempts instead of ~86,400 per worker.
-            delay = min(sweep_interval_sec * 2**failures, max_backoff_sec)
+            delay = min(sweep_interval_sec * (2.0**failures), max_backoff_sec)
         await asyncio.sleep(delay)
 
 

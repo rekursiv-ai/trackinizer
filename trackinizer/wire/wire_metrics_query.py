@@ -69,9 +69,10 @@ is the ONE definition of the metric comparator set: the CLI parser gates on it,
 this wire model types ``op`` with it, and the store's operator map covers
 exactly it -- so the three cannot drift into disagreement."""
 
+# ``get_args`` on a PEP 695 alias returns ``()``; the Literal lives on ``__value__``.
 METRIC_COMPARE_OPS: tuple[MetricCompareOp, ...] = cast(
     tuple[MetricCompareOp, ...],
-    get_args(MetricCompareOp.__value__),
+    get_args(MetricCompareOp.__value__),  # pyright: ignore[reportAny] -- PEP 695 alias value is runtime metadata.
 )
 """Runtime tuple of every metric comparator, derived from the type so the tuple
 and the ``Literal`` never diverge."""

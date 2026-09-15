@@ -5,13 +5,14 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextvars import ContextVar
 from datetime import datetime
-from typing import Any, cast
+from typing import cast
 
 import argparse
 import json
 import shutil
 import sys
 
+from trackinizer.lib.custom_json import DictCodec, FloatCodec, ListCodec, StrCodec
 from trackinizer.trax.context import err_stream, out_stream
 from trackinizer.types.edges import EDGE_POLICIES, Edge
 
@@ -57,7 +58,7 @@ def echo(message: object = "", *, err: bool = False, nl: bool = True) -> None:
 
 
 def print_rows(
-    rows: Sequence[dict[str, Any]],
+    rows: Sequence[Mapping[str, object]],
     output: str,
     *,
     width: int | None = None,
@@ -125,7 +126,7 @@ def resolve_labels(labels: Sequence[str] | None) -> list[str]:
     return out
 
 
-type _RowFn = Callable[[dict[str, Any]], str]
+type _RowFn = Callable[[Mapping[str, object]], str]
 """Renders one row's cell for a given table column."""
 
 
@@ -142,7 +143,7 @@ def format_json(payload: object) -> str:
     return json.dumps(payload, indent=2, default=str) + "\n"
 
 
-def format_ids(rows: Iterable[dict[str, Any]]) -> str:
+def format_ids(rows: Iterable[Mapping[str, object]]) -> str:
     """One row id per line.
 
     Args:
@@ -155,7 +156,9 @@ def format_ids(rows: Iterable[dict[str, Any]]) -> str:
     return "".join(f"{row['id']}\n" for row in rows)
 
 
-def format_table(rows: Sequence[dict[str, Any]], *, width: int | None = None) -> str:
+def format_table(
+    rows: Sequence[Mapping[str, object]], *, width: int | None = None
+) -> str:
     """Render rows as an aligned table, dropping empty optional columns to fit width.
 
     Args:
@@ -172,8 +175,8 @@ def format_table(rows: Sequence[dict[str, Any]], *, width: int | None = None) ->
         rows,
         (
             ("ref", lambda r: f"{r.get('kind', '?')}#{r.get('seq', '?')}"),
-            ("status", lambda r: cast(str, r.get("status", ""))),
-            ("title", lambda r: cast(str, r.get("title", ""))),
+            ("status", lambda r: StrCodec.coerce(r.get("status"))),
+            ("title", lambda r: StrCodec.coerce(r.get("title"))),
             ("priority", lambda r: _row_value(r.get("priority"))),
             ("owner", lambda r: _row_value(r.get("owner"))),
             ("kind", lambda r: _row_value(r.get("issue_kind"))),
@@ -239,9 +242,11 @@ def format_edge(view: Mapping[str, object], *, changes: bool = False) -> str:
       result: Formatted edge display with newline-terminated lines.
 
     """
-    edge = cast(Mapping[str, object], view["edge"])
+    edge = DictCodec.coerce(view["edge"])
     lines = [f"edge: {view['title']!s}"]
-    for endpoint in cast(Sequence[Mapping[str, object]], view["endpoints"]):
+    endpoints = view["endpoints"]
+    assert isinstance(endpoints, (list, tuple))
+    for endpoint in ListCodec.mappings(list(cast(Sequence[object], endpoints))):
         lines.append("")
         lines.append(f"{endpoint['label']}:")
         lines.append(
@@ -251,7 +256,7 @@ def format_edge(view: Mapping[str, object], *, changes: bool = False) -> str:
     lines.append("")
     lines.append("edge:")
     lines.extend(_format_selected_edge(edge))
-    change_rows = cast(list[dict[str, Any]], view.get("changes") or [])
+    change_rows = ListCodec.mappings(view.get("changes"))
     if changes and change_rows:
         lines.append("")
         lines.append("Recent changes:")
@@ -260,7 +265,7 @@ def format_edge(view: Mapping[str, object], *, changes: bool = False) -> str:
 
 
 def format_show(
-    view: dict[str, Any],
+    view: Mapping[str, object],
     *,
     changes: bool = False,
     include_id: bool = False,
@@ -278,7 +283,7 @@ def format_show(
       result: Formatted inquiry display with newline-terminated lines.
 
     """
-    self_view = cast(dict[str, Any], view["self"])
+    self_view = DictCodec.coerce(view["self"])
     lines: list[str] = []
     ref = f"{self_view.get('kind')}#{self_view.get('seq')}"
     lines.append(f"{ref}  [{self_view.get('status')}]")
@@ -289,10 +294,10 @@ def format_show(
     lines.append(f"  title:       {self_view.get('title') or ''}")
     if self_view.get("description"):
         lines.append(f"  description: {self_view['description']}")
-    if labels := self_view.get("labels"):
-        lines.append(f"  labels:      {','.join(cast(list[str], labels))}")
-    if subs := self_view.get("subscribers"):
-        lines.append(f"  subscribers: {','.join(cast(list[str], subs))}")
+    if labels := ListCodec.coerce(self_view.get("labels"), str):
+        lines.append(f"  labels:      {','.join(labels)}")
+    if subs := ListCodec.coerce(self_view.get("subscribers"), str):
+        lines.append(f"  subscribers: {','.join(subs)}")
     lines.extend(
         f"  {extra:11}: {value}"
         for extra in (
@@ -325,12 +330,12 @@ def format_show(
         )
     )
     if "codechanges" in self_view:
-        ids = cast(list[str], self_view["codechanges"])
+        ids = ListCodec.coerce(self_view["codechanges"], str)
         lines.append(f"  codechanges: {len(ids)} entries")
         lines.extend(f"    - {cid}" for cid in ids)
-    cost = cast(dict[str, float], self_view.get("marginal_cost") or {})
-    agent_cost = float(cost.get("agent_usd", 0))
-    resource_cost = float(cost.get("resource_usd", 0))
+    cost = DictCodec.coerce(self_view.get("marginal_cost"))
+    agent_cost = FloatCodec.coerce(cost.get("agent_usd"))
+    resource_cost = FloatCodec.coerce(cost.get("resource_usd"))
     if agent_cost:
         lines.append(f"  agent-cost:  ${agent_cost:.4f}")
     if resource_cost:
@@ -339,17 +344,17 @@ def format_show(
         lines.append(f"  created:     {created}")
     if modified := _format_local_time(self_view.get("modified")):
         lines.append(f"  modified:    {modified}")
-    if selected_edge := cast(dict[str, Any], view.get("selected_edge") or {}):
+    if selected_edge := DictCodec.coerce(view.get("selected_edge")):
         lines.append("")
         lines.append("Selected edge:")
         lines.extend(_format_selected_edge(selected_edge))
-    edges = cast(dict[str, list[dict[str, Any]]], view.get("edges") or {})
-    backlinks = cast(dict[str, list[dict[str, Any]]], view.get("backlinks") or {})
+    edges = _relation_groups(view.get("edges"))
+    backlinks = _relation_groups(view.get("backlinks"))
     if edges or backlinks:
         lines.append("")
         lines.extend(_format_relations(edges, inbound=False))
         lines.extend(_format_relations(backlinks, inbound=True))
-    rows = cast(list[dict[str, Any]], view.get("changes") or [])
+    rows = ListCodec.mappings(view.get("changes"))
     if changes and rows:
         lines.append("")
         lines.append("Recent changes:")
@@ -357,7 +362,7 @@ def format_show(
     return "\n".join(lines) + "\n"
 
 
-def format_changes(rows: Sequence[dict[str, Any]]) -> str:
+def format_changes(rows: Sequence[Mapping[str, object]]) -> str:
     """Render the audit feed, one entry plus its field deltas.
 
     Args:
@@ -480,15 +485,22 @@ def _row_value(value: object, depth: int = 0) -> str:
     if value is None or value == "":
         return ""
     if isinstance(value, list | tuple):
-        return ",".join(
-            _row_value(item, depth + 1) for item in cast(Sequence[object], value)
-        )
+        items = cast(Sequence[object], value)
+        return ",".join(_row_value(item, depth + 1) for item in items)
     return str(value)
 
 
-def _row_cost(row: dict[str, Any], key: str) -> str:
-    value = float(cast(dict[str, float], row.get("marginal_cost") or {}).get(key, 0))
+def _row_cost(row: Mapping[str, object], key: str) -> str:
+    value = FloatCodec.coerce(DictCodec.coerce(row.get("marginal_cost")).get(key))
     return f"${value:.2f}" if value else ""
+
+
+def _relation_groups(value: object) -> dict[str, Sequence[Mapping[str, object]]]:
+    """Narrow an ``edges`` / ``backlinks`` view: edge kind -> peer rows."""
+    return {
+        kind: ListCodec.mappings(peers)
+        for kind, peers in DictCodec.coerce(value).items()
+    }
 
 
 def _format_selected_edge(edge: Mapping[str, object]) -> list[str]:
@@ -529,8 +541,8 @@ _CHANGE_DELTA_HIDDEN_KEYS: frozenset[str] = frozenset(
 
 
 def _format_change_delta(change: Mapping[str, object]) -> list[str]:
-    old = cast(Mapping[str, object], change.get("old") or {})
-    new = cast(Mapping[str, object], change.get("new") or {})
+    old = DictCodec.coerce(change.get("old"))
+    new = DictCodec.coerce(change.get("new"))
     return [
         f"{key}: {old_text or '∅'} -> {new_text or '∅'}"
         for key in tuple(dict.fromkeys((*old.keys(), *new.keys())))
@@ -561,7 +573,7 @@ def _format_local_time(value: object) -> str:
 
 
 def _format_relations(
-    edges: Mapping[str, list[dict[str, Any]]],
+    edges: Mapping[str, Sequence[Mapping[str, object]]],
     *,
     inbound: bool,
 ) -> list[str]:
@@ -581,28 +593,28 @@ def _relation_title(edge_kind: str, *, inbound: bool) -> str:
     # ``inbound=True`` reads the edge from the opposite vertex. Every edge is
     # stored child -> parent. Labels come from the single EDGE_POLICIES source
     # (forward/inverse_label), never a parallel table here.
-    policy = EDGE_POLICIES.get(cast(Edge.Kind, edge_kind))
-    if policy is None:
+    if edge_kind not in EDGE_POLICIES:
         return edge_kind.replace("_", " ").title()
+    policy = EDGE_POLICIES[cast("Edge.Kind", edge_kind)]
     return policy.inverse_label if inbound else policy.forward_label
 
 
-def _edge_annotation(peer: dict[str, Any]) -> str:
+def _edge_annotation(peer: Mapping[str, object]) -> str:
     """Compact ``[rel=...; labels=...; note]`` suffix for a related row, if any."""
     parts: list[str] = []
     if "priority" in peer:
         parts.append(f"prio={peer['priority']}")
     if "valence" in peer:
         parts.append(f"val={peer['valence']}")
-    if labels := peer.get("labels"):
-        parts.append("labels=" + ",".join(cast(list[str], labels)))
+    if labels := ListCodec.coerce(peer.get("labels"), str):
+        parts.append("labels=" + ",".join(labels))
     if note := peer.get("note"):
         parts.append(str(note))
     return f"  [{'; '.join(parts)}]" if parts else ""
 
 
 def _visible_table_columns(
-    rows: Sequence[dict[str, Any]],
+    rows: Sequence[Mapping[str, object]],
     columns: Sequence[tuple[str, _RowFn]],
 ) -> tuple[tuple[str, _RowFn], ...]:
     return tuple(
@@ -629,7 +641,7 @@ def _columns_for_width(
 ) -> tuple[tuple[str, _RowFn], ...]:
     if width <= 0:
         return columns
-    out = list(columns)
+    out: list[tuple[str, _RowFn]] = list(columns)
     for name in (
         "validation",
         "description",

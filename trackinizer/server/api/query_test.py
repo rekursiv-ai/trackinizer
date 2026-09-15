@@ -6,8 +6,9 @@ Houses inquiry delete too: ``DELETE /api/inquiries/{id}`` is defined in
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 import json
@@ -32,7 +33,14 @@ from trackinizer.conftest import (
     queue_field_rows,
     set_field_row,
 )
-from trackinizer.lib.custom_json import DictCodec, FloatCodec, IntCodec, StrCodec
+from trackinizer.lib.custom_json import (
+    DictCodec,
+    FloatCodec,
+    IntCodec,
+    ListCodec,
+    StrCodec,
+    loads,
+)
 from trackinizer.server import web
 from trackinizer.server.api import query
 from trackinizer.server.api.app import app
@@ -50,7 +58,9 @@ if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
     from trackinizer.server.store.core import Store
+from trackinizer.wire.filters import Filter
 from trackinizer.wire.routes import MAX_LIST_LIMIT
+from trackinizer.wire.seq_ranges import SeqRange
 
 
 class TestRoutes:
@@ -82,9 +92,10 @@ class TestRoutes:
         )
 
         assert response.status_code == 409
-        assert "release its owner" in response.json()["detail"]
+        body = DictCodec.coerce(response.json())
+        assert "release its owner" in StrCodec.coerce(body["detail"])
         assert not any(
-            "DELETE FROM inquiries" in call.args[0]
+            isinstance(call.args[0], str) and "DELETE FROM inquiries" in call.args[0]
             for call in engine.conn.execute.call_args_list
         )
 
@@ -102,7 +113,8 @@ class TestRoutes:
             json={"actor": "user", "reason": ""},
         )
         assert r.status_code == 404
-        assert r.json()["code"] == "not_found"
+        body = DictCodec.coerce(r.json())
+        assert body["code"] == "not_found"
 
     def test_list_kind_route_rejects_bad_bounds(
         self,
@@ -148,8 +160,13 @@ class TestRoutes:
         assert r.status_code == 200, r.text
         assert mock.await_args is not None
         forwarded = mock.await_args.kwargs.get("seq_ranges")
-        assert forwarded is not None
-        assert [(r.start, r.stop) for r in forwarded] == [(222, 260), (279, None)]
+        assert isinstance(forwarded, Sequence)
+        ranges: list[SeqRange] = []
+        for item in forwarded:
+            assert isinstance(item, SeqRange)
+            ranges.append(item)
+        assert len(ranges) == len(forwarded)
+        assert [(r.start, r.stop) for r in ranges] == [(222, 260), (279, None)]
 
     def test_list_kind_route_forwards_filters_to_store(
         self,
@@ -179,8 +196,13 @@ class TestRoutes:
         assert mock.await_count == 1
         assert mock.await_args is not None
         forwarded = mock.await_args.kwargs.get("filters")
-        assert forwarded is not None
-        triples = [(f.field, f.op, f.value) for f in forwarded]
+        assert isinstance(forwarded, Sequence)
+        filters: list[Filter] = []
+        for item in forwarded:
+            assert isinstance(item, Filter)
+            filters.append(item)
+        assert len(filters) == len(forwarded)
+        triples = [(f.field, f.op, f.value) for f in filters]
         # The route canonicalizes filter fields to their flat storage
         # column before forwarding: priority -> issue_priority, so the
         # store filters the real (prefixed) inquiries rows. ``nre`` rides
@@ -406,8 +428,13 @@ class TestRoutes:
         assert r.status_code == 200, r.text
         assert mock.await_args is not None
         forwarded = mock.await_args.kwargs.get("filters")
-        assert forwarded is not None
-        triples = [(f.field, f.op, f.value) for f in forwarded]
+        assert isinstance(forwarded, Sequence)
+        filters: list[Filter] = []
+        for item in forwarded:
+            assert isinstance(item, Filter)
+            filters.append(item)
+        assert len(filters) == len(forwarded)
+        triples = [(f.field, f.op, f.value) for f in filters]
         assert triples == [
             ("issue_kind", "isnull", ""),
             ("owner", "notnull", ""),
@@ -547,7 +574,7 @@ class TestRoutes:
         )
         r = client.post("/api/inquiries/lookup", json=[str(good), str(bad)])
         assert r.status_code == 200
-        body = r.json()
+        body = DictCodec.coerce(loads(r.content))
         assert body["found"] == {str(good): "Issue"}
         assert body["missing"] == [str(bad)]
 
@@ -614,9 +641,9 @@ class TestCoverageRoutesAndCli:
         target_id: uuid.UUID,
         *,
         kind: Inquiry.InquiryKind = "Issue",
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         now = datetime.now(UTC)
-        row: dict[str, Any] = {
+        row: dict[str, object] = {
             "id": target_id,
             "kind": kind,
             "seq": 1,
@@ -666,13 +693,26 @@ class TestCoverageRoutesAndCli:
             [],
             [],
         ]
-        assert client.get(f"/api/inquiries/{target_id}").json()["kind"] == "Issue"
-        assert client.get("/api/inquiries/Issue/1").json()["id"] == str(target_id)
         assert (
-            client.get("/api/inquiries", params={"kind": "Issue"}).json()[0]["kind"]
+            DictCodec.coerce(client.get(f"/api/inquiries/{target_id}").json())["kind"]
             == "Issue"
         )
-        assert client.get("/api/inquiries/next_issue").json()["kind"] == "Issue"
+        assert DictCodec.coerce(client.get("/api/inquiries/Issue/1").json())[
+            "id"
+        ] == str(target_id)
+        assert (
+            DictCodec.coerce(
+                ListCodec.coerce(
+                    client.get("/api/inquiries", params={"kind": "Issue"}).json(),
+                    object,
+                )[0]
+            )["kind"]
+            == "Issue"
+        )
+        assert (
+            DictCodec.coerce(client.get("/api/inquiries/next_issue").json())["kind"]
+            == "Issue"
+        )
 
     def test_misc_routes(
         self,
@@ -683,7 +723,12 @@ class TestCoverageRoutesAndCli:
         # cost_for now does an existence check via fetchval first.
         engine.conn.fetchval.return_value = 1
         set_field_row(engine.conn, {"agent_usd": 1.0, "resource_usd": 2.0})
-        assert client.get(f"/api/inquiries/{target_id}/cost").json()["agent_usd"] == 1.0
+        assert (
+            DictCodec.coerce(client.get(f"/api/inquiries/{target_id}/cost").json())[
+                "agent_usd"
+            ]
+            == 1.0
+        )
         engine.conn.fetch.side_effect = [
             # proves_belief: main select + bulk outbound + bulk inbound.
             [self._row(target_id, kind="Experiment")],
@@ -693,7 +738,12 @@ class TestCoverageRoutesAndCli:
             [],
         ]
         assert (
-            client.get(f"/api/inquiries/{target_id}/proves_belief").json()[0]["kind"]
+            DictCodec.coerce(
+                ListCodec.coerce(
+                    client.get(f"/api/inquiries/{target_id}/proves_belief").json(),
+                    object,
+                )[0]
+            )["kind"]
             == "Experiment"
         )
         assert (
@@ -790,24 +840,24 @@ def test_list_endpoint_never_500s_on_bad_params(
 ) -> None:
     store, engine = make_store()
     answer_account_active(engine)
-    monkeypatch_list = AsyncMock(return_value=[])
     prev_engine = getattr(app.state, "engine", None)
     prev_store = getattr(app.state, "store", None)
     app.state.engine = engine
     app.state.store = store
     install_identity(make_test_identity())
-    store.list_kind = monkeypatch_list
     try:
-        client = FastAPITestClient(app)
-        params: list[tuple[str, str]] = [("kind", "Issue")]
-        params += [("seq_range", v) for v in seq_ranges]
-        params += [("filter", v) for v in filters]
-        params.append(("limit", str(limit)))
-        params.append(("offset", str(offset)))
-        # httpx2.QueryParams is the typed carrier the TestClient stub accepts and
-        # preserves the repeated keys (seq_range/filter) a bare list encodes.
-        r = client.get("/api/inquiries", params=httpx2.QueryParams(params))
-        assert r.status_code != 500, f"500 on params {params!r}: {r.text[:200]}"
+        with patch.object(store, "list_kind", new=AsyncMock(return_value=[])):
+            client = FastAPITestClient(app)
+            params: list[tuple[str, str]] = [("kind", "Issue")]
+            params += [("seq_range", v) for v in seq_ranges]
+            params += [("filter", v) for v in filters]
+            params.append(("limit", str(limit)))
+            params.append(("offset", str(offset)))
+            # httpx2.QueryParams is the typed carrier the TestClient stub accepts
+            # and preserves the repeated keys (seq_range/filter) a bare list
+            # encodes.
+            r = client.get("/api/inquiries", params=httpx2.QueryParams(params))
+            assert r.status_code != 500, f"500 on params {params!r}: {r.text[:200]}"
     finally:
         clear_identity_override()
         if prev_engine is None:

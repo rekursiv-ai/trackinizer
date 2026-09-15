@@ -5,9 +5,8 @@ from __future__ import annotations
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Self
+from typing import Literal, Protocol, Self
 
-import argparse
 import os
 import shutil
 import time
@@ -23,6 +22,7 @@ from trackinizer.types.embedder import Embedder
 __all__ = [
     "Config",
     "ConfigError",
+    "ConfigFlags",
     "build_embedder",
     "build_engine",
     "parse_engine",
@@ -43,6 +43,20 @@ class ConfigError(Exception):
 _DEFAULT_SESSION_MAX_AGE_SECONDS: int = (
     30 * 24 * 60 * 60
 )  # house-ignore[globals] -- Shared default; threading would duplicate across the Config field default and the env-parse fallback.
+
+
+class ConfigFlags(Protocol):
+    """The parsed CLI flags :meth:`Config.from_args` reads."""
+
+    engine: str
+    datadir: Path | None
+    ephemeral: bool
+    pglite_tcp: bool
+    dsn: str
+    embedder: str
+    web: bool
+    session_max_age_seconds: int
+    no_auth: bool
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -121,24 +135,24 @@ class Config:
         )
 
     @classmethod
-    def from_args(cls, args: argparse.Namespace) -> Self:
+    def from_args(cls, flags: ConfigFlags) -> Self:
         """Build from parsed CLI flags.
 
         Args:
-          args: Parsed arguments with engine, datadir, ephemeral, etc. fields.
+          flags: Parsed arguments with engine, datadir, ephemeral, etc. fields.
 
         Returns:
-          result: Config with settings from args; OAuth secrets from environment only.
+          result: Config with settings from flags; OAuth secrets from environment only.
 
         """
         return cls(
-            engine=parse_engine(args.engine),
-            datadir=Path(args.datadir) if args.datadir else None,
-            ephemeral=args.ephemeral,
-            pglite_tcp=args.pglite_tcp,
-            dsn=args.dsn,
-            embedder=args.embedder,
-            web=args.web,
+            engine=parse_engine(flags.engine),
+            datadir=flags.datadir,
+            ephemeral=flags.ephemeral,
+            pglite_tcp=flags.pglite_tcp,
+            dsn=flags.dsn,
+            embedder=flags.embedder,
+            web=flags.web,
             # OAuth secrets come from the environment only, never CLI flags.
             oauth_google_client_id=os.environ.get("TRACKINIZER_GOOGLE_CLIENT_ID")
             or None,
@@ -148,8 +162,8 @@ class Config:
             or None,
             oauth_redirect_uri=os.environ.get("TRACKINIZER_OAUTH_REDIRECT_URI") or None,
             session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET") or None,
-            session_max_age_seconds=args.session_max_age_seconds,
-            auth_disabled=args.no_auth,
+            session_max_age_seconds=flags.session_max_age_seconds,
+            auth_disabled=flags.no_auth,
         )
 
 

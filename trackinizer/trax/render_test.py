@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from os import terminal_size
-from typing import TYPE_CHECKING, get_args
+from typing import TYPE_CHECKING, cast, get_args
 
 import json
 import shutil
@@ -332,39 +332,37 @@ class TestDetailFormats:
         assert "Recent changes:" in text
 
     def test_format_show_changes_hides_empty_deltas(self) -> None:
-        text = render.format_show(
-            {
-                "self": {
-                    "id": "abc",
-                    "kind": "Issue",
-                    "seq": 1,
-                    "status": "active",
-                    "title": "x",
-                },
-                "changes": [
-                    {
-                        "created": "2026-05-18T00:00:00",
-                        "kind": "edge_added",
-                        "actor": "system",
-                        "old": {
-                            "peer_id": None,
-                            "peer_kind": None,
-                            "peer_edge_kind": None,
-                            "edge_note": None,
-                            "edge_labels": [],
-                        },
-                        "new": {
-                            "peer_id": "b83f3bc9-8ece-451a-a919-7c1ef31da12e",
-                            "peer_kind": "Issue",
-                            "peer_edge_kind": "requires",
-                            "edge_note": None,
-                            "edge_labels": [],
-                        },
-                    },
-                ],
+        view: dict[str, object] = {
+            "self": {
+                "id": "abc",
+                "kind": "Issue",
+                "seq": 1,
+                "status": "active",
+                "title": "x",
             },
-            changes=True,
-        )
+            "changes": [
+                {
+                    "created": "2026-05-18T00:00:00",
+                    "kind": "edge_added",
+                    "actor": "system",
+                    "old": {
+                        "peer_id": None,
+                        "peer_kind": None,
+                        "peer_edge_kind": None,
+                        "edge_note": None,
+                        "edge_labels": [],
+                    },
+                    "new": {
+                        "peer_id": "b83f3bc9-8ece-451a-a919-7c1ef31da12e",
+                        "peer_kind": "Issue",
+                        "peer_edge_kind": "requires",
+                        "edge_note": None,
+                        "edge_labels": [],
+                    },
+                },
+            ],
+        }
+        text = render.format_show(view, changes=True)
 
         assert "peer_id:" in text
         assert "peer_kind:" in text
@@ -403,7 +401,10 @@ class TestDetailFormats:
         (``cites``/``cited_by``). Pin the table to the closed ``Edge.Kind`` so a
         new kind cannot silently render its storage name.
         """
-        for kind in get_args(Edge.Kind.__value__):
+        for kind in cast(
+            tuple[Edge.Kind, ...],
+            get_args(cast(object, Edge.Kind.__value__)),
+        ):
             for inbound in (False, True):
                 title = _relation_title(kind, inbound=inbound)
                 fallback = kind.replace("_", " ").title()

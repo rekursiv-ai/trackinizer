@@ -11,11 +11,12 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
-from typing import Any, Literal, cast
+from typing import Literal, cast
 from uuid import UUID
 
 import asyncpg
 
+from trackinizer.lib.custom_json import FloatCodec, StrCodec
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
@@ -51,6 +52,17 @@ from trackinizer.types.inquiries import (
 __all__ = [
     "_EditMixin",
 ]
+
+
+def _snapshot_field(
+    column: str,
+    value: object,
+    *,
+    prefix: Literal["old_", "new_"],
+) -> Snapshot:
+    """Build a typed snapshot containing one dynamically selected field."""
+    row: dict[str, object] = {prefix + column: value}
+    return Snapshot.from_row(row, prefix=prefix)
 
 
 class _EditMixin(_CascadeAuditMixin):
@@ -106,9 +118,9 @@ class _EditMixin(_CascadeAuditMixin):
             change_id, _ = await self._emit_field_change(
                 conn,
                 target_id,
-                row["kind"],
+                cast(Inquiry.InquiryKind, row["kind"]),
                 "title",
-                Snapshot(title=row["title"]),
+                Snapshot(title=StrCodec.coerce(row["title"], None)),
                 new=Snapshot(title=value),
                 api_key_id=api_key_id,
                 actor=actor,
@@ -365,10 +377,10 @@ class _EditMixin(_CascadeAuditMixin):
             change_id, _ = await self._emit_field_change(
                 conn,
                 target_id,
-                row["kind"],
+                cast(Inquiry.InquiryKind, row["kind"]),
                 cast(Change.Kind, column),
-                Snapshot(**{column: old_value}),
-                new=Snapshot(**{column: new_value}),
+                _snapshot_field(column, old_value, prefix="old_"),
+                new=_snapshot_field(column, new_value, prefix="new_"),
                 api_key_id=api_key_id,
                 actor=actor,
                 reason=reason if spec.supports_reason else "",
@@ -418,10 +430,7 @@ class _EditMixin(_CascadeAuditMixin):
           ConflictError: The current owner differs from ``expected_from``.
 
         """
-        expected_owner = cast(
-            Inquiry.Actor | None,
-            empty_optional_to_none(expected_from),
-        )
+        expected_owner = empty_optional_to_none(expected_from)
         new_owner = cast(Inquiry.Actor | None, empty_optional_to_none(to))
         async with (
             notify_after_commit(),
@@ -445,7 +454,7 @@ class _EditMixin(_CascadeAuditMixin):
             )
             if replay is not None:
                 return replay
-            current = row["owner"]
+            current = cast(Inquiry.Actor | None, row["owner"])
             if current != expected_owner:
                 raise ConflictError(
                     f"owner transition rejected: expected {expected_owner!r}, "
@@ -457,7 +466,7 @@ class _EditMixin(_CascadeAuditMixin):
             change_id, _ = await self._emit_field_change(
                 conn,
                 target_id,
-                row["kind"],
+                cast(Inquiry.InquiryKind, row["kind"]),
                 "owner",
                 Snapshot(owner=current),
                 new=Snapshot(owner=new_owner),
@@ -583,7 +592,7 @@ class _EditMixin(_CascadeAuditMixin):
             )
             if replay is not None:
                 return replay
-            current = row["status"]
+            current = cast(Inquiry.Status, row["status"])
             if current != expected_from:
                 raise ConflictError(
                     f"status transition rejected: expected {expected_from!r}, "
@@ -595,7 +604,7 @@ class _EditMixin(_CascadeAuditMixin):
             change_id, _ = await self._emit_field_change(
                 conn,
                 target_id,
-                row["kind"],
+                cast(Inquiry.InquiryKind, row["kind"]),
                 "status",
                 Snapshot(status=current),
                 new=Snapshot(status=to),
@@ -681,7 +690,7 @@ class _EditMixin(_CascadeAuditMixin):
             )
             if replay is not None:
                 return replay
-            current = row["belief_judgement"]
+            current = cast(Belief.Judgement | None, row["belief_judgement"])
             if current != expected_from:
                 raise ConflictError(
                     f"judgement transition rejected: expected {expected_from!r}, "
@@ -693,7 +702,7 @@ class _EditMixin(_CascadeAuditMixin):
             change_id, _ = await self._emit_field_change(
                 conn,
                 target_id,
-                row["kind"],
+                cast(Inquiry.InquiryKind, row["kind"]),
                 "belief_judgement",
                 Snapshot(belief_judgement=current),
                 new=Snapshot(belief_judgement=to),
@@ -944,12 +953,15 @@ class _EditMixin(_CascadeAuditMixin):
         # Snapshot spread below; ``_set_field`` uses the same pattern. Tightening
         # the annotation to a concrete element type makes basedpyright fail to
         # unify against every possible Snapshot field type.
-        old_snapshot: Any = hooks.decode_old(row[column])
+        old_snapshot: object = hooks.decode_old(row[column])
         # Normalize the stored set the same way the new item is normalized, so
         # add/remove membership is consistent: a stored ``"Smith "`` and an added
         # ``"Smith"`` are one byline entry, not two.
-        working: tuple[Any, ...] = hooks.normalize(tuple(old_snapshot or ()))
-        normalized = hooks.normalize((item,))
+        working = cast(
+            tuple[object, ...],
+            hooks.normalize(tuple(cast(Sequence[object], old_snapshot or ()))),
+        )
+        normalized = cast(tuple[object, ...], hooks.normalize((item,)))
         if len(normalized) != 1:
             raise ConflictError(f"{column} item must be non-empty")
         normalized_item = normalized[0]
@@ -968,7 +980,7 @@ class _EditMixin(_CascadeAuditMixin):
         # stores (one encoding of "unset"). A ``min_items`` column
         # (``issue_kind``) is exempt -- the empty set must reach the DB CHECK and
         # raise, not become NULL.
-        new_value: Any
+        new_value: object
         if include:
             new_value = (*working, normalized_item)
         else:
@@ -995,17 +1007,21 @@ class _EditMixin(_CascadeAuditMixin):
             raise ConflictError(
                 f"check constraint violated: {exc.detail or exc!s}",
             ) from exc
-        extra_subs = working if hooks.notify_old_subscribers else ()
+        extra_subs = (
+            cast(tuple[Inquiry.Actor, ...], working)
+            if hooks.notify_old_subscribers
+            else ()
+        )
         change_id, _ = await self._emit_field_change(
             conn,
             target_id,
-            row["kind"],
+            cast(Inquiry.InquiryKind, row["kind"]),
             cast(Change.Kind, column),
             # ``cast(Any, {...})`` because the kwargs spread can't be statically
             # matched against Snapshot's per-field types (the column name is only
             # known at runtime).
-            Snapshot(**cast(Any, {column: old_snapshot})),
-            new=Snapshot(**cast(Any, {column: new_value})),
+            _snapshot_field(column, old_snapshot, prefix="old_"),
+            new=_snapshot_field(column, new_value, prefix="new_"),
             api_key_id=api_key_id,
             actor=actor,
             extra_subscribers=extra_subs,
@@ -1717,9 +1733,12 @@ class _EditMixin(_CascadeAuditMixin):
             # Lock before the second replay probe. A same-key winner can
             # commit while the first probe is waiting; the lock gives this
             # statement a fresh READ COMMITTED snapshot before the no-op test.
-            kind = await conn.fetchval(
-                "SELECT kind FROM inquiries WHERE id = $1 FOR UPDATE",
-                target_id,
+            kind = cast(
+                Inquiry.InquiryKind | None,
+                await conn.fetchval(
+                    "SELECT kind FROM inquiries WHERE id = $1 FOR UPDATE",
+                    target_id,
+                ),
             )
             if kind is None:
                 raise NotFoundError(f"inquiry {target_id} not found")
@@ -1742,7 +1761,7 @@ class _EditMixin(_CascadeAuditMixin):
                 api_key_id=api_key_id,
                 actor=actor,
                 subject_id=target_id,
-                subject_kind=cast(Inquiry.InquiryKind, kind),
+                subject_kind=kind,
                 kind="marginal_cost",
                 cost_delta=delta,
                 reason=reason,
@@ -1813,7 +1832,7 @@ class _EditMixin(_CascadeAuditMixin):
                 return replay
             if value < 0:
                 raise ConflictError(f"{axis} cannot be negative")
-            delta = Cost(**{axis: value - float(row["current"])})
+            delta = Cost(**{axis: value - FloatCodec.coerce(row["current"], None)})
             if not delta:
                 return None
             change_id, _ = await self.emit_change(
@@ -1821,7 +1840,7 @@ class _EditMixin(_CascadeAuditMixin):
                 api_key_id=api_key_id,
                 actor=actor,
                 subject_id=target_id,
-                subject_kind=row["kind"],
+                subject_kind=cast(Inquiry.InquiryKind, row["kind"]),
                 kind="marginal_cost",
                 cost_delta=delta,
                 reason=reason,

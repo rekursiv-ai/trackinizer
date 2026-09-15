@@ -9,7 +9,7 @@ through each item so a mixed-kind batch commits or rolls back atomically.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 from uuid import UUID
 
 import uuid
@@ -69,7 +69,10 @@ type PostInsert = Callable[[Conn, UUID, UUID], Awaitable[None]]
 type PreInsert = Callable[[Conn], Awaitable[None]]
 
 
-class _SubmitOnConn(Protocol):
+T_Submit_contra = TypeVar("T_Submit_contra", contravariant=True)
+
+
+class _SubmitOnConn(Protocol[T_Submit_contra]):
     """A ``submit_X`` bound method that can join a caller's transaction.
 
     ``req`` is typed ``Any`` deliberately: each ``submit_X`` accepts its own
@@ -82,7 +85,7 @@ class _SubmitOnConn(Protocol):
 
     def __call__(
         self,
-        req: Any,  # noqa: ANN401 -- see the class docstring: a Protocol parameter is contravariant.
+        req: T_Submit_contra,
         *,
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
@@ -191,7 +194,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         kind: Inquiry.InquiryKind,
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
-        extras: dict[str, Any] | None = None,
+        extras: dict[str, object] | None = None,
         pre_insert: PreInsert | None = None,
         post_insert: PostInsert | None = None,
         conn: Conn | None = None,
@@ -287,7 +290,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         kind: Inquiry.InquiryKind,
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
-        extras: dict[str, Any] | None,
+        extras: dict[str, object] | None,
         pre_insert: PreInsert | None,
         post_insert: PostInsert | None,
         embeddings: list[tuple[str, list[float]]] | None = None,
@@ -428,8 +431,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 f"idempotency_key {idempotency_key} already created a "
                 f"{row['subject_kind']}, not {kind}",
             )
-        subject_id = row["subject_id"]
-        assert subject_id is None or isinstance(subject_id, UUID)
+        subject_id = cast(UUID | None, row["subject_id"])
         return subject_id
 
     async def submit_artifact(
@@ -677,7 +679,9 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         ):
             ids: list[UUID] = []
             for item in items:
-                method = cast(_SubmitOnConn, getattr(self, SUBMIT_METHOD[type(item)]))
+                method = cast(
+                    _SubmitOnConn[SubmitBase], getattr(self, SUBMIT_METHOD[type(item)])
+                )
                 ids.append(
                     await method(
                         item,

@@ -231,7 +231,7 @@ def _element_type(value_type: object) -> object | None:
     """Return the element type of a ``tuple[X, ...] | None`` column."""
     for member in get_args(value_type) or (value_type,):
         if get_origin(member) is tuple:
-            args = get_args(member)
+            args: tuple[object, ...] = get_args(member)
             if len(args) == 2 and args[1] is Ellipsis:
                 return args[0]
     return None

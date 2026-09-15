@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, cast, get_args
+from typing import cast, get_args
 
 import pytest
 
 from trackinizer.conftest import new_uuid
 from trackinizer.types.change_log import Change, Snapshot
+from trackinizer.types.columns import Row
 from trackinizer.types.cost import Cost
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import (
@@ -33,7 +34,7 @@ class TestRowConverters:
         bid = new_uuid()
         now = datetime.now(UTC)
         row = cast(
-            Any,
+            Row,
             {
                 "id": bid,
                 "seq": 7,
@@ -61,7 +62,7 @@ class TestRowConverters:
         cid = new_uuid()
         now = datetime.now(UTC)
         row = cast(
-            Any,
+            Row,
             {
                 "id": cid,
                 "seq": 3,
@@ -87,7 +88,7 @@ class TestRowConverters:
         sid = new_uuid()
         now = datetime.now(UTC)
         row = cast(
-            Any,
+            Row,
             {
                 "id": sid,
                 "seq": 9,
@@ -117,7 +118,7 @@ class TestRowConverters:
         eid, cc_id = new_uuid(), new_uuid()
         now = datetime.now(UTC)
         row = cast(
-            Any,
+            Row,
             {
                 "id": eid,
                 "seq": 4,
@@ -177,29 +178,29 @@ class TestModels:
             edge_kind="narrows",
         )
         assert edge.edge_kind == "narrows"
-        assert not Snapshot.from_row(cast(Any, {}), prefix="old_")
+        assert not Snapshot.from_row(cast(Row, {}), prefix="old_")
 
     def test_from_row_requires_persisted_identity_fields(self) -> None:
         # ``Inquiry.from_row`` raises a clear ValueError naming the missing
         # base column, matching its kind-loop contract -- not a bare KeyError.
         with pytest.raises(ValueError, match="id"):
-            Inquiry.from_row(cast(Any, {}))
+            Inquiry.from_row(cast(Row, {}))
         with pytest.raises(KeyError, match="'subject_id'"):
             Change.from_row(
                 cast(
-                    Any,
+                    Row,
                     {"id": new_uuid(), "created": datetime.now(UTC), "actor": "x"},
                 ),
             )
         with pytest.raises(KeyError, match="'from_id'"):
-            Edge.from_row(cast(Any, {}))
+            Edge.from_row(cast(Row, {}))
 
     def test_from_row_partial_projection_raises_clear_value_error(self) -> None:
         # A partial-projection row (base half incomplete) must surface a
         # clear ValueError naming the missing column, not a bare KeyError
         # mid-construction. Mirrors the kind-loop's ``col not in row`` gate.
         with pytest.raises(ValueError, match="owner"):
-            Inquiry.from_row(cast(Any, {"kind": "Issue", "id": new_uuid(), "seq": 0}))
+            Inquiry.from_row(cast(Row, {"kind": "Issue", "id": new_uuid(), "seq": 0}))
 
 
 class TestIsValidSource:
@@ -219,7 +220,7 @@ class TestKindToClass:
     """``KIND_TO_CLASS`` is the canonical row-discriminator -> class registry."""
 
     def test_covers_every_declared_kind(self) -> None:
-        declared = set(get_args(Inquiry.InquiryKind.__value__))
+        declared = set(get_args(cast(object, Inquiry.InquiryKind.__value__)))
         assert set(KIND_TO_CLASS) == declared
 
     def test_enumerates_every_concrete_subclass(self) -> None:

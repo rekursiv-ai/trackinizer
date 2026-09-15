@@ -31,13 +31,15 @@ from typing import Final, Literal, Protocol, cast
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
+from trackinizer.lib.custom_json import DictCodec, StrCodec
+
 
 class _SetsCookies(Protocol):
     """Structural type for the subset of :class:`fastapi.Response` we use.
 
     Helpers in this module only need ``set_cookie`` / ``delete_cookie``;
     typing against :class:`Response` itself would force tests to fake
-    the whole class (or ``cast(Any, ...)``) to pass a stub that only
+    the whole class to pass a stub that only
     implements those two methods.
     """
 
@@ -153,14 +155,12 @@ def read_session_cookie(
         return None
     serializer = URLSafeTimedSerializer(secret, salt=_SESSION_SALT)
     try:
-        payload = serializer.loads(raw, max_age=max_age_seconds)
+        payload = DictCodec.coerce(
+            cast(dict[str, object], serializer.loads(raw, max_age=max_age_seconds))
+        )
     except BadSignature:
         return None
-    if not isinstance(payload, dict):
-        return None
-    user_id = cast(dict[str, object], payload).get("user_id")
-    if not isinstance(user_id, str):
-        return None
+    user_id = StrCodec.coerce(payload.get("user_id"), default=None)
     return user_id
 
 
@@ -234,15 +234,17 @@ def read_oauth_state_cookie(
         return None
     serializer = URLSafeTimedSerializer(secret, salt=_OAUTH_STATE_SALT)
     try:
-        payload = serializer.loads(raw, max_age=OAUTH_STATE_MAX_AGE_SECONDS)
+        payload = DictCodec.coerce(
+            cast(
+                dict[str, object],
+                serializer.loads(raw, max_age=OAUTH_STATE_MAX_AGE_SECONDS),
+            ),
+        )
     except BadSignature:
         return None
-    if not isinstance(payload, dict):
-        return None
-    narrowed = cast(dict[str, object], payload)
-    state = narrowed.get("state")
-    next_url = narrowed.get("next")
-    if not isinstance(state, str) or not isinstance(next_url, str):
+    state = StrCodec.coerce(payload.get("state"))
+    next_url = StrCodec.coerce(payload.get("next"))
+    if not state or not next_url:
         return None
     return state, next_url
 

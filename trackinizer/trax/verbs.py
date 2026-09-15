@@ -7,7 +7,7 @@ The 8 kind names share one ``Kind`` command; ``recent``, ``next``,
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from typing import TYPE_CHECKING, ClassVar, Final, cast, get_args, override
+from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast, get_args, override
 
 import argparse
 import math
@@ -16,7 +16,13 @@ import uuid
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import IntCodec
+from trackinizer.lib.custom_json import (
+    DictCodec,
+    FloatCodec,
+    IntCodec,
+    ListCodec,
+    StrCodec,
+)
 from trackinizer.trax import render
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import cwd, env
@@ -310,10 +316,10 @@ class Kind(Command):
         _kind, _target_id, payload = client.get_inquiry(ref)
         edge_kind, _inbound = relation
         rows = cls._relation_rows(payload, relation, against=against)
-        rows = cls._sort_relation_rows(rows, args.sort)
+        rows = cls._sort_relation_rows(rows, _arg_str(args, "sort"))
         hydrated = cls._hydrate_relation_rows(client, rows)
         if not tokens:
-            print_rows(hydrated, args.format_, width=args.width)
+            print_rows(hydrated, _arg_str(args, "format_"), width=_arg_width(args))
             return
         row = cls._select_relation_row(rows, edge_kind, tokens[0])
         cls._print_edge_payload(client, ref, row, relation, args)
@@ -392,7 +398,7 @@ class Kind(Command):
         # declares the flag (it must, or it rejects the command outright) and
         # therefore has already consumed it -- scanning ``runner_args`` for it
         # found nothing and every ``--lossy`` resume was refused anyway.
-        lossy = bool(args.lossy)
+        lossy = bool(_arg_bool(args, "lossy"))
         forwarded = [arg for arg in runner_args if arg != "--lossy"]
         ref, consumed = consume_ref(before, 0, kind_hint="AgentSession")
         if before[consumed:]:
@@ -437,7 +443,9 @@ class Kind(Command):
         client = client_factory()
         _kind, exp_id = client.resolve_id(ref)
         if action.write is not None:
-            written = cls._write_masked(client, exp_id, action, bulk_ok=args.makeitso)
+            written = cls._write_masked(
+                client, exp_id, action, bulk_ok=_arg_bool(args, "makeitso")
+            )
             echo(f"written: {written}")
             return
         points = client.query_metrics(
@@ -500,7 +508,9 @@ class Kind(Command):
         # create-then-annotate path (the create itself is atomic).
         exp_id = cls.run_create("Experiment", actions, args, client_factory)
         client = client_factory()
-        written = cls._write_masked(client, exp_id, action, bulk_ok=args.makeitso)
+        written = cls._write_masked(
+            client, exp_id, action, bulk_ok=_arg_bool(args, "makeitso")
+        )
         echo(f"written: {written}")
 
     # The ``to`` value is a finite float; ``step`` must be masked (a metric point has no
@@ -540,7 +550,7 @@ class Kind(Command):
         args: argparse.Namespace,
     ) -> None:
         """Print masked cells in ``(key, step)`` order, or JSON."""
-        if args.format_ == "json":
+        if _arg_str(args, "format_") == "json":
             echo(
                 render.format_json([p.model_dump(mode="json") for p in points]),
                 nl=False,
@@ -560,7 +570,7 @@ class Kind(Command):
         args: argparse.Namespace,
     ) -> None:
         """Print a cross-experiment read: each cell tagged with its experiment."""
-        if args.format_ == "json":
+        if _arg_str(args, "format_") == "json":
             echo(
                 render.format_json(
                     [
@@ -597,13 +607,7 @@ class Kind(Command):
     ) -> list[dict[str, object]]:
         edge_kind, inbound = relation
         bucket = "backlinks" if inbound else "edges"
-        rows = list(
-            cast(
-                Sequence[dict[str, object]],
-                cast(Mapping[str, object], payload.get(bucket) or {}).get(edge_kind)
-                or (),
-            ),
-        )
+        rows = ListCodec.mappings(DictCodec.coerce(payload.get(bucket)).get(edge_kind))
         if against:
             # A ``dis*`` spelling selects the negative-valence (against) subset of
             # the shared citation kind: for-vs-against is the valence sign.
@@ -631,11 +635,11 @@ class Kind(Command):
             peer_row,
             relation,
         )
-        if args.format_ == "json":
+        if _arg_str(args, "format_") == "json":
             echo(render.format_json(edge_payload), nl=False)
         else:
             echo(
-                render.format_edge(edge_payload, changes=args.changes),
+                render.format_edge(edge_payload, changes=_arg_bool(args, "changes")),
                 nl=False,
             )
 
@@ -648,8 +652,8 @@ class Kind(Command):
         relation: tuple[str, bool],
     ) -> dict[str, object]:
         edge_kind, inbound = relation
-        subject = cast(Mapping[str, object], subject_payload["self"])
-        peer = cast(Mapping[str, object], peer_payload["self"])
+        subject = DictCodec.coerce(subject_payload["self"])
+        peer = DictCodec.coerce(peer_payload["self"])
         source, target = (peer, subject) if inbound else (subject, peer)
         # For-vs-against is the sign of valence: a negative-valence citation reads
         # with the dis* spelling, not the plain kind name.
@@ -669,15 +673,10 @@ class Kind(Command):
         target_id = str(target.get("id") or "")
         changes = [
             change
-            for change in cast(
-                Sequence[dict[str, object]],
-                source_payload.get("changes") or (),
-            )
+            for change in ListCodec.mappings(source_payload.get("changes"))
             if any(
-                cast(Mapping[str, object], snapshot or {}).get("peer_edge_kind")
-                == edge_kind
-                and cast(Mapping[str, object], snapshot or {}).get("peer_id")
-                == target_id
+                DictCodec.coerce(snapshot).get("peer_edge_kind") == edge_kind
+                and DictCodec.coerce(snapshot).get("peer_id") == target_id
                 for snapshot in (change.get("old"), change.get("new"))
             )
         ]
@@ -698,7 +697,7 @@ class Kind(Command):
         sort: str,
     ) -> list[dict[str, object]]:
         if sort == "seq":
-            return sorted(rows, key=lambda row: int(cast(int, row.get("seq") or 0)))
+            return sorted(rows, key=lambda row: IntCodec.coerce(row.get("seq")))
         if sort == "recent":
             return sorted(
                 rows,
@@ -710,7 +709,7 @@ class Kind(Command):
         if sort == "valence":
             return sorted(
                 rows,
-                key=lambda row: float(cast(float, row.get("valence") or 0)),
+                key=lambda row: FloatCodec.coerce(row.get("valence")),
                 reverse=True,
             )
         return sorted(
@@ -723,7 +722,7 @@ class Kind(Command):
                 20
                 if row.get("priority") is None
                 else IntCodec.coerce(row.get("priority"), 0),
-                int(cast(int, row.get("seq") or 0)),
+                IntCodec.coerce(row.get("seq")),
             ),
         )
 
@@ -759,7 +758,7 @@ class Kind(Command):
             _kind, _target_id, payload = client.get_inquiry(
                 UuidRef(uuid=uuid.UUID(str(row["id"]))),
             )
-            self_row = cast(dict[str, object], payload["self"])
+            self_row = DictCodec.coerce(payload["self"])
             hydrated.append(dict(self_row, **cls._relation_edge_metadata(row)))
         return hydrated
 
@@ -804,7 +803,7 @@ class Kind(Command):
         client = client_factory()
         _source_kind, src_id = client.resolve_id(source)
         _target_kind, tgt_id = client.resolve_id(target)
-        actor = resolve_actor(args.actor, client)
+        actor = resolve_actor(_arg_str(args, "actor"), client)
         result = client.add_edge(src_id, tgt_id, relation[0], actor=actor)
         verb = "added" if result.created else "exists"
         echo(f"{verb}: {source} {relation[0]} {target}")
@@ -856,7 +855,7 @@ class Kind(Command):
         client = client_factory()
         _, src_id = client.resolve_id(source)
         _, tgt_id = client.resolve_id(target)
-        actor = resolve_actor(args.actor, client)
+        actor = resolve_actor(_arg_str(args, "actor"), client)
         priority = cast(int | None, metadata.get("priority"))
         note = cast(str | None, metadata.get("note"))
         valence = cast(float | None, metadata.get("valence"))
@@ -912,7 +911,7 @@ class Kind(Command):
 
         """
         client = client_factory()
-        actor = resolve_actor(args.actor, client)
+        actor = resolve_actor(_arg_str(args, "actor"), client)
         create_actions, edge_actions, cost_actions = cls._split_create_actions(actions)
         # Reject kind-invalid create fields before any request so a bad body
         # cannot land an inline-create edge target and then orphan it on the
@@ -967,9 +966,9 @@ class Kind(Command):
                 cost_key(cost.field),
                 cost.value,
                 actor=actor,
-                reason=args.reason,
+                reason=_arg_str(args, "reason"),
             )
-        bare_ids = args.format_ == "ids"
+        bare_ids = _arg_str(args, "format_") == "ids"
         new_ref = _submitted_ref(ids[0], client)
         # Under ``--format ids`` stdout carries only the bare UUIDs so a
         # ``$(...)`` capture stays clean; the human ``created:``/``added:``
@@ -1188,8 +1187,8 @@ class Kind(Command):
         kind, target_id = client.resolve_id(ref)
         client.purge(
             target_id,
-            actor=resolve_actor(args.actor, client),
-            reason=args.reason or "del",
+            actor=resolve_actor(_arg_str(args, "actor"), client),
+            reason=_arg_str(args, "reason") or "del",
         )
         echo(f"deleted: {kind} {target_id}" if show_ids() else f"deleted: {kind} {ref}")
 
@@ -1219,7 +1218,7 @@ class Kind(Command):
             src_id,
             tgt_id,
             edge_kind,
-            actor=resolve_actor(args.actor, client),
+            actor=resolve_actor(_arg_str(args, "actor"), client),
         )
         echo(f"removed: {source} {edge_kind} {target}")
 
@@ -1288,9 +1287,10 @@ class Kind(Command):
         client_factory: Callable[[], Client],
     ) -> None:
         """Build a deep/wide inline-create subtree anchored at an existing row."""
-        target = cast(InlineCreate, action.target)
+        target = action.target
+        assert isinstance(target, InlineCreate)
         client = client_factory()
-        actor = resolve_actor(args.actor, client)
+        actor = resolve_actor(_arg_str(args, "actor"), client)
         _, anchor_id = client.resolve_id(ref)
         validate_writable_fields(target.kind, tuple(f.field for f in target.fields))
 
@@ -1329,9 +1329,9 @@ class Kind(Command):
                 cost_key(cost.field),
                 cost.value,
                 actor=actor,
-                reason=args.reason,
+                reason=_arg_str(args, "reason"),
             )
-        bare_ids = args.format_ == "ids"
+        bare_ids = _arg_str(args, "format_") == "ids"
         # ``created:`` for every minted node, then ``added:`` for the anchor edge
         # and each nested edge -- the same echo contract ``run_create`` emits, so
         # the edit path no longer silently omits the relationship (F9).
@@ -1395,10 +1395,13 @@ class Kind(Command):
             raise ClientError(f"unknown list field {action.field!r}")
         include = isinstance(action, AddList)
         client = client_factory()
-        actor = resolve_actor(args.actor, client)
+        actor = resolve_actor(_arg_str(args, "actor"), client)
         _, target_id = client.resolve_id(ref)
         verb_past = "added" if include else "removed"
-        method = getattr(client, spec.list_add if include else spec.list_remove)
+        method = cast(
+            _ListMutation,
+            getattr(client, spec.list_add if include else spec.list_remove),
+        )
         if action.ref is not None:
             # Ref-list field: the parser attached the typed ref (trax #419). The
             # sole ref-list field (``codechanges``) is monomorphic, so the wire
@@ -1550,9 +1553,9 @@ def run_list_query(
 
     """
     print_rows(
-        _query_rows(query, client_factory(), limit=args.limit),
-        args.format_,
-        width=args.width,
+        _query_rows(query, client_factory(), limit=_arg_int(args, "limit")),
+        _arg_str(args, "format_"),
+        width=_arg_width(args),
     )
 
 
@@ -1592,9 +1595,9 @@ def run_bulk_apply(
     # The guard is keyed on match count, not command shape: a single-row match
     # is as safe as a seq-targeted edit, so only a genuinely multi-row write
     # demands explicit confirmation. This is intentional (reviewed).
-    if len(rows) > 1 and not args.makeitso:
+    if len(rows) > 1 and not _arg_bool(args, "makeitso"):
         echo(f"would apply to {len(rows)} rows; pass --makeitso to proceed:")
-        print_rows(rows, args.format_, width=args.width)
+        print_rows(rows, _arg_str(args, "format_"), width=_arg_width(args))
         return
     actions = _resolve_stdin_actions(bulk.actions)
     for row in rows:
@@ -1618,11 +1621,13 @@ def run_show(
     """
     client = client_factory()
     _kind, _target_id, payload = client.get_inquiry(ref)
-    if args.format_ == "json":
+    if _arg_str(args, "format_") == "json":
         echo(render.format_json(payload), nl=False)
     else:
         echo(
-            render.format_show(payload, changes=args.changes, include_id=show_ids()),
+            render.format_show(
+                payload, changes=_arg_bool(args, "changes"), include_id=show_ids()
+            ),
             nl=False,
         )
 
@@ -1645,7 +1650,7 @@ def run_field(
     del args
     client = client_factory()
     _kind, _target_id, payload = client.get_inquiry(ref)
-    row = cast(Mapping[str, object], payload["self"])
+    row = DictCodec.coerce(payload["self"])
     if field not in row:
         raise ClientError(f"field {field!r} not present on {ref}")
     echo(format_field_value(row[field]))
@@ -1699,8 +1704,8 @@ def run_add_cost(
         target_id,
         cost_key(field),
         value,
-        actor=resolve_actor(args.actor, client),
-        reason=args.reason,
+        actor=resolve_actor(_arg_str(args, "actor"), client),
+        reason=_arg_str(args, "reason"),
     )
     echo(f"added: {ref} {field} {value:.6f}")
 
@@ -1807,8 +1812,8 @@ def run_set_field(
         target_id,
         action.field,
         value,
-        actor=resolve_actor(args.actor, client),
-        reason=args.reason,
+        actor=resolve_actor(_arg_str(args, "actor"), client),
+        reason=_arg_str(args, "reason"),
     )
     echo(f"set: {ref} {action.field} = {_set_field_echo(action)}")
 
@@ -1853,8 +1858,8 @@ class Recent(Command):
         client_factory: Callable[[], Client],
     ) -> None:
         del verb
-        rows = client_factory().recent_changes(limit=args.limit)
-        if args.format_ == "json":
+        rows = client_factory().recent_changes(limit=_arg_int(args, "limit"))
+        if _arg_str(args, "format_") == "json":
             echo(render.format_json(list(rows)), nl=False)
         else:
             echo(render.format_changes(list(rows)), nl=False)
@@ -1911,9 +1916,11 @@ Options:
     ) -> None:
         del verb
         try:
-            target = uuid.UUID(args.uuid)
+            target = uuid.UUID(_arg_str(args, "uuid"))
         except ValueError as exc:
-            raise ClientError(f"trax id: {args.uuid!r} is not a valid uuid") from exc
+            raise ClientError(
+                f"trax id: {_arg_str(args, 'uuid')!r} is not a valid uuid"
+            ) from exc
         # ``expected_kind=None``: the caller named no kind, so no typo-guard --
         # the row's real kind is resolved server-side.
         run_show(UuidRef(uuid=target), args, client_factory)
@@ -1960,7 +1967,7 @@ Options:
         if row is None:
             echo("(no active issues)")
             return
-        print_rows([row], args.format_)
+        print_rows([row], _arg_str(args, "format_"))
 
 
 class Blocked(Command):
@@ -2021,10 +2028,7 @@ Examples:
             # off-window (status unknown) prerequisite still blocks the row.
             prerequisites = [
                 pid
-                for ref in cast(
-                    Sequence[Mapping[str, object]],
-                    row.get("requires") or (),
-                )
+                for ref in ListCodec.mappings(row.get("requires"))
                 if (pid := str(ref.get("id")))
                 and status_by_id.get(pid, "active") == "active"
             ]
@@ -2084,7 +2088,7 @@ Options:
         # COMPLETE -- a single capped fetch would silently drop issues past the
         # ceiling, rendering a partial tree with no warning.
         rows = client_factory().list_kind_all("Issue")
-        if args.open_only:
+        if _arg_bool(args, "open_only"):
             rows = [r for r in rows if str(r.get("status") or "") == "active"]
         cls.render(rows)
 
@@ -2108,7 +2112,7 @@ Options:
             for pid in _ref_ids(row.get("requires"))
             if pid in rows_by_id
         }
-        ordered = sorted(rows, key=lambda row: int(cast(int, row.get("seq", 0))))
+        ordered = sorted(rows, key=lambda row: IntCodec.coerce(row.get("seq")))
         roots = [row for row in ordered if str(row.get("id")) not in depended_on]
         # ``rendered`` spans the whole forest so a node reachable from many
         # roots is expanded once. Without it a layered graph re-renders every
@@ -2220,7 +2224,7 @@ Options:
         del verb
         # Page past the per-request cap so the board shows EVERY issue, not a
         # silently-truncated first window.
-        cls.render(client_factory().list_kind_all("Issue"), width=args.width)
+        cls.render(client_factory().list_kind_all("Issue"), width=_arg_width(args))
 
     @classmethod
     def render(
@@ -2243,7 +2247,10 @@ Options:
         groups: dict[str, list[Mapping[str, object]]] = {}
         for row in rows:
             groups.setdefault(str(row.get("status") or "?"), []).append(row)
-        for status in get_args(Inquiry.Status.__value__):
+        for status in cast(
+            tuple[Inquiry.Status, ...],
+            get_args(cast(object, Inquiry.Status.__value__)),
+        ):
             bucket = groups.get(status, [])
             if not bucket:
                 continue
@@ -2308,13 +2315,13 @@ Options:
     ) -> None:
         del verb
         client = client_factory()
-        ref = SeqRef(kind=KIND_LOWER[args.kind], seq=args.seq)
+        ref = SeqRef(kind=KIND_LOWER[_arg_str(args, "kind")], seq=_arg_int(args, "seq"))
         _, target_id = client.resolve_id(ref)
-        payload = client.cost_for(target_id, deep=args.deep)
-        if args.format_ == "json":
+        payload = client.cost_for(target_id, deep=_arg_bool(args, "deep"))
+        if _arg_str(args, "format_") == "json":
             echo(render.format_json(payload), nl=False)
             return
-        scope = "subtree" if args.deep else "self"
+        scope = "subtree" if _arg_bool(args, "deep") else "self"
         echo(f"scope:    {scope}")
         echo(f"agent:    ${payload.get('agent_usd', 0):.6f}")
         echo(f"resource: ${payload.get('resource_usd', 0):.6f}")
@@ -2355,8 +2362,10 @@ Notes:
         client_factory: Callable[[], Client],
     ) -> None:
         del verb
-        actor, room = _parse_target(args.target)
-        delivered = client_factory().send_message(actor, " ".join(args.text), room=room)
+        actor, room = _parse_target(_arg_str(args, "target"))
+        delivered = client_factory().send_message(
+            actor, " ".join(_arg_text(args)), room=room
+        )
         if not delivered:
             scope = f"@{actor}:{room}" if room else f"@{actor}"
             echo(f"undelivered: no live session matches {scope}")
@@ -2590,7 +2599,7 @@ def _apply_create_defaults(kind: Inquiry.InquiryKind, body: dict[str, object]) -
 def _submitted_ref(target_id: uuid.UUID, client: Client) -> Ref:
     """Look up a just-created UUID's user-facing ``Kind#seq`` ref."""
     kind, _target_id, view = client.get_inquiry(UuidRef(uuid=target_id))
-    self_view = cast(Mapping[str, object], view["self"])
+    self_view = DictCodec.coerce(view["self"])
     return SeqRef(kind=kind, seq=IntCodec.coerce(self_view["seq"], 0))
 
 
@@ -2669,9 +2678,9 @@ def _query_rows(
     client: Client,
     *,
     limit: int,
-) -> list[dict[str, object]]:
+) -> list[Mapping[str, object]]:
     """Fetch matching rows across the query's kinds, ranges, and filters."""
-    rows: list[dict[str, object]] = []
+    rows: list[Mapping[str, object]] = []
     for kind in query.kinds:
         if (remaining := limit - len(rows)) <= 0:
             break
@@ -2765,10 +2774,42 @@ def _resolve_set_value(action: SetField, client: Client) -> object:
     ]
 
 
+def _arg_str(args: argparse.Namespace, name: str) -> str:
+    return StrCodec.coerce(_arg_values(args).get(name), "")
+
+
+class _ListMutation(Protocol):
+    def __call__(
+        self,
+        target_id: uuid.UUID,
+        value: object,
+        *,
+        actor: Inquiry.Actor,
+    ) -> None: ...
+
+
+def _arg_values(args: argparse.Namespace) -> Mapping[str, object]:
+    return vars(args)
+
+
+def _arg_int(args: argparse.Namespace, name: str) -> int:
+    return IntCodec.coerce(_arg_values(args).get(name), 0)
+
+
+def _arg_text(args: argparse.Namespace) -> list[str]:
+    value = _arg_values(args).get("text")
+    return [str(item) for item in ListCodec.coerce(value)]
+
+
+def _arg_bool(args: argparse.Namespace, name: str) -> bool:
+    return bool(_arg_values(args).get(name, False))
+
+
+def _arg_width(args: argparse.Namespace) -> int | None:
+    value = _arg_values(args).get("width")
+    return None if value is None else IntCodec.coerce(value, 0)
+
+
 def _ref_ids(refs: object) -> list[str]:
     """Peer ids from a relationship projection (a list of IssueEdge ref dicts)."""
-    return [
-        pid
-        for ref in cast(Sequence[Mapping[str, object]], refs or ())
-        if (pid := str(ref.get("id")))
-    ]
+    return [pid for ref in ListCodec.mappings(refs) if (pid := str(ref.get("id")))]

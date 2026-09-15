@@ -17,10 +17,10 @@ import logging
 import time
 import uuid
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from trackinizer.lib.custom_json import MutableJSON
+from trackinizer.lib.custom_json import DictCodec, MutableJSON, loads
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.server.api._deps import get_store, tag_kind, tag_row
 from trackinizer.server.api._regex_guard import regex_failures_as_400
@@ -311,7 +311,8 @@ async def by_seq_route(
         )
         if row is None:
             raise HTTPException(status_code=404, detail=f"{kind}#{seq} not found")
-    return _require_found(tag_kind(await get_store(request).get_inquiry(row["id"])))
+        target_id = cast(uuid.UUID, row["id"])
+    return _require_found(tag_kind(await get_store(request).get_inquiry(target_id)))
 
 
 @router.get("/api/inquiries/{target_id}")
@@ -386,7 +387,12 @@ async def change_log_stream_route(
 
     """
     del identity
-    engine = cast(DatabaseEngine, request.app.state.engine)
+    app_obj = cast(FastAPI, request.app)
+    state_data = cast(
+        dict[str, object],
+        object.__getattribute__(app_obj.state, "_state"),
+    )
+    engine = cast(DatabaseEngine, state_data["engine"])
     return StreamingResponse(iter_sse_events(engine), media_type="text/event-stream")
 
 
@@ -480,7 +486,7 @@ def _filter_columns_for(kind: Inquiry.InquiryKind) -> frozenset[str]:
 def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
     """Decode one ``filter=<json>`` query param, raising 400 on bad input."""
     try:
-        payload = cast(object, json.loads(raw))
+        payload = loads(raw)
     except json.JSONDecodeError as err:
         raise HTTPException(
             status_code=400,
@@ -488,7 +494,7 @@ def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
         ) from err
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="filter must be a JSON object")
-    obj = cast(dict[str, object], payload)
+    obj = DictCodec.coerce(payload)
     field = obj.get("field")
     op = obj.get("op")
     # The presence ops carry no operand; default a missing value to "". Gate on

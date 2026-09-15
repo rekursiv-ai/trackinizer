@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
 
 import uuid
@@ -11,6 +12,8 @@ import asyncpg
 import pytest
 
 from trackinizer.conftest import executed_sql
+from trackinizer.lib.custom_json import DictCodec, ListCodec
+from trackinizer.wire.bodies import SubmitBase
 
 
 if TYPE_CHECKING:
@@ -37,7 +40,8 @@ class TestRoutes:
         client, _store, _engine = route_client
         r = client.post("/api/inquiries/issue", json={"title": "t"})
         assert r.status_code == 201
-        assert "id" in r.json()
+        body = DictCodec.coerce(r.json())
+        assert "id" in body
 
     def test_submit_codechange_allows_unset_sha(
         self,
@@ -72,12 +76,13 @@ class TestRoutes:
             },
         )
         assert r.status_code == 200
-        body = r.json()
+        body = DictCodec.coerce(r.json())
         # Inquiry ids are server-minted; assert structure, not equality
         # against the sent idempotency_keys.
         assert list(body) == ["ids"]
-        assert len(body["ids"]) == 2
-        assert all(_is_uuid(s) for s in body["ids"])
+        ids = ListCodec.coerce(body["ids"], str)
+        assert len(ids) == 2
+        assert all(_is_uuid(s) for s in ids)
 
     def test_submit_batch_forwards_per_item_actor(
         self,
@@ -112,6 +117,9 @@ class TestRoutes:
         )
         assert r.status_code == 200, r.text
         forwarded_items = captured.call_args.args[0]
+        assert isinstance(forwarded_items, list)
+        assert isinstance(forwarded_items[0], SubmitBase)
+        assert isinstance(forwarded_items[1], SubmitBase)
         # item[0] keeps its explicit actor; item[1] (no actor) falls back.
         assert forwarded_items[0].actor == "alice"
         assert not forwarded_items[1].actor
@@ -130,7 +138,7 @@ class TestRoutes:
             AsyncMock(return_value=[uuid.uuid4()] * 20),
         )
         probe_calls = 0
-        base = engine.conn.fetchval
+        base = cast(Callable[..., Awaitable[object]], engine.conn.fetchval)
 
         async def fetchval(sql: str, *args: object) -> object:
             nonlocal probe_calls
@@ -179,7 +187,10 @@ class TestRoutes:
         client, _store, engine = route_client
         conn = engine.conn
         inserts = {"n": 0}
-        real_execute = conn.execute.side_effect
+        real_execute = cast(
+            Callable[..., Awaitable[object]] | None,
+            conn.execute.side_effect,
+        )
 
         async def execute(sql: str, *args: object) -> object:
             if "INSERT INTO inquiries" in sql:
@@ -251,9 +262,10 @@ class TestRoutes:
         ]
         r = client.post("/api/inquiries/batch", json={"items": items})
         assert r.status_code == 200
-        body = r.json()
-        assert len(body["ids"]) == len(item_keys)
-        assert all(_is_uuid(s) for s in body["ids"])
+        body = DictCodec.coerce(r.json())
+        ids = ListCodec.coerce(body["ids"], str)
+        assert len(ids) == len(item_keys)
+        assert all(_is_uuid(s) for s in ids)
         verbs = [s for s in executed_sql(conn) if s in ("BEGIN", "COMMIT", "ROLLBACK")]
         assert verbs.count("BEGIN") == 1
         assert verbs.count("COMMIT") == 1
@@ -273,7 +285,10 @@ class TestRoutes:
         client, _store, engine = route_client
         conn = engine.conn
         inserts = {"n": 0}
-        real_execute = conn.execute.side_effect
+        real_execute = cast(
+            Callable[..., Awaitable[object]] | None,
+            conn.execute.side_effect,
+        )
 
         async def execute(sql: str, *args: object) -> object:
             if "INSERT INTO change_log" in sql:
@@ -325,7 +340,10 @@ class TestRoutes:
             "11111111-1111-1111-1111-111111111111": uuid.uuid4(),
             "22222222-2222-2222-2222-222222222222": uuid.uuid4(),
         }
-        real_fetchrow = conn.fetchrow.side_effect
+        real_fetchrow = cast(
+            Callable[..., Awaitable[object]] | None,
+            conn.fetchrow.side_effect,
+        )
 
         async def fetchrow(sql: str, *args: object) -> object:
             if "FROM change_log c WHERE c.id" in sql:
@@ -361,11 +379,14 @@ class TestRoutes:
             },
         )
         assert r.status_code == 200
-        assert r.json()["ids"] == [str(v) for v in existing.values()]
+        body = DictCodec.coerce(r.json())
+        assert body["ids"] == [str(v) for v in existing.values()]
         inserts = [
             c
             for c in conn.execute.call_args_list
-            if c.args and "INSERT INTO inquiries" in c.args[0]
+            if c.args
+            and isinstance(c.args[0], str)
+            and "INSERT INTO inquiries" in c.args[0]
         ]
         assert inserts == []
 

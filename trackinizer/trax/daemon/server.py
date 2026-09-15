@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Final, override
+from typing import Final, cast, override
 
 import contextlib
 import contextvars
@@ -142,7 +142,7 @@ class _Handler(socketserver.BaseRequestHandler):
         assert isinstance(server, _Server)
         server.touch()
         try:
-            request = Request.from_json(read_frame(self.request))
+            request = Request.from_json(read_frame(cast(socket.socket, self.request)))
         except ProtocolVersionError as mismatch:
             # Answer rather than dropping the connection: a silent close is
             # indistinguishable from "no daemon", so the client would fall
@@ -170,7 +170,7 @@ class _Handler(socketserver.BaseRequestHandler):
     def _reply(self, response: Response) -> None:
         """Write one response frame, tolerating a client that hung up."""
         with contextlib.suppress(OSError):
-            write_frame(self.request, response.to_json())
+            write_frame(cast(socket.socket, self.request), response.to_json())
 
 
 class _Server(socketserver.ThreadingUnixStreamServer):

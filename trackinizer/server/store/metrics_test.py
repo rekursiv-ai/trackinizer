@@ -132,8 +132,12 @@ class TestReadMetrics:
         store, _engine = make_store(conn)
         conn.fetch = AsyncMock(return_value=[])
         await store.read_metrics(uuid.uuid4(), key="loss")
-        args = conn.fetch.call_args[0]
-        assert "key = $2" in str(args[0])
+        call_args = conn.fetch.call_args
+        assert call_args is not None
+        args = call_args.args
+        sql = args[0]
+        assert isinstance(sql, str)
+        assert "key = $2" in sql
         assert "loss" in args
 
 
@@ -158,7 +162,11 @@ class TestQueryMetrics:
         conn.fetch = AsyncMock(return_value=[])
         eids = [uuid.uuid4(), uuid.uuid4()]
         await store.query_metrics(eids, masks=[])
-        sql = str(conn.fetch.call_args[0][0])
+        call_args = conn.fetch.call_args
+        assert call_args is not None
+        sql_arg = call_args.args[0]
+        assert isinstance(sql_arg, str)
+        sql = sql_arg
         assert "experiment_id = ANY($1::uuid[])" in sql
         assert conn.fetch.call_args[0][1] == eids
 
@@ -181,7 +189,11 @@ class TestQueryMetrics:
                 [uuid.uuid4()],
                 masks=[MetricMaskClause(axis="step", op=op, value="3")],
             )
-            sql = str(conn.fetch.call_args[0][0])
+            call_args = conn.fetch.call_args
+            assert call_args is not None
+            sql_arg = call_args.args[0]
+            assert isinstance(sql_arg, str)
+            sql = sql_arg
             assert f"step {sql_op} $2::bigint" in sql, op
 
     @pytest.mark.asyncio
@@ -200,7 +212,11 @@ class TestQueryMetrics:
                 [uuid.uuid4()],
                 masks=[MetricMaskClause(axis=axis, op="is", value=val)],
             )
-            sql = str(conn.fetch.call_args[0][0])
+            call_args = conn.fetch.call_args
+            assert call_args is not None
+            sql_arg = call_args.args[0]
+            assert isinstance(sql_arg, str)
+            sql = sql_arg
             assert f"{axis} = {cast_sql}" in sql, axis
 
     @pytest.mark.asyncio
@@ -246,7 +262,11 @@ class TestQueryMetrics:
             [uuid.uuid4()],
             masks=[MetricMaskClause(axis="step", op="max")],
         )
-        sql = str(conn.fetch.call_args[0][0])
+        call_args = conn.fetch.call_args
+        assert call_args is not None
+        sql_arg = call_args.args[0]
+        assert isinstance(sql_arg, str)
+        sql = sql_arg
         assert "DISTINCT ON (experiment_id, key)" in sql
         assert "ORDER BY experiment_id, key, step DESC" in sql
 
@@ -259,7 +279,11 @@ class TestQueryMetrics:
             [uuid.uuid4()],
             masks=[MetricMaskClause(axis="step", op="min")],
         )
-        sql = str(conn.fetch.call_args[0][0])
+        call_args = conn.fetch.call_args
+        assert call_args is not None
+        sql_arg = call_args.args[0]
+        assert isinstance(sql_arg, str)
+        sql = sql_arg
         assert "ORDER BY experiment_id, key, step ASC" in sql
 
     @pytest.mark.asyncio
@@ -268,7 +292,11 @@ class TestQueryMetrics:
         store, _engine = make_store(conn)
         conn.fetch = AsyncMock(return_value=[])
         await store.query_metrics([uuid.uuid4()], masks=[])
-        sql = str(conn.fetch.call_args[0][0])
+        call_args = conn.fetch.call_args
+        assert call_args is not None
+        sql_arg = call_args.args[0]
+        assert isinstance(sql_arg, str)
+        sql = sql_arg
         assert "DISTINCT ON" not in sql
         assert "ORDER BY experiment_id, key, step" in sql
 
@@ -318,7 +346,11 @@ class TestQueryMetrics:
         store, _engine = make_store(conn)
         conn.fetch = AsyncMock(return_value=[])
         await store.query_metrics([uuid.uuid4()], masks=[], sort="desc", limit=5)
-        sql = str(conn.fetch.call_args[0][0])
+        call_args = conn.fetch.call_args
+        assert call_args is not None
+        sql_arg = call_args.args[0]
+        assert isinstance(sql_arg, str)
+        sql = sql_arg
         assert "ORDER BY value DESC" in sql
         assert "LIMIT $" in sql
         assert 5 in conn.fetch.call_args[0]

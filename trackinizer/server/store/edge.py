@@ -14,6 +14,7 @@ from typing import Final, cast
 from uuid import UUID
 
 from trackinizer.lib.absent import ABSENT, Absent
+from trackinizer.lib.custom_json import ListCodec
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
@@ -579,11 +580,13 @@ class _EdgeMixin(_CascadeAuditMixin):
         else:
             new_priority = priority
         validate_edge_priority(edge_kind, new_priority)
-        old_note = cast(str | None, row["note"])
-        old_valence = cast(float | None, row["valence"])
-        old_labels = cast(
-            tuple[str, ...] | None,
-            (None if row["labels"] is None else tuple(row["labels"] or ())),
+        old_note = row["note"]
+        old_valence = row["valence"]
+        assert old_note is None or isinstance(old_note, str)
+        assert old_valence is None or isinstance(old_valence, float)
+        raw_labels = row["labels"]
+        old_labels = (
+            None if raw_labels is None else tuple(ListCodec.coerce(raw_labels, str))
         )
         new_note: str | None
         if isinstance(note, Absent):
@@ -647,8 +650,8 @@ class _EdgeMixin(_CascadeAuditMixin):
             and old_labels == new_labels
         ):
             return None
-        from_kind = row["from_kind"]
-        to_kind = row["to_kind"]
+        from_kind = cast(Inquiry.InquiryKind, row["from_kind"])
+        to_kind = cast(Inquiry.InquiryKind, row["to_kind"])
         await conn.execute(
             "UPDATE edges SET priority = $1, note = $2, valence = $3, "
             "labels = $4 WHERE from_id = $5 AND to_id = $6 AND edge_kind = $7",
@@ -879,12 +882,17 @@ class _EdgeMixin(_CascadeAuditMixin):
             )
             if row is None:
                 return None
-            from_kind = row["from_kind"]
-            to_kind = row["to_kind"]
-            priority = row["priority"]
+            from_kind = cast(Inquiry.InquiryKind, row["from_kind"])
+            to_kind = cast(Inquiry.InquiryKind, row["to_kind"])
+            priority = cast(Issue.Priority | None, row["priority"])
             note = row["note"]
             valence = row["valence"]
-            edge_labels = None if row["labels"] is None else tuple(row["labels"] or ())
+            assert note is None or isinstance(note, str)
+            assert valence is None or isinstance(valence, float)
+            labels = row["labels"]
+            edge_labels = (
+                None if labels is None else tuple(ListCodec.coerce(labels, str))
+            )
             # Capture every edge touching ``from_id`` before the DELETE.
             # The cascade re-walks ``edges`` live, so deleting first would
             # drop the removed edge: ``_parent_edges`` would miss it and the

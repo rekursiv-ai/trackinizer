@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from contextlib import asynccontextmanager
-from typing import Any, Final, Self, cast
+from typing import Final, Self, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import uuid
@@ -28,6 +28,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib import postgres
+from trackinizer.lib.custom_json import FloatCodec
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.lib.testing.resource_markers import pytest_collection_modifyitems
 from trackinizer.lib.testing.userdirs_fixture import (
@@ -60,13 +61,13 @@ def make_conn() -> AsyncMock:
     """
     conn = AsyncMock()
     conn.execute = AsyncMock(return_value="UPDATE 1")
-    field_default: list[Any] = [None]
-    field_queue: list[Any] = []
+    field_default: list[object] = [None]
+    field_queue: list[object] = []
 
-    async def fetchrow(sql: str, *args: Any) -> Any:  # noqa: ANN401 -- forwarded to an upstream Any.
+    async def fetchrow(sql: str, *args: object) -> object:
         if "marginal_cost_agent_usd" in sql and "RETURNING" in sql:
-            agent = float(args[0]) if args else 0.0
-            resource = float(args[1]) if len(args) > 1 else 0.0
+            agent = FloatCodec.coerce(args[0]) if args else 0.0
+            resource = FloatCodec.coerce(args[1]) if len(args) > 1 else 0.0
             old_agent = max(0.0, -agent)
             old_resource = max(0.0, -resource)
             subject_id = args[2] if len(args) > 2 else uuid.uuid4()
@@ -96,12 +97,12 @@ def make_conn() -> AsyncMock:
 
 def set_field_row(conn: AsyncMock, row: object | None) -> None:
     """Set the default field-read row returned by ``conn.fetchrow``."""
-    cast(list[Any], conn.field_default)[0] = row
+    cast(list[object], conn.field_default)[0] = row
 
 
 def queue_field_rows(conn: AsyncMock, *rows: object) -> None:
     """Queue field-read rows; ``conn.fetchrow`` pops one per call."""
-    cast(list[Any], conn.field_queue).extend(rows)
+    cast(list[object], conn.field_queue).extend(rows)
 
 
 class FakeEngine:
@@ -181,7 +182,11 @@ def executed_sql(conn: AsyncMock) -> list[str]:
     ``fetch`` with its own ``side_effect``, so order-sensitive assertions hold.
     """
     sql: list[str] = []
-    for name, args, _kwargs in conn.mock_calls:
+    for call in conn.mock_calls:
+        name, args, _kwargs = cast(
+            tuple[str, tuple[object, ...], dict[str, object]],
+            call,
+        )
         if name in {"execute", "fetch"} and args:
             sql.append(str(args[0]))
     return sql

@@ -15,14 +15,15 @@ Three layers:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal, cast
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from typing import Literal, NoReturn, cast
+from unittest.mock import AsyncMock, MagicMock, _Call
 
 import logging
 import os
 import uuid
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 import pytest
 
@@ -31,7 +32,7 @@ from trackinizer.conftest import (
     executed_sql,
     make_conn,
 )
-from trackinizer.lib.postgres import PostgresEngine
+from trackinizer.lib.postgres import Conn, DatabaseEngine, PostgresEngine
 from trackinizer.server import auth
 from trackinizer.server.auth import (
     BOOTSTRAP_ADMIN_ENV,
@@ -132,7 +133,7 @@ def _row(
     key_id: uuid.UUID | None = None,
     user_role: str | None = None,
     key_role: str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """Build one ``api_keys JOIN users`` row as ``_resolve_identity`` reads it."""
     return {
         "key_id": key_id or uuid.uuid4(),
@@ -159,21 +160,25 @@ def _request_with(
     cookies: dict[str, str] | None = None,
     config: Config | None = None,
     store: Store | None = None,
-) -> Any:  # noqa: ANN401 -- forwards an upstream Any.
+) -> Request:
     """Build a fake :class:`fastapi.Request` carrying one header + the engine."""
     request = MagicMock()
+    request.app = SimpleNamespace(
+        state=SimpleNamespace(
+            engine=engine,
+            config=Config() if config is None else config,
+            store=Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+            if store is None
+            else store,
+        ),
+    )
+    request.state = SimpleNamespace(request_id="")
     headers: dict[str, str] = {}
     if authorization is not None:
         headers["Authorization"] = authorization
     request.headers = headers
     request.cookies = cookies or {}
-    request.app.state.engine = engine
-    request.app.state.config = Config() if config is None else config
-    request.app.state.store = (
-        Store(cast(Any, engine), embed=StubEmbedder()) if store is None else store
-    )
-    request.state.request_id = ""
-    return request
+    return cast(Request, request)
 
 
 class TestCurrentUser:
@@ -204,7 +209,7 @@ class TestCurrentUser:
         # show "this key was used 5 minutes ago". Coalescing across repeats
         # is ``test_last_used_at_coalesces_repeat_hits``; the bump firing at
         # all is this one.
-        sqls = [c.args[0] for c in engine.conn.execute.call_args_list]
+        sqls = [_sql(c) for c in engine.conn.execute.call_args_list]
         assert any("UPDATE api_keys SET last_used_at" in s for s in sqls)
 
     @pytest.mark.asyncio
@@ -426,7 +431,7 @@ class TestCurrentUser:
         engine.conn.fetch.return_value = [row]
         # One ``Store`` reused across calls so the throttle stays the
         # subject of the test rather than the fixture.
-        store = Store(cast(Any, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
 
         clock: list[float] = [1_000.0]
         monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
@@ -436,7 +441,7 @@ class TestCurrentUser:
         bump_sqls = [
             c
             for c in engine.conn.execute.call_args_list
-            if "UPDATE api_keys SET last_used_at" in c.args[0]
+            if "UPDATE api_keys SET last_used_at" in _sql(c)
         ]
         # First hit primes the cache and writes; the next four collapse.
         assert len(bump_sqls) == 1
@@ -447,7 +452,7 @@ class TestCurrentUser:
         bump_sqls = [
             c
             for c in engine.conn.execute.call_args_list
-            if "UPDATE api_keys SET last_used_at" in c.args[0]
+            if "UPDATE api_keys SET last_used_at" in _sql(c)
         ]
         assert len(bump_sqls) == 2
 
@@ -466,8 +471,8 @@ class TestCurrentUser:
         row = _row(secret_hash=hash_secret(secret), key_id=key_id)
         engine = FakeEngine()
         engine.conn.fetch.return_value = [row]
-        store_a = Store(cast(Any, engine), embed=StubEmbedder())
-        store_b = Store(cast(Any, engine), embed=StubEmbedder())
+        store_a = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store_b = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {secret}", store=store_a))
@@ -476,7 +481,7 @@ class TestCurrentUser:
         bump_sqls = [
             c
             for c in engine.conn.execute.call_args_list
-            if "UPDATE api_keys SET last_used_at" in c.args[0]
+            if "UPDATE api_keys SET last_used_at" in _sql(c)
         ]
         assert len(bump_sqls) == 2
 
@@ -495,7 +500,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
-        store = Store(cast(Any, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         verifies: list[str] = []
@@ -530,7 +535,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
-        store = Store(cast(Any, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
         clock = [1_000.0]
         monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
         # TTL well past the bump interval so the entry is still cached when
@@ -544,7 +549,7 @@ class TestVerifiedBearerCache:
         bump_sqls = [
             c
             for c in engine.conn.execute.call_args_list
-            if "UPDATE api_keys SET last_used_at" in c.args[0]
+            if "UPDATE api_keys SET last_used_at" in _sql(c)
         ]
         assert len(bump_sqls) == 2
 
@@ -558,7 +563,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
-        store = Store(cast(Any, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         for _ in range(5):
@@ -566,7 +571,7 @@ class TestVerifiedBearerCache:
         bump_sqls = [
             c
             for c in engine.conn.execute.call_args_list
-            if "UPDATE api_keys SET last_used_at" in c.args[0]
+            if "UPDATE api_keys SET last_used_at" in _sql(c)
         ]
         assert len(bump_sqls) == 1
 
@@ -582,7 +587,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
-        store = Store(cast(Any, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {secret}", store=store))
@@ -608,7 +613,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
-        store = Store(cast(Any, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
         clock = [1_000.0]
         monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
 
@@ -638,7 +643,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = []
-        store = Store(cast(Any, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         verifies: list[str] = []
@@ -669,7 +674,7 @@ class TestVerifiedBearerCache:
         engine.conn.fetch.return_value = [
             _row(secret_hash=hash_secret(secret), user_id=user_id),
         ]
-        store = Store(cast(Any, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {secret}", store=store))
@@ -688,7 +693,7 @@ class TestVerifiedBearerCache:
         engine.conn.fetch.return_value = [
             _row(secret_hash=hash_secret(kept_secret), user_id=kept_user),
         ]
-        store = Store(cast(Any, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {kept_secret}", store=store))
@@ -698,7 +703,7 @@ class TestVerifiedBearerCache:
     def test_cache_is_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # A flood of distinct keys must not pin unbounded memory.
         engine = FakeEngine()
-        store = Store(cast(Any, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
         monkeypatch.setattr(auth, "VERIFIED_BEARER_MAX_ENTRIES", 4)
         clock = [1_000.0]
         monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
@@ -722,7 +727,7 @@ class TestVerifiedBearerCache:
         # The cache key is a digest: a heap dump of a live server must not
         # yield replayable tokens.
         engine = FakeEngine()
-        store = Store(cast(Any, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
         secret, _ = generate_token()
         store.remember_bearer_identity(
             secret,
@@ -797,11 +802,9 @@ class TestBootstrapAdmin:
         # -> the winner id; then ``create_api_key`` looks up the just-inserted
         # bootstrap admin's role.
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin"])
-        await bootstrap_admin(conn)
+        await bootstrap_admin(cast(Conn, conn))
         inserts = [
-            c
-            for c in conn.execute.call_args_list
-            if "INSERT INTO allowlist" in c.args[0]
+            c for c in conn.execute.call_args_list if "INSERT INTO allowlist" in _sql(c)
         ]
         assert len(inserts) == 1
         # The seeded email must round-trip verbatim.
@@ -824,8 +827,8 @@ class TestBootstrapAdmin:
         conn = make_conn()
         # Probe -> None (looked empty); users insert RETURNING id -> None (lost).
         conn.fetchval = AsyncMock(side_effect=[None, None])
-        await bootstrap_admin(conn)
-        sqls = [c.args[0] for c in conn.execute.call_args_list]
+        await bootstrap_admin(cast(Conn, conn))
+        sqls = [_sql(c) for c in conn.execute.call_args_list]
         # No api_key minted, and the tx still committed (no rollback).
         assert not any("INSERT INTO api_keys" in s for s in sqls)
         assert any(s.strip().upper().startswith("COMMIT") for s in sqls)
@@ -837,7 +840,7 @@ class TestBootstrapAdmin:
     async def test_skips_when_env_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(BOOTSTRAP_ADMIN_ENV, raising=False)
         conn = make_conn()
-        await bootstrap_admin(conn)
+        await bootstrap_admin(cast(Conn, conn))
         # No SQL at all when the env var is missing -- offline tests
         # and dev bootstraps must not require it.
         assert conn.execute.call_count == 0
@@ -847,7 +850,7 @@ class TestBootstrapAdmin:
     async def test_skips_when_env_blank(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(BOOTSTRAP_ADMIN_ENV, "   ")
         conn = make_conn()
-        await bootstrap_admin(conn)
+        await bootstrap_admin(cast(Conn, conn))
         assert conn.execute.call_count == 0
 
     @pytest.mark.asyncio
@@ -860,11 +863,9 @@ class TestBootstrapAdmin:
         monkeypatch.setenv(BOOTSTRAP_ADMIN_ENV, "admin@example.com")
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value=1)
-        await bootstrap_admin(conn)
+        await bootstrap_admin(cast(Conn, conn))
         inserts = [
-            c
-            for c in conn.execute.call_args_list
-            if "INSERT INTO allowlist" in c.args[0]
+            c for c in conn.execute.call_args_list if "INSERT INTO allowlist" in _sql(c)
         ]
         assert inserts == []
 
@@ -918,12 +919,10 @@ class TestBootstrapAdmin:
         # bootstrap admin is now present) and the function short-circuits
         # before ``create_api_key``.
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin", 1])
-        await bootstrap_admin(conn)
-        await bootstrap_admin(conn)
+        await bootstrap_admin(cast(Conn, conn))
+        await bootstrap_admin(cast(Conn, conn))
         inserts = [
-            c
-            for c in conn.execute.call_args_list
-            if "INSERT INTO allowlist" in c.args[0]
+            c for c in conn.execute.call_args_list if "INSERT INTO allowlist" in _sql(c)
         ]
         assert len(inserts) == 1
 
@@ -940,12 +939,12 @@ class TestBootstrapAdmin:
         monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, str(tmp_path / "bootstrap_token"))
         conn = make_conn()
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin"])
-        await bootstrap_admin(conn)
-        sqls = [c.args[0] for c in conn.execute.call_args_list]
+        await bootstrap_admin(cast(Conn, conn))
+        sqls = [_sql(c) for c in conn.execute.call_args_list]
         # The users insert is a ``fetchval`` now (it reads back ``RETURNING id``
         # to tell the race winner from a loser), so it lands among the queries,
         # not the plain executes.
-        fetched = [c.args[0] for c in conn.fetchval.call_args_list]
+        fetched = [_sql(c) for c in conn.fetchval.call_args_list]
         assert any("INSERT INTO allowlist" in s for s in sqls)
         assert any("INSERT INTO users" in s for s in fetched)
         assert any("INSERT INTO api_keys" in s for s in sqls)
@@ -961,7 +960,7 @@ class TestBootstrapAdmin:
         monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, str(token_file))
         conn = make_conn()
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin"])
-        await bootstrap_admin(conn)
+        await bootstrap_admin(cast(Conn, conn))
         assert token_file.exists()
         # Sensitive: secret is auth-equivalent to a password.
         assert (token_file.stat().st_mode & 0o777) == 0o600
@@ -998,7 +997,7 @@ class TestBootstrapAdmin:
         monkeypatch.setattr(Path, "mkdir", _failing_mkdir)
         try:
             with pytest.raises(OSError, match="simulated read-only filesystem"):
-                await bootstrap_admin(conn)
+                await bootstrap_admin(cast(Conn, conn))
         finally:
             monkeypatch.setattr(Path, "mkdir", original_mkdir)
         sqls = executed_sql(conn)
@@ -1036,7 +1035,7 @@ class TestBootstrapAdmin:
 
         conn.execute = AsyncMock(side_effect=execute)
         with pytest.raises(RuntimeError, match="simulated commit failure"):
-            await bootstrap_admin(conn)
+            await bootstrap_admin(cast(Conn, conn))
         # The final path must NOT exist: a rolled-back DB tx and a
         # plaintext credential on disk are an unrecoverable mismatch.
         assert not token_file.exists()
@@ -1062,13 +1061,13 @@ class TestBootstrapAdmin:
         conn = make_conn()
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin"])
 
-        async def boom(*args: object, **kwargs: object) -> Any:  # noqa: ANN401 -- forwards an upstream Any.
+        async def boom(*args: object, **kwargs: object) -> NoReturn:
             del args, kwargs
             raise RuntimeError("simulated api_key insert failure")
 
         monkeypatch.setattr("trackinizer.server.auth.create_api_key", boom)
         with pytest.raises(RuntimeError, match="simulated api_key insert failure"):
-            await bootstrap_admin(conn)
+            await bootstrap_admin(cast(Conn, conn))
         sqls = executed_sql(conn)
         # Atomic bootstrap: BEGIN must precede the INSERTs and ROLLBACK
         # must follow the failure -- the gate row is undone, retry works.
@@ -1091,18 +1090,16 @@ class TestBootstrapAdmin:
         monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, str(tmp_path / "bt"))
         conn = make_conn()
         conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin"])
-        await bootstrap_admin(conn)
+        await bootstrap_admin(cast(Conn, conn))
         allowlist_inserts = [
-            c
-            for c in conn.execute.call_args_list
-            if "INSERT INTO allowlist" in c.args[0]
+            c for c in conn.execute.call_args_list if "INSERT INTO allowlist" in _sql(c)
         ]
         assert len(allowlist_inserts) == 1
         assert allowlist_inserts[0].args[1] == "foo@bar.com"
         # The users insert reads back ``RETURNING id`` via fetchval, so its
         # lowercased email argument lands on the fetchval call, not an execute.
         users_inserts = [
-            c for c in conn.fetchval.call_args_list if "INSERT INTO users" in c.args[0]
+            c for c in conn.fetchval.call_args_list if "INSERT INTO users" in _sql(c)
         ]
         assert len(users_inserts) == 1
         assert users_inserts[0].args[2] == "foo@bar.com"
@@ -1132,10 +1129,11 @@ class _SeedAfterUsersProbe:
                     "VALUES ($1, 'race@example.com', 'race', 'admin', 'active')",
                     uuid.uuid4(),
                 )
-        return await cast(Any, self._conn).execute(sql, *args)
+        return await cast(Conn, self._conn).execute(sql, *args)
 
     def __getattr__(self, name: str) -> object:
-        return getattr(self._conn, name)
+        value: object = getattr(self._conn, name)  # pyright: ignore[reportAny] -- the delegated connection surface is intentionally dynamic.
+        return value
 
 
 @pytest.mark.db_pglite
@@ -1172,7 +1170,9 @@ class TestBootstrapAdminRace:
         async with integ_engine.acquire() as conn_b:
             # The wrapper is a structural Conn stand-in (delegates every attr);
             # cast at the call site so the test exercises the real signature.
-            await bootstrap_admin(cast(Any, _SeedAfterUsersProbe(conn_b, integ_engine)))
+            await bootstrap_admin(
+                cast(Conn, _SeedAfterUsersProbe(conn_b, integ_engine))
+            )
 
         async with integ_engine.acquire() as conn:
             admin_count = await conn.fetchval(
@@ -1522,10 +1522,11 @@ class TestAllowlistMatch:
     async def test_literal_match_returns_role(self) -> None:
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value="admin")
-        role = await allowlist_match(conn, email="alice@rekursiv.ai")
+        role = await allowlist_match(cast(Conn, conn), email="alice@rekursiv.ai")
         assert role == "admin"
         # The first SQL probe must be the literal lookup.
         sql, *args = conn.fetchval.call_args_list[0].args
+        assert isinstance(sql, str)
         assert "lower(email_or_pattern) = lower($1)" in sql
         assert args == ["alice@rekursiv.ai"]
 
@@ -1540,7 +1541,7 @@ class TestAllowlistMatch:
             return None
 
         conn.fetchval = AsyncMock(side_effect=fetchval)
-        role = await allowlist_match(conn, email="alice@example.com")
+        role = await allowlist_match(cast(Conn, conn), email="alice@example.com")
         assert role == "admin"
 
     @pytest.mark.asyncio
@@ -1548,17 +1549,18 @@ class TestAllowlistMatch:
         # Literal probe misses (returns None), pattern probe wins.
         conn = make_conn()
         conn.fetchval = AsyncMock(side_effect=[None, "writer"])
-        role = await allowlist_match(conn, email="bob@rekursiv.ai")
+        role = await allowlist_match(cast(Conn, conn), email="bob@rekursiv.ai")
         assert role == "writer"
         # Second probe queries the LIKE-anchored pattern table.
         second_sql = conn.fetchval.call_args_list[1].args[0]
+        assert isinstance(second_sql, str)
         assert "LIKE '*@%'" in second_sql
 
     @pytest.mark.asyncio
     async def test_miss_returns_none(self) -> None:
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value=None)
-        role = await allowlist_match(conn, email="evil@example.com")
+        role = await allowlist_match(cast(Conn, conn), email="evil@example.com")
         assert role is None
 
     @pytest.mark.asyncio
@@ -1568,7 +1570,7 @@ class TestAllowlistMatch:
         # passing an empty domain to the SQL.
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value=None)
-        role = await allowlist_match(conn, email="no-at-symbol")
+        role = await allowlist_match(cast(Conn, conn), email="no-at-symbol")
         assert role is None
 
 
@@ -1590,7 +1592,13 @@ class TestEffectiveRole:
 
     def test_equal_roles_pass_through(self) -> None:
         for r in ("viewer", "writer", "admin"):
-            assert effective_role(cast(Any, r), cast(Any, r)) == r
+            assert (
+                effective_role(
+                    r,
+                    r,
+                )
+                == r
+            )
 
 
 # ---- create_api_key + set_api_key_role tests ------------------------------
@@ -1606,7 +1614,7 @@ class TestCreateApiKey:
         user_id = uuid.uuid4()
         # A non-binding admin ceiling: the default still caps at the user role.
         _key_id, _secret, _prefix, role = await create_api_key(
-            conn,
+            cast(Conn, conn),
             user_id=user_id,
             name="laptop",
             ceiling="admin",
@@ -1614,9 +1622,7 @@ class TestCreateApiKey:
         assert role == "writer"
         # The INSERT must carry the inferred role as the 6th bind.
         insert = next(
-            c
-            for c in conn.execute.call_args_list
-            if "INSERT INTO api_keys" in c.args[0]
+            c for c in conn.execute.call_args_list if "INSERT INTO api_keys" in _sql(c)
         )
         assert insert.args[6] == "writer"
 
@@ -1625,7 +1631,7 @@ class TestCreateApiKey:
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value="admin")
         _key_id, _secret, _prefix, role = await create_api_key(
-            conn,
+            cast(Conn, conn),
             user_id=uuid.uuid4(),
             name="ro",
             role="viewer",
@@ -1639,14 +1645,14 @@ class TestCreateApiKey:
         conn.fetchval = AsyncMock(return_value="writer")
         with pytest.raises(RoleCeilingError):
             await create_api_key(
-                conn,
+                cast(Conn, conn),
                 user_id=uuid.uuid4(),
                 name="bad",
                 role="admin",
                 ceiling="writer",
             )
         # And no INSERT fires when the ceiling check rejects.
-        sqls = [c.args[0] for c in conn.execute.call_args_list]
+        sqls = [_sql(c) for c in conn.execute.call_args_list]
         assert not any("INSERT INTO api_keys" in s for s in sqls)
 
     @pytest.mark.asyncio
@@ -1654,7 +1660,12 @@ class TestCreateApiKey:
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value=None)
         with pytest.raises(LookupError):
-            await create_api_key(conn, user_id=uuid.uuid4(), name="x", ceiling="writer")
+            await create_api_key(
+                cast(Conn, conn),
+                user_id=uuid.uuid4(),
+                name="x",
+                ceiling="writer",
+            )
 
     @pytest.mark.asyncio
     async def test_ceiling_caps_below_user_role(self) -> None:
@@ -1665,13 +1676,13 @@ class TestCreateApiKey:
         conn.fetchval = AsyncMock(return_value="admin")
         with pytest.raises(RoleCeilingError):
             await create_api_key(
-                conn,
+                cast(Conn, conn),
                 user_id=uuid.uuid4(),
                 name="bad",
                 role="admin",
                 ceiling="viewer",
             )
-        sqls = [c.args[0] for c in conn.execute.call_args_list]
+        sqls = [_sql(c) for c in conn.execute.call_args_list]
         assert not any("INSERT INTO api_keys" in s for s in sqls)
 
     @pytest.mark.asyncio
@@ -1681,7 +1692,7 @@ class TestCreateApiKey:
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value="admin")
         _key_id, _secret, _prefix, role = await create_api_key(
-            conn,
+            cast(Conn, conn),
             user_id=uuid.uuid4(),
             name="scoped",
             ceiling="viewer",
@@ -1698,7 +1709,7 @@ class TestSetApiKeyRole:
         conn.fetchval = AsyncMock(return_value="writer")
         conn.execute = AsyncMock(return_value="UPDATE 1")
         updated = await set_api_key_role(
-            conn,
+            cast(Conn, conn),
             key_id=uuid.uuid4(),
             user_id=uuid.uuid4(),
             role="writer",
@@ -1712,14 +1723,14 @@ class TestSetApiKeyRole:
         conn.fetchval = AsyncMock(return_value="writer")
         with pytest.raises(RoleCeilingError):
             await set_api_key_role(
-                conn,
+                cast(Conn, conn),
                 key_id=uuid.uuid4(),
                 user_id=uuid.uuid4(),
                 role="admin",
                 ceiling="writer",
             )
         # The UPDATE must not have run.
-        sqls = [c.args[0] for c in conn.execute.call_args_list]
+        sqls = [_sql(c) for c in conn.execute.call_args_list]
         assert not any("UPDATE api_keys" in s for s in sqls)
 
     @pytest.mark.asyncio
@@ -1728,7 +1739,7 @@ class TestSetApiKeyRole:
         conn.fetchval = AsyncMock(return_value="writer")
         conn.execute = AsyncMock(return_value="UPDATE 0")
         updated = await set_api_key_role(
-            conn,
+            cast(Conn, conn),
             key_id=uuid.uuid4(),
             user_id=uuid.uuid4(),
             role="viewer",
@@ -1744,14 +1755,21 @@ class TestSetApiKeyRole:
         conn.fetchval = AsyncMock(side_effect=["admin", 1])
         with pytest.raises(RoleCeilingError):
             await set_api_key_role(
-                conn,
+                cast(Conn, conn),
                 key_id=uuid.uuid4(),
                 user_id=uuid.uuid4(),
                 role="admin",
                 ceiling="viewer",
             )
-        sqls = [c.args[0] for c in conn.execute.call_args_list]
+        sqls = [_sql(c) for c in conn.execute.call_args_list]
         assert not any("UPDATE api_keys SET role" in s for s in sqls)
+
+
+def _sql(call: _Call) -> str:
+    """Return a recorded SQL argument after narrowing the mock call boundary."""
+    sql = call.args[0]
+    assert isinstance(sql, str)
+    return sql
 
 
 if __name__ == "__main__":

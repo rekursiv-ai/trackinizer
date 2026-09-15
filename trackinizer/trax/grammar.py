@@ -27,6 +27,7 @@ import re
 import uuid
 
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.custom_json import DictCodec
 from trackinizer.types.columns import flat_column_specs
 from trackinizer.types.inquiries import (
     CITATION_VALENCE_DEFAULT,
@@ -87,7 +88,7 @@ __all__ = [
 
 VALID_KINDS: tuple[Inquiry.InquiryKind, ...] = cast(
     tuple[Inquiry.InquiryKind, ...],
-    get_args(Inquiry.InquiryKind.__value__),
+    get_args(cast(object, Inquiry.InquiryKind.__value__)),
 )
 KIND_LOWER: Mapping[str, Inquiry.InquiryKind] = {k.lower(): k for k in VALID_KINDS}
 
@@ -281,7 +282,7 @@ class InlineCreate:
     costs: tuple[AddCost, ...] = ()
 
     inbound_meta: Mapping[str, object] = dataclass_field(
-        default_factory=lambda: cast(dict[str, object], {}),
+        default_factory=dict[str, object],
     )
 
 
@@ -415,7 +416,7 @@ EDGE_ALIASES: Mapping[str, Edge] = {
 }
 ISSUE_KINDS: tuple[Issue.Kind, ...] = cast(
     tuple[Issue.Kind, ...],
-    get_args(Issue.Kind.__value__),
+    get_args(cast(object, Issue.Kind.__value__)),
 )
 PRIORITY_ALIASES: Final[Mapping[str, int]] = {
     "critical": 0,
@@ -549,20 +550,20 @@ def _coerce_confidence(value: str) -> float:
 
 
 def _coerce_status(value: str) -> str:
-    if value not in get_args(Inquiry.Status.__value__):
+    if value not in get_args(cast(object, Inquiry.Status.__value__)):
         raise ValueError(f"unknown status {value!r}")
     return value
 
 
 def _coerce_judgement(value: str) -> str:
-    judgements = get_args(Belief.Judgement.__value__)
+    judgements = get_args(cast(object, Belief.Judgement.__value__))
     if value not in judgements:
         raise ValueError(f"unknown judgement {value!r}")
     return value
 
 
 def _coerce_publication_type(value: str) -> str:
-    publication_types = get_args(Paper.PublicationType.__value__)
+    publication_types = get_args(cast(object, Paper.PublicationType.__value__))
     if value not in publication_types:
         raise ValueError(f"unknown publication_type {value!r}")
     return value
@@ -575,18 +576,20 @@ def _coerce_config(value: str) -> object:
     """Parse a ``config`` token to its JSON-object wire value."""
     if value == "-" or value.startswith("@"):
         return value
+    # ``json.loads`` directly, not :func:`loads`: the stdlib parser accepts
+    # ``NaN`` / ``Infinity`` literals unless ``parse_constant`` rejects them,
+    # and that rejection must read as invalid JSON, not as an overflow.
     try:
-        parsed: object = json.loads(
-            value,
-            parse_constant=_reject_nonstandard_json_constant,
+        parsed = cast(
+            object,
+            json.loads(value, parse_constant=_reject_nonstandard_json_constant),
         )
     except ValueError as err:
         raise ValueError(f"config must be valid JSON: {err}") from err
-    match parsed:
-        case dict():
-            config = cast(dict[str, object], parsed)
-        case _:
-            raise ValueError("config must be a JSON object")
+    try:
+        config = DictCodec.coerce(parsed, default=None)
+    except TypeError as err:
+        raise ValueError("config must be a JSON object") from err
     try:
         json.dumps(config, allow_nan=False)
     except ValueError as err:

@@ -197,15 +197,18 @@ async def test_the_console_feed_reads_an_index_not_the_whole_table(
             session_id,
         )
         await conn.execute("ANALYZE session_records")
-        plan = "\n".join(
-            r["QUERY PLAN"]
-            for r in await conn.fetch(
-                "EXPLAIN SELECT e.session_id, e.part, e.idx, e.created "
-                "FROM session_records e JOIN inquiries i ON i.id = e.session_id "
-                "WHERE i.kind = 'AgentSession' "
-                "ORDER BY e.created, e.session_id, e.part, e.idx LIMIT 200",
-            )
+        plan_rows = await conn.fetch(
+            "EXPLAIN SELECT e.session_id, e.part, e.idx, e.created "
+            "FROM session_records e JOIN inquiries i ON i.id = e.session_id "
+            "WHERE i.kind = 'AgentSession' "
+            "ORDER BY e.created, e.session_id, e.part, e.idx LIMIT 200",
         )
+        plan_parts: list[str] = []
+        for row in plan_rows:
+            value = row["QUERY PLAN"]
+            assert isinstance(value, str)
+            plan_parts.append(value)
+        plan = "\n".join(plan_parts)
     assert "idx_session_records_created_session_part_idx" in plan, (
         f"the console feed scans every record instead of its index:\n{plan}"
     )

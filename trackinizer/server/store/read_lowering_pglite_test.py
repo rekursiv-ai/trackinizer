@@ -461,7 +461,11 @@ async def test_text_array_membership_can_use_the_gin_index(store: Store) -> None
             *params,
         )
 
-    plan = "\n".join(str(row[0]) for row in rows)
+    plan_parts: list[str] = []
+    for row in rows:
+        value = cast(str, row[0])
+        plan_parts.append(value)
+    plan = "\n".join(plan_parts)
     assert "filter_probe_labels_gin" in plan
 
 
@@ -485,9 +489,12 @@ async def test_uuid_array_membership_preserves_parameter_typing(store: Store) ->
             "INSERT INTO filter_probe VALUES (ARRAY[$1]::uuid[])",
             target,
         )
-        count = await conn.fetchval(
-            vetted_sql("SELECT count(*) FROM filter_probe WHERE ", clause),
-            *params,
+        count = cast(
+            int,
+            await conn.fetchval(
+                vetted_sql("SELECT count(*) FROM filter_probe WHERE ", clause),
+                *params,
+            ),
         )
 
     assert count == 1

@@ -14,7 +14,7 @@ disagree about which clauses lower.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Final, Literal, get_args, get_origin
+from typing import Final, Literal, cast, get_args, get_origin
 
 from trackinizer.types.columns import (
     FlatColumn,
@@ -451,12 +451,17 @@ def _is_valued(annotation: object, target: type) -> bool:
     if get_origin(annotation) is Literal:
         return all(
             isinstance(arg, target)
-            for arg in get_args(annotation)
+            for arg in cast(tuple[object, ...], get_args(annotation))
             if arg is not type(None)
         )
-    if (aliased := getattr(annotation, "__value__", None)) is not None:
+    aliased: object = getattr(annotation, "__value__", None)
+    if aliased is not None:
         return _is_valued(aliased, target)
-    args = [arg for arg in get_args(annotation) if arg is not type(None)]
+    args = [
+        arg
+        for arg in cast(tuple[object, ...], get_args(annotation))
+        if arg is not type(None)
+    ]
     return bool(args) and all(_is_valued(arg, target) for arg in args)
 
 

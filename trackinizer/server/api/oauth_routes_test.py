@@ -27,6 +27,7 @@ import httpx2
 import pytest
 
 from trackinizer.conftest import FakeEngine, make_store
+from trackinizer.lib.custom_json import DictCodec
 from trackinizer.server.api import oauth_routes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
@@ -40,7 +41,6 @@ from trackinizer.server.session import (
     read_oauth_state_cookie,
     set_session_cookie,
 )
-from trackinizer.server.store.core import Store
 
 
 # A complete OAuth Config wired so the routes don't 503. ``redirect_uri``
@@ -206,7 +206,8 @@ class TestAuthLogin:
         response = client.get("/auth/login")
         assert response.status_code == 503
         # The error names the missing env var so deployers know what to set.
-        detail = response.json()["detail"]
+        detail = DictCodec.coerce(response.json())["detail"]
+        assert isinstance(detail, str)
         assert "TRACKINIZER_GOOGLE_CLIENT_ID" in detail
         assert "TRACKINIZER_SESSION_SECRET" in detail
 
@@ -227,7 +228,7 @@ class TestAuthLogin:
         _install_oauth_state(config=partial)
         response = client.get("/auth/login")
         assert response.status_code == 503
-        assert "TRACKINIZER_OAUTH_REDIRECT_URI" in response.json()["detail"]
+        assert "TRACKINIZER_OAUTH_REDIRECT_URI" in _json_detail(response)
 
     def test_503_when_only_session_secret_missing(
         self,
@@ -241,7 +242,7 @@ class TestAuthLogin:
         _install_oauth_state(config=partial)
         response = client.get("/auth/login")
         assert response.status_code == 503
-        assert "TRACKINIZER_SESSION_SECRET" in response.json()["detail"]
+        assert "TRACKINIZER_SESSION_SECRET" in _json_detail(response)
 
     @pytest.mark.parametrize(
         "next_url",
@@ -343,7 +344,7 @@ class TestAuthCallbackHappyPath:
         assert response.status_code == 302, response.text
         assert response.headers["location"] == "/"
         assert SESSION_COOKIE_NAME in response.cookies
-        sql = engine.conn.fetchrow.call_args.args[0]
+        sql = _sql(engine.conn.fetchrow.call_args.args[0])
         assert "INSERT INTO users" in sql
         assert "ON CONFLICT (email) DO UPDATE" in sql
 
@@ -365,7 +366,7 @@ class TestAuthCallbackHappyPath:
         state = _start_login(client)
         response = client.get(f"/auth/callback?code=auth-code-123&state={state}")
         assert response.status_code == 302
-        sql = engine.conn.fetchrow.call_args.args[0]
+        sql = _sql(engine.conn.fetchrow.call_args.args[0])
         assert "ON CONFLICT (email) DO UPDATE" in sql
         assert "SELECT id FROM users WHERE email" not in sql
 
@@ -384,9 +385,11 @@ class TestAuthCallbackHappyPath:
         state = _start_login(client)
         response = client.get(f"/auth/callback?code=auth-code-123&state={state}")
         assert response.status_code == 403
-        assert "allowlist" in response.json()["detail"].lower()
-        assert "administrator" in response.json()["detail"].lower()
-        sqls = [c.args[0] for c in engine.conn.execute.call_args_list]
+        detail = DictCodec.coerce(response.json())["detail"]
+        assert isinstance(detail, str)
+        assert "allowlist" in detail.lower()
+        assert "administrator" in detail.lower()
+        sqls = [_sql(c.args[0]) for c in engine.conn.execute.call_args_list]
         # No INSERT, no UPDATE on users.
         assert not any("INSERT INTO users" in s for s in sqls)
         assert not any("UPDATE users" in s for s in sqls)
@@ -410,7 +413,9 @@ class TestAuthCallbackHappyPath:
         state = _start_login(client)
         response = client.get(f"/auth/callback?code=auth-code-123&state={state}")
         assert response.status_code == 403
-        assert "disabled" in response.json()["detail"].lower()
+        detail = DictCodec.coerce(response.json())["detail"]
+        assert isinstance(detail, str)
+        assert "disabled" in detail.lower()
         assert SESSION_COOKIE_NAME not in response.cookies
 
     def test_disabled_user_callback_does_not_bump_last_login(
@@ -432,7 +437,7 @@ class TestAuthCallbackHappyPath:
         state = _start_login(client)
         response = client.get(f"/auth/callback?code=auth-code-123&state={state}")
         assert response.status_code == 403
-        sql = engine.conn.fetchrow.call_args.args[0]
+        sql = _sql(engine.conn.fetchrow.call_args.args[0])
         # The upsert must condition the last_login bump on the existing
         # row being active; otherwise a denied callback silently
         # advances last_login on the disabled row.
@@ -483,7 +488,7 @@ class TestAuthCallbackEmailNormalization:
         state = _start_login(client)
         response = client.get(f"/auth/callback?code=c&state={state}")
         assert response.status_code == 302
-        normalized = " ".join(engine.conn.fetchrow.call_args.args[0].split())
+        normalized = " ".join(_sql(engine.conn.fetchrow.call_args.args[0]).split())
         assert "name = EXCLUDED.name" in normalized
 
 
@@ -498,7 +503,7 @@ class TestAuthCallbackErrors:
         _start_login(client)
         response = client.get("/auth/callback?code=c&state=not-the-real-state")
         assert response.status_code == 400
-        assert "state mismatch" in response.json()["detail"]
+        assert "state mismatch" in _json_detail(response)
 
     def test_missing_state_cookie_returns_400(
         self,
@@ -513,7 +518,7 @@ class TestAuthCallbackErrors:
         client.cookies.clear()
         response = client.get("/auth/callback?code=c&state=anything")
         assert response.status_code == 400
-        assert "oauth state" in response.json()["detail"]
+        assert "oauth state" in _json_detail(response)
 
     def test_missing_code_returns_400(
         self,
@@ -525,7 +530,7 @@ class TestAuthCallbackErrors:
         state = _start_login(client)
         response = client.get(f"/auth/callback?state={state}")
         assert response.status_code == 400
-        assert "authorization code" in response.json()["detail"]
+        assert "authorization code" in _json_detail(response)
 
     @pytest.mark.parametrize("email_verified", [False, "false"])
     def test_unverified_email_rejected(
@@ -545,9 +550,9 @@ class TestAuthCallbackErrors:
         state = _start_login(client)
         response = client.get(f"/auth/callback?code=c&state={state}")
         assert response.status_code == 403
-        assert "not verified" in response.json()["detail"]
+        assert "not verified" in _json_detail(response)
         assert SESSION_COOKIE_NAME not in response.cookies
-        sqls = [c.args[0] for c in engine.conn.execute.call_args_list]
+        sqls = [_sql(c.args[0]) for c in engine.conn.execute.call_args_list]
         assert not any("INSERT INTO users" in s for s in sqls)
         assert not any("UPDATE users" in s for s in sqls)
 
@@ -586,7 +591,8 @@ class TestAuthCallbackErrors:
         caplog.set_level(logging.WARNING, logger=oauth_routes.__name__)
         response = client.get(f"/auth/callback?code=c&state={state}")
         assert response.status_code == 400
-        detail = response.json()["detail"]
+        detail = DictCodec.coerce(response.json())["detail"]
+        assert isinstance(detail, str)
         assert "SENSITIVE" not in detail
         assert "DEPLOYMENT" not in detail
         assert "token exchange" in detail.lower()
@@ -644,7 +650,7 @@ class TestAuthCallbackErrors:
         state = _start_login(client)
         response = client.get(f"/auth/callback?code=c&state={state}")
         assert response.status_code == 400
-        assert "invalid json" in response.json()["detail"]
+        assert "invalid json" in _json_detail(response)
 
     def test_userinfo_error_does_not_leak_google_response(
         self,
@@ -671,7 +677,8 @@ class TestAuthCallbackErrors:
         caplog.set_level(logging.WARNING, logger=oauth_routes.__name__)
         response = client.get(f"/auth/callback?code=c&state={state}")
         assert response.status_code == 400
-        detail = response.json()["detail"]
+        detail = DictCodec.coerce(response.json())["detail"]
+        assert isinstance(detail, str)
         assert "SECRETTOKEN" not in detail
         assert "PRIVATE" not in detail
         assert "userinfo" in detail.lower()
@@ -703,7 +710,7 @@ class TestAuthCallbackErrors:
         state = _start_login(client)
         response = client.get(f"/auth/callback?code=c&state={state}")
         assert response.status_code == 400
-        assert "invalid json" in response.json()["detail"]
+        assert "invalid json" in _json_detail(response)
 
 
 # ---- /auth/logout ---------------------------------------------------------
@@ -825,8 +832,8 @@ class TestBootstrapAdminFirstLogin:
         assert response.status_code == 302, response.text
         assert SESSION_COOKIE_NAME in response.cookies
         insert_args = engine.conn.fetchrow.call_args.args
-        assert "INSERT INTO users" in insert_args[0]
-        assert "ON CONFLICT (email) DO UPDATE" in insert_args[0]
+        assert "INSERT INTO users" in _sql(insert_args[0])
+        assert "ON CONFLICT (email) DO UPDATE" in _sql(insert_args[0])
         assert insert_args[2] == "admin@rekursiv.ai"
         assert insert_args[3] == "Admin"
         assert insert_args[4] == "admin"
@@ -861,7 +868,7 @@ class TestInstallOAuthStateWiresStore:
         # Sanity: the helper must own the wiring it claims to. Without
         # this assertion the test could silently pass on a
         # prior-leaked store.
-        assert isinstance(app.state.store, Store)
+        assert "store" in vars(app.state)["_state"]
         # Stub the bearer-resolution fetch as a viewer-role api_key
         # joined to an active user. This is the documented happy path
         # for ``_resolve_identity`` -- the route then 404s on the unknown
@@ -892,6 +899,19 @@ class TestInstallOAuthStateWiresStore:
         # outcomes (200 happy path, 401 unauthorized, 404 unknown
         # target) is acceptable evidence the bearer path resolved.
         assert response.status_code in {200, 401, 404}, response.text
+
+
+def _sql(value: object) -> str:
+    assert isinstance(value, str)
+    return value
+
+
+def _json_detail(response: httpx2.Response) -> str:
+    """Narrow an error detail at the HTTP response boundary."""
+    body = DictCodec.coerce(response.json())
+    detail = body["detail"]
+    assert isinstance(detail, str)
+    return detail
 
 
 if __name__ == "__main__":

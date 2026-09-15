@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from pathlib import Path
+from typing import cast
 
 import contextlib
 import os
@@ -40,7 +41,7 @@ def serving(path: Path, *, version: str = "v1") -> Generator[list[Request]]:
     def serve() -> None:
         while True:
             try:
-                conn, _ = listener.accept()
+                conn, _ = cast(tuple[socket.socket, object], listener.accept())
             except OSError:
                 return
             with conn:
@@ -238,7 +239,7 @@ class TestDelegate:
         listener.listen(1)
 
         def serve_then_die() -> None:
-            conn, _ = listener.accept()
+            conn, _ = cast(tuple[socket.socket, object], listener.accept())
             with conn:
                 received.append(Request.from_json(read_frame(conn)))
                 # Reply never sent: the daemon "crashed" after running the verb.

@@ -39,7 +39,12 @@ def _adapter_for(path: Path) -> _Adapter:
     return claude if path.name.startswith("claude") else codex
 
 
-@pytest.mark.parametrize("path", _fixtures(), ids=lambda p: p.stem)
+def _fixture_id(path: Path) -> str:
+    """Return the fixture stem for pytest's parameter id."""
+    return path.stem
+
+
+@pytest.mark.parametrize("path", _fixtures(), ids=_fixture_id)
 def test_a_captured_session_round_trips_byte_for_byte(path: Path) -> None:
     native = path.read_text(encoding="utf-8")
     adapter = _adapter_for(path)
@@ -51,7 +56,7 @@ def test_a_captured_session_round_trips_byte_for_byte(path: Path) -> None:
     assert rebuilt.getvalue() == native
 
 
-@pytest.mark.parametrize("path", _fixtures(), ids=lambda p: p.stem)
+@pytest.mark.parametrize("path", _fixtures(), ids=_fixture_id)
 def test_a_captured_session_is_detected_as_its_own_format(path: Path) -> None:
     expected = "claude" if path.name.startswith("claude") else "codex"
 
@@ -83,7 +88,7 @@ claim to understand. A kind leaving this list is the IR learning something;
 a kind joining it is the IR giving something up."""
 
 
-@pytest.mark.parametrize("path", _fixtures(), ids=lambda p: p.stem)
+@pytest.mark.parametrize("path", _fixtures(), ids=_fixture_id)
 def test_a_captured_session_maps_every_record_kind(path: Path) -> None:
     # The point of capturing live output: a kind the CLI emits but no adapter
     # maps lands in UncategorizedRecord, and this is what reports it. A
@@ -105,7 +110,7 @@ def test_the_fixture_directory_is_populated() -> None:
     assert _fixtures(), f"no session fixtures in {_CWD / 'testdata'}"
 
 
-@pytest.mark.parametrize("path", _fixtures(), ids=lambda p: p.stem)
+@pytest.mark.parametrize("path", _fixtures(), ids=_fixture_id)
 def test_a_captured_session_carries_no_credential(path: Path) -> None:
     # A capture drives real tools against a real environment, so the model can
     # echo a live secret into its own transcript: one codex run wrote a 1900

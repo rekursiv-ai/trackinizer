@@ -26,6 +26,7 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedRecord,
     UserMessage,
 )
+from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
 
 
 def _content(record: SessionRecord) -> str:
@@ -139,9 +140,12 @@ def test_a_call_after_a_user_turn_gets_its_own_assistant_turn() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    messages = json.loads(out.getvalue())["messages"]
-    assert [message["type"] for message in messages] == ["user", "gemini"]
-    assert "toolCalls" not in messages[0]
+    messages = ListCodec.coerce(DictCodec.coerce(loads(out.getvalue())).get("messages"))
+    assert [DictCodec.coerce(message)["type"] for message in messages] == [
+        "user",
+        "gemini",
+    ]
+    assert "toolCalls" not in DictCodec.coerce(messages[0])
 
 
 def test_a_leading_tool_call_writes_a_turn_rather_than_crashing() -> None:
@@ -156,7 +160,7 @@ def test_a_leading_tool_call_writes_a_turn_rather_than_crashing() -> None:
 
     gemini.denormalize([ToolCall(call_id="t1", name="read_file")], out)
 
-    assert json.loads(out.getvalue())["messages"] == [
+    assert DictCodec.coerce(loads(out.getvalue()))["messages"] == [
         {
             "type": "gemini",
             "content": "",
@@ -182,7 +186,8 @@ def test_one_incomplete_record_does_not_discard_the_session() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    assert [m["content"] for m in json.loads(out.getvalue())["messages"]] == [
+    messages = ListCodec.coerce(DictCodec.coerce(loads(out.getvalue())).get("messages"))
+    assert [DictCodec.coerce(m)["content"] for m in messages] == [
         "real turn",
         "answer",
     ]
@@ -200,7 +205,7 @@ def test_a_crossed_session_declares_an_id_it_can_be_recognized_by() -> None:
     gemini.denormalize([UserMessage(content="hi")], out)
 
     assert detect_format(out.getvalue()) == "gemini"
-    assert json.loads(out.getvalue())["sessionId"]
+    assert DictCodec.coerce(loads(out.getvalue()))["sessionId"]
 
 
 def test_a_foreign_encoding_key_is_not_written_as_a_document_field() -> None:
@@ -218,7 +223,7 @@ def test_a_foreign_encoding_key_is_not_written_as_a_document_field() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    assert set(json.loads(out.getvalue())) == {"sessionId", "messages"}
+    assert set(DictCodec.coerce(loads(out.getvalue()))) == {"sessionId", "messages"}
 
 
 def test_a_timestamp_survives_the_gemini_round_trip() -> None:
@@ -275,7 +280,8 @@ def test_a_record_gemini_cannot_express_is_dropped_not_written() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    assert len(json.loads(out.getvalue())["messages"]) == 1
+    messages = ListCodec.coerce(DictCodec.coerce(loads(out.getvalue())).get("messages"))
+    assert len(messages) == 1
 
 
 if __name__ == "__main__":

@@ -101,6 +101,7 @@ async def profile_route(
             identity.user_id,
         )
     name = identity.email if row is None else row["name"]
+    assert isinstance(name, str)
     last_login = None if row is None else row["last_login"]
     return {
         "user_id": str(identity.user_id),

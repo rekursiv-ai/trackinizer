@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import suppress
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
 
 import asyncio
@@ -236,9 +236,9 @@ class _LifecycleMixin(_StoreShared):
             for row in rows:
                 await upsert_embedding(
                     conn,
-                    row["id"],
+                    cast(UUID, row["id"]),
                     embedder.name,
-                    await embedder.embed(row["title"]),
+                    await embedder.embed(cast(str, row["title"])),
                 )
 
     async def bootstrap(self, *, attempts: int = 6) -> None:

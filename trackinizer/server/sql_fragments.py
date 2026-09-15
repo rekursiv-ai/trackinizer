@@ -10,7 +10,7 @@ consistently.
 
 from __future__ import annotations
 
-from typing import Final, Literal, cast
+from typing import Final, Literal
 
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.edges import EDGE_POLICIES
@@ -37,10 +37,14 @@ def _policy_exclude_clauses(
     """Render an ``AND NOT EXISTS`` clause per policy that sets ``policy_attr``."""
     sides: dict[Literal["from", "to"], list[str]] = {"from": [], "to": []}
     for kind, policy in EDGE_POLICIES.items():
-        side = getattr(policy, policy_attr)
+        side = (
+            policy.skips_scheduler_on
+            if policy_attr == "skips_scheduler_on"
+            else policy.invalidates_currency_on
+        )
         if side is None:
             continue
-        sides[cast(Literal["from", "to"], side)].append(kind)
+        sides[side].append(kind)
     clauses: list[str] = []
     for side, kinds in sides.items():
         if not kinds:

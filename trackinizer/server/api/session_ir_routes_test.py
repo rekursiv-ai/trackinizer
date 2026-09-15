@@ -21,7 +21,13 @@ from trackinizer.lib.agent.types.sessions import (
     Thinking,
     UserMessage,
 )
-from trackinizer.lib.custom_json import json_freeze
+from trackinizer.lib.custom_json import (
+    DictCodec,
+    IntCodec,
+    ListCodec,
+    StrCodec,
+    json_freeze,
+)
 from trackinizer.server.store.session_ir import SessionManifest
 from trackinizer.types.inquiries import AgentSession, Issue
 from trackinizer.types.session_records import SessionRecordRow
@@ -88,7 +94,12 @@ class TestReadParts:
         response = client.get(f"/api/sessions/{session_id}/parts")
 
         assert response.status_code == 200, response.text
-        assert [p["name"] for p in response.json()["parts"]] == ["a.jsonl", "b.jsonl"]
+        body = DictCodec.coerce(response.json())
+        parts = ListCodec.coerce(body["parts"], object)
+        assert [StrCodec.coerce(DictCodec.coerce(p)["name"]) for p in parts] == [
+            "a.jsonl",
+            "b.jsonl",
+        ]
 
     def test_an_empty_format_is_reported_not_hidden(
         self,
@@ -125,7 +136,9 @@ class TestReadParts:
 
         response = client.get(f"/api/sessions/{uuid.uuid4()}/parts")
 
-        assert response.json()["parts"][0]["format"] == ""
+        body = DictCodec.coerce(response.json())
+        parts = ListCodec.coerce(body["parts"], object)
+        assert DictCodec.coerce(parts[0])["format"] == ""
 
     def test_a_non_session_id_is_a_404(
         self,
@@ -162,9 +175,10 @@ class TestReadRecords:
         response = client.get(f"/api/sessions/{uuid.uuid4()}/records?part=0")
 
         assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["part"] == 0
-        assert [r["idx"] for r in body["records"]] == [0, 1]
+        body = DictCodec.coerce(response.json())
+        assert IntCodec.coerce(body["part"]) == 0
+        records = ListCodec.coerce(body["records"], object)
+        assert [IntCodec.coerce(DictCodec.coerce(r)["idx"]) for r in records] == [0, 1]
 
     def test_ciphertext_rides_beside_the_payload(
         self,
@@ -193,11 +207,12 @@ class TestReadRecords:
             ),
         )
 
-        record = client.get(f"/api/sessions/{uuid.uuid4()}/records").json()["records"][
-            0
-        ]
+        body = DictCodec.coerce(
+            client.get(f"/api/sessions/{uuid.uuid4()}/records").json(),
+        )
+        record = DictCodec.coerce(ListCodec.coerce(body["records"], object)[0])
 
-        assert record["ciphertext"] == _CIPHERTEXT
+        assert StrCodec.coerce(record["ciphertext"]) == _CIPHERTEXT
         assert _CIPHERTEXT not in str(record["payload"])
 
     def test_plaintext_only_reaches_the_store(

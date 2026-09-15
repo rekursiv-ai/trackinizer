@@ -11,7 +11,7 @@ client and the generated doc.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final, get_args
+from typing import Final, cast, get_args
 
 from fastapi import FastAPI
 
@@ -220,7 +220,15 @@ def test_submit_tokens_are_kind_lowercased() -> None:
     One canonical lowercase spelling per kind across the URL, the CLI
     verb, and the storage prefix -- no snake_case split, no hand table.
     """
-    kinds = set(get_args(Inquiry.InquiryKind.__value__))
+    kinds = cast(
+        tuple[str, ...],
+        get_args(
+            cast(
+                object,
+                Inquiry.InquiryKind.__value__,
+            ),
+        ),
+    )
     assert set(SUBMIT_BODY) == {kind.lower() for kind in kinds}
 
 

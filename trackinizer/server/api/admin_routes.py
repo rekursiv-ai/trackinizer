@@ -22,7 +22,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from trackinizer.lib.custom_json import MutableJSON
+from trackinizer.lib.custom_json import DatetimeCodec, MutableJSON, StrCodec
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api._routes_shared import (
@@ -98,12 +98,12 @@ async def admin_list_users_route(
         "users": [
             {
                 "id": str(row["id"]),
-                "email": str(row["email"]),
-                "name": str(row["name"]),
-                "role": cast(Role, row["role"]),
-                "status": str(row["status"]),
-                "created_at": iso_format(row["created_at"]),
-                "last_login": iso_format(row["last_login"]),
+                "email": StrCodec.coerce(row["email"]),
+                "name": StrCodec.coerce(row["name"]),
+                "role": cast(Role, StrCodec.coerce(row["role"])),
+                "status": StrCodec.coerce(row["status"]),
+                "created_at": iso_format(DatetimeCodec.coerce(row["created_at"])),
+                "last_login": iso_format(DatetimeCodec.coerce(row["last_login"])),
             }
             for row in rows
         ]
@@ -433,7 +433,9 @@ async def _refuse_last_admin_loss(conn: Conn, target_id: uuid.UUID) -> None:
     )
     if row is None or not row["target_is_admin_active"]:
         return
-    if row["other_admins"] >= 1:
+    other_admins = row["other_admins"]
+    assert isinstance(other_admins, int)
+    if other_admins >= 1:
         return
     raise HTTPException(
         status_code=409,
@@ -447,7 +449,7 @@ def _serialize_allowlist(row: dict[str, object]) -> MutableJSON:
     return {
         "email_or_pattern": str(row["email_or_pattern"]),
         "role": str(row["role"]),
-        "added_by": (None if added_by is None else str(cast(uuid.UUID, added_by))),
+        "added_by": (None if added_by is None else str(added_by)),
         "added_at": iso_format(row["added_at"]),
     }
 

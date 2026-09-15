@@ -11,7 +11,7 @@ oracle even though it no longer runs in production.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import cast
 from uuid import UUID, uuid4
 
 import dataclasses
@@ -41,7 +41,7 @@ from trackinizer.types.inquiries import (
 )
 
 
-_INQUIRIES_NS: dict[str, Any] = dict(vars(inquiries))
+_INQUIRIES_NS: dict[str, object] = dict(vars(inquiries))
 
 
 def _resolve(annotation: object) -> object:
@@ -50,11 +50,12 @@ def _resolve(annotation: object) -> object:
         # ``from __future__ import annotations`` leaves every ``field.type``
         # as source text; evaluate it in the defining module's namespace,
         # which is what ``get_type_hints`` does for the top-level classes.
-        annotation = eval(annotation, _INQUIRIES_NS)  # noqa: S307 -- module's own annotations.
+        annotation = eval(annotation, _INQUIRIES_NS)  # noqa: S307 -- module's own annotations.  # pyright: ignore[reportAny] -- eval's stub is Any, but this evaluates the module's own annotations.
     if isinstance(annotation, typing.TypeAliasType):
         # PEP 695 aliases (``type Actor = str``, ``type Status = Literal[...]``)
         # are values rather than types; unwrap to whatever they name.
-        return _resolve(annotation.__value__)
+        value: object = annotation.__value__  # pyright: ignore[reportAny] -- TypeAliasType's stub exposes its value as Any.
+        return _resolve(value)
     return annotation
 
 
@@ -64,6 +65,11 @@ def _resolve(annotation: object) -> object:
 # rather than silently substituting something else, so the failure names the missing
 # case instead of hiding it; extending this function is then the deliberate act it
 # should be.
+def _type_args(annotation: object) -> tuple[object, ...]:
+    """Return runtime annotation arguments with the untyped stub narrowed."""
+    return typing.get_args(annotation)
+
+
 def _sample(annotation: object) -> object:
     """One non-``None`` value satisfying an annotation."""
     annotation = _resolve(annotation)
@@ -72,10 +78,10 @@ def _sample(annotation: object) -> object:
         # Reached only via a nested annotation (a tuple of optionals, say);
         # ``_samples`` is what expands a union at the field level.
         return _sample(
-            next(a for a in typing.get_args(annotation) if a is not type(None)),
+            next(a for a in _type_args(annotation) if a is not type(None)),
         )
     if origin is tuple:
-        return (_sample(typing.get_args(annotation)[0]),)
+        return (_sample(_type_args(annotation)[0]),)
     if origin is dict:
         # ``Experiment.config`` -- the one JSONB field, whose leaves are
         # caller-supplied and so the only place an unhandled type can enter.
@@ -94,7 +100,7 @@ def _sample(annotation: object) -> object:
             },
         }
     if origin is typing.Literal:
-        return typing.get_args(annotation)[0]
+        return _type_args(annotation)[0]
     if annotation is datetime:
         return datetime(2026, 8, 19, 10, 12, 23, 55_030, tzinfo=UTC)
     if annotation is UUID:
@@ -129,15 +135,12 @@ def _sample(annotation: object) -> object:
 # by ``test_every_field_is_populated``.
 def _populated[T: Inquiry](subclass: type[T]) -> T:
     """One instance of ``subclass`` with every field set to a real value."""
-    hints = typing.get_type_hints(subclass, _INQUIRIES_NS)
+    hints = cast(dict[str, object], typing.get_type_hints(subclass, _INQUIRIES_NS))
     return subclass(
-        **cast(
-            dict[str, Any],
-            {
-                field.name: _sample(hints[field.name])
-                for field in dataclasses.fields(subclass)
-            },
-        ),
+        **{  # pyright: ignore[reportArgumentType] -- Dynamic dataclass fields are validated by the runtime oracle.  # ty: ignore[invalid-argument-type] -- Dynamic dataclass fields are validated by the runtime oracle.
+            field.name: _sample(hints[field.name])
+            for field in dataclasses.fields(subclass)
+        },
     )
 
 
@@ -191,7 +194,7 @@ class TestTagKind:
         # protocol break, not an optimization.
         issue = _issue()
         payload = tag_kind(issue)
-        expected = jsonable_encoder(issue)
+        expected = cast(dict[str, object], jsonable_encoder(issue))
         expected["kind"] = "Issue"
         assert payload == expected
 
@@ -228,7 +231,7 @@ class TestTagKind:
         # tuned to whichever kind the author happened to test.
         instance = _populated(subclass)
         payload = tag_kind(instance)
-        expected = jsonable_encoder(instance)
+        expected = cast(dict[str, object], jsonable_encoder(instance))
         expected["kind"] = subclass.__name__
         assert payload == expected
 

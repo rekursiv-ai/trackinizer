@@ -23,6 +23,7 @@ from trackinizer.lib.custom_json import (
     DataclassCodec,
     decode,
     json_unfreeze,
+    loads,
 )
 
 
@@ -42,7 +43,7 @@ def normalize(stream: TextIO) -> Iterator[SessionRecord]:
     # Each record carries its own ``py/object`` tag, which is what selects the
     # union member -- so the whole list decodes as the annotated type rather
     # than one class named up front.
-    decoded = decode(list[SessionRecord], json.loads(stream.read()))
+    decoded = decode(list[SessionRecord], loads(stream.read()))
     assert isinstance(decoded, list)
     yield from cast(list[SessionRecord], decoded)
 

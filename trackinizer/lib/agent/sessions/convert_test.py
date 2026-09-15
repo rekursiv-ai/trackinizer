@@ -31,7 +31,7 @@ from trackinizer.lib.agent.sessions.convert import (
     detect_format,
     main,
 )
-from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec
+from trackinizer.lib.custom_json import DictCodec, IntCodec, ListCodec, StrCodec, loads
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -60,7 +60,7 @@ def _first_turn(rollout: str) -> str:
     kept = [rollout.splitlines(keepends=True)[0]]
     started = False
     for line in rollout.splitlines(keepends=True)[1:]:
-        record = DictCodec.coerce(json.loads(line))
+        record = DictCodec.coerce(loads(line))
         started = started or record.get("type") == "turn_context"
         if not started:
             continue
@@ -101,7 +101,7 @@ def test_convert_writes_stdout_and_out_dir(
     assert main(["convert", str(path), "--to", "json"]) == 0
     # A bare ARRAY of tagged records: a session IS its records, so nothing
     # wraps them and no metadata sits beside them.
-    document = ListCodec.mappings(json.loads(capsys.readouterr().out))
+    document = ListCodec.mappings(loads(capsys.readouterr().out))
     assert StrCodec.coerce(document[0].get("py/object")).endswith("TurnContext")
 
     assert main(["convert", str(path), "--to", "json", "--out-dir", str(out_dir)]) == 0
@@ -173,7 +173,7 @@ def test_workers_run_in_separate_processes(
         _ = _session(tmp_path / name / "s.jsonl", _claude_session())
 
     assert main(["verify", str(tmp_path), "--workers", "4", "--format", "json"]) == 0
-    report = json.loads(capsys.readouterr().err)
+    report = DictCodec.coerce(loads(capsys.readouterr().err))
 
     assert report["files"] == 4
     assert report["ok"] == 4
@@ -190,7 +190,11 @@ def test_verify_reports_the_wire_size_against_the_source(
     path.write_text(_claude_session())
 
     assert main(["verify", str(path), "--format", "json"]) == 0
-    report = json.loads(capsys.readouterr().err)["results"][0]
+    report = DictCodec.coerce(
+        ListCodec.coerce(
+            DictCodec.coerce(loads(capsys.readouterr().err))["results"],
+        )[0],
+    )
 
     assert report["source_bytes"] == path.stat().st_size
     assert report["output_bytes"] == report["source_bytes"]
@@ -209,11 +213,19 @@ def test_verify_reports_a_size_gap_on_a_shortened_rewrite(
     )
 
     assert main(["verify", str(path), "--format", "json"]) == 1
-    report = json.loads(capsys.readouterr().err)["results"][0]
+    report = DictCodec.coerce(
+        ListCodec.coerce(
+            DictCodec.coerce(loads(capsys.readouterr().err))["results"],
+        )[0],
+    )
 
     assert report["byte_exact"] is False
     assert report["source_bytes"] == path.stat().st_size
-    assert 0 < report["output_bytes"] < report["source_bytes"]
+    assert (
+        0
+        < IntCodec.coerce(report["output_bytes"])
+        < IntCodec.coerce(report["source_bytes"])
+    )
 
 
 def test_detect_format_reads_each_shape(tmp_path: Path) -> None:
@@ -439,7 +451,7 @@ def test_a_multi_file_session_is_joined_then_split_back_byte_for_byte(
     assert result.output_bytes == result.source_bytes
 
     assert main(["verify", str(project), "--format", "json"]) == 0
-    report = json.loads(capsys.readouterr().err)
+    report = DictCodec.coerce(loads(capsys.readouterr().err))
     assert report["files"] == 1
     assert report["ok"] == 1
 

@@ -15,16 +15,17 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast, override
+from typing import cast, override
 from uuid import UUID
 
 import asyncio
-import json
 
 import pytest
 
 from trackinizer.conftest import new_uuid
+from trackinizer.lib.custom_json import DictCodec, loads
 from trackinizer.server.inbound import Inbound, InboundQueue
+from trackinizer.server.store.core import Store
 from trackinizer.server.subscriber import (
     _change_payload,
     _delivery_key,
@@ -111,7 +112,7 @@ async def _run_sweep_until(
     """Drive the real task until ``done()`` (or fail at ``timeout_sec``)."""
     task = asyncio.create_task(
         push_changes_to_live_subscribers(
-            cast(Any, store),
+            cast(Store, store),
             inbound,
             page_size=page_size,
             sweep_interval_sec=0.01,
@@ -147,7 +148,7 @@ class TestPushChanges:
         drained = inbound.drain(session_id)
         assert len(drained) == 1
         assert drained[0].source == "trackinizer"
-        payload = json.loads(drained[0].text)
+        payload = DictCodec.coerce(loads(drained[0].text))
         assert payload["kind"] == "created"
         assert payload["subject_id"] == str(change.subject_id)
 
@@ -374,7 +375,7 @@ async def _run_failing_sweep(
     monkeypatch.setattr(asyncio, "sleep", _record)
     task = asyncio.create_task(
         push_changes_to_live_subscribers(
-            cast(Any, store),
+            cast(Store, store),
             InboundQueue(),
             sweep_interval_sec=0.5,
             max_backoff_sec=max_backoff_sec,
@@ -508,7 +509,7 @@ class TestPayloadAndKey:
     def test_change_payload_is_a_compact_envelope(self) -> None:
         """The payload is metadata only: who did what to which row, when."""
         change = _change(kind="status")
-        payload = json.loads(_change_payload(change, 42))
+        payload = DictCodec.coerce(loads(_change_payload(change, 42)))
         assert payload["kind"] == "status"
         assert payload["actor"] == "bob"
         assert payload["subject_kind"] == "Issue"
@@ -525,7 +526,7 @@ class TestPayloadAndKey:
         ``subject_ref`` carries the bare address for programmatic reuse.
         """
         change = _change(kind="status")
-        payload = json.loads(_change_payload(change, 42))
+        payload = DictCodec.coerce(loads(_change_payload(change, 42)))
         assert payload["agent_message"] == "FYI: trax issue 42 status changed (by bob)"
         assert payload["subject_ref"] == "issue 42"
         assert payload["row"] == "trax issue 42"
@@ -533,13 +534,15 @@ class TestPayloadAndKey:
     def test_payload_falls_back_to_uuid_for_purged_subjects(self) -> None:
         """A purged subject has no seq (LEFT JOIN miss); the UUID still works."""
         change = _change(kind="purged")
-        payload = json.loads(_change_payload(change, None))
+        payload = DictCodec.coerce(loads(_change_payload(change, None)))
         assert payload["subject_ref"] == f"issue {change.subject_id}"
         assert payload["row"] == f"trax issue {change.subject_id}"
 
     def test_agent_message_reads_naturally_for_event_kinds(self) -> None:
         """Event kinds (created, edge_added) read bare -- no 'changed' suffix."""
-        payload = json.loads(_change_payload(_change(kind="edge_added"), 7))
+        payload = DictCodec.coerce(
+            loads(_change_payload(_change(kind="edge_added"), 7))
+        )
         assert payload["agent_message"] == "FYI: trax issue 7 edge_added (by bob)"
 
     def test_payload_is_bounded_regardless_of_field_sizes(self) -> None:

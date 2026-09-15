@@ -30,7 +30,7 @@ from contextlib import ExitStack, asynccontextmanager, closing, nullcontext, sup
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Self, TextIO, cast, override
+from typing import Self, TextIO, cast, override
 from unittest.mock import Mock
 
 import enum
@@ -51,6 +51,7 @@ import uvicorn
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.agent.types.sessions import SessionRecord, UserMessage
+from trackinizer.lib.custom_json import DictCodec, IntCodec, ListCodec
 from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.server.api import query, session_ir_routes, sessions_routes
@@ -105,7 +106,8 @@ def _free_port() -> int:
     """Pick an ephemeral localhost port for the test server."""
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
         sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
+        address = cast(tuple[str, int], sock.getsockname())
+        return address[1]
 
 
 # The engine is constructed *inside* the lifespan so it lives on uvicorn's own event
@@ -274,9 +276,9 @@ def test_server_thread_stops_thread_on_startup_timeout(
         while not fake.should_exit:
             time.sleep(0.01)
 
-    thread_ref._server = cast(Any, fake)
+    thread_ref._server = cast(uvicorn.Server, fake)
     thread_ref._thread = threading.Thread(target=_loop, daemon=True)
-    thread_ref._app = cast(Any, _StateApp())
+    thread_ref._app = cast(FastAPI, _StateApp())
     thread_ref.base_url = "http://127.0.0.1:0"
 
     with pytest.raises(RuntimeError, match="did not start"):
@@ -331,7 +333,7 @@ def _latest_session_row(
             params={"kind": "AgentSession", "limit": 50},
         )
         listing.raise_for_status()
-        rows = cast(list[dict[str, object]], listing.json())
+        rows = ListCodec.mappings(listing.json())
         if cli is not None:
             rows = [r for r in rows if r.get("cli") == cli]
         return rows[0] if rows else None
@@ -359,20 +361,20 @@ def _latest_session_records(
     with httpx2.Client(base_url=base_url, timeout=30.0) as http:
         parts = http.get(f"/api/sessions/{session_id}/parts")
         parts.raise_for_status()
-        listing = cast(dict[str, object], parts.json())
-        for part in cast(list[dict[str, object]], listing["parts"]):
+        listing = DictCodec.coerce(parts.json())
+        for part in ListCodec.mappings(listing["parts"]):
             page = http.get(
                 f"/api/sessions/{session_id}/records",
-                params={"part": int(cast(int, part["part"])), "limit": 1000},
+                params={"part": IntCodec.coerce(part["part"]), "limit": 1000},
             )
             page.raise_for_status()
-            body = cast(dict[str, object], page.json())
+            body = DictCodec.coerce(page.json())
             # ``RecordBody`` carries no ``part`` -- the route resolves one and
             # returns it alongside -- so stamp it here, or a caller checking
             # positions cannot tell two parts apart.
             found.extend(
                 {**record, "part": body["part"]}
-                for record in cast(list[dict[str, object]], body["records"])
+                for record in ListCodec.mappings(body["records"])
             )
     return found
 
@@ -430,13 +432,13 @@ def _assert_transcript_synced(base_url: str, *, cli: str) -> None:
     # position derived from its place in the file's normalized stream.
     for record in records:
         assert isinstance(record["payload"], dict)
-        assert int(cast(int, record["idx"])) >= 0
+        assert IntCodec.coerce(record["idx"]) >= 0
     # Each part numbers its records from 0 with no gaps: the key is derived
     # from stream position, so a hole means a record was dropped in ingest.
     by_part: dict[int, list[int]] = {}
     for record in records:
-        part = int(cast(int, record["part"]))
-        by_part.setdefault(part, []).append(int(cast(int, record["idx"])))
+        part = IntCodec.coerce(record["part"])
+        by_part.setdefault(part, []).append(IntCodec.coerce(record["idx"]))
     for part, idxs in by_part.items():
         assert sorted(idxs) == list(range(len(idxs))), (
             f"gap in part {part}'s positions: {sorted(idxs)}"
@@ -573,7 +575,7 @@ def test_capture_streams_incrementally_before_close(
 
     worker = threading.Thread(
         target=lambda: _drain_filesystem_loop(
-            cast(Any, adapter),
+            (adapter),
             sink,
             stats,
             config,

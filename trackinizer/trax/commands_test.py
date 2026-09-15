@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any, cast
-
 import argparse
 
 import pytest
@@ -100,7 +98,7 @@ def test_command_base_run_raises_not_implemented() -> None:
         names = ("norun",)
 
     with pytest.raises(NotImplementedError):
-        _Cmd.run("norun", argparse.Namespace(), cast(Any, lambda: None))
+        _Cmd.run("norun", argparse.Namespace(), lambda: pytest.fail("never called"))
 
 
 if __name__ == "__main__":

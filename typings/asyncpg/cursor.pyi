@@ -1,0 +1,111 @@
+from collections.abc import Generator, Sequence
+from typing import Any, Generic, Self, overload
+from typing_extensions import TypeVar
+
+from . import (
+    connection as _connection,
+    connresource,
+)
+from .protocol import (
+    Record,
+    protocol as _cprotocol,
+)
+
+_Record = TypeVar("_Record", bound=Record, default=Record)
+
+class CursorFactory(connresource.ConnectionResource, Generic[_Record]):
+    __slots__ = (
+        "_args",
+        "_prefetch",
+        "_query",
+        "_record_class",
+        "_state",
+        "_timeout",
+    )
+    @overload
+    def __init__(
+        self,
+        connection: _connection.Connection[_Record],
+        query: str,
+        state: _cprotocol.PreparedStatementState[_Record] | None,
+        args: Sequence[object],
+        prefetch: int | None,
+        timeout: float | None,
+        record_class: None,
+    ) -> None: ...
+    @overload
+    def __init__(
+        self,
+        connection: _connection.Connection[Any],
+        query: str,
+        state: _cprotocol.PreparedStatementState[_Record] | None,
+        args: Sequence[object],
+        prefetch: int | None,
+        timeout: float | None,
+        record_class: type[_Record],
+    ) -> None: ...
+    def __aiter__(self) -> CursorIterator[_Record]: ...
+    def __await__(self) -> Generator[Any, None, Cursor[_Record]]: ...
+    def __del__(self) -> None: ...
+
+class BaseCursor(connresource.ConnectionResource, Generic[_Record]):
+    __slots__ = (
+        "_args",
+        "_exhausted",
+        "_portal_name",
+        "_query",
+        "_record_class",
+        "_state",
+    )
+    @overload
+    def __init__(
+        self,
+        connection: _connection.Connection[_Record],
+        query: str,
+        state: _cprotocol.PreparedStatementState[_Record] | None,
+        args: Sequence[object],
+        record_class: None,
+    ) -> None: ...
+    @overload
+    def __init__(
+        self,
+        connection: _connection.Connection[Any],
+        query: str,
+        state: _cprotocol.PreparedStatementState[_Record] | None,
+        args: Sequence[object],
+        record_class: type[_Record],
+    ) -> None: ...
+    def __del__(self) -> None: ...
+
+class CursorIterator(BaseCursor[_Record]):
+    __slots__ = ("_buffer", "_prefetch", "_timeout")
+    @overload
+    def __init__(
+        self,
+        connection: _connection.Connection[_Record],
+        query: str,
+        state: _cprotocol.PreparedStatementState[_Record] | None,
+        args: Sequence[object],
+        record_class: None,
+        prefetch: int,
+        timeout: float | None,
+    ) -> None: ...
+    @overload
+    def __init__(
+        self,
+        connection: _connection.Connection[Any],
+        query: str,
+        state: _cprotocol.PreparedStatementState[_Record] | None,
+        args: Sequence[object],
+        record_class: type[_Record],
+        prefetch: int,
+        timeout: float | None,
+    ) -> None: ...
+    def __aiter__(self) -> Self: ...
+    async def __anext__(self) -> _Record: ...
+
+class Cursor(BaseCursor[_Record]):
+    __slots__ = ()
+    async def fetch(self, n: int, *, timeout: float | None = ...) -> list[_Record]: ...  # noqa: ASYNC109 -- Mirrors upstream timeout parameter.
+    async def fetchrow(self, *, timeout: float | None = ...) -> _Record | None: ...  # noqa: ASYNC109 -- Mirrors upstream timeout parameter.
+    async def forward(self, n: int, *, timeout: float | None = ...) -> int: ...  # noqa: ASYNC109 -- Mirrors upstream timeout parameter.

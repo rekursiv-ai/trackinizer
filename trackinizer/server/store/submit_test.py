@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from typing import cast
 from unittest.mock import AsyncMock
 
-import json
+import inspect
 
 import asyncpg
 import pytest
@@ -18,6 +19,7 @@ from trackinizer.conftest import (
     new_uuid,
     queue_field_rows,
 )
+from trackinizer.lib.custom_json import DictCodec, loads
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.store.change_id_slot import (
@@ -48,7 +50,7 @@ class TestSubmit:
         assert len(engine.notify_calls) == 1
         ch, payload = engine.notify_calls[0]
         assert ch == NOTIFY_CHANNEL
-        decoded = json.loads(payload)
+        decoded = DictCodec.coerce(loads(payload))
         assert decoded == {"id": str(issue_id)}
 
     @pytest.mark.asyncio
@@ -170,7 +172,8 @@ class TestSubmit:
         )
         # Edge INSERT now uses fetchval (RETURNING); covered via fetchval calls.
         assert any(
-            "INSERT INTO edges" in c.args[0] for c in conn.fetchval.call_args_list
+            isinstance(c.args[0], str) and "INSERT INTO edges" in c.args[0]
+            for c in conn.fetchval.call_args_list
         )
 
     @pytest.mark.asyncio
@@ -198,7 +201,9 @@ class TestSubmit:
         )
         sqls = executed_sql(conn)
         edge_inserts = [
-            c for c in conn.fetchval.call_args_list if "INSERT INTO edges" in c.args[0]
+            c
+            for c in conn.fetchval.call_args_list
+            if isinstance(c.args[0], str) and "INSERT INTO edges" in c.args[0]
         ]
         assert edge_inserts
         # Belief citations now store as Artifact -> Belief (cite_peer_as_from):
@@ -270,7 +275,9 @@ class TestSubmit:
         insert = next(
             c
             for c in conn.execute.call_args_list
-            if c.args and "INSERT INTO inquiries" in c.args[0]
+            if c.args
+            and isinstance(c.args[0], str)
+            and "INSERT INTO inquiries" in c.args[0]
         )
         # Locate the paper_authors bind by its column position rather than a
         # hardcoded index: insert_inquiry derives the column order from
@@ -283,7 +290,7 @@ class TestSubmit:
         authors = insert.args[4 + derived.index("paper_authors")]
         # byline_strs preserves order + duplicates (unlike canonical_strs dedup),
         # matching set_authors. Stored as tuple/list -- both bind to TEXT[].
-        assert list(authors) == ["Ada", "Ada", "Grace"]
+        assert list(cast(list[str], authors)) == ["Ada", "Ada", "Grace"]
 
 
 class TestIdempotentShortCircuitConsumesChangeId:
@@ -331,7 +338,8 @@ class TestIdempotentShortCircuitConsumesChangeId:
         change_ids = [
             call.args[1]  # ``id`` is the first column in ``emit_change``.
             for call in conn.execute.call_args_list
-            if "INSERT INTO change_log" in call.args[0]
+            if isinstance(call.args[0], str)
+            and "INSERT INTO change_log" in call.args[0]
         ]
         # Only the artifact's ``created`` emit_change ran; its
         # change_log.id must NOT be the prior submit's key.
@@ -377,7 +385,8 @@ class TestIdempotentShortCircuitConsumesChangeId:
         change_ids = [
             call.args[1]
             for call in conn.execute.call_args_list
-            if "INSERT INTO change_log" in call.args[0]
+            if isinstance(call.args[0], str)
+            and "INSERT INTO change_log" in call.args[0]
         ]
         assert len(change_ids) == 1
         assert change_ids[0] != external_key, (
@@ -443,7 +452,8 @@ class TestIdempotentShortCircuitConsumesChangeId:
         change_ids = [
             call.args[1]
             for call in conn.execute.call_args_list
-            if "INSERT INTO change_log" in call.args[0]
+            if isinstance(call.args[0], str)
+            and "INSERT INTO change_log" in call.args[0]
         ]
         # First INSERT raised; second (the artifact's) succeeded. Its
         # change_log.id must NOT be the racer's key.
@@ -594,7 +604,12 @@ class TestSubmitBatch:
                 inserts["n"] += 1
                 if inserts["n"] == 2:
                     raise RuntimeError("boom")
-            return await base(sql, *args) if base is not None else "OK"
+            if base is None:
+                return "OK"
+            assert callable(base)
+            result = base(sql, *args)
+            assert inspect.isawaitable(result)
+            return await cast(Awaitable[object], result)
 
         conn.execute.side_effect = execute
         store, _engine = make_store(conn)
@@ -672,7 +687,7 @@ class TestSubmitBatch:
         ids = await store.submit_batch([SubmitIssue(title="i1", idempotency_key=key)])
         assert ids == [winner]
         assert not any(
-            "INSERT INTO inquiries" in call.args[0]
+            isinstance(call.args[0], str) and "INSERT INTO inquiries" in call.args[0]
             for call in conn.execute.call_args_list
             if call.args
         )

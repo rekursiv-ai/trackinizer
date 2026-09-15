@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from functools import partial
-from typing import cast, get_args
+from typing import cast
 from uuid import UUID
 
 import math
@@ -172,10 +172,13 @@ async def lookup_kind(conn: Conn, target_id: UUID) -> Inquiry.InquiryKind:
         not-found mutation path -- add_edge, add_cost -- surfaces one rule).
 
     """
-    kind = await conn.fetchval("SELECT kind FROM inquiries WHERE id = $1", target_id)
+    kind = cast(
+        Inquiry.InquiryKind | None,
+        await conn.fetchval("SELECT kind FROM inquiries WHERE id = $1", target_id),
+    )
     if kind is None:
         raise NotFoundError(f"inquiry {target_id} not found")
-    return cast(Inquiry.InquiryKind, kind)
+    return kind
 
 
 async def lookup_kinds(
@@ -207,7 +210,14 @@ async def lookup_kinds(
         vetted_sql("SELECT id, kind FROM inquiries WHERE id = ANY($1::uuid[])", lock),
         list(ids),
     )
-    return {r["id"]: r["kind"] for r in rows}
+    result: dict[UUID, Inquiry.InquiryKind] = {}
+    for row in rows:
+        row_id: object = row["id"]
+        row_kind: object = row["kind"]
+        assert isinstance(row_id, UUID)
+        assert isinstance(row_kind, str)
+        result[row_id] = cast(Inquiry.InquiryKind, row_kind)
+    return result
 
 
 async def validate_list_references(
@@ -423,7 +433,7 @@ _EDGE_ANNOTATION_KINDS: dict[str, frozenset[str]] = {
     if spec.applies_to_edge_kinds is not None
 }
 
-_VALID_EDGE_KINDS = cast(frozenset[str], frozenset(get_args(Edge.Kind.__value__)))
+_VALID_EDGE_KINDS = frozenset(EDGE_POLICIES)
 
 
 def validate_edge_priority(
@@ -521,7 +531,7 @@ async def _reject_edge_cycle(
     # Reject membership with a raise (not a bare ``assert``, which ``python -O``
     # strips) so a future internal caller mistake surfaces at the call site
     # rather than silently as a leaked lock.
-    if edge_kind not in get_args(Edge.Kind.__value__):
+    if edge_kind not in _VALID_EDGE_KINDS:
         raise ValidationError(f"_reject_edge_cycle: unknown edge_kind {edge_kind!r}")
     if not EDGE_POLICIES[edge_kind].enforces_acyclicity:
         return

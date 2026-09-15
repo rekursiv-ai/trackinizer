@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
@@ -91,11 +90,17 @@ class TestStartSession:
         store, _engine = make_store(conn)
         # Mock attribute patch: overwrite the bound method with a stub that
         # returns the replayed winner's id (the gather/idempotency race outcome).
-        store.submit_agentsession = AsyncMock(side_effect=submit)
-        sid, owner, next_seq = await store.start_session(
-            SubmitAgentSession(title="s", cli="codex", account="tester@example.com"),
-            requested_actor="alice",
-        )
+        with patch.object(
+            store,
+            "submit_agentsession",
+            new=AsyncMock(side_effect=submit),
+        ):
+            sid, owner, next_seq = await store.start_session(
+                SubmitAgentSession(
+                    title="s", cli="codex", account="tester@example.com"
+                ),
+                requested_actor="alice",
+            )
         assert sid == existing_id
         assert owner == "alice"
         assert next_seq == 0
@@ -105,7 +110,7 @@ class TestEndSession:
     """``end_session`` closes a session atomically (one tx, all-or-nothing)."""
 
     @classmethod
-    def _live_row(cls, cli: str | None = None) -> dict[str, Any]:
+    def _live_row(cls, cli: str | None = None) -> dict[str, object]:
         """Return a live ``AgentSession`` field-read row (``ended`` NULL)."""
         return {
             "kind": "AgentSession",

@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, cast, override
+from typing import cast, override
 
 import argparse
 import inspect
-import json
 import logging
 import uuid
 
@@ -21,7 +20,15 @@ from trackinizer.client.client import (
     server_url,
 )
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import DictCodec, FloatCodec, IntCodec, StrCodec
+from trackinizer.lib.custom_json import (
+    DictCodec,
+    FloatCodec,
+    IntCodec,
+    JSONValue,
+    ListCodec,
+    StrCodec,
+    loads,
+)
 from trackinizer.trax import cli, profile
 from trackinizer.trax.conftest import FakeClient
 from trackinizer.trax.grammar import parse_kind, parse_ref
@@ -37,7 +44,7 @@ from trackinizer.wire.wire_sessions import SessionStart
 # test asserts on the request that arrives in the handler.
 def _install_mock_transport(
     client: Client,
-    handler: Any,  # noqa: ANN401 -- forwarded to an upstream Any.
+    handler: Callable[[httpx2.Request], httpx2.Response],
 ) -> None:
     """Replace the client's transport with one that calls ``handler``."""
     client._http.close()
@@ -52,11 +59,11 @@ class _ClientSpy(Client):
     def __init__(
         self,
         *,
-        get_results: list[object] | None = None,
-        post_result: object | None = None,
+        get_results: list[JSONValue] | None = None,
+        post_result: JSONValue | None = None,
     ) -> None:
         super().__init__("http://server")
-        self.get_results = list(get_results or [])
+        self.get_results: list[JSONValue] = list(get_results or [])
         self.post_result = post_result
         self.get_calls: list[tuple[str, dict[str, object] | None]] = []
         self.post_calls: list[tuple[str, object]] = []
@@ -71,7 +78,7 @@ class _ClientSpy(Client):
         path: str,
         *,
         params: Mapping[str, object] | None = None,
-    ) -> Any:
+    ) -> JSONValue:
         self.get_calls.append((path, None if params is None else dict(params)))
         return self.get_results.pop(0) if self.get_results else None
 
@@ -81,7 +88,7 @@ class _ClientSpy(Client):
         path: str,
         *,
         body: object = None,
-    ) -> Any:
+    ) -> JSONValue:
         self.post_calls.append((path, body))
         self.request_calls.append(("POST", path, body))
         return self.post_result
@@ -97,7 +104,7 @@ class _ClientSpy(Client):
         change_id: uuid.UUID | None = None,
         retry_attempts: int = 3,
         timeout: float | None = None,
-    ) -> Any:
+    ) -> JSONValue:
         del change_id, params, retry_attempts, timeout
         self.request_calls.append((method, path, body))
         # ``submit`` and other write paths route through the HTTP verb
@@ -168,9 +175,12 @@ class TestFlags:
         parser = argparse.ArgumentParser()
         cli.connect_flags(parser)
         args = parser.parse_args([])
-        assert args.profile is None
-        assert args.host is None
-        assert args.port is None
+        profile_arg = cast(str | None, args.profile)
+        host_arg = cast(str | None, args.host)
+        port_arg = cast(int | None, args.port)
+        assert profile_arg is None
+        assert host_arg is None
+        assert port_arg is None
 
     def test_flags_parse_user_values(self) -> None:
         parser = argparse.ArgumentParser()
@@ -178,9 +188,12 @@ class TestFlags:
         args = parser.parse_args(
             ["--profile", "prod", "--host", "1.2.3.4", "--port", "9000"],
         )
-        assert args.profile == "prod"
-        assert args.host == "1.2.3.4"
-        assert args.port == 9000
+        profile_arg = cast(str | None, args.profile)
+        host_arg = cast(str | None, args.host)
+        port_arg = cast(int | None, args.port)
+        assert profile_arg == "prod"
+        assert host_arg == "1.2.3.4"
+        assert port_arg == 9000
 
     def test_from_args_host_port_override_profile(self) -> None:
         profile.save_profile("prod", Profile(url="http://prod:1000"))
@@ -324,7 +337,7 @@ class TestRequests:
         req = seen["req"]
         assert str(req.url) == "http://server/api/x"
         assert req.method == "POST"
-        assert json.loads(req.content) == {"a": 1}
+        assert loads(req.content) == {"a": 1}
         assert req.headers["Accept"] == "application/json"
         # Mutating requests carry the Idempotency-Key header.
         uuid.UUID(req.headers["Idempotency-Key"])
@@ -844,7 +857,8 @@ class TestClientMethods:
         offsets: list[str | None] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
-            offset = request.url.params.get("offset")
+            offset = cast(object, request.url.params.get("offset"))
+            assert offset is None or isinstance(offset, str)
             offsets.append(offset)
             if offset == "0":
                 return httpx2.Response(
@@ -1095,7 +1109,7 @@ class TestClientMethods:
 
         class _FailingSecondPut(_ClientSpy):
             @override
-            def put(self, path: str, *, body: object = None) -> Any:
+            def put(self, path: str, *, body: object = None) -> JSONValue:
                 recorded = super().put(path, body=body)
                 if path.endswith("/note"):
                     raise ClientError("put note failed")
@@ -1161,7 +1175,7 @@ class TestClientMethods:
             valence=0.9,
             labels=["important"],
         )
-        body = cast(dict[str, object], client.post_calls[0][1])
+        body = DictCodec.coerce(client.post_calls[0][1])
         assert body["note"] == "load-bearing"
         assert body["valence"] == 0.9
         assert body["labels"] == ["important"]
@@ -1224,16 +1238,19 @@ def test_fake_client_method_signatures_match_client() -> None:
     """
     mismatches: list[str] = []
     for name in _public_methods(Client) & _public_methods(FakeClient):
-        real_sig = inspect.signature(getattr(Client, name))
-        fake_sig = inspect.signature(getattr(FakeClient, name))
+        real_sig = inspect.signature(cast(Callable[..., object], getattr(Client, name)))
+        fake_sig = inspect.signature(
+            cast(Callable[..., object], getattr(FakeClient, name))
+        )
         real_params = list(real_sig.parameters)
         fake_params = list(fake_sig.parameters)
         if real_params != fake_params:
             mismatches.append(f"{name}: real={real_params!r} fake={fake_params!r}")
-        if real_sig.return_annotation != fake_sig.return_annotation:
+        real_return = cast(object, real_sig.return_annotation)
+        fake_return = cast(object, fake_sig.return_annotation)
+        if real_return != fake_return:
             mismatches.append(
-                f"{name}: return real={real_sig.return_annotation!r} "
-                f"fake={fake_sig.return_annotation!r}",
+                f"{name}: return real={real_return!r} fake={fake_return!r}",
             )
     assert not mismatches, (
         "FakeClient method signatures diverge from Client:\n"
@@ -1431,8 +1448,8 @@ def test_submit_batch_accepts_matching_or_absent_body_kind() -> None:
             ("Belief", {"title": "b", "kind": "Belief"}),  # Matching body kind.
         ],
     )
-    body = cast(dict[str, object], client.request_calls[0][2])
-    items = cast(list[dict[str, object]], body["items"])
+    body = DictCodec.coerce(client.request_calls[0][2])
+    items = ListCodec.mappings(body["items"])
     assert items[0]["kind"] == "Issue"
     assert items[1]["kind"] == "Belief"
 
@@ -1483,14 +1500,14 @@ class TestSessionMethods:
 
         def handler(request: httpx2.Request) -> httpx2.Response:
             seen["path"] = request.url.path
-            seen["body"] = json.loads(request.content)
+            seen["body"] = loads(request.content)
             return httpx2.Response(201, json={"id": str(sid), "seq": 3})
 
         client = Client("http://server")
         _install_mock_transport(client, handler)
         resp = client.session_start(SessionStart(cli="codex"))
         assert seen["path"] == "/api/sessions/start"
-        body = cast(dict[str, object], seen["body"])
+        body = DictCodec.coerce(seen["body"])
         assert body["cli"] == "codex"
         # A missing idempotency key is minted client-side.
         assert body["idempotency_key"] is not None

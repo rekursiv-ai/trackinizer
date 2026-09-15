@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import argparse
 
@@ -12,6 +13,7 @@ from trackinizer.lib.postgres import PGliteEngine, PostgresEngine
 from trackinizer.server.config import (
     Config,
     ConfigError,
+    ConfigFlags,
     build_embedder,
     build_engine,
     parse_engine,
@@ -189,7 +191,7 @@ def _patch_data_dir(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
     monkeypatch.setattr("trackinizer.server.config.data_dir", _fake_data_dir)
 
 
-def _server_args(**overrides: object) -> argparse.Namespace:
+def _server_args(**overrides: object) -> ConfigFlags:
     """Build a ``server._parse_args``-shaped Namespace with sane defaults."""
     base: dict[str, object] = {
         "engine": "pglite",
@@ -203,7 +205,7 @@ def _server_args(**overrides: object) -> argparse.Namespace:
         "session_max_age_seconds": 30 * 24 * 60 * 60,
     }
     base.update(overrides)
-    return argparse.Namespace(**base)
+    return cast(ConfigFlags, argparse.Namespace(**base))
 
 
 if __name__ == "__main__":

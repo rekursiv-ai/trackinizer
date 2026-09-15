@@ -39,7 +39,12 @@ from trackinizer.lib.agent.types.sessions import (
     WebSearchResult,
     WebSearchResults,
 )
-from trackinizer.lib.custom_json import DictCodec, MutableJSONValue, json_unfreeze
+from trackinizer.lib.custom_json import (
+    DictCodec,
+    MutableJSONValue,
+    json_unfreeze,
+    loads,
+)
 
 
 META = '{"type":"session_meta","payload":{"session_id":"s1","cwd":"/workspace"}}\n'
@@ -269,7 +274,8 @@ def test_a_foreign_subtype_is_not_written_as_a_codex_role() -> None:
 
     codex.denormalize([SystemMessage(content="", subtype="turn_duration")], out)
 
-    payload = DictCodec.coerce(json.loads(out.getvalue().splitlines()[0])["payload"])
+    outer = DictCodec.coerce(loads(out.getvalue().splitlines()[0]))
+    payload = DictCodec.coerce(outer["payload"])
     assert payload["role"] == "system"
 
 

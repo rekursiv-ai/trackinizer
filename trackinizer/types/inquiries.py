@@ -95,12 +95,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
-from typing import Any, Final, Literal, Self, cast, get_args
+from typing import Final, Literal, Protocol, Self, cast, get_args
 from uuid import UUID, uuid4
 
 import re
 import sys
 
+from trackinizer.lib.custom_json import ListCodec
 from trackinizer.types.columns import (
     ColumnSpec,
     Row,
@@ -471,7 +472,7 @@ class Inquiry:
             raise ValueError(
                 f"{cls.__name__}.from_row: row missing base columns {missing}",
             )
-        kwargs: dict[str, Any] = {
+        kwargs: dict[str, object] = {
             "id": row["id"],
             "seq": row["seq"],
             "owner": row["owner"],
@@ -479,10 +480,16 @@ class Inquiry:
             "status": row["status"],
             "title": row["title"],
             "description": row["description"],
-            "labels": None if row["labels"] is None else tuple(row["labels"]),
+            "labels": (
+                None
+                if row["labels"] is None
+                else tuple(ListCodec.coerce(row["labels"], str))
+            ),
             "marginal_cost": Cost.from_row(row),
             "subscribers": (
-                None if row["subscribers"] is None else tuple(row["subscribers"])
+                None
+                if row["subscribers"] is None
+                else tuple(ListCodec.coerce(row["subscribers"], str))
             ),
             "created": row["created"],
             "modified": row["modified"],
@@ -500,9 +507,9 @@ class Inquiry:
                 continue
             value = row[col]
             if value is not None and f.name in _TUPLE_COLUMNS:
-                value = tuple(value)
+                value = tuple(ListCodec.coerce(value))
             kwargs[f.name] = value
-        return cls(**kwargs)
+        return cast(_InquiryConstructor[Self], cls)(**kwargs)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -528,6 +535,10 @@ class ArtifactEdge(InquiryEdge):
     """
 
     valence: float = CITATION_VALENCE_DEFAULT
+
+
+class _InquiryConstructor[Instance](Protocol):
+    def __call__(self, **kwargs: object) -> Instance: ...
 
 
 # Genuine Postgres array COLUMNS on ``inquiries`` that ``Inquiry.from_row``
@@ -1261,7 +1272,9 @@ exported class (see :func:`_kind_to_class`).
 target) and is intentionally absent: it is never a stored row ``kind``.
 """
 
-_MISSING_KINDS = set(get_args(Inquiry.InquiryKind.__value__)) - set(KIND_TO_CLASS)
+_MISSING_KINDS = set(get_args(cast(object, Inquiry.InquiryKind.__value__))) - set(
+    KIND_TO_CLASS
+)
 assert not _MISSING_KINDS, (
     f"KIND_TO_CLASS missing concrete subclasses for {sorted(_MISSING_KINDS)}"
 )

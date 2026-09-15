@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 import dataclasses
 import datetime
@@ -18,6 +18,11 @@ if TYPE_CHECKING:
     from fastapi import Request
 
 
+class _State(Protocol):
+    store: Store
+    inbound: InboundQueue
+
+
 def get_store(request: Request) -> Store:
     """Return the Store held on the FastAPI app state.
 
@@ -28,7 +33,8 @@ def get_store(request: Request) -> Store:
       result: The Store.
 
     """
-    return cast(Store, request.app.state.store)
+    app = cast(_App, request.app)
+    return app.state.store
 
 
 def get_inbound(request: Request) -> InboundQueue:
@@ -41,7 +47,8 @@ def get_inbound(request: Request) -> InboundQueue:
       result: The InboundQueue.
 
     """
-    return cast(InboundQueue, request.app.state.inbound)
+    app = cast(_App, request.app)
+    return app.state.inbound
 
 
 def tag_row(inquiry: Inquiry) -> MutableJSON:
@@ -102,7 +109,7 @@ def _jsonable(value: object) -> object:
     """Convert one value -- and everything under it -- to JSON-shaped data."""
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {
-            field.name: _jsonable(getattr(value, field.name))
+            field.name: _jsonable(cast(object, getattr(value, field.name)))
             for field in dataclasses.fields(value)
         }
     if isinstance(value, tuple | list):
@@ -134,3 +141,7 @@ def _jsonable(value: object) -> object:
     # read yields nothing exotic. The guard is for the next field, not this
     # one.
     raise TypeError(f"cannot serialize {type(value).__name__} to JSON: {value!r}")
+
+
+class _App(Protocol):
+    state: _State

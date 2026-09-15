@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import cast
 
 import contextlib
 import uuid
@@ -13,6 +13,7 @@ from hypothesis import (
 
 import pytest
 
+from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli
 from trackinizer.trax.conftest import FakeClient
@@ -848,7 +849,7 @@ def test_relation_only_alias_raises_client_error() -> None:
     with pytest.raises(ClientError):
         cli.parse_and_run(
             ["issue", "1", "narrower", "issue", "5"],
-            client_factory=lambda: cast(Any, client),
+            client_factory=lambda: cast(Client, client),
         )
 
 
@@ -878,7 +879,7 @@ def test_removed_edge_aliases_reject(alias: str) -> None:
     with pytest.raises(ClientError):
         cli.parse_and_run(
             ["issue", "1", alias, "issue", "5"],
-            client_factory=lambda: cast(Any, client),
+            client_factory=lambda: cast(Client, client),
         )
 
 

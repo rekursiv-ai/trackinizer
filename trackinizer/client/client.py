@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Self, cast
+from typing import TYPE_CHECKING, Literal, NamedTuple, Self, cast
 from urllib.parse import urlparse
 
 import json
@@ -344,7 +344,7 @@ class Client:
         offset: int = 0,
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[Filter] = (),
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, JSONValue]]:
         """Fetch one page of inquiries of a given kind.
 
         Args:
@@ -364,30 +364,33 @@ class Client:
         # server applies them before LIMIT to keep the result set honest.
         # ``seq_range`` repeats the same way: one ``a..b`` interval per
         # param, their union selecting rows across disjoint seq windows.
-        return _require_list(
-            self.get(
+        return [
+            dict(_require_mapping(row, "/api/inquiries"))
+            for row in _require_list(
+                self.get(
+                    "/api/inquiries",
+                    params={
+                        "kind": kind,
+                        "status": status,
+                        "limit": limit,
+                        "offset": offset,
+                        "seq_range": [format_interval(r) for r in seq_ranges],
+                        "filter": [
+                            json.dumps(
+                                {
+                                    "field": filt.field,
+                                    "op": filt.op,
+                                    "value": filt.value,
+                                },
+                                separators=(",", ":"),
+                            )
+                            for filt in filters
+                        ],
+                    },
+                ),
                 "/api/inquiries",
-                params={
-                    "kind": kind,
-                    "status": status,
-                    "limit": limit,
-                    "offset": offset,
-                    "seq_range": [format_interval(r) for r in seq_ranges],
-                    "filter": [
-                        json.dumps(
-                            {
-                                "field": filt.field,
-                                "op": filt.op,
-                                "value": filt.value,
-                            },
-                            separators=(",", ":"),
-                        )
-                        for filt in filters
-                    ],
-                },
-            ),
-            "/api/inquiries",
-        )
+            )
+        ]
 
     def list_kind_all(
         self,
@@ -396,7 +399,7 @@ class Client:
         status: Inquiry.Status | None = None,
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[Filter] = (),
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, JSONValue]]:
         """Fetch EVERY matching row, paging past the server's per-request cap.
 
         ``list_kind`` is bounded by ``MAX_LIST_LIMIT`` (the route rejects a
@@ -429,7 +432,7 @@ class Client:
           rows: All matching inquiry rows as dicts, concatenated from pages.
 
         """
-        rows: list[dict[str, Any]] = []
+        rows: list[dict[str, JSONValue]] = []
         offset = 0
         while True:
             page = self.list_kind(
@@ -448,25 +451,25 @@ class Client:
     def get_inquiry(
         self,
         ref: Ref,
-    ) -> tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, Any]]:
+    ) -> tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, JSONValue]]:
         """Resolve and fetch the SPA detail view (self + edges + changes).
 
         Args:
           ref: Ref.
 
         Returns:
-          result: The tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, Any]].
+          result: The tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, JSONValue]].
 
         """
         kind, target_id = self.resolve_id(ref)
         where = f"/api/web/get/{target_id}"
         return kind, target_id, dict(_require_mapping(self.get(where), where))
 
-    def next_issue(self) -> dict[str, Any] | None:
+    def next_issue(self) -> dict[str, JSONValue] | None:
         """Next issue.
 
         Returns:
-          result: The dict[str, Any] | None.
+          result: The dict[str, JSONValue] | None.
 
         """
         where = "/api/inquiries/next_issue"
@@ -492,7 +495,7 @@ class Client:
         payload = self.get("/api/version")
         if not isinstance(payload, dict) or "sha" not in payload:
             raise ClientError(f"/api/version returned a malformed payload: {payload!r}")
-        return str(cast(dict[str, Any], payload)["sha"])
+        return str(payload["sha"])
 
     def wait_until_ready(
         self,
@@ -543,12 +546,23 @@ class Client:
             else:
                 return
 
-    def recent_changes(self, *, limit: int = 50) -> list[dict[str, Any]]:
-        """Recent changes."""
-        return _require_list(
-            self.get("/api/web/recent_changes", params={"limit": limit}),
-            "/api/web/recent_changes",
-        )
+    def recent_changes(self, *, limit: int = 50) -> list[dict[str, JSONValue]]:
+        """Fetch the most recent change rows, newest first.
+
+        Args:
+          limit: Maximum number of rows to return.
+
+        Returns:
+          rows: Change rows as dicts, each a flattened old/new snapshot.
+
+        """
+        return [
+            dict(_require_mapping(row, "/api/web/recent_changes"))
+            for row in _require_list(
+                self.get("/api/web/recent_changes", params={"limit": limit}),
+                "/api/web/recent_changes",
+            )
+        ]
 
     def cost_for(self, target_id: uuid.UUID, *, deep: bool = False) -> dict[str, float]:
         """Fetch cost breakdown by field name; optionally include related rows.
@@ -1618,13 +1632,13 @@ class Client:
                 )
                 if attempt == retry_attempts - 1:
                     raise ClientError(f"{method} {path} failed: {err}") from err
-                time.sleep(0.1 * (3**attempt))
+                time.sleep(0.1 * (3.0 ** int(attempt)))
                 continue
             if (
                 response.status_code in (500, 502, 503, 504)
                 and attempt < retry_attempts - 1
             ):
-                time.sleep(0.1 * (3**attempt))
+                time.sleep(0.1 * (3.0 ** int(attempt)))
                 continue
             break
         else:
@@ -1632,7 +1646,7 @@ class Client:
         if response.status_code >= 400:
             error_code = ""
             try:
-                payload = cast(object, response.json())
+                payload = response.json()
             except ValueError:
                 payload = None
             if isinstance(payload, dict):
@@ -1719,18 +1733,18 @@ def _truncate(text: str, limit: int = 2_048) -> str:
 
 # A server response of the wrong JSON type would otherwise leak a raw ``TypeError`` when
 # a caller subscripts it, past the ClientError contract.
-def _require_mapping(payload: object, where: str) -> Mapping[str, object]:
+def _require_mapping(payload: object, where: str) -> Mapping[str, JSONValue]:
     """Return ``payload`` as a mapping, or raise a wrapped ``ClientError``."""
     if not isinstance(payload, Mapping):
         raise ClientError(f"{where} returned a malformed payload: {payload!r}")
-    return cast(Mapping[str, object], payload)
+    return cast(Mapping[str, JSONValue], payload)
 
 
-def _require_list(payload: object, where: str) -> list[Any]:
+def _require_list(payload: object, where: str) -> list[JSONValue]:
     """Return ``payload`` as a list, or raise a wrapped ``ClientError``."""
     if not isinstance(payload, list):
         raise ClientError(f"{where} returned a malformed payload: {payload!r}")
-    return cast(list[Any], payload)
+    return cast(list[JSONValue], payload)
 
 
 def _require_field(payload: object, field: str, where: str) -> object:

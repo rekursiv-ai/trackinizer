@@ -235,12 +235,13 @@ class _OAuthSettings:
 # unavailable", since the likely cause is a deployer who forgot one secret.
 def _resolve_oauth_settings(request: Request) -> _OAuthSettings:
     """Pull the OAuth settings off app state; raise 503 if any are missing."""
-    config = cast(Config | None, getattr(request.app.state, "config", None))
-    if config is None:
+    config_value: object = getattr(request.app.state, "config", None)  # pyright: ignore[reportAny] -- Starlette state attributes are untyped.
+    if not isinstance(config_value, Config):
         raise HTTPException(
             status_code=503,
             detail="oauth not configured (no Config on app.state)",
         )
+    config = config_value
     del request
     missing: list[str] = []
     if not config.oauth_google_client_id:
@@ -359,7 +360,7 @@ def _log_google_failure(op: str, *, endpoint: str, response: httpx2.Response) ->
     """Log a non-2xx Google response with only safe metadata."""
     error_code = "unparsed"
     try:
-        payload: object = response.json()
+        payload = response.json()
     except ValueError:
         payload = None
     if isinstance(payload, dict):
@@ -420,7 +421,10 @@ async def _upsert_user_on_login(
     )
     if row is None:
         raise RuntimeError("user upsert returned no row")
-    return cast(uuid.UUID, row["id"]), str(row["status"])
+    user_id: object = row["id"]
+    status: object = row["status"]
+    assert isinstance(user_id, uuid.UUID)
+    return user_id, str(status)
 
 
 # Google's ``name`` is optional and free-form; a non-string or absent value yields the

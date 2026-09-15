@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import ClassVar, Final, cast
+from typing import ClassVar, Final, Protocol, cast
 
 import argparse
 import asyncio
@@ -45,6 +45,7 @@ import threading
 import time
 
 from trackinizer.client.client import Client
+from trackinizer.lib.custom_json import DictCodec, loads
 from trackinizer.lib.posix.follow import follow_dir, follow_tree
 from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.userdirs import state_dir
@@ -405,21 +406,21 @@ def main(
         trax_argv = argv
         cli_argv = ()
     parser = build_parser()
-    args = parser.parse_args(trax_argv)
-    # ``syncing`` off the parsed args, not off a half-built config: the client
+    flags = cast(_Flags, parser.parse_args(trax_argv))
+    # ``syncing`` off the parsed flags, not off a half-built config: the client
     # is then an ordinary constructor argument and ``RunConfig`` stays frozen.
-    syncing = args.sync and args.out is None and not args.dry_run
+    syncing = flags.sync and flags.out is None and not flags.dry_run
     return run(
         RunConfig(
-            cli_name=args.cli,
+            cli_name=flags.cli,
             # Prepended, so a caller's own ``--`` args still win over it.
-            cli_args=(*resume_argv(args.cli, cli_session_id), *cli_argv),
-            actor=args.actor or os.environ.get("AGENTNAME", "Agent"),
-            rooms=tuple(args.rooms or ()),
-            out_path=args.out,
-            verbose=args.verbose,
-            dry_run=args.dry_run,
-            sync=args.sync,
+            cli_args=(*resume_argv(flags.cli, cli_session_id), *cli_argv),
+            actor=flags.actor or os.environ.get("AGENTNAME", "Agent"),
+            rooms=tuple(flags.rooms or ()),
+            out_path=flags.out,
+            verbose=flags.verbose,
+            dry_run=flags.dry_run,
+            sync=flags.sync,
             client=client_factory() if syncing and client_factory else None,
             resume_path=resume_path,
             cli_session_id=cli_session_id,
@@ -807,12 +808,12 @@ def _render_inbound(
 def _envelope_agent_message(text: str) -> str | None:
     """Return the ``agent_message`` line of a change envelope, or None if not one."""
     try:
-        payload = json.loads(text)
+        payload = loads(text)
     except json.JSONDecodeError:
         return None
     if not isinstance(payload, dict):
         return None
-    message = cast(dict[str, object], payload).get("agent_message")
+    message = DictCodec.coerce(payload).get("agent_message")
     return message if isinstance(message, str) else None
 
 
@@ -1368,3 +1369,15 @@ def _dry_run_drain(
             ),
         )
     return 0
+
+
+class _Flags(Protocol):
+    """Parsed ``trax run`` flags."""
+
+    cli: str
+    out: Path | None
+    verbose: bool
+    dry_run: bool
+    sync: bool
+    actor: str | None
+    rooms: list[str] | None

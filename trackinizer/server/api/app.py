@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 
 import asyncpg
 
-from trackinizer.lib.custom_json import SchemaError
+from trackinizer.lib.custom_json import IntCodec, SchemaError
 from trackinizer.server.api import (
     admin_routes,
     auth_routes,
@@ -109,7 +109,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
       nothing: Yields control after startup, resumes on shutdown.
 
     """
-    config = cast(Config, getattr(app.state, "config", None)) or Config.from_env()
+    config: object = getattr(app.state, "config", None)
+    if not isinstance(config, Config):
+        config = Config.from_env()
     if config.auth_disabled:
         # ``--no-auth`` / ``TRACKINIZER_NO_AUTH`` collapses every request to a
         # synthetic admin -- anyone who can reach the port can edit everything.
@@ -162,20 +164,20 @@ def _build_app() -> FastAPI:
     built = FastAPI(title="Trackinizer", lifespan=lifespan)
     built.add_middleware(ChangeIdMiddleware)
     built.add_middleware(RequestLoggingMiddleware)
-    for route_module in (
-        admin_routes,
-        auth_routes,
-        edge,
-        edit,
-        meta_routes,
-        metrics_routes,
-        oauth_routes,
-        query,
-        session_ir_routes,
-        sessions_routes,
-        submit,
+    for router in (
+        admin_routes.router,
+        auth_routes.router,
+        edge.router,
+        edit.router,
+        meta_routes.router,
+        metrics_routes.router,
+        oauth_routes.router,
+        query.router,
+        session_ir_routes.router,
+        sessions_routes.router,
+        submit.router,
     ):
-        built.include_router(route_module.router)
+        built.include_router(router)
     return built
 
 
@@ -221,7 +223,7 @@ class _RequestLogSpan:
 
     async def send(self, message: Message) -> None:
         if message["type"] == "http.response.start":
-            self.status_code = int(message["status"])
+            self.status_code = IntCodec.coerce(cast(object, message["status"]))
             self.response_start_sec = time.perf_counter() - self.started
             headers = list(cast(list[tuple[bytes, bytes]], message.get("headers", [])))
             headers = [

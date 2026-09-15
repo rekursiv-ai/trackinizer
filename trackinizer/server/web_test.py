@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Final, cast, get_args
+from typing import TYPE_CHECKING, Final, cast, get_args
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
@@ -15,10 +15,19 @@ import uuid
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
-import asyncpg
+
+if TYPE_CHECKING:
+    import asyncpg
+else:
+    from wrapt import lazy_import
+
+    asyncpg = lazy_import("asyncpg")
+
 import pytest
 
 from trackinizer.conftest import FakeEngine, make_conn, new_uuid
+from trackinizer.lib.custom_json import DictCodec
+from trackinizer.lib.postgres import Conn
 from trackinizer.server import web
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.route_iter import (
@@ -192,7 +201,7 @@ class TestSerialization:
         target_id = new_uuid()
         out = web._row_to_dict(
             cast(
-                Any,
+                "asyncpg.Record",
                 _inquiry_row(
                     id=target_id,
                     kind="WebSearch",
@@ -220,7 +229,7 @@ class TestSerialization:
         # detail view rendered them empty despite being populated.
         out = web._row_to_dict(
             cast(
-                Any,
+                "asyncpg.Record",
                 _inquiry_row(
                     kind="Paper",
                     paper_google_scholar_cluster_id="vexaDfEelKEJ",
@@ -232,7 +241,7 @@ class TestSerialization:
         assert out["google_scholar_cites_id"] == "4727085927710188680"
 
     def test_row_to_dict_omits_google_scholar_handles_when_absent(self) -> None:
-        out = web._row_to_dict(cast(Any, _inquiry_row(kind="Paper")))
+        out = web._row_to_dict(cast("asyncpg.Record", _inquiry_row(kind="Paper")))
         assert "google_scholar_cluster_id" not in out
         assert "google_scholar_cites_id" not in out
 
@@ -240,7 +249,7 @@ class TestSerialization:
         cfg = {"lr": 3e-4, "batch": 32, "nested": {"warmup": 100}}
         out = web._row_to_dict(
             cast(
-                Any,
+                "asyncpg.Record",
                 _inquiry_row(kind="Experiment", experiment_config=cfg),
             ),
         )
@@ -250,7 +259,10 @@ class TestSerialization:
 
     def test_row_to_dict_omits_config_when_absent(self) -> None:
         out = web._row_to_dict(
-            cast(Any, _inquiry_row(kind="Experiment", experiment_config=None)),
+            cast(
+                "asyncpg.Record",
+                _inquiry_row(kind="Experiment", experiment_config=None),
+            ),
         )
         assert "config" not in out
 
@@ -258,7 +270,7 @@ class TestSerialization:
         started = datetime(2026, 5, 18, 9, tzinfo=UTC)
         out = web._row_to_dict(
             cast(
-                Any,
+                "asyncpg.Record",
                 _inquiry_row(
                     kind="AgentSession",
                     agentsession_cli="claude",
@@ -293,7 +305,7 @@ class TestSerialization:
             new_marginal_cost_agent_usd=2,
             new_marginal_cost_resource_usd=3,
         )
-        out = web._change_to_dict(cast(Any, row))
+        out = web._change_to_dict(cast("asyncpg.Record", row))
         assert out["api_key_id"] == str(api_key_id)
         assert out["principal"] == "api@example.com"
         assert out["caused_by"] == str(peer_id)
@@ -316,7 +328,7 @@ class TestSerialization:
             "peer_status": "active",
             "peer_judgement": "proven",
         }
-        assert web._peer_ref(cast(Any, row), peer_id) == {
+        assert web._peer_ref(cast("asyncpg.Record", row), peer_id) == {
             "id": str(peer_id),
             "kind": "Belief",
             "seq": 4,
@@ -379,9 +391,9 @@ class TestEdgeHelpers:
                 ],
             ],
         )
-        edges = await web._edges_for(cast(Any, conn), target_id, direction="outbound")
+        edges = await web._edges_for(cast(Conn, conn), target_id, direction="outbound")
         backlinks = await web._edges_for(
-            cast(Any, conn),
+            cast(Conn, conn),
             target_id,
             direction="inbound",
         )
@@ -401,8 +413,8 @@ class TestGraphLegend:
         # cannot silently leave the legend stale (the SPA would render an
         # uncolored node/edge with no key entry).
         legend = web.graph_legend()
-        assert set(legend["node_kinds"]) == set(get_args(Inquiry.InquiryKind.__value__))
-        assert set(legend["edge_kinds"]) == set(get_args(Edge.Kind.__value__))
+        assert set(legend["node_kinds"]) == set(get_args(Inquiry.InquiryKind))
+        assert set(legend["edge_kinds"]) == set(get_args(Edge.Kind))
 
 
 class TestRoutes:
@@ -431,6 +443,7 @@ class TestRoutes:
         assert rows[0]["title"] == "title"
         assert engine.conn.fetch.await_args is not None
         sql, *params = engine.conn.fetch.await_args.args
+        assert isinstance(sql, str)
         assert "kind = $2" in sql
         assert params == ["%hello%", "Issue", 3]
 
@@ -451,7 +464,12 @@ class TestRoutes:
             q="title:^(a+)+$",
             identity=_TEST_IDENTITY,
         )
-        executed = [c.args[0] for c in engine.conn.execute.call_args_list]
+        executed = [
+            s
+            for c in engine.conn.execute.call_args_list
+            for s in c.args[:1]
+            if isinstance(s, str)
+        ]
         timeouts = [s for s in executed if "statement_timeout" in s.lower()]
         assert timeouts, (
             "search must SET LOCAL statement_timeout to bound per-query DB cost"
@@ -528,7 +546,9 @@ class TestRoutes:
         )
         assert recent[0]["actor"] == "alice"
         assert recent[0]["principal"] == "api@example.com"
-        assert "LEFT JOIN api_keys" in engine.conn.fetch.call_args.args[0]
+        sql = engine.conn.fetch.call_args.args[0]
+        assert isinstance(sql, str)
+        assert "LEFT JOIN api_keys" in sql
 
         engine.conn.fetchval = AsyncMock(return_value="Issue")
         assert await web.web_lookup(
@@ -620,7 +640,7 @@ class TestRoutes:
             limit=0,
         )
         nodes = cast(list[dict[str, object]], graph["nodes"])
-        edges = cast(list[dict[str, object]], graph["edges"])
+        edges = graph["edges"]
         assert [n["id"] for n in nodes] == [str(root_id), str(child_id)]
         assert nodes[0] == {
             "id": str(root_id),
@@ -646,6 +666,7 @@ class TestRoutes:
         # Nodes must be ordered by ``created`` ascending so the replay
         # animation lands them in the order they were authored.
         node_sql = engine.conn.fetch.call_args_list[0].args[0]
+        assert isinstance(node_sql, str)
         assert "ORDER BY created" in node_sql
 
     @pytest.mark.asyncio
@@ -675,7 +696,7 @@ class TestRoutes:
             identity=_TEST_IDENTITY,
             limit=0,
         )
-        assert cast(list[dict[str, object]], graph["edges"]) == [
+        assert graph["edges"] == [
             {"from_id": str(a), "to_id": str(b), "edge_kind": "narrows"},
         ]
 
@@ -738,9 +759,11 @@ class TestRoutes:
         assert {n["id"] for n in nodes} == {str(old_id), str(recent_id)}
         # The recent-id query carried the limit; the edge query closed the set.
         recent_sql = engine.conn.fetch.call_args_list[0].args[0]
+        assert isinstance(recent_sql, str)
         assert "ORDER BY created DESC" in recent_sql
         assert "LIMIT" in recent_sql
         edge_sql = engine.conn.fetch.call_args_list[1].args[0]
+        assert isinstance(edge_sql, str)
         assert "from_id = ANY" in edge_sql
         assert "to_id = ANY" in edge_sql
 
@@ -1002,7 +1025,10 @@ class TestRouteBounds:
         # return wrong matches.
         r = c.get("/api/web/search", params={"q": 'title:"unclosed'})
         assert r.status_code == 400
-        assert "quot" in r.json()["detail"]
+        body = DictCodec.coerce(r.json())
+        detail = body["detail"]
+        assert isinstance(detail, str)
+        assert "quot" in detail
 
     def test_search_rejects_empty_field_value(self) -> None:
         engine = FakeEngine()
@@ -1016,7 +1042,10 @@ class TestRouteBounds:
         # token search for ``%title:%``; now it is a 400.
         r = c.get("/api/web/search", params={"q": "title:"})
         assert r.status_code == 400
-        assert "empty" in r.json()["detail"]
+        body = DictCodec.coerce(r.json())
+        detail = body["detail"]
+        assert isinstance(detail, str)
+        assert "empty" in detail
 
 
 # ---- Phase 4 HTML pages --------------------------------------------------
@@ -1118,7 +1147,8 @@ class TestPhase4Pages:
         client = TestClient(app)
         r = client.get("/admin")
         assert r.status_code == 403
-        assert r.json()["detail"] == "admin role required"
+        body = DictCodec.coerce(r.json())
+        assert body["detail"] == "admin role required"
 
     def test_admin_403_for_non_admin(self, tmp_path: Path) -> None:
         app = _build_pages_app(tmp_path)
@@ -1126,7 +1156,10 @@ class TestPhase4Pages:
         client = TestClient(app)
         r = client.get("/admin")
         assert r.status_code == 403
-        assert "admin" in r.json()["detail"]
+        body = DictCodec.coerce(r.json())
+        detail = body["detail"]
+        assert isinstance(detail, str)
+        assert "admin" in detail
 
     def test_admin_renders_for_admin(self, tmp_path: Path) -> None:
         app = _build_pages_app(tmp_path)

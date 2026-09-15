@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from fastapi import HTTPException
 
@@ -19,6 +19,10 @@ if TYPE_CHECKING:
 RoleLiteral = Literal["viewer", "writer", "admin"]
 
 
+class _State(Protocol):
+    engine: DatabaseEngine
+
+
 def engine_of(request: Request) -> DatabaseEngine:
     """Return the DatabaseEngine held on app state.
 
@@ -29,7 +33,8 @@ def engine_of(request: Request) -> DatabaseEngine:
       engine: The DatabaseEngine.
 
     """
-    engine: DatabaseEngine = request.app.state.engine
+    app = cast(_App, request.app)
+    engine: DatabaseEngine = app.state.engine
     return engine
 
 
@@ -71,4 +76,9 @@ def iso_format(value: object) -> str | None:
     """
     if value is None:
         return None
-    return cast(datetime, value).isoformat()
+    assert isinstance(value, datetime)
+    return value.isoformat()
+
+
+class _App(Protocol):
+    state: _State

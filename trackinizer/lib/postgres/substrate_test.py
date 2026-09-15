@@ -13,6 +13,8 @@ import os
 import threading
 import time
 
+from py_pglite import PGliteManager
+
 import asyncpg
 import pytest
 
@@ -83,7 +85,7 @@ async def test_pglite_acquire_reopens_dropped_connection(tmp_path: Path) -> None
     engine = PGliteEngine(workdir=tmp_path / "pg", extensions=())
     manager = MagicMock()
     manager.get_asyncpg_uri.return_value = "postgresql://x"
-    engine._manager = manager
+    engine._manager = cast(PGliteManager, manager)
     dead = _make_conn()
     dead.is_closed = MagicMock(return_value=True)
     fresh = _make_conn()
@@ -118,7 +120,7 @@ async def test_pglite_acquire_restarts_manager_when_node_died(tmp_path: Path) ->
     dead_manager.get_asyncpg_uri.side_effect = RuntimeError(
         "PGlite server is not running. Call start() first.",
     )
-    engine._manager = dead_manager
+    engine._manager = cast(PGliteManager, dead_manager)
     engine._conn = cast("asyncpg.Connection[asyncpg.Record]", _make_conn())
     fresh_manager = MagicMock()
     fresh_manager.is_running.return_value = True
@@ -156,7 +158,7 @@ async def test_pglite_acquire_releases_lock_on_reconnect_failure(
     engine = PGliteEngine(workdir=tmp_path / "pg", extensions=())
     manager = MagicMock()
     manager.get_asyncpg_uri.return_value = "postgresql://x"
-    engine._manager = manager
+    engine._manager = cast(PGliteManager, manager)
 
     with pytest.MonkeyPatch().context() as monkeypatch:
         monkeypatch.setattr(
@@ -182,7 +184,7 @@ async def test_pglite_reentrant_acquire_raises_not_deadlocks(tmp_path: Path) -> 
     engine = PGliteEngine(workdir=tmp_path / "pg", extensions=())
     manager = MagicMock()
     manager.get_asyncpg_uri.return_value = "postgresql://x"
-    engine._manager = manager
+    engine._manager = cast(PGliteManager, manager)
     engine._conn = cast("asyncpg.Connection[asyncpg.Record]", _make_conn())
 
     with pytest.MonkeyPatch().context() as monkeypatch:
@@ -244,7 +246,9 @@ def test_shared_node_modules_installs_once_then_reuses(
     assert first == second
     assert (first.parent / ".ready").exists()
     calls.assert_called_once()
-    assert calls.call_args.args[0][:2] == ["npm", "ci"]
+    command = calls.call_args.args[0]
+    assert isinstance(command, list)
+    assert command[:2] == ["npm", "ci"]
 
 
 def test_warm_cache_preserves_superseded_keys_that_may_still_be_live(
@@ -569,7 +573,7 @@ async def test_pglite_exit_terminates_client_socket(tmp_path: Path) -> None:
     conn.terminate = MagicMock()
     engine._conn = cast("asyncpg.Connection[asyncpg.Record]", conn)
     manager = MagicMock()
-    engine._manager = manager
+    engine._manager = cast(PGliteManager, manager)
 
     await engine.__aexit__()
 

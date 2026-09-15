@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import cast
 from uuid import UUID
 
+from trackinizer.lib.custom_json import FloatCodec
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import tx
 from trackinizer.server.projection import (
@@ -209,19 +210,26 @@ class _ReadMixin(_StoreShared):
                 # Overlaid for the PREDICATE only: the row itself stays the
                 # ``Record`` ``materialize`` reads, since a record text is a
                 # filtering aid and not a column of the inquiry.
-                texts = await _record_texts(conn, [r["id"] for r in rows], filters)
+                texts = await _record_texts(
+                    conn,
+                    [cast(UUID, r["id"]) for r in rows],
+                    filters,
+                )
                 kept = [
                     r
                     for r in rows
                     if all(
-                        match_filter({**r, **texts.get(r["id"], {})}, f)
+                        match_filter(
+                            {**r, **texts.get(cast(UUID, r["id"]), {})},
+                            f,
+                        )
                         for f in filters
                     )
                 ]
                 window = kept[offset : offset + limit]
                 outbound, inbound = await fetch_edges_bulk(
                     conn,
-                    [r["id"] for r in window],
+                    [cast(UUID, r["id"]) for r in window],
                 )
             return [materialize(row, outbound, inbound) for row in window]
         params.extend([limit, offset])
@@ -241,7 +249,9 @@ class _ReadMixin(_StoreShared):
         async with self.engine.acquire() as conn, tx(conn):
             await apply_regex_statement_timeout(conn)
             rows = await conn.fetch(sql, *params)
-            outbound, inbound = await fetch_edges_bulk(conn, [r["id"] for r in rows])
+            outbound, inbound = await fetch_edges_bulk(
+                conn, [cast(UUID, r["id"]) for r in rows]
+            )
         return [materialize(row, outbound, inbound) for row in rows]
 
     async def next_issue(self) -> Issue | None:
@@ -256,8 +266,11 @@ class _ReadMixin(_StoreShared):
             if row is None:
                 return None
             rid = row["id"]
+            assert isinstance(rid, UUID)
             outbound, inbound = await fetch_edges(conn, rid)
-        return cast(Issue, materialize(row, {rid: outbound}, {rid: inbound}))
+        issue = materialize(row, {rid: outbound}, {rid: inbound})
+        assert isinstance(issue, Issue)
+        return issue
 
     async def cost_for(self, subject_id: UUID, *, deep: bool = False) -> Cost | None:
         """Return the running cost for one inquiry, or ``None`` if missing.
@@ -296,8 +309,8 @@ class _ReadMixin(_StoreShared):
         if row is None:
             return Cost()
         return Cost(
-            agent_usd=float(row["agent_usd"]),
-            resource_usd=float(row["resource_usd"]),
+            agent_usd=FloatCodec.coerce(row["agent_usd"], None),
+            resource_usd=FloatCodec.coerce(row["resource_usd"], None),
         )
 
     async def proves_belief(self, belief_id: UUID) -> list[Inquiry]:
@@ -317,7 +330,9 @@ class _ReadMixin(_StoreShared):
         """
         async with self.engine.acquire() as conn:
             rows = await conn.fetch(PROVES_BELIEF_SQL, belief_id)
-            outbound, inbound = await fetch_edges_bulk(conn, [r["id"] for r in rows])
+            outbound, inbound = await fetch_edges_bulk(
+                conn, [cast(UUID, r["id"]) for r in rows]
+            )
         return [materialize(row, outbound, inbound) for row in rows]
 
     async def what_changed_for_me(
@@ -420,7 +435,7 @@ class _ReadMixin(_StoreShared):
                 cursor_id,
                 limit,
             )
-        return [(Change.from_row(r), r["subject_seq"]) for r in rows]
+        return [(Change.from_row(r), cast(int | None, r["subject_seq"])) for r in rows]
 
     async def get_change(self, change_id: UUID) -> Change | None:
         """Fetch one ``change_log`` row by id; ``None`` when absent.
@@ -571,9 +586,12 @@ async def _record_texts(
     # reads as NULL, where an empty list would make ``notnull`` answer true.
     texts: dict[UUID, dict[str, object]] = {}
     for record in found:
-        texts.setdefault(record["session_id"], {})[kinds[record["kind"]]] = list(
-            record["texts"],
-        )
+        session_id = record["session_id"]
+        assert isinstance(session_id, UUID)
+        kind = record["kind"]
+        assert isinstance(kind, str)
+        values = record["texts"]
+        texts.setdefault(session_id, {})[kinds[kind]] = values
     return texts
 
 

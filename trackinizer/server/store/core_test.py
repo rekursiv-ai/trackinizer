@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Protocol, cast
 from unittest.mock import AsyncMock
 
 import asyncio
@@ -119,12 +119,12 @@ class TestStoreEmbedders:
         emb_upserts = [
             c
             for c in conn.execute.call_args_list
-            if "INSERT INTO inquiry_embeddings" in c.args[0]
+            if "INSERT INTO inquiry_embeddings" in _sql(c.args)
         ]
         assert len(emb_upserts) == 2
         assert {c.args[2] for c in emb_upserts} == {"a", "b"}
         # Upsert (re-runs on title edit) implies ON CONFLICT clause.
-        assert all("ON CONFLICT" in c.args[0] for c in emb_upserts)
+        assert all("ON CONFLICT" in _sql(c.args) for c in emb_upserts)
 
     @pytest.mark.asyncio
     async def test_embed_all_runs_concurrently(self) -> None:
@@ -175,7 +175,7 @@ class TestStoreBootstrap:
         inserts = [
             c.args[1]
             for c in engine.conn.execute.call_args_list
-            if "INSERT INTO applied_migrations" in c.args[0]
+            if "INSERT INTO applied_migrations" in _sql(c.args)
         ]
         # A fresh database gets the baseline, which already carries every
         # numbered migration's tables -- so each is RECORDED without being
@@ -200,7 +200,7 @@ class TestStoreBootstrap:
         inserts = [
             c.args[1]
             for c in engine.conn.execute.call_args_list
-            if "INSERT INTO applied_migrations" in c.args[0]
+            if "INSERT INTO applied_migrations" in _sql(c.args)
         ]
         # The baseline is already applied, so it is neither re-run nor
         # re-recorded. Every NUMBERED migration is unrecorded here, so each
@@ -235,7 +235,7 @@ class TestStoreBootstrap:
         recorded = {
             c.args[1]
             for c in engine.conn.execute.call_args_list
-            if "INSERT INTO applied_migrations" in c.args[0]
+            if "INSERT INTO applied_migrations" in _sql(c.args)
         }
         assert recorded == {name for name, _body in schema_migrations()}
 
@@ -247,13 +247,13 @@ class TestStoreBootstrap:
         store, engine = make_store(conn)
         await store.bootstrap()
         setvals = [
-            c for c in engine.conn.execute.call_args_list if "setval" in c.args[0]
+            c for c in engine.conn.execute.call_args_list if "setval" in _sql(c.args)
         ]
         # One reconcile per kind, each guarded by GREATEST so a healthy
         # sequence is never lowered, each carrying the table max as the floor.
         assert len(setvals) == 9
         assert all(
-            "GREATEST" in c.args[0] and "last_value" in c.args[0] for c in setvals
+            "GREATEST" in _sql(c.args) and "last_value" in _sql(c.args) for c in setvals
         )
         assert all(c.args[1] == 265 for c in setvals)
 
@@ -263,7 +263,7 @@ class TestStoreBootstrap:
         store, engine = make_store()  # `fetchval` defaults to None (empty table).
         await store.bootstrap()
         assert not any(
-            "setval" in c.args[0] for c in engine.conn.execute.call_args_list
+            "setval" in _sql(c.args) for c in engine.conn.execute.call_args_list
         )
 
     @pytest.mark.asyncio
@@ -286,7 +286,7 @@ class TestStoreBootstrap:
         inserts = [
             c.args[1:]
             for c in engine.conn.execute.call_args_list
-            if "INSERT INTO inquiry_embeddings" in c.args[0]
+            if "INSERT INTO inquiry_embeddings" in _sql(c.args)
         ]
         assert len(inserts) == 1
         assert inserts[0][0] == missing_id  # inquiry_id positional arg.
@@ -297,7 +297,7 @@ class TestStoreBootstrap:
         store, engine = make_store()  # `fetch` defaults to [] (nothing missing).
         await store.bootstrap()
         assert not any(
-            "INSERT INTO inquiry_embeddings" in c.args[0]
+            "INSERT INTO inquiry_embeddings" in _sql(c.args)
             for c in engine.conn.execute.call_args_list
         )
 
@@ -345,7 +345,7 @@ class TestStoreBootstrap:
                     "connection was closed in the middle of operation",
                 )
             if first_real_execute is not None:
-                return await first_real_execute(sql, *args)
+                return await cast(_Execute, first_real_execute)(sql, *args)
             return "UPDATE 1"
 
         conn.execute = AsyncMock(side_effect=flaky_execute)
@@ -447,7 +447,7 @@ class TestStoreBootstrap:
             if calls["n"] == 1:
                 raise asyncpg.InterfaceError("connection is closed")
             if first_real is not None:
-                return await first_real(sql, *args)
+                return await cast(_Execute, first_real)(sql, *args)
             return "UPDATE 1"
 
         conn.execute = AsyncMock(side_effect=flaky)
@@ -486,6 +486,16 @@ class TestStoreBootstrap:
         with pytest.raises(asyncpg.exceptions.ConnectionDoesNotExistError) as exc:
             await store._bootstrap_once()
         assert "DDL died first" in str(exc.value)
+
+
+class _Execute(Protocol):
+    async def __call__(self, sql: str, *args: object) -> object: ...
+
+
+def _sql(args: tuple[object, ...]) -> str:
+    sql = args[0]
+    assert isinstance(sql, str)
+    return sql
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
-from typing import Any, Literal, Self
+from typing import Literal, Self, TypedDict, cast
 from uuid import UUID, uuid4
 
 from trackinizer.types.columns import Row
@@ -154,7 +154,7 @@ class Snapshot:
           snapshot: Snapshot object with values for touched fields only.
 
         """
-        kwargs: dict[str, Any] = {}
+        kwargs: dict[str, object] = {}
         for f in fields(cls):
             col = prefix + f.name
             if f.name == "marginal_cost":
@@ -166,9 +166,9 @@ class Snapshot:
             elif col in row:
                 value = row[col]
                 if value is not None and f.name in _SNAPSHOT_TUPLE_FIELDS:
-                    value = tuple(value or ())
+                    value = value or ()
                 kwargs[f.name] = value
-        return cls(**kwargs)
+        return cls(**cast(_SnapshotKwargs, kwargs))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -327,7 +327,7 @@ class Change:
           change: Change object with all audited fields unpacked.
 
         """
-        kwargs: dict[str, Any] = {
+        kwargs: dict[str, object] = {
             "id": row["id"],
             "created": row["created"],
             "actor": row["actor"],
@@ -337,8 +337,67 @@ class Change:
             "kind": row["kind"],
             "caused_by": row.get("caused_by"),
             "reason": row["reason"],
-            "subscribers_snapshot": tuple(row.get("subscribers_snapshot") or ()),
+            "subscribers_snapshot": (row.get("subscribers_snapshot") or ()),
             "old": Snapshot.from_row(row, prefix="old_"),
             "new": Snapshot.from_row(row, prefix="new_"),
         }
-        return cls(**kwargs)
+        return cls(**cast(_ChangeKwargs, kwargs))
+
+
+class _SnapshotKwargs(TypedDict, total=False):
+    title: str | None
+    description: str | None
+    labels: tuple[str, ...] | None
+    owner: Inquiry.Actor | None
+    account: Inquiry.Actor | None
+    peer_id: UUID | None
+    peer_kind: Inquiry.InquiryKind | None
+    peer_edge_kind: Edge.Kind | None
+    status: Inquiry.Status | None
+    belief_judgement: Belief.Judgement | None
+    belief_confidence: float | None
+    edge_priority: Issue.Priority | None
+    edge_note: str | None
+    edge_valence: float | None
+    edge_labels: tuple[str, ...] | None
+    issue_kind: tuple[Issue.Kind, ...] | None
+    issue_validation: str | None
+    issue_priority: Issue.Priority | None
+    experiment_outcome: str | None
+    experiment_config: dict[str, object] | None
+    paper_abstract: str | None
+    paper_authors: tuple[str, ...] | None
+    paper_publication_type: Paper.PublicationType | None
+    paper_venue: str | None
+    paper_subvenue: str | None
+    paper_publish_date: datetime | None
+    paper_source: str | None
+    paper_google_scholar_cluster_id: str | None
+    paper_google_scholar_cites_id: str | None
+    codechange_sha: str | None
+    webresult_url: str | None
+    websearch_query: str | None
+    websearch_provider: str | None
+    experiment_codechanges: tuple[UUID, ...] | None
+    agentsession_cli: str | None
+    agentsession_cli_session_id: str | None
+    agentsession_started: datetime | None
+    agentsession_ended: datetime | None
+    agentsession_rooms: tuple[str, ...] | None
+    subscribers: tuple[Inquiry.Actor, ...] | None
+    marginal_cost: Cost | None
+
+
+class _ChangeKwargs(TypedDict, total=False):
+    id: UUID
+    created: datetime
+    actor: Inquiry.Actor
+    api_key_id: UUID | None
+    subject_id: UUID | None
+    subject_kind: Inquiry.InquiryKind | None
+    kind: Change.Kind | None
+    caused_by: UUID | None
+    reason: str
+    subscribers_snapshot: tuple[str, ...]
+    old: Snapshot
+    new: Snapshot

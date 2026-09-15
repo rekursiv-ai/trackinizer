@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, cast, override
+from typing import TYPE_CHECKING, Final, Protocol, cast, override
 from urllib.parse import urlparse
 
 import argparse
@@ -173,10 +173,11 @@ class Help(Command):
         client_factory: Callable[[], Client],
     ) -> None:
         del verb, client_factory
-        if not args.topic:
+        flags = cast(_HelpFlags, args)
+        if not flags.topic:
             echo(cls.help_text(), nl=False)
             return
-        topic = args.topic.lower()
+        topic = flags.topic.lower()
         for dispatcher in DISPATCHERS:
             if dispatcher.matches(topic):
                 echo(dispatcher.help_text_for(topic), nl=False)
@@ -219,7 +220,7 @@ def parse_and_run(
 
     """
     top, leftover = _peel_top_flags(list(argv))
-    SHOW_IDS.set(bool(getattr(top, "show_ids", False)))
+    SHOW_IDS.set(cast(_TopFlags, top).show_ids)
     if client_factory is None:
         # ``connect`` shares one Client per resolved target for the life of
         # the process, so every verb here -- and every later invocation, when
@@ -282,11 +283,30 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
+class _HelpFlags(Protocol):
+    """Parsed ``trax help`` flags."""
+
+    topic: str
+
+
+class _TopFlags(Protocol):
+    """Parsed top-level flags, as ``_peel_top_flags`` registers them.
+
+    ``connect`` still takes the raw ``Namespace``: its callers may pass a bare
+    ``Namespace()`` and rely on the ``getattr`` defaults in ``_resolve_target``.
+    """
+
+    profile: str | None
+    host: str | None
+    port: int | None
+    show_ids: bool
+
+
 def _resolve_target(args: argparse.Namespace) -> _Target:
     """Resolve flags, environment, and profile into one connection identity."""
-    host = getattr(args, "host", None)
-    port = getattr(args, "port", None)
-    if name := getattr(args, "profile", None):
+    host = cast(str | None, getattr(args, "host", None))  # -- argparse namespace field.
+    port = cast(int | None, getattr(args, "port", None))  # -- argparse namespace field.
+    if name := cast(str | None, getattr(args, "profile", None)):  # -- argparse field.
         profile = read_profile(name)
     elif env_url := env("TRACKINIZER_URL"):
         profile = Profile(url=server_url(env_url, "TRACKINIZER_URL"), author="")

@@ -14,7 +14,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from typing import Final
-from unittest.mock import DEFAULT
+from unittest.mock import (
+    DEFAULT,  # pyright: ignore[reportAny] -- unittest.mock stubs DEFAULT as Any.
+)
 
 import uuid
 
@@ -87,7 +89,7 @@ def answer_account_active(engine: FakeEngine) -> None:
         # ``conn.fetchval.return_value = "Issue"`` still drives ``lookup_kind``.
         if "FROM users" in sql and "status = 'active'" in sql:
             return 1
-        return DEFAULT
+        return DEFAULT  # pyright: ignore[reportAny] -- unittest.mock stubs type DEFAULT as Any.
 
     conn.fetchval.side_effect = fetchval
 

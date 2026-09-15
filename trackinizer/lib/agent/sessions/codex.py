@@ -69,6 +69,7 @@ from trackinizer.lib.custom_json import (
     decode_or_none,
     json_freeze,
     json_unfreeze,
+    loads,
     replay,
     residual,
     take,
@@ -1104,14 +1105,14 @@ def _effort(
     """Read a reported effort level, resolving a provider's own spelling."""
     if wire in aliases:
         return aliases[wire]
-    if wire not in get_args(ThinkingEffort.__value__):
+    if wire not in get_args(ThinkingEffort.__value__):  # pyright: ignore[reportAny] -- PEP 695 aliases expose their target through __value__.
         return None
     return cast(ThinkingEffort, wire)
 
 
 def _summary_kind(wire: str) -> SummaryKind | None:
     """Read a requested summary verbosity."""
-    if wire not in get_args(SummaryKind.__value__):
+    if wire not in get_args(SummaryKind.__value__):  # pyright: ignore[reportAny] -- PEP 695 aliases expose their target through __value__.
         return None
     return cast(SummaryKind, wire)
 
@@ -1226,7 +1227,7 @@ class _Reader:
             self._records.append(IncompleteRecord(text=line))
             return
         try:
-            decoded = json.loads(line)
+            decoded = loads(line)
         except json.JSONDecodeError:
             self._records.append(IncompleteRecord(text=line))
             return
@@ -1898,7 +1899,7 @@ def _read_tool_call(
 def _parse_arguments(text: str) -> dict[str, object] | None:
     """Parse a provider-supplied JSON argument string, or ``None`` if invalid."""
     try:
-        return DictCodec.coerce(json.loads(text))
+        return DictCodec.coerce(loads(text))
     except json.JSONDecodeError:
         return None
 

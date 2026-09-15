@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any, override
+from typing import TYPE_CHECKING, override
 
 import logging
 import uuid
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.custom_json import DictCodec, StrCodec
 from trackinizer.tools import replay_live_graph
 from trackinizer.types.inquiries import Inquiry
 
@@ -64,7 +65,7 @@ def _detail(
     node_id: str,
     seq: int,
     title: str,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     return {
         "self": {
             "id": node_id,
@@ -160,16 +161,25 @@ def test_detail_order_key_uses_source_created_then_id() -> None:
         seq=3,
         title="new",
     )
-    old_high_id["self"]["created"] = "2026-01-01T00:00:00+00:00"
-    old_low_id["self"]["created"] = "2026-01-01T00:00:00+00:00"
-    new["self"]["created"] = "2026-01-02T00:00:00+00:00"
+    old_high_self = old_high_id["self"]
+    old_low_self = old_low_id["self"]
+    new_self = new["self"]
+    assert isinstance(old_high_self, dict)
+    assert isinstance(old_low_self, dict)
+    assert isinstance(new_self, dict)
+    old_high_self["created"] = "2026-01-01T00:00:00+00:00"
+    old_low_self["created"] = "2026-01-01T00:00:00+00:00"
+    new_self["created"] = "2026-01-02T00:00:00+00:00"
 
     ordered = sorted(
         [new, old_high_id, old_low_id],
         key=replay_live_graph._detail_order_key,
     )
 
-    assert [d["self"]["id"] for d in ordered] == [
+    ids = [
+        StrCodec.coerce(DictCodec.coerce(detail["self"])["id"]) for detail in ordered
+    ]
+    assert ids == [
         "00000000-0000-0000-0000-000000000000",
         "ffffffff-ffff-ffff-ffff-ffffffffffff",
         "11111111-1111-1111-1111-111111111111",

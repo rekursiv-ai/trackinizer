@@ -20,7 +20,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Protocol, Self
+from typing import Final, Protocol, Self, cast
 
 import asyncio
 import hashlib
@@ -648,16 +648,20 @@ def _drain_node_stdout(manager: PGliteManager) -> None:
     proc = manager.process
     if proc is None or proc.stdout is None:
         return
-    stdout = proc.stdout
+    stdout = cast(_ReadableStdout, proc.stdout)
 
     def _consume() -> None:
         try:
-            for _ in iter(stdout.readline, ""):
+            for _line in iter(stdout.readline, ""):
                 pass
         except (OSError, ValueError):
             pass
 
     threading.Thread(target=_consume, daemon=True).start()
+
+
+class _ReadableStdout(Protocol):
+    def readline(self) -> str: ...
 
 
 # A crashed/killed installer cannot remove its ``.lock`` directory; treat one
@@ -939,8 +943,7 @@ def _pick_free_port() -> int:
     """Return an ephemeral TCP port the OS just assigned us (TCP mode only)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-        assert isinstance(port, int)
+        port = cast(int, s.getsockname()[1])
         return port
 
 

@@ -78,7 +78,7 @@ class TestPurge:
         change_kinds = [
             call.args[6]
             for call in conn.execute.call_args_list
-            if "INSERT INTO change_log" in call.args[0]
+            if "INSERT INTO change_log" in _sql(call.args[0])
         ]
         assert change_kinds == ["purged", "dependency_changed", "edge_removed"]
         # Three change_log rows touch two distinct subjects (the purged target
@@ -117,10 +117,10 @@ class TestEmitChangeFloorIsAtomic:
                 cost_delta=Cost(agent_usd=0.5),
             )
         cost_updates = [
-            call.args[0]
+            _sql(call.args[0])
             for call in conn.fetchrow.call_args_list
-            if "marginal_cost_agent_usd" in call.args[0]
-            and "UPDATE inquiries" in call.args[0]
+            if "marginal_cost_agent_usd" in _sql(call.args[0])
+            and "UPDATE inquiries" in _sql(call.args[0])
         ]
         assert cost_updates, "expected the cost UPDATE to fire"
         sql = cost_updates[0]
@@ -280,10 +280,10 @@ class TestEmitChangeFloorIsAtomic:
                 cost_delta=Cost(agent_usd=0.5),
             )
         probe = next(
-            call.args[0]
+            _sql(call.args[0])
             for call in conn.fetchrow.call_args_list
-            if "marginal_cost_agent_usd" in call.args[0]
-            and "WITH probe" in call.args[0]
+            if "marginal_cost_agent_usd" in _sql(call.args[0])
+            and "WITH probe" in _sql(call.args[0])
         )
         assert "FOR SHARE" in probe, (
             "the presence-probe CTE must lock the subject row FOR SHARE so it "
@@ -377,9 +377,9 @@ class TestEdgeCascadeSymmetry:
         insert = next(
             c
             for c in conn.execute.call_args_list
-            if "INSERT INTO change_log" in c.args[0]
+            if "INSERT INTO change_log" in _sql(c.args[0])
         )
-        cols = insert.args[0]
+        cols = _sql(insert.args[0])
         names = cols[cols.index("(") + 1 : cols.index(")")].split(", ")
         new_edge_note = insert.args[1 + names.index("new_edge_note")]
         # A whitespace note normalizes to absence: ``edges`` stores NULL
@@ -387,6 +387,12 @@ class TestEdgeCascadeSymmetry:
         # coerces that to "" for its peer-present CHECK -- never the raw
         # "   ". An empty note yields the same "".
         assert new_edge_note == ""
+
+
+def _sql(value: object) -> str:
+    """Narrow a recorded mock argument before inspecting SQL text."""
+    assert isinstance(value, str)
+    return value
 
 
 if __name__ == "__main__":

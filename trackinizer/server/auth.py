@@ -26,7 +26,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Final, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, cast
 
 import base64
 import binascii
@@ -47,8 +47,9 @@ from trackinizer.server.session import read_session_cookie
 
 
 if TYPE_CHECKING:
-    # ``store.core`` imports this module, so a runtime import here is a cycle.
-    # Every use of ``Store`` below is an annotation or a cast.
+    # ``store.core`` and ``config`` import this module, so a runtime import of
+    # either here is a cycle. Every use below is an annotation or a cast.
+    from trackinizer.server.config import Config
     from trackinizer.server.store.core import Store
 
 
@@ -298,7 +299,8 @@ async def current_user(request: Request) -> AuthIdentity:
     # ``--no-auth`` collapses the resolver to a synthetic admin -- demo mode
     # only. Tests that skip the lifespan leave ``config`` unset and fall
     # through to the bearer / session paths.
-    config = getattr(request.app.state, "config", None)
+    state = cast("_AppLike", request.app).state
+    config = _config(state)
     if config is not None and config.auth_disabled:
         return AuthIdentity(
             user_id=_NO_AUTH_USER_ID,
@@ -307,7 +309,7 @@ async def current_user(request: Request) -> AuthIdentity:
             role="admin",
         )
     # The Store carries the per-process ``last_used_at`` throttle.
-    store = cast("Store", request.app.state.store)
+    store = state.store
     bearer = _try_extract_bearer(request)
     if bearer is not None:
         identity = await _resolve_identity(
@@ -543,27 +545,33 @@ async def allowlist_match(conn: Conn, *, email: str) -> Role | None:
       result: Granted role (viewer/writer/admin) or None if not allowed.
 
     """
-    literal = await conn.fetchval(
-        "SELECT role FROM allowlist WHERE lower(email_or_pattern) = lower($1)",
-        email,
+    literal = cast(
+        Role | None,
+        await conn.fetchval(
+            "SELECT role FROM allowlist WHERE lower(email_or_pattern) = lower($1)",
+            email,
+        ),
     )
     if literal is not None:
-        return cast(Role, literal)
+        return literal
     # Wildcards share the column with literals; the ``*@`` anchor skips them.
     at_index = email.rfind("@")
     if at_index == -1:
         return None
     domain = email[at_index + 1 :]
-    pattern_role = await conn.fetchval(
-        "SELECT role FROM allowlist "
-        "WHERE email_or_pattern LIKE '*@%' "
-        "AND lower(substring(email_or_pattern FROM 3)) = lower($1) "
-        "LIMIT 1",
-        domain,
+    pattern_role = cast(
+        Role | None,
+        await conn.fetchval(
+            "SELECT role FROM allowlist "
+            "WHERE email_or_pattern LIKE '*@%' "
+            "AND lower(substring(email_or_pattern FROM 3)) = lower($1) "
+            "LIMIT 1",
+            domain,
+        ),
     )
     if pattern_role is None:
         return None
-    return cast(Role, pattern_role)
+    return pattern_role
 
 
 async def lookup_user_by_id(
@@ -589,15 +597,17 @@ async def lookup_user_by_id(
         "SELECT id, email, role, status FROM users WHERE id = $1",
         user_id,
     )
-    if row is None:
+    if row is None or row["status"] != "active":
         return None
-    if row["status"] != "active":
-        return None
+    row_id = row["id"]
+    email = row["email"]
+    assert isinstance(row_id, uuid.UUID)
+    assert isinstance(email, str)
     return AuthIdentity(
-        user_id=row["id"],
+        user_id=row_id,
         api_key_id=None,
-        email=row["email"],
-        role=row["role"],
+        email=email,
+        role=cast(Role, row["role"]),
     )
 
 
@@ -798,7 +808,7 @@ def _try_extract_bearer(request: Request) -> str | None:
 # unaffected either way.
 def _try_read_session_user_id(request: Request) -> uuid.UUID | None:
     """Return the ``users.id`` from the signed session cookie, or ``None``."""
-    config = getattr(request.app.state, "config", None)
+    config = _config(cast("_AppLike", request.app).state)
     if config is None or not config.session_secret:
         return None
     raw = read_session_cookie(
@@ -885,7 +895,9 @@ async def _resolve_identity(
             return None
         for row in rows:
             verify_started = time.perf_counter()
-            verified = verify_secret(secret, row["secret_hash"])
+            secret_hash = row["secret_hash"]
+            assert isinstance(secret_hash, str)
+            verified = verify_secret(secret, secret_hash)
             verify_sec += time.perf_counter() - verify_started
             if not verified:
                 continue
@@ -894,19 +906,24 @@ async def _resolve_identity(
                 # active match later in the list.
                 continue
             key_id = row["key_id"]
+            assert isinstance(key_id, uuid.UUID)
             if store.should_bump_api_key_last_used(key_id):
                 await conn.execute(
                     "UPDATE api_keys SET last_used_at = clock_timestamp() "
                     "WHERE id = $1",
                     key_id,
                 )
+            user_id = row["user_id"]
+            email = row["email"]
+            assert isinstance(user_id, uuid.UUID)
+            assert isinstance(email, str)
             identity = AuthIdentity(
-                user_id=row["user_id"],
+                user_id=user_id,
                 api_key_id=key_id,
-                email=row["email"],
+                email=email,
                 role=effective_role(
-                    row["user_role"],
-                    row["key_role"],
+                    cast(Role, row["user_role"]),
+                    cast(Role, row["key_role"]),
                 ),
             )
             store.remember_bearer_identity(secret, identity)
@@ -1000,6 +1017,23 @@ def _b64decode(encoded: str) -> bytes:
     return base64.urlsafe_b64decode(encoded + pad)
 
 
+# Starlette's ``State`` is a bag of dynamic attributes; this names the two the
+# lifespan installs. ``config`` is ABSENT (not None) in tests that skip the
+# lifespan, so it is read with ``getattr(..., None)`` rather than directly.
+class _StateLike(Protocol):
+    store: Store
+    config: Config | None
+
+
+class _AppLike(Protocol):
+    state: _StateLike
+
+
+def _config(state: _StateLike) -> Config | None:
+    """Return the lifespan-installed config, or ``None`` when no lifespan ran."""
+    return cast("Config | None", getattr(state, "config", None))
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _RoleRequirement:
     min_role: Role
@@ -1018,7 +1052,10 @@ class _RoleRequirement:
 
 async def _fetch_user_role(conn: Conn, user_id: uuid.UUID) -> Role:
     """Return one user's role; raise when the user id is unknown."""
-    user_role_raw = await conn.fetchval("SELECT role FROM users WHERE id = $1", user_id)
+    user_role_raw = cast(
+        Role | None,
+        await conn.fetchval("SELECT role FROM users WHERE id = $1", user_id),
+    )
     if user_role_raw is None:
         raise LookupError(f"unknown user {user_id}")
-    return cast(Role, user_role_raw)
+    return user_role_raw

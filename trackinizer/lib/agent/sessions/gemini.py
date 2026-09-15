@@ -37,6 +37,7 @@ from trackinizer.lib.custom_json import (
     decode_or_none,
     json_freeze,
     json_unfreeze,
+    loads,
     residual,
 )
 
@@ -269,7 +270,7 @@ def _read(text: str) -> list[SessionRecord]:
     if not text.strip():
         return out
     try:
-        decoded: object = json.loads(text)
+        decoded = loads(text)
     except json.JSONDecodeError:
         return [*out, IncompleteRecord(text=text)]
     # A document that is not an object carries no session: an array or a bare

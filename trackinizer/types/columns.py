@@ -9,9 +9,10 @@ the wire bodies, and the Store's setter dispatch must all agree on.
 from __future__ import annotations
 
 from collections import UserDict
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from functools import cache
-from typing import TYPE_CHECKING, Any, Protocol, get_type_hints, overload
+from typing import TYPE_CHECKING, Protocol, cast, get_type_hints, overload
 
 
 if TYPE_CHECKING:
@@ -26,7 +27,7 @@ class Row(Protocol):
     satisfy this, so the row mappers never care which one they got.
     """
 
-    def __getitem__(self, key: str, /) -> Any:  # noqa: ANN401 -- mirrors asyncpg.Record, whose column values are untyped.
+    def __getitem__(self, key: str, /) -> object:
         """Get a column value by name."""
         ...
 
@@ -35,9 +36,9 @@ class Row(Protocol):
         ...
 
     @overload
-    def get(self, key: str) -> Any | None: ...  # noqa: ANN401 -- mirrors asyncpg.Record, whose column values are untyped.
+    def get(self, key: str, /) -> object | None: ...
     @overload
-    def get(self, key: str, default: Any) -> Any: ...  # noqa: ANN401 -- mirrors asyncpg.Record, whose column values are untyped.
+    def get(self, key: str, default: object, /) -> object: ...
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -159,7 +160,7 @@ def column_specs(cls: type[DataclassInstance]) -> dict[str, ColumnSpec]:
     """
     out: dict[str, ColumnSpec] = {}
     for f in fields(cls):
-        for meta in f.metadata.values():
+        for meta in cast(Mapping[str, object], f.metadata).values():
             if isinstance(meta, ColumnSpec):
                 out[f.name] = meta
     return out

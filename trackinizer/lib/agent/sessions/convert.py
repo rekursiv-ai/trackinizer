@@ -38,7 +38,7 @@ import time
 from trackinizer.lib.agent.sessions import claude, codex, gemini, normalized
 from trackinizer.lib.agent.sessions.fuse import chain, fuse, names_of, unfuse
 from trackinizer.lib.agent.types.sessions import SessionRecord
-from trackinizer.lib.custom_json import DictCodec
+from trackinizer.lib.custom_json import DictCodec, loads
 
 
 type Format = str
@@ -119,41 +119,41 @@ def main(
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser, formats=formats)
-    args = parser.parse_args(argv)
-    paths = tuple(_session_files(args.paths))
+    flags = cast(_Flags, parser.parse_args(argv))
+    paths = tuple(_session_files(flags.paths))
     if not paths:
         parser.error("no session files found")
-    if args.command == "convert" and args.to is None:
+    if flags.command == "convert" and flags.to is None:
         parser.error("convert requires --to")
-    if args.output is not None and len(paths) > 1:
+    if flags.output is not None and len(paths) > 1:
         parser.error("--output takes a single input path")
     results = _convert_all(
         paths,
-        workers=args.workers,
-        source=args.source,
-        target=args.to,
-        want_diff=args.diff,
-        fail_fast=args.fail_fast,
-        destination=_destination_for(args),
-        parent_poll_sec=args.parent_poll_sec,
+        workers=flags.workers,
+        source=flags.source,
+        target=flags.to,
+        want_diff=flags.diff,
+        fail_fast=flags.fail_fast,
+        destination=_destination_for(flags),
+        parent_poll_sec=flags.parent_poll_sec,
     )
     lossy = [r for r in results if r.dropped]
-    if lossy and not args.lossy:
+    if lossy and not flags.lossy:
         for result in lossy:
             print(  # noqa: T201 -- CLI report.
                 f"{result.path}: drops {', '.join(result.dropped)}",
                 file=sys.stderr,
             )
         parser.error("conversion drops records; pass --lossy to accept")
-    _write(results, output=args.output, out_dir=args.out_dir, stream=sys.stdout)
+    _write(results, output=flags.output, out_dir=flags.out_dir, stream=sys.stdout)
     _report(
         results,
-        output_format=args.format,
-        quiet=args.quiet,
-        verbose=args.verbose,
-        verifying=args.command == "verify",
+        output_format=flags.format,
+        quiet=flags.quiet,
+        verbose=flags.verbose,
+        verifying=flags.command == "verify",
     )
-    return 0 if _passed(results, verifying=args.command == "verify") else 1
+    return 0 if _passed(results, verifying=flags.command == "verify") else 1
 
 
 def convert_file(
@@ -267,7 +267,7 @@ def detect_format(native: str) -> Format:
     # through to "". Recognized by the pair of keys it always carries.
     if stripped.startswith("{"):
         try:
-            document = DictCodec.coerce(json.loads(native))
+            document = DictCodec.coerce(loads(native))
         except json.JSONDecodeError:
             document = {}
         if "sessionId" in document and "messages" in document:
@@ -276,7 +276,7 @@ def detect_format(native: str) -> Format:
         if not line.strip():
             continue
         try:
-            record = json.loads(line)
+            record = loads(line)
         except json.JSONDecodeError:
             continue
         keys = set(DictCodec.coerce(record))
@@ -285,6 +285,23 @@ def detect_format(native: str) -> Format:
         if {"sessionId", "uuid", "parentUuid", "agentId"} & keys:
             return "claude"
     return ""
+
+
+class _Flags(Protocol):
+    command: str
+    paths: list[Path]
+    to: Format | None
+    source: Format
+    output: Path | None
+    out_dir: Path | None
+    workers: int
+    diff: bool
+    fail_fast: bool
+    parent_poll_sec: float
+    lossy: bool
+    format: str
+    quiet: bool
+    verbose: bool
 
 
 class _Adapter(Protocol):
@@ -709,12 +726,11 @@ def _status(result: FileResult, *, verifying: bool) -> str:
 
 # ``verify`` never needs it, and a ``convert`` with a directory writes it there; only a
 # convert with nowhere to put it brings the text home.
-def _destination_for(args: argparse.Namespace) -> Path | Literal[False] | None:
+def _destination_for(flags: _Flags) -> Path | Literal[False] | None:
     """Return where one run's converted text should go."""
-    if args.command != "convert":
+    if flags.command != "convert":
         return False
-    # ``Namespace`` attributes are ``Any``; the parser typed this one as Path.
-    return cast(Path | None, args.out_dir)
+    return flags.out_dir
 
 
 # Part by part, holding one part's source and one part's rewrite at a time: the whole of
@@ -1053,7 +1069,12 @@ def _semantic_value(value: object) -> object:
     """Canonicalize container shapes and omit provider-native metadata."""
     if is_dataclass(value) and not isinstance(value, type):
         return tuple(
-            (field.name, _semantic_value(getattr(value, field.name)))
+            (
+                field.name,
+                _semantic_value(
+                    getattr(value, field.name)  # pyright: ignore[reportAny] -- Dataclass fields are runtime-selected by name.
+                ),
+            )
             for field in fields(value)
             # ``context_id`` is an INDEX into the record stream (axiom 5), not
             # a value: a session carrying no ``TurnContext`` gains one when

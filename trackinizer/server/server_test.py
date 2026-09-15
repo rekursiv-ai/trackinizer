@@ -85,11 +85,11 @@ class TestPureFunctions:
 
     def test_parse_args_defaults(self) -> None:
         parser = argparse.ArgumentParser()
-        args, remaining = _parse_args(parser, [])
-        assert args.engine == "pglite"
-        assert args.host == "127.0.0.1"
-        assert args.port == 8765
-        assert args.embedder == "stub"
+        flags, remaining = _parse_args(parser, [])
+        assert flags.engine == "pglite"
+        assert flags.host == "127.0.0.1"
+        assert flags.port == 8765
+        assert flags.embedder == "stub"
         assert remaining == []
 
     def test_session_ttl_env_typo_exits_cleanly(
@@ -126,9 +126,9 @@ class TestPureFunctions:
     ) -> None:
         monkeypatch.delenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", raising=False)
 
-        args, _ = _parse_args(argparse.ArgumentParser(), [])
+        flags, _ = _parse_args(argparse.ArgumentParser(), [])
 
-        assert args.session_max_age_seconds == 30 * 24 * 60 * 60
+        assert flags.session_max_age_seconds == 30 * 24 * 60 * 60
 
     def test_session_ttl_reads_the_environment(
         self,
@@ -136,19 +136,19 @@ class TestPureFunctions:
     ) -> None:
         monkeypatch.setenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", "600")
 
-        args, _ = _parse_args(argparse.ArgumentParser(), [])
+        flags, _ = _parse_args(argparse.ArgumentParser(), [])
 
-        assert args.session_max_age_seconds == 600
+        assert flags.session_max_age_seconds == 600
 
     def test_parse_args_overrides(self) -> None:
         parser = argparse.ArgumentParser()
-        args, _ = _parse_args(
+        flags, _ = _parse_args(
             parser,
             ["--engine", "pg", "--dsn", "x", "--port", "9000"],
         )
-        assert args.engine == "pg"
-        assert args.dsn == "x"
-        assert args.port == 9000
+        assert flags.engine == "pg"
+        assert flags.dsn == "x"
+        assert flags.port == 9000
 
 
 class TestCLIHelpers:
@@ -268,8 +268,10 @@ class TestMainAppliesEveryStartupInvariant:
         main()
 
         assert served["target"] is app
-        assert app.state.config.engine == "pg"
-        assert app.state.config.dsn == "postgres://probe/db"
+        config = app.state.config  # pyright: ignore[reportAny] -- Starlette's `State` exposes every attribute as Any.
+        assert isinstance(config, Config)
+        assert config.engine == "pg"
+        assert config.dsn == "postgres://probe/db"
 
     def test_rejects_unrecognized_arguments(
         self,

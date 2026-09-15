@@ -12,6 +12,7 @@ from fastapi import HTTPException
 import pytest
 
 from trackinizer.conftest import make_store, new_uuid, set_field_row
+from trackinizer.lib.custom_json import DictCodec
 from trackinizer.server.api.edit import _run_compare_and_set
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.types.inquiries import Inquiry
@@ -120,7 +121,8 @@ class TestRoutes:
             json={"value": "ghost@example.com", "actor": "alice"},
         )
         assert r.status_code == 422, r.text
-        assert "not an active user" in r.json()["detail"]
+        body = DictCodec.coerce(r.json())
+        assert "not an active user" in str(body["detail"])
 
     def test_account_has_no_delete_route(
         self,
@@ -189,7 +191,8 @@ class TestRoutes:
         # (``_mutate_list_field`` normalizes and rejects the empty element),
         # which surfaces as a 409 ConflictError -- not the old Pydantic 422.
         assert r.status_code == 409
-        assert "must be non-empty" in r.json()["detail"]
+        body = DictCodec.coerce(r.json())
+        assert "must be non-empty" in str(body["detail"])
 
     def test_add_issue_kind_route(
         self,
@@ -292,7 +295,8 @@ class TestRoutes:
             },
         )
         assert r.status_code == 409
-        assert "expected 'active'" in r.json()["detail"]
+        body = DictCodec.coerce(r.json())
+        assert "expected 'active'" in str(body["detail"])
 
     def test_transition_owner_route_accepts_null_expectation(
         self,
@@ -331,7 +335,8 @@ class TestRoutes:
         )
 
         assert response.status_code == 409
-        assert "expected None" in response.json()["detail"]
+        body = DictCodec.coerce(response.json())
+        assert "expected None" in str(body["detail"])
 
     def test_misspelled_guard_field_is_422_not_blind_write(
         self,
@@ -353,7 +358,10 @@ class TestRoutes:
         assert r.status_code == 422
         # And no UPDATE was issued -- the typo never reached the store.
         sqls = [c.args[0] for c in engine.conn.execute.call_args_list]
-        assert not any("UPDATE inquiries SET status" in s for s in sqls)
+        assert not any(
+            isinstance(sql, str) and "UPDATE inquiries SET status" in sql
+            for sql in sqls
+        )
 
     def test_cas_mode_without_expected_is_422(
         self,
@@ -447,7 +455,8 @@ class TestRoutes:
         update = next(
             c
             for c in engine.conn.execute.call_args_list
-            if "UPDATE inquiries SET description" in c.args[0]
+            if isinstance(c.args[0], str)
+            and "UPDATE inquiries SET description" in c.args[0]
         )
         assert update.args[1] is None
 
@@ -469,7 +478,8 @@ class TestRoutes:
         update = next(
             c
             for c in engine.conn.execute.call_args_list
-            if "UPDATE inquiries SET paper_venue" in c.args[0]
+            if isinstance(c.args[0], str)
+            and "UPDATE inquiries SET paper_venue" in c.args[0]
         )
         assert update.args[1] is None
 

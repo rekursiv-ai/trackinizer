@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from trackinizer.lib.custom_json import DictCodec
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
@@ -40,6 +41,7 @@ def _change_log_column(engine: FakeEngine, name: str) -> object:
     """Read the bound value for one column on the latest change_log insert."""
     for call in reversed(engine.conn.execute.call_args_list):
         sql = call.args[0]
+        assert isinstance(sql, str)
         if "INSERT INTO change_log" in sql:
             columns_segment = sql.split("(", 1)[1].split(")", 1)[0]
             columns = [c.strip() for c in columns_segment.split(",")]
@@ -54,6 +56,7 @@ def _inquiry_column(engine: FakeEngine, name: str) -> object:
     """Read the bound value for one column on the latest inquiries insert."""
     for call in reversed(engine.conn.execute.call_args_list):
         sql = call.args[0]
+        assert isinstance(sql, str)
         if "INSERT INTO inquiries" in sql:
             columns_segment = sql.split("(", 1)[1].split(")", 1)[0]
             columns = [c.strip() for c in columns_segment.split(",")]
@@ -95,7 +98,10 @@ class TestViewerHitsWriterRoute403:
         install_identity(make_test_identity(role="viewer"))
         r = client.post("/api/inquiries/issue", json={"title": "x"})
         assert r.status_code == 403
-        assert "viewer" in r.json()["detail"]
+        body = DictCodec.coerce(r.json())
+        detail = body["detail"]
+        assert isinstance(detail, str)
+        assert "viewer" in detail
 
     def test_viewer_can_read(
         self,
@@ -213,7 +219,10 @@ class TestAccountAttribution:
             json={"title": "ghost account", "account": "ghost@example.com"},
         )
         assert r.status_code == 422, r.text
-        assert "not an active user" in r.json()["detail"]
+        body = DictCodec.coerce(r.json())
+        detail = body["detail"]
+        assert isinstance(detail, str)
+        assert "not an active user" in detail
 
     def test_submit_blank_account_rejected_as_malformed(
         self,
@@ -231,8 +240,9 @@ class TestAccountAttribution:
             json={"title": "blank account", "account": "  "},
         )
         assert r.status_code == 422, r.text
-        assert "not an active user" not in str(r.json())
-        assert "account" in str(r.json())
+        body = DictCodec.coerce(r.json())
+        assert "not an active user" not in str(body)
+        assert "account" in str(body)
 
 
 if __name__ == "__main__":

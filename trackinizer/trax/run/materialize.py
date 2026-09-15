@@ -571,7 +571,7 @@ def _one_line(text: str) -> bool:
     if "\n" in text.rstrip("\n"):
         return False
     try:
-        _, end = json.JSONDecoder().raw_decode(text.strip())
+        end = json.JSONDecoder().raw_decode(text.strip())[1]
     except ValueError:
         # Unparsable as a whole is the TRUNCATED case this record preserves;
         # one line, so it replays.

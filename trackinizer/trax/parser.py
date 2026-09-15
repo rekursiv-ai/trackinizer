@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Literal, cast, get_args
 import uuid
 
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import FloatCodec
+from trackinizer.lib.custom_json import FloatCodec, ListCodec
 from trackinizer.trax.grammar import (
     AGAINST_RELATION_SPELLINGS,
     COST_FIELDS,
@@ -624,7 +624,7 @@ def edge_metadata(
             # this branch handling every remaining valid field.
             if op not in ("to", "add", "del"):
                 raise ClientError("edge label uses to, add, or del")
-            labels = list(cast(Sequence[str], metadata.get("labels") or ()))
+            labels = ListCodec.coerce(metadata.get("labels"), str)
             if op == "to":
                 labels = resolve_labels((value,))
             elif op == "add":
@@ -1045,7 +1045,9 @@ def _parse_metric_mask(tokens: Sequence[str], index: int) -> tuple[MetricMask, i
     # Step-axis reductions: highest/lowest step per key ("final"/"first"). They
     # take no value and apply only to the ``step`` axis (metric-grammar.md
     # Grammar summary).
-    if op in frozenset(get_args(wire_metrics_query.MetricReduce.__value__)):
+    if op in frozenset(
+        get_args(cast(object, wire_metrics_query.MetricReduce.__value__))
+    ):
         if field != "step":
             raise ClientError(f"{op} applies to step only, not {field!r}")
         return MetricMask(field=field, op=op, value=""), index + 2

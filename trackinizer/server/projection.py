@@ -105,9 +105,13 @@ async def fetch_edges_bulk(
         ids,
     )
     for r in out_rows:
-        outbound[r["from_id"]].append(r)
+        from_id = r["from_id"]
+        assert isinstance(from_id, UUID)
+        outbound[from_id].append(r)
     for r in in_rows:
-        inbound[r["to_id"]].append(r)
+        to_id = r["to_id"]
+        assert isinstance(to_id, UUID)
+        inbound[to_id].append(r)
     return outbound, inbound
 
 
@@ -131,9 +135,10 @@ def materialize(
       result: Fully-projected inquiry with relationships filled.
 
     """
-    cls = KIND_TO_CLASS[row["kind"]]
+    kind = cast(Inquiry.InquiryKind, row["kind"])
+    cls = KIND_TO_CLASS[kind]
     base = cls.from_row(row)
-    rid = row["id"]
+    rid = cast(UUID, row["id"])
     return project_relationships(
         base,
         outbound_buckets.get(rid, []),
@@ -338,7 +343,7 @@ def _issue_edges(
             kind=pkind,
             note=note,
             labels=labels,
-            priority=r["priority"],
+            priority=cast(Issue.Priority | None, r["priority"]),
         )
         for r in _matching(rows, edge_kind)
         for pid, pkind, note, labels in (_peer(r, id_col=id_col, kind_col=kind_col),)
@@ -348,6 +353,13 @@ def _issue_edges(
 # A NULL stored valence (a legacy citation row written before the column was populated)
 # reads as :data:`CITATION_VALENCE_DEFAULT`; a citation written through the current
 # paths always carries a concrete value.
+def _valence(value: object) -> float:
+    if value is None:
+        return CITATION_VALENCE_DEFAULT
+    assert isinstance(value, float)
+    return value
+
+
 def _artifact_edges(
     rows: Sequence[asyncpg.Record],
     *,
@@ -362,9 +374,7 @@ def _artifact_edges(
             kind=pkind,
             note=note,
             labels=labels,
-            valence=(
-                CITATION_VALENCE_DEFAULT if r["valence"] is None else r["valence"]
-            ),
+            valence=_valence(r["valence"]),
         )
         for r in _matching(rows, edge_kind)
         for pid, pkind, note, labels in (_peer(r, id_col=id_col, kind_col=kind_col),)

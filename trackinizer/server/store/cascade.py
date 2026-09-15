@@ -10,7 +10,7 @@ the mixin dependency graph.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, cast
+from typing import cast
 from uuid import UUID
 
 import collections
@@ -18,6 +18,7 @@ import uuid
 
 import asyncpg
 
+from trackinizer.lib.custom_json import FloatCodec, ListCodec
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import (
     NOTIFICATION_BUFFER,
@@ -34,9 +35,9 @@ from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import list_or_none, vetted_sql
 from trackinizer.types.change_log import Change, Snapshot
 from trackinizer.types.cost import Cost
-from trackinizer.types.edges import EDGE_POLICIES
+from trackinizer.types.edges import EDGE_POLICIES, Edge
 from trackinizer.types.errors import ConflictError, NotFoundError
-from trackinizer.types.inquiries import Inquiry
+from trackinizer.types.inquiries import Inquiry, Issue
 
 
 __all__ = [
@@ -68,11 +69,11 @@ _MIRROR_LIST_COLUMNS: frozenset[str] = frozenset(
 # Derived from :data:`CHANGE_LOG_COLUMN_ORDER` so a new audited column flows in with no
 # edit here; list columns pass through ``list_or_none`` (NULL stays NULL, a set becomes
 # a plain list asyncpg binds to the array column).
-def _snapshot_mirror(side: str, snap: Snapshot) -> dict[str, Any]:
+def _snapshot_mirror(side: str, snap: Snapshot) -> dict[str, object]:
     """Build the ``{side}_<col>`` audit-mirror entries for one Snapshot side."""
     return {
         f"{side}_{col}": (
-            list_or_none(getattr(snap, col))
+            list_or_none(cast(Sequence[object] | None, getattr(snap, col)))
             if col in _MIRROR_LIST_COLUMNS
             else getattr(snap, col)
         )
@@ -196,17 +197,15 @@ async def _apply_change(
         )
     else:
         old_cost = Cost(
-            agent_usd=float(cost_row["old_agent"]),
-            resource_usd=float(cost_row["old_resource"]),
+            agent_usd=FloatCodec.coerce(cost_row["old_agent"], None),
+            resource_usd=FloatCodec.coerce(cost_row["old_resource"], None),
         )
         new_cost = Cost(
-            agent_usd=float(cost_row["new_agent"]),
-            resource_usd=float(cost_row["new_resource"]),
+            agent_usd=FloatCodec.coerce(cost_row["new_agent"], None),
+            resource_usd=FloatCodec.coerce(cost_row["new_resource"], None),
         )
-        subs = cast(
-            tuple[Inquiry.Actor, ...],
-            tuple(cost_row["current_subscribers"] or ()),
-        )
+        # NULL when the row has never had a subscriber.
+        subs = tuple(ListCodec.coerce(cost_row["current_subscribers"], str))
     if extra_subscribers:
         # Update ``seen`` in-loop so duplicates *within*
         # ``extra_subscribers`` are also collapsed.
@@ -239,7 +238,7 @@ async def _apply_change(
         if new.peer_id is not None and new.edge_labels is None
         else list_or_none(new.edge_labels)
     )
-    columns: dict[str, Any] = {
+    columns: dict[str, object] = {
         "id": change_id,
         "api_key_id": api_key_id,
         "actor": actor,
@@ -360,6 +359,7 @@ class _CascadeAuditMixin(_StoreShared):
         client_change_id = _consume_client_change_id()
         change_id = client_change_id or uuid.uuid4()
 
+        subscribers: tuple[Inquiry.Actor, ...]
         if client_change_id is None:
             _, _, subscribers = await _apply_change(
                 conn,
@@ -432,10 +432,8 @@ class _CascadeAuditMixin(_StoreShared):
                     and existing["subject_id"] == subject_id
                     and existing["kind"] == kind
                 ):
-                    return client_change_id, cast(
-                        tuple[str, ...],
-                        tuple(existing["subscribers_snapshot"] or ()),
-                    )
+                    snapshot = ListCodec.coerce(existing["subscribers_snapshot"], str)
+                    return client_change_id, tuple(snapshot)
                 raise ConflictError(
                     f"idempotency_key {client_change_id} already used "
                     "for a different operation",
@@ -519,11 +517,11 @@ class _CascadeAuditMixin(_StoreShared):
                     new=Snapshot(
                         peer_id=cur_id,
                         peer_kind=cur_kind,
-                        peer_edge_kind=edge["edge_kind"],
-                        edge_priority=edge["priority"],
-                        edge_note=edge["note"],
-                        edge_valence=edge["valence"],
-                        edge_labels=tuple(edge["labels"] or ()),
+                        peer_edge_kind=cast(Edge.Kind, edge["edge_kind"]),
+                        edge_priority=cast(Issue.Priority | None, edge["priority"]),
+                        edge_note=_optional_str(edge["note"]),
+                        edge_valence=_optional_float(edge["valence"]),
+                        edge_labels=tuple(ListCodec.coerce(edge["labels"], str)),
                     ),
                     cascade=False,
                 )
@@ -561,14 +559,16 @@ class _CascadeAuditMixin(_StoreShared):
             )
         out: list[tuple[UUID, Inquiry.InquiryKind, asyncpg.Record]] = []
         for row in edge_rows:
-            edge_kind = row["edge_kind"]
+            edge_kind = cast(Edge.Kind, row["edge_kind"])
             policy = EDGE_POLICIES[edge_kind]
             if policy.cascade_dependent == "to":
                 dependent_id = row["to_id"]
-                dependent_kind = row["to_kind"]
+                assert isinstance(dependent_id, UUID)
+                dependent_kind = cast(Inquiry.InquiryKind, row["to_kind"])
             else:
                 dependent_id = row["from_id"]
-                dependent_kind = row["from_kind"]
+                assert isinstance(dependent_id, UUID)
+                dependent_kind = cast(Inquiry.InquiryKind, row["from_kind"])
             # The dependent itself is the row being changed/purged; do
             # not self-alert.
             if dependent_id == child_id:
@@ -611,7 +611,7 @@ class _CascadeAuditMixin(_StoreShared):
                 raise ConflictError(
                     f"inquiry is owned by {owner!r}; release its owner before purge",
                 )
-            kind = row["kind"]
+            kind = cast(Inquiry.InquiryKind, row["kind"])
             parent_edges = await conn.fetch(
                 "SELECT from_id, from_kind, to_id, to_kind, edge_kind, "
                 "priority, note, valence, labels FROM edges "
@@ -664,10 +664,12 @@ class _CascadeAuditMixin(_StoreShared):
         """Emit the peer-side ``edge_removed`` audit row for a purged subject."""
         if edge["from_id"] == target_id:
             subject_id = edge["to_id"]
-            subject_kind = edge["to_kind"]
+            assert isinstance(subject_id, UUID)
+            subject_kind = cast(Inquiry.InquiryKind, edge["to_kind"])
         else:
             subject_id = edge["from_id"]
-            subject_kind = edge["from_kind"]
+            assert isinstance(subject_id, UUID)
+            subject_kind = cast(Inquiry.InquiryKind, edge["from_kind"])
         await self.emit_change(
             conn,
             api_key_id=api_key_id,
@@ -680,10 +682,20 @@ class _CascadeAuditMixin(_StoreShared):
             old=Snapshot(
                 peer_id=target_id,
                 peer_kind=target_kind,
-                peer_edge_kind=edge["edge_kind"],
-                edge_priority=edge["priority"],
-                edge_note=edge["note"],
-                edge_valence=edge["valence"],
-                edge_labels=tuple(edge["labels"] or ()),
+                peer_edge_kind=cast(Edge.Kind, edge["edge_kind"]),
+                edge_priority=cast(Issue.Priority | None, edge["priority"]),
+                edge_note=cast(str | None, edge["note"]),
+                edge_valence=cast(float | None, edge["valence"]),
+                edge_labels=tuple(cast(Sequence[str], edge["labels"] or ())),
             ),
         )
+
+
+def _optional_str(value: object) -> str | None:
+    assert value is None or isinstance(value, str)
+    return value
+
+
+def _optional_float(value: object) -> float | None:
+    assert value is None or isinstance(value, float)
+    return value

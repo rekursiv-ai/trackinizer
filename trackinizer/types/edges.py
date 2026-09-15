@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import Final, Literal, Self, cast, get_args
 from uuid import UUID
 
+from trackinizer.lib.custom_json import ListCodec
 from trackinizer.types.columns import ColumnSpec, Row
 from trackinizer.types.inquiries import Artifact, Inquiry, Issue
 
@@ -217,16 +218,27 @@ class Edge:
           edge: Parsed Edge instance.
 
         """
+        from_id = row["from_id"]
+        to_id = row["to_id"]
+        priority = row.get("priority")
+        note = row.get("note")
+        valence = row.get("valence")
+        labels = row.get("labels")
+        assert isinstance(from_id, UUID)
+        assert isinstance(to_id, UUID)
+        assert priority is None or isinstance(priority, int)
+        assert note is None or isinstance(note, str)
+        assert valence is None or isinstance(valence, float)
         return cls(
-            from_id=row["from_id"],
-            from_kind=row["from_kind"],
-            to_id=row["to_id"],
-            to_kind=row["to_kind"],
-            edge_kind=row["edge_kind"],
-            priority=row.get("priority"),
-            note=row.get("note"),
-            valence=row.get("valence"),
-            labels=None if row.get("labels") is None else tuple(row["labels"]),
+            from_id=from_id,
+            from_kind=cast(Inquiry.InquiryKind, row["from_kind"]),
+            to_id=to_id,
+            to_kind=cast(Inquiry.InquiryKind, row["to_kind"]),
+            edge_kind=cast(Edge.Kind, row["edge_kind"]),
+            priority=priority,
+            note=note,
+            valence=valence,
+            labels=None if labels is None else tuple(ListCodec.coerce(labels, str)),
         )
 
 
@@ -274,11 +286,11 @@ def kind_group_members(group: KindGroup) -> tuple[Inquiry.InquiryKind, ...]:
     """
     inquiry: tuple[Inquiry.InquiryKind, ...] = cast(
         tuple[Inquiry.InquiryKind, ...],
-        get_args(Inquiry.InquiryKind.__value__),
+        get_args(cast(object, Inquiry.InquiryKind.__value__)),
     )
     artifact: tuple[Inquiry.InquiryKind, ...] = cast(
         tuple[Inquiry.InquiryKind, ...],
-        get_args(Artifact.Kind.__value__),
+        get_args(cast(object, Artifact.Kind.__value__)),
     )
     match group:
         case "issue":
@@ -577,7 +589,7 @@ def edge_labels() -> dict[str, dict[str, str]]:
     }
 
 
-_MISSING_POLICY = set(get_args(Edge.Kind.__value__)) - set(EDGE_POLICIES)
+_MISSING_POLICY = set(get_args(cast(object, Edge.Kind.__value__))) - set(EDGE_POLICIES)
 if _MISSING_POLICY:
     raise RuntimeError(
         f"EDGE_POLICIES missing an entry for {sorted(_MISSING_POLICY)}; every "

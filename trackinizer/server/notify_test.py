@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import cast
 
 import json
 
@@ -14,7 +14,7 @@ from trackinizer.conftest import (
     make_conn,
     new_uuid,
 )
-from trackinizer.lib.postgres import DatabaseEngine
+from trackinizer.lib.postgres import Conn, DatabaseEngine
 from trackinizer.server.notify import (
     NOTIFICATION_BUFFER,
     Notification,
@@ -29,7 +29,7 @@ class TestTx:
     @pytest.mark.asyncio
     async def test_code_changes_on_success(self) -> None:
         conn = make_conn()
-        async with tx(cast(Any, conn)):
+        async with tx(cast(Conn, conn)):
             pass
         assert executed_sql(conn) == ["BEGIN", "COMMIT"]
 
@@ -37,7 +37,7 @@ class TestTx:
     async def test_rollback_on_exception(self) -> None:
         conn = make_conn()
         with pytest.raises(ValueError, match="boom"):
-            async with tx(cast(Any, conn)):
+            async with tx(cast(Conn, conn)):
                 raise ValueError("boom")
         assert executed_sql(conn) == ["BEGIN", "ROLLBACK"]
 
@@ -120,7 +120,9 @@ class TestSseEvents:
             '{"id": "abc-123"}',
         ]
         with caplog.at_level("WARNING"):
-            frames = [frame async for frame in iter_sse_events(cast(Any, engine))]
+            frames = [
+                frame async for frame in iter_sse_events(cast(DatabaseEngine, engine))
+            ]
         # Only the well-formed payload yields a frame.
         assert frames == [b'data: {"id": "abc-123"}\n\n']
         # Both malformed payloads were logged (one per drop).

@@ -11,7 +11,6 @@ fails here, at unit speed, instead of in the browser.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import get_args
 
 import re
 
@@ -25,7 +24,6 @@ from trackinizer.types.edges import (
     PRODUCED_INFERENCE_NEUTRAL,
     PRODUCED_INFERENCE_PRECEDENCE,
     PRODUCED_INFERENCE_SUPPRESSED,
-    Edge,
     edge_topology,
 )
 
@@ -53,8 +51,7 @@ def _schema_edge_arms() -> dict[str, tuple[frozenset[str], frozenset[str]]]:
         if one is not None:
             return frozenset({one})
         assert many is not None
-        found = [str(v) for v in re.findall(r"'(\w+)'", many)]
-        return frozenset(found)
+        return frozenset(str(m.group(1)) for m in re.finditer(r"'(\w+)'", many))
 
     out: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
     for m in arm.finditer(block):
@@ -89,7 +86,7 @@ def test_edge_topology_matches_schema_check() -> None:
 
 def test_edge_topology_covers_every_edge_kind() -> None:
     """Every ``Edge.Kind`` literal has a topology entry (no kind unmapped)."""
-    assert set(edge_topology()) == set(get_args(Edge.Kind.__value__))
+    assert set(edge_topology()) == set(EDGE_POLICIES)
 
 
 def test_citations_store_artifact_to_claimable() -> None:
@@ -126,7 +123,7 @@ def test_produced_inference_precedence_and_neutral_partition_every_edge_kind() -
     explicitly provenance-NEUTRAL. This fails if a kind is added to neither
     (silently undefined inference behavior) or to both (contradiction).
     """
-    all_kinds = set(get_args(Edge.Kind.__value__))
+    all_kinds = set(EDGE_POLICIES)
     assert set(PRODUCED_INFERENCE_PRECEDENCE) | PRODUCED_INFERENCE_NEUTRAL == all_kinds
     assert set(PRODUCED_INFERENCE_PRECEDENCE) & PRODUCED_INFERENCE_NEUTRAL == set()
     assert len(PRODUCED_INFERENCE_PRECEDENCE) == len(set(PRODUCED_INFERENCE_PRECEDENCE))
@@ -161,7 +158,7 @@ def test_every_edge_kind_has_an_acyclicity_policy() -> None:
     external-fact kind -- must be exempt so mutual citation is storable.
     """
     policies = EDGE_POLICIES
-    assert set(policies) == set(get_args(Edge.Kind.__value__))
+    assert set(policies) == set(EDGE_POLICIES)
     assert policies["cites_paper"].enforces_acyclicity is False
     for kind, policy in policies.items():
         if kind != "cites_paper":

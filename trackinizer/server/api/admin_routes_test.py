@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Protocol, cast
 from unittest.mock import AsyncMock
 
 import uuid
@@ -12,6 +12,7 @@ import asyncpg
 import pytest
 
 from trackinizer.conftest import executed_sql
+from trackinizer.lib.custom_json import DictCodec, ListCodec
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_ID,
@@ -71,6 +72,22 @@ def _allowlist_row(
 def _executed_sql(engine: FakeEngine) -> list[str]:
     """Return the SQL strings captured on ``engine.conn``, in call order."""
     return executed_sql(engine.conn)
+
+
+class _JsonResponse(Protocol):
+    def json(self) -> object: ...
+
+
+def _json(response: _JsonResponse) -> dict[str, object]:
+    """Narrow a TestClient JSON body at the HTTP boundary."""
+    return DictCodec.coerce(response.json())
+
+
+def _json_detail(response: _JsonResponse) -> str:
+    """Read the string detail field from an error response."""
+    detail = _json(response)["detail"]
+    assert isinstance(detail, str)
+    return detail
 
 
 # ---- Auth gating ---------------------------------------------------------
@@ -147,7 +164,7 @@ class TestAuthGating:
         install_identity(make_test_identity(role=cast(Role, role)))
         r = client.get("/api/admin/users")
         assert r.status_code == 403
-        assert role in r.json()["detail"]
+        assert role in _json_detail(r)
 
     def test_non_admin_role_change_403(
         self,
@@ -221,14 +238,17 @@ class TestAdminUsers:
         engine.conn.fetch = AsyncMock(return_value=[row])
         r = client.get("/api/admin/users")
         assert r.status_code == 200, r.text
-        body = r.json()
-        assert len(body["users"]) == 1
-        assert body["users"][0]["email"] == "bob@example.com"
-        assert body["users"][0]["role"] == "writer"
-        assert body["users"][0]["status"] == "active"
+        body = DictCodec.coerce(r.json())
+        users = ListCodec.mappings(body["users"])
+        assert len(users) == 1
+        user = users[0]
+        assert isinstance(user, dict)
+        assert user["email"] == "bob@example.com"
+        assert user["role"] == "writer"
+        assert user["status"] == "active"
         # ``id`` and ``created_at`` are serialized for the table view.
-        assert body["users"][0]["id"] == str(row["id"])
-        assert "created_at" in body["users"][0]
+        assert user["id"] == str(row["id"])
+        assert "created_at" in user
 
     def test_role_change_happy_path(
         self,
@@ -287,7 +307,7 @@ class TestAdminUsers:
         )
         assert r.status_code == 409, r.text
         assert not any(
-            "UPDATE users SET role" in c.args[0]
+            "UPDATE users SET role" in _sql(c.args[0])
             for c in engine.conn.execute.call_args_list
         )
 
@@ -340,7 +360,7 @@ class TestAdminUsers:
         r = client.post(f"/api/admin/users/{TEST_USER_ID}/disable")
         assert r.status_code == 409, r.text
         assert not any(
-            "UPDATE users SET status = 'disabled'" in c.args[0]
+            "UPDATE users SET status = 'disabled'" in _sql(c.args[0])
             for c in engine.conn.execute.call_args_list
         )
 
@@ -380,7 +400,7 @@ class TestAdminUsers:
         engine.conn.execute = AsyncMock(return_value="UPDATE 1")
         r = client.post(f"/api/admin/users/{uuid.uuid4()}/enable")
         assert r.status_code == 200, r.text
-        assert r.json()["status"] == "active"
+        assert _json(r)["status"] == "active"
         sqls = _executed_sql(engine)
         assert any("UPDATE users SET status = 'active'" in s for s in sqls)
 
@@ -421,9 +441,9 @@ class TestLastAdminGuard:
             json={"role": "viewer"},
         )
         assert r.status_code == 409, r.text
-        assert "last_admin" in r.json()["detail"]
+        assert "last_admin" in _json_detail(r)
         assert not any(
-            "UPDATE users SET role" in c.args[0]
+            "UPDATE users SET role" in _sql(c.args[0])
             for c in engine.conn.execute.call_args_list
         )
 
@@ -438,9 +458,9 @@ class TestLastAdminGuard:
         target = uuid.uuid4()
         r = client.post(f"/api/admin/users/{target}/disable")
         assert r.status_code == 409, r.text
-        assert "last_admin" in r.json()["detail"]
+        assert "last_admin" in _json_detail(r)
         assert not any(
-            "UPDATE users SET status = 'disabled'" in c.args[0]
+            "UPDATE users SET status = 'disabled'" in _sql(c.args[0])
             for c in engine.conn.execute.call_args_list
         )
 
@@ -455,9 +475,10 @@ class TestLastAdminGuard:
         target = uuid.uuid4()
         r = client.delete(f"/api/admin/users/{target}")
         assert r.status_code == 409, r.text
-        assert "last_admin" in r.json()["detail"]
+        assert "last_admin" in _json_detail(r)
         assert not any(
-            "DELETE FROM users" in c.args[0] for c in engine.conn.execute.call_args_list
+            "DELETE FROM users" in _sql(c.args[0])
+            for c in engine.conn.execute.call_args_list
         )
 
     def test_demote_non_admin_target_permitted(
@@ -685,12 +706,13 @@ class TestAdminRemoveUser:
         engine.conn.execute = AsyncMock(return_value="DELETE 1")
         r = client.delete(f"/api/admin/users/{TEST_USER_ID}")
         assert r.status_code == 409, r.text
-        assert "own account" in r.json()["detail"]
+        assert "own account" in _json_detail(r)
         # Crucially: the self-delete guard fires *before* the SQL,
         # otherwise an admin could nuke themselves and rely on a stale
         # 409 message to suggest the row survived.
         assert not any(
-            "DELETE FROM users" in c.args[0] for c in engine.conn.execute.call_args_list
+            "DELETE FROM users" in _sql(c.args[0])
+            for c in engine.conn.execute.call_args_list
         )
 
 
@@ -706,10 +728,13 @@ class TestAdminAllowlist:
         )
         r = client.get("/api/admin/allowlist")
         assert r.status_code == 200, r.text
-        body = r.json()
-        assert len(body["entries"]) == 1
-        assert body["entries"][0]["email_or_pattern"] == "*@example.com"
-        assert body["entries"][0]["role"] == "writer"
+        body = DictCodec.coerce(r.json())
+        entries = ListCodec.mappings(body["entries"])
+        assert len(entries) == 1
+        entry = entries[0]
+        assert isinstance(entry, dict)
+        assert entry["email_or_pattern"] == "*@example.com"
+        assert entry["role"] == "writer"
 
     def test_add_happy_path_stamps_added_by(
         self,
@@ -727,7 +752,7 @@ class TestAdminAllowlist:
         insert = next(
             c
             for c in engine.conn.execute.call_args_list
-            if "INSERT INTO allowlist" in c.args[0]
+            if "INSERT INTO allowlist" in _sql(c.args[0])
         )
         assert insert.args[1] == "new@example.com"
         assert insert.args[2] == "viewer"
@@ -747,10 +772,10 @@ class TestAdminAllowlist:
         insert = next(
             c
             for c in engine.conn.execute.call_args_list
-            if "INSERT INTO allowlist" in c.args[0]
+            if "INSERT INTO allowlist" in _sql(c.args[0])
         )
         assert insert.args[1] == "alice@example.com"
-        assert r.json()["email_or_pattern"] == "alice@example.com"
+        assert _json(r)["email_or_pattern"] == "alice@example.com"
 
     def test_add_lowercases_wildcard_pattern_domain(
         self,
@@ -766,10 +791,10 @@ class TestAdminAllowlist:
         insert = next(
             c
             for c in engine.conn.execute.call_args_list
-            if "INSERT INTO allowlist" in c.args[0]
+            if "INSERT INTO allowlist" in _sql(c.args[0])
         )
         assert insert.args[1] == "*@example.com"
-        assert r.json()["email_or_pattern"] == "*@example.com"
+        assert _json(r)["email_or_pattern"] == "*@example.com"
 
     def test_set_allowlist_role_canonicalizes_path_param(
         self,
@@ -786,7 +811,7 @@ class TestAdminAllowlist:
         update = next(
             c
             for c in engine.conn.execute.call_args_list
-            if "UPDATE allowlist" in c.args[0]
+            if "UPDATE allowlist" in _sql(c.args[0])
         )
         assert update.args[1] == "*@example.com"
 
@@ -802,7 +827,7 @@ class TestAdminAllowlist:
         delete = next(
             c
             for c in engine.conn.execute.call_args_list
-            if "DELETE FROM allowlist" in c.args[0]
+            if "DELETE FROM allowlist" in _sql(c.args[0])
         )
         assert delete.args[1] == "*@example.com"
 
@@ -866,7 +891,7 @@ class TestAdminAllowlist:
         delete = next(
             c
             for c in engine.conn.execute.call_args_list
-            if "DELETE FROM allowlist" in c.args[0]
+            if "DELETE FROM allowlist" in _sql(c.args[0])
         )
         assert delete.args[1] == "*@example.com"
 
@@ -896,7 +921,7 @@ class TestAdminAllowlist:
         update = next(
             c
             for c in engine.conn.execute.call_args_list
-            if "UPDATE allowlist SET role" in c.args[0]
+            if "UPDATE allowlist SET role" in _sql(c.args[0])
         )
         assert update.args[1] == "x@example.com"
         assert update.args[2] == "admin"
@@ -921,7 +946,7 @@ class TestAdminAllowlist:
         update = next(
             c
             for c in engine.conn.execute.call_args_list
-            if "UPDATE allowlist SET role" in c.args[0]
+            if "UPDATE allowlist SET role" in _sql(c.args[0])
         )
         assert update.args[1] == "*@example.com"
 
@@ -969,11 +994,13 @@ class TestProfileRoute:
         )
         r = client.get("/api/me/profile")
         assert r.status_code == 200, r.text
-        body = r.json()
+        body = DictCodec.coerce(r.json())
         assert body["email"]
         assert body["role"] == "admin"
         assert body["name"] == "Alice"
-        assert body["last_login"].startswith("2026")
+        last_login = body["last_login"]
+        assert isinstance(last_login, str)
+        assert last_login.startswith("2026")
 
     def test_401_without_auth(
         self,
@@ -983,6 +1010,11 @@ class TestProfileRoute:
         app.dependency_overrides.pop(current_user, None)
         r = client.get("/api/me/profile")
         assert r.status_code == 401
+
+
+def _sql(value: object) -> str:
+    assert isinstance(value, str)
+    return value
 
 
 if __name__ == "__main__":

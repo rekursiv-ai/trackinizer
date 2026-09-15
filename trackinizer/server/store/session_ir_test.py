@@ -441,6 +441,7 @@ async def test_search_never_indexes_ciphertext(store: Store) -> None:
             session_id,
         )
 
+    assert isinstance(vector, str)
     assert "plaintext" in vector
     assert _CIPHERTEXT.lower() not in vector.lower()
 

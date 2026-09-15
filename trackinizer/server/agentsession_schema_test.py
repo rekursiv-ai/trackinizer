@@ -157,6 +157,7 @@ async def test_submit_agentsession_stamps_opening_api_key(store: Store) -> None:
             "SELECT agentsession_opened_by_api_key_id FROM inquiries WHERE id = $1",
             session_id,
         )
+    assert isinstance(stored, uuid.UUID)
     assert stored == opener
 
 

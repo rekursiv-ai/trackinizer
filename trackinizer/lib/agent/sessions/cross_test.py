@@ -12,8 +12,9 @@ drops a record still emits a well-formed file.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from io import StringIO
-from types import ModuleType
+from typing import Protocol, TextIO
 
 import json
 
@@ -24,11 +25,14 @@ from trackinizer.lib.agent.sessions.convert import detect_format
 from trackinizer.lib.agent.sessions.fuse import chain
 from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,
+    AssistantMessage,
     FileEditResult,
     FileReadResult,
     FileWriteResult,
     SessionRecord,
     ToolResult,
+    UncategorizedToolResult,
+    UserMessage,
     WebFetchResult,
     WebSearchResults,
 )
@@ -285,8 +289,16 @@ def test_an_image_carrying_detail_is_still_an_attachment() -> None:
 
     records = list(codex.normalize(StringIO(native)))
 
+    attachment_records = (
+        UserMessage,
+        AssistantMessage,
+        UncategorizedToolResult,
+    )
     attachments = [
-        found for record in records for found in getattr(record, "attachments", ())
+        found
+        for record in records
+        if isinstance(record, attachment_records)
+        for found in record.attachments
     ]
     assert [found.data for found in attachments] == [b"hi"]
     out = StringIO()
@@ -426,6 +438,12 @@ def test_a_session_whose_fork_link_cycles_is_still_ordered() -> None:
     assert chain([records]) == [records]
 
 
+class _SessionModule(Protocol):
+    def normalize(self, stream: TextIO) -> Iterator[SessionRecord]: ...
+
+    def denormalize(self, records: Iterable[SessionRecord], stream: TextIO) -> None: ...
+
+
 @pytest.mark.parametrize(
     ("target", "reader"),
     [("claude", claude), ("codex", codex)],
@@ -433,7 +451,7 @@ def test_a_session_whose_fork_link_cycles_is_still_ordered() -> None:
 )
 def test_a_gemini_session_crosses_to_the_other_providers(
     target: str,
-    reader: object,
+    reader: _SessionModule,
 ) -> None:
     """Gemini is a source like any other, so its acts must reach both wires.
 
@@ -459,8 +477,6 @@ def test_a_gemini_session_crosses_to_the_other_providers(
         separators=(",", ":"),
     )
     records = list(gemini.normalize(StringIO(native)))
-    assert isinstance(reader, ModuleType)
-
     out = StringIO()
     reader.denormalize(records, out)
 

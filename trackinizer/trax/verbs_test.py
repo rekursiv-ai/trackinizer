@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any, cast, get_args, override
+from typing import cast, get_args, override
 
+import argparse
 import io
 import uuid
 
@@ -1994,7 +1995,6 @@ def test_whole_collection_views_never_exceed_server_cap(client: FakeClient) -> N
         # Every paged request the helper issued must be within the server cap.
         for call in (c for c in client.calls if c[0] == "list_kind"):
             kwargs = call[-1]
-            assert isinstance(kwargs, dict)
             assert IntCodec.coerce(kwargs["limit"], 0) <= MAX_LIST_LIMIT, verb
 
 
@@ -2168,24 +2168,20 @@ def test_run_action_rejects_unknown_action_variant() -> None:
 
     client = FakeClient()
     ref = SeqRef(kind="Issue", seq=1)
-    args = type(
-        "_Args",
-        (),
-        {
-            "actor": "",
-            "reason": "",
-            "format_": "table",
-            "limit": 50,
-            "sort": "seq",
-            "width": None,
-        },
-    )()
+
     with pytest.raises((TypeError, ValueError, AssertionError)):
         verbs.run_action(
             ref,
-            cast(Any, _UnknownAction()),
-            cast(Any, args),
-            lambda: cast(Any, client),
+            _UnknownAction(),
+            argparse.Namespace(
+                actor="",
+                reason="",
+                format_="table",
+                limit=50,
+                sort="seq",
+                width=None,
+            ),
+            lambda: cast(Client, client),
         )
     assert not any(call[0] == "purge" for call in client.calls), (
         "run_action silently purged for an unknown Action variant"
@@ -2494,7 +2490,7 @@ def test_edge_labels_dict_is_pinned_to_edge_kind() -> None:
     extra key is dead code. Pin the constant's keys to the closed ``Edge.Kind``
     literal so adding a kind forces a label entry.
     """
-    assert set(LABELS_BY_EDGE_KIND) == set(get_args(Edge.Kind.__value__))
+    assert set(LABELS_BY_EDGE_KIND) == set(get_args(cast(object, Edge.Kind.__value__)))
 
 
 def test_blocked_render_builds_seq_index_once_no_nested_scan() -> None:
@@ -3353,7 +3349,10 @@ def test_a_caught_exception_is_a_class_not_a_lazy_proxy(name: str) -> None:
     Asserted on every deferred exception, not just the one that bit: the
     three share one cause, and a class fixed instance-by-instance comes back.
     """
-    assert _declines(getattr(verbs, name)), f"{name} is a proxy, not a class"
+    caught: object = getattr(verbs, name)  # pyright: ignore[reportAny] -- vendor lazy imports expose dynamic attributes.
+    assert isinstance(caught, type)
+    assert issubclass(caught, BaseException)
+    assert _declines(caught), f"{name} is a proxy, not a class"
 
 
 # The operation itself, because wrapt forwards ``__class__``: a proxy passes

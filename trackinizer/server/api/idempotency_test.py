@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 import uuid
 
+from trackinizer.lib.custom_json import DictCodec
+
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -40,7 +42,10 @@ class TestMiddleware:
             headers={"Idempotency-Key": "not-a-uuid"},
         )
         assert resp.status_code == 400
-        assert "Idempotency-Key" in resp.json()["detail"]
+        body = DictCodec.coerce(resp.json())
+        detail = body["detail"]
+        assert isinstance(detail, str)
+        assert "Idempotency-Key" in detail
 
     def test_missing_header_falls_back_to_server_mint(
         self,

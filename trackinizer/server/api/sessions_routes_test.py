@@ -16,6 +16,7 @@ import uuid
 
 import pytest
 
+from trackinizer.lib.custom_json import DictCodec
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
@@ -69,7 +70,7 @@ class TestSendMessageIdempotency:
             headers={"Idempotency-Key": key},
         )
         assert r1.status_code == 200, r1.text
-        assert r1.json()["delivered"] == []
+        assert DictCodec.coerce(r1.json())["delivered"] == []
 
         # The session is now live: the same key must deliver, not replay [].
         session_id = uuid.uuid4()
@@ -89,7 +90,7 @@ class TestSendMessageIdempotency:
             headers={"Idempotency-Key": key},
         )
         assert r2.status_code == 200, r2.text
-        assert r2.json()["delivered"] == [str(session_id)]
+        assert DictCodec.coerce(r2.json())["delivered"] == [str(session_id)]
 
     def test_nonempty_delivery_is_recorded_for_replay(
         self,
@@ -118,7 +119,7 @@ class TestSendMessageIdempotency:
             json={"actor": "scientist", "text": "hi", "room": "sear"},
             headers={"Idempotency-Key": key},
         )
-        assert r1.json()["delivered"] == [str(session_id)]
+        assert DictCodec.coerce(r1.json())["delivered"] == [str(session_id)]
         # Replay: the recorded receipt comes back; the queue is not
         # enqueued a second time.
         r2 = client.post(
@@ -126,7 +127,7 @@ class TestSendMessageIdempotency:
             json={"actor": "scientist", "text": "hi", "room": "sear"},
             headers={"Idempotency-Key": key},
         )
-        assert r2.json()["delivered"] == [str(session_id)]
+        assert DictCodec.coerce(r2.json())["delivered"] == [str(session_id)]
         assert app.state.inbound.pending(session_id) == 1
 
 
@@ -289,7 +290,7 @@ class TestInboundEnqueueRejectsSource:
             headers={"Idempotency-Key": key},
         )
         assert first.status_code == 200, first.text
-        assert first.json()["queued"] == 1
+        assert DictCodec.coerce(first.json())["queued"] == 1
         # Same key -> deduped: still exactly one message queued.
         retry = client.post(
             f"/api/sessions/{session_id}/inbound",
@@ -297,7 +298,7 @@ class TestInboundEnqueueRejectsSource:
             headers={"Idempotency-Key": key},
         )
         assert retry.status_code == 200, retry.text
-        assert retry.json()["queued"] == 1
+        assert DictCodec.coerce(retry.json())["queued"] == 1
         assert inbound.pending(session_id) == 1
 
 
@@ -328,7 +329,9 @@ class TestSessionStartAccountValidation:
             json={"cli": "claude", "cli_session_id": "abc"},
         )
         assert r.status_code == 422, r.text
-        assert "not an active user" in r.json()["detail"]
+        detail = DictCodec.coerce(r.json())["detail"]
+        assert isinstance(detail, str)
+        assert "not an active user" in detail
 
     def test_start_passes_creator_account_into_submit(
         self,

@@ -56,9 +56,10 @@ class TestStoreReads:
         main = next(
             c
             for c in conn.fetch.call_args_list
-            if c.args and "FROM change_log" in c.args[0]
+            if c.args and isinstance(c.args[0], str) and "FROM change_log" in c.args[0]
         )
         sql = main.args[0]
+        assert isinstance(sql, str)
         # A composite row comparison, not a bare ``id <``.
         assert "(created, id) <" in sql
         assert cursor_created in main.args
@@ -104,6 +105,7 @@ class TestStoreReads:
         conn.fetch = AsyncMock(return_value=[])
         await store.what_changed_for_anyone(since, after_id=after)
         sql = conn.fetch.call_args.args[0]
+        assert isinstance(sql, str)
         assert "(c.created, c.id) > ($1, $2)" in sql
         assert "subscribers_snapshot != '{}'" in sql
         assert "ORDER BY c.created, c.id" in sql
@@ -232,6 +234,7 @@ class TestCoverageStoreReads:
             seq_ranges=(SeqRange(start=222, stop=260), SeqRange(start=279)),
         )
         sql, *params = conn.fetch.call_args_list[0].args
+        assert isinstance(sql, str)
         assert "(seq >= $2 AND seq <= $3) OR (seq >= $4)" in sql
         # The seq bounds bind $2..$4; LIMIT/OFFSET trail as the last two.
         assert params[:4] == ["Issue", 222, 260, 279]
@@ -274,6 +277,7 @@ class TestListKindFilterLowering:
         )
 
         sql, *params = conn.fetch.call_args_list[0].args
+        assert isinstance(sql, str)
         assert "account = $2" in sql, (
             f"equality filter stayed in Python; SQL was:\n{sql}"
         )
@@ -297,6 +301,7 @@ class TestListKindFilterLowering:
         )
 
         sql, *params = conn.fetch.call_args_list[0].args
+        assert isinstance(sql, str)
         assert "LIMIT" in sql, f"lowered filter still fetched unbounded:\n{sql}"
         assert 5 in params
 
@@ -330,6 +335,7 @@ class TestListKindFilterLowering:
         )
 
         sql, *params = conn.fetch.call_args_list[0].args
+        assert isinstance(sql, str)
         assert "owner IS NULL" in sql
         # Kind, limit, offset -- no operand for the presence test.
         assert params == ["Issue", 5, 0]

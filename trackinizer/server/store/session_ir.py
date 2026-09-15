@@ -25,9 +25,9 @@ import json
 from trackinizer.lib.custom_json import (
     JSON,
     DictCodec,
-    IntCodec,
     json_freeze,
     json_unfreeze,
+    loads,
 )
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
@@ -299,14 +299,18 @@ class _SessionIRMixin(_CascadeAuditMixin):
                 "WHERE session_id = $1 ORDER BY seq",
                 session_id,
             )
-        return [
-            SlashCommandRow(
-                timestamp=row["timestamp"],
-                command=row["command"],
-                args=row["args"],
+        result: list[SlashCommandRow] = []
+        for row in rows:
+            timestamp = row["timestamp"]
+            assert isinstance(timestamp, datetime)
+            command = row["command"]
+            assert isinstance(command, str)
+            args = row["args"]
+            assert isinstance(args, str)
+            result.append(
+                SlashCommandRow(timestamp=timestamp, command=command, args=args),
             )
-            for row in rows
-        ]
+        return result
 
     async def read_session_records(
         self,
@@ -376,23 +380,43 @@ class _SessionIRMixin(_CascadeAuditMixin):
                 after_idx,
                 limit,
             )
-        return [
-            SessionRecordRow(
-                session_id=row["session_id"],
-                part=row["part"],
-                idx=row["idx"],
-                kind=row["kind"],
-                context_id=row["context_id"],
-                timestamp=row["timestamp"],
-                model=row["model"],
-                payload=_decoded_payload(row["payload"]),
-                text=row["text"],
-                ciphertext=(
-                    None if row["bytes"] is None else bytes(row["bytes"]).decode()
+        result: list[SessionRecordRow] = []
+        for row in rows:
+            session_id_value = row["session_id"]
+            assert isinstance(session_id_value, UUID)
+            part_value = row["part"]
+            assert isinstance(part_value, int)
+            idx_value = row["idx"]
+            assert isinstance(idx_value, int)
+            kind_value = row["kind"]
+            assert isinstance(kind_value, str)
+            context_id_value = row["context_id"]
+            timestamp_value = row["timestamp"]
+            model_value = row["model"]
+            payload_value = row["payload"]
+            assert isinstance(payload_value, str)
+            text_value = row["text"]
+            assert isinstance(text_value, str)
+            bytes_value = row["bytes"]
+            assert context_id_value is None or isinstance(context_id_value, int)
+            assert timestamp_value is None or isinstance(timestamp_value, datetime)
+            assert model_value is None or isinstance(model_value, str)
+            assert bytes_value is None or isinstance(bytes_value, bytes)
+            result.append(
+                SessionRecordRow(
+                    session_id=session_id_value,
+                    part=part_value,
+                    idx=idx_value,
+                    kind=kind_value,
+                    context_id=context_id_value,
+                    timestamp=timestamp_value,
+                    model=model_value,
+                    payload=_decoded_payload(payload_value),
+                    text=text_value,
+                    ciphertext=(None if bytes_value is None else bytes_value.decode()),
                 ),
             )
-            for row in rows
-        ]
+        return result
 
     async def upsert_session_manifest(
         self,
@@ -434,22 +458,23 @@ class _SessionIRMixin(_CascadeAuditMixin):
         # driver's own codec would round-trip it through a dict.
         encoded = _encoded_payload(metadata)
         async with self.engine.acquire() as conn, tx(conn):
-            found = await conn.fetchval(
+            found: object = await conn.fetchval(
                 "SELECT part FROM session_manifests "
                 "WHERE session_id = $1 AND name = $2",
                 session_id,
                 name,
             )
-            part = IntCodec.coerce(
-                found
-                if found is not None
-                else await conn.fetchval(
+            if found is not None:
+                assert isinstance(found, int)
+                part = found
+            else:
+                next_part: object = await conn.fetchval(
                     "SELECT coalesce(max(part) + 1, 0) FROM session_manifests "
                     "WHERE session_id = $1",
                     session_id,
-                ),
-                0,
-            )
+                )
+                assert isinstance(next_part, int)
+                part = next_part
             try:
                 await conn.execute(
                     "INSERT INTO session_manifests (session_id, part, name, "
@@ -470,7 +495,7 @@ class _SessionIRMixin(_CascadeAuditMixin):
                 # A concurrent append claimed this part for a different file.
                 # Its manifest is now the truth for that number, so re-read
                 # rather than overwrite: ours belongs at a later part.
-                retry = await conn.fetchval(
+                retry: object = await conn.fetchval(
                     "SELECT part FROM session_manifests "
                     "WHERE session_id = $1 AND name = $2",
                     session_id,
@@ -478,7 +503,8 @@ class _SessionIRMixin(_CascadeAuditMixin):
                 )
                 if retry is None:
                     raise
-                part = IntCodec.coerce(retry, 0)
+                assert isinstance(retry, int)
+                part = retry
             except asyncpg.ForeignKeyViolationError as exc:
                 raise NotFoundError(f"session {session_id} not found") from exc
         return part
@@ -499,17 +525,31 @@ class _SessionIRMixin(_CascadeAuditMixin):
                 "FROM session_manifests WHERE session_id = $1 ORDER BY part",
                 session_id,
             )
-        return [
-            SessionManifest(
-                part=row["part"],
-                name=row["name"],
-                metadata=_decoded_payload(row["metadata"]),
-                ir_id=row["ir_id"],
-                format=row["format"],
-                records=row["records"],
+        result: list[SessionManifest] = []
+        for row in rows:
+            part: object = row["part"]
+            name: object = row["name"]
+            metadata: object = row["metadata"]
+            ir_id: object = row["ir_id"]
+            format_value: object = row["format"]
+            records: object = row["records"]
+            assert isinstance(part, int)
+            assert isinstance(name, str)
+            assert isinstance(metadata, str)
+            assert isinstance(ir_id, UUID)
+            assert isinstance(format_value, str)
+            assert isinstance(records, int)
+            result.append(
+                SessionManifest(
+                    part=part,
+                    name=name,
+                    metadata=_decoded_payload(metadata),
+                    ir_id=ir_id,
+                    format=format_value,
+                    records=records,
+                ),
             )
-            for row in rows
-        ]
+        return result
 
 
 # Serialized HERE rather than handed to asyncpg as a mapping: the column is ``json``
@@ -524,7 +564,7 @@ def _encoded_payload(payload: JSON) -> str:
 
 def _decoded_payload(raw: str) -> JSON:
     """Return the stored payload text back as frozen JSON, key order intact."""
-    return json_freeze(DictCodec.coerce(json.loads(raw)))
+    return json_freeze(DictCodec.coerce(loads(raw)))
 
 
 # Claude writes standard base64 and codex base64url, so one decode/encode pair cannot

@@ -470,7 +470,11 @@ class _Observer(Protocol):
 def _fsevents_observer() -> _Observer:
     """Build watchdog's FSEvents observer."""
     try:
-        return cast(_Observer, _fsevents.FSEventsObserver())
+        observer = cast(
+            _Observer,
+            _fsevents.FSEventsObserver(),  # pyright: ignore[reportAny] -- Watchdog's macOS-only lazy module is untyped.
+        )
+        return observer
     except ImportError as err:
         raise NotImplementedError(
             "watchdog's FSEvents backend is unavailable; "
@@ -564,7 +568,7 @@ async def _drain_queue(queue: asyncio.Queue[Path]) -> AsyncIterator[set[Path]]:
 def _inotify_fd(*directories: Path) -> tuple[int, dict[int, Path]]:
     """Open one inotify fd watching every directory's subtree."""
     libc = _libc()
-    fd = int(libc.inotify_init1(os.O_NONBLOCK))
+    fd = int(cast(Callable[[int], int], libc.inotify_init1)(os.O_NONBLOCK))
     if fd < 0:
         raise OSError(ctypes.get_errno(), "inotify_init1 failed")
     watches: dict[int, Path] = {}
@@ -617,7 +621,13 @@ def _add_watch(
     watches: dict[int, Path],
 ) -> None:
     """Register one directory; record which watch descriptor names it."""
-    descriptor = int(libc.inotify_add_watch(fd, str(directory).encode(), _WATCH_MASK))
+    descriptor = int(
+        cast(Callable[[int, bytes, int], int], libc.inotify_add_watch)(
+            fd,
+            str(directory).encode(),
+            _WATCH_MASK,
+        ),
+    )
     if descriptor < 0:
         code = ctypes.get_errno()
         if code == errno.ENOENT:
@@ -675,7 +685,10 @@ def _read_events(
     changed: set[Path] = set()
     offset = 0
     while offset < len(raw):
-        descriptor, mask, _cookie, length = _EVENT_HEADER.unpack_from(raw, offset)
+        descriptor, mask, _cookie, length = cast(
+            tuple[int, int, int, int],
+            _EVENT_HEADER.unpack_from(raw, offset),
+        )
         offset += _EVENT_HEADER.size
         name = raw[offset : offset + length].split(b"\0", 1)[0]
         offset += length

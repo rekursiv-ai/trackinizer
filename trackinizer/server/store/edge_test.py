@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import _Call
+
 import pytest
 
 from trackinizer.conftest import (
@@ -30,16 +32,14 @@ class TestEdge:
         )
         sqls = executed_sql(conn)
         # INSERT INTO edges moved to fetchval (RETURNING from_id).
-        assert any(
-            "INSERT INTO edges" in c.args[0] for c in conn.fetchval.call_args_list
-        )
+        assert any("INSERT INTO edges" in _sql(c) for c in conn.fetchval.call_args_list)
         # Two change_log rows: one against from-side, one against to-side.
         change_log_inserts = [s for s in sqls if "INSERT INTO change_log" in s]
         assert len(change_log_inserts) == 2
         change_kinds = [
             call.args[6]
             for call in conn.execute.call_args_list
-            if "INSERT INTO change_log" in call.args[0]
+            if "INSERT INTO change_log" in _sql(call)
         ]
         assert change_kinds == ["edge_added", "edge_added"]
 
@@ -101,7 +101,7 @@ class TestEdge:
         change_kinds = [
             call.args[6]
             for call in conn.execute.call_args_list
-            if "INSERT INTO change_log" in call.args[0]
+            if "INSERT INTO change_log" in _sql(call)
         ]
         assert change_kinds == ["edge_annotation_changed", "edge_annotation_changed"]
         assert len(engine.notify_calls) == 2
@@ -148,7 +148,7 @@ class TestEdge:
             actor="alice",
         )
         update = next(
-            c for c in conn.execute.call_args_list if "UPDATE edges SET" in c.args[0]
+            c for c in conn.execute.call_args_list if "UPDATE edges SET" in _sql(c)
         )
         assert update.args[1:5] == (None, None, None, None)
 
@@ -179,7 +179,7 @@ class TestEdge:
             actor="alice",
         )
         update = next(
-            (c for c in conn.execute.call_args_list if "UPDATE edges SET" in c.args[0]),
+            (c for c in conn.execute.call_args_list if "UPDATE edges SET" in _sql(c)),
             None,
         )
         assert update is not None, "label add should issue an UPDATE for labels"
@@ -214,9 +214,16 @@ class TestEdge:
         change_kinds = [
             call.args[6]
             for call in conn.execute.call_args_list
-            if "INSERT INTO change_log" in call.args[0]
+            if "INSERT INTO change_log" in _sql(call)
         ]
         assert change_kinds == ["edge_removed", "edge_removed"]
+
+
+def _sql(call: _Call) -> str:
+    """Narrow a recorded mock argument to the SQL string passed by production."""
+    sql = call.args[0]
+    assert isinstance(sql, str)
+    return sql
 
 
 if __name__ == "__main__":

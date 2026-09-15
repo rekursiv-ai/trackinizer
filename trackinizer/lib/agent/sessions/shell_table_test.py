@@ -34,7 +34,13 @@ from trackinizer.lib.agent.types.sessions import (
     SessionRecord,
     ToolCall,
 )
-from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec, json_unfreeze
+from trackinizer.lib.custom_json import (
+    DictCodec,
+    ListCodec,
+    StrCodec,
+    json_unfreeze,
+    loads,
+)
 
 
 # One entry per row of the table in ``shell_results``: the command, the record
@@ -276,7 +282,7 @@ def test_editing_a_lifted_path_rewrites_the_replayed_command(
 def _replayed_command(native: str) -> str:
     """Return the Bash command a rewritten claude transcript carries."""
     for line in native.splitlines():
-        record = DictCodec.coerce(json.loads(line))
+        record = DictCodec.coerce(loads(line))
         message = DictCodec.coerce(record.get("message"))
         for block in ListCodec.mappings(message.get("content")):
             if StrCodec.coerce(block.get("name")) == "Bash":

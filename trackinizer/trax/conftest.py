@@ -10,15 +10,17 @@ profile-related GRAMMAR.md examples once their xfails are lifted.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from types import TracebackType
-from typing import Any, Self, cast
+from typing import Self, cast
 
 import uuid
 
 import pytest
 
-from trackinizer.client.client import EdgeWrite
+from trackinizer.client.client import Client, EdgeWrite
 from trackinizer.lib.absent import Absent
+from trackinizer.lib.custom_json import IntCodec, JSONValue
 from trackinizer.trax import cli
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import (
@@ -87,7 +89,7 @@ def _storage_view(row: dict[str, object]) -> dict[str, object]:
 
 @pytest.fixture(autouse=True)
 def tmp_config_dir(
-    tmp_path: pytest.TempPathFactory,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Isolate profile state so tests cannot touch the real config.
@@ -98,7 +100,7 @@ def tmp_config_dir(
     ``TRACKINIZER_PROFILE`` and ``TRACKINIZER_URL`` so an exported shell
     variable does not bleed into the test process.
     """
-    root = cast(Any, tmp_path)
+    root = tmp_path
     # A test fixture repointing userdirs.
     monkeypatch.setenv(
         "XDG_CONFIG_HOME", str(root)
@@ -357,9 +359,9 @@ class FakeClient:
 
     def submit_batch(
         self,
-        items: Sequence[tuple[Inquiry.InquiryKind, Any]],
+        items: Sequence[tuple[Inquiry.InquiryKind, object]],
         *,
-        edges: Sequence[Any] = (),
+        edges: Sequence[object] = (),
     ) -> list[uuid.UUID]:
         """Submit batch."""
         self.calls.append(("submit_batch", (tuple(items),), {"edges": tuple(edges)}))
@@ -375,7 +377,7 @@ class FakeClient:
         offset: int = 0,
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[Filter] = (),
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, JSONValue]]:
         """List kind."""
         self.calls.append(
             (
@@ -390,7 +392,9 @@ class FakeClient:
                 },
             ),
         )
-        rows = [row for row in self.rows if row.get("kind") == kind]
+        rows: list[dict[str, object]] = [
+            row for row in self.rows if row.get("kind") == kind
+        ]
         if seq_ranges:
             # Mirror the server's OR-of-intervals union: a row survives if its
             # seq falls in any interval. A single query, so overlaps never
@@ -399,7 +403,7 @@ class FakeClient:
                 row
                 for row in rows
                 if any(
-                    _seq_in_interval(int(cast(int, row.get("seq") or 0)), interval)
+                    _seq_in_interval(IntCodec.coerce(row.get("seq")), interval)
                     for interval in seq_ranges
                 )
             ]
@@ -424,8 +428,13 @@ class FakeClient:
         if status is not None:
             rows = [row for row in rows if row.get("status") == status]
         for filt in filters:
-            rows = [row for row in rows if match_filter(_storage_view(row), filt)]
-        return rows[offset : offset + limit]
+            rows = [row for row in rows if bool(match_filter(_storage_view(row), filt))]
+        return cast(
+            list[dict[str, JSONValue]],
+            cast(
+                object, rows[offset : offset + limit]
+            ),  # -- fake rows are JSON-shaped.
+        )
 
     def list_kind_all(
         self,
@@ -434,7 +443,7 @@ class FakeClient:
         status: Inquiry.Status | None = None,
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[Filter] = (),
-    ) -> list[dict[str, Any]]:
+    ) -> list[dict[str, JSONValue]]:
         """Page past the cap, mirroring the real client's whole-collection fetch.
 
         Records a ``list_kind_all`` call, then pages via ``list_kind`` in
@@ -453,7 +462,7 @@ class FakeClient:
                 },
             ),
         )
-        rows: list[dict[str, Any]] = []
+        rows: list[dict[str, JSONValue]] = []
         offset = 0
         while True:
             page = self.list_kind(
@@ -472,7 +481,7 @@ class FakeClient:
     def get_inquiry(
         self,
         ref: Ref,
-    ) -> tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, Any]]:
+    ) -> tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, JSONValue]]:
         """Get inquiry."""
         self.calls.append(("get_inquiry", (ref,), {}))
         if isinstance(ref, UuidRef):
@@ -501,16 +510,25 @@ class FakeClient:
         # is not modeled.
         detail = dict(self.detail)
         detail["self"] = row
-        return (
-            cast(Inquiry.InquiryKind, row.get("kind", "Issue")),
-            target_id,
-            detail,
+        return cast(
+            tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, JSONValue]],
+            cast(
+                object,
+                (
+                    row.get("kind", "Issue"),
+                    target_id,
+                    detail,
+                ),
+            ),  # -- fake detail payload is JSON-shaped.
         )
 
-    def next_issue(self) -> dict[str, Any] | None:
+    def next_issue(self) -> dict[str, JSONValue] | None:
         """Next issue."""
         self.calls.append(("next_issue", (), {}))
-        return self.next_payload
+        return cast(
+            dict[str, JSONValue] | None,
+            self.next_payload,  # -- fake payload is JSON-shaped.
+        )
 
     def version(self) -> str:
         """Version."""
@@ -544,10 +562,13 @@ class FakeClient:
             ),
         )
 
-    def recent_changes(self, *, limit: int = 50) -> list[dict[str, Any]]:
+    def recent_changes(self, *, limit: int = 50) -> list[dict[str, JSONValue]]:
         """Recent changes."""
         self.calls.append(("recent_changes", (), {"limit": limit}))
-        return list(self.changes)
+        return cast(
+            list[dict[str, JSONValue]],
+            cast(object, list(self.changes)),  # -- fake changes are JSON-shaped.
+        )
 
     def cost_for(self, target_id: uuid.UUID, *, deep: bool = False) -> dict[str, float]:
         """Cost for."""
@@ -976,4 +997,7 @@ def client() -> FakeClient:
 
 def run(argv: list[str], client: FakeClient) -> None:
     """Run."""
-    cli.parse_and_run(argv, client_factory=lambda: cast(Any, client))
+    cli.parse_and_run(
+        argv,
+        client_factory=lambda: cast(Client, client),
+    )

@@ -65,9 +65,16 @@ def column_check_body(col: str, spec: ColumnSpec) -> str:
 # (``seq_<lowercased_kind>``) is declared once.
 SEQ_FOR_KIND: dict[Inquiry.InquiryKind, str] = {
     kind: f"seq_{kind.lower()}"
-    for kind in cast(
-        tuple[Inquiry.InquiryKind, ...],
-        get_args(Inquiry.InquiryKind.__value__),
+    for kind in (
+        "Issue",
+        "Artifact",
+        "Experiment",
+        "Paper",
+        "Belief",
+        "CodeChange",
+        "WebResult",
+        "WebSearch",
+        "AgentSession",
     )
 }
 
@@ -209,7 +216,7 @@ def quote_literal(literal_alias: object) -> str:
 
     """
     target = getattr(literal_alias, "__value__", literal_alias)
-    args = get_args(target)
+    args: tuple[object, ...] = get_args(target)
     if not args:
         raise AssertionError(
             f"quote_literal({literal_alias!r}): no Literal members; "
@@ -243,7 +250,7 @@ def generate_inquiry_kind_columns() -> str:
     """
     # Sanity-check: the order tuple must cover every concrete kind so
     # adding a new Inquiry subclass doesn't silently KeyError below.
-    declared_kinds = set(get_args(Inquiry.InquiryKind.__value__))
+    declared_kinds = set(INQUIRY_KIND_ORDER)
     missing = declared_kinds - set(INQUIRY_KIND_ORDER)
     if missing:  # pragma: no cover -- defensive check that fires only if a new Inquiry kind is added without updating INQUIRY_KIND_ORDER.
         raise AssertionError(

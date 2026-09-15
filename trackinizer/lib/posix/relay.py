@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
 import asyncio
 import concurrent.futures
@@ -402,12 +402,12 @@ class ThreadedRelay:
 
 # None when ``fd`` is not a terminal (piped stdin, or -1), so the relay still runs -- it
 # just has no line discipline to toggle.
-def _enter_raw(fd: int) -> list[Any] | None:
+def _enter_raw(fd: int) -> list[int | list[bytes | int]] | None:
     """Put ``fd`` in raw mode; return prior attributes to restore, or None."""
     if fd < 0:
         return None
     try:
-        old = termios.tcgetattr(fd)
+        old = cast(list[int | list[bytes | int]], termios.tcgetattr(fd))
     except termios.error:
         return None
     tty.setraw(fd)
@@ -422,7 +422,7 @@ def _enter_raw(fd: int) -> list[Any] | None:
 #
 # The guarantee ``TCSADRAIN`` buys -- queued bytes reach the terminal under the old
 # discipline -- is unobtainable anyway when there is no consumer to reach them.
-def _restore(fd: int, old_attr: list[Any] | None) -> None:
+def _restore(fd: int, old_attr: list[int | list[bytes | int]] | None) -> None:
     """Restore terminal attributes saved by :func:`_enter_raw`."""
     if old_attr is None:
         return

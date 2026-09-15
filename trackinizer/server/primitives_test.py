@@ -159,7 +159,10 @@ class TestPureFunctions:
             [rid],
             column="experiment_codechanges",
         )
-        (sql, _ids), _kwargs = conn.fetch.call_args
+        recorded = conn.fetch.call_args
+        assert recorded is not None
+        sql = recorded.args[0]
+        assert isinstance(sql, str)
         assert "FOR SHARE" in sql
 
     @pytest.mark.asyncio
@@ -173,7 +176,7 @@ class TestPureFunctions:
         # Self-loop is input-invalid -> 422 ValidationError.
         with pytest.raises(ValidationError, match="self-loop"):
             await insert_edge(
-                conn,
+                cast(Conn, conn),
                 from_id=target_id,
                 from_kind="Issue",
                 to_id=target_id,
@@ -183,7 +186,7 @@ class TestPureFunctions:
         # A cycle is a STATE conflict -> 409 ConflictError.
         with pytest.raises(ConflictError, match="cycle"):
             await insert_edge(
-                conn,
+                cast(Conn, conn),
                 from_id=new_uuid(),
                 from_kind="Issue",
                 to_id=new_uuid(),
@@ -243,7 +246,7 @@ class TestCLIHelpers:
         with pytest.raises(ValidationError, match="self-loop"):
             asyncio.run(
                 _reject_edge_cycle(
-                    conn,
+                    cast(Conn, conn),
                     from_id=target,
                     to_id=target,
                     edge_kind="narrows",
@@ -257,7 +260,7 @@ class TestCoverageStoreReadsAndEdits:
         conn = make_conn()
         conn.fetchval.side_effect = ["Issue", False, new_uuid()]
         inserted, to_kind = await insert_edge(
-            conn,
+            cast(Conn, conn),
             from_id=new_uuid(),
             from_kind="Issue",
             to_id=new_uuid(),

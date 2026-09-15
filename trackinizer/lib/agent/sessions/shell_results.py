@@ -192,7 +192,6 @@ def lift_shell_result(
         return None
     kind, path, _, content, ranges, _ = operation
     extra_value = json_unfreeze(result.extra)
-    assert isinstance(extra_value, dict)
     extra = extra_value
     replay: dict[str, MutableJSONValue] = {}
     if result.command is not None:
@@ -449,7 +448,7 @@ def _matched_row(
         return heredoc
     # ROW: patch F << 'EOF'. The heredoc IS the diff, which makes this the one
     # rewrite whose change the transcript states outright.
-    inline = _patch_heredoc(parts, body=quoted[1] if quoted is not None else None)
+    inline = _patch_heredoc(parts, body=None if quoted is None else quoted[1])
     if inline is not None:
         return inline
     word_nodes = [part for part in parts if part.kind == "word"]

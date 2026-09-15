@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
@@ -55,21 +55,21 @@ from trackinizer.types.inquiries import (
 )
 
 
-_Encoder = Callable[[Any], Any]
+_Encoder = Callable[[object], object]
 """Transform a normalized Python value into the form ``UPDATE`` accepts.
 
 Used for list columns where the Python value is a tuple but storage
 wants a plain list asyncpg can bind to the array column.
 """
 
-_Decoder = Callable[[Any], Any]
+_Decoder = Callable[[object], object]
 """Transform a stored value back into the canonical Python form.
 
 Used so the old-vs-new equality check operates in canonical space
 (e.g. a stored array decoding to ``tuple[...]``).
 """
 
-TargetValidator = Callable[[Conn, Any], Awaitable[None]]
+TargetValidator = Callable[[Conn, object], Awaitable[None]]
 """Validate a new value against the live database before writing.
 
 Used for columns that reference other inquiries (``codechanges``)
@@ -95,18 +95,26 @@ class _RuntimeHooks:
     notify_old_subscribers: bool = False
 
 
-def _canonical_tuple(value: Iterable[str]) -> tuple[str, ...]:
+def _canonical_tuple(value: object) -> object:
     """Adapter so ``canonical_strs`` matches the ``_Encoder`` shape."""
-    return canonical_strs(value)
+    assert isinstance(value, Iterable)
+    items = list(value)
+    assert all(isinstance(item, str) for item in items)
+    strings = [item for item in items if isinstance(item, str)]
+    assert len(strings) == len(items)
+    return canonical_strs(strings)
 
 
 # A NULL list column stays ``None`` ("value was absent") rather than collapsing to
 # ``()`` ("explicitly cleared"), so an edit from an unset column records a NULL old side
 # in the audit log -- the distinction the change-log snapshot relies on (see
 # ``types/change_log.py``).
-def _tuple_or_none(value: Iterable[object] | None) -> tuple[object, ...] | None:
+def _tuple_or_none(value: object) -> object:
     """Decode a stored list column, preserving NULL as ``None``."""
-    return None if value is None else tuple(value)
+    if value is None:
+        return None
+    assert isinstance(value, Iterable)
+    return tuple(value)
 
 
 NO_HOOKS = _RuntimeHooks()
@@ -119,22 +127,22 @@ RUNTIME_HOOKS: dict[str, _RuntimeHooks] = {
     "issue_kind": _RuntimeHooks(
         normalize=_canonical_tuple,
         decode_old=_tuple_or_none,
-        encode=list,
+        encode=lambda value: list(value) if isinstance(value, Iterable) else value,
     ),
     "labels": _RuntimeHooks(
         normalize=_canonical_tuple,
         decode_old=_tuple_or_none,
-        encode=list,
+        encode=lambda value: list(value) if isinstance(value, Iterable) else value,
     ),
     "agentsession_rooms": _RuntimeHooks(
         normalize=_canonical_tuple,
         decode_old=_tuple_or_none,
-        encode=list,
+        encode=lambda value: list(value) if isinstance(value, Iterable) else value,
     ),
     "subscribers": _RuntimeHooks(
         normalize=_canonical_tuple,
         decode_old=_tuple_or_none,
-        encode=list,
+        encode=lambda value: list(value) if isinstance(value, Iterable) else value,
         # Route the audit row to the pre-edit subscriber set too, so a
         # just-removed subscriber sees the change documenting their
         # removal.
@@ -144,7 +152,7 @@ RUNTIME_HOOKS: dict[str, _RuntimeHooks] = {
         # Canonical Python form is tuple[UUID, ...] to match the
         # Snapshot typing. Storage column is UUID[]; asyncpg encodes
         # either tuple or list.
-        normalize=tuple,
+        normalize=lambda value: tuple(value) if isinstance(value, Iterable) else value,
         decode_old=_tuple_or_none,
     ),
     "paper_authors": _RuntimeHooks(
@@ -156,7 +164,13 @@ RUNTIME_HOOKS: dict[str, _RuntimeHooks] = {
         # element and drops blanks (so "Smith " and "Smith" are one byline
         # entry) while keeping order and legitimate duplicates -- the same
         # normalizer the submit path uses, so create and edit agree.
-        normalize=byline_strs,
+        normalize=lambda value: (
+            byline_strs(
+                [item for item in value if isinstance(item, str)],
+            )
+            if isinstance(value, Iterable)
+            else value
+        ),
         decode_old=_tuple_or_none,
     ),
 }

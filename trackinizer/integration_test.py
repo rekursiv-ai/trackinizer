@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Protocol, cast
 from unittest.mock import MagicMock
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -21,7 +21,14 @@ import pytest
 
 from trackinizer.conftest import new_uuid
 from trackinizer.lib.agent.types.sessions import UserMessage
-from trackinizer.lib.custom_json import json_freeze
+from trackinizer.lib.custom_json import (
+    DictCodec,
+    FloatCodec,
+    IntCodec,
+    ListCodec,
+    StrCodec,
+    json_freeze,
+)
 from trackinizer.server import web
 from trackinizer.server.api import (
     edit,
@@ -289,7 +296,8 @@ class TestIntegrationEndToEnd:
         eid = await integ_store.submit_experiment(
             SubmitExperiment(account="tester@example.com", title="run", config={}),
         )
-        row = cast(Experiment, await integ_store.get_inquiry(eid))
+        row = await integ_store.get_inquiry(eid)
+        assert isinstance(row, Experiment)
         assert row.config == {}
 
     async def test_experiment_config_reorder_is_noop_edit(
@@ -461,18 +469,21 @@ class TestIntegrationEndToEnd:
         eid = await integ_store.submit_experiment(
             SubmitExperiment(account="tester@example.com", title="run", config=cfg),
         )
-        row = cast(Experiment, await integ_store.get_inquiry(eid))
+        row = await integ_store.get_inquiry(eid)
+        assert isinstance(row, Experiment)
         assert row.config == cfg  # `dict` in, dict out (asyncpg jsonb codec)
 
         # Edit via set_config: overwrite the whole object.
         new_cfg: dict[str, object] = {"lr": 1e-4, "batch": 64}
         await integ_store.set_config(eid, new_cfg, actor="scientist")
-        row2 = cast(Experiment, await integ_store.get_inquiry(eid))
+        row2 = await integ_store.get_inquiry(eid)
+        assert isinstance(row2, Experiment)
         assert row2.config == new_cfg
 
         # Clear to NULL.
         await integ_store.set_config(eid, None, actor="scientist")
-        row3 = cast(Experiment, await integ_store.get_inquiry(eid))
+        row3 = await integ_store.get_inquiry(eid)
+        assert isinstance(row3, Experiment)
         assert row3.config is None
 
     async def test_log_metrics_rejects_non_experiment(self, integ_store: Store) -> None:
@@ -665,7 +676,8 @@ class TestIntegrationEndToEnd:
             requested_actor="scientist",
         )
         assert resumed == sid
-        row = cast(AgentSession, await integ_store.get_inquiry(sid))
+        row = await integ_store.get_inquiry(sid)
+        assert isinstance(row, AgentSession)
         assert set(row.rooms or ()) == {"a", "b"}
 
     async def test_resume_applies_new_body_fields(self, integ_store: Store) -> None:
@@ -697,7 +709,8 @@ class TestIntegrationEndToEnd:
             requested_actor="scientist",
         )
         assert rsid == sid
-        row = cast(AgentSession, await integ_store.get_inquiry(sid))
+        row = await integ_store.get_inquiry(sid)
+        assert isinstance(row, AgentSession)
         assert set(row.rooms or ()) == {"a", "b"}
 
     async def test_resume_audit_attributed_to_resuming_caller(
@@ -726,7 +739,8 @@ class TestIntegrationEndToEnd:
             requested_actor="bob",
         )
         async with integ_store.engine.acquire() as conn:
-            actor = await conn.fetchval(
+            actor = await _fetchval(
+                conn,
                 "SELECT actor FROM change_log WHERE subject_id = $1 "
                 "AND kind = 'agentsession_ended' ORDER BY created DESC LIMIT 1",
                 sid,
@@ -787,7 +801,8 @@ class TestIntegrationEndToEnd:
             SubmitIssue(account="tester@example.com", title="after"),
         )
         async with integ_store.engine.acquire() as conn:
-            change_id = await conn.fetchval(
+            change_id = await _fetchval(
+                conn,
                 "SELECT id FROM change_log WHERE subject_id = $1 AND kind = 'created'",
                 new_sid,
             )
@@ -812,7 +827,8 @@ class TestIntegrationEndToEnd:
             SubmitIssue(account="tester@example.com", title="after"),
         )
         async with integ_store.engine.acquire() as conn:
-            change_id = await conn.fetchval(
+            change_id = await _fetchval(
+                conn,
                 "SELECT id FROM change_log WHERE subject_id = $1 AND kind = 'created'",
                 new_sid,
             )
@@ -916,7 +932,8 @@ class TestIntegrationEndToEnd:
         assert granted == ["scientist", "scientist#2"]
         # Both rows persisted with the names they were granted.
         for sid, name, _ in results:
-            row = cast(AgentSession, await integ_store.get_inquiry(sid))
+            row = await integ_store.get_inquiry(sid)
+            assert isinstance(row, AgentSession)
             assert row.owner == name
 
     async def test_start_session_same_key_replays_original_owner(
@@ -999,7 +1016,8 @@ class TestIntegrationEndToEnd:
             ),
         )
         await integ_store.set_status(sid2, "abandoned", actor="u")
-        abandoned = cast(AgentSession, await integ_store.get_inquiry(sid2))
+        abandoned = await integ_store.get_inquiry(sid2)
+        assert isinstance(abandoned, AgentSession)
         assert abandoned.status == "abandoned"
         assert abandoned.ended is None
 
@@ -1033,14 +1051,16 @@ class TestIntegrationEndToEnd:
                     json={"cli": "claude", "actor": "scientist"},
                 )
                 assert first.status_code == 201, first.text
-                assert first.json()["actor"] == "scientist"
+                first_body = _json_object(first)
+                assert StrCodec.coerce(first_body["actor"]) == "scientist"
                 # A second concurrent start with the same name is suffixed.
                 second = await http.post(
                     "/api/sessions/start",
                     json={"cli": "claude", "actor": "scientist"},
                 )
                 assert second.status_code == 201, second.text
-                assert second.json()["actor"] == "scientist#2"
+                second_body = _json_object(second)
+                assert StrCodec.coerce(second_body["actor"]) == "scientist#2"
 
                 # ``rooms`` round-trips: start with membership, read it back
                 # off the stored AgentSession row.
@@ -1049,10 +1069,11 @@ class TestIntegrationEndToEnd:
                     json={"cli": "codex", "actor": "eng", "rooms": ["sear", "lab"]},
                 )
                 assert roomed.status_code == 201, roomed.text
-                sid = uuid.UUID(roomed.json()["id"])
+                sid = UUID(StrCodec.coerce(_json_object(roomed)["id"]))
         finally:
             app.dependency_overrides.pop(current_user, None)
-        row = cast(AgentSession, await integ_store.get_inquiry(sid))
+        row = await integ_store.get_inquiry(sid)
+        assert isinstance(row, AgentSession)
         assert row.rooms is not None
         assert sorted(row.rooms) == ["lab", "sear"]
 
@@ -1101,12 +1122,19 @@ class TestIntegrationEndToEnd:
                     },
                 )
                 assert logged.status_code == 200, logged.text
-                assert logged.json() == {"logged": 3, "skipped": 0}
+                assert _json_object(logged) == {"logged": 3, "skipped": 0}
 
                 read = await http.get(f"/api/experiments/{eid}/metrics")
                 assert read.status_code == 200, read.text
-                pts = read.json()["points"]
-                assert [(p["key"], p["step"], p["value"]) for p in pts] == [
+                pts = ListCodec.coerce(_json_object(read)["points"])
+                assert [
+                    (
+                        StrCodec.coerce(DictCodec.coerce(p)["key"]),
+                        IntCodec.coerce(DictCodec.coerce(p)["step"]),
+                        FloatCodec.coerce(DictCodec.coerce(p)["value"]),
+                    )
+                    for p in pts
+                ] == [
                     ("acc", 0, 0.4),
                     ("loss", 0, 0.9),
                     ("loss", 1, 0.5),
@@ -1115,7 +1143,8 @@ class TestIntegrationEndToEnd:
                 # ``config`` surfaces on the SPA detail view verbatim.
                 detail = await http.get(f"/api/web/get/{eid}")
                 assert detail.status_code == 200, detail.text
-                assert detail.json()["self"]["config"] == cfg
+                detail_body = _json_object(detail)
+                assert DictCodec.coerce(detail_body["self"])["config"] == cfg
 
                 # An over-cap batch is a clean 422 at the boundary (not a 500 or
                 # a memory-pinning mega-INSERT), and writes nothing.
@@ -1130,7 +1159,9 @@ class TestIntegrationEndToEnd:
                 )
                 assert over_resp.status_code == 422, over_resp.text
                 still = await http.get(f"/api/experiments/{eid}/metrics")
-                assert len(still.json()["points"]) == 3  # Unchanged.
+                assert (
+                    len(ListCodec.coerce(_json_object(still)["points"])) == 3
+                )  # Unchanged.
         finally:
             app.dependency_overrides.pop(current_user, None)
             app.dependency_overrides.pop(web.optional_identity, None)
@@ -1172,7 +1203,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "router-eng", "rooms": ["sear"]},
                 )
-                sid = start.json()["id"]
+                sid = StrCodec.coerce(_json_object(start)["id"])
 
                 # PUT overwrites the whole membership.
                 put = await http.put(
@@ -1180,7 +1211,8 @@ class TestIntegrationEndToEnd:
                     json={"value": ["lab", "ops"], "actor": "editor@test"},
                 )
                 assert put.status_code == 200, put.text
-                row = cast(AgentSession, await integ_store.get_inquiry(uuid.UUID(sid)))
+                row = await integ_store.get_inquiry(uuid.UUID(sid))
+                assert isinstance(row, AgentSession)
                 assert sorted(row.rooms or ()) == ["lab", "ops"]
 
                 # PATCH add joins one more room.
@@ -1189,7 +1221,8 @@ class TestIntegrationEndToEnd:
                     json={"op": "add", "value": "sear", "actor": "editor@test"},
                 )
                 assert added.status_code == 200, added.text
-                row = cast(AgentSession, await integ_store.get_inquiry(uuid.UUID(sid)))
+                row = await integ_store.get_inquiry(uuid.UUID(sid))
+                assert isinstance(row, AgentSession)
                 assert sorted(row.rooms or ()) == ["lab", "ops", "sear"]
 
                 # PATCH remove leaves the rest.
@@ -1198,7 +1231,8 @@ class TestIntegrationEndToEnd:
                     json={"op": "sub", "value": "lab", "actor": "editor@test"},
                 )
                 assert removed.status_code == 200, removed.text
-                row = cast(AgentSession, await integ_store.get_inquiry(uuid.UUID(sid)))
+                row = await integ_store.get_inquiry(uuid.UUID(sid))
+                assert isinstance(row, AgentSession)
                 assert sorted(row.rooms or ()) == ["ops", "sear"]
         finally:
             app.dependency_overrides.pop(current_user, None)
@@ -1218,10 +1252,13 @@ class TestIntegrationEndToEnd:
             )
         assert len(rows) == 3
         # First edit (PUT set) overwrote ["sear"] -> ["lab", "ops"].
-        assert sorted(rows[0]["old_agentsession_rooms"]) == ["sear"]
-        assert sorted(rows[0]["new_agentsession_rooms"]) == ["lab", "ops"]
+        old_rooms = cast(list[str], rows[0]["old_agentsession_rooms"])
+        new_rooms = cast(list[str], rows[0]["new_agentsession_rooms"])
+        last_rooms = cast(list[str], rows[2]["new_agentsession_rooms"])
+        assert sorted(old_rooms) == ["sear"]
+        assert sorted(new_rooms) == ["lab", "ops"]
         # Last edit (remove "lab") landed ["ops", "sear"] as the new snapshot.
-        assert sorted(rows[2]["new_agentsession_rooms"]) == ["ops", "sear"]
+        assert sorted(last_rooms) == ["ops", "sear"]
 
     async def test_send_resolves_actor_room_to_live_session(
         self,
@@ -1255,7 +1292,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "scientist", "rooms": ["sear"]},
                 )
-                sid = start.json()["id"]
+                sid = StrCodec.coerce(_json_object(start)["id"])
 
                 # Room-scoped send to the right room reaches the session.
                 hit = await http.post(
@@ -1263,23 +1300,28 @@ class TestIntegrationEndToEnd:
                     json={"actor": "scientist", "room": "sear", "text": "go"},
                 )
                 assert hit.status_code == 200, hit.text
-                assert hit.json()["delivered"] == [sid]
+                assert ListCodec.coerce(_json_object(hit)["delivered"], str) == [
+                    str(sid)
+                ]
 
                 # Wrong room matches nothing (undelivered).
                 miss = await http.post(
                     "/api/messages",
                     json={"actor": "scientist", "room": "other", "text": "go"},
                 )
-                assert miss.json()["delivered"] == []
+                assert ListCodec.coerce(_json_object(miss)["delivered"]) == []
 
                 # The reaching send landed in the session's inbound queue,
                 # carrying the attested sender and the routed room so the
                 # poller can render the ``[room] sender:`` injection context.
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
-                msgs = drain.json()["messages"]
-                assert [m["text"] for m in msgs] == ["go"]
-                assert msgs[0]["source"] == "sender@test"
-                assert msgs[0]["room"] == "sear"
+                msgs = ListCodec.coerce(_json_object(drain)["messages"])
+                assert [StrCodec.coerce(DictCodec.coerce(m)["text"]) for m in msgs] == [
+                    "go"
+                ]
+                first_msg = DictCodec.coerce(msgs[0])
+                assert StrCodec.coerce(first_msg["source"]) == "sender@test"
+                assert StrCodec.coerce(first_msg["room"]) == "sear"
         finally:
             app.dependency_overrides.pop(current_user, None)
 
@@ -1321,14 +1363,16 @@ class TestIntegrationEndToEnd:
                     json={"actor": "multi", "text": "go"},
                 )
                 assert bare.status_code == 409, bare.text
-                assert "address one explicitly" in bare.json()["detail"]
+                assert "address one explicitly" in StrCodec.coerce(
+                    _json_object(bare)["detail"]
+                )
                 # Naming a room resolves it.
                 scoped = await http.post(
                     "/api/messages",
                     json={"actor": "multi", "room": "a", "text": "go"},
                 )
                 assert scoped.status_code == 200, scoped.text
-                assert len(scoped.json()["delivered"]) == 1
+                assert len(ListCodec.coerce(_json_object(scoped)["delivered"])) == 1
         finally:
             app.dependency_overrides.pop(current_user, None)
 
@@ -1365,7 +1409,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "idem", "rooms": ["sear"]},
                 )
-                sid = start.json()["id"]
+                sid = StrCodec.coerce(_json_object(start)["id"])
                 key = str(uuid.uuid4())
                 body = {"actor": "idem", "room": "sear", "text": "once"}
                 first = await http.post(
@@ -1378,11 +1422,14 @@ class TestIntegrationEndToEnd:
                     json=body,
                     headers={"Idempotency-Key": key},
                 )
-                assert first.json()["delivered"] == [sid]
+                assert ListCodec.coerce(_json_object(first)["delivered"], str) == [sid]
                 # Replay returns the same receipt, but does not enqueue again.
-                assert replay.json()["delivered"] == [sid]
+                assert ListCodec.coerce(_json_object(replay)["delivered"], str) == [sid]
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
-                assert [m["text"] for m in drain.json()["messages"]] == ["once"]
+                assert [
+                    StrCodec.coerce(DictCodec.coerce(m)["text"])
+                    for m in ListCodec.coerce(_json_object(drain)["messages"])
+                ] == ["once"]
         finally:
             app.dependency_overrides.pop(current_user, None)
 
@@ -1422,7 +1469,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "race", "rooms": ["sear"]},
                 )
-                sid = start.json()["id"]
+                sid = StrCodec.coerce(_json_object(start)["id"])
                 key = str(uuid.uuid4())
                 body = {"actor": "race", "room": "sear", "text": "once"}
                 first, second = await asyncio.gather(
@@ -1437,11 +1484,14 @@ class TestIntegrationEndToEnd:
                         headers={"Idempotency-Key": key},
                     ),
                 )
-                assert first.json()["delivered"] == [sid]
-                assert second.json()["delivered"] == [sid]
+                assert ListCodec.coerce(_json_object(first)["delivered"], str) == [sid]
+                assert ListCodec.coerce(_json_object(second)["delivered"], str) == [sid]
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
                 # Exactly one copy despite two concurrent same-key sends.
-                assert [m["text"] for m in drain.json()["messages"]] == ["once"]
+                assert [
+                    StrCodec.coerce(DictCodec.coerce(m)["text"])
+                    for m in ListCodec.coerce(_json_object(drain)["messages"])
+                ] == ["once"]
         finally:
             app.dependency_overrides.pop(current_user, None)
 
@@ -1480,7 +1530,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "ending", "rooms": ["sear"]},
                 )
-                sid = uuid.UUID(start.json()["id"])
+                sid = UUID(StrCodec.coerce(_json_object(start)["id"]))
                 # Close via ``end_session`` (ended + status=complete together)
                 # so the AgentSession lifecycle CHECK holds.
                 await integ_store.end_session(
@@ -1502,7 +1552,7 @@ class TestIntegrationEndToEnd:
                     "/api/messages",
                     json={"actor": "ending", "room": "sear", "text": "late"},
                 )
-                assert resp.json()["delivered"] == []
+                assert _json_object(resp)["delivered"] == []
                 assert app.state.inbound.pending(sid) == 0
         finally:
             app.dependency_overrides.pop(current_user, None)
@@ -1710,18 +1760,23 @@ class TestIntegrationEndToEnd:
                     json={"text": "check the logs"},
                 )
                 assert enq.status_code == 200, enq.text
-                assert enq.json()["queued"] == 1
+                assert IntCodec.coerce(_json_object(enq)["queued"]) == 1
 
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
                 assert drain.status_code == 200, drain.text
-                messages = drain.json()["messages"]
-                assert [m["text"] for m in messages] == ["check the logs"]
+                messages = ListCodec.coerce(_json_object(drain)["messages"])
+                assert [
+                    StrCodec.coerce(DictCodec.coerce(m)["text"]) for m in messages
+                ] == ["check the logs"]
                 # Source is the authenticated principal, attested by the route.
-                assert messages[0]["source"] == "router@test"
+                assert (
+                    StrCodec.coerce(DictCodec.coerce(messages[0])["source"])
+                    == "router@test"
+                )
 
                 # Drain emptied it: a second drain returns nothing.
                 again = await http.get(f"/api/sessions/{sid}/inbound")
-                assert again.json()["messages"] == []
+                assert _json_object(again)["messages"] == []
 
                 # Unknown session -> 404 on both verbs.
                 missing = uuid.uuid4()
@@ -1736,7 +1791,7 @@ class TestIntegrationEndToEnd:
                 end = await http.post(f"/api/sessions/{sid}/end", json={})
                 assert end.status_code == 200, end.text
                 # REV-31: end with no ``ended`` body still stamps a real time.
-                assert end.json()["ended"] is not None
+                assert _json_object(end)["ended"] is not None
                 rejected = await http.post(
                     f"/api/sessions/{sid}/inbound",
                     json={"text": "late"},
@@ -1783,8 +1838,8 @@ class TestIntegrationEndToEnd:
             ) as http:
                 r = await http.get(f"/api/web/get/{sid}")
                 assert r.status_code == 200, r.text
-                self_view = r.json()["self"]
-                assert self_view["kind"] == "AgentSession"
+                self_view = DictCodec.coerce(_json_object(r)["self"])
+                assert StrCodec.coerce(self_view["kind"]) == "AgentSession"
                 assert self_view["cli"] == "claude"
                 assert self_view["cli_session_id"] == "sess-9"
                 # Minted with no explicit ``started``; a live session has no
@@ -1848,7 +1903,7 @@ class TestIntegrationEndToEnd:
             ) as http:
                 r = await http.post("/api/sessions/start", json={"cli": "codex"})
                 assert r.status_code == 201, r.text
-                session_id = r.json()["id"]
+                session_id = StrCodec.coerce(_json_object(r)["id"])
 
                 key = str(uuid.uuid4())
                 # Empty body: the route stamps a fresh ``now()``. The replay
@@ -1871,7 +1926,7 @@ class TestIntegrationEndToEnd:
                 )
                 assert retry.status_code == 200, retry.text
                 assert retry.json() == first.json()
-                assert retry.json()["ended"] == first.json()["ended"]
+                assert _json_object(retry)["ended"] == _json_object(first)["ended"]
 
                 # A different key on the already-ended session -> 409.
                 other = await http.post(
@@ -1926,7 +1981,7 @@ class TestIntegrationEndToEnd:
                 # real change (the cli emit then consumes K).
                 r = await http.post("/api/sessions/start", json={"cli": "codex"})
                 assert r.status_code == 201, r.text
-                session_id = r.json()["id"]
+                session_id = StrCodec.coerce(_json_object(r)["id"])
 
                 key = str(uuid.uuid4())
                 body = {"ended": "2026-05-31T16:00:00Z", "cli_session_id": "vendor-9"}
@@ -1977,7 +2032,8 @@ class TestIntegrationEndToEnd:
             ),
         )
         await integ_store.set_status(exp_id, "complete", actor="user")
-        belief = cast(Belief, await integ_store.get_inquiry(belief_id))
+        belief = await integ_store.get_inquiry(belief_id)
+        assert isinstance(belief, Belief)
         assert belief.judgement == "proven"
         async with integ_store.engine.acquire() as conn:
             row = await conn.fetchrow(
@@ -2147,7 +2203,8 @@ class TestIntegrationEndToEnd:
             )
         assert row is not None
         assert row["note"] == "revised"
-        assert list(row["labels"]) == ["important"]
+        labels = row["labels"]
+        assert labels == ["important"]
 
     async def test_edge_without_note_or_labels_stores_null(
         self,
@@ -2260,14 +2317,16 @@ class TestIntegrationEndToEnd:
                 actor="u",
             )
         async with integ_store.engine.acquire() as conn:
-            labels = await conn.fetchval(
+            labels = await _fetchval(
+                conn,
                 "SELECT labels FROM edges "
                 "WHERE from_id = $1 AND to_id = $2 AND edge_kind = $3",
                 a_id,
                 b_id,
                 "requires",
             )
-        assert list(labels) == ["zeta", "alpha", "mu"]
+        assert isinstance(labels, list)
+        assert labels == ["zeta", "alpha", "mu"]
 
     async def test_remove_narrows_cascades_to_broader(
         self,
@@ -2358,7 +2417,8 @@ class TestIntegrationEndToEnd:
                 subscribers=["alice", "alice", "bob"],
             ),
         )
-        issue = cast(Issue, await integ_store.get_inquiry(issue_id))
+        issue = await integ_store.get_inquiry(issue_id)
+        assert isinstance(issue, Issue)
         assert issue.labels == ("x", "y", "z")
         assert issue.subscribers == ("alice", "bob")
 
@@ -2371,7 +2431,8 @@ class TestIntegrationEndToEnd:
             SubmitPaper(account="tester@example.com", title="p", source="https://x"),
         )
         await integ_store.set_source(paper_id, "doi:10.1/abc", actor="user")
-        paper = cast(Paper, await integ_store.get_inquiry(paper_id))
+        paper = await integ_store.get_inquiry(paper_id)
+        assert isinstance(paper, Paper)
         assert paper.source == "doi:10.1/abc"
 
     async def test_google_scholar_cluster_id_round_trips_on_submit_and_edit(
@@ -2393,17 +2454,20 @@ class TestIntegrationEndToEnd:
                 google_scholar_cluster_id="12345678901234567890",
             ),
         )
-        paper = cast(Paper, await integ_store.get_inquiry(paper_id))
+        paper = await integ_store.get_inquiry(paper_id)
+        assert isinstance(paper, Paper)
         assert paper.google_scholar_cluster_id == "12345678901234567890"
         # Coexists with source -- both stored on the one row.
         assert paper.source == "doi:10.1/abc"
         # Re-point via the setter.
         await integ_store.set_google_scholar_cluster_id(paper_id, "99999", actor="user")
-        paper = cast(Paper, await integ_store.get_inquiry(paper_id))
+        paper = await integ_store.get_inquiry(paper_id)
+        assert isinstance(paper, Paper)
         assert paper.google_scholar_cluster_id == "99999"
         # An empty value clears to NULL (the "unset is NULL" rule).
         await integ_store.set_google_scholar_cluster_id(paper_id, "", actor="user")
-        paper = cast(Paper, await integ_store.get_inquiry(paper_id))
+        paper = await integ_store.get_inquiry(paper_id)
+        assert isinstance(paper, Paper)
         assert paper.google_scholar_cluster_id is None
 
     async def test_google_scholar_cluster_id_edit_is_audited(
@@ -2460,7 +2524,8 @@ class TestIntegrationEndToEnd:
         with pytest.raises(ConflictError, match="scheme-tagged"):
             await integ_store.set_source(paper_id, "2405.16391", actor="user")
         # The pre-edit source survives the rejected write.
-        paper = cast(Paper, await integ_store.get_inquiry(paper_id))
+        paper = await integ_store.get_inquiry(paper_id)
+        assert isinstance(paper, Paper)
         assert paper.source == "arXiv:2405.16391"
 
     async def test_paper_bib_fields_round_trip(
@@ -2482,7 +2547,8 @@ class TestIntegrationEndToEnd:
                 source="arXiv:1706.03762",
             ),
         )
-        paper = cast(Paper, await integ_store.get_inquiry(paper_id))
+        paper = await integ_store.get_inquiry(paper_id)
+        assert isinstance(paper, Paper)
         assert paper.abstract == "The dominant sequence transduction models..."
         assert paper.authors == ("Vaswani", "Shazeer", "Parmar")
         assert paper.publication_type == "inproceedings"
@@ -2495,7 +2561,8 @@ class TestIntegrationEndToEnd:
         await integ_store.set_publication_type(paper_id, "article", actor="u")
         await integ_store.set_venue(paper_id, "JMLR", actor="u")
         await integ_store.add_author(paper_id, "Uszkoreit", actor="u")
-        edited = cast(Paper, await integ_store.get_inquiry(paper_id))
+        edited = await integ_store.get_inquiry(paper_id)
+        assert isinstance(edited, Paper)
         assert edited.publication_type == "article"
         assert edited.venue == "JMLR"
         assert edited.authors == ("Vaswani", "Shazeer", "Parmar", "Uszkoreit")
@@ -2518,11 +2585,13 @@ class TestIntegrationEndToEnd:
         )
         # Add of an already-present author appends a second entry.
         await integ_store.add_author(paper_id, "Smith", actor="u")
-        added = cast(Paper, await integ_store.get_inquiry(paper_id))
+        added = await integ_store.get_inquiry(paper_id)
+        assert isinstance(added, Paper)
         assert added.authors == ("Smith", "Jones", "Smith", "Smith")
         # Remove drops only the first occurrence.
         await integ_store.remove_author(paper_id, "Smith", actor="u")
-        removed = cast(Paper, await integ_store.get_inquiry(paper_id))
+        removed = await integ_store.get_inquiry(paper_id)
+        assert isinstance(removed, Paper)
         assert removed.authors == ("Jones", "Smith", "Smith")
 
     async def test_invalid_publication_type_rejected_by_check(
@@ -2549,7 +2618,8 @@ class TestIntegrationEndToEnd:
         paper_id = await integ_store.submit_paper(
             SubmitPaper(account="tester@example.com", title="k", venue="KDD"),
         )
-        paper = cast(Paper, await integ_store.get_inquiry(paper_id))
+        paper = await integ_store.get_inquiry(paper_id)
+        assert isinstance(paper, Paper)
         assert paper.venue == "KDD"
 
     async def test_submit_paper_blank_venue_stores_null(
@@ -2565,7 +2635,8 @@ class TestIntegrationEndToEnd:
         paper_id = await integ_store.submit_paper(
             SubmitPaper(account="tester@example.com", title="p", venue="   "),
         )
-        paper = cast(Paper, await integ_store.get_inquiry(paper_id))
+        paper = await integ_store.get_inquiry(paper_id)
+        assert isinstance(paper, Paper)
         assert paper.venue is None
 
     async def test_filter_by_venue(
@@ -2691,13 +2762,15 @@ class TestIntegrationEndToEnd:
         assert first == second
         assert first != key
         async with integ_store.engine.acquire() as conn:
-            inquiry_count = await conn.fetchval(
+            inquiry_count = await _fetchval(
+                conn,
                 "SELECT COUNT(*) FROM inquiries WHERE id = $1",
                 first,
             )
             # The idempotency_key lives on change_log.id of the
             # ``created`` event for the resulting inquiry.
-            created_change_id = await conn.fetchval(
+            created_change_id = await _fetchval(
+                conn,
                 "SELECT id FROM change_log WHERE subject_id = $1 AND kind = 'created'",
                 first,
             )
@@ -2728,11 +2801,13 @@ class TestIntegrationEndToEnd:
         assert first == second
         assert first != key  # server-minted.
         async with integ_store.engine.acquire() as conn:
-            inquiry_count = await conn.fetchval(
+            inquiry_count = await _fetchval(
+                conn,
                 "SELECT COUNT(*) FROM inquiries WHERE id = $1",
                 first,
             )
-            change_count = await conn.fetchval(
+            change_count = await _fetchval(
+                conn,
                 "SELECT COUNT(*) FROM change_log WHERE subject_id = $1",
                 first,
             )
@@ -2881,7 +2956,8 @@ class TestIntegrationEndToEnd:
             ),
         )
         # The Belief projects the experiment in favored_by, carrying valence.
-        belief = cast(Belief, await integ_store.get_inquiry(belief_id))
+        belief = await integ_store.get_inquiry(belief_id)
+        assert isinstance(belief, Belief)
         assert belief.favored_by == (
             ArtifactEdge(id=exp_id, kind="Experiment", valence=0.5),
         )
@@ -2928,7 +3004,8 @@ class TestIntegrationEndToEnd:
                 ],
             ),
         )
-        belief = cast(Belief, await integ_store.get_inquiry(belief_id))
+        belief = await integ_store.get_inquiry(belief_id)
+        assert isinstance(belief, Belief)
         assert belief.favored_by == (
             ArtifactEdge(id=exp_id, kind="Experiment", valence=-0.5),
         )
@@ -3029,8 +3106,9 @@ class TestIntegrationEndToEnd:
                 issue_id,
             )
         assert row is not None
-        assert "alice" in row["subscribers_snapshot"]
-        assert "bob" in row["subscribers_snapshot"]
+        snapshot = ListCodec.coerce(row["subscribers_snapshot"], str)
+        assert "alice" in snapshot
+        assert "bob" in snapshot
 
     async def test_add_label_is_atomic_and_idempotent(
         self,
@@ -3047,11 +3125,13 @@ class TestIntegrationEndToEnd:
         )
         # Re-adding "x" is idempotent.
         await integ_store.add_label(issue_id, "x", actor="alice")
-        issue = cast(Issue, await integ_store.get_inquiry(issue_id))
+        issue = await integ_store.get_inquiry(issue_id)
+        assert isinstance(issue, Issue)
         assert issue.labels is not None
         assert sorted(issue.labels) == ["x", "y", "z"]
         await integ_store.remove_label(issue_id, "y", actor="bob")
-        issue = cast(Issue, await integ_store.get_inquiry(issue_id))
+        issue = await integ_store.get_inquiry(issue_id)
+        assert isinstance(issue, Issue)
         assert issue.labels is not None
         assert sorted(issue.labels) == ["x", "z"]
 
@@ -3071,12 +3151,14 @@ class TestIntegrationEndToEnd:
         with pytest.raises(ConflictError, match="check constraint"):
             await integ_store.remove_issue_kind(issue_id, "bug", actor="alice")
         # The pre-removal state is preserved.
-        issue = cast(Issue, await integ_store.get_inquiry(issue_id))
+        issue = await integ_store.get_inquiry(issue_id)
+        assert isinstance(issue, Issue)
         assert issue.issue_kind == ("bug",)
         # Adding a second kind then removing the original is allowed.
         await integ_store.add_issue_kind(issue_id, "task", actor="alice")
         await integ_store.remove_issue_kind(issue_id, "bug", actor="alice")
-        issue = cast(Issue, await integ_store.get_inquiry(issue_id))
+        issue = await integ_store.get_inquiry(issue_id)
+        assert isinstance(issue, Issue)
         assert issue.issue_kind == ("task",)
 
     async def test_transition_status_is_compare_and_set(
@@ -3101,7 +3183,8 @@ class TestIntegrationEndToEnd:
                 to="abandoned",
                 actor="bob",
             )
-        issue = cast(Issue, await integ_store.get_inquiry(issue_id))
+        issue = await integ_store.get_inquiry(issue_id)
+        assert isinstance(issue, Issue)
         assert issue.status == "complete"
 
     async def test_submit_batch_returns_ids_in_order(
@@ -3109,7 +3192,7 @@ class TestIntegrationEndToEnd:
         integ_store: Store,
     ) -> None:
         """``submit_batch`` collapses N round-trips into one and returns ordered ids."""
-        items: list[Any] = [
+        items: list[SubmitIssue | SubmitArtifact | SubmitPaper] = [
             SubmitIssue(
                 account="tester@example.com",
                 title="issue",
@@ -3402,7 +3485,8 @@ class TestIntegrationEndToEnd:
             actor="user",
         )
         async with integ_store.engine.acquire() as conn:
-            stored = await conn.fetchval(
+            stored = await _fetchval(
+                conn,
                 "SELECT valence FROM edges "
                 "WHERE from_id = $1 AND to_id = $2 AND edge_kind = 'proves'",
                 paper,
@@ -3441,7 +3525,8 @@ class TestIntegrationEndToEnd:
             actor="user",
         )
         async with integ_store.engine.acquire() as conn:
-            stored = await conn.fetchval(
+            stored = await _fetchval(
+                conn,
                 "SELECT valence FROM edges "
                 "WHERE from_id = $1 AND to_id = $2 AND edge_kind = 'proves'",
                 paper,
@@ -3550,7 +3635,8 @@ class TestIntegrationEndToEnd:
             actor="user",
         )
         async with integ_store.engine.acquire() as conn:
-            stored = await conn.fetchval(
+            stored = await _fetchval(
+                conn,
                 "SELECT valence FROM edges "
                 "WHERE from_id = $1 AND to_id = $2 AND edge_kind = 'proves'",
                 paper,
@@ -3771,12 +3857,14 @@ class TestIntegrationEndToEnd:
         # arbitrary-actor capability the whole-list rejection map
         # promises.
         await integ_store.add_subscriber(issue_id, "dave", actor="admin")
-        issue = cast(Issue, await integ_store.get_inquiry(issue_id))
+        issue = await integ_store.get_inquiry(issue_id)
+        assert isinstance(issue, Issue)
         assert issue.subscribers is not None
         assert sorted(issue.subscribers) == ["alice", "bob", "carol", "dave"]
         # Remove is atomic too and accepts a non-self subscriber.
         await integ_store.remove_subscriber(issue_id, "bob", actor="admin")
-        issue = cast(Issue, await integ_store.get_inquiry(issue_id))
+        issue = await integ_store.get_inquiry(issue_id)
+        assert isinstance(issue, Issue)
         assert issue.subscribers is not None
         assert sorted(issue.subscribers) == ["alice", "carol", "dave"]
 
@@ -3849,7 +3937,8 @@ class TestIntegrationEndToEnd:
 
         # The unset owner is stored as SQL NULL, not the actor or an empty string.
         async with integ_store.engine.acquire() as conn:
-            stored = await conn.fetchval(
+            stored = await _fetchval(
+                conn,
                 "SELECT owner FROM inquiries WHERE id = $1",
                 unowned,
             )
@@ -3936,7 +4025,8 @@ class TestIntegrationEndToEnd:
         change_id = await integ_store.set_labels(rid, ["", "  "], actor="u")
         assert change_id is None
         async with integ_store.engine.acquire() as conn:
-            stored = await conn.fetchval(
+            stored = await _fetchval(
+                conn,
                 "SELECT labels FROM inquiries WHERE id = $1",
                 rid,
             )
@@ -3949,7 +4039,8 @@ class TestIntegrationEndToEnd:
         assert change_id is not None
         async with integ_store.engine.acquire() as conn:
             row = await conn.fetchrow("SELECT labels FROM inquiries WHERE id = $1", rid)
-            new_labels = await conn.fetchval(
+            new_labels = await _fetchval(
+                conn,
                 "SELECT new_labels FROM change_log WHERE id = $1",
                 change_id,
             )
@@ -3994,7 +4085,8 @@ class TestIntegrationEndToEnd:
         change_id = await integ_store.set_source(pid, "  ", actor="u")
         assert change_id is None
         async with integ_store.engine.acquire() as conn:
-            stored = await conn.fetchval(
+            stored = await _fetchval(
+                conn,
                 "SELECT paper_source FROM inquiries WHERE id = $1",
                 pid,
             )
@@ -4022,7 +4114,8 @@ class TestIntegrationEndToEnd:
                     "labels": ["", "  "],
                 },
             )
-            stored = await conn.fetchval(
+            stored = await _fetchval(
+                conn,
                 "SELECT labels FROM inquiries WHERE id = $1",
                 rid,
             )
@@ -4050,7 +4143,8 @@ class TestIntegrationEndToEnd:
             )
         assert row is not None
         assert row["old_labels"] is None
-        assert list(row["new_labels"]) == ["x"]
+        new_labels = row["new_labels"]
+        assert new_labels == ["x"]
 
     async def test_removing_last_list_item_stores_null(
         self,
@@ -4067,7 +4161,8 @@ class TestIntegrationEndToEnd:
         )
         await integ_store.remove_label(rid, "only", actor="u")
         async with integ_store.engine.acquire() as conn:
-            stored = await conn.fetchval(
+            stored = await _fetchval(
+                conn,
                 "SELECT labels FROM inquiries WHERE id = $1",
                 rid,
             )
@@ -4093,7 +4188,8 @@ class TestIntegrationEndToEnd:
         )
         with pytest.raises(ConflictError, match="check constraint"):
             await integ_store.remove_issue_kind(rid, "bug", actor="u")
-        kept = cast(Issue, await integ_store.get_inquiry(rid))
+        kept = await integ_store.get_inquiry(rid)
+        assert isinstance(kept, Issue)
         assert kept.issue_kind == ("bug",)
 
     async def test_submit_empty_optionals_store_null(
@@ -4135,7 +4231,8 @@ class TestIntegrationEndToEnd:
         )
         await integ_store.set_source(rid, "", actor="u")
         async with integ_store.engine.acquire() as conn:
-            stored = await conn.fetchval(
+            stored = await _fetchval(
+                conn,
                 "SELECT paper_source FROM inquiries WHERE id = $1",
                 rid,
             )
@@ -4151,7 +4248,8 @@ class TestIntegrationEndToEnd:
         )
         await integ_store.set_owner(rid, "   ", actor="u")
         async with integ_store.engine.acquire() as conn:
-            stored = await conn.fetchval(
+            stored = await _fetchval(
+                conn,
                 "SELECT owner FROM inquiries WHERE id = $1",
                 rid,
             )
@@ -4269,7 +4367,9 @@ class TestIntegrationEndToEnd:
                     ],
                 )
                 assert r.status_code == 200, r.text
-                assert [row["id"] for row in r.json()] == [str(needle_id)], r.json()
+                assert [StrCodec.coerce(row["id"]) for row in _json_objects(r)] == [
+                    str(needle_id)
+                ], r.json()
 
                 # 2. list-shaped equality (``labels is target``):
                 # must compare against array membership, not the
@@ -4283,7 +4383,9 @@ class TestIntegrationEndToEnd:
                     ],
                 )
                 assert r.status_code == 200, r.text
-                assert [row["id"] for row in r.json()] == [str(needle_id)]
+                assert [StrCodec.coerce(row["id"]) for row in _json_objects(r)] == [
+                    str(needle_id)
+                ]
 
                 # 3. value containing URL-sensitive characters (``:``)
                 # round-trips through httpx2 percent-encoding and
@@ -4300,7 +4402,9 @@ class TestIntegrationEndToEnd:
                     ],
                 )
                 assert r.status_code == 200, r.text
-                assert [row["id"] for row in r.json()] == [str(needle_id)]
+                assert [StrCodec.coerce(row["id"]) for row in _json_objects(r)] == [
+                    str(needle_id)
+                ]
 
                 # 4. ``kind`` is a CLI alias for the ``issue_kind``
                 # payload column. Reading the discriminator (always
@@ -4317,7 +4421,9 @@ class TestIntegrationEndToEnd:
                     ],
                 )
                 assert r.status_code == 200, r.text
-                assert [row["id"] for row in r.json()] == [str(needle_id)]
+                assert [StrCodec.coerce(row["id"]) for row in _json_objects(r)] == [
+                    str(needle_id)
+                ]
 
                 # 5. control: same endpoint without filters returns the
                 # default top-5 by recency; the needle is the oldest
@@ -4328,7 +4434,7 @@ class TestIntegrationEndToEnd:
                     params={"kind": "Issue", "limit": "5"},
                 )
                 assert r.status_code == 200, r.text
-                ids = [row["id"] for row in r.json()]
+                ids = [StrCodec.coerce(row["id"]) for row in _json_objects(r)]
                 assert str(needle_id) not in ids, ids
 
                 # 6. disjoint ``seq_range`` union: the needle is seq 1
@@ -4346,7 +4452,7 @@ class TestIntegrationEndToEnd:
                     ],
                 )
                 assert r.status_code == 200, r.text
-                seqs = sorted(row["seq"] for row in r.json())
+                seqs = sorted(IntCodec.coerce(row["seq"]) for row in _json_objects(r))
                 assert seqs[0] == 1
                 assert all(s == 1 or s >= 40 for s in seqs)
                 assert 2 not in seqs
@@ -4434,28 +4540,50 @@ class TestIntegrationEndToEnd:
                 # the citing artifact, the from-side).
                 r = await http.get(f"/api/web/get/{paper_id}")
                 assert r.status_code == 200, r.text
-                paper_body = r.json()
-                assert paper_body["self"]["source"] == "arXiv:2501.00001"
-                proves = paper_body["edges"]["proves"]
-                assert [p["id"] for p in proves] == [str(belief_id)]
-                assert proves[0]["judgement"] == "proven"
+                paper_body = _json_object(r)
+                assert (
+                    StrCodec.coerce(DictCodec.coerce(paper_body["self"])["source"])
+                    == "arXiv:2501.00001"
+                )
+                proves = ListCodec.coerce(
+                    DictCodec.coerce(paper_body["edges"])["proves"]
+                )
+                assert [StrCodec.coerce(DictCodec.coerce(p)["id"]) for p in proves] == [
+                    str(belief_id)
+                ]
+                assert (
+                    StrCodec.coerce(DictCodec.coerce(proves[0])["judgement"])
+                    == "proven"
+                )
 
                 # The Belief detail: the inbound backlink runs the same peer
                 # join in the reverse direction (the Belief is the cited claim,
                 # the to-side), projecting the Paper peer.
                 r = await http.get(f"/api/web/get/{belief_id}")
                 assert r.status_code == 200, r.text
-                body = r.json()
-                assert body["self"]["judgement"] == "proven"
-                assert body["self"]["confidence"] == 0.9
-                backlink = body["backlinks"]["proves"]
-                assert [b["id"] for b in backlink] == [str(paper_id)]
+                body = _json_object(r)
+                assert (
+                    StrCodec.coerce(DictCodec.coerce(body["self"])["judgement"])
+                    == "proven"
+                )
+                assert (
+                    FloatCodec.coerce(DictCodec.coerce(body["self"])["confidence"])
+                    == 0.9
+                )
+                backlink = ListCodec.coerce(
+                    DictCodec.coerce(body["backlinks"])["proves"]
+                )
+                assert [
+                    StrCodec.coerce(DictCodec.coerce(b)["id"]) for b in backlink
+                ] == [str(paper_id)]
 
                 # /search: cross-kind ILIKE over title/description, the
                 # ``trax search`` path. Runs raw SQL against inquiries.
                 r = await http.get("/api/web/search", params={"q": "overfits"})
                 assert r.status_code == 200, r.text
-                assert str(belief_id) in [row["id"] for row in r.json()]
+                assert str(belief_id) in [
+                    StrCodec.coerce(row["id"]) for row in _json_objects(r)
+                ]
 
                 # An edit so a kind-specific change row exists, then
                 # /recent_changes flattens its old_*/new_* snapshot
@@ -4469,12 +4597,21 @@ class TestIntegrationEndToEnd:
                 )
                 r = await http.get("/api/web/recent_changes", params={"limit": "20"})
                 assert r.status_code == 200, r.text
-                changes = r.json()
-                judged = [c for c in changes if c["kind"] == "belief_judgement"]
+                changes = _json_objects(r)
+                judged = [
+                    c
+                    for c in changes
+                    if StrCodec.coerce(c["kind"]) == "belief_judgement"
+                ]
                 assert judged, "judgement change should appear in recent"
                 # The cross-kind audit feed keys snapshot fields by their
                 # flat storage name, so it's belief_judgement, not bare.
-                assert judged[0]["new"]["belief_judgement"] == "disproven"
+                assert (
+                    StrCodec.coerce(
+                        DictCodec.coerce(judged[0]["new"])["belief_judgement"]
+                    )
+                    == "disproven"
+                )
         finally:
             app.dependency_overrides.pop(current_user, None)
 
@@ -4513,7 +4650,7 @@ class TestIntegrationEndToEnd:
             ) as http:
                 r = await http.get("/api/web/search", params={"q": "%"})
                 assert r.status_code == 200, r.text
-                ids = [row["id"] for row in r.json()]
+                ids = [StrCodec.coerce(row["id"]) for row in _json_objects(r)]
                 # Only the literal-percent row matches; the wildcard does not
                 # leak into a match-all.
                 assert ids == [str(literal_id)]
@@ -4603,13 +4740,14 @@ class TestIntegrationAuth:
         # ``current_user`` reads ``auth_disabled=False`` and exercises
         # the bearer path.
         request.app.state.config = Config()
-        identity = await current_user(request)
+        identity = await current_user(cast(Request, request))
         assert identity.user_id == user_id
         assert identity.email == "alice@example.com"
         assert identity.role == "admin"
         # ``last_used_at`` actually persisted.
         async with integ_store.engine.acquire() as conn:
-            last_used = await conn.fetchval(
+            last_used = await _fetchval(
+                conn,
                 "SELECT last_used_at FROM api_keys WHERE user_id = $1",
                 user_id,
             )
@@ -4639,7 +4777,7 @@ class TestIntegrationAuth:
         request.app.state.store = integ_store
         request.app.state.config = Config()  # See test_create_token rationale.
         with pytest.raises(HTTPException) as exc_info:
-            await current_user(request)
+            await current_user(cast(Request, request))
         assert exc_info.value.status_code == 401
 
     async def test_bootstrap_admin_seeds_with_null_added_by(
@@ -4733,7 +4871,8 @@ class TestIntegrationAuth:
             )
             await conn.execute("DELETE FROM users WHERE id = $1", user_id)
             # Keys gone (CASCADE on api_keys.user_id).
-            remaining_keys = await conn.fetchval(
+            remaining_keys = await _fetchval(
+                conn,
                 "SELECT count(*) FROM api_keys WHERE user_id = $1",
                 user_id,
             )
@@ -4845,11 +4984,13 @@ class TestClientChangeIdReplay:
         assert first == second
         assert first != key  # server-minted.
         async with integ_store.engine.acquire() as conn:
-            inquiry_count = await conn.fetchval(
+            inquiry_count = await _fetchval(
+                conn,
                 "SELECT COUNT(*) FROM inquiries WHERE id = $1",
                 first,
             )
-            change_count = await conn.fetchval(
+            change_count = await _fetchval(
+                conn,
                 "SELECT COUNT(*) FROM change_log WHERE subject_id = $1",
                 first,
             )
@@ -4930,8 +5071,10 @@ class TestFirstEdgeInfersProduced:
             edge_kind="requires",
             actor="alice",
         )
-        older_row = cast(Issue, await integ_store.get_inquiry(older))
-        younger_row = cast(Issue, await integ_store.get_inquiry(younger))
+        older_row = await integ_store.get_inquiry(older)
+        assert isinstance(older_row, Issue)
+        younger_row = await integ_store.get_inquiry(younger)
+        assert isinstance(younger_row, Issue)
         assert younger_row.id in {e.id for e in older_row.produces}
         assert older_row.id in {e.id for e in younger_row.produced_by}
 
@@ -4948,8 +5091,10 @@ class TestFirstEdgeInfersProduced:
             edge_kind="requires",
             actor="alice",
         )
-        older_row = cast(Issue, await integ_store.get_inquiry(older))
-        younger_row = cast(Issue, await integ_store.get_inquiry(younger))
+        older_row = await integ_store.get_inquiry(older)
+        assert isinstance(older_row, Issue)
+        younger_row = await integ_store.get_inquiry(younger)
+        assert isinstance(younger_row, Issue)
         assert younger in {e.id for e in older_row.produces}
         assert older in {e.id for e in younger_row.produced_by}
 
@@ -4966,7 +5111,8 @@ class TestFirstEdgeInfersProduced:
             edge_kind="narrows",
             actor="alice",
         )
-        older_row = cast(Issue, await integ_store.get_inquiry(older))
+        older_row = await integ_store.get_inquiry(older)
+        assert isinstance(older_row, Issue)
         assert younger in {e.id for e in older_row.produces}
         assert "Issue" in {e.kind for e in older_row.produces}
 
@@ -4989,7 +5135,8 @@ class TestFirstEdgeInfersProduced:
             actor="alice",
         )
         async with integ_store.engine.acquire() as conn:
-            produced = await conn.fetchval(
+            produced = await _fetchval(
+                conn,
                 "SELECT count(*) FROM edges WHERE edge_kind = 'produced_by' "
                 "AND ((from_id = $1 AND to_id = $2) OR (from_id = $2 AND to_id = $1))",
                 older,
@@ -5011,7 +5158,8 @@ class TestFirstEdgeInfersProduced:
             actor="alice",
         )
         async with integ_store.engine.acquire() as conn:
-            produced = await conn.fetchval(
+            produced = await _fetchval(
+                conn,
                 "SELECT count(*) FROM edges WHERE edge_kind = 'produced_by' "
                 "AND ((from_id = $1 AND to_id = $2) OR (from_id = $2 AND to_id = $1))",
                 older,
@@ -5039,7 +5187,8 @@ class TestFirstEdgeInfersProduced:
             ],
         )
         newborn = ids[0]
-        anchor_row = cast(Issue, await integ_store.get_inquiry(anchor))
+        anchor_row = await integ_store.get_inquiry(anchor)
+        assert isinstance(anchor_row, Issue)
         assert newborn in {e.id for e in anchor_row.produces}
 
     async def test_supersedes_infers_produced_by(self, integ_store: Store) -> None:
@@ -5080,8 +5229,10 @@ class TestFirstEdgeInfersProduced:
             note="see section 3",
             actor="alice",
         )
-        citing_row = cast(Paper, await integ_store.get_inquiry(citing))
-        cited_row = cast(Paper, await integ_store.get_inquiry(cited))
+        citing_row = await integ_store.get_inquiry(citing)
+        assert isinstance(citing_row, Paper)
+        cited_row = await integ_store.get_inquiry(cited)
+        assert isinstance(cited_row, Paper)
         assert cited in {e.id for e in citing_row.cites}
         assert {e.note for e in citing_row.cites} == {"see section 3"}
         assert citing in {e.id for e in cited_row.cited_by}
@@ -5102,7 +5253,8 @@ class TestFirstEdgeInfersProduced:
             actor="alice",
         )
         async with integ_store.engine.acquire() as conn:
-            produced = await conn.fetchval(
+            produced = await _fetchval(
+                conn,
                 "SELECT count(*) FROM edges WHERE edge_kind = 'produced_by' "
                 "AND ((from_id = $1 AND to_id = $2) OR (from_id = $2 AND to_id = $1))",
                 cited,
@@ -5110,7 +5262,8 @@ class TestFirstEdgeInfersProduced:
             )
         assert produced == 0
         # And the projection confirms neither side gained a provenance edge.
-        citing_row = cast(Paper, await integ_store.get_inquiry(citing))
+        citing_row = await integ_store.get_inquiry(citing)
+        assert isinstance(citing_row, Paper)
         assert citing_row.produced_by == ()
         assert citing_row.produces == ()
 
@@ -5151,7 +5304,8 @@ class TestFirstEdgeInfersProduced:
             actor="alice",
         )
         async with integ_store.engine.acquire() as conn:
-            produced = await conn.fetchval(
+            produced = await _fetchval(
+                conn,
                 "SELECT count(*) FROM edges WHERE edge_kind = 'produced_by' "
                 "AND ((from_id = $1 AND to_id = $2) OR (from_id = $2 AND to_id = $1))",
                 belief,
@@ -5160,7 +5314,8 @@ class TestFirstEdgeInfersProduced:
         assert produced == 0
         # The Belief gained no provenance parent; the Paper cites it via the
         # epistemic edge, which is the only relationship stored.
-        belief_row = cast(Belief, await integ_store.get_inquiry(belief))
+        belief_row = await integ_store.get_inquiry(belief)
+        assert isinstance(belief_row, Belief)
         assert belief_row.produced_by == ()
         assert belief_row.produces == ()
 
@@ -5183,8 +5338,10 @@ class TestFirstEdgeInfersProduced:
             edge_kind="cites_paper",
             actor="alice",
         )
-        a_row = cast(Paper, await integ_store.get_inquiry(a))
-        b_row = cast(Paper, await integ_store.get_inquiry(b))
+        a_row = await integ_store.get_inquiry(a)
+        assert isinstance(a_row, Paper)
+        b_row = await integ_store.get_inquiry(b)
+        assert isinstance(b_row, Paper)
         assert b in {e.id for e in a_row.cites}
         assert a in {e.id for e in b_row.cites}
         # Acyclicity-exemption does NOT relax the self-loop bar: a paper still
@@ -5213,7 +5370,8 @@ class TestFirstEdgeInfersProduced:
                 BatchEdge(from_id=younger, to_id=older, edge_kind="requires"),
             ],
         )
-        older_row = cast(Issue, await integ_store.get_inquiry(older))
+        older_row = await integ_store.get_inquiry(older)
+        assert isinstance(older_row, Issue)
         assert younger in {e.id for e in older_row.produces}
 
     async def test_inferred_produced_by_audit_is_chained_to_trigger(
@@ -5232,7 +5390,8 @@ class TestFirstEdgeInfersProduced:
             actor="alice",
         )
         async with integ_store.engine.acquire() as conn:
-            trigger = await conn.fetchval(
+            trigger = await _fetchval(
+                conn,
                 "SELECT id FROM change_log WHERE kind = 'edge_added' "
                 "AND new_peer_edge_kind = 'requires' AND subject_id = $1",
                 younger,
@@ -5246,7 +5405,8 @@ class TestFirstEdgeInfersProduced:
             )
         assert inferred is not None
         assert inferred["caused_by"] == trigger
-        assert inferred["reason"].startswith(INFERRED_PROVENANCE_REASON)
+        reason = cast(str, inferred["reason"])
+        assert reason.startswith(INFERRED_PROVENANCE_REASON)
 
     async def test_inferred_produced_by_creation_does_not_cascade(
         self,
@@ -5263,14 +5423,16 @@ class TestFirstEdgeInfersProduced:
             actor="alice",
         )
         async with integ_store.engine.acquire() as conn:
-            inferred_id = await conn.fetchval(
+            inferred_id = await _fetchval(
+                conn,
                 "SELECT id FROM change_log WHERE kind = 'edge_added' "
                 "AND new_peer_edge_kind = 'produced_by' AND subject_id = $1 "
                 "AND new_peer_id = $2",
                 younger,
                 older,
             )
-            caused_by_inferred = await conn.fetchval(
+            caused_by_inferred = await _fetchval(
+                conn,
                 "SELECT count(*) FROM change_log WHERE kind = 'dependency_changed' "
                 "AND caused_by = $1",
                 inferred_id,
@@ -5303,9 +5465,35 @@ class TestFirstEdgeInfersProduced:
             edge_kind="proves",
             actor="alice",
         )
-        belief_row = cast(Belief, await integ_store.get_inquiry(belief))
+        belief_row = await integ_store.get_inquiry(belief)
+        assert isinstance(belief_row, Belief)
         assert belief_row.produces == ()
         assert belief_row.produced_by == ()
+
+
+async def _fetchval(
+    conn: _FetchValConnection,
+    query: str,
+    *args: object,
+) -> object:
+    """Name the scalar as an object at asyncpg's untyped boundary."""
+    return await conn.fetchval(query, *args)
+
+
+class _FetchValConnection(Protocol):
+    """The asyncpg connection slice used by scalar integration assertions."""
+
+    async def fetchval(self, query: str, *args: object) -> object: ...
+
+
+def _json_object(response: httpx2.Response) -> dict[str, object]:
+    """Narrow an HTTP JSON object at the response boundary."""
+    return DictCodec.coerce(response.json())
+
+
+def _json_objects(response: httpx2.Response) -> list[dict[str, object]]:
+    """Narrow an HTTP JSON array of objects at the response boundary."""
+    return [DictCodec.coerce(item) for item in cast(list[object], response.json())]
 
 
 if __name__ == "__main__":

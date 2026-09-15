@@ -22,6 +22,7 @@ import argparse
 import statistics
 import time
 
+from trackinizer.lib.custom_json import FloatCodec, IntCodec
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
@@ -94,7 +95,10 @@ def main() -> int:
     )
     _add_arguments(parser)
     args = parser.parse_args()
-    report(tick_sec=args.tick_sec, repeats=args.repeats)
+    report(
+        tick_sec=FloatCodec.coerce(getattr(args, "tick_sec", None)),
+        repeats=IntCodec.coerce(getattr(args, "repeats", None)),
+    )
     return 0
 
 

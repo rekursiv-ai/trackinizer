@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, _Call
 
 import uuid
 
 import pytest
 
+from trackinizer.lib.custom_json import DictCodec, ListCodec
 from trackinizer.server.api.app import app
 from trackinizer.server.auth import AuthIdentity, current_user, generate_token
 
@@ -60,15 +61,18 @@ class TestCreateToken:
         engine.conn.fetchval = AsyncMock(return_value="writer")
         r = client.post("/api/me/tokens", json={"name": "laptop"})
         assert r.status_code == 200, r.text
-        body = r.json()
+        raw: object = r.json()
+        body = DictCodec.coerce(raw)
         assert body["name"] == "laptop"
         # Defaults to caller's user role when ``role`` is omitted.
         assert body["role"] == "writer"
         # The plaintext secret is the *only* return path; clients
         # cannot re-derive it later.
-        assert body["secret"].startswith("trax_")
+        secret = body["secret"]
+        assert isinstance(secret, str)
+        assert secret.startswith("trax_")
         # And the INSERT into api_keys actually fired.
-        sqls = [c.args[0] for c in engine.conn.execute.call_args_list]
+        sqls = [_sql(c) for c in engine.conn.execute.call_args_list]
         assert any("INSERT INTO api_keys" in s for s in sqls)
 
     def test_rejects_blank_name(
@@ -96,7 +100,7 @@ class TestCreateToken:
         assert r.status_code == 403
         # And no INSERT into api_keys -- the ceiling check fires
         # before the write.
-        sqls = [c.args[0] for c in engine.conn.execute.call_args_list]
+        sqls = [_sql(c) for c in engine.conn.execute.call_args_list]
         assert not any("INSERT INTO api_keys" in s for s in sqls)
 
     def test_writer_can_mint_viewer_token(
@@ -112,7 +116,8 @@ class TestCreateToken:
         engine.conn.fetchval = AsyncMock(return_value="writer")
         r = client.post("/api/me/tokens", json={"name": "ro", "role": "viewer"})
         assert r.status_code == 200, r.text
-        assert r.json()["role"] == "viewer"
+        body = DictCodec.coerce(r.json())
+        assert body["role"] == "viewer"
 
     def test_scoped_key_cannot_mint_above_its_ceiling(
         self,
@@ -142,7 +147,7 @@ class TestCreateToken:
         # ...but the presented credential is viewer-scoped, so admin is refused.
         r = client.post("/api/me/tokens", json={"name": "escalate", "role": "admin"})
         assert r.status_code == 403, r.text
-        sqls = [c.args[0] for c in engine.conn.execute.call_args_list]
+        sqls = [_sql(c) for c in engine.conn.execute.call_args_list]
         assert not any("INSERT INTO api_keys" in s for s in sqls)
 
 
@@ -169,9 +174,11 @@ class TestListTokens:
         )
         r = client.get("/api/me/tokens")
         assert r.status_code == 200, r.text
-        body = r.json()
-        assert len(body["tokens"]) == 1
-        tok = body["tokens"][0]
+        raw: object = r.json()
+        body = DictCodec.coerce(raw)
+        token_values = ListCodec.coerce(body["tokens"])
+        assert len(token_values) == 1
+        tok = DictCodec.coerce(token_values[0])
         assert tok["id"] == str(key_id)
         assert tok["prefix"] == "trax_aBcDeFgH"
         # The new ``role`` column lands in the wire shape so the UI can
@@ -281,7 +288,7 @@ class TestSetTokenRole:
         )
         assert r.status_code == 200, r.text
         assert r.json() == {"ok": True, "role": "writer"}
-        sqls = [c.args[0] for c in engine.conn.execute.call_args_list]
+        sqls = [_sql(c) for c in engine.conn.execute.call_args_list]
         assert any("UPDATE api_keys SET role" in s for s in sqls)
 
     def test_above_ceiling_is_403(
@@ -297,7 +304,7 @@ class TestSetTokenRole:
             json={"role": "admin"},
         )
         assert r.status_code == 403
-        sqls = [c.args[0] for c in engine.conn.execute.call_args_list]
+        sqls = [_sql(c) for c in engine.conn.execute.call_args_list]
         assert not any("UPDATE api_keys SET role" in s for s in sqls)
 
     def test_404_when_not_owned(
@@ -344,7 +351,7 @@ class TestSetTokenRole:
             json={"role": "admin"},
         )
         assert r.status_code == 403, r.text
-        sqls = [c.args[0] for c in engine.conn.execute.call_args_list]
+        sqls = [_sql(c) for c in engine.conn.execute.call_args_list]
         assert not any("UPDATE api_keys SET role" in s for s in sqls)
 
     def test_unknown_key_above_ceiling_is_404_not_403(
@@ -396,6 +403,13 @@ class TestRouteRequiresAuth:
         app.dependency_overrides.pop(current_user, None)
         r = client.post("/api/me/tokens", json={"name": "x"})
         assert r.status_code == 401
+
+
+def _sql(call: _Call) -> str:
+    """Narrow a recorded mock argument to the SQL string passed by production."""
+    sql = call.args[0]
+    assert isinstance(sql, str)
+    return sql
 
 
 if __name__ == "__main__":

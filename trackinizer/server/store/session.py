@@ -14,8 +14,6 @@ from datetime import datetime
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
-import json
-
 
 if TYPE_CHECKING:
     import asyncpg
@@ -26,8 +24,12 @@ else:
 
 from trackinizer.lib.custom_json import (
     DictCodec,
+    IntCodec,
     JSONValue,
+    ListCodec,
+    StrCodec,
     json_freeze,
+    loads,
 )
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
@@ -55,13 +57,13 @@ def _strip_postgres_nuls(value: JSONValue) -> JSONValue:
     if isinstance(value, str):
         return value.replace("\0", "")
     if isinstance(value, Mapping):
-        mapping = cast(Mapping[str, JSONValue], value)
+        mapping = value
         return {
             key.replace("\0", ""): _strip_postgres_nuls(item)
             for key, item in mapping.items()
         }
     if isinstance(value, Sequence):
-        sequence = cast(Sequence[JSONValue], value)
+        sequence = value
         return [_strip_postgres_nuls(item) for item in sequence]
     return value
 
@@ -183,13 +185,11 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                     conn,
                 )
                 if existing is not None:
-                    owner = cast(
-                        str,
-                        await conn.fetchval(
-                            "SELECT owner FROM inquiries WHERE id = $1",
-                            existing,
-                        ),
+                    owner = await conn.fetchval(
+                        "SELECT owner FROM inquiries WHERE id = $1",
+                        existing,
                     )
+                    assert isinstance(owner, str)
                     next_seq = await self._next_event_seq(conn, existing)
                     # Drain the peeked slot so the leftover key can't leak into
                     # the next same-context write's ``emit_change`` (mirrors
@@ -226,13 +226,11 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             # returned id so a racing retry echoes the winner's receipt, not a
             # mismatched ``(granted, 0)``.
             async with self.engine.acquire() as conn:
-                owner = cast(
-                    str,
-                    await conn.fetchval(
-                        "SELECT owner FROM inquiries WHERE id = $1",
-                        session_id,
-                    ),
+                owner = await conn.fetchval(
+                    "SELECT owner FROM inquiries WHERE id = $1",
+                    session_id,
                 )
+                assert isinstance(owner, str)
                 next_seq = await self._next_event_seq(conn, session_id)
             return session_id, owner, next_seq
         # Exhausted the retry budget: surface a clean 409, not a raw asyncpg
@@ -310,8 +308,11 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             )
             if row is None:
                 return None
-            session_id = cast(UUID, row["id"])
-            owner = str(row["owner"])
+            session_id = row["id"]
+            assert isinstance(session_id, UUID)
+            # NULL for a session captured from a transcript rather than opened
+            # live; resolve_live_sessions reads the column the same way.
+            owner = StrCodec.coerce(row["owner"])
             if row["agentsession_ended"] is not None:
                 # Re-open: move ended -> live in one statement so the lifecycle
                 # CHECK never observes (ended set, status active). Attribute the
@@ -326,7 +327,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                     session_id,
                     "AgentSession",
                     "agentsession_ended",
-                    Snapshot(agentsession_ended=row["agentsession_ended"]),
+                    Snapshot(agentsession_ended=_datetime(row["agentsession_ended"])),
                     new=Snapshot(agentsession_ended=None),
                     api_key_id=api_key_id,
                     actor=actor,
@@ -337,7 +338,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                         session_id,
                         "AgentSession",
                         "status",
-                        Snapshot(status=row["status"]),
+                        Snapshot(status=cast(Inquiry.Status, row["status"])),
                         new=Snapshot(status="active"),
                         api_key_id=api_key_id,
                         actor=actor,
@@ -403,7 +404,13 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 ),
                 *params,
             )
-        return [(row["id"], tuple(row["agentsession_rooms"] or ())) for row in rows]
+        return [
+            (
+                _uuid(row["id"]),
+                tuple(ListCodec.coerce(row["agentsession_rooms"], str)),
+            )
+            for row in rows
+        ]
 
     async def read_feed(
         self,
@@ -495,23 +502,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             rows = await conn.fetch(sql, *params)
         if tail:
             rows = list(reversed(rows))
-        return [
-            FeedEvent(
-                session_id=row["session_id"],
-                actor=row["owner"] or "",
-                rooms=list(row["agentsession_rooms"] or []),
-                cli=row["agentsession_cli"],
-                part=row["part"],
-                seq=row["idx"],
-                kind=row["kind"],
-                created=row["created"],
-                timestamp=row["timestamp"],
-                model=row["model"],
-                message=json_freeze(DictCodec.coerce(json.loads(row["payload"]))),
-                text=row["text"],
-            )
-            for row in rows
-        ]
+        return [_feed_event(row) for row in rows]
 
     async def end_session(
         self,
@@ -610,7 +601,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                     set_client_change_id(None)
                     # Replay echoes the COMMITTED ended, not the retry's fresh
                     # request-time value, so the receipt is byte-identical.
-                    return cast(datetime, row["agentsession_ended"])
+                    return _datetime(row["agentsession_ended"])
                 # Genuine second close. Drain the peeked slot before raising:
                 # the replay-success path above drains, but this raise path did
                 # not, so the externally-set key leaked into the next mutation
@@ -636,7 +627,9 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                     "AgentSession",
                     "agentsession_cli_session_id",
                     Snapshot(
-                        agentsession_cli_session_id=row["agentsession_cli_session_id"],
+                        agentsession_cli_session_id=_optional_str(
+                            row["agentsession_cli_session_id"],
+                        ),
                     ),
                     new=Snapshot(agentsession_cli_session_id=cli_session_id),
                     api_key_id=api_key_id,
@@ -672,9 +665,49 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                     session_id,
                     "AgentSession",
                     "status",
-                    Snapshot(status=row["status"]),
+                    Snapshot(status=cast(Inquiry.Status, row["status"])),
                     new=Snapshot(status=status),
                     api_key_id=api_key_id,
                     actor=actor,
                 )
             return ended
+
+
+def _feed_event(row: asyncpg.Record) -> FeedEvent:
+    """Build one feed item from a ``session_records`` join row."""
+    return FeedEvent(
+        session_id=_uuid(row["session_id"]),
+        actor=StrCodec.coerce(row["owner"]),
+        rooms=ListCodec.coerce(row["agentsession_rooms"], str),
+        cli=_optional_str(row["agentsession_cli"]),
+        part=IntCodec.coerce(row["part"], None),
+        seq=IntCodec.coerce(row["idx"], None),
+        kind=StrCodec.coerce(row["kind"], None),
+        created=_datetime(row["created"]),
+        timestamp=_optional_datetime(row["timestamp"]),
+        model=_optional_str(row["model"]),
+        message=json_freeze(
+            DictCodec.coerce(loads(StrCodec.coerce(row["payload"], None)))
+        ),
+        text=StrCodec.coerce(row["text"], None),
+    )
+
+
+def _uuid(value: object) -> UUID:
+    assert isinstance(value, UUID)
+    return value
+
+
+def _datetime(value: object) -> datetime:
+    assert isinstance(value, datetime)
+    return value
+
+
+def _optional_datetime(value: object) -> datetime | None:
+    assert value is None or isinstance(value, datetime)
+    return value
+
+
+def _optional_str(value: object) -> str | None:
+    assert value is None or isinstance(value, str)
+    return value

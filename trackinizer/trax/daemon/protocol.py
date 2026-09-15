@@ -420,7 +420,7 @@ def _aliased_socket_path(logical_path: Path) -> Path:
 def _decode_object(raw: bytes, where: str) -> dict[str, object]:
     """Decode one frame into a JSON object, or raise ``ValueError``."""
     try:
-        payload: object = json.loads(raw)
+        payload = cast(object, json.loads(raw))
     except ValueError as err:
         raise ValueError(f"malformed {where} frame: {err}") from err
     if not isinstance(payload, dict):

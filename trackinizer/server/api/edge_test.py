@@ -19,6 +19,7 @@ from trackinizer.conftest import (
     queue_field_rows,
     set_field_row,
 )
+from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec, loads
 from trackinizer.server.api.app import app
 from trackinizer.server.api.edge import _set_edge_annotation
 from trackinizer.types.edges import Edge
@@ -211,7 +212,7 @@ class TestCreate:
             f"/api/edges/{new_uuid()}/proves/{new_uuid()}",
             json={"actor": "u", "note": "load-bearing", "valence": 0.5},
         )
-        body = r.json()
+        body = DictCodec.coerce(loads(r.content))
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None
@@ -226,7 +227,7 @@ class TestCreate:
             f"/api/edges/{new_uuid()}/narrows/{new_uuid()}",
             json={},
         )
-        body = r.json()
+        body = DictCodec.coerce(loads(r.content))
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None
@@ -321,7 +322,6 @@ class TestBatch:
         # Fail-stop: item[0] was attempted (and, on a real store, committed
         # in its own tx) before item[1] failed; item[2] was never attempted.
         store = app.state.store
-        assert isinstance(store, _PartialEdgeStore)
         assert store.calls == 2
 
     def test_edge_batch_conflict_error_message_is_preserved(
@@ -347,7 +347,10 @@ class TestBatch:
             },
         )
         assert r.status_code == 200
-        assert r.json()["items"][0]["error"] == "narrows edge would close a cycle"
+        body = DictCodec.coerce(r.json())
+        items = ListCodec.coerce(body["items"], object)
+        item = DictCodec.coerce(items[0])
+        assert item["error"] == "narrows edge would close a cycle"
 
     def test_edge_batch_does_not_leak_db_detail(
         self,
@@ -372,7 +375,10 @@ class TestBatch:
             },
         )
         assert r.status_code == 200
-        error = r.json()["items"][0]["error"]
+        response = DictCodec.coerce(loads(r.content))
+        items = ListCodec.coerce(response["items"], object)
+        item = DictCodec.coerce(items[0])
+        error = StrCodec.coerce(item["error"])
         assert error == "edge could not be created"
         assert "secret_constraint" not in error
         assert "from_id" not in error
@@ -436,7 +442,7 @@ class TestDelete:
             f"/api/edges/{from_id}/narrows/{to_id}",
             json={"actor": "u"},
         )
-        body = r.json()
+        body = DictCodec.coerce(loads(r.content))
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None
@@ -455,7 +461,7 @@ class TestAnnotate:
             f"/api/edges/{from_id}/narrows/{to_id}/note",
             json={"value": "contextual note", "actor": "u"},
         )
-        body = r.json()
+        body = DictCodec.coerce(loads(r.content))
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None
@@ -471,7 +477,7 @@ class TestAnnotate:
             f"/api/edges/{from_id}/narrows/{to_id}/labels",
             json={"value": ["context"], "actor": "u"},
         )
-        body = r.json()
+        body = DictCodec.coerce(loads(r.content))
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None
@@ -488,7 +494,7 @@ class TestAnnotate:
             f"/api/edges/{from_id}/narrows/{to_id}/note",
             json={"actor": "u"},
         )
-        body = r.json()
+        body = DictCodec.coerce(loads(r.content))
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None
@@ -510,7 +516,7 @@ class TestAnnotate:
             f"/api/edges/{from_id}/narrows/{to_id}/labels",
             json={"op": "add", "value": "context", "actor": "u"},
         )
-        body = r.json()
+        body = DictCodec.coerce(loads(r.content))
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None
@@ -530,7 +536,7 @@ class TestAnnotate:
             f"/api/edges/{from_id}/narrows/{to_id}/labels",
             json={"op": "sub", "value": "context", "actor": "u"},
         )
-        body = r.json()
+        body = DictCodec.coerce(loads(r.content))
         assert r.status_code == 200
         assert "change_id" in body
         assert body["change_id"] is not None

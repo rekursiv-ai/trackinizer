@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Literal, cast
 
 import math
 
@@ -42,8 +42,14 @@ class TestMetricPointKind:
         """
         # Runtime-invalid on purpose: the Literal makes this a static error too,
         # so cast to feed the bad value past the type checker to the validator.
+        bad_kind = "".join(("histogram",))
         with pytest.raises(ValidationError):
-            MetricPoint(key="loss", step=0, value=1.0, kind=cast(Any, "histogram"))
+            MetricPoint(
+                key="loss",
+                step=0,
+                value=1.0,
+                kind=cast(Literal["scalar"], bad_kind),
+            )
 
     def test_defaults_to_scalar(self) -> None:
         assert MetricPoint(key="loss", step=0, value=1.0).kind == "scalar"
