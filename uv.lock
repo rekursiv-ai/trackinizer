@@ -888,9 +888,9 @@ wheels = [
 ]
 
 [[package]]
-name = "rekursiv-typeshed"
+name = "rekursiv-ai-typeshed"
 version = "0.1.0"
-source = { directory = "packages/rekursiv-typeshed" }
+source = { directory = "packages/rekursiv-ai-typeshed" }
 dependencies = [
     { name = "basedpyright" },
     { name = "ty" },
@@ -1006,7 +1006,7 @@ dev = [
     { name = "pytest-postgresql" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
-    { name = "rekursiv-typeshed" },
+    { name = "rekursiv-ai-typeshed" },
     { name = "ruff" },
     { name = "ty" },
 ]
@@ -1027,7 +1027,7 @@ pre-commit = [
     { name = "pytest-postgresql" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
-    { name = "rekursiv-typeshed" },
+    { name = "rekursiv-ai-typeshed" },
     { name = "ruff" },
     { name = "ty" },
 ]
@@ -1044,7 +1044,7 @@ typecheck = [
     { name = "asyncpg-stubs" },
     { name = "basedpyright" },
     { name = "hatchling" },
-    { name = "rekursiv-typeshed" },
+    { name = "rekursiv-ai-typeshed" },
     { name = "ty" },
 ]
 
@@ -1080,7 +1080,7 @@ dev = [
     { name = "pytest-postgresql", specifier = ">=9.0" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "rekursiv-typeshed", directory = "packages/rekursiv-typeshed" },
+    { name = "rekursiv-ai-typeshed", directory = "packages/rekursiv-ai-typeshed" },
     { name = "ruff" },
     { name = "ty", specifier = ">=0.0.75" },
 ]
@@ -1101,7 +1101,7 @@ pre-commit = [
     { name = "pytest-postgresql", specifier = ">=9.0" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "rekursiv-typeshed", directory = "packages/rekursiv-typeshed" },
+    { name = "rekursiv-ai-typeshed", directory = "packages/rekursiv-ai-typeshed" },
     { name = "ruff" },
     { name = "ty", specifier = ">=0.0.75" },
 ]
@@ -1118,7 +1118,7 @@ typecheck = [
     { name = "asyncpg-stubs", specifier = ">=0.31.2" },
     { name = "basedpyright", specifier = ">=1.10" },
     { name = "hatchling" },
-    { name = "rekursiv-typeshed", directory = "packages/rekursiv-typeshed" },
+    { name = "rekursiv-ai-typeshed", directory = "packages/rekursiv-ai-typeshed" },
     { name = "ty", specifier = ">=0.0.75" },
 ]
 
