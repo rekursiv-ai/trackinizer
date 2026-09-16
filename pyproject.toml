@@ -493,11 +493,7 @@ reportInvalidCast = false                  # All cast() calls are intentional.
 # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 
 # Extra.
-reportMissingModuleSource = false
-reportUnnecessaryTypeIgnoreComment = false
-reportUnknownArgumentType = false
 reportUnknownMemberType = false
-reportUnknownVariableType = false
 # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 
 [tool.ty.environment]
