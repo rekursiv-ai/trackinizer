@@ -13,6 +13,7 @@ import pytest
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli, profile
+from trackinizer.trax.client_cache import close_clients
 from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.profile import Profile
 
@@ -78,7 +79,7 @@ def test_profile_flag_overrides_trackinizer_url(
         assert str(client.base_url) == "http://prod:9000"
         assert client.author == "alice"
     finally:
-        cli.close_clients()
+        close_clients()
 
 
 class TestClientSharing:
@@ -101,7 +102,7 @@ class TestClientSharing:
                 "is a new connection pool and a leaked socket per request"
             )
         finally:
-            cli.close_clients()
+            close_clients()
 
     def test_separates_clients_by_resolved_target(self) -> None:
         """Two profiles are two servers; they must not share a connection."""
@@ -113,7 +114,7 @@ class TestClientSharing:
 
             assert first is not second
         finally:
-            cli.close_clients()
+            close_clients()
 
     def test_a_profile_rewrite_invalidates_the_cached_client(self) -> None:
         """A cached client still carries the OLD token after a token change."""
@@ -127,7 +128,7 @@ class TestClientSharing:
             assert before is not after
             assert after.api_key == "new"
         finally:
-            cli.close_clients()
+            close_clients()
 
 
 def test_global_flag_not_peeled_from_field_value() -> None:

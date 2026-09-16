@@ -25,7 +25,8 @@ from trackinizer.lib.agent.sessions import (
 from trackinizer.lib.agent.types.sessions import SessionRecord, Thinking
 from trackinizer.lib.custom_json import DictCodec, json_freeze
 from trackinizer.lib.postgres import PostgresEngine
-from trackinizer.server.store.core import Store, StubEmbedder
+from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.store.core import Store
 from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.trax.run.errors import CiphertextDroppedError
 from trackinizer.trax.run.materialize import materialize_claude

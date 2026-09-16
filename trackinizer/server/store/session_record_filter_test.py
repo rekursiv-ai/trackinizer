@@ -27,7 +27,8 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
 )
 from trackinizer.lib.postgres import PostgresEngine
-from trackinizer.server.store.core import Store, StubEmbedder
+from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.store.core import Store
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.filters import Filter

@@ -11,7 +11,6 @@ this base only needs to own the genuinely shared state and the leaf
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Final
 from uuid import UUID
 
 import asyncio
@@ -21,13 +20,7 @@ from trackinizer.server.auth import AuthIdentity
 from trackinizer.types.embedder import Embedder
 
 
-__all__ = [
-    "EMBEDDING_DIM",
-    "_StoreShared",
-]
-
-
-EMBEDDING_DIM: Final = 384  # MiniLM-L6-v2 sentence-embedding dim.
+__all__ = ["_StoreShared"]
 
 
 class _StoreShared:
@@ -43,12 +36,14 @@ class _StoreShared:
         self,
         engine: DatabaseEngine,
         embed: Embedder | Sequence[Embedder],
+        *,
+        embedding_dim: int = 384,
     ) -> None:
         """Construct a Store bound to ``engine`` with one or more embedders.
 
         Multiple embedders populate ``inquiry_embeddings`` in parallel per
-        submit/edit; each needs a unique ``name`` and ``dim == EMBEDDING_DIM``,
-        matching ``vector(384)`` on the embeddings table.
+        submit/edit; each needs a unique ``name`` and ``dim == embedding_dim``
+        (default 384, matching ``vector(384)`` on the embeddings table).
 
         Validating embedders here turns what would otherwise be opaque
         mid-transaction failures (NOT NULL / UNIQUE / pgvector dim mismatch)
@@ -56,7 +51,7 @@ class _StoreShared:
 
         Raises:
           ValueError: ``embed`` is empty, two embedders share a ``name``, or
-            any embedder's ``dim`` differs from ``EMBEDDING_DIM``.
+            any embedder's ``dim`` differs from ``embedding_dim``.
 
         """
         # The runtime_checkable Protocol narrows a single Embedder; a str,
@@ -73,10 +68,10 @@ class _StoreShared:
             raise ValueError(
                 f"Embedder names must be unique; duplicates: {duplicates}.",
             )
-        bad_dim = [(e.name, e.dim) for e in self.embedders if e.dim != EMBEDDING_DIM]
+        bad_dim = [(e.name, e.dim) for e in self.embedders if e.dim != embedding_dim]
         if bad_dim:
             raise ValueError(
-                f"All embedders must have dim={EMBEDDING_DIM}; got"
+                f"All embedders must have dim={embedding_dim}; got"
                 f" mismatched (name, dim) pairs: {bad_dim}.",
             )
         self.engine = engine

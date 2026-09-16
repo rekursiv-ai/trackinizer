@@ -15,6 +15,7 @@ import tempfile
 from trackinizer.client.client import Client, server_url
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.userdirs import config_dir
+from trackinizer.trax.client_cache import close_clients
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import env
 from trackinizer.trax.render import echo
@@ -329,7 +330,7 @@ def save_profile(name: str, profile: Profile) -> None:
     # A long-lived process (the daemon) caches clients keyed on the resolved
     # url/author/token. This profile just changed one of them, so a cached
     # client would keep talking to the old server under the old credential.
-    _invalidate_clients()
+    close_clients()
 
 
 def switch_profile(name: str) -> None:
@@ -488,14 +489,3 @@ def _explicit_profile() -> str | None:
     except FileNotFoundError:
         return None
     return text or None
-
-
-# Imported at call time: ``cli`` imports this module, so a module-scope import would be
-# a cycle.
-def _invalidate_clients() -> None:
-    """Drop cached clients after a profile write."""
-    from trackinizer.trax.cli import (  # noqa: PLC0415 -- Breaks the import cycle with trackinizer.trax.cli.
-        close_clients,
-    )
-
-    close_clients()

@@ -53,12 +53,13 @@ from trackinizer.server.auth import (
     verify_secret,
 )
 from trackinizer.server.config import Config
+from trackinizer.server.embedder import StubEmbedder
 from trackinizer.server.session import (
     SESSION_COOKIE_NAME,
     read_session_cookie,
     set_session_cookie,
 )
-from trackinizer.server.store.core import Store, StubEmbedder
+from trackinizer.server.store.core import Store
 
 
 class TestHashSecret:

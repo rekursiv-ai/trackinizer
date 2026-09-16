@@ -26,7 +26,8 @@ from trackinizer.lib.custom_json import (
     json_unfreeze,
 )
 from trackinizer.lib.postgres import PostgresEngine
-from trackinizer.server.store.core import Store, StubEmbedder
+from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.store.core import Store
 from trackinizer.types.session_records import SessionRecordRow
 
 

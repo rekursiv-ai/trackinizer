@@ -18,7 +18,7 @@ from trackinizer.server.config import (
     build_engine,
     parse_engine,
 )
-from trackinizer.server.store.core import StubEmbedder
+from trackinizer.server.embedder import StubEmbedder
 
 
 class TestPureFunctions:

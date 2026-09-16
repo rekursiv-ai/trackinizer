@@ -26,7 +26,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, cast
+from typing import Annotated, Final, Literal, Protocol, cast
 
 import base64
 import binascii
@@ -44,13 +44,6 @@ from trackinizer.lib.postgres import Conn, DatabaseEngine
 from trackinizer.lib.userdirs import data_dir
 from trackinizer.server.notify import tx
 from trackinizer.server.session import read_session_cookie
-
-
-if TYPE_CHECKING:
-    # ``store.core`` and ``config`` import this module, so a runtime import of
-    # either here is a cycle. Every use below is an annotation or a cast.
-    from trackinizer.server.config import Config
-    from trackinizer.server.store.core import Store
 
 
 logger = logging.getLogger(__name__)
@@ -847,7 +840,7 @@ async def _resolve_session_identity(
 # faster than the cache TTL -- the busiest keys, which are exactly the ones the column
 # is consulted for.
 async def _resolve_identity(
-    store: Store,
+    store: _StoreLike,
     secret: str,
     *,
     request_id: str,
@@ -951,7 +944,7 @@ async def _resolve_identity(
 # of the cache. The throttle keeps this to one write per key per
 # :data:`LAST_USED_BUMP_INTERVAL_SEC`, so the common hit still touches no connection at
 # all.
-async def _bump_last_used(store: Store, key_id: uuid.UUID | None) -> None:
+async def _bump_last_used(store: _StoreLike, key_id: uuid.UUID | None) -> None:
     """Refresh ``last_used_at`` for a cache-hit auth, subject to the throttle."""
     # Every cached entry came from the bearer path, which always sets a key.
     assert key_id is not None
@@ -1017,21 +1010,37 @@ def _b64decode(encoded: str) -> bytes:
     return base64.urlsafe_b64decode(encoded + pad)
 
 
+class _ConfigLike(Protocol):
+    auth_disabled: bool
+    session_secret: str | None
+    session_max_age_seconds: int
+
+
+class _StoreLike(Protocol):
+    engine: DatabaseEngine
+
+    def cached_bearer_identity(self, secret: str) -> AuthIdentity | None: ...
+
+    def should_bump_api_key_last_used(self, key_id: uuid.UUID) -> bool: ...
+
+    def remember_bearer_identity(self, secret: str, identity: AuthIdentity) -> None: ...
+
+
 # Starlette's ``State`` is a bag of dynamic attributes; this names the two the
 # lifespan installs. ``config`` is ABSENT (not None) in tests that skip the
 # lifespan, so it is read with ``getattr(..., None)`` rather than directly.
 class _StateLike(Protocol):
-    store: Store
-    config: Config | None
+    store: _StoreLike
+    config: _ConfigLike | None
 
 
 class _AppLike(Protocol):
     state: _StateLike
 
 
-def _config(state: _StateLike) -> Config | None:
+def _config(state: _StateLike) -> _ConfigLike | None:
     """Return the lifespan-installed config, or ``None`` when no lifespan ran."""
-    return cast("Config | None", getattr(state, "config", None))
+    return cast("_ConfigLike | None", getattr(state, "config", None))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

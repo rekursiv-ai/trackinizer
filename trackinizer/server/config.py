@@ -14,8 +14,8 @@ import uuid
 
 from trackinizer.lib.postgres import DatabaseEngine, PGliteEngine, PostgresEngine
 from trackinizer.lib.userdirs import data_dir
+from trackinizer.server.embedder import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
-from trackinizer.server.store.core import StubEmbedder
 from trackinizer.types.embedder import Embedder
 
 

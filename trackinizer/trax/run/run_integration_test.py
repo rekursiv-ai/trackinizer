@@ -56,8 +56,9 @@ from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.server.api import query, session_ir_routes, sessions_routes
 from trackinizer.server.auth import AuthIdentity, current_user
+from trackinizer.server.embedder import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
-from trackinizer.server.store.core import Store, StubEmbedder
+from trackinizer.server.store.core import Store
 from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.session import (

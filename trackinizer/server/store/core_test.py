@@ -18,13 +18,9 @@ from trackinizer.conftest import (
     new_uuid,
 )
 from trackinizer.lib.postgres import DatabaseEngine
+from trackinizer.server.embedder import StubEmbedder, _xorshift_floats
 from trackinizer.server.sql import schema_migrations
-from trackinizer.server.store.core import (
-    Store,
-    StubEmbedder,
-    _xorshift_floats,
-)
-from trackinizer.server.store.shared import EMBEDDING_DIM
+from trackinizer.server.store.core import Store
 from trackinizer.wire.bodies import SubmitIssue
 
 
@@ -46,7 +42,7 @@ class TestStubEmbedder:
     async def test_embed_unit_norm_correct_dim(self) -> None:
         emb = StubEmbedder()
         v = await emb.embed("hello")
-        assert len(v) == EMBEDDING_DIM
+        assert len(v) == StubEmbedder.dim
         norm = sum(x * x for x in v) ** 0.5
         assert abs(norm - 1.0) < 1e-9
 
@@ -143,7 +139,7 @@ class TestStoreEmbedders:
         class _GatedEmbedder:
             def __init__(self, name: str) -> None:
                 self.name = name
-                self.dim = EMBEDDING_DIM
+                self.dim = StubEmbedder.dim
 
             async def embed(self, text: str) -> list[float]:
                 del text

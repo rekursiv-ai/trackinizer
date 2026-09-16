@@ -23,7 +23,8 @@ from trackinizer.lib.agent.types.sessions import (
 )
 from trackinizer.lib.custom_json import json_freeze
 from trackinizer.lib.postgres import PostgresEngine
-from trackinizer.server.store.core import Store, StubEmbedder
+from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_ir import SlashCommandRow
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.session_records import SessionRecordRow

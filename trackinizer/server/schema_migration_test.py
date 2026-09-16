@@ -26,9 +26,10 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib import postgres
+from trackinizer.server.embedder import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.sql import load_sql
-from trackinizer.server.store.core import Store, StubEmbedder
+from trackinizer.server.store.core import Store
 from trackinizer.wire.filters import NON_NULLABLE_COLUMNS
 
 

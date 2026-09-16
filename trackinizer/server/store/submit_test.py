@@ -21,13 +21,13 @@ from trackinizer.conftest import (
 )
 from trackinizer.lib.custom_json import DictCodec, loads
 from trackinizer.lib.postgres import DatabaseEngine
+from trackinizer.server.embedder import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
     set_client_change_id,
 )
 from trackinizer.server.store.core import Store
-from trackinizer.server.store.shared import EMBEDDING_DIM
 from trackinizer.types.errors import NotFoundError
 from trackinizer.wire.bodies import (
     Citation,
@@ -518,7 +518,7 @@ class _BeginRecordingEmbedder:
     """
 
     name = "begin-recorder"
-    dim = EMBEDDING_DIM
+    dim = StubEmbedder.dim
 
     def __init__(self, conn: AsyncMock) -> None:
         self._conn = conn

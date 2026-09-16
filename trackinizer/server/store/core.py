@@ -1,4 +1,4 @@
-""":class:`Store` plus :class:`StubEmbedder` and ``EMBEDDING_DIM``.
+""":class:`Store` lifecycle and mixin composition.
 
 Owns CRUD against the three-table backend; emits changes; cascades. The
 concrete behavior is split across mixins (submit / read / edit / edge /
@@ -8,7 +8,7 @@ embedding) and composes them into the public :class:`Store`.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
@@ -43,21 +43,14 @@ from trackinizer.server.store.metrics import _MetricsMixin
 from trackinizer.server.store.read import _ReadMixin
 from trackinizer.server.store.session import _SessionMixin
 from trackinizer.server.store.session_ir import _SessionIRMixin
-from trackinizer.server.store.shared import (
-    EMBEDDING_DIM,
-    _StoreShared,
-)
+from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.store.submit import (
     _SubmitMixin,
 )
 from trackinizer.server.values import vetted_sql
 
 
-__all__ = [
-    "Store",
-    "StubEmbedder",
-    "_xorshift_floats",
-]
+__all__ = ["Store"]
 
 # ``asyncpg`` raises a plain ``InterfaceError('connection is closed')`` (and a
 # mid-operation ``ConnectionDoesNotExistError`` whose message mentions "closed
@@ -459,31 +452,3 @@ class Store(
     full concern set here without tracing the MRO. The order is C3-consistent
     with the dependency chain (cascade is the base of the mutation MRO).
     """
-
-
-class StubEmbedder:
-    """Deterministic hash-based embedder for tests and offline bootstrap."""
-
-    name = "stub"
-    dim = EMBEDDING_DIM
-
-    async def embed(self, text: str) -> list[float]:
-        """Embed ``text`` into a vector."""
-        seed = hashlib.sha256(text.encode("utf-8")).digest()
-        rng = _xorshift_floats(int.from_bytes(seed[:8], "little") or 1)
-        vec = [next(rng) for _ in range(self.dim)]
-        norm = sum(v * v for v in vec) ** 0.5 or 1.0
-        return [v / norm for v in vec]
-
-
-# Used by :class:`StubEmbedder` to produce stable per-text vectors without depending on
-# numpy / random's global state.
-def _xorshift_floats(seed: int) -> Iterator[float]:
-    """Deterministic ``uint64 -> float64 in [-1, 1)`` generator."""
-    state = seed & ((1 << 64) - 1) or 1
-    while True:
-        state ^= (state << 13) & ((1 << 64) - 1)
-        state ^= state >> 7
-        state ^= (state << 17) & ((1 << 64) - 1)
-        # Map the top 53 bits to a double in [0, 1), then scale to [-1, 1).
-        yield (state >> 11) * (2.0 / (1 << 53)) - 1.0

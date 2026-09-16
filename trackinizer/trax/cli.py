@@ -8,18 +8,21 @@ stays pure HTTP transport with no dependency on the profile store.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, Protocol, cast, override
+from typing import TYPE_CHECKING, Protocol, cast, override
 from urllib.parse import urlparse
 
 import argparse
 import atexit
 import functools
 import sys
-import threading
 
 from trackinizer.client.client import Client, server_url
 from trackinizer.client.errors import ClientError
+from trackinizer.trax.client_cache import (
+    Target,
+    close_clients,
+    shared_client,
+)
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import env
 from trackinizer.trax.parser import parse_list_query
@@ -93,43 +96,7 @@ def connect(args: argparse.Namespace) -> Client:
       client: Shared cached Client for the resolved target identity.
 
     """
-    return _shared_client(_resolve_target(args))
-
-
-@dataclass(frozen=True, kw_only=True, slots=True)
-class _Target:
-    """The resolved connection identity a ``Client`` is keyed on."""
-
-    url: str
-
-    author: str
-
-    api_key: str
-
-
-_CLIENTS: Final[dict[_Target, Client]] = {}
-"""Live clients by connection identity, shared across invocations.
-
-A module global because the sharing must outlive one ``parse_and_run`` call:
-under the daemon that function runs per request, so a call-local cache would
-build (and leak) a pool per request. Bounded by the number of distinct
-profiles a user actually addresses."""
-
-_CLIENTS_LOCK: Final = threading.Lock()
-"""The daemon serves requests on threads, so two may resolve the same target
-at once; without this each would build a pool and one would be orphaned."""
-
-
-def close_clients() -> None:
-    """Close every shared client and forget it.
-
-    Registered by the one-shot CLI path at exit; the daemon calls it when a
-    profile is rewritten, since the cached client still carries the old token.
-    """
-    with _CLIENTS_LOCK:
-        for client in _CLIENTS.values():
-            client.close()
-        _CLIENTS.clear()
+    return shared_client(_resolve_target(args))
 
 
 class Help(Command):
@@ -302,7 +269,7 @@ class _TopFlags(Protocol):
     show_ids: bool
 
 
-def _resolve_target(args: argparse.Namespace) -> _Target:
+def _resolve_target(args: argparse.Namespace) -> Target:
     """Resolve flags, environment, and profile into one connection identity."""
     host = cast(str | None, getattr(args, "host", None))  # -- argparse namespace field.
     port = cast(int | None, getattr(args, "port", None))  # -- argparse namespace field.
@@ -319,17 +286,7 @@ def _resolve_target(args: argparse.Namespace) -> _Target:
         host = host or parsed.hostname or "127.0.0.1"
         port = port or parsed.port
         url = f"{scheme}://{host if port is None else f'{host}:{port}'}"
-    return _Target(url=url, author=profile.author, api_key=profile.api_key)
-
-
-def _shared_client(target: _Target) -> Client:
-    """Return the Client for ``target``, building it once per process."""
-    with _CLIENTS_LOCK:
-        if (client := _CLIENTS.get(target)) is not None:
-            return client
-        client = Client(target.url, author=target.author, api_key=target.api_key)
-        _CLIENTS[target] = client
-        return client
+    return Target(url=url, author=profile.author, api_key=profile.api_key)
 
 
 # The one kindless path: bare ``trax`` reaches it with no tokens, and a leading filter
