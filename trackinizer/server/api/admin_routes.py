@@ -106,7 +106,7 @@ async def admin_list_users_route(
                 "last_login": iso_format(DatetimeCodec.coerce(row["last_login"])),
             }
             for row in rows
-        ]
+        ],
     }
 
 

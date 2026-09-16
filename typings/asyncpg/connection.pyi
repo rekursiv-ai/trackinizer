@@ -42,7 +42,12 @@ _Record = TypeVar("_Record", bound=protocol.Record, default=protocol.Record)
 _OtherRecord = TypeVar("_OtherRecord", bound=protocol.Record)
 
 type _SSLStringValues = Literal[
-    "disable", "prefer", "allow", "require", "verify-ca", "verify-full"
+    "disable",
+    "prefer",
+    "allow",
+    "require",
+    "verify-ca",
+    "verify-full",
 ]
 type _SSLType = connect_utils._ParsedSSLType | _SSLStringValues | bool
 type _HostType = list[str] | tuple[str] | str
@@ -75,12 +80,16 @@ class _LogListener(Protocol):
 
 class _TerminationListener(Protocol):
     def __call__(
-        self, con_ref: Connection[Any] | pool.PoolConnectionProxy[Any], /
+        self,
+        con_ref: Connection[Any] | pool.PoolConnectionProxy[Any],
+        /,
     ) -> Awaitable[None] | Generator[Any] | None: ...
 
 class _QueryLogger(Protocol):
     def __call__(
-        self, record: LoggedQuery, /
+        self,
+        record: LoggedQuery,
+        /,
     ) -> Awaitable[None] | Generator[Any] | None: ...
 
 class ConnectionMeta(type):

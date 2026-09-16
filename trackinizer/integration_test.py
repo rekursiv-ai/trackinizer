@@ -1012,7 +1012,9 @@ class TestIntegrationEndToEnd:
         # A live session can be abandoned with ``ended`` left NULL.
         sid2 = await integ_store.submit_agentsession(
             SubmitAgentSession(
-                account="tester@example.com", title="aband", cli="codex"
+                account="tester@example.com",
+                title="aband",
+                cli="codex",
             ),
         )
         await integ_store.set_status(sid2, "abandoned", actor="u")
@@ -1301,7 +1303,7 @@ class TestIntegrationEndToEnd:
                 )
                 assert hit.status_code == 200, hit.text
                 assert ListCodec.coerce(_json_object(hit)["delivered"], str) == [
-                    str(sid)
+                    str(sid),
                 ]
 
                 # Wrong room matches nothing (undelivered).
@@ -1317,7 +1319,7 @@ class TestIntegrationEndToEnd:
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
                 msgs = ListCodec.coerce(_json_object(drain)["messages"])
                 assert [StrCodec.coerce(DictCodec.coerce(m)["text"]) for m in msgs] == [
-                    "go"
+                    "go",
                 ]
                 first_msg = DictCodec.coerce(msgs[0])
                 assert StrCodec.coerce(first_msg["source"]) == "sender@test"
@@ -1364,7 +1366,7 @@ class TestIntegrationEndToEnd:
                 )
                 assert bare.status_code == 409, bare.text
                 assert "address one explicitly" in StrCodec.coerce(
-                    _json_object(bare)["detail"]
+                    _json_object(bare)["detail"],
                 )
                 # Naming a room resolves it.
                 scoped = await http.post(
@@ -3076,7 +3078,9 @@ class TestIntegrationEndToEnd:
                     # Declared as Paper but actually an Experiment.
                     proved_by=[
                         Citation(
-                            artifact_id=exp_id, artifact_kind="Paper", valence=1.0
+                            artifact_id=exp_id,
+                            artifact_kind="Paper",
+                            valence=1.0,
                         ),
                     ],
                 ),
@@ -4368,7 +4372,7 @@ class TestIntegrationEndToEnd:
                 )
                 assert r.status_code == 200, r.text
                 assert [StrCodec.coerce(row["id"]) for row in _json_objects(r)] == [
-                    str(needle_id)
+                    str(needle_id),
                 ], r.json()
 
                 # 2. list-shaped equality (``labels is target``):
@@ -4384,7 +4388,7 @@ class TestIntegrationEndToEnd:
                 )
                 assert r.status_code == 200, r.text
                 assert [StrCodec.coerce(row["id"]) for row in _json_objects(r)] == [
-                    str(needle_id)
+                    str(needle_id),
                 ]
 
                 # 3. value containing URL-sensitive characters (``:``)
@@ -4403,7 +4407,7 @@ class TestIntegrationEndToEnd:
                 )
                 assert r.status_code == 200, r.text
                 assert [StrCodec.coerce(row["id"]) for row in _json_objects(r)] == [
-                    str(needle_id)
+                    str(needle_id),
                 ]
 
                 # 4. ``kind`` is a CLI alias for the ``issue_kind``
@@ -4422,7 +4426,7 @@ class TestIntegrationEndToEnd:
                 )
                 assert r.status_code == 200, r.text
                 assert [StrCodec.coerce(row["id"]) for row in _json_objects(r)] == [
-                    str(needle_id)
+                    str(needle_id),
                 ]
 
                 # 5. control: same endpoint without filters returns the
@@ -4546,10 +4550,10 @@ class TestIntegrationEndToEnd:
                     == "arXiv:2501.00001"
                 )
                 proves = ListCodec.coerce(
-                    DictCodec.coerce(paper_body["edges"])["proves"]
+                    DictCodec.coerce(paper_body["edges"])["proves"],
                 )
                 assert [StrCodec.coerce(DictCodec.coerce(p)["id"]) for p in proves] == [
-                    str(belief_id)
+                    str(belief_id),
                 ]
                 assert (
                     StrCodec.coerce(DictCodec.coerce(proves[0])["judgement"])
@@ -4571,7 +4575,7 @@ class TestIntegrationEndToEnd:
                     == 0.9
                 )
                 backlink = ListCodec.coerce(
-                    DictCodec.coerce(body["backlinks"])["proves"]
+                    DictCodec.coerce(body["backlinks"])["proves"],
                 )
                 assert [
                     StrCodec.coerce(DictCodec.coerce(b)["id"]) for b in backlink
@@ -4608,7 +4612,7 @@ class TestIntegrationEndToEnd:
                 # flat storage name, so it's belief_judgement, not bare.
                 assert (
                     StrCodec.coerce(
-                        DictCodec.coerce(judged[0]["new"])["belief_judgement"]
+                        DictCodec.coerce(judged[0]["new"])["belief_judgement"],
                     )
                     == "disproven"
                 )

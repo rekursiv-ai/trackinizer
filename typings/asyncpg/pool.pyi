@@ -67,7 +67,8 @@ class _Connect(Protocol[_Record]):
 class PoolConnectionProxyMeta(type): ...
 
 class PoolConnectionProxy(
-    connection._ConnectionProxy[_Record], metaclass=PoolConnectionProxyMeta
+    connection._ConnectionProxy[_Record],
+    metaclass=PoolConnectionProxyMeta,
 ):
     __slots__ = ("_con", "_holder")
     _holder: PoolConnectionHolder[_Record]
@@ -77,18 +78,24 @@ class PoolConnectionProxy(
         con: connection.Connection[_Record],
     ) -> None: ...
     async def add_listener(
-        self, channel: str, callback: connection._Listener
+        self,
+        channel: str,
+        callback: connection._Listener,
     ) -> None: ...
     async def remove_listener(
-        self, channel: str, callback: connection._Listener
+        self,
+        channel: str,
+        callback: connection._Listener,
     ) -> None: ...
     def add_log_listener(self, callback: connection._LogListener) -> None: ...
     def remove_log_listener(self, callback: connection._LogListener) -> None: ...
     def add_termination_listener(
-        self, callback: connection._TerminationListener
+        self,
+        callback: connection._TerminationListener,
     ) -> None: ...
     def remove_termination_listener(
-        self, callback: connection._TerminationListener
+        self,
+        callback: connection._TerminationListener,
     ) -> None: ...
     def add_query_logger(self, callback: connection._QueryLogger) -> None: ...
     def remove_query_logger(self, callback: connection._QueryLogger) -> None: ...
@@ -606,7 +613,9 @@ class Pool(Generic[_Record]):
         where: str | None = ...,
     ) -> str: ...
     def acquire(
-        self, *, timeout: float | None = ...
+        self,
+        *,
+        timeout: float | None = ...,
     ) -> PoolAcquireContext[_Record]: ...
     async def release(
         self,

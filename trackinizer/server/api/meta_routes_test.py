@@ -66,22 +66,22 @@ def test_enums_route_reflects_the_type_literals(client: TestClient) -> None:
     assert r.status_code == 200
     body = DictCodec.coerce(loads(r.content))
     assert ListCodec.coerce(body["status"], str) == list(
-        map(str, get_args(cast(object, Issue.Status.__value__)))
+        map(str, get_args(cast(object, Issue.Status.__value__))),
     )
     assert ListCodec.coerce(body["judgement"], str) == list(
-        map(str, get_args(cast(object, Belief.Judgement.__value__)))
+        map(str, get_args(cast(object, Belief.Judgement.__value__))),
     )
     assert ListCodec.coerce(body["issue_kind"], str) == list(
-        map(str, get_args(cast(object, Issue.Kind.__value__)))
+        map(str, get_args(cast(object, Issue.Kind.__value__))),
     )
     assert ListCodec.coerce(body["publication_type"], str) == list(
-        map(str, get_args(cast(object, Paper.PublicationType.__value__)))
+        map(str, get_args(cast(object, Paper.PublicationType.__value__))),
     )
     assert ListCodec.coerce(body["edge_kind"], str) == list(
-        map(str, get_args(cast(object, Edge.Kind.__value__)))
+        map(str, get_args(cast(object, Edge.Kind.__value__))),
     )
     assert ListCodec.coerce(body["inquiry_kind_all"], str) == list(
-        map(str, get_args(cast(object, Inquiry.InquiryKind.__value__)))
+        map(str, get_args(cast(object, Inquiry.InquiryKind.__value__))),
     )
 
 

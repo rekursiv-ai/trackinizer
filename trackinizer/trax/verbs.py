@@ -444,7 +444,10 @@ class Kind(Command):
         _kind, exp_id = client.resolve_id(ref)
         if action.write is not None:
             written = cls._write_masked(
-                client, exp_id, action, bulk_ok=_arg_bool(args, "makeitso")
+                client,
+                exp_id,
+                action,
+                bulk_ok=_arg_bool(args, "makeitso"),
             )
             echo(f"written: {written}")
             return
@@ -509,7 +512,10 @@ class Kind(Command):
         exp_id = cls.run_create("Experiment", actions, args, client_factory)
         client = client_factory()
         written = cls._write_masked(
-            client, exp_id, action, bulk_ok=_arg_bool(args, "makeitso")
+            client,
+            exp_id,
+            action,
+            bulk_ok=_arg_bool(args, "makeitso"),
         )
         echo(f"written: {written}")
 
@@ -1626,7 +1632,9 @@ def run_show(
     else:
         echo(
             render.format_show(
-                payload, changes=_arg_bool(args, "changes"), include_id=show_ids()
+                payload,
+                changes=_arg_bool(args, "changes"),
+                include_id=show_ids(),
             ),
             nl=False,
         )
@@ -1919,7 +1927,7 @@ Options:
             target = uuid.UUID(_arg_str(args, "uuid"))
         except ValueError as exc:
             raise ClientError(
-                f"trax id: {_arg_str(args, 'uuid')!r} is not a valid uuid"
+                f"trax id: {_arg_str(args, 'uuid')!r} is not a valid uuid",
             ) from exc
         # ``expected_kind=None``: the caller named no kind, so no typo-guard --
         # the row's real kind is resolved server-side.
@@ -2364,7 +2372,9 @@ Notes:
         del verb
         actor, room = _parse_target(_arg_str(args, "target"))
         delivered = client_factory().send_message(
-            actor, " ".join(_arg_text(args)), room=room
+            actor,
+            " ".join(_arg_text(args)),
+            room=room,
         )
         if not delivered:
             scope = f"@{actor}:{room}" if room else f"@{actor}"

@@ -47,7 +47,11 @@ class ClusterTestCase(TestCase):
     def get_server_settings(cls) -> Any: ...
     @classmethod
     def new_cluster(
-        cls, ClusterCls: Any, *, cluster_kwargs: Any = ..., initdb_options: Any = ...
+        cls,
+        ClusterCls: Any,
+        *,
+        cluster_kwargs: Any = ...,
+        initdb_options: Any = ...,
     ) -> Any: ...
     @classmethod
     def start_cluster(cls, cluster: Any, *, server_settings: Any = ...) -> None: ...
@@ -64,7 +68,10 @@ class ClusterTestCase(TestCase):
     def setUp(self) -> None: ...
     def tearDown(self) -> None: ...
     def create_pool(
-        self, pool_class: Any = ..., connection_class: Any = ..., **kwargs: Any
+        self,
+        pool_class: Any = ...,
+        connection_class: Any = ...,
+        **kwargs: Any,
     ) -> Any: ...
 
 class ProxiedClusterTestCase(ClusterTestCase):

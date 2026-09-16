@@ -490,10 +490,16 @@ class TestArtifactLocatorFields:
         conn = make_conn()
         store, _engine = make_store(conn)
         await store._update_field(
-            cast(Conn, conn), new_uuid(), "codechange_sha", "new_sha"
+            cast(Conn, conn),
+            new_uuid(),
+            "codechange_sha",
+            "new_sha",
         )
         await store._update_field(
-            cast(Conn, conn), new_uuid(), "webresult_url", "https://b"
+            cast(Conn, conn),
+            new_uuid(),
+            "webresult_url",
+            "https://b",
         )
         sqls = executed_sql(conn)
         assert any(

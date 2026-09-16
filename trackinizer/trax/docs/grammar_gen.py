@@ -516,27 +516,27 @@ def _semantics_block() -> str:
             cast(
                 Literal["active", "complete", "abandoned", "invalid"],
                 Inquiry.Status.__value__,
-            )
-        )
+            ),
+        ),
     )
     judgement = " ".join(
         get_args(
             cast(
                 Literal["proven", "disproven", "unproven", "undecidable"],
                 Belief.Judgement.__value__,
-            )
-        )
+            ),
+        ),
     )
     issue_kind = " ".join(
-        get_args(cast(Literal["feature", "bug", "task"], Issue.Kind.__value__))
+        get_args(cast(Literal["feature", "bug", "task"], Issue.Kind.__value__)),
     )
     pub_type = " ".join(
         get_args(
             cast(
                 Literal["article", "book", "dataset", "software", "other"],
                 Paper.PublicationType.__value__,
-            )
-        )
+            ),
+        ),
     )
     priority = " ".join(f"{a}={v}" for a, v in PRIORITY_ALIASES.items())
     lines = [

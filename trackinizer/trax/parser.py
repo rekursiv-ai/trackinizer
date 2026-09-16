@@ -275,7 +275,7 @@ def parse_bulk_apply(
             query_tokens.append(clause.kind)
         elif isinstance(clause, _RangeClause):
             query_tokens.append(
-                ",".join(format_interval(interval) for interval in clause.ranges)
+                ",".join(format_interval(interval) for interval in clause.ranges),
             )
             has_selector = True
         elif isinstance(clause, _FilterClause):
@@ -430,7 +430,9 @@ def parse_metric_action(tokens: Sequence[str]) -> MetricAction:
         elif word == "limit":
             limit = _parse_metric_limit(
                 required_token(
-                    tokens, index + 1, "'limit' requires a positive integer"
+                    tokens,
+                    index + 1,
+                    "'limit' requires a positive integer",
                 ),
             )
             index += 2
@@ -1046,7 +1048,7 @@ def _parse_metric_mask(tokens: Sequence[str], index: int) -> tuple[MetricMask, i
     # take no value and apply only to the ``step`` axis (metric-grammar.md
     # Grammar summary).
     if op in frozenset(
-        get_args(cast(object, wire_metrics_query.MetricReduce.__value__))
+        get_args(cast(object, wire_metrics_query.MetricReduce.__value__)),
     ):
         if field != "step":
             raise ClientError(f"{op} applies to step only, not {field!r}")

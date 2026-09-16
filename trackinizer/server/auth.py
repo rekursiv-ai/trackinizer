@@ -759,7 +759,7 @@ def _stage_bootstrap_token(token_path: Path, secret: str) -> None:
         os.fsync(f.fileno())
     # The target is the caller's chosen path; 0o600 is the token's contract.
     tmp_path.chmod(
-        0o600
+        0o600,
     )  # house-ignore[mkdir-mode] -- The caller chose the path; 0o600 is the token's contract.
 
 

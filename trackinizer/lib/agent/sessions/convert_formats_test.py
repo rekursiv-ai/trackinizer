@@ -92,7 +92,8 @@ def test_every_offered_format_resolves_to_an_adapter() -> None:
     default so the list under test is the one users are given.
     """
     offered = cast(
-        tuple[str, ...], inspect.signature(main).parameters["formats"].default
+        tuple[str, ...],
+        inspect.signature(main).parameters["formats"].default,
     )
 
     for name in offered:

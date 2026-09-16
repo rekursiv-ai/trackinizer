@@ -97,7 +97,9 @@ class TestStartSession:
         ):
             sid, owner, next_seq = await store.start_session(
                 SubmitAgentSession(
-                    title="s", cli="codex", account="tester@example.com"
+                    title="s",
+                    cli="codex",
+                    account="tester@example.com",
                 ),
                 requested_actor="alice",
             )

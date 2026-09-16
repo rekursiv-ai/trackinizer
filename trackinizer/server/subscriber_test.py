@@ -545,7 +545,7 @@ class TestPayloadAndKey:
     def test_agent_message_reads_naturally_for_event_kinds(self) -> None:
         """Event kinds (created, edge_added) read bare -- no 'changed' suffix."""
         payload = DictCodec.coerce(
-            loads(_change_payload(_change(kind="edge_added"), 7))
+            loads(_change_payload(_change(kind="edge_added"), 7)),
         )
         assert payload["agent_message"] == "FYI: trax issue 7 edge_added (by bob)"
 

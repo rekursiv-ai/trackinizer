@@ -65,7 +65,7 @@ def enum_values() -> dict[str, list[str]]:
         "judgement": _literal_values(_literal_alias_value(Belief.Judgement)),
         "issue_kind": _literal_values(_literal_alias_value(Issue.Kind)),
         "publication_type": _literal_values(
-            _literal_alias_value(Paper.PublicationType)
+            _literal_alias_value(Paper.PublicationType),
         ),
         "edge_kind": _literal_values(_literal_alias_value(Edge.Kind)),
         # The inquiry-kind taxonomy the SPA needs for its kind dropdowns,

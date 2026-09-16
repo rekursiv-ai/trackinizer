@@ -39,7 +39,9 @@ class PostgresMessage(metaclass=PostgresMessageMeta):
     server_source_function: str | None
     @classmethod
     def _make_constructor(
-        cls, fields: dict[str, str], query: str | None = ...
+        cls,
+        fields: dict[str, str],
+        query: str | None = ...,
     ) -> tuple[Self, str, dict[str, str]]: ...
     def as_dict(self) -> dict[str, str]: ...
 
@@ -101,5 +103,7 @@ class PostgresLogMessage(PostgresMessage):
     def __setattr__(self, name: str, val: object) -> None: ...
     @classmethod
     def new(
-        cls, fields: dict[str, str], query: str | None = ...
+        cls,
+        fields: dict[str, str],
+        query: str | None = ...,
     ) -> PostgresMessage: ...

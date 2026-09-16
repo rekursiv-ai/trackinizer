@@ -342,7 +342,7 @@ class InappropriateAccessModeForBranchTransactionError(InvalidTransactionStateEr
     sqlstate: ClassVar[str]
 
 class InappropriateIsolationLevelForBranchTransactionError(
-    InvalidTransactionStateError
+    InvalidTransactionStateError,
 ):
     sqlstate: ClassVar[str]
 

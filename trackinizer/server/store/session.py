@@ -687,7 +687,7 @@ def _feed_event(row: asyncpg.Record) -> FeedEvent:
         timestamp=_optional_datetime(row["timestamp"]),
         model=_optional_str(row["model"]),
         message=json_freeze(
-            DictCodec.coerce(loads(StrCodec.coerce(row["payload"], None)))
+            DictCodec.coerce(loads(StrCodec.coerce(row["payload"], None))),
         ),
         text=StrCodec.coerce(row["text"], None),
     )

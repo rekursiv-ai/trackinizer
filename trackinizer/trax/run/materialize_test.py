@@ -313,7 +313,7 @@ class TestMaterializingCodex:
         )
 
         declared = DictCodec.coerce(
-            loads(written.path.read_text(encoding="utf-8").splitlines()[0])
+            loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
         )
         payload = DictCodec.coerce(declared["payload"])
         assert payload["id"] == str(written.cli_session_id)
@@ -335,7 +335,7 @@ class TestMaterializingCodex:
         )
 
         declared = DictCodec.coerce(
-            loads(written.path.read_text(encoding="utf-8").splitlines()[0])
+            loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
         )
         payload = DictCodec.coerce(declared["payload"])
         assert declared["ordinal"] == 0
@@ -462,7 +462,7 @@ class TestMaterializingCodex:
         )
 
         declared = DictCodec.coerce(
-            loads(written.path.read_text(encoding="utf-8").splitlines()[0])
+            loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
         )
         timestamp = declared["timestamp"]
         assert isinstance(timestamp, str)
@@ -526,7 +526,7 @@ class TestMaterializingCodex:
 
         payload = DictCodec.coerce(
             DictCodec.coerce(
-                loads(written.path.read_text(encoding="utf-8").splitlines()[0])
+                loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
             )["payload"],
         )
         assert payload["cwd"] == "/elsewhere"
@@ -627,10 +627,12 @@ class TestCodexCliVersion:
         run.assert_not_called()
 
     @pytest.mark.parametrize(
-        "error", [OSError(), subprocess.TimeoutExpired("codex", 10)]
+        "error",
+        [OSError(), subprocess.TimeoutExpired("codex", 10)],
     )
     def test_an_unavailable_binary_uses_the_verified_floor(
-        self, error: Exception
+        self,
+        error: Exception,
     ) -> None:
         with (
             patch("shutil.which", return_value="/test/bin/codex"),

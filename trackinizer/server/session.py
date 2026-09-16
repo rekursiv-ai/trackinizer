@@ -156,7 +156,7 @@ def read_session_cookie(
     serializer = URLSafeTimedSerializer(secret, salt=_SESSION_SALT)
     try:
         payload = DictCodec.coerce(
-            cast(dict[str, object], serializer.loads(raw, max_age=max_age_seconds))
+            cast(dict[str, object], serializer.loads(raw, max_age=max_age_seconds)),
         )
     except BadSignature:
         return None

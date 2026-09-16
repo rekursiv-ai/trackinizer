@@ -103,7 +103,8 @@ def tmp_config_dir(
     root = tmp_path
     # A test fixture repointing userdirs.
     monkeypatch.setenv(
-        "XDG_CONFIG_HOME", str(root)
+        "XDG_CONFIG_HOME",
+        str(root),
     )  # house-ignore[xdg-literal] -- A test fixture repointing userdirs.
     (root / "rekursiv-ai" / "trax" / "profiles").mkdir(parents=True, exist_ok=True)
     monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
@@ -432,7 +433,8 @@ class FakeClient:
         return cast(
             list[dict[str, JSONValue]],
             cast(
-                object, rows[offset : offset + limit]
+                object,
+                rows[offset : offset + limit],
             ),  # -- fake rows are JSON-shaped.
         )
 

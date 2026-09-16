@@ -1240,7 +1240,7 @@ def test_fake_client_method_signatures_match_client() -> None:
     for name in _public_methods(Client) & _public_methods(FakeClient):
         real_sig = inspect.signature(cast(Callable[..., object], getattr(Client, name)))
         fake_sig = inspect.signature(
-            cast(Callable[..., object], getattr(FakeClient, name))
+            cast(Callable[..., object], getattr(FakeClient, name)),
         )
         real_params = list(real_sig.parameters)
         fake_params = list(fake_sig.parameters)

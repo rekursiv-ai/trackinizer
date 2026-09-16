@@ -157,7 +157,9 @@ def format_ids(rows: Iterable[Mapping[str, object]]) -> str:
 
 
 def format_table(
-    rows: Sequence[Mapping[str, object]], *, width: int | None = None
+    rows: Sequence[Mapping[str, object]],
+    *,
+    width: int | None = None,
 ) -> str:
     """Render rows as an aligned table, dropping empty optional columns to fit width.
 
@@ -437,7 +439,8 @@ def _table_widths(
                     max((len(row[index]) for row in cells), default=0),
                 ),
                 {"description": 40, "validation": 40, "note": 80}.get(
-                    name, natural_unbounded_width()
+                    name,
+                    natural_unbounded_width(),
                 ),
             )
         )

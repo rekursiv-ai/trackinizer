@@ -680,7 +680,8 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             ids: list[UUID] = []
             for item in items:
                 method = cast(
-                    _SubmitOnConn[SubmitBase], getattr(self, SUBMIT_METHOD[type(item)])
+                    _SubmitOnConn[SubmitBase],
+                    getattr(self, SUBMIT_METHOD[type(item)]),
                 )
                 ids.append(
                     await method(

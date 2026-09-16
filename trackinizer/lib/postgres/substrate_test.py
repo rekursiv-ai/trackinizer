@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncio
 import hashlib
 import os
+import subprocess
 import threading
 import time
 
@@ -262,9 +263,7 @@ def test_warm_cache_preserves_superseded_keys_that_may_still_be_live(
     no lease information, so automatic pruning would race those readers.
     """
     monkeypatch.setattr(substrate, "cache_dir", _cache_dir_under(tmp_path))
-    monkeypatch.setattr(
-        "trackinizer.lib.postgres.substrate.subprocess.run", MagicMock()
-    )
+    monkeypatch.setattr(subprocess, "run", MagicMock())
     current = substrate._ensure_shared_node_modules()  # Warms current key.
     stale = current.parent.parent / "deadbeef00000000"
     stale.mkdir()

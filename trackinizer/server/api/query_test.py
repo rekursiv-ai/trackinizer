@@ -705,7 +705,7 @@ class TestCoverageRoutesAndCli:
                 ListCodec.coerce(
                     client.get("/api/inquiries", params={"kind": "Issue"}).json(),
                     object,
-                )[0]
+                )[0],
             )["kind"]
             == "Issue"
         )
@@ -742,7 +742,7 @@ class TestCoverageRoutesAndCli:
                 ListCodec.coerce(
                     client.get(f"/api/inquiries/{target_id}/proves_belief").json(),
                     object,
-                )[0]
+                )[0],
             )["kind"]
             == "Experiment"
         )

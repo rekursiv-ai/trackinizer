@@ -250,7 +250,8 @@ class _ReadMixin(_StoreShared):
             await apply_regex_statement_timeout(conn)
             rows = await conn.fetch(sql, *params)
             outbound, inbound = await fetch_edges_bulk(
-                conn, [cast(UUID, r["id"]) for r in rows]
+                conn,
+                [cast(UUID, r["id"]) for r in rows],
             )
         return [materialize(row, outbound, inbound) for row in rows]
 
@@ -331,7 +332,8 @@ class _ReadMixin(_StoreShared):
         async with self.engine.acquire() as conn:
             rows = await conn.fetch(PROVES_BELIEF_SQL, belief_id)
             outbound, inbound = await fetch_edges_bulk(
-                conn, [cast(UUID, r["id"]) for r in rows]
+                conn,
+                [cast(UUID, r["id"]) for r in rows],
             )
         return [materialize(row, outbound, inbound) for row in rows]
 

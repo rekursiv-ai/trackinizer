@@ -41,7 +41,10 @@ def test_pg_dsn_reserves_ports_for_seeded_workers(
     monkeypatch.setattr(api, "available_good_ports", lambda: set(range(10_000, 10_032)))
     monkeypatch.setattr(process, "_pg_exe", MagicMock(return_value=Path("/unused")))
     executor = MagicMock(
-        host="localhost", user="postgres", password=None, dbname="test"
+        host="localhost",
+        user="postgres",
+        password=None,
+        dbname="test",
     )
     executor.logfile = str(tmp_path / "unused.log")
     monkeypatch.setattr(process, "PostgreSQLExecutor", MagicMock(return_value=executor))
@@ -73,7 +76,7 @@ def test_pg_dsn_reserves_ports_for_seeded_workers(
         for _ in range(workers):
             random.seed(1337)
             stack.enter_context(
-                dsn_fixture(cast(pytest.FixtureRequest, fixture_request))
+                dsn_fixture(cast(pytest.FixtureRequest, fixture_request)),
             )
         assert len(list(tmp_path.glob("*.port"))) == workers
         assert get_config(request).port_search_count == max(retries, workers - 1)

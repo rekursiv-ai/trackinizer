@@ -380,7 +380,7 @@ def _table_sources() -> dict[str, set[str]]:
         "Cost fields (`COST_FIELDS`)": set(grammar.COST_FIELDS),
         "Edge keywords (`EDGE_ALIASES`)": set(grammar.EDGE_ALIASES),
         "Statuses (`Inquiry.Status`)": set(
-            get_args(cast(object, Inquiry.Status.__value__))
+            get_args(cast(object, Inquiry.Status.__value__)),
         ),
         "Sort choices (`SORT_CHOICES`)": set(grammar.SORT_CHOICES),
         "Filter ops (`FILTER_OPS`)": set(FILTER_OPS),

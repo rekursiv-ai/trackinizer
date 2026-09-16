@@ -1072,7 +1072,7 @@ def _semantic_value(value: object) -> object:
             (
                 field.name,
                 _semantic_value(
-                    getattr(value, field.name)  # pyright: ignore[reportAny] -- Dataclass fields are runtime-selected by name.
+                    getattr(value, field.name),  # pyright: ignore[reportAny] -- Dataclass fields are runtime-selected by name.
                 ),
             )
             for field in fields(value)

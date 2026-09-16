@@ -1172,7 +1172,7 @@ class TestBootstrapAdminRace:
             # The wrapper is a structural Conn stand-in (delegates every attr);
             # cast at the call site so the test exercises the real signature.
             await bootstrap_admin(
-                cast(Conn, _SeedAfterUsersProbe(conn_b, integ_engine))
+                cast(Conn, _SeedAfterUsersProbe(conn_b, integ_engine)),
             )
 
         async with integ_engine.acquire() as conn:

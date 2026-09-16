@@ -27,7 +27,8 @@ from ..types import Attribute, Type
 _Record = TypeVar("_Record", bound=Record, default=Record)
 _OtherRecord = TypeVar("_OtherRecord", bound=Record)
 _PreparedStatementState = TypeVar(
-    "_PreparedStatementState", bound=PreparedStatementState[Any]
+    "_PreparedStatementState",
+    bound=PreparedStatementState[Any],
 )
 
 _NoTimeoutType = NewType("_NoTimeoutType", object)
@@ -59,12 +60,18 @@ class ConnectionSettings(asyncpg.pgproto.pgproto.CodecContext):
     ) -> Any: ...
     def clear_type_cache(self) -> None: ...
     def get_data_codec(
-        self, oid: int, format: object = ..., ignore_custom_codec: bool = ...
+        self,
+        oid: int,
+        format: object = ...,
+        ignore_custom_codec: bool = ...,
     ) -> Any: ...
     def get_text_codec(self) -> CodecInfo: ...
     def register_data_types(self, types: Iterable[object]) -> None: ...
     def remove_python_codec(
-        self, typeoid: int, typename: str, typeschema: str
+        self,
+        typeoid: int,
+        typename: str,
+        typeschema: str,
     ) -> None: ...
     def set_builtin_type_codec(
         self,
@@ -272,7 +279,10 @@ class DataCodecConfig:
     def clear_type_cache(self) -> None: ...
     def declare_fallback_codec(self, oid: int, name: str, schema: str) -> Codec: ...
     def remove_python_codec(
-        self, typeoid: int, typename: str, typeschema: str
+        self,
+        typeoid: int,
+        typename: str,
+        typeschema: str,
     ) -> Any: ...
     def set_builtin_type_codec(
         self,

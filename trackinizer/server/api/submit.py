@@ -139,7 +139,8 @@ async def submit_route(
     if body_cls is None:
         raise HTTPException(status_code=404, detail=f"unknown inquiry kind {kind!r}")
     discriminator = StrCodec.coerce(
-        cast(str, body_cls.model_fields["kind"].default), default=None
+        cast(str, body_cls.model_fields["kind"].default),
+        default=None,
     )
     try:
         req = body_cls.model_validate({**payload, "kind": discriminator})

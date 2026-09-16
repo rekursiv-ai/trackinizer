@@ -144,7 +144,7 @@ def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
     stamp = decode_or_none(str, message.get("$timestamp"))
     kept = dict(
         json_unfreeze(
-            residual(message, ("type", "content", "toolCalls", "$timestamp"))
+            residual(message, ("type", "content", "toolCalls", "$timestamp")),
         ),
     )
     if "toolCalls" in message and not calls:
