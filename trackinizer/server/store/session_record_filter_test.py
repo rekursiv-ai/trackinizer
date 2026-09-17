@@ -12,7 +12,7 @@ the regex, and the ciphertext that must never be matchable.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import pytest
@@ -26,12 +26,17 @@ from trackinizer.lib.agent.types.sessions import (
     ToolCall,
     UserMessage,
 )
-from trackinizer.lib.postgres import PostgresEngine
 from trackinizer.server.embedder import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.filters import Filter
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Sequence
+
+    from trackinizer.lib.postgres import PostgresEngine
 
 
 @pytest_asyncio.fixture(loop_scope="session")

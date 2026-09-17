@@ -26,7 +26,7 @@ from io import StringIO
 from itertools import repeat
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal, Protocol, TextIO, cast, override
+from typing import TYPE_CHECKING, Literal, Protocol, TextIO, cast, override
 
 import argparse
 import json
@@ -37,8 +37,11 @@ import time
 
 from trackinizer.lib.agent.sessions import claude, codex, gemini, normalized
 from trackinizer.lib.agent.sessions.fuse import chain, fuse, names_of, unfuse
-from trackinizer.lib.agent.types.sessions import SessionRecord
 from trackinizer.lib.custom_json import DictCodec, loads
+
+
+if TYPE_CHECKING:
+    from trackinizer.lib.agent.types.sessions import SessionRecord
 
 
 type Format = str

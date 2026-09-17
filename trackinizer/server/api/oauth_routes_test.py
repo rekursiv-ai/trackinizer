@@ -13,8 +13,7 @@ being silently dragged onto the next page.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
@@ -41,6 +40,10 @@ from trackinizer.server.session import (
     read_oauth_state_cookie,
     set_session_cookie,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 # A complete OAuth Config wired so the routes don't 503. ``redirect_uri``

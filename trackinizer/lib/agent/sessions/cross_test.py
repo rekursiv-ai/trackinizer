@@ -12,9 +12,8 @@ drops a record still emits a well-formed file.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
 from io import StringIO
-from typing import Protocol, TextIO
+from typing import TYPE_CHECKING, Protocol, TextIO
 
 import json
 
@@ -36,6 +35,10 @@ from trackinizer.lib.agent.types.sessions import (
     WebFetchResult,
     WebSearchResults,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
 
 
 def _claude_read_line() -> str:

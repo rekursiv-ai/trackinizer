@@ -40,9 +40,8 @@ Examples:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
-from typing import Final, Protocol, cast
+from typing import TYPE_CHECKING, Final, Protocol, cast
 
 import argparse
 import json
@@ -58,6 +57,10 @@ import zlib
 
 from trackinizer.lib.custom_json import DictCodec, loads
 from trackinizer.lib.posix.relay import ThreadedRelay
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 _CWD: Final = Path(__file__).resolve().parent

@@ -9,7 +9,6 @@ plumbs into the same contextvar before ``emit_change`` runs.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, override
 
 import uuid
@@ -23,6 +22,8 @@ from trackinizer.server.store.change_id_slot import (
 
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from starlette.requests import Request
     from starlette.responses import Response
 

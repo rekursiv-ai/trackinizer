@@ -16,7 +16,9 @@ from typing import TYPE_CHECKING, Protocol, cast, get_type_hints, overload
 
 
 if TYPE_CHECKING:
-    from _typeshed import DataclassInstance
+    from _typeshed import (
+        DataclassInstance,  # noqa: TC004 -- ``_typeshed`` has no runtime module; ``ColumnSpec.flatten`` is never resolved through ``get_type_hints``.
+    )
 
 
 class Row(Protocol):

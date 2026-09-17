@@ -8,8 +8,7 @@ touch it.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import os
 import sys
@@ -21,6 +20,10 @@ from trackinizer.trax.daemon.client import (
     should_delegate,
 )
 from trackinizer.trax.daemon.protocol import package_root, source_version
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 _LOST_EXIT_CODE: Final = 75

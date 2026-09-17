@@ -25,9 +25,7 @@ common case where the engine is incidental scaffolding.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
-from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import contextlib
 
@@ -35,6 +33,11 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.postgres import PGliteEngine
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+    from pathlib import Path
 
 
 @pytest.fixture(scope="session")
@@ -53,8 +56,7 @@ def pglite_workdir(tmp_path_factory: pytest.TempPathFactory) -> Path:
       workdir: Directory the shared engines may own for the session.
 
     """
-    workdir = tmp_path_factory.mktemp("pglite-shared")
-    return workdir
+    return tmp_path_factory.mktemp("pglite-shared")
 
 
 @pytest_asyncio.fixture(loop_scope="session")

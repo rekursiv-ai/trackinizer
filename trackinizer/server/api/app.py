@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
@@ -15,6 +14,7 @@ import time
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.types import Send
 
 import asyncpg
 
@@ -50,7 +50,9 @@ from trackinizer.types.errors import (
 
 
 if TYPE_CHECKING:
-    from starlette.types import ASGIApp, Message, Receive, Scope, Send
+    from collections.abc import AsyncGenerator
+
+    from starlette.types import ASGIApp, Message, Receive, Scope
 
 
 _logger = logging.getLogger(__name__)

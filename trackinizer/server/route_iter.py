@@ -18,7 +18,6 @@ directly.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from fastapi.routing import _IncludedRouter, _RouterIncludeContext
@@ -26,6 +25,8 @@ from starlette.routing import Mount, Route, WebSocketRoute
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from fastapi import FastAPI
     from starlette.routing import BaseRoute
 

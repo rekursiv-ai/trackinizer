@@ -15,9 +15,14 @@ returns 422 (and an OpenAPI schema) for a bad value.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 
-import uuid
+
+# The field handlers are built by a factory and registered with
+# ``router.put(path)(handler)``, so ruff's ``runtime-evaluated-decorators``
+# cannot see them. FastAPI still resolves ``target_id: uuid.UUID`` when the
+# request arrives, so this import must be eager.
+import uuid  # noqa: TC003 -- Handler signature resolved by FastAPI at request time.
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -28,7 +33,6 @@ from trackinizer.server.auth import (
     assert_account_active,
     require_role,
 )
-from trackinizer.server.store.core import Store
 from trackinizer.types.cost import Cost
 from trackinizer.types.inquiries import Belief, Inquiry
 from trackinizer.wire.bodies import (
@@ -42,6 +46,10 @@ from trackinizer.wire.routes import (
     inquiry_field_path,
     inquiry_field_routes,
 )
+
+
+if TYPE_CHECKING:
+    from trackinizer.server.store.core import Store
 
 
 router = APIRouter()

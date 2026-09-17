@@ -42,9 +42,8 @@ Run to regenerate (writes grammar.lark in place):
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
-from typing import Final, Literal, cast, get_args
+from typing import TYPE_CHECKING, Final, Literal, cast, get_args
 
 import argparse
 
@@ -78,6 +77,10 @@ from trackinizer.wire.wire_metrics_query import (
     METRIC_COMPARE_OPS,
     MetricReduce,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 _CWD: Final = Path(__file__).resolve().parent

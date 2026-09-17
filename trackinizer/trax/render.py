@@ -5,9 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextvars import ContextVar
 from datetime import datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
-import argparse
 import json
 import shutil
 import sys
@@ -15,6 +14,10 @@ import sys
 from trackinizer.lib.custom_json import DictCodec, FloatCodec, ListCodec, StrCodec
 from trackinizer.trax.context import err_stream, out_stream
 from trackinizer.types.edges import EDGE_POLICIES, Edge
+
+
+if TYPE_CHECKING:
+    import argparse
 
 
 SHOW_IDS: ContextVar[bool] = ContextVar("trax_show_ids", default=False)

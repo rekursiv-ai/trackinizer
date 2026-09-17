@@ -18,15 +18,18 @@ See ``docs/cli-scraping-investigation.md`` for the empirical layout.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import os
 import re
 
 from trackinizer.lib.agent.sessions import claude
 from trackinizer.trax.run.adapters.tail import Tail
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 _NOT_KEPT: Final = re.compile(r"[^A-Za-z0-9-]")

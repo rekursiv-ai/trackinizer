@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from typing import cast
-from uuid import UUID
+from typing import TYPE_CHECKING, cast
 
 import asyncpg
 import pytest
@@ -15,7 +14,6 @@ from trackinizer.server.projection import (
     project_relationships,
 )
 from trackinizer.types import inquiries
-from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import (
     KIND_TO_CLASS,
     ArtifactEdge,
@@ -26,6 +24,12 @@ from trackinizer.types.inquiries import (
     IssueEdge,
     Paper,
 )
+
+
+if TYPE_CHECKING:
+    from uuid import UUID
+
+    from trackinizer.types.edges import Edge
 
 
 def _edge(

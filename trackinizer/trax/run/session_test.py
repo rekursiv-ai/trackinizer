@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import TextIO, cast, override
+from typing import TYPE_CHECKING, TextIO, cast, override
 
 import json
 import os
@@ -36,10 +36,8 @@ from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.trax.run import session
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
-from trackinizer.trax.run.adapters.custom_types import Adapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 from trackinizer.trax.run.adapters.tail import Tail
-from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.session import (
     RunConfig,
     _drain_filesystem_loop,
@@ -55,7 +53,12 @@ from trackinizer.trax.run.session import (
 )
 from trackinizer.trax.run.sink import Sink
 from trackinizer.trax.run.slash import SlashCommand
-from trackinizer.wire.wire_session_ir import RecordBody
+
+
+if TYPE_CHECKING:
+    from trackinizer.trax.run.adapters.custom_types import Adapter
+    from trackinizer.trax.run.custom_types import Event
+    from trackinizer.wire.wire_session_ir import RecordBody
 
 
 @pytest.fixture(autouse=True)

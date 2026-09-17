@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
 from dataclasses import replace
 from io import StringIO
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import base64
@@ -41,6 +41,10 @@ from trackinizer.lib.agent.types.sessions import (
     WebSearchResults,
 )
 from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
 
 
 ENVELOPE = (

@@ -25,12 +25,12 @@ gone cannot be replayed to the provider (:class:`CiphertextDroppedError`).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import TextIO
+from typing import TYPE_CHECKING, TextIO
 from uuid import UUID, uuid4
 
 import json
@@ -54,6 +54,10 @@ from trackinizer.trax.run.errors import (
     CiphertextDroppedError,
     NotResumableError,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 __all__ = [
@@ -259,7 +263,8 @@ class _Target:
 def _claude_scope() -> Path:
     """Claude's project directory for the local cwd."""
     scope = ClaudeAdapter().session_scope()
-    assert scope is not None, "the claude adapter always derives a project directory"
+    if scope is None:
+        raise ValueError("the claude adapter always derives a project directory")
     return scope
 
 

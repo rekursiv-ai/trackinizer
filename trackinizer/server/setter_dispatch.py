@@ -99,9 +99,11 @@ def _canonical_tuple(value: object) -> object:
     """Adapter so ``canonical_strs`` matches the ``_Encoder`` shape."""
     assert isinstance(value, Iterable)
     items = list(value)
-    assert all(isinstance(item, str) for item in items)
+    if not all(isinstance(item, str) for item in items):
+        raise ValueError("Expected all(isinstance(item, str) for item in items).")
     strings = [item for item in items if isinstance(item, str)]
-    assert len(strings) == len(items)
+    if len(strings) != len(items):
+        raise ValueError("Expected len(strings) == len(items).")
     return canonical_strs(strings)
 
 

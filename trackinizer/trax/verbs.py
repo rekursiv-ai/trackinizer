@@ -14,7 +14,6 @@ import math
 import sys
 import uuid
 
-from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.custom_json import (
     DictCodec,
@@ -93,6 +92,7 @@ from trackinizer.wire.routes import (
 
 
 if TYPE_CHECKING:
+    from trackinizer.client.client import Client
     from trackinizer.trax.run import session
     from trackinizer.trax.run.resume import prepare_resume
 else:
@@ -533,7 +533,8 @@ class Kind(Command):
         bulk_ok: bool,
     ) -> int:
         """Coerce and apply a masked ``to`` write, guarding a bulk blast radius."""
-        assert action.write is not None
+        if action.write is None:
+            raise ValueError("Expected action.write is not None.")
         value = _finite_float(action.write)
         masks = _mask_clauses(action.masks)
         if not any(m.axis == "step" for m in masks):

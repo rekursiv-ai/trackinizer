@@ -51,13 +51,13 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.auth import AuthIdentity, current_user
-from trackinizer.types.inquiries import Inquiry
 
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
     from trackinizer.server.store.core import Store
+    from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange

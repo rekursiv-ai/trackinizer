@@ -13,11 +13,15 @@ kind moving between them is a change to what the IR claims to understand.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from io import StringIO
+from typing import TYPE_CHECKING
 
 from trackinizer.lib.agent.sessions import claude, codex
 from trackinizer.lib.agent.types.sessions import SessionRecord, UncategorizedRecord
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 CODEX_KINDS = (

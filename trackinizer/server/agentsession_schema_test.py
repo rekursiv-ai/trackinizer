@@ -15,7 +15,7 @@ in-process Postgres substrate is unavailable.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 import uuid
 
@@ -24,12 +24,17 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.agent.types.sessions import UserMessage
-from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.embedder import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.bodies import SubmitAgentSession, SubmitIssue
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from trackinizer.lib.postgres import PGliteEngine
 
 
 @pytest_asyncio.fixture(loop_scope="session")

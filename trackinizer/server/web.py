@@ -21,7 +21,6 @@ design.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass, fields
 from datetime import datetime
 from pathlib import Path
@@ -43,7 +42,6 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 
 from trackinizer.lib.custom_json import FloatCodec, IntCodec, ListCodec
-from trackinizer.lib.postgres import Conn, DatabaseEngine
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.auth import (
     AuthIdentity,
@@ -52,7 +50,6 @@ from trackinizer.server.auth import (
 )
 from trackinizer.server.notify import iter_sse_events, tx
 from trackinizer.server.regex_timeout import apply_regex_statement_timeout
-from trackinizer.server.store.core import Store
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.edges import Edge
@@ -61,7 +58,12 @@ from trackinizer.wire.wire_sessions import FeedCursor, FeedResponse
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import asyncpg
+
+    from trackinizer.lib.postgres import Conn, DatabaseEngine
+    from trackinizer.server.store.core import Store
 
 
 _CWD: Final = Path(__file__).resolve().parent

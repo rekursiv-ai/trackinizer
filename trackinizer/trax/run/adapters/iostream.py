@@ -17,16 +17,20 @@ by the time trax sees a byte. See :data:`Capture`.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
-from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import logging
 import re
 
 from trackinizer.trax.run.adapters import scrape
-from trackinizer.trax.run.adapters.custom_types import Capture
 from trackinizer.trax.run.adapters.tail import Tail
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable
+    from pathlib import Path
+
+    from trackinizer.trax.run.adapters.custom_types import Capture
 
 
 __all__ = ["IOStreamAdapter", "LineCapture"]

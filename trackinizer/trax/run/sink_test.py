@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TypeGuard, cast, override
+from typing import TYPE_CHECKING, TypeGuard, cast, override
 from uuid import UUID, uuid4
 
 import asyncio
@@ -22,7 +22,6 @@ from trackinizer.lib.custom_json import DictCodec, loads
 from trackinizer.lib.posix.follow import follow_tree
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter
-from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.sink import (
     FileSink,
@@ -44,6 +43,10 @@ from trackinizer.wire.wire_sessions import (
     SessionStart,
     SessionStartResponse,
 )
+
+
+if TYPE_CHECKING:
+    from trackinizer.trax.run.adapters.tail import Tail
 
 
 _PART = Path("/sessions/a.jsonl")

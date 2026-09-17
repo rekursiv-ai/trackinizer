@@ -17,6 +17,9 @@ from uuid import UUID
 
 if TYPE_CHECKING:
     import asyncpg
+
+    from trackinizer.lib.postgres import Conn
+    from trackinizer.wire.bodies import SubmitAgentSession
 else:
     from wrapt import lazy_import
 
@@ -31,7 +34,6 @@ from trackinizer.lib.custom_json import (
     json_freeze,
     loads,
 )
-from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
@@ -43,7 +45,6 @@ from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.inquiries import Inquiry
-from trackinizer.wire.bodies import SubmitAgentSession
 from trackinizer.wire.wire_sessions import FeedEvent
 
 
@@ -704,10 +705,12 @@ def _datetime(value: object) -> datetime:
 
 
 def _optional_datetime(value: object) -> datetime | None:
-    assert value is None or isinstance(value, datetime)
+    if value is not None and not isinstance(value, datetime):
+        raise ValueError("Expected value is None or isinstance(value, datetime).")
     return value
 
 
 def _optional_str(value: object) -> str | None:
-    assert value is None or isinstance(value, str)
+    if value is not None and not isinstance(value, str):
+        raise ValueError("Expected value is None or isinstance(value, str).")
     return value

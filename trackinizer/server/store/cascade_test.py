@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import json
@@ -17,9 +18,12 @@ from trackinizer.conftest import (
     queue_field_rows,
     set_field_row,
 )
-from trackinizer.server.store.core import Store
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import ConflictError
+
+
+if TYPE_CHECKING:
+    from trackinizer.server.store.core import Store
 
 
 # Returns the list each invocation appends to, so a test asserts the cascade fired

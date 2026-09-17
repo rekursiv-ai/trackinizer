@@ -10,8 +10,7 @@ would have compared differently.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import re
 
@@ -28,6 +27,10 @@ from trackinizer.wire.column_shapes import (
     lowers_into_sql,
     sql_template,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 class TestTheOracleIsPerColumnAndOp:

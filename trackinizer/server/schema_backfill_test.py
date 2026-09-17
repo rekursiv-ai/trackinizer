@@ -8,9 +8,8 @@ observable without executing the SQL.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
 
 import json
@@ -25,10 +24,15 @@ from trackinizer.lib.custom_json import (
     json_freeze,
     json_unfreeze,
 )
-from trackinizer.lib.postgres import PostgresEngine
 from trackinizer.server.embedder import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.session_records import SessionRecordRow
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from trackinizer.lib.postgres import PostgresEngine
 
 
 _CWD: Final = Path(__file__).resolve().parent

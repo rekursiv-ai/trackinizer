@@ -9,10 +9,9 @@ Regenerate after a CLI version bump:
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from io import StringIO
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import pytest
 
@@ -24,6 +23,10 @@ from trackinizer.lib.agent.sessions.testdata.capture import (
     _scrub_secrets,
 )
 from trackinizer.lib.agent.types.sessions import SessionRecord, UncategorizedRecord
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 _CWD: Final = Path(__file__).resolve().parent

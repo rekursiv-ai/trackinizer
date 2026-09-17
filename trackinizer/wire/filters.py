@@ -15,11 +15,10 @@ spelling and both resolve to one column.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from functools import lru_cache
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 import re
 import warnings
@@ -45,6 +44,10 @@ from trackinizer.wire.posix_regex import (
     posix_pattern,
 )
 from trackinizer.wire.routes import MAX_LIST_LIMIT
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 __all__ = [

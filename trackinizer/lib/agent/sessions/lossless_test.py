@@ -13,11 +13,15 @@ comparing cannot fail on a dropped blank line.
 from __future__ import annotations
 
 from io import StringIO
+from typing import TYPE_CHECKING
 
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex, normalized
-from trackinizer.lib.agent.sessions.convert import _Adapter
+
+
+if TYPE_CHECKING:
+    from trackinizer.lib.agent.sessions.convert import _Adapter
 
 
 # Key order is the CLI's, not ours: across 40,695 corpus lines only one of 46

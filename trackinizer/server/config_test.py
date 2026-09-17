@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import argparse
 
@@ -19,6 +18,10 @@ from trackinizer.server.config import (
     parse_engine,
 )
 from trackinizer.server.embedder import StubEmbedder
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestPureFunctions:

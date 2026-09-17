@@ -15,7 +15,7 @@ has them ready.
 
 from __future__ import annotations
 
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
 import uuid
 
@@ -23,7 +23,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from trackinizer.lib.custom_json import DatetimeCodec, MutableJSON, StrCodec
-from trackinizer.lib.postgres import Conn
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api._routes_shared import (
     RoleLiteral,
@@ -32,6 +31,10 @@ from trackinizer.server.api._routes_shared import (
 )
 from trackinizer.server.auth import AuthIdentity, Role, require_role
 from trackinizer.server.notify import tx
+
+
+if TYPE_CHECKING:
+    from trackinizer.lib.postgres import Conn
 
 
 __all__ = [

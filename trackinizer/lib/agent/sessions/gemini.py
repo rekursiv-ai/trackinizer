@@ -12,8 +12,7 @@ claude or codex through the ordinary :mod:`convert` path.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping
-from typing import TextIO
+from typing import TYPE_CHECKING, TextIO
 from uuid import UUID, uuid5
 
 import json
@@ -40,6 +39,10 @@ from trackinizer.lib.custom_json import (
     loads,
     residual,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator, Mapping
 
 
 __all__ = ["denormalize", "normalize"]

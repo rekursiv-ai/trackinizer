@@ -4,18 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
-from typing import Literal, Self, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, Self, TypedDict, cast
 from uuid import UUID, uuid4
 
-from trackinizer.types.columns import Row
 from trackinizer.types.cost import Cost
 from trackinizer.types.edges import Edge
-from trackinizer.types.inquiries import (
-    Belief,
-    Inquiry,
-    Issue,
-    Paper,
-)
+from trackinizer.types.inquiries import Belief, Inquiry, Issue, Paper
+
+
+if TYPE_CHECKING:
+    from trackinizer.types.columns import Row
 
 
 # Snapshot fields stored as Postgres arrays, normalized with

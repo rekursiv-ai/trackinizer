@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import contextlib
 import uuid
@@ -46,10 +46,13 @@ from trackinizer.trax.parser import (
     ref_text,
     required_token,
 )
-from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import SeqRef, UuidRef
 from trackinizer.wire.seq_ranges import SeqRange
+
+
+if TYPE_CHECKING:
+    from trackinizer.types.inquiries import Inquiry
 
 
 def test_consume_ref_uuid() -> None:

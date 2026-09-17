@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
-import argparse
-
-from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax.render import echo
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    import argparse
+
+    from trackinizer.client.client import Client
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

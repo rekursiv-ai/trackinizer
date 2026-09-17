@@ -21,11 +21,13 @@ status is its lifecycle).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Final, Literal
-
-import uuid
+from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+if TYPE_CHECKING:
+    import uuid
 
 
 _MAX_KEY_CHARS: Final = 512

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, _Call
 
 import asyncio
@@ -19,7 +19,10 @@ from trackinizer.conftest import (
 from trackinizer.lib.postgres import Conn
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import ConflictError, NotFoundError
-from trackinizer.types.inquiries import Inquiry
+
+
+if TYPE_CHECKING:
+    from trackinizer.types.inquiries import Inquiry
 
 
 class TestStatusEdits:

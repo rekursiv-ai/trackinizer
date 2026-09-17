@@ -18,15 +18,18 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import os
 
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex, normalized
-from trackinizer.lib.agent.sessions.convert import _Adapter
-from trackinizer.lib.agent.types.sessions import SessionRecord
+
+
+if TYPE_CHECKING:
+    from trackinizer.lib.agent.sessions.convert import _Adapter
+    from trackinizer.lib.agent.types.sessions import SessionRecord
 
 
 _CWD: Final = Path(__file__).resolve().parent

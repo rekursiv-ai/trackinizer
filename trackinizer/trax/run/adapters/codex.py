@@ -14,9 +14,8 @@ See ``docs/cli-scraping-investigation.md`` for the empirical layout.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import os
 import re
@@ -24,6 +23,10 @@ import re
 from trackinizer.lib.agent.sessions import codex
 from trackinizer.lib.custom_json import StrCodec
 from trackinizer.trax.run.adapters.tail import Tail
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 _ROLLOUT_NAME: Final = re.compile(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import _Call
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -14,6 +14,10 @@ from trackinizer.conftest import (
     set_field_row,
 )
 from trackinizer.types.errors import ConflictError, NotFoundError
+
+
+if TYPE_CHECKING:
+    from unittest.mock import _Call
 
 
 class TestEdge:

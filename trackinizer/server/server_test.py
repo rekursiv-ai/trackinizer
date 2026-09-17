@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import argparse
 import inspect
@@ -27,6 +27,10 @@ from trackinizer.server.server import (
     logger,
     main,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 @pytest.fixture(autouse=True)

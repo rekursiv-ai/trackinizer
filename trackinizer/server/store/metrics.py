@@ -11,7 +11,6 @@ wake the console fanout).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from datetime import datetime
 from math import isfinite
 from typing import TYPE_CHECKING, Final, Literal
@@ -19,13 +18,16 @@ from uuid import UUID
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import asyncpg
+
+    from trackinizer.lib.postgres import Conn
 else:
     from wrapt import lazy_import
 
     asyncpg = lazy_import("asyncpg")  # ~60 ms; only log_metrics catches its FK error.
 
-from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import tx
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import vetted_sql
@@ -65,10 +67,11 @@ _OP_TO_SQL: Final[dict[str, str]] = {
 # (an op in one but not the other) is the drift class this asserts away at
 # import. ``METRIC_COMPARE_OPS`` is the single definition; if it gains an op,
 # this fails until the SQL symbol is added here too.
-assert set(_OP_TO_SQL) == set(METRIC_COMPARE_OPS), (
-    "metric SQL operator map drifted from METRIC_COMPARE_OPS: "
-    f"{set(_OP_TO_SQL) ^ set(METRIC_COMPARE_OPS)}"
-)
+if set(_OP_TO_SQL) != set(METRIC_COMPARE_OPS):
+    raise ValueError(
+        "metric SQL operator map drifted from METRIC_COMPARE_OPS: "
+        f"{set(_OP_TO_SQL) ^ set(METRIC_COMPARE_OPS)}",
+    )
 
 
 # Each grid axis and the SQL cast its bound operand takes: ``key`` compares as
@@ -233,9 +236,16 @@ class _MetricsMixin(_StoreShared):
             assert isinstance(key_value, str)
             assert isinstance(step_value, int)
             assert isinstance(value_value, float)
-            assert kind_value == "scalar"
+            if kind_value != "scalar":
+                raise ValueError('Expected kind_value == "scalar".')
             kind: Literal["scalar"] = "scalar"
-            assert timestamp_value is None or isinstance(timestamp_value, datetime)
+            if timestamp_value is not None and not isinstance(
+                timestamp_value,
+                datetime,
+            ):
+                raise ValueError(
+                    "Expected timestamp_value is None or isinstance(timestamp_value, datetime).",
+                )
             result.append(
                 MetricPoint(
                     key=key_value,
@@ -363,9 +373,16 @@ class _MetricsMixin(_StoreShared):
             assert isinstance(key_value, str)
             assert isinstance(step_value, int)
             assert isinstance(value_value, float)
-            assert kind_value == "scalar"
+            if kind_value != "scalar":
+                raise ValueError('Expected kind_value == "scalar".')
             kind: Literal["scalar"] = "scalar"
-            assert timestamp_value is None or isinstance(timestamp_value, datetime)
+            if timestamp_value is not None and not isinstance(
+                timestamp_value,
+                datetime,
+            ):
+                raise ValueError(
+                    "Expected timestamp_value is None or isinstance(timestamp_value, datetime).",
+                )
             result.append(
                 (
                     experiment_id_value,

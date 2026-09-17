@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 from unittest.mock import MagicMock
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -55,10 +54,8 @@ from trackinizer.server.primitives import insert_inquiry
 from trackinizer.server.store.change_id_slot import (
     set_client_change_id,
 )
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.edge import INFERRED_PROVENANCE_REASON
 from trackinizer.types.cost import Cost
-from trackinizer.types.edges import Edge
 from trackinizer.types.errors import (
     ConflictError,
     NotFoundError,
@@ -87,6 +84,13 @@ from trackinizer.wire.bodies import (
 )
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.wire_metrics import MetricPoint
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from trackinizer.server.store.core import Store
+    from trackinizer.types.edges import Edge
 
 
 # The session-start route resolves the request's ``account`` from the authenticated

@@ -25,12 +25,10 @@ or replaying a finished session.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import ClassVar, Final, Protocol, cast
+from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast
 
 import argparse
 import asyncio
@@ -63,6 +61,11 @@ from trackinizer.trax.run.sink import (
     TrackinizerSink,
 )
 from trackinizer.trax.run.slash import SlashCommand, SlashCommandDetector
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+    from datetime import datetime
 
 
 _logger = logging.getLogger(__name__)

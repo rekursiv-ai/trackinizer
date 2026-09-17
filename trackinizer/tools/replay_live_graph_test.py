@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, override
 
 import logging
@@ -10,13 +9,16 @@ import uuid
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     import pytest
+
+    from trackinizer.types.inquiries import Inquiry
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.custom_json import DictCodec, StrCodec
 from trackinizer.tools import replay_live_graph
-from trackinizer.types.inquiries import Inquiry
 
 
 class _FailingInsertClient(Client):

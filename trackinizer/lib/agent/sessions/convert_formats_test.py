@@ -11,8 +11,7 @@ the tool that spawns the process, and its own tests pin what it can carry.
 from __future__ import annotations
 
 from io import StringIO
-from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import inspect
 import json
@@ -36,6 +35,10 @@ from trackinizer.lib.agent.types.sessions import (
     ToolCall,
     UserMessage,
 )
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _session() -> list[SessionRecord]:

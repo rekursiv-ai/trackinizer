@@ -10,14 +10,19 @@ this base only needs to own the genuinely shared state and the leaf
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from uuid import UUID
+from typing import TYPE_CHECKING
 
 import asyncio
 
-from trackinizer.lib.postgres import DatabaseEngine
-from trackinizer.server.auth import AuthIdentity
 from trackinizer.types.embedder import Embedder
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from uuid import UUID
+
+    from trackinizer.lib.postgres import DatabaseEngine
+    from trackinizer.server.auth import AuthIdentity
 
 
 __all__ = ["_StoreShared"]

@@ -14,13 +14,17 @@ See ``docs/cli-scraping-investigation.md`` for the empirical layout.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import hashlib
 
 from trackinizer.lib.agent.sessions import gemini
 from trackinizer.trax.run.adapters.tail import Tail
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 class GeminiAdapter:

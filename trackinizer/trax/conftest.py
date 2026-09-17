@@ -9,10 +9,7 @@ profile-related GRAMMAR.md examples once their xfails are lifted.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from pathlib import Path
-from types import TracebackType
-from typing import Self, cast
+from typing import TYPE_CHECKING, Self, cast
 
 import uuid
 
@@ -33,14 +30,9 @@ from trackinizer.wire.routes import (
     MAX_LIST_LIMIT,
 )
 from trackinizer.wire.row_filter import match_filter
-from trackinizer.wire.seq_ranges import SeqRange
 from trackinizer.wire.wire_metrics import (
     LogMetricsResponse,
     MetricPoint,
-)
-from trackinizer.wire.wire_metrics_query import (
-    MetricMaskClause,
-    MetricRankRow,
 )
 from trackinizer.wire.wire_session_ir import (
     AppendRecordsResponse,
@@ -55,6 +47,18 @@ from trackinizer.wire.wire_sessions import (
     SessionStart,
     SessionStartResponse,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+    from pathlib import Path
+    from types import TracebackType
+
+    from trackinizer.wire.seq_ranges import SeqRange
+    from trackinizer.wire.wire_metrics_query import (
+        MetricMaskClause,
+        MetricRankRow,
+    )
 
 
 _ABSENT = Absent()

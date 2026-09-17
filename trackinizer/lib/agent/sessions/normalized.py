@@ -13,8 +13,7 @@ convert between formats without knowing which it holds.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
-from typing import TextIO, cast
+from typing import TYPE_CHECKING, TextIO, cast
 
 import json
 
@@ -25,6 +24,10 @@ from trackinizer.lib.custom_json import (
     json_unfreeze,
     loads,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
 
 
 __all__ = ["denormalize", "normalize"]

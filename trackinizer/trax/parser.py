@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast, get_args
 
@@ -60,6 +59,8 @@ from trackinizer.wire.seq_ranges import (
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping, Sequence
+
     from trackinizer.wire import wire_metrics_query
 else:
     # ``wire_metrics_query`` builds pydantic models at import (~44ms measured,

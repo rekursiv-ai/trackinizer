@@ -25,12 +25,10 @@ What it proves, per CLI:
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable, Iterator
 from contextlib import ExitStack, asynccontextmanager, closing, nullcontext, suppress
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Self, TextIO, cast, override
+from typing import TYPE_CHECKING, Self, TextIO, cast, override
 from unittest.mock import Mock
 
 import enum
@@ -60,7 +58,6 @@ from trackinizer.server.embedder import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store
 from trackinizer.trax.run.adapters.tail import Tail
-from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.session import (
     RunConfig,
     _drain_filesystem_loop,
@@ -69,10 +66,17 @@ from trackinizer.trax.run.session import (
     run,
 )
 from trackinizer.trax.run.sink import Sink, TrackinizerSink
-from trackinizer.trax.run.slash import SlashCommand
 from trackinizer.types.session_records import _BY_KIND
-from trackinizer.wire.wire_session_ir import RecordBody
 from trackinizer.wire.wire_sessions import SessionStart, SessionStartResponse
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+    from datetime import datetime
+
+    from trackinizer.trax.run.custom_types import Event
+    from trackinizer.trax.run.slash import SlashCommand
+    from trackinizer.wire.wire_session_ir import RecordBody
 
 
 # A trivial prompt that forces exactly one model turn and exits fast. The

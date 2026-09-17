@@ -7,8 +7,8 @@ landing in its own table, and the generated tsvector never seeing it.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import pytest
@@ -22,12 +22,17 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
 )
 from trackinizer.lib.custom_json import json_freeze
-from trackinizer.lib.postgres import PostgresEngine
 from trackinizer.server.embedder import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_ir import SlashCommandRow
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.session_records import SessionRecordRow
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Sequence
+
+    from trackinizer.lib.postgres import PostgresEngine
 
 
 _CIPHERTEXT = "gAAAAABqPBiCY9-vjMraAiiOTNS8xKmaodTJ4D2l6XR2pMszVFyz"

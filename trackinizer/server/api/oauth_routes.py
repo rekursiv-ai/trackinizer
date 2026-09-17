@@ -19,7 +19,7 @@ login and have their ``last_login`` bumped on each later callback.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import urlencode, urlsplit
 
 import logging
@@ -31,7 +31,6 @@ from fastapi.responses import RedirectResponse, Response
 
 import httpx2
 
-from trackinizer.lib.postgres import Conn
 from trackinizer.server.api._routes_shared import engine_of
 from trackinizer.server.auth import Role, allowlist_match
 from trackinizer.server.config import Config
@@ -42,6 +41,10 @@ from trackinizer.server.session import (
     read_oauth_state_cookie,
     set_session_cookie,
 )
+
+
+if TYPE_CHECKING:
+    from trackinizer.lib.postgres import Conn
 
 
 _logger = logging.getLogger(__name__)

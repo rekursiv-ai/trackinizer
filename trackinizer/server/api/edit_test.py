@@ -15,7 +15,6 @@ from trackinizer.conftest import make_store, new_uuid, set_field_row
 from trackinizer.lib.custom_json import DictCodec
 from trackinizer.server.api.edit import _run_compare_and_set
 from trackinizer.server.auth import AuthIdentity
-from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.bodies import FieldSet
 from trackinizer.wire.routes import (
     inquiry_field_path,
@@ -75,6 +74,7 @@ if TYPE_CHECKING:
 
     from trackinizer.conftest import FakeEngine
     from trackinizer.server.store.core import Store
+    from trackinizer.types.inquiries import Inquiry
 
 
 class TestRoutes:

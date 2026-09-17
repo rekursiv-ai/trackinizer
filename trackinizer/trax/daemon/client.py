@@ -6,9 +6,8 @@ why, and ``protocol_test`` for the check that enforces it.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import os
 import socket
@@ -25,6 +24,10 @@ from trackinizer.trax.daemon.protocol import (
     socket_path,
     write_frame,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 _CLI_MODULE: Final = __name__.rsplit(".", maxsplit=2)[0]

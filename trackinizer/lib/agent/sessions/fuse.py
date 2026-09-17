@@ -35,7 +35,7 @@ settings, claude marks the carried-over summary with ``isCompactSummary``.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from typing import TYPE_CHECKING
 
 from trackinizer.lib.agent.types.sessions import (
     ContextClear,
@@ -49,6 +49,10 @@ from trackinizer.lib.custom_json import (
     json_freeze,
     json_unfreeze,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator, Mapping, Sequence
 
 
 __all__ = ["fuse", "names_of", "unfuse"]

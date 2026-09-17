@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex, normalized
-from trackinizer.lib.agent.sessions.convert import _Adapter
 from trackinizer.lib.agent.types.sessions import (
     AgentToAgentMessage,
     AssistantMessage,
@@ -29,6 +28,10 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
 )
 from trackinizer.lib.custom_json import ListCodec, StrCodec, loads
+
+
+if TYPE_CHECKING:
+    from trackinizer.lib.agent.sessions.convert import _Adapter
 
 
 _CWD: Final = Path(__file__).resolve().parent

@@ -13,16 +13,14 @@ returning different rows in production than in the CLI's test fake.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
 from datetime import datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import uuid
 
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.embedder import StubEmbedder
 from trackinizer.server.store import read
@@ -30,7 +28,6 @@ from trackinizer.server.store.core import Store
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import ValidationError
-from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.bodies import (
     SubmitBelief,
     SubmitCodeChange,
@@ -44,6 +41,13 @@ from trackinizer.wire.filters import (
     FilterOp,
     validate_regex_dialect,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Sequence
+
+    from trackinizer.lib.postgres import PGliteEngine
+    from trackinizer.types.inquiries import Inquiry
 
 
 @pytest_asyncio.fixture(loop_scope="session")

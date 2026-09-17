@@ -145,7 +145,8 @@ class Tail:
     # answer.
     def _restart(self) -> None:
         """Drop the dead reader and the queues it shared, ready to rebuild."""
-        assert self._reader is not None
+        if self._reader is None:
+            raise ValueError("Expected self._reader is not None.")
         self._reader.join()
         self._reader = None
         self._lines = queue.SimpleQueue()
@@ -204,11 +205,13 @@ class Tail:
                 self._restart()
                 raise item.error
             if item is _ENDED:
-                assert self._reader is not None
+                if self._reader is None:
+                    raise ValueError("Expected self._reader is not None.")
                 self._reader.join()
                 self._ended = True
                 return out
-            assert not isinstance(item, _Signal)
+            if isinstance(item, _Signal):
+                raise TypeError("Expected not isinstance(item, _Signal).")
             out.append(self._remembered(item))
 
     def _remembered(self, record: TraxRecord) -> TraxRecord:

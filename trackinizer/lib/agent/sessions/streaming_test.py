@@ -9,9 +9,8 @@ tracks the output it produced.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
 from io import StringIO
-from typing import TextIO, override
+from typing import TYPE_CHECKING, TextIO, override
 from weakref import ReferenceType, ref
 
 import gc
@@ -21,8 +20,13 @@ import tracemalloc
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex
-from trackinizer.lib.agent.sessions.convert import _Adapter
-from trackinizer.lib.agent.types.sessions import SessionRecord
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+
+    from trackinizer.lib.agent.sessions.convert import _Adapter
+    from trackinizer.lib.agent.types.sessions import SessionRecord
 
 
 class _TrackedLine(str):

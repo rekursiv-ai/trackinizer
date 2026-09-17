@@ -19,30 +19,34 @@ The path under test is the whole one:
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
 
 from trackinizer.lib.agent.sessions import claude, codex
-from trackinizer.lib.agent.sessions.convert import _Adapter
 from trackinizer.lib.agent.types.sessions import (
     SessionRecord,
     Thinking,
     TurnContext,
 )
 from trackinizer.lib.custom_json import json_freeze
-from trackinizer.lib.postgres import PostgresEngine
 from trackinizer.server.embedder import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Sequence
+
+    from trackinizer.lib.agent.sessions.convert import _Adapter
+    from trackinizer.lib.postgres import PostgresEngine
 
 
 # Asked of the MODULE that owns it, not counted in parents from here: the

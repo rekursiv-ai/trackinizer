@@ -10,14 +10,11 @@ audited ``marginal_cost`` emit on :class:`_CascadeAuditMixin`.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import datetime
-from typing import Literal, cast
-from uuid import UUID
+from typing import TYPE_CHECKING, Literal, cast
 
 import asyncpg
 
 from trackinizer.lib.custom_json import FloatCodec, StrCodec
-from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
     upsert_embedding,
@@ -47,6 +44,13 @@ from trackinizer.types.inquiries import (
     Paper,
     is_valid_source,
 )
+
+
+if TYPE_CHECKING:
+    from datetime import datetime
+    from uuid import UUID
+
+    from trackinizer.lib.postgres import Conn
 
 
 __all__ = [

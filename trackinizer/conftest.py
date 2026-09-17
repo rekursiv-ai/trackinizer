@@ -13,9 +13,8 @@ Tests across ``trackinizer_test.py`` and friends share:
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 from contextlib import asynccontextmanager
-from typing import Final, Self, cast
+from typing import TYPE_CHECKING, Final, Self, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import os
@@ -40,6 +39,10 @@ from trackinizer.lib.testing.userdirs_fixture import (
 from trackinizer.server.embedder import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.store.core import Store
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, AsyncIterator, Iterator
 
 
 # Re-exported, not merely imported: an autouse fixture reaches only the

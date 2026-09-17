@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
-from pathlib import Path
-from typing import cast, get_args, override
+from typing import TYPE_CHECKING, cast, get_args, override
 
 import argparse
 import io
@@ -31,7 +29,6 @@ from trackinizer.trax.verbs import (
     resolve_actor,
 )
 from trackinizer.types.edges import Edge
-from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
 from trackinizer.wire.routes import MAX_LIST_LIMIT
@@ -40,6 +37,13 @@ from trackinizer.wire.wire_metrics_query import (
     MetricMaskClause,
     MetricRankRow,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping, Sequence
+    from pathlib import Path
+
+    from trackinizer.types.inquiries import Inquiry
 
 
 def _batch_items(client: FakeClient) -> list[tuple[str, dict[str, object]]]:

@@ -8,13 +8,10 @@ A pure leaf: :meth:`get_inquiry`, :meth:`list_kind`, :meth:`next_issue`,
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from datetime import datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 from trackinizer.lib.custom_json import FloatCodec
-from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import tx
 from trackinizer.server.projection import (
     fetch_edges,
@@ -41,8 +38,15 @@ from trackinizer.wire.row_filter import (
     match_filter,
     reject_inadmissible,
 )
-from trackinizer.wire.seq_ranges import SeqRange
 from trackinizer.wire.session_record_fields import record_kind_for
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from datetime import datetime
+
+    from trackinizer.lib.postgres import Conn
+    from trackinizer.wire.seq_ranges import SeqRange
 
 
 __all__ = [

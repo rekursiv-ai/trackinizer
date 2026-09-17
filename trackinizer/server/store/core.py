@@ -8,7 +8,6 @@ embedding) and composes them into the public :class:`Store`.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
@@ -18,13 +17,16 @@ import hashlib
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import asyncpg
+
+    from trackinizer.lib.postgres import Conn
 else:
     from wrapt import lazy_import
 
     asyncpg = lazy_import("asyncpg")  # ~60 ms; Store retry paths need it.
 
-from trackinizer.lib.postgres import Conn
 from trackinizer.server import auth
 from trackinizer.server.auth import bootstrap_admin
 from trackinizer.server.notify import tx

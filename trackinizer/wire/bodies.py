@@ -10,9 +10,8 @@ lives in ``types/inquiries.py``, not here.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import datetime
-from typing import Annotated, Final, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Self
 
 import uuid
 
@@ -40,6 +39,10 @@ from trackinizer.types.inquiries import (
     Paper,
     is_valid_source,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 BATCH_MAX_ITEMS: Final = 1000

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import replace
 from io import StringIO
+from typing import TYPE_CHECKING
 
 import json
 
@@ -45,6 +45,10 @@ from trackinizer.lib.custom_json import (
     json_unfreeze,
     loads,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 META = '{"type":"session_meta","payload":{"session_id":"s1","cwd":"/workspace"}}\n'

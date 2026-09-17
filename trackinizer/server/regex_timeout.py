@@ -18,11 +18,13 @@ incident -- these are that fix lifted out so a second caller cannot drift.
 
 from __future__ import annotations
 
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import os
 
-from trackinizer.lib.postgres import Conn
+
+if TYPE_CHECKING:
+    from trackinizer.lib.postgres import Conn
 
 
 __all__ = ["STATEMENT_TIMEOUT_MS", "apply_regex_statement_timeout"]

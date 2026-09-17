@@ -11,11 +11,14 @@ and writes it back out as any CLI's native format.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from pathlib import Path
-from typing import Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
-from trackinizer.trax.run.adapters.tail import Tail
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from pathlib import Path
+
+    from trackinizer.trax.run.adapters.tail import Tail
 
 
 __all__ = ["Adapter", "Capture", "StreamAdapter"]

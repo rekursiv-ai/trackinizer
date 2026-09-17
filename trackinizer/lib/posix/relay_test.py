@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import asyncio
 import contextlib
@@ -29,6 +28,10 @@ from trackinizer.lib.posix.relay import (
     terminal_size,
 )
 from trackinizer.lib.posix.terminal import PASTE_START, Terminal
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 _CWD: Final = Path(__file__).resolve().parent

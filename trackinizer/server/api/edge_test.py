@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import asyncio
@@ -22,9 +21,7 @@ from trackinizer.conftest import (
 from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec, loads
 from trackinizer.server.api.app import app
 from trackinizer.server.api.edge import _set_edge_annotation
-from trackinizer.types.edges import Edge
 from trackinizer.types.errors import ConflictError
-from trackinizer.types.inquiries import Inquiry, Issue
 
 
 def test_set_edge_annotation_rejects_unknown_field() -> None:
@@ -53,10 +50,14 @@ def test_set_edge_annotation_rejects_unknown_field() -> None:
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from fastapi.testclient import TestClient
 
     from trackinizer.conftest import FakeEngine
     from trackinizer.server.store.core import Store
+    from trackinizer.types.edges import Edge
+    from trackinizer.types.inquiries import Inquiry, Issue
 
 
 # Mirrors the column set selected by ``get_edge`` and the ``FOR UPDATE`` SELECT in

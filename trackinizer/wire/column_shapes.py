@@ -275,7 +275,8 @@ def sql_template(column: str, op: str) -> str | None:
     if template is None or shape is not ColumnShape.SESSION_RECORD:
         return template
     kind = record_kind_for(column)
-    assert kind is not None, "a SESSION_RECORD shape is seeded only for a record field"
+    if kind is None:
+        raise ValueError("a SESSION_RECORD shape is seeded only for a record field")
     # ``{col}`` consumed here; ``{p}`` is left for the caller to bind.
     return template.replace("{col}", kind)
 

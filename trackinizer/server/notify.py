@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 import json
@@ -15,7 +14,13 @@ import logging
 import asyncpg
 
 from trackinizer.lib.custom_json import DictCodec, StrCodec, loads
-from trackinizer.lib.postgres import Conn, DatabaseEngine
+from trackinizer.lib.postgres import DatabaseEngine
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+
+    from trackinizer.lib.postgres import Conn
 
 
 # ``asyncpg`` errors that mean the connection itself is gone, not that the SQL was

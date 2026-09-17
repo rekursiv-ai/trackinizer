@@ -29,9 +29,7 @@ from trackinizer.server.store.change_id_slot import (
 from trackinizer.server.store.edge import _EdgeMixin
 from trackinizer.server.store.edit import _EditMixin
 from trackinizer.server.values import canonical_strs
-from trackinizer.types.edges import Edge
 from trackinizer.types.errors import ConflictError
-from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.bodies import (
     BatchEdge,
     Citation,
@@ -50,6 +48,9 @@ from trackinizer.wire.bodies import (
 
 if TYPE_CHECKING:
     import asyncpg
+
+    from trackinizer.types.edges import Edge
+    from trackinizer.types.inquiries import Inquiry
 else:
     from wrapt import lazy_import
 
@@ -431,8 +432,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 f"idempotency_key {idempotency_key} already created a "
                 f"{row['subject_kind']}, not {kind}",
             )
-        subject_id = cast(UUID | None, row["subject_id"])
-        return subject_id
+        return cast(UUID | None, row["subject_id"])
 
     async def submit_artifact(
         self,

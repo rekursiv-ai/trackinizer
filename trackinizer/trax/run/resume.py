@@ -14,11 +14,10 @@ the stamp the run forks a second AgentSession and the transcript splits in two.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable, Sequence
 from io import StringIO
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from trackinizer.client.client import Client
 from trackinizer.lib.agent.sessions import (
     claude,
     codex,
@@ -40,6 +39,12 @@ from trackinizer.trax.run.materialize import (
     materialize,
 )
 from trackinizer.types.streams import Stderr, Stdin, Stdout
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
+    from trackinizer.client.client import Client
 
 
 __all__ = ["prepare_resume"]
@@ -182,9 +187,10 @@ def _read_part(
     for body in client.read_session_records(session_id, part=part):
         row = body.row(session_id, part)
         record = row.record()
-        assert not isinstance(record, Stdin | Stdout | Stderr), (
-            f"a native part holds no stream records; {row.kind} came from one"
-        )
+        if isinstance(record, Stdin | Stdout | Stderr):
+            raise TypeError(
+                f"a native part holds no stream records; {row.kind} came from one",
+            )
         records.append(record)
         sealed.append(row.ciphertext)
     return records, sealed

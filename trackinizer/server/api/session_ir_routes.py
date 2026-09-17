@@ -14,6 +14,7 @@ derived by joining to ``inquiries``, as every session route does.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -21,7 +22,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from trackinizer.lib.custom_json import DictCodec, json_freeze
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.auth import require_role
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_ir import SlashCommandRow
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
@@ -33,6 +33,10 @@ from trackinizer.wire.wire_session_ir import (
     ReadRecordsResponse,
     RecordBody,
 )
+
+
+if TYPE_CHECKING:
+    from trackinizer.server.store.core import Store
 
 
 router = APIRouter()

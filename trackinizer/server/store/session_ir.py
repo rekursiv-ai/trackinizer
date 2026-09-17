@@ -14,7 +14,6 @@ back where it already was instead of appending a second copy.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -29,7 +28,6 @@ from trackinizer.lib.custom_json import (
     json_unfreeze,
     loads,
 )
-from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.cascade import _CascadeAuditMixin
 from trackinizer.server.values import vetted_sql
@@ -38,7 +36,11 @@ from trackinizer.types.session_records import SessionRecordRow
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import asyncpg
+
+    from trackinizer.lib.postgres import Conn
 else:
     from wrapt import lazy_import
 
@@ -398,10 +400,25 @@ class _SessionIRMixin(_CascadeAuditMixin):
             text_value = row["text"]
             assert isinstance(text_value, str)
             bytes_value = row["bytes"]
-            assert context_id_value is None or isinstance(context_id_value, int)
-            assert timestamp_value is None or isinstance(timestamp_value, datetime)
-            assert model_value is None or isinstance(model_value, str)
-            assert bytes_value is None or isinstance(bytes_value, bytes)
+            if context_id_value is not None and not isinstance(context_id_value, int):
+                raise ValueError(
+                    "Expected context_id_value is None or isinstance(context_id_value, int).",
+                )
+            if timestamp_value is not None and not isinstance(
+                timestamp_value,
+                datetime,
+            ):
+                raise ValueError(
+                    "Expected timestamp_value is None or isinstance(timestamp_value, datetime).",
+                )
+            if model_value is not None and not isinstance(model_value, str):
+                raise ValueError(
+                    "Expected model_value is None or isinstance(model_value, str).",
+                )
+            if bytes_value is not None and not isinstance(bytes_value, bytes):
+                raise ValueError(
+                    "Expected bytes_value is None or isinstance(bytes_value, bytes).",
+                )
             result.append(
                 SessionRecordRow(
                     session_id=session_id_value,
@@ -572,5 +589,6 @@ def _decoded_payload(raw: str) -> JSON:
 # unchanged.
 def _encoded(ciphertext: str | None) -> bytes:
     """Return the base64 ASCII as bytes, stored verbatim rather than decoded."""
-    assert ciphertext is not None
+    if ciphertext is None:
+        raise ValueError("Expected ciphertext is not None.")
     return ciphertext.encode()

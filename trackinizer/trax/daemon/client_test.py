@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import contextlib
 import os
@@ -27,6 +26,10 @@ from trackinizer.trax.daemon.protocol import (
     socket_address,
     write_frame,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 
 @contextlib.contextmanager

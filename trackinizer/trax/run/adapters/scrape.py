@@ -21,12 +21,15 @@ record from there.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
-from typing import TextIO
+from typing import TYPE_CHECKING, TextIO
 
 from trackinizer.lib.agent.types.sessions import ContextClear, TurnContext
 from trackinizer.lib.custom_json import json_freeze
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
 
 
 __all__ = ["denormalize", "normalize"]

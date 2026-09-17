@@ -22,9 +22,7 @@ raw mode, window-size forwarding, mirroring bytes back -- is
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping, Sequence
-from pathlib import Path
-from typing import Final, Self, cast
+from typing import TYPE_CHECKING, Final, Self, cast
 
 import asyncio
 import contextlib
@@ -35,6 +33,11 @@ import signal
 import struct
 import subprocess
 import termios
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Mapping, Sequence
+    from pathlib import Path
 
 
 __all__ = [
@@ -272,7 +275,8 @@ class Terminal:
         if binary is None:
             raise FileNotFoundError(self._argv[0])
         bash = shutil.which("bash")
-        assert bash is not None
+        if bash is None:
+            raise ValueError("Expected bash is not None.")
         self._master_fd, slave_fd = os.openpty()
         # Geometry and line discipline are set on the pty before the child
         # exists, so its first ``ioctl`` already sees them.
@@ -571,7 +575,8 @@ class Terminal:
         # ``Popen.__del__`` polls a child whose ``returncode`` is unset, and its
         # ``waitpid`` would either steal the status we just took or fault on a
         # recycled pid; recording it here is what tells it the child is gone.
-        assert self._proc is not None
+        if self._proc is None:
+            raise ValueError("Expected self._proc is not None.")
         self._proc.returncode = code
         return code
 

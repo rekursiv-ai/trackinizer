@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import asyncio
 import contextlib
@@ -22,6 +22,10 @@ from trackinizer.lib.posix.terminal import (
     reset_terminal_modes,
     write_all,
 )
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestEncodePaste:

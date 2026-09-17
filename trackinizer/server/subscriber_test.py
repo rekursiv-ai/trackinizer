@@ -12,10 +12,9 @@ wrong deliveries here -- not just different recorded calls.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
-from typing import cast, override
+from typing import TYPE_CHECKING, cast, override
 from uuid import UUID
 
 import asyncio
@@ -32,6 +31,10 @@ from trackinizer.server.subscriber import (
     push_changes_to_live_subscribers,
 )
 from trackinizer.types.change_log import Change, Snapshot
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def _change(

@@ -10,7 +10,7 @@ the mixin dependency graph.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 import collections
@@ -19,7 +19,6 @@ import uuid
 import asyncpg
 
 from trackinizer.lib.custom_json import FloatCodec, ListCodec
-from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import (
     NOTIFICATION_BUFFER,
     Notification,
@@ -38,6 +37,10 @@ from trackinizer.types.cost import Cost
 from trackinizer.types.edges import EDGE_POLICIES, Edge
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.inquiries import Inquiry, Issue
+
+
+if TYPE_CHECKING:
+    from trackinizer.lib.postgres import Conn
 
 
 __all__ = [
@@ -692,10 +695,12 @@ class _CascadeAuditMixin(_StoreShared):
 
 
 def _optional_str(value: object) -> str | None:
-    assert value is None or isinstance(value, str)
+    if value is not None and not isinstance(value, str):
+        raise ValueError("Expected value is None or isinstance(value, str).")
     return value
 
 
 def _optional_float(value: object) -> float | None:
-    assert value is None or isinstance(value, float)
+    if value is not None and not isinstance(value, float):
+        raise ValueError("Expected value is None or isinstance(value, float).")
     return value

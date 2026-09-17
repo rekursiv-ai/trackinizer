@@ -27,9 +27,12 @@ structure those questions need.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
 
 
 __all__ = [

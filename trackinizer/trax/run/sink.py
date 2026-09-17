@@ -28,10 +28,8 @@ into the TUI and never written to the log -- so it travels its own way
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import IO, Protocol, cast, override
+from typing import IO, TYPE_CHECKING, Protocol, cast, override
 from uuid import UUID, uuid4
 
 import json
@@ -39,12 +37,8 @@ import sys
 import threading
 import time
 
-from trackinizer.client.client import Client
 from trackinizer.lib.custom_json import JSON, json_freeze
-from trackinizer.trax.run.adapters.custom_types import Adapter
-from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.trax.run.custom_types import Event
-from trackinizer.trax.run.slash import SlashCommand
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_session_ir import (
     ManifestBody,
@@ -52,6 +46,16 @@ from trackinizer.wire.wire_session_ir import (
     SlashCommandBody,
 )
 from trackinizer.wire.wire_sessions import SessionEnd, SessionStart
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
+
+    from trackinizer.client.client import Client
+    from trackinizer.trax.run.adapters.custom_types import Adapter
+    from trackinizer.trax.run.adapters.tail import Tail
+    from trackinizer.trax.run.slash import SlashCommand
 
 
 class Sink(Protocol):
@@ -761,7 +765,8 @@ class ResilientSink(Sink):
     def _degrade(self, err: Exception) -> bool:
         """Abandon the primary sink and route the rest to a local file."""
         primary, self._primary = self._primary, None
-        assert primary is not None, "degrade is only reachable with a live primary"
+        if primary is None:
+            raise ValueError("degrade is only reachable with a live primary")
         sys.stderr.write(
             f"[trax run] sync failed ({err}); "
             f"falling back to local capture at {self._fallback_path}\n",

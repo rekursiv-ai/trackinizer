@@ -32,6 +32,7 @@ step 4 of ``docs/private/workers.md``.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid5
 
 import asyncio
@@ -39,8 +40,11 @@ import json
 import logging
 
 from trackinizer.server.inbound import Inbound, InboundQueue
-from trackinizer.server.store.core import Store
-from trackinizer.types.change_log import Change
+
+
+if TYPE_CHECKING:
+    from trackinizer.server.store.core import Store
+    from trackinizer.types.change_log import Change
 
 
 __all__ = ["push_changes_to_live_subscribers"]

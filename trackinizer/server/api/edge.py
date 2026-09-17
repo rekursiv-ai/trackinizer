@@ -11,7 +11,7 @@ and add/sub on ``labels`` reuses ``FieldOp``. The scalar annotations
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 import uuid
 
@@ -21,7 +21,6 @@ from pydantic import BaseModel
 from trackinizer.lib.custom_json import MutableJSON
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.auth import AuthIdentity, require_role
-from trackinizer.server.store.core import Store
 from trackinizer.types.edges import Edge
 from trackinizer.types.errors import ConflictError, ValidationError
 from trackinizer.types.inquiries import Issue
@@ -31,15 +30,16 @@ from trackinizer.wire.bodies import (
     FieldOp,
     FieldSet,
 )
-from trackinizer.wire.edge_bodies import (
-    CreateEdge,
-    CreateEdgeBatch,
-)
+from trackinizer.wire.edge_bodies import CreateEdge, CreateEdgeBatch
 from trackinizer.wire.routes import (
     EdgeFieldRoute,
     edge_field_path,
     edge_field_routes,
 )
+
+
+if TYPE_CHECKING:
+    from trackinizer.server.store.core import Store
 
 
 router = APIRouter()

@@ -25,9 +25,7 @@ the disables through.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine, Mapping, Sequence
-from pathlib import Path
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 import asyncio
 import concurrent.futures
@@ -44,6 +42,11 @@ import threading
 import tty
 
 from trackinizer.lib.posix.terminal import Terminal, reset_terminal_modes, write_all
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine, Mapping, Sequence
+    from pathlib import Path
 
 
 __all__ = ["HasFileno", "Relay", "ThreadedRelay", "real_fd", "terminal_size"]

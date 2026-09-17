@@ -17,18 +17,22 @@ grammar never asks which provider it is reading.
 from __future__ import annotations
 
 from io import StringIO
+from typing import TYPE_CHECKING
 
 import json
 
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex, gemini
-from trackinizer.lib.agent.sessions.convert import _Adapter
 from trackinizer.lib.agent.types.sessions import (
     ContextClear,
     SessionRecord,
     TurnContext,
 )
+
+
+if TYPE_CHECKING:
+    from trackinizer.lib.agent.sessions.convert import _Adapter
 
 
 _CLAUDE = (

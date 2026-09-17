@@ -6,9 +6,7 @@ purpose: holding those imports resident is the daemon's entire job.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from pathlib import Path
-from typing import Final, cast, override
+from typing import TYPE_CHECKING, Final, cast, override
 
 import contextlib
 import contextvars
@@ -43,6 +41,11 @@ from trackinizer.trax.daemon.protocol import (
     write_frame,
 )
 from trackinizer.trax.render import TERMINAL_WIDTH
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+    from pathlib import Path
 
 
 _IDLE_TIMEOUT_SEC: Final = 30 * 60

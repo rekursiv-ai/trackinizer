@@ -9,13 +9,14 @@ import datetime
 import uuid
 
 from trackinizer.lib.custom_json import MutableJSON
-from trackinizer.server.inbound import InboundQueue
-from trackinizer.server.store.core import Store
-from trackinizer.types.inquiries import Inquiry
 
 
 if TYPE_CHECKING:
     from fastapi import Request
+
+    from trackinizer.server.inbound import InboundQueue
+    from trackinizer.server.store.core import Store
+    from trackinizer.types.inquiries import Inquiry
 
 
 class _State(Protocol):

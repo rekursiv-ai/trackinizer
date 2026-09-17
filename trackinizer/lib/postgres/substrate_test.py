@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncio
@@ -21,6 +20,10 @@ import pytest
 
 from trackinizer.lib.postgres import PGliteEngine, PostgresEngine, substrate
 from trackinizer.lib.userdirs import cache_dir
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Callable
 
 
 def _cache_dir_under(root: Path) -> Callable[[], Path]:

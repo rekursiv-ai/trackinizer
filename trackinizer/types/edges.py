@@ -8,15 +8,18 @@ mutation goes through ``edges``.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Final, Literal, Self, cast, get_args
+from typing import TYPE_CHECKING, Final, Literal, Self, cast, get_args
 from uuid import UUID
 
 from trackinizer.lib.custom_json import ListCodec
 from trackinizer.types.columns import ColumnSpec, Row
 from trackinizer.types.inquiries import Artifact, Inquiry, Issue
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -226,9 +229,12 @@ class Edge:
         labels = row.get("labels")
         assert isinstance(from_id, UUID)
         assert isinstance(to_id, UUID)
-        assert priority is None or isinstance(priority, int)
-        assert note is None or isinstance(note, str)
-        assert valence is None or isinstance(valence, float)
+        if priority is not None and not isinstance(priority, int):
+            raise ValueError("Expected priority is None or isinstance(priority, int).")
+        if note is not None and not isinstance(note, str):
+            raise ValueError("Expected note is None or isinstance(note, str).")
+        if valence is not None and not isinstance(valence, float):
+            raise ValueError("Expected valence is None or isinstance(valence, float).")
         return cls(
             from_id=from_id,
             from_kind=cast(Inquiry.InquiryKind, row["from_kind"]),

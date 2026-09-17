@@ -12,7 +12,7 @@ The mutating routes require the ``writer`` role; the read requires
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -24,7 +24,6 @@ from trackinizer.server.auth import (
     require_role,
 )
 from trackinizer.server.inbound import Inbound
-from trackinizer.server.store.core import Store
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.bodies import SubmitAgentSession
 from trackinizer.wire.wire_sessions import (
@@ -39,6 +38,10 @@ from trackinizer.wire.wire_sessions import (
     SessionStart,
     SessionStartResponse,
 )
+
+
+if TYPE_CHECKING:
+    from trackinizer.server.store.core import Store
 
 
 router = APIRouter()
@@ -364,5 +367,6 @@ async def _require_session(store: Store, session_id: UUID) -> AgentSession:
 def _idempotency_key(request: Request) -> UUID | None:
     """Return the request's already-parsed ``Idempotency-Key``, or ``None``."""
     key = getattr(request.state, "idempotency_key", None)
-    assert key is None or isinstance(key, UUID)
+    if key is not None and not isinstance(key, UUID):
+        raise ValueError("Expected key is None or isinstance(key, UUID).")
     return key

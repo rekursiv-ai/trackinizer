@@ -10,15 +10,13 @@ validator.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from functools import partial
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 import math
 
-from trackinizer.lib.postgres import Conn
 from trackinizer.server.schema_gen import SEQ_FOR_KIND
 from trackinizer.server.setter_dispatch import (
     COLUMN_SPECS,
@@ -48,6 +46,12 @@ from trackinizer.types.inquiries import (
     Inquiry,
     Issue,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
+    from trackinizer.lib.postgres import Conn
 
 
 # Columns ``insert_inquiry`` writes explicitly, so the derived body skips them:

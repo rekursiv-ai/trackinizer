@@ -17,9 +17,9 @@ command on the CALL and the output on the result, codex records both together.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import replace
 from io import StringIO
+from typing import TYPE_CHECKING
 
 import json
 
@@ -41,6 +41,10 @@ from trackinizer.lib.custom_json import (
     json_unfreeze,
     loads,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 # One entry per row of the table in ``shell_results``: the command, the record

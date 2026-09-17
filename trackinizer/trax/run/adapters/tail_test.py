@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
-from typing import TextIO, override
+from typing import TYPE_CHECKING, TextIO, override
 
 import queue
 import threading
@@ -15,6 +14,10 @@ import pytest
 from trackinizer.lib.agent.types.sessions import UserMessage
 from trackinizer.trax.run.adapters import tail
 from trackinizer.types.streams import TraxRecord
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 
 def test_failed_reader_cannot_end_the_replacement(

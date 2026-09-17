@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, Self
+from typing import TYPE_CHECKING, Literal, Protocol, Self
 
 import os
 import shutil
@@ -16,7 +16,10 @@ from trackinizer.lib.postgres import DatabaseEngine, PGliteEngine, PostgresEngin
 from trackinizer.lib.userdirs import data_dir
 from trackinizer.server.embedder import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
-from trackinizer.types.embedder import Embedder
+
+
+if TYPE_CHECKING:
+    from trackinizer.types.embedder import Embedder
 
 
 __all__ = [

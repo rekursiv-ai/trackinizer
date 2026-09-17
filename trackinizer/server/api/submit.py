@@ -7,9 +7,7 @@ dispatch over many items in one all-or-nothing transaction.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
-from typing import Annotated, Protocol, cast
-from uuid import UUID
+from typing import TYPE_CHECKING, Annotated, Protocol, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
@@ -21,7 +19,6 @@ from trackinizer.server.auth import (
     assert_account_active,
     require_role,
 )
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.submit import SUBMIT_METHOD
 from trackinizer.wire.bodies import (
     SubmitAgentSession,
@@ -37,6 +34,13 @@ from trackinizer.wire.bodies import (
     SubmitWebResult,
     SubmitWebSearch,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
+    from uuid import UUID
+
+    from trackinizer.server.store.core import Store
 
 
 router = APIRouter()

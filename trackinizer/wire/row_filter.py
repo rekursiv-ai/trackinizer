@@ -357,7 +357,8 @@ def _ordered[T: (float, Decimal, str)](left: T, op: str, right: T) -> bool:
         return left <= right
     if op == "gt":
         return left > right
-    assert op == "ge", f"unreachable order op {op!r}"
+    if op != "ge":
+        raise ValueError(f"unreachable order op {op!r}")
     return left >= right
 
 

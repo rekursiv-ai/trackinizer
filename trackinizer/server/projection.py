@@ -7,8 +7,6 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID
 
-from trackinizer.lib.postgres import Conn
-from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import (
     CITATION_VALENCE_DEFAULT,
     KIND_TO_CLASS,
@@ -31,6 +29,9 @@ from trackinizer.types.inquiries import (
 
 if TYPE_CHECKING:
     import asyncpg
+
+    from trackinizer.lib.postgres import Conn
+    from trackinizer.types.edges import Edge
 
 
 async def fetch_edges(

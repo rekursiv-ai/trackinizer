@@ -20,11 +20,15 @@ never corrupts capture.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import logging
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 __all__ = ["SlashCommand", "SlashCommandDetector"]

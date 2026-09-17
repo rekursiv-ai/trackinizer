@@ -11,12 +11,15 @@ install fails to resolve a server module.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import ast
 import pkgutil
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 _CWD: Final = Path(__file__).resolve().parent

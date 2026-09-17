@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 import math
 
 from trackinizer.lib.custom_json import FloatCodec
-from trackinizer.types.columns import Row
+
+
+if TYPE_CHECKING:
+    from trackinizer.types.columns import Row
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

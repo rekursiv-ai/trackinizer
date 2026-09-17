@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from pathlib import Path
-from typing import cast, override
+from typing import TYPE_CHECKING, cast, override
 
 import argparse
 import inspect
@@ -38,6 +37,10 @@ from trackinizer.wire.refs import SeqRef, UuidRef
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
 from trackinizer.wire.wire_sessions import SessionStart
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 # ``handler`` receives an ``httpx2.Request`` and returns an ``httpx2.Response``. The

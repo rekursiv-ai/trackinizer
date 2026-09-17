@@ -214,7 +214,8 @@ def lift_shell_result(
             ranges=ranges,
             extra=extra_frozen,
         )
-    assert content is not None
+    if content is None:
+        raise ValueError("Expected content is not None.")
     if kind == "append":
         # The one edit whose new bytes the transcript holds, so it renders as
         # the one-sided diff it is. The file BEFORE the append was never
@@ -349,7 +350,8 @@ def rewrite_shell_source(command: str, result: FileResult) -> str:
     # the file. ``printf %s`` writes the new bytes literally, whatever utility
     # the original used, and the redirect keeps the original's direction.
     found = _simple_command(renamed)
-    assert found is not None
+    if found is None:
+        raise ValueError("Expected found is not None.")
     tree, _ = found
     redirect = next(part for part in tree.parts if part.kind == "redirect")
     rewritten = (

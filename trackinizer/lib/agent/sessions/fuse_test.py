@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
 from io import StringIO
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex, fuse
-from trackinizer.lib.agent.sessions.convert import _Adapter
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
     ContextClear,
@@ -20,6 +18,12 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
 )
 from trackinizer.lib.custom_json import DictCodec, StrCodec
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
+    from trackinizer.lib.agent.sessions.convert import _Adapter
 
 
 _CWD: Final = Path(__file__).resolve().parent

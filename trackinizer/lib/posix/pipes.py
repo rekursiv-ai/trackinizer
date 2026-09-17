@@ -22,15 +22,18 @@ loses whatever it was holding.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping, Sequence
-from pathlib import Path
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 import asyncio
 import contextlib
 import os
 import shutil
 import signal
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Mapping, Sequence
+    from pathlib import Path
 
 
 __all__ = ["Piped", "Stream"]

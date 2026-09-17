@@ -23,10 +23,9 @@ The pieces:
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Final, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, cast
 
 import base64
 import binascii
@@ -40,10 +39,15 @@ import uuid
 
 from fastapi import Depends, HTTPException, Request
 
-from trackinizer.lib.postgres import Conn, DatabaseEngine
 from trackinizer.lib.userdirs import data_dir
 from trackinizer.server.notify import tx
 from trackinizer.server.session import read_session_cookie
+
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from trackinizer.lib.postgres import Conn, DatabaseEngine
 
 
 logger = logging.getLogger(__name__)
@@ -947,7 +951,8 @@ async def _resolve_identity(
 async def _bump_last_used(store: _StoreLike, key_id: uuid.UUID | None) -> None:
     """Refresh ``last_used_at`` for a cache-hit auth, subject to the throttle."""
     # Every cached entry came from the bearer path, which always sets a key.
-    assert key_id is not None
+    if key_id is None:
+        raise ValueError("Expected key_id is not None.")
     if not store.should_bump_api_key_last_used(key_id):
         return
     async with store.engine.acquire() as conn:

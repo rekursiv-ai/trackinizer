@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from unittest.mock import AsyncMock
 
 import asyncio
@@ -21,9 +21,12 @@ from trackinizer.conftest import (
 from trackinizer.server.store import read
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import NotFoundError, ValidationError
-from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.seq_ranges import SeqRange
+
+
+if TYPE_CHECKING:
+    from trackinizer.types.inquiries import Inquiry
 
 
 _CWD: Final = Path(__file__).resolve().parent

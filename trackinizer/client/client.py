@@ -36,7 +36,6 @@ escapes the ``ClientError`` contract.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from types import TracebackType
 from typing import TYPE_CHECKING, Literal, NamedTuple, Self, cast
 from urllib.parse import urlparse
 
@@ -52,7 +51,6 @@ from trackinizer.client.errors import ClientError
 from trackinizer.lib.absent import ABSENT, Absent
 from trackinizer.lib.custom_json import JSONValue
 from trackinizer.types.inquiries import Inquiry, Issue
-from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
 from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
@@ -66,6 +64,8 @@ logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     import pydantic
 
     from trackinizer.wire import (
@@ -74,6 +74,7 @@ if TYPE_CHECKING:
         wire_session_ir,
         wire_sessions,
     )
+    from trackinizer.wire.filters import Filter
     from trackinizer.wire.wire_metrics import (
         LogMetricsResponse,
         MetricPoint,

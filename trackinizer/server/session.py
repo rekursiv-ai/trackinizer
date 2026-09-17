@@ -26,12 +26,15 @@ Both cookies are opaque to clients; only the server holds the signing key.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Final, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 from trackinizer.lib.custom_json import DictCodec, StrCodec
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 class _SetsCookies(Protocol):
@@ -160,8 +163,7 @@ def read_session_cookie(
         )
     except BadSignature:
         return None
-    user_id = StrCodec.coerce(payload.get("user_id"), default=None)
-    return user_id
+    return StrCodec.coerce(payload.get("user_id"), default=None)
 
 
 def clear_session_cookie(response: _SetsCookies) -> None:

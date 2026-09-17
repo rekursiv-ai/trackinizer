@@ -15,12 +15,12 @@ Changing a table here means updating ``GRAMMAR.md`` in the same commit;
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import (
     dataclass,
     field as dataclass_field,
 )
-from typing import Final, Literal, TypeGuard, cast, get_args
+from typing import TYPE_CHECKING, Final, Literal, TypeGuard, cast, get_args
 
 import json
 import re
@@ -41,6 +41,10 @@ from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
 from trackinizer.wire.seq_ranges import SeqRange
 from trackinizer.wire.session_record_fields import SESSION_RECORD_FIELDS
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 __all__ = [
@@ -867,9 +871,10 @@ def _ref_fields_by_payload() -> Mapping[str, Field]:
         prior = by_key.get(f.payload_key)
         # Aliases sharing a payload_key (e.g. ``codechange``/``codechanges``)
         # must agree on their ref kind so the lookup is unambiguous.
-        assert prior is None or prior.ref_kind == f.ref_kind, (
-            f"ref-list aliases disagree on wire shape for {f.payload_key!r}"
-        )
+        if prior is not None and prior.ref_kind != f.ref_kind:
+            raise ValueError(
+                f"ref-list aliases disagree on wire shape for {f.payload_key!r}",
+            )
         by_key.setdefault(f.payload_key, f)
     return by_key
 

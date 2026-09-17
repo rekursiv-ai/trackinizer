@@ -11,15 +11,18 @@ and measured at 0.2ms.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final, Self, cast, override
+from typing import TYPE_CHECKING, Final, Self, cast, override
 
 import hashlib
 import json
 import os
-import socket
 import stat
 
 from trackinizer.lib.userdirs import config_dir, state_dir
+
+
+if TYPE_CHECKING:
+    import socket
 
 
 _CWD: Final = Path(__file__).resolve().parent

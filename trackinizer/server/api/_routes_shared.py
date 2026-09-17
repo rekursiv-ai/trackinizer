@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from fastapi import HTTPException
 
-from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.wire.seq_ranges import SeqRange, parse_seq_range
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from fastapi import Request
+
+    from trackinizer.lib.postgres import DatabaseEngine
 
 
 RoleLiteral = Literal["viewer", "writer", "admin"]

@@ -12,8 +12,7 @@ pattern).
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from unittest.mock import (
     DEFAULT,  # pyright: ignore[reportAny] -- unittest.mock stubs DEFAULT as Any.
 )
@@ -27,7 +26,12 @@ import pytest
 from trackinizer.conftest import FakeEngine, make_store
 from trackinizer.server.api.app import app
 from trackinizer.server.auth import AuthIdentity, Role, current_user
-from trackinizer.server.store.core import Store
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from trackinizer.server.store.core import Store
 
 
 # Stable test principal injected by ``route_client``. Pinned UUIDs +

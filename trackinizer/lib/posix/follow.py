@@ -470,11 +470,10 @@ class _Observer(Protocol):
 def _fsevents_observer() -> _Observer:
     """Build watchdog's FSEvents observer."""
     try:
-        observer = cast(
+        return cast(
             _Observer,
             _fsevents.FSEventsObserver(),  # pyright: ignore[reportAny] -- Watchdog's macOS-only lazy module is untyped.
         )
-        return observer
     except ImportError as err:
         raise NotImplementedError(
             "watchdog's FSEvents backend is unavailable; "

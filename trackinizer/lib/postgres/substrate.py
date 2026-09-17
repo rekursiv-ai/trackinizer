@@ -16,11 +16,10 @@ NOTIFY; PostgresEngine bridges the dedicated listener into the same bus).
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Protocol, Self, cast
+from typing import TYPE_CHECKING, Final, Protocol, Self, cast
 
 import asyncio
 import hashlib
@@ -42,6 +41,10 @@ import asyncpg
 import asyncpg.pool
 
 from trackinizer.lib.userdirs import cache_dir
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -116,7 +119,8 @@ directory keeps its contents between Node process lifetimes."""
 def _lock_owner(lock: asyncio.Lock) -> asyncio.Task[object] | None:
     """Return the task that currently holds ``lock`` via a guard, if any."""
     owner = getattr(lock, _LOCK_OWNER_ATTR, None)
-    assert owner is None or isinstance(owner, asyncio.Task)
+    if owner is not None and not isinstance(owner, asyncio.Task):
+        raise ValueError("Expected owner is None or isinstance(owner, asyncio.Task).")
     return owner
 
 
@@ -366,7 +370,8 @@ class PGliteEngine:
           guard: Async context manager yielding the single connection.
 
         """
-        assert self._manager is not None, "engine not entered"
+        if self._manager is None:
+            raise ValueError("engine not entered")
         return _ConnGuard(self._live_conn, self._lock)
 
     # ``pglite-socket`` 0.2's ``server.start()`` resolves before the WASM Postgres is
@@ -383,7 +388,8 @@ class PGliteEngine:
         backoff_seconds: float = 0.25,
     ) -> asyncpg.Connection[asyncpg.Record]:
         """Open one configured asyncpg connection to the running PGlite."""
-        assert self._manager is not None, "engine not entered"
+        if self._manager is None:
+            raise ValueError("engine not entered")
         last_error: BaseException | None = None
         for attempt in range(attempts):
             try:
@@ -400,7 +406,8 @@ class PGliteEngine:
                 continue
             await _init_connection(conn)
             return conn
-        assert last_error is not None
+        if last_error is None:
+            raise ValueError("Expected last_error is not None.")
         raise last_error
 
     # The asyncpg socket and the PGlite Node child fail independently: Node can crash
@@ -414,7 +421,8 @@ class PGliteEngine:
         if self._manager is None or not self._manager.is_running():
             await self._shutdown()
             await self._start_with_retries()
-            assert self._conn is not None
+            if self._conn is None:
+                raise ValueError("Expected self._conn is not None.")
             return self._conn
         if self._conn is None or self._conn.is_closed():
             self._conn = await self._open_conn()
@@ -510,7 +518,8 @@ class PostgresEngine:
         if self._listener is not None:
             await self._listener.close()
             self._listener = None
-        assert self._pool is not None
+        if self._pool is None:
+            raise ValueError("Expected self._pool is not None.")
         await self._pool.close()
 
     def acquire(self) -> asyncpg.pool.PoolAcquireContext[asyncpg.Record]:
@@ -520,7 +529,8 @@ class PostgresEngine:
           result: The asyncpg.pool.PoolAcquireContext[asyncpg.Record].
 
         """
-        assert self._pool is not None, "engine not entered"
+        if self._pool is None:
+            raise ValueError("engine not entered")
         return self._pool.acquire()
 
     async def notify(self, channel: str, payload: str) -> None:
@@ -943,8 +953,7 @@ def _pick_free_port() -> int:
     """Return an ephemeral TCP port the OS just assigned us (TCP mode only)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
-        port = cast(int, s.getsockname()[1])
-        return port
+        return cast(int, s.getsockname()[1])
 
 
 # Shared by the Unix- and TCP-socket persist templates: each validates the extension

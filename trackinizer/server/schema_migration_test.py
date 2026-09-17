@@ -17,7 +17,7 @@ Each runs against its own scratch database so none touches the shared
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 import uuid
 
@@ -31,6 +31,10 @@ from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.sql import load_sql
 from trackinizer.server.store.core import Store
 from trackinizer.wire.filters import NON_NULLABLE_COLUMNS
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 @pytest_asyncio.fixture(loop_scope="session")

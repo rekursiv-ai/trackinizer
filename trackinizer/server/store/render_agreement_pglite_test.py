@@ -23,16 +23,20 @@ templates make.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.wire.column_shapes import _REAL_TEXT, _TS_TEXT
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Iterator, Sequence
+
+    from trackinizer.lib.postgres import PGliteEngine
 
 
 @pytest_asyncio.fixture(loop_scope="session")

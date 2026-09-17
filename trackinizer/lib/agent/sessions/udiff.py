@@ -16,16 +16,19 @@ that line otherwise, which was 10 of 71 captured codex diffs.
 
 from __future__ import annotations
 
-from collections.abc import (
-    Sequence,
-    Set as AbstractSet,
-)
 from dataclasses import replace
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import re
 
 from trackinizer.lib.agent.types.sessions import Splice
+
+
+if TYPE_CHECKING:
+    from collections.abc import (
+        Sequence,
+        Set as AbstractSet,
+    )
 
 
 __all__ = ["parse_udiff", "render_udiff"]

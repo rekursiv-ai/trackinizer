@@ -9,13 +9,10 @@ insert an edge and emit paired ``edge_added`` audits on both endpoints,
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Final, cast
-from uuid import UUID
+from typing import TYPE_CHECKING, Final, cast
 
 from trackinizer.lib.absent import ABSENT, Absent
 from trackinizer.lib.custom_json import ListCodec
-from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
     infer_produced_endpoints,
@@ -37,6 +34,13 @@ from trackinizer.types.errors import (
     ValidationError,
 )
 from trackinizer.types.inquiries import Inquiry, Issue
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from uuid import UUID
+
+    from trackinizer.lib.postgres import Conn
 
 
 __all__ = [
@@ -555,10 +559,11 @@ class _EdgeMixin(_CascadeAuditMixin):
         actor: Inquiry.Actor,
     ) -> UUID | None:
         """Annotate an existing edge on an already-open transaction."""
-        assert labels_delta is None or isinstance(labels, Absent), (
-            "labels_delta (single add/remove) and labels (whole-list "
-            "overwrite) are mutually exclusive"
-        )
+        if labels_delta is not None and not isinstance(labels, Absent):
+            raise ValueError(
+                "labels_delta (single add/remove) and labels (whole-list "
+                "overwrite) are mutually exclusive",
+            )
         # ``FOR UPDATE`` so a concurrent annotate / remove can't observe stale
         # state between this SELECT and the UPDATE.
         row = await conn.fetchrow(
@@ -582,8 +587,12 @@ class _EdgeMixin(_CascadeAuditMixin):
         validate_edge_priority(edge_kind, new_priority)
         old_note = row["note"]
         old_valence = row["valence"]
-        assert old_note is None or isinstance(old_note, str)
-        assert old_valence is None or isinstance(old_valence, float)
+        if old_note is not None and not isinstance(old_note, str):
+            raise ValueError("Expected old_note is None or isinstance(old_note, str).")
+        if old_valence is not None and not isinstance(old_valence, float):
+            raise ValueError(
+                "Expected old_valence is None or isinstance(old_valence, float).",
+            )
         raw_labels = row["labels"]
         old_labels = (
             None if raw_labels is None else tuple(ListCodec.coerce(raw_labels, str))
@@ -887,8 +896,12 @@ class _EdgeMixin(_CascadeAuditMixin):
             priority = cast(Issue.Priority | None, row["priority"])
             note = row["note"]
             valence = row["valence"]
-            assert note is None or isinstance(note, str)
-            assert valence is None or isinstance(valence, float)
+            if note is not None and not isinstance(note, str):
+                raise ValueError("Expected note is None or isinstance(note, str).")
+            if valence is not None and not isinstance(valence, float):
+                raise ValueError(
+                    "Expected valence is None or isinstance(valence, float).",
+                )
             labels = row["labels"]
             edge_labels = (
                 None if labels is None else tuple(ListCodec.coerce(labels, str))

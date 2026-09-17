@@ -203,7 +203,8 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
             ordinal += 1
             continue
         line_state, wire_item = _pop_line_state(item)
-        assert not isinstance(wire_item, IncompleteRecord)
+        if isinstance(wire_item, IncompleteRecord):
+            raise TypeError("Expected not isinstance(wire_item, IncompleteRecord).")
         template = DictCodec.coerce(line_state.get("outer"))
         raw_timestamp = template.get("timestamp")
         timestamp = (

@@ -1275,9 +1275,10 @@ target) and is intentionally absent: it is never a stored row ``kind``.
 _MISSING_KINDS = set(get_args(cast(object, Inquiry.InquiryKind.__value__))) - set(
     KIND_TO_CLASS,
 )
-assert not _MISSING_KINDS, (
-    f"KIND_TO_CLASS missing concrete subclasses for {sorted(_MISSING_KINDS)}"
-)
+if _MISSING_KINDS:
+    raise ValueError(
+        f"KIND_TO_CLASS missing concrete subclasses for {sorted(_MISSING_KINDS)}",
+    )
 
 
 INQUIRY_CLASSES: tuple[type[Inquiry], ...] = (Inquiry, *KIND_TO_CLASS.values())

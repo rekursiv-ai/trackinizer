@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import argparse
 import subprocess
@@ -16,6 +15,10 @@ from trackinizer.trax import cli, profile
 from trackinizer.trax.client_cache import close_clients
 from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.profile import Profile
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
 
 
 _CWD: Final = Path(__file__).resolve().parent

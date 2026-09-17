@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from io import StringIO
 from pathlib import Path
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -28,8 +28,11 @@ from trackinizer.trax.run.resume import (
     prepare_resume,
 )
 from trackinizer.types.session_records import SessionRecordRow
-from trackinizer.types.streams import TraxRecord
 from trackinizer.wire.wire_session_ir import PartBody, RecordBody
+
+
+if TYPE_CHECKING:
+    from trackinizer.types.streams import TraxRecord
 
 
 # Asked of the MODULE that owns it, not counted in parents from here: the
