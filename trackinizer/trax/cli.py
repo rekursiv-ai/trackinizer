@@ -298,7 +298,12 @@ def _run_kindless(tokens: Sequence[str], client_factory: Callable[[], Client]) -
     query = parse_list_query(None, cast(Sequence[str], args.rest))
     if query is None:
         raise ClientError(f"unknown verb: {tokens[0]!r}")
-    return run_list_query(query, args, client_factory)
+    return run_list_query(
+        query,
+        args,
+        client_factory,
+        receipt_id=cast(str | None, args.receipt_id),
+    )
 
 
 # Global flags are peeled ONLY from the pre-verb prefix -- the run of leading tokens up

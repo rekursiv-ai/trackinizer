@@ -214,6 +214,16 @@ class Kind(Command):
         parser.add_argument("--width", type=int, default=None)
         parser.add_argument("--changes", action="store_true")
         parser.add_argument(
+            "--receipt-id",
+            dest="receipt_id",
+            metavar="ID",
+            default=None,
+            help=(
+                "list only experiments whose config.executions record this "
+                "receipt id exactly (experiment list queries only)"
+            ),
+        )
+        parser.add_argument(
             "--makeitso",
             action="store_true",
             help="apply a bulk field mutation that matches more than one row",
@@ -244,6 +254,18 @@ class Kind(Command):
     ) -> None:
         kind = KIND_LOWER[verb]
         rest = cast(Sequence[str], args.rest)
+        # Gated before every other dispatch: the flag is a LIST narrowing, so a
+        # show, create, edit, metric, or run form carrying it is refused here
+        # rather than silently ignoring it (or, for a write, applying without it).
+        if (receipt_id := _arg_receipt_id(args)) is not None:
+            query = parse_list_query(kind, rest)
+            if query is None:
+                raise ClientError(
+                    "--receipt-id narrows a list query; it cannot be combined "
+                    "with a row, create, metric, or run form "
+                    "(use: trax experiment [FILTER ...] --receipt-id ID)",
+                )
+            return run_list_query(query, args, client_factory, receipt_id=receipt_id)
         # The ``metric`` grid tail is Experiment-only and can appear after a ref
         # (single experiment), after a list query (cross-experiment rank), or
         # after create fields (create+log fusion). Intercept it before the
@@ -1489,7 +1511,7 @@ def inquiry_help_text(prefix: str, *, seq: str = "SEQ") -> str:
     """
     return f"""\
 Usage:
-  trax {prefix} [--format FORMAT] [--limit INT]
+  trax {prefix} [--format FORMAT] [--limit INT]{_receipt_usage(prefix)}
   trax {prefix} FIELD to VALUE [FIELD to VALUE ...] [--as ACTOR] [--reason TEXT]
   trax {prefix} {seq} [ACTION]
 
@@ -1535,16 +1557,32 @@ EDGE:
 {_edge_legend()}
 
 Options:
-  --format table|json|ids; --limit INT
+  --format table|json|ids; --limit INT{_receipt_option(prefix)}
   --sort priority|seq|recent|oldest|valence
   --as TEXT; --reason TEXT
 """
+
+
+# The receipt flag is an Experiment-only narrowing (``config.executions`` lives on
+# that kind alone), so the other eight help pages never mention it.
+def _receipt_usage(prefix: str) -> str:
+    """Usage suffix for the receipt flag; empty for every kind but experiment."""
+    return " [--receipt-id ID]" if prefix == "experiment" else ""
+
+
+def _receipt_option(prefix: str) -> str:
+    """Options-line entry for the receipt flag; empty for every kind but experiment."""
+    if prefix != "experiment":
+        return ""
+    return "; --receipt-id ID (rows whose config.executions record the receipt)"
 
 
 def run_list_query(
     query: ListQuery,
     args: argparse.Namespace,
     client_factory: Callable[[], Client],
+    *,
+    receipt_id: str | None = None,
 ) -> None:
     """List rows across the query's kinds, ranges, and filters.
 
@@ -1557,10 +1595,24 @@ def run_list_query(
       query: Parsed query with kinds, ranges, and filters.
       args: CLI namespace (limit, format, width).
       client_factory: Callable that creates a client.
+      receipt_id: Exact receipt id the rows' ``config.executions`` must record.
+        Accepted only when the query names Experiment alone, since no other
+        kind carries a config.
 
     """
+    if receipt_id is not None and query.kinds != ("Experiment",):
+        raise ClientError(
+            "--receipt-id applies to experiment list queries only; this query "
+            f"names {', '.join(query.kinds)} "
+            "(use: trax experiment [FILTER ...] --receipt-id ID)",
+        )
     print_rows(
-        _query_rows(query, client_factory(), limit=_arg_int(args, "limit")),
+        _query_rows(
+            query,
+            client_factory(),
+            limit=_arg_int(args, "limit"),
+            receipt_id=receipt_id,
+        ),
         _arg_str(args, "format_"),
         width=_arg_width(args),
     )
@@ -2689,6 +2741,7 @@ def _query_rows(
     client: Client,
     *,
     limit: int,
+    receipt_id: str | None = None,
 ) -> list[Mapping[str, object]]:
     """Fetch matching rows across the query's kinds, ranges, and filters."""
     rows: list[Mapping[str, object]] = []
@@ -2703,6 +2756,7 @@ def _query_rows(
                 kind,
                 limit=remaining,
                 seq_ranges=query.ranges.get(kind, ()),
+                receipt_id=receipt_id,
                 filters=query.filters,
             ),
         )
@@ -2787,6 +2841,13 @@ def _resolve_set_value(action: SetField, client: Client) -> object:
 
 def _arg_str(args: argparse.Namespace, name: str) -> str:
     return StrCodec.coerce(_arg_values(args).get(name), "")
+
+
+def _arg_receipt_id(args: argparse.Namespace) -> str | None:
+    value = cast(str | None, args.receipt_id)
+    if value == "":
+        raise ClientError("--receipt-id requires a non-empty receipt ID")
+    return value
 
 
 class _ListMutation(Protocol):

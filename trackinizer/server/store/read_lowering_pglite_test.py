@@ -525,6 +525,100 @@ async def test_paging_agrees_between_the_two_paths(store: Store, offset: int) ->
     assert [row.seq for row in lowered] == [row.seq for row in in_python]
 
 
+def _execution(receipt: str) -> dict[str, object]:
+    """One ``config.executions`` row in the shape TrackExperimentFinish writes."""
+    return {"receipt": receipt, "status": "succeeded", "exit_code": 0}
+
+
+async def _seed_receipts(store: Store) -> dict[str, uuid.UUID]:
+    """Experiments spanning the shapes an exact receipt lookup must tell apart."""
+    shapes: dict[str, dict[str, object] | None] = {
+        # Two Experiments share R123: a receipt may feed many protocols.
+        "shared_a": {"lr": 0.1, "executions": [_execution("R123")]},
+        "shared_b": {"executions": [_execution("R9"), _execution("R123")]},
+        # Substring and prefix neighbours: only the full id may match.
+        "prefix": {"executions": [_execution("R1234")]},
+        "suffix": {"executions": [_execution("XR123")]},
+        # The id in the wrong place: a config key, not an execution's receipt.
+        "elsewhere": {"receipt": "R123", "executions": [_execution("R7")]},
+        # No executions, and no config at all.
+        "no_executions": {"lr": 0.1},
+        "no_config": None,
+    }
+    ids: dict[str, uuid.UUID] = {}
+    for title, config in shapes.items():
+        ids[title] = await store.submit_experiment(
+            SubmitExperiment(title=title, account="josh@rekursiv.ai", config=config),
+        )
+    return ids
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_receipt_lookup_matches_the_whole_id_in_executions_only(
+    store: Store,
+) -> None:
+    await _seed_receipts(store)
+
+    rows = await store.list_kind("Experiment", receipt_id="R123")
+
+    assert sorted(row.title for row in rows) == ["shared_a", "shared_b"]
+    assert await store.list_kind("Experiment", receipt_id="R999") == []
+    # An Issue never carries a config, so the same id finds nothing there.
+    await store.submit_issue(SubmitIssue(title="R123", account="josh@rekursiv.ai"))
+    assert await store.list_kind("Issue", receipt_id="R123") == []
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_receipt_lookup_windows_after_matching(store: Store) -> None:
+    """The receipt clause runs in the WHERE, so a small window still finds a match.
+
+    Seeded newest-last, and ``list_kind`` orders newest-first: with the clause
+    applied after the window, ``limit=1`` would return the unrelated newest
+    row and then drop it, answering empty.
+    """
+    await _seed_receipts(store)
+    for index in range(3):
+        await store.submit_experiment(
+            SubmitExperiment(
+                title=f"newer-{index}",
+                account="josh@rekursiv.ai",
+                config={"executions": [_execution("R555")]},
+            ),
+        )
+
+    first = await store.list_kind("Experiment", receipt_id="R123", limit=1)
+    second = await store.list_kind("Experiment", receipt_id="R123", limit=1, offset=1)
+    both = await store.list_kind("Experiment", receipt_id="R123", limit=5)
+
+    assert len(first) == len(second) == 1
+    assert {first[0].title, second[0].title} == {"shared_a", "shared_b"}
+    assert sorted(row.title for row in both) == ["shared_a", "shared_b"]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_receipt_lookup_composes_with_filters_and_follows_config_edits(
+    store: Store,
+) -> None:
+    ids = await _seed_receipts(store)
+    await store.set_status(ids["shared_b"], "complete", actor="tester")
+
+    complete = await store.list_kind(
+        "Experiment",
+        receipt_id="R123",
+        filters=(Filter(field="status", op="is", value="complete"),),
+    )
+    assert [row.title for row in complete] == ["shared_b"]
+
+    # The config is the one association: rewriting it moves the row out of the
+    # result, and purging the row removes it, with no second table to sync.
+    await store.set_config(ids["shared_b"], {"executions": []}, actor="tester")
+    await store.purge(ids["shared_a"], actor="tester")
+    assert await store.list_kind("Experiment", receipt_id="R123") == []
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 

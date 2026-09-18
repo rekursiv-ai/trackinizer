@@ -71,6 +71,21 @@ def _seq_in_interval(seq: int, interval: SeqRange) -> bool:
     return not (interval.stop is not None and seq > interval.stop)
 
 
+def _records_receipt(row: dict[str, object], receipt_id: str) -> bool:
+    """Whether one ``config.executions`` entry names ``receipt_id`` exactly."""
+    config = row.get("config")
+    if not isinstance(config, dict):
+        return False
+    executions = cast(dict[str, object], config).get("executions")
+    if not isinstance(executions, list):
+        return False
+    return any(
+        isinstance(entry, dict)
+        and cast(dict[str, object], entry).get("receipt") == receipt_id
+        for entry in cast(list[object], executions)
+    )
+
+
 # ``match_filter`` resolves a filter field through ``canonical_filter_field`` and looks
 # the result up by key, so it expects storage-column keys (``issue_priority``,
 # ``paper_source``, ...). The fake's rows -- and the CLI render path -- carry the
@@ -381,6 +396,7 @@ class FakeClient:
         limit: int = 200,
         offset: int = 0,
         seq_ranges: Sequence[SeqRange] = (),
+        receipt_id: str | None = None,
         filters: Sequence[Filter] = (),
     ) -> list[dict[str, JSONValue]]:
         """List kind."""
@@ -393,6 +409,7 @@ class FakeClient:
                     "limit": limit,
                     "offset": offset,
                     "seq_ranges": tuple(seq_ranges),
+                    "receipt_id": receipt_id,
                     "filters": tuple(filters),
                 },
             ),
@@ -432,6 +449,10 @@ class FakeClient:
         # still surfaces. ``status`` is folded into the same pipeline.
         if status is not None:
             rows = [row for row in rows if row.get("status") == status]
+        # Mirror the server's containment: any ``config.executions`` entry whose
+        # ``receipt`` equals the id; a row without a config matches nothing.
+        if receipt_id is not None:
+            rows = [row for row in rows if _records_receipt(row, receipt_id)]
         for filt in filters:
             rows = [row for row in rows if bool(match_filter(_storage_view(row), filt))]
         return cast(

@@ -112,6 +112,9 @@ CREATE INDEX IF NOT EXISTS idx_inquiries_labels_gin
     ON inquiries USING gin(labels);
 CREATE INDEX IF NOT EXISTS idx_inquiries_subscribers_gin
     ON inquiries USING gin(subscribers);
+-- Supports containment queries over Experiment execution receipts.
+CREATE INDEX IF NOT EXISTS idx_inquiries_experiment_config_gin
+    ON inquiries USING gin(experiment_config jsonb_path_ops);
 -- Tie-breaker index for offset pagination over ``list_kind``.
 CREATE INDEX IF NOT EXISTS idx_inquiries_created_id
     ON inquiries (created DESC, id DESC);

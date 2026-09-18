@@ -168,6 +168,30 @@ class TestRoutes:
         assert len(ranges) == len(forwarded)
         assert [(r.start, r.stop) for r in ranges] == [(222, 260), (279, None)]
 
+    @pytest.mark.parametrize(
+        "kinds",
+        [("Issue",), ("Experiment", "Issue"), ("Belief", "Experiment")],
+    )
+    def test_list_kind_route_refuses_receipt_id_outside_experiment_only(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        kinds: tuple[str, ...],
+    ) -> None:
+        """A receipt is an Experiment fact; any other kind in the request is a 400.
+
+        Refused before the store is asked, so a mistaken kind never runs a
+        query whose answer is silently empty.
+        """
+        client, store, _engine = route_client
+        with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
+            r = client.get(
+                "/api/inquiries",
+                params=[*(("kind", k) for k in kinds), ("receipt_id", "R123")],
+            )
+        assert r.status_code == 400, r.text
+        assert "receipt_id" in r.text
+        mock.assert_not_awaited()
+
     def test_list_kind_route_forwards_filters_to_store(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
