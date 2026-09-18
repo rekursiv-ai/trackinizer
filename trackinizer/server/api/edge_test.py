@@ -96,7 +96,12 @@ class _PartialEdgeStore:
     def __init__(self) -> None:
         self.calls = 0
 
-    session_authz = staticmethod(_non_session_authz)
+    async def session_authz(
+        self,
+        target_id: uuid.UUID,
+    ) -> tuple[str, uuid.UUID | None]:
+        del self
+        return await _non_session_authz(target_id)
 
     async def add_edge(
         self,
@@ -138,7 +143,12 @@ class _ConflictEdgeStore:
     author-written message must reach the batch caller verbatim.
     """
 
-    session_authz = staticmethod(_non_session_authz)
+    async def session_authz(
+        self,
+        target_id: uuid.UUID,
+    ) -> tuple[str, uuid.UUID | None]:
+        del self
+        return await _non_session_authz(target_id)
 
     async def add_edge(
         self,
@@ -165,7 +175,12 @@ class _LeakyEdgeStore:
     reach the wire.
     """
 
-    session_authz = staticmethod(_non_session_authz)
+    async def session_authz(
+        self,
+        target_id: uuid.UUID,
+    ) -> tuple[str, uuid.UUID | None]:
+        del self
+        return await _non_session_authz(target_id)
 
     async def add_edge(
         self,
