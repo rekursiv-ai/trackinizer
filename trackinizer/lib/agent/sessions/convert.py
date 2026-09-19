@@ -917,7 +917,7 @@ def _destination(out_dir: Path, path: Path, suffix: str) -> Path:
     return out_dir / f"{path.stem}-{abs(hash(str(path)))}{suffix}"
 
 
-class _Comparing(TextIO):
+class _Comparing(StringIO):
     """A sink that checks what is written against a file, keeping neither.
 
     ``denormalize`` writes a whole session, and holding that as one string

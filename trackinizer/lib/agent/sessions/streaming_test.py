@@ -10,7 +10,7 @@ tracks the output it produced.
 from __future__ import annotations
 
 from io import StringIO
-from typing import TYPE_CHECKING, TextIO, override
+from typing import TYPE_CHECKING, override
 from weakref import ReferenceType, ref
 
 import gc
@@ -35,7 +35,7 @@ class _TrackedLine(str):
     __slots__ = ("__weakref__",)
 
 
-class _WatchedInput(TextIO):
+class _WatchedInput(StringIO):
     """Hand out one line at a time, watching how many stay alive at once.
 
     The count is taken WHILE the adapter reads, not after: a reader that
@@ -65,7 +65,7 @@ class _WatchedInput(TextIO):
         return line
 
 
-class _NullSink(TextIO):
+class _NullSink(StringIO):
     """Discard every write, so only the writer's own retention is measured."""
 
     @override

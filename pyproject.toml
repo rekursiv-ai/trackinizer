@@ -65,8 +65,8 @@ test = [
     "pytest-postgresql>=9.0",
 ]
 typecheck = [
-    "basedpyright>=1.10",
-    "ty>=0.0.75",
+    "basedpyright>=1.40.1",
+    "ty>=0.0.82",
     "rekursiv-ai-typeshed",
     "hatchling>=1.32.1",  # packages/rekursiv-ai-typeshed/rekursiv_ai_typeshed/hatch_build.py subscripts its two-parameter BuildHookInterface.
     "asyncpg-stubs>=0.31.2",
