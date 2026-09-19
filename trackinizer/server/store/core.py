@@ -41,6 +41,7 @@ from trackinizer.server.store.edge import (
     _EdgeMixin,
 )
 from trackinizer.server.store.edit import _EditMixin
+from trackinizer.server.store.export import _ExportMixin
 from trackinizer.server.store.metrics import _MetricsMixin
 from trackinizer.server.store.read import _ReadMixin
 from trackinizer.server.store.session import _SessionMixin
@@ -428,6 +429,7 @@ def _is_transient_pglite_fault(err: BaseException) -> bool:
 class Store(
     _LifecycleMixin,
     _ReadMixin,
+    _ExportMixin,
     _MetricsMixin,
     _SessionMixin,
     _SessionIRMixin,

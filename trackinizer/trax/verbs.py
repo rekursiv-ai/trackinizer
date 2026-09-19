@@ -2417,6 +2417,43 @@ Notes:
         echo(client_factory().version())
 
 
+class Export(Command):
+    """Write the whole graph as JSON lines, for backup or a mirror."""
+
+    names = ("export",)
+    help = """\
+Usage: trax export
+
+Examples:
+  trax export > graph.jsonl                     back up the whole graph
+
+Notes:
+  One JSON object per line. The first names the format and the schema
+  migrations the rows were written under; each one after is
+  {"table": ..., "row": {...}}. Covers every inquiry, edge, and change_log
+  row plus experiment metrics and agent-session records. Leaves out
+  embeddings, encrypted thinking, and users and API keys. An unchanged
+  graph exports byte-for-byte the same. Read-only: nothing imports it yet.
+"""
+
+    @classmethod
+    @override
+    def make_parser(cls) -> argparse.ArgumentParser:
+        return argparse.ArgumentParser(prog="trax export", description=cls.__doc__)
+
+    @classmethod
+    @override
+    def run(
+        cls,
+        verb: str,
+        args: argparse.Namespace,
+        client_factory: Callable[[], Client],
+    ) -> None:
+        del verb, args
+        for line in client_factory().export():
+            echo(line)
+
+
 # The leading ``@`` is optional; a single ``:`` separates an optional room.
 def _parse_target(target: str) -> tuple[str, str | None]:
     """Split a ``@actor[:room]`` target into ``(actor, room)``."""

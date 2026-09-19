@@ -217,6 +217,12 @@ The typed fields on `Inquiry` (`produces`, `supersedes`, citation lists)
 are projections the Store fills by reading `edges` -- the edge table is the
 real storage.
 
+`trax export > graph.jsonl` writes the graph as JSON lines: the rows of the
+tables above, minus embeddings, ciphertext, and auth. Unlike a copy of the
+PGlite datadir it is not tied to the storage internals that wrote it, and an
+unchanged graph exports the same bytes twice. Line format:
+[`docs/api.md`](trackinizer/docs/api.md) section 3.24.
+
 ## Package dependency graph
 
 Four layers, two legs sharing one contract spine. An arrow means

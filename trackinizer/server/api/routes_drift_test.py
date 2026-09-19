@@ -30,6 +30,7 @@ from trackinizer.wire.routes import (
     inquiry_field_path,
     inquiry_field_routes,
 )
+from trackinizer.wire.wire_export import EXPORT_API_PATHS
 from trackinizer.wire.wire_metrics import METRICS_API_PATHS
 from trackinizer.wire.wire_metrics_query import (
     METRICS_QUERY_API_PATHS,
@@ -193,6 +194,19 @@ def test_metrics_api_paths_are_registered_routes() -> None:
     assert not missing, "metrics-family routes with no registered route:\n" + "\n".join(
         missing,
     )
+
+
+def test_export_api_paths_are_registered_and_documented() -> None:
+    """The export route exists on the live app and appears in ``docs/api.md``.
+
+    Hand-registered like the metrics and session families, so it gets the
+    same two guards: a rename cannot strand the client, and the doc cannot
+    quietly lose the route.
+    """
+    registered = registered_paths(app)
+    api_md = (_CWD.parents[1] / "docs" / "api.md").read_text()
+    assert [p for p in EXPORT_API_PATHS if p not in registered] == []
+    assert [p for p in EXPORT_API_PATHS if p not in api_md] == []
 
 
 def test_session_api_paths_are_documented() -> None:

@@ -274,6 +274,17 @@ GET /api/version
 `git HEAD`, else `"unknown"`). A 404 means the live binary predates the
 endpoint -- itself a staleness signal.
 
+### 1.23 Export
+
+```
+GET /api/export
+```
+
+The whole graph as JSON lines (`application/x-ndjson`), for backup or a
+public mirror: every inquiry, edge, and change-log row, plus experiment
+metrics and agent-session records, read in one snapshot. Viewer role, like
+any read. Read-only; nothing imports it yet. Line shape: section 3.24.
+
 ## 2. Glossary
 
 ### 2.1 Route tokens
@@ -732,6 +743,28 @@ action          -> {"ok": true}
 event: change
 data: {"id": "<change_uuid>"}
 ```
+
+### 3.24 Export lines
+
+```
+{"format": "trackinizer-export", "version": 1, "migrations": ["schema.sql", ...]}
+{"table": "inquiries", "row": {"id": "<uuid>", "kind": "Issue", ...}}
+{"table": "edges", "row": {"from_id": "<uuid>", "edge_kind": "narrows", ...}}
+...
+```
+
+The first line is the header: `migrations` names the applied schema files,
+so a reader knows which columns the rows carry. Every later line is one row
+of one table, keyed by column name. Tables come in the order `inquiries`,
+`edges`, `change_log`, `experiment_metrics`, `session_manifests`,
+`session_records`, `session_slash_commands`, and rows in a fixed order within
+each, so an unchanged graph exports byte-for-byte the same and new rows land
+at the end. UUIDs and timestamps are strings; `json` columns are their
+decoded value.
+
+Not exported: `inquiry_embeddings` (derived), `session_ciphertext`
+(encrypted, retention-managed), and `users` / `api_keys` / `allowlist`
+(credentials and access control).
 
 ## 4. Other details
 

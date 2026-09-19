@@ -36,6 +36,7 @@ from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import SeqRef, UuidRef
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
+from trackinizer.wire.wire_export import EXPORT_API_PATH
 from trackinizer.wire.wire_sessions import SessionStart
 
 
@@ -1530,6 +1531,49 @@ class TestSessionMethods:
         resp = client.session_end(sid)
         assert seen["path"] == f"/api/sessions/{sid}/end"
         assert resp.id == sid
+
+
+class TestExport:
+    def test_yields_each_line_without_its_newline(self) -> None:
+        body = b'{"format":"trackinizer-export"}\n\n{"table":"edges","row":{}}\n'
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, content=body)
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            lines = list(client.export())
+
+        assert lines == [
+            '{"format":"trackinizer-export"}',
+            '{"table":"edges","row":{}}',
+        ]
+        assert [(r.method, r.url.path) for r in seen] == [("GET", EXPORT_API_PATH)]
+
+    def test_an_error_status_raises_client_error(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(401, json={"detail": "not authenticated"})
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError) as err:
+                list(client.export())
+
+        assert err.value.status_code == 401
+        assert "not authenticated" in str(err.value)
+
+    def test_a_transport_failure_raises_client_error(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            raise httpx2.ConnectError("refused")
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError, match="refused"):
+                list(client.export())
 
 
 if __name__ == "__main__":

@@ -1904,6 +1904,19 @@ def test_version_prints_server_sha(
     assert "testsha" in capsys.readouterr().out
 
 
+def test_export_writes_each_line_to_stdout(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["export"], client)
+
+    assert [c[0] for c in client.calls] == ["export"]
+    assert capsys.readouterr().out == (
+        '{"format":"trackinizer-export","version":1,"migrations":[]}\n'
+        '{"table":"inquiries","row":{"title":"canned"}}\n'
+    )
+
+
 def test_kindless_filter_queries_every_kind(client: FakeClient) -> None:
     """A leading filter field lists across every kind.
 

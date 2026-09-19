@@ -434,7 +434,7 @@ flags documented here.
 ```
 verb_name   ::= "help" | "profile" | "next" | "recent"
              |  "cost" | "blocked" | "board" | "graph" | "id"
-             |  "version" | "send" | "run"
+             |  "version" | "export" | "send" | "run"
 ```
 
 A leading token that is neither a verb nor a kind is a FILTER FIELD, and the
@@ -456,6 +456,8 @@ kinds resolve first, so a field can never shadow a command.
 - `trax board [--width INT]` -- Issues grouped by status.
 - `trax graph [--open-only]` -- dependency tree.
 - `trax version` -- print the CLI version.
+- `trax export` -- write the whole graph as JSON lines to stdout, for
+  backup or a mirror (`trax export > graph.jsonl`). Read-only.
 - `trax send @actor[:room] TEXT...` -- inject a message into a live agent
   session addressed by its routing name (its `run --as` owner).
 - `trax run claude|gemini|codex [--out FILE] [--verbose] [--dry-run]

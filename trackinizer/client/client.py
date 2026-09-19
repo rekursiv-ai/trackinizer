@@ -58,12 +58,14 @@ from trackinizer.wire.routes import (
     inquiry_field_path,
 )
 from trackinizer.wire.seq_ranges import SeqRange, format_interval
+from trackinizer.wire.wire_export import EXPORT_API_PATH
 
 
 logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from types import TracebackType
 
     import pydantic
@@ -497,6 +499,30 @@ class Client:
         if not isinstance(payload, dict) or "sha" not in payload:
             raise ClientError(f"/api/version returned a malformed payload: {payload!r}")
         return str(payload["sha"])
+
+    def export(self) -> Iterator[str]:
+        """Stream the logical export (``wire.wire_export``), one line at a time.
+
+        Lines are yielded as they arrive, so a large graph is never held
+        whole. Not retried, unlike :meth:`_request`: a failure part-way would
+        restart the stream and hand the caller its first lines twice.
+
+        Yields:
+          line: One JSON object, without its trailing newline.
+
+        """
+        try:
+            with self._http.stream("GET", EXPORT_API_PATH) as response:
+                if response.status_code >= 400:
+                    _ = response.read()
+                    raise ClientError(
+                        f"GET {EXPORT_API_PATH} -> {response.status_code}: "
+                        f"{_truncate(response.text)}",
+                        status_code=response.status_code,
+                    )
+                yield from (line for line in response.iter_lines() if line)
+        except httpx2.TransportError as err:
+            raise ClientError(f"GET {EXPORT_API_PATH} failed: {err}") from err
 
     def wait_until_ready(
         self,

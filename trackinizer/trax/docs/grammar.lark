@@ -155,7 +155,7 @@ group_create: KIND (inline_field | cost_action | safe_meta | EDGE edge_meta)+ (e
 
 // ---- terminals (keyword sets; spellings overlap across classes, e.g.
 // codechange is KIND+REF_LIST_FIELD, resolved by position) ----
-VERB: "blocked" | "profile" | "version" | "recent" | "board" | "graph" | "cost" | "help" | "next" | "send" | "run" | "id"
+VERB: "blocked" | "profile" | "version" | "export" | "recent" | "board" | "graph" | "cost" | "help" | "next" | "send" | "run" | "id"
 KIND: "agentsession" | "codechange" | "experiment" | "webresult" | "websearch" | "artifact" | "belief" | "issue" | "paper"
 EDGE_KEYWORD: "disfavored_by" | "superseded_by" | "broadened_by" | "disproved_by" | "narrowed_by" | "produced_by" | "required_by" | "blocked_by" | "favored_by" | "supersedes" | "disfavors" | "disproves" | "proved_by" | "broadens" | "cited_by" | "produced" | "produces" | "requires" | "narrows" | "blocks" | "favors" | "proves" | "cites"
 FIELD: "google_scholar_cluster_id" | "google_scholar_cites_id" | "publication_type" | "cli_session_id" | "publish_date" | "description" | "confidence" | "validation" | "judgement" | "abstract" | "priority" | "provider" | "subvenue" | "account" | "outcome" | "started" | "config" | "source" | "status" | "owner" | "query" | "title" | "venue" | "cli" | "sha" | "url"
@@ -227,6 +227,7 @@ VERB_ARG: /\S+/
 //   blocked
 //   board [--width V]
 //   cost issue|artifact|experiment|paper|belief|codechange|webresult|websearch|agentsession SEQ [--deep] [--format text|json]
+//   export
 //   graph [--open-only]
 //   help [TOPIC]
 //   id UUID [--format table|json] [--changes]

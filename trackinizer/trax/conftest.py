@@ -50,7 +50,7 @@ from trackinizer.wire.wire_sessions import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
     from pathlib import Path
     from types import TracebackType
 
@@ -540,6 +540,12 @@ class FakeClient:
         """Version."""
         self.calls.append(("version", (), {}))
         return "testsha"
+
+    def export(self) -> Iterator[str]:
+        """Two canned export lines: a header and one row."""
+        self.calls.append(("export", (), {}))
+        yield '{"format":"trackinizer-export","version":1,"migrations":[]}'
+        yield '{"table":"inquiries","row":{"title":"canned"}}'
 
     def wait_until_ready(
         self,
