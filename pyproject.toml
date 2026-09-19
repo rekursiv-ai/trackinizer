@@ -598,6 +598,12 @@ required-environments = [
 [tool.uv.workspace]
 members = []
 
+[tool.uv.extra-build-dependencies]
+rekursiv-ai-typeshed = [
+    {requirement = "basedpyright", match-runtime = true},
+    {requirement = "ty", match-runtime = true},
+]
+
 [tool.uv.pip]
 compile-bytecode = true
 
