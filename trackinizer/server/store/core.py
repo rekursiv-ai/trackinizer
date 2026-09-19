@@ -14,6 +14,8 @@ from uuid import UUID
 
 import asyncio
 import hashlib
+import logging
+import os
 
 
 if TYPE_CHECKING:
@@ -45,7 +47,7 @@ from trackinizer.server.store.metrics import _MetricsMixin
 from trackinizer.server.store.read import _ReadMixin
 from trackinizer.server.store.session import _SessionMixin
 from trackinizer.server.store.session_ir import _SessionIRMixin
-from trackinizer.server.store.shared import _StoreShared
+from trackinizer.server.store.shared import _StoreShared, embeddable_text
 from trackinizer.server.store.submit import (
     _SubmitMixin,
 )
@@ -53,6 +55,8 @@ from trackinizer.server.values import vetted_sql
 
 
 __all__ = ["Store"]
+
+logger = logging.getLogger(__name__)
 
 # ``asyncpg`` raises a plain ``InterfaceError('connection is closed')`` (and a
 # mid-operation ``ConnectionDoesNotExistError`` whose message mentions "closed
@@ -220,20 +224,74 @@ class _LifecycleMixin(_StoreShared):
     # network/model embedder must move this off the startup path -- N blocking ``embed``
     # calls would stall boot.
     async def _backfill_embeddings(self, conn: Conn) -> None:
-        """Embed any inquiry missing a row for a registered embedder."""
+        """Embed any inquiry missing a row for a registered embedder.
+
+        Indexes the same text the submit and edit paths do -- title AND
+        description, via :func:`embeddable_text`. All four write paths must
+        agree: if this one regenerated a title-only vector, a backfilled row
+        would sit in the table alongside normally-written rows carrying
+        strictly more information, and queries derived from description
+        wording would match the backfilled rows worse for no visible reason.
+
+        This fills only rows with NO vector for the embedder, so rows written
+        before description-indexing keep their title-only vectors. That is
+        almost never worth acting on: the only embedder a server can register
+        is ``stub`` (``build_embedder`` rejects every other name), whose
+        vectors are hash expansions carrying no meaning, and
+        ``Store.find_similar`` refuses to rank them. Enabling real search means
+        registering a different embedder, whose different ``name`` has no rows
+        yet -- so this method embeds the whole table fresh, with the current
+        composition, and no mixed state arises.
+
+        It can arise for one caller: a library user already running
+        ``Store(embed=...)`` under a stable name who upgrades across this
+        change. Because the vector is fully derived data (recomputable from the
+        row, so discarding it loses nothing), either fix works --
+        ``DELETE FROM inquiry_embeddings WHERE model = '<name>'`` and restart to
+        let this method regenerate, or bump the embedder's ``name`` so the
+        fresh composition lands beside the old one. The ``(inquiry_id, model)``
+        key and ``find_similar``'s single-``model`` scoping make the second
+        reversible, which is what the schema's "multiple rows per inquiry allow
+        side-by-side comparison of embedding approaches" note is for.
+        """
         for embedder in self.embedders:
+            # A remote embedder is skipped here unless explicitly opted in.
+            # This method runs inside bootstrap's advisory-locked transaction,
+            # so N network round-trips would stall every boot for as long as
+            # the corpus takes to embed -- which is the case the class comment
+            # above warns must not run on the startup path. Rows written from
+            # now on are embedded by the submit/edit paths as normal; only
+            # pre-existing rows wait, and an operator who wants them filled
+            # sets TRACKINIZER_EMBEDDER_BACKFILL=1 for a one-time pass.
+            if getattr(embedder, "is_remote", False) and (
+                os.environ.get("TRACKINIZER_EMBEDDER_BACKFILL") != "1"
+            ):
+                logger.info(
+                    "skipping boot backfill for remote embedder %r; set "
+                    "TRACKINIZER_EMBEDDER_BACKFILL=1 to run it once",
+                    embedder.name,
+                )
+                continue
             rows = await conn.fetch(
-                "SELECT id, title FROM inquiries i WHERE NOT EXISTS ("
+                "SELECT id, title, description FROM inquiries i WHERE NOT EXISTS ("
                 "SELECT 1 FROM inquiry_embeddings e "
                 "WHERE e.inquiry_id = i.id AND e.model = $1)",
                 embedder.name,
             )
             for row in rows:
+                # ``.get``: a projection without the column means "no
+                # description", embedding the title alone rather than raising.
+                # Same access shape ``Edge.from_row`` uses for optional columns.
+                stored_description = row.get("description")
+                text = embeddable_text(
+                    cast(str, row["title"]),
+                    stored_description if isinstance(stored_description, str) else None,
+                )
                 await upsert_embedding(
                     conn,
                     cast(UUID, row["id"]),
                     embedder.name,
-                    await embedder.embed(cast(str, row["title"])),
+                    await embedder.embed(text),
                 )
 
     async def bootstrap(self, *, attempts: int = 6) -> None:

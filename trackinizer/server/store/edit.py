@@ -91,7 +91,28 @@ class _EditMixin(_CascadeAuditMixin):
         # ``FOR UPDATE`` lock for the round-trip, blocking every other
         # writer touching this Inquiry. The cost of a wasted embed on
         # the rare dedup-hit is dominated by the lock-contention win.
-        new_vecs = await self._embed_all(value)
+        #
+        # The indexed text spans title AND description (``embeddable_text``),
+        # so the current description has to be read to re-embed. It is read
+        # here, outside the transaction, to keep the embed off the lock -- the
+        # whole reason this call sits above ``tx``. A concurrent description
+        # edit between this read and the commit re-embeds the row itself, so
+        # last-writer-wins and neither path leaves a stale vector.
+        async with self.engine.acquire() as pre:
+            current = await pre.fetchrow(
+                "SELECT description FROM inquiries WHERE id = $1",
+                target_id,
+            )
+        # ``.get`` rather than ``[...]``: a projection that does not carry the
+        # column yields "no description", which embeds the title alone -- the
+        # same access shape ``Edge.from_row`` uses for optional columns. The
+        # isinstance check stands in for ``StrCodec.coerce``, which raises on a
+        # genuine SQL NULL rather than returning the ``None`` default.
+        stored_description = current.get("description") if current is not None else None
+        new_vecs = await self._embed_inquiry(
+            value,
+            stored_description if isinstance(stored_description, str) else None,
+        )
         async with (
             notify_after_commit(),
             self.engine.acquire() as conn,
@@ -270,12 +291,31 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
     ) -> UUID | None:
+        # The description is part of the indexed text (``embeddable_text``), so
+        # editing it must re-embed -- otherwise the stored vector keeps
+        # describing the previous wording and semantic search silently drifts
+        # out of sync with the row. Read the title and embed here, outside the
+        # transaction, for the lock reason documented on ``_set_field``.
+        async with self.engine.acquire() as pre:
+            current = await pre.fetchrow(
+                "SELECT title FROM inquiries WHERE id = $1",
+                target_id,
+            )
+        reembed = (
+            ()
+            if current is None
+            else await self._embed_inquiry(
+                StrCodec.coerce(current.get("title"), "") or "",
+                value,
+            )
+        )
         return await self._set_field(
             target_id,
             value,
             column="description",
             api_key_id=api_key_id,
             actor=actor,
+            reembed=reembed,
         )
 
     # The single mutation pipeline that every ``set_X`` setter delegates into. Replaces
@@ -294,8 +334,18 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
         reason: str = "",
+        reembed: Sequence[tuple[str, list[float]]] = (),
     ) -> UUID | None:
-        """Lock, compare, validate, update, audit, and notify one editable column."""
+        """Lock, compare, validate, update, audit, and notify one editable column.
+
+        ``reembed`` carries pre-computed ``(model, vector)`` pairs to upsert
+        after the column write lands. Only columns that feed
+        ``embeddable_text`` supply it (``description``; ``title`` has its own
+        setter). Computed by the caller *before* the transaction so a network
+        embedder never runs while the row's ``FOR UPDATE`` lock is held --
+        the same rule ``set_title`` and the submit path follow. Empty for
+        every other column, which makes this a no-op there.
+        """
         spec = COLUMN_SPECS[column]
         if spec.immutable:
             raise ConflictError(
@@ -371,6 +421,11 @@ class _EditMixin(_CascadeAuditMixin):
                 raise ConflictError(
                     f"check constraint violated: {exc.detail or exc!s}",
                 ) from exc
+            # Keep the row's vector aligned with its searchable text. Placed
+            # after the column write so a failed update leaves the old vector
+            # intact rather than pointing at text that never committed.
+            for model, vec in reembed:
+                await upsert_embedding(conn, target_id, model, vec)
             # ``old_value`` is None when subscribers was unset (NULL); the
             # notify fan-out wants the concrete pre-edit set, so coalesce.
             extra_subs = (

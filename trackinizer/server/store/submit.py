@@ -225,7 +225,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         # lock-contention win. The batch path cannot hoist (each item's embed
         # is unavoidably inside the batch's shared tx), so it lets
         # ``_submit_on_conn`` embed inline by passing ``embeddings=None``.
-        embeddings = await self._embed_all(req.title)
+        embeddings = await self._embed_inquiry(req.title, req.description)
         try:
             async with (
                 notify_after_commit(),
@@ -329,7 +329,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         # shared tx, which it cannot avoid; the single path passes a value it
         # computed before opening its own tx.
         if embeddings is None:
-            embeddings = await self._embed_all(req.title)
+            embeddings = await self._embed_inquiry(req.title, req.description)
         # Stash the client-supplied idempotency key into the per-request
         # slot so ``emit_change`` picks it up on its first call inside
         # this transaction. Mirrors how ``Idempotency-Key`` is delivered for

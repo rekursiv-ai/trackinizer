@@ -479,6 +479,51 @@ class Client:
             return None
         return dict(_require_mapping(payload, where))
 
+    def find_similar(
+        self,
+        text: str,
+        *,
+        kind: Inquiry.InquiryKind | None = None,
+        limit: int | None = None,
+        model: str | None = None,
+    ) -> list[dict[str, JSONValue]]:
+        """Inquiries whose embedding is nearest ``text``, nearest first.
+
+        Each row is the inquiry's own fields plus a ``distance`` key: pgvector
+        cosine distance in ``[0, 2]``, 0 being identical, so smaller is closer.
+
+        Pass ``kind`` when looking for same-kind neighbours. The graph holds a
+        Belief and the Experiment proving it as separate rows, so their text is
+        near-duplicate by design and an unfiltered search for comparable
+        Beliefs returns the Experiments too.
+
+        Requires the server to run a meaning-bearing embedder; against the
+        default hash stub the route answers 400 rather than return an arbitrary
+        ranking, which surfaces here as a :class:`ClientError`.
+
+        Args:
+          text: Query text to search by.
+          kind: Restrict to one Inquiry kind, or None for all kinds.
+          limit: Maximum rows; None uses the server default.
+          model: Embedder name whose vectors to search; None uses the first.
+
+        Returns:
+          matches: Row dicts, nearest first, each carrying ``distance``.
+
+        """
+        params: dict[str, str] = {"q": text}
+        if kind is not None:
+            params["kind"] = kind
+        if limit is not None:
+            params["limit"] = str(limit)
+        if model is not None:
+            params["model"] = model
+        where = "/api/inquiries/similar"
+        return [
+            dict(_require_mapping(row, where))
+            for row in _require_list(self.get(where, params=params), where)
+        ]
+
     def version(self) -> str:
         """Return the server's build SHA, for stale-deploy detection.
 

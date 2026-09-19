@@ -15,6 +15,7 @@ import uuid
 from trackinizer.lib.postgres import DatabaseEngine, PGliteEngine, PostgresEngine
 from trackinizer.lib.userdirs import data_dir
 from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.embedder_http import HttpEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 
 
@@ -248,9 +249,48 @@ def build_engine(config: Config | None = None) -> DatabaseEngine:
 
 
 def build_embedder(name: str) -> Embedder:
-    """Build the embedder backend."""
+    """Build the embedder backend.
+
+    ``stub`` stays the default so an unconfigured install behaves exactly as
+    before: offline, no key, no download, and ``Store.find_similar`` refusing
+    to rank its hash vectors rather than returning arbitrary ones.
+
+    ``http`` is a real embedder over an OpenAI-compatible ``/v1/embeddings``
+    endpoint (see :mod:`trackinizer.server.embedder_http`). Its settings come
+    from the environment rather than new CLI flags, matching how the Google
+    OAuth secrets are already supplied:
+
+    - ``TRACKINIZER_EMBEDDER_URL``   -- API base, e.g.
+      ``http://localhost:11434/v1`` for a local Ollama, or a hosted provider.
+    - ``TRACKINIZER_EMBEDDER_MODEL`` -- model id to request.
+    - ``TRACKINIZER_EMBEDDER_API_KEY`` -- optional; local servers need none.
+    - ``TRACKINIZER_EMBEDDER_NAME``  -- optional label written to
+      ``inquiry_embeddings.model``, defaulting to the model id. Bump it
+      whenever the vector geometry changes, since ``find_similar`` scopes each
+      query to one name and must not compare two geometries.
+
+    Raises:
+      ConfigError: Unknown backend name, or ``http`` selected without the
+        URL and model it needs. Failing at construction beats discovering it
+        on the first submit.
+
+    """
     if name == "stub":
         return StubEmbedder()
+    if name == "http":
+        url = os.environ.get("TRACKINIZER_EMBEDDER_URL", "").strip()
+        model = os.environ.get("TRACKINIZER_EMBEDDER_MODEL", "").strip()
+        if not url or not model:
+            raise ConfigError(
+                "--embedder http requires TRACKINIZER_EMBEDDER_URL and "
+                "TRACKINIZER_EMBEDDER_MODEL",
+            )
+        return HttpEmbedder(
+            url=url,
+            model=model,
+            api_key=os.environ.get("TRACKINIZER_EMBEDDER_API_KEY") or None,
+            name=os.environ.get("TRACKINIZER_EMBEDDER_NAME") or None,
+        )
     raise ConfigError(f"unknown embedder {name!r}")
 
 

@@ -255,6 +255,60 @@ async def list_inquiries_route(
     return out
 
 
+# Registered before ``/{target_id}`` and ``/{kind}/{seq}``: Starlette matches
+# in registration order, so a later declaration would see "similar" parsed as
+# a UUID (422) or as an InquiryKind (422) instead of reaching this handler.
+@router.get("/api/inquiries/similar")
+async def find_similar_route(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    q: Annotated[str, Query(min_length=1)],
+    *,
+    kind: Inquiry.InquiryKind | None = None,
+    limit: int = DEFAULT_LIST_LIMIT,
+    model: str | None = None,
+) -> list[MutableJSON]:
+    """Inquiries whose embedding is nearest ``q``, nearest first.
+
+    The read half of the embedding search ``docs/design.md`` names as one of
+    the two discovery paths; the write half already populates
+    ``inquiry_embeddings`` on every submit and title/description edit.
+
+    Each row carries a ``distance`` key alongside the inquiry's own fields:
+    pgvector cosine distance in ``[0, 2]``, where 0 is identical, so smaller
+    is closer. It is reported rather than turned into a similarity percentage
+    because the caller decides what threshold means "close enough" for its
+    purpose, and that varies by corpus.
+
+    ``kind`` is worth passing. The graph deliberately holds a Belief and the
+    Experiment proving it as separate rows, so their text is near-duplicate by
+    design and an unfiltered search for comparable Beliefs surfaces the
+    Experiments instead.
+
+    Requires an embedder whose vectors are meaning-bearing. The default
+    ``stub`` embedder is a hash, so this returns 400 rather than a ranking
+    that looks real but is arbitrary.
+    """
+    del identity
+    try:
+        matches = await get_store(request).find_similar(
+            q,
+            kind=kind,
+            limit=limit,
+            model=model,
+        )
+    except ValueError as exc:
+        # Both raising paths are caller/deployment errors, not server faults:
+        # an unknown ``model`` name, or an embedder that cannot rank.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    out: list[MutableJSON] = []
+    for inquiry, distance in matches:
+        row = tag_row(inquiry)
+        row["distance"] = distance
+        out.append(row)
+    return out
+
+
 # Register the static-suffix routes (/cost, /proves_belief) before the
 # /{kind}/{seq} route so a UUID in the first segment isn't matched as a
 # kind and rejected by InquiryKind validation. Starlette matches in

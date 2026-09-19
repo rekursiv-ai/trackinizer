@@ -182,8 +182,15 @@ def _parse_args(
     parser.add_argument(
         "--embedder",
         default="stub",
-        choices=["stub"],
-        help="Embedding backend (default: stub).",
+        choices=["stub", "http"],
+        help=(
+            "Embedding backend (default: stub). 'stub' is a deterministic hash: "
+            "offline and dependency-free, but its vectors carry no meaning, so "
+            "semantic search refuses to rank them. 'http' calls an "
+            "OpenAI-compatible /v1/embeddings endpoint and needs "
+            "TRACKINIZER_EMBEDDER_URL and TRACKINIZER_EMBEDDER_MODEL (see "
+            "config.build_embedder); point it at a local Ollama to stay offline."
+        ),
     )
     parser.add_argument(
         "--web",
