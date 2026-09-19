@@ -157,7 +157,7 @@ group_create: KIND (inline_field | cost_action | safe_meta | EDGE edge_meta)+ (e
 // codechange is KIND+REF_LIST_FIELD, resolved by position) ----
 VERB: "blocked" | "profile" | "version" | "recent" | "board" | "graph" | "cost" | "help" | "next" | "send" | "run" | "id"
 KIND: "agentsession" | "codechange" | "experiment" | "webresult" | "websearch" | "artifact" | "belief" | "issue" | "paper"
-EDGE_KEYWORD: "disfavored_by" | "superseded_by" | "broadened_by" | "disproved_by" | "narrowed_by" | "produced_by" | "required_by" | "blocked_by" | "favored_by" | "supersedes" | "disfavors" | "disproves" | "proved_by" | "broadens" | "cited_by" | "produced" | "produces" | "requires" | "narrows" | "blocks" | "favors" | "proves" | "cites"
+EDGE_KEYWORD: "disfavored_by" | "superseded_by" | "broadened_by" | "disproved_by" | "overruled_by" | "narrowed_by" | "produced_by" | "required_by" | "blocked_by" | "favored_by" | "supersedes" | "disfavors" | "disproves" | "overrules" | "proved_by" | "broadens" | "cited_by" | "produced" | "produces" | "requires" | "narrows" | "blocks" | "favors" | "proves" | "cites"
 FIELD: "google_scholar_cluster_id" | "google_scholar_cites_id" | "publication_type" | "cli_session_id" | "publish_date" | "description" | "confidence" | "validation" | "judgement" | "abstract" | "priority" | "provider" | "subvenue" | "account" | "outcome" | "started" | "config" | "source" | "status" | "owner" | "query" | "title" | "venue" | "cli" | "sha" | "url"
 LIST_FIELD: "subscribers" | "issue_kind" | "subscriber" | "issuekind" | "authors" | "author" | "labels" | "label" | "kind"
 REF_LIST_FIELD: "codechanges" | "codechange"
@@ -217,7 +217,7 @@ VERB_ARG: /\S+/
 //   produced_by: produced_by   (reverse voice: produced produces)
 //   proves: disproves proves   (reverse voice: disproved_by proved_by)
 //   favors: disfavors favors   (reverse voice: disfavored_by favored_by)
-//   supersedes: supersedes   (reverse voice: superseded_by)
+//   supersedes: overrules supersedes   (reverse voice: overruled_by superseded_by)
 //   cites_paper: cites   (reverse voice: cited_by)
 // VERBS (full usage, generated from each verb's argparse). What they do:
 //   next=next unblocked Issue; blocked/board/graph=Issue views;

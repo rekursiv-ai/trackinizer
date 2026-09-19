@@ -28,7 +28,7 @@ from trackinizer.trax.verbs import (
     _query_rows,
     resolve_actor,
 )
-from trackinizer.types.edges import Edge
+from trackinizer.types.edges import OVERRULE_LABEL, Edge
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
 from trackinizer.wire.routes import MAX_LIST_LIMIT
@@ -733,6 +733,78 @@ def test_disproves_relation_filters_to_negative_valence() -> None:
     against = Kind._relation_rows(payload, ("proves", True), against=True)
     assert len(all_proves) == 2
     assert [r["id"] for r in against] == ["p2"]
+
+
+def test_overrules_writes_a_labelled_supersedes_with_its_reason(
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``belief 2 overrules belief 1`` stores successor -> predecessor, labelled."""
+    ids = {1: uuid.uuid4(), 2: uuid.uuid4()}
+
+    def _resolve(self: FakeClient, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
+        del self
+        assert isinstance(ref, SeqRef)
+        return "Belief", ids[ref.seq]
+
+    monkeypatch.setattr(FakeClient, "resolve_id", _resolve)
+    run(
+        ["belief", "2", "overrules", "belief", "1", "note", "to", "board chose it"],
+        client,
+    )
+
+    (call,) = [c for c in client.calls if c[0] == "add_edge"]
+    assert call[1] == (ids[2], ids[1], "supersedes")
+    assert call[2]["labels"] == (OVERRULE_LABEL,)
+    assert call[2]["note"] == "board chose it"
+
+
+def test_overruled_by_relation_filters_to_the_overrule_label() -> None:
+    """``... overruled_by`` lists only the supersessions that were overrules."""
+    payload: dict[str, object] = {
+        "self": {"id": "b1", "kind": "Belief", "seq": 1},
+        "backlinks": {
+            "supersedes": [
+                {"id": "b2", "kind": "Belief", "seq": 2, "labels": ["overrule"]},
+                {"id": "b3", "kind": "Belief", "seq": 3},
+            ],
+        },
+    }
+    everything = Kind._relation_rows(payload, ("supersedes", True))
+    overrules = Kind._relation_rows(
+        payload,
+        ("supersedes", True),
+        label=OVERRULE_LABEL,
+    )
+    assert len(everything) == 2
+    assert [r["id"] for r in overrules] == ["b2"]
+
+
+def test_edge_payload_overrule_reads_as_overrules() -> None:
+    """A ``supersedes`` edge carrying the overrule label renders as one."""
+    predecessor: dict[str, object] = {
+        "self": {"id": "b1", "kind": "Belief", "seq": 1},
+        "changes": [],
+    }
+    successor: dict[str, object] = {
+        "self": {"id": "b2", "kind": "Belief", "seq": 2},
+        "changes": [],
+    }
+    payload = Kind._edge_payload(
+        predecessor,
+        successor,
+        {"labels": [OVERRULE_LABEL], "note": "board chose it"},
+        ("supersedes", True),
+    )
+    assert payload["title"] == "overrules"
+    source, target = cast(
+        tuple[dict[str, object], dict[str, object]],
+        payload["endpoints"],
+    )
+    assert source["label"] == "successor"
+    assert target["label"] == "overruled predecessor"
+    plain = Kind._edge_payload(predecessor, successor, {}, ("supersedes", True))
+    assert plain["title"] == "supersedes"
 
 
 def test_edge_payload_positive_valence_keeps_proves_polarity() -> None:

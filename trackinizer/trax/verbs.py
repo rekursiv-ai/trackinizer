@@ -82,7 +82,7 @@ from trackinizer.trax.run.errors import (
     LossyConversionError,
     NotResumableError,
 )
-from trackinizer.types.edges import Edge
+from trackinizer.types.edges import OVERRULE_LABEL, Edge
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
 from trackinizer.wire.routes import (
@@ -296,6 +296,7 @@ class Kind(Command):
         client_factory: Callable[[], Client],
         *,
         against: bool = False,
+        label: str | None = None,
     ) -> None:
         """Run relation.
 
@@ -306,6 +307,7 @@ class Kind(Command):
           args: CLI namespace (sort, format, width).
           client_factory: Callable that creates a client.
           against: Flip the edge direction for display.
+          label: Keep only edges carrying this label (``overruled_by``).
 
         """
         if len(tokens) > 1:
@@ -315,7 +317,7 @@ class Kind(Command):
         client = client_factory()
         _kind, _target_id, payload = client.get_inquiry(ref)
         edge_kind, _inbound = relation
-        rows = cls._relation_rows(payload, relation, against=against)
+        rows = cls._relation_rows(payload, relation, against=against, label=label)
         rows = cls._sort_relation_rows(rows, _arg_str(args, "sort"))
         hydrated = cls._hydrate_relation_rows(client, rows)
         if not tokens:
@@ -611,6 +613,7 @@ class Kind(Command):
         relation: tuple[str, bool],
         *,
         against: bool = False,
+        label: str | None = None,
     ) -> list[dict[str, object]]:
         edge_kind, inbound = relation
         bucket = "backlinks" if inbound else "edges"
@@ -621,6 +624,10 @@ class Kind(Command):
             rows = [
                 r for r in rows if _is_against_citation(edge_kind, r.get("valence"))
             ]
+        if label is not None:
+            # An ``overrule*`` spelling selects the labelled subset of
+            # ``supersedes``: an overrule is a supersession with a label.
+            rows = [r for r in rows if label in ListCodec.coerce(r.get("labels"), str)]
         return rows
 
     @classmethod
@@ -676,6 +683,12 @@ class Kind(Command):
             if against
             else LABELS_BY_EDGE_KIND[typed_kind]
         )
+        # Likewise an overrule is a labelled supersession, and reads as one.
+        if edge_kind == "supersedes" and OVERRULE_LABEL in ListCodec.coerce(
+            peer_row.get("labels"),
+            str,
+        ):
+            title, target_label = "overrules", "overruled predecessor"
         source_payload = peer_payload if inbound else subject_payload
         target_id = str(target.get("id") or "")
         changes = [
@@ -1790,6 +1803,7 @@ def run_action(
             args,
             client_factory,
             against=action.against,
+            label=action.label,
         )
     elif isinstance(action, EdgeAction):
         Kind.run_edge_action(ref, action, args, client_factory)

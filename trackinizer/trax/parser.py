@@ -17,6 +17,7 @@ from trackinizer.trax.grammar import (
     FIELDS_BY_NAME,
     FILTER_FIELDS_CLI,
     KIND_LOWER,
+    LABELED_RELATION_SPELLINGS,
     LIST_FIELDS,
     RELATION_ALIASES,
     UUID_RE,
@@ -1242,6 +1243,7 @@ def _parse_relation_or_edge(
             relation=relation,
             index=value or "",
             against=word in AGAINST_RELATION_SPELLINGS,
+            label=LABELED_RELATION_SPELLINGS.get(word),
         ), 2 if value else 1
     edge = EDGE_ALIASES.get(word)
     if edge is None:
@@ -1293,6 +1295,7 @@ def _parse_edge_action(
     # is malformed input either way; the order just makes it deterministic.
     metadata, consumed_metadata = edge_metadata(tokens[offset:])
     merged = _apply_valence_alias(edge, {**inbound, **dict(pre_meta), **metadata})
+    merged = _apply_label_alias(edge, merged)
     return EdgeAction(
         edge=edge,
         target=target,
@@ -1326,4 +1329,24 @@ def _apply_valence_alias(edge: Edge, metadata: dict[str, object]) -> dict[str, o
             f"(the spelling sets the for/against polarity); got {value}",
         )
     metadata["valence"] = -value if edge.valence_negate else value
+    return metadata
+
+
+# ``overrules`` / ``overruled_by`` are ``supersedes`` with a label. The label is added
+# to whatever labels the command also sets, never in place of them, and the note is
+# required: an overrule's reason has no other home, and the actor recorded on the
+# edge's change is only half of "who overruled it, and why".
+def _apply_label_alias(edge: Edge, metadata: dict[str, object]) -> dict[str, object]:
+    """Stamp a labelled alias's label onto the edge, and demand its note."""
+    if edge.label is None:
+        return metadata
+    note = metadata.get("note")
+    if not isinstance(note, str) or not note.strip():
+        raise ClientError(
+            f'an {edge.label} records why: add note to "<reason>"',
+        )
+    labels = ListCodec.coerce(metadata.get("labels"), str)
+    if edge.label not in labels:
+        labels.append(edge.label)
+    metadata["labels"] = labels
     return metadata

@@ -29,6 +29,7 @@ import uuid
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.custom_json import DictCodec
 from trackinizer.types.columns import flat_column_specs
+from trackinizer.types.edges import OVERRULE_LABEL
 from trackinizer.types.inquiries import (
     CITATION_VALENCE_DEFAULT,
     KIND_TO_CLASS,
@@ -112,6 +113,10 @@ class Edge:
         ``favors`` kind with ``valence_negate=True`` and a negative default, so a
         user-given positive valence is negated and an omitted one defaults to
         ``-0.5``. A plain ``proves`` / ``favors`` defaults to ``+0.5``.
+
+        ``label`` is the same move for an edge label: ``overrules`` /
+        ``overruled_by`` resolve to ``supersedes`` stamped with
+        :data:`~trackinizer.types.edges.OVERRULE_LABEL`, and must carry a note.
     """
 
     name: str
@@ -121,6 +126,8 @@ class Edge:
     valence_default: float | None = None
 
     valence_negate: bool = False
+
+    label: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -193,6 +200,8 @@ class RelationAction:
     ``against`` is set when the spelling was an against-citation (``dis*``):
     the stored kind is the same proves/favors, so the view filters to the
     negative-valence rows -- for-vs-against is the sign, not a separate kind.
+    ``label`` likewise narrows the view to edges carrying that label, which is
+    how ``overruled_by`` lists only the overrules among the supersessions.
     """
 
     relation: tuple[str, bool]
@@ -200,6 +209,8 @@ class RelationAction:
     index: str = ""
 
     against: bool = False
+
+    label: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -408,9 +419,13 @@ EDGE_ALIASES: Mapping[str, Edge] = {
         valence_default=-CITATION_VALENCE_DEFAULT,
         valence_negate=True,
     ),
-    # Supersedes: stored successor(child) -> predecessor(parent).
+    # Supersedes: stored successor(child) -> predecessor(parent). The
+    # ``overrule*`` spellings are the SAME kind decided by authority rather than
+    # evidence: the label marks it and the edge note says why.
     "supersedes": Edge(name="supersedes"),
     "superseded_by": Edge(name="supersedes", reverse=True),
+    "overrules": Edge(name="supersedes", label=OVERRULE_LABEL),
+    "overruled_by": Edge(name="supersedes", reverse=True, label=OVERRULE_LABEL),
     # cites_paper: stored citing(child) -> cited(parent), Paper -> Paper. A
     # historical/bibliographic citation, not epistemic: it carries no valence,
     # so no dis* spelling and no valence_default. ``A cites B`` = A's bibliography
@@ -462,6 +477,8 @@ RELATION_ALIASES: Final[Mapping[str, tuple[str, bool]]] = {
     "disfavored_by": ("favors", True),
     "supersedes": ("supersedes", False),
     "superseded_by": ("supersedes", True),
+    "overrules": ("supersedes", False),
+    "overruled_by": ("supersedes", True),
     "cites": ("cites_paper", False),
     "cited_by": ("cites_paper", True),
 }
@@ -472,6 +489,14 @@ RELATION_ALIASES: Final[Mapping[str, tuple[str, bool]]] = {
 AGAINST_RELATION_SPELLINGS: frozenset[str] = frozenset(
     {"disproves", "disproved_by", "disfavors", "disfavored_by"},
 )
+
+# Relation spellings that select the edges carrying a label out of their shared
+# stored kind. ``trax belief 5 overruled_by`` lists only the supersessions that
+# were overrules, where ``superseded_by`` lists them all.
+LABELED_RELATION_SPELLINGS: Final[Mapping[str, str]] = {
+    "overrules": OVERRULE_LABEL,
+    "overruled_by": OVERRULE_LABEL,
+}
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,

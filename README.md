@@ -173,7 +173,10 @@ and a child describe the same edge from either end:
 - Parents are always older than children, on each edge's own clock:
   creation-time for every edge except `requires`, which is completion-time.
 - Any Inquiry can be `produced_by` older ones (its origins) and
-  `superseded_by` others (M:N knowledge surgery).
+  `superseded_by` others (M:N knowledge surgery). A supersession decided by
+  authority rather than evidence is an overrule: the same edge labelled
+  `overrule`, its note saying why and its change log saying who
+  (`trax ... overrules ...`).
 - An Issue can be `narrowed_by` (broader to narrower) or `required_by` (it
   is the prerequisite another waits on). Both are Issue to Issue.
 - `proves` / `favors` go from any Artifact to a `Belief` or `Experiment`

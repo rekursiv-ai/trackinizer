@@ -61,7 +61,9 @@ class Edge:
       relation with no natural child-as-subject active verb in English, so it
       keeps the passive ``produced_by`` as the child's stored name.
     * Any Inquiry can be ``superseded_by`` one or more others (M:N
-      knowledge-surgery: replace / coarsen / split / merge).
+      knowledge-surgery: replace / coarsen / split / merge). A supersession
+      decided by authority rather than evidence is an overrule: the same edge,
+      labelled :data:`OVERRULE_LABEL`, with the reason in its :attr:`note`.
     * An Issue ``narrows`` a broader Issue (decomposition) or ``requires`` a
       prerequisite Issue (sequencing) -- both Issue -> Issue.
     * Citations (``proves`` / ``favors``) store ``Artifact -> {Belief,
@@ -552,6 +554,22 @@ PRODUCED_INFERENCE_SUPPRESSED: frozenset[Edge.Kind] = frozenset({"produced_by"})
 PRODUCED_INFERENCE_NEUTRAL: frozenset[Edge.Kind] = frozenset(
     {"cites_paper", "proves", "favors"},
 )
+
+OVERRULE_LABEL: Final = "overrule"
+"""The edge label that marks a ``supersedes`` as an OVERRULE.
+
+A plain ``supersedes`` is evidential: the successor replaced the predecessor
+because it is better supported. An overrule is a decision by authority: someone
+with the standing to settle it chose the successor, whatever the evidence
+said. Epistemically different, structurally the same replacement, so it is the
+same edge kind with this label on it -- as ``disproves`` is ``proves`` with a
+negative valence rather than a kind of its own.
+
+Who overruled is the ``actor`` (and ``api_key_id``) on the ``change_log`` row
+that added the edge; why is the edge's ``note``. trax's ``overrules`` /
+``overruled_by`` spellings write the label and refuse an empty note, and read
+back only the labelled edges.
+"""
 
 
 def edge_topology() -> dict[str, dict[str, list[str]]]:

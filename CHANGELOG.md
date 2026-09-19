@@ -5,6 +5,14 @@ All notable trackinizer changes are documented here. This project follows
 
 ## Unreleased
 
+### Added
+
+- `trax ... overrules ...` / `overruled_by` record a supersession decided by
+  authority rather than evidence: the same `supersedes` edge, labelled
+  `overrule`, whose note (required) says why, while the actor on its change
+  says who. Read back, the two spellings list only overrules, so "we were
+  overruled" and "we were refuted" are no longer the same query.
+
 ## 0.1.4 - 2026-08-20
 
 ### Added

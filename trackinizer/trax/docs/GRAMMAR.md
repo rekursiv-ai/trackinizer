@@ -526,7 +526,8 @@ the same commit.
 `narrows`, `narrowed_by`, `broadens`, `broadened_by`, `requires`, `required_by`,
 `blocked_by`, `blocks`, `produced`, `produced_by`, `produces`, `proves`,
 `proved_by`, `disproves`, `disproved_by`, `favors`, `favored_by`, `disfavors`,
-`disfavored_by`, `supersedes`, `superseded_by`, `cites`, `cited_by`.
+`disfavored_by`, `supersedes`, `superseded_by`, `overrules`, `overruled_by`,
+`cites`, `cited_by`.
 
 "proved/disproved" are intentionally hyperbolic. Epistemologically,
 "credited/discredited" would be more precise, but Trackinizer uses
@@ -547,6 +548,17 @@ user anchor at the other endpoint without changing the stored edge:
                                      -> stores Experiment#5 -> Belief#1
     trax paper 5 favors belief 3     -> stores Paper#5 -> Belief#3
     trax belief 3 favored_by paper 5 -> stores Paper#5 -> Belief#3
+
+`overrules`/`overruled_by` store a `supersedes` edge labelled `overrule`: the
+successor replaced the predecessor by authority (a review, an owner's call)
+rather than by better evidence. The reason is the edge's `note`, which these
+spellings require; who decided is the actor on the change that added the edge.
+Read back, `overrules`/`overruled_by` list only the labelled edges, while
+`supersedes`/`superseded_by` still list every supersession:
+
+    trax belief 7 overrules belief 3 note to "architecture review chose it"
+                                     -> stores Belief#7 -> Belief#3, labelled
+    trax belief 3 overruled_by       -> the overrules among its supersessions
 
 `cites`/`cited_by` are a separate, non-epistemic edge: a HISTORICAL citation
 storing `Paper -> Paper` (`cites_paper`), the citing paper's bibliography. Unlike

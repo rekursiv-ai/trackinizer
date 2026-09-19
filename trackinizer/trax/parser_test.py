@@ -46,6 +46,7 @@ from trackinizer.trax.parser import (
     ref_text,
     required_token,
 )
+from trackinizer.types.edges import OVERRULE_LABEL
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import SeqRef, UuidRef
 from trackinizer.wire.seq_ranges import SeqRange
@@ -682,6 +683,62 @@ def test_positive_citation_accepts_non_negative_valence() -> None:
     assert isinstance(edge, EdgeAction)
     assert edge.edge.name == "proves"
     assert edge.metadata.get("valence") == 0.9
+
+
+def test_overrules_is_a_labelled_supersedes_carrying_its_note() -> None:
+    """``overrules`` stores ``supersedes``: the label is the only difference."""
+    (edge,) = parse_actions(
+        ["overrules", "belief", "1", "note", "to", "board chose it"],
+    )
+
+    assert isinstance(edge, EdgeAction)
+    assert edge.edge.name == "supersedes"
+    assert not edge.edge.reverse
+    assert edge.metadata == {"note": "board chose it", "labels": [OVERRULE_LABEL]}
+
+
+def test_overruled_by_names_the_same_edge_from_the_predecessor() -> None:
+    (edge,) = parse_actions(["overruled_by", "belief", "2", "note", "to", "why"])
+
+    assert isinstance(edge, EdgeAction)
+    assert edge.edge.name == "supersedes"
+    assert edge.edge.reverse
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [[], ["note", "to", "   "]],
+    ids=["no note", "blank note"],
+)
+def test_an_overrule_without_a_reason_is_refused(tail: list[str]) -> None:
+    with pytest.raises(ClientError, match="records why"):
+        parse_actions(["overrules", "belief", "1", *tail])
+
+
+def test_an_overrule_keeps_the_labels_the_command_also_sets() -> None:
+    (edge,) = parse_actions(
+        ["overrules", "label", "add", "adr", "belief", "1", "note", "to", "why"],
+    )
+
+    assert isinstance(edge, EdgeAction)
+    assert edge.metadata["labels"] == ["adr", OVERRULE_LABEL]
+
+
+def test_removing_an_overrule_needs_no_reason() -> None:
+    (edge,) = parse_actions(["overrules", "belief", "1", "del"])
+
+    assert isinstance(edge, EdgeAction)
+    assert edge.remove
+    assert edge.edge.name == "supersedes"
+
+
+def test_the_overrule_views_select_the_label_and_the_plain_ones_do_not() -> None:
+    assert parse_actions(["overruled_by"]) == [
+        RelationAction(relation=("supersedes", True), label=OVERRULE_LABEL),
+    ]
+    assert parse_actions(["superseded_by"]) == [
+        RelationAction(relation=("supersedes", True)),
+    ]
 
 
 def test_required_token_raises_on_missing() -> None:

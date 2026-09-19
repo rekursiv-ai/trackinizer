@@ -26,6 +26,7 @@ Everywhere below that says `descend` should be read as `produced_by` / `produces
 * An Issue can be narrowed_by (broader→narrower decomposition) or required_by (it's the prerequisite another waits on) -- both Issue→Issue.
 * proved,favored edges carry valence ∈ [−1,1] (polarity = sign, weight = magnitude; 0 neutral, default 0.5; never unset). trax `disprove`/`disfavor` store the negated value (default −0.5).
 * supersede is M:N knowledge-surgery (replace/coarsen/split/merge); produced_by is pure origin (child came to be from parent).
+* supersede is evidential by default: the successor is better supported. An overrule is a supersede settled by authority instead, recorded as the same edge labelled `overrule`, with the reason as the edge note and the authority as the actor on its change. It is a label and not a kind for the reason disprove is a valence and not a kind: the replacement is structurally the same, only its grounds differ.
 * prove is load-bearing (votes in the proof predicate); favor is context (informs but does not vote).
 * "requires" is "do-time" whereas everything else is "origin-time". nevertheless, A requires B implies B is "do-time" older than A.
 

@@ -167,6 +167,11 @@ CORPUS: tuple[Case, ...] = (
     Case(label="relation by index", tokens="belief 7 produces 2"),
     Case(label="edge to existing ref", tokens="issue 7 requires issue 8"),
     Case(
+        label="overrule edge with its note",
+        tokens="belief 7 overrules belief 3 note to review",
+    ),
+    Case(label="overrule relation view", tokens="belief 3 overruled_by"),
+    Case(
         label="edge to uuid ref",
         tokens="belief 7 proves belief 0a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d",
     ),
