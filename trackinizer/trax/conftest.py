@@ -274,6 +274,19 @@ class FakeClient:
             "title": "next issue",
             "status": "active",
         }
+        # One row carrying the ``distance`` key the real route adds alongside
+        # the inquiry's own fields. Typed as the method's return type rather
+        # than ``object`` so no cast is needed to hand it back.
+        self.similar_payload: list[dict[str, JSONValue]] = [
+            {
+                "id": str(self.target_id),
+                "kind": "Belief",
+                "seq": 3,
+                "title": "a nearby belief",
+                "status": "active",
+                "distance": 0.25,
+            },
+        ]
 
     def close(self) -> None:
         """Release held resources."""
@@ -535,6 +548,24 @@ class FakeClient:
             dict[str, JSONValue] | None,
             self.next_payload,  # -- fake payload is JSON-shaped.
         )
+
+    def find_similar(
+        self,
+        text: str,
+        *,
+        kind: Inquiry.InquiryKind | None = None,
+        limit: int | None = None,
+        model: str | None = None,
+    ) -> list[dict[str, JSONValue]]:
+        """Record a similarity query; the fake ranks nothing."""
+        self.calls.append(
+            (
+                "find_similar",
+                (text,),
+                {"kind": kind, "limit": limit, "model": model},
+            ),
+        )
+        return self.similar_payload
 
     def version(self) -> str:
         """Version."""

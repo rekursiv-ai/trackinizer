@@ -53,6 +53,7 @@ from trackinizer.server.regex_timeout import apply_regex_statement_timeout
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.edges import Edge
+from trackinizer.types.errors import ConflictError
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.wire_sessions import FeedCursor, FeedResponse
 
@@ -70,6 +71,33 @@ _CWD: Final = Path(__file__).resolve().parent
 
 
 type WebView = dict[str, object]
+
+
+# Cosine DISTANCE ceiling for the semantic fallback below -- note the unit.
+# pgvector's ``<=>`` returns distance (0 = identical), which is ``1 -
+# similarity``. Retrieval literature usually quotes cosine SIMILARITY cutoffs
+# of 0.80-0.85, i.e. distance 0.15-0.20; this constant is not that number
+# inverted, and reading it as one would make the filter roughly four times
+# stricter than intended.
+#
+# Those published cutoffs come from near-duplicate work (semantic caching,
+# dedup), where the two texts really are near-identical. A search query and the
+# row answering it never are, so the same figure would reject every correct
+# match measured here. The anchor used instead is geometric: for unit vectors
+# distance 1.0 is ORTHOGONAL -- no relationship at all -- so anything at or
+# above it is noise by construction, and 0.8 keeps a margin below that.
+#
+# Measured with a local 384-dim model over trackinizer rows: on-topic queries
+# landed at 0.42-0.69, off-topic ones ("how do I bake sourdough bread", "the
+# treaty of westphalia") at 0.94-1.04. One corpus and one model, so absolute
+# distances will shift with both -- this is a conservative default, not a
+# constant of nature.
+#
+# Erring loose is deliberate on this path. It runs only where literal search
+# already returned nothing, so a marginal hit competes with an empty page, and
+# the cost of being slightly too permissive is far lower than hiding the row
+# the caller was looking for.
+_RELATED_DISTANCE_MAX: Final = 0.8
 
 
 router = APIRouter()
@@ -153,7 +181,65 @@ async def web_search(
         # nothing while reading as though it worked.
         with regex_failures_as_400():
             rows = await conn.fetch(sql, *params)
-    return [_row_to_dict(r) for r in rows]
+    if rows:
+        return [_row_to_dict(r) for r in rows]
+    return await _semantic_fallback(request, q, kind=kind, limit=limit)
+
+
+# Only reached when the literal search found NOTHING, which is the case this
+# endpoint is worst at: its grammar requires every bare token to appear in
+# title or description, so a question phrased in the caller's own words
+# ("how do we close the accuracy gap") matches no row even when the answer is
+# sitting in the graph. Semantic recall is exactly the right tool there, and
+# running it only on empty results keeps every currently-working query
+# byte-identical -- literal matching still wins whenever it matches at all.
+async def _semantic_fallback(
+    request: Request,
+    q: str,
+    *,
+    kind: Inquiry.InquiryKind | None,
+    limit: int,
+) -> list[WebView]:
+    """Nearest-by-meaning rows, or ``[]`` when semantic search is unavailable.
+
+    Returns ``[]`` rather than raising for every reason the search cannot run:
+    the configured embedder is the hash stub (the default), the endpoint is
+    unreachable, or nothing is embedded yet. The caller asked a question that
+    literal search already answered with nothing, so the honest answer is
+    still nothing -- turning a search miss into a 500 would make the box worse
+    than before, which no fallback should ever do.
+    """
+    store = get_store(request)
+    try:
+        matches = await store.find_similar(q, kind=kind, limit=limit)
+    except (ValueError, ConflictError):
+        # ValueError: no meaning-bearing embedder configured (the default).
+        # ConflictError: the embedding endpoint failed or misbehaved.
+        return []
+    # Nearest-neighbour search always returns SOMETHING -- the closest rows,
+    # however far away. Without a cutoff, "how do I bake sourdough bread"
+    # comes back with whatever the graph happens to hold, which is worse than
+    # the empty result the caller gets today. So the fallback keeps only rows
+    # that are measurably related.
+    matches = [(inq, d) for inq, d in matches if d < _RELATED_DISTANCE_MAX]
+    if not matches:
+        return []
+    # Re-read the matched rows as records so the existing ``_row_to_dict``
+    # does the flattening. ``find_similar`` hands back materialized dataclasses,
+    # and a parallel dataclass-to-WebView converter would have to repeat
+    # ``_row_to_dict``'s ~18 kind-specific column mappings and then drift from
+    # it. One extra query buys one converter, and it only runs on the path
+    # where literal search already came back empty.
+    ranked_ids = [inquiry.id for inquiry, _distance in matches]
+    async with store.engine.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM inquiries WHERE id = ANY($1::uuid[])",
+            ranked_ids,
+        )
+    by_id = {_record_uuid(r, "id"): r for r in rows}
+    # ``ANY`` does not preserve argument order, so restore the similarity
+    # ranking rather than returning rows in whatever order Postgres chose.
+    return [_row_to_dict(by_id[rid]) for rid in ranked_ids if rid in by_id]
 
 
 @router.get("/recent_changes")

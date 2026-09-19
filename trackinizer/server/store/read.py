@@ -25,7 +25,7 @@ from trackinizer.server.sql_fragments import (
     PROVES_BELIEF_SQL,
 )
 from trackinizer.server.store.shared import _StoreShared
-from trackinizer.server.values import vetted_sql
+from trackinizer.server.values import vec_to_text, vetted_sql
 from trackinizer.types.change_log import Change
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import NotFoundError
@@ -340,6 +340,121 @@ class _ReadMixin(_StoreShared):
                 [cast(UUID, r["id"]) for r in rows],
             )
         return [materialize(row, outbound, inbound) for row in rows]
+
+    async def find_similar(
+        self,
+        text: str,
+        *,
+        kind: Inquiry.InquiryKind | None = None,
+        limit: int = DEFAULT_LIST_LIMIT,
+        model: str | None = None,
+        conn: Conn | None = None,
+    ) -> list[tuple[Inquiry, float]]:
+        """Inquiries whose embedding is nearest ``text``, nearest first.
+
+        This is the read half of the embedding search ``docs/design.md`` names
+        as one of the two discovery paths ("content (embedding search over
+        title/description)"); the write half already populates
+        ``inquiry_embeddings`` on every submit and title edit.
+
+        ``kind`` matters more than it looks: the graph deliberately holds a
+        Belief and the Experiment that proves it as separate rows, so their
+        titles are near-duplicates by design. An unfiltered search for "which
+        Beliefs resemble this one" surfaces the Experiments instead. Callers
+        looking for same-kind neighbours (consolidation, dedup review) should
+        always pass it.
+
+        ``model`` selects which embedder's vectors to search, defaulting to the
+        first registered one. Several embedders can populate the table in
+        parallel (``__init__``), and mixing their vector spaces in one distance
+        computation is meaningless, so a query is always scoped to exactly one.
+
+        ``conn`` joins a caller's open transaction. Required, not a
+        convenience: PGlite exposes a single connection and a re-entrant
+        ``acquire`` raises, so a caller already holding it cannot call this
+        without passing it through.
+
+        Args:
+          text: Query text to embed and search by.
+          kind: Restrict results to one Inquiry kind, or None for all kinds.
+          limit: Maximum rows to return.
+          model: Embedder name whose vectors to search; None uses the first.
+          conn: Existing connection to reuse, or None to acquire one.
+
+        Returns:
+          matches: ``(inquiry, distance)`` pairs, nearest first. Distance is
+            pgvector cosine distance in ``[0, 2]`` -- 0 is identical, so
+            smaller is closer. Empty when nothing is embedded for ``model``.
+
+        Raises:
+          ValueError: ``model`` names no registered embedder, or the resolved
+            embedder cannot support semantic search (see below).
+
+        """
+        embedder = self.embedders[0]
+        if model is not None:
+            for candidate in self.embedders:
+                if candidate.name == model:
+                    embedder = candidate
+                    break
+            else:
+                names = ", ".join(e.name for e in self.embedders)
+                raise ValueError(
+                    f"no embedder named {model!r} is registered (have: {names})",
+                )
+        # Refuse rather than return plausible-looking noise. StubEmbedder is a
+        # hash (sha256 -> xorshift -> normalize), so its vectors carry no
+        # semantic signal at all: paraphrases land in unrelated directions and
+        # every ranking it produces is arbitrary. Returning those silently
+        # would look like a working search, which is worse than an error.
+        if getattr(embedder, "is_semantic", False) is not True:
+            raise ValueError(
+                f"embedder {embedder.name!r} does not support semantic search; "
+                "its vectors are not meaning-bearing. Configure a real "
+                "embedding model to use find_similar().",
+            )
+        limit = max(1, min(limit, MAX_LIST_LIMIT))
+        query_vec = vec_to_text(await embedder.embed(text))
+
+        params: list[object] = [query_vec, embedder.name]
+        kind_clause = ""
+        if kind is not None:
+            params.append(kind)
+            kind_clause = f" AND i.kind = ${len(params)}"
+        params.append(limit)
+        # Every dynamic piece is a bound-placeholder index, never caller text:
+        # the query vector, the model name, and the kind all arrive as $N
+        # parameters. ``vetted_sql`` is the one audited place that assembles
+        # such fragments (see its docstring on ruff S608).
+        sql = vetted_sql(
+            "SELECT i.*, (e.embedding <=> $1::vector) AS distance ",
+            "FROM inquiry_embeddings e ",
+            "JOIN inquiries i ON i.id = e.inquiry_id ",
+            "WHERE e.model = $2",
+            kind_clause,
+            " ORDER BY e.embedding <=> $1::vector",
+            " LIMIT $",
+            str(len(params)),
+        )
+
+        async def run(active: Conn) -> list[tuple[Inquiry, float]]:
+            rows = await active.fetch(sql, *params)
+            outbound, inbound = await fetch_edges_bulk(
+                active,
+                [cast(UUID, r["id"]) for r in rows],
+            )
+            return [
+                (
+                    materialize(row, outbound, inbound),
+                    FloatCodec.coerce(row["distance"], 0.0) or 0.0,
+                )
+                for row in rows
+            ]
+
+        if conn is not None:
+            return await run(conn)
+        async with self.engine.acquire() as own:
+            return await run(own)
 
     async def what_changed_for_me(
         self,
