@@ -8,8 +8,10 @@ A pure leaf: :meth:`get_inquiry`, :meth:`list_kind`, :meth:`next_issue`,
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
+
+import math
 
 from trackinizer.lib.custom_json import FloatCodec
 from trackinizer.server.notify import tx
@@ -23,11 +25,14 @@ from trackinizer.server.sql_fragments import (
     COST_SUBTREE_SQL,
     NEXT_ISSUE_SQL,
     PROVES_BELIEF_SQL,
+    PROVING_EDGES_SQL,
 )
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import vetted_sql
+from trackinizer.types.belief_strength import BeliefStrength
 from trackinizer.types.change_log import Change
 from trackinizer.types.cost import Cost
+from trackinizer.types.edges import kind_group_members
 from trackinizer.types.errors import NotFoundError
 from trackinizer.types.inquiries import Inquiry, Issue
 from trackinizer.wire.column_shapes import sql_template
@@ -53,6 +58,19 @@ __all__ = [
     "_ReadMixin",
     "seq_range_clause",
 ]
+
+
+_BELIEF_STRENGTH_BASE: Final = 0.5
+"""Neutral prior every Belief/Experiment starts from before its citation
+graph is folded in. Deliberately not seeded from the row's own asserted
+``confidence`` -- that would make ``strength_for`` partly restate what a
+human already believes instead of measuring the evidence graph
+independently, which defeats comparing the two."""
+
+_CLAIMABLE_KINDS: Final = frozenset(kind_group_members("claimable"))
+"""Belief/Experiment: the only kinds a ``proves`` edge can target, so the
+only kinds ``strength_for`` recurses into. Every other Artifact kind can
+cite but never be cited, so it is always a recursion leaf."""
 
 
 def seq_range_clause(
@@ -340,6 +358,100 @@ class _ReadMixin(_StoreShared):
                 [cast(UUID, r["id"]) for r in rows],
             )
         return [materialize(row, outbound, inbound) for row in rows]
+
+    async def strength_for(
+        self,
+        belief_id: UUID,
+        *,
+        conn: Conn | None = None,
+    ) -> BeliefStrength | None:
+        """Euler-based argumentation strength, or ``None`` if missing.
+
+        Computes ``design.md``'s named-but-unbuilt "emergent authority":
+        how much the graph's currently-true ``proves`` citations lean on
+        ``belief_id``, recursively -- a citing Artifact that is itself a
+        Belief or Experiment (the only kinds ``proves`` can target) has its
+        own strength folded in rather than counted at face value, since a
+        proof resting on a since-discredited Belief should not carry full
+        weight. Uses the semantics from Amgoud & Ben-Naim, "Weighted Bipolar
+        Argumentation Graphs: Axioms and Semantics" (IJCAI 2018), chosen over
+        the plan's original DF-QuAD pick because DF-QuAD is proven in that
+        same paper to jump discontinuously (a weak, heavily-attacked argument
+        can leap to strength 0.991 off one weak supporter); Euler-based
+        semantics satisfies all twelve of the paper's rigor axioms and avoids
+        the jump (same worked example: 0.22).
+
+        Every Belief/Experiment starts at the neutral base score
+        :data:`_BELIEF_STRENGTH_BASE` -- not the row's own ``confidence``,
+        which would make this partly restate a human's existing judgement
+        instead of measuring the evidence graph independently. This is
+        purely derived and read-only: it never writes back to ``judgement``
+        or ``confidence``, so it can disagree with them, which is the point.
+
+        ``conn`` joins a caller's open transaction: PGlite's single
+        connection deadlocks on a re-entrant ``acquire``, and this walk
+        issues one query per node.
+
+        Args:
+          belief_id: Belief or Experiment row id to score.
+          conn: Existing connection to reuse, or None to acquire one.
+
+        Returns:
+          strength: The computed :class:`BeliefStrength`, or None if
+            ``belief_id`` does not exist.
+
+        """
+
+        async def run(active: Conn) -> BeliefStrength | None:
+            exists = await active.fetchval(
+                "SELECT 1 FROM inquiries WHERE id = $1",
+                belief_id,
+            )
+            if exists is None:
+                return None
+            memo: dict[UUID, float] = {}
+            visiting: set[UUID] = set()
+
+            async def strength(node_id: UUID) -> float:
+                if node_id in memo:
+                    return memo[node_id]
+                # A cycle should not be constructible (edges point child ->
+                # older parent), but a corrupted graph must degrade rather
+                # than hang: treat a node revisited mid-walk as contributing
+                # its neutral base score instead of recursing forever.
+                if node_id in visiting:
+                    return _BELIEF_STRENGTH_BASE
+                visiting.add(node_id)
+                rows = await active.fetch(PROVING_EDGES_SQL, node_id)
+                support = 0.0
+                attack = 0.0
+                for row in rows:
+                    from_id = cast(UUID, row["from_id"])
+                    from_kind = cast(str, row["from_kind"])
+                    valence = cast(float, row["valence"])
+                    citer_strength = (
+                        await strength(from_id)
+                        if from_kind in _CLAIMABLE_KINDS
+                        else 1.0
+                    )
+                    weighted = abs(valence) * citer_strength
+                    if valence >= 0:
+                        support += weighted
+                    else:
+                        attack += weighted
+                energy = support - attack
+                base = _BELIEF_STRENGTH_BASE
+                result = 1 - (1 - base * base) / (1 + base * math.exp(energy))
+                visiting.discard(node_id)
+                memo[node_id] = result
+                return result
+
+            return BeliefStrength(strength=await strength(belief_id))
+
+        if conn is not None:
+            return await run(conn)
+        async with self.engine.acquire() as new_conn:
+            return await run(new_conn)
 
     async def what_changed_for_me(
         self,

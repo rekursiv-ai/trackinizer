@@ -20,6 +20,7 @@ __all__ = [
     "COST_SUBTREE_SQL",
     "NEXT_ISSUE_SQL",
     "PROVES_BELIEF_SQL",
+    "PROVING_EDGES_SQL",
 ]
 
 
@@ -129,3 +130,28 @@ COST_SUBTREE_SQL: Final[str] = (
 """Decomposition-rollup of ``marginal_cost_*_usd`` from the subtree
 rooted at ``$1``. Walks ``narrows`` edges downward (broader -> narrower via the
 stored narrower -> broader edge's from-side)."""
+
+
+PROVING_EDGES_SQL: Final[str] = vetted_sql(
+    # Same shape and currency rule as PROVES_BELIEF_SQL, but returns the edge
+    # (citer id/kind + valence) instead of the full citing row -- all
+    # strength_for needs, one hop at a time.
+    "SELECT e.from_id, t.kind AS from_kind, e.valence FROM edges e "
+    "JOIN inquiries t ON t.id = e.from_id "
+    "WHERE e.edge_kind = 'proves' AND e.to_id = $1 "
+    "  AND ("
+    "    (t.kind = 'Belief' AND t.belief_judgement = 'proven') "
+    "    OR (t.kind = 'Experiment' AND t.status = 'complete') "
+    "    OR (t.kind NOT IN ('Belief', 'Experiment') AND t.status = 'active')"
+    "  ) ",
+    _policy_exclude_clauses(
+        subject_alias="t.id",
+        policy_attr="invalidates_currency_on",
+    ),
+)
+"""Currently-true ``proves`` edges pointing at ``$1``, one hop.
+
+``strength_for`` walks this recursively for each citer that is itself
+claimable (Belief/Experiment, since only those kinds can carry inbound
+``proves``), so a chain of Beliefs citing Beliefs resolves bottom-up.
+"""

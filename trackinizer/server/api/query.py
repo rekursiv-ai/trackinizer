@@ -30,6 +30,7 @@ from trackinizer.server.api._routes_shared import (
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import iter_sse_events
 from trackinizer.server.primitives import lookup_kinds
+from trackinizer.types.belief_strength import BeliefStrength
 from trackinizer.types.change_log import Change
 from trackinizer.types.columns import (
     flat_column_specs,
@@ -281,6 +282,17 @@ async def proves_belief_route(
     del identity
     rows = await get_store(request).proves_belief(target_id)
     return [tag_row(r) for r in rows]
+
+
+@router.get("/api/inquiries/{target_id}/strength")
+async def strength_route(
+    target_id: uuid.UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+) -> BeliefStrength:
+    """Strength route."""
+    del identity
+    return _require_found(await get_store(request).strength_for(target_id))
 
 
 @router.get("/api/inquiries/{kind}/{seq}")

@@ -585,6 +585,23 @@ class Client:
             ),
         )
 
+    def strength_for(self, target_id: uuid.UUID) -> float:
+        """Fetch the Euler-based argumentation strength for a Belief/Experiment.
+
+        Purely derived from currently-true ``proves`` citations; never
+        reflects back into the row's own ``judgement`` or ``confidence``.
+
+        Args:
+          target_id: Belief or Experiment ID to score.
+
+        Returns:
+          result: Strength in ``[0, 1]``; 0.5 is neutral.
+
+        """
+        where = f"/api/inquiries/{target_id}/strength"
+        body = _require_mapping(self.get(where), where)
+        return cast(float, body["strength"])
+
     # -- Writes -------------------------------------------------------------
 
     def submit(

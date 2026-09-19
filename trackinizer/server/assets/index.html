@@ -543,6 +543,9 @@ const Api = {
     if (kind) params.set("kind", kind);
     return api(`/api/web/search?${params}`);
   },
+  // Derived, read-only: how much the citation graph leans on this
+  // Belief/Experiment. Never reflects into judgement/confidence.
+  strength: (id) => api(`/api/inquiries/${id}/strength`),
   recent: (limit = 50) => api(`/api/web/recent_changes?limit=${limit}`),
   // One page of a session's captured IR records, oldest first. The path is a
   // single literal (no concatenation) so the assets-drift scan covers it.
@@ -1094,6 +1097,7 @@ function renderInquiry(view) {
       { control: "select", options: JUDGEMENT_VALUES },
     ));
     left.appendChild(buildEditableField("confidence", self.id, self.confidence ?? 0.5));
+    attachStrength(left, self.id);
   }
   if (self.kind === "Issue") {
     left.appendChild(buildEditableField(
@@ -1116,6 +1120,7 @@ function renderInquiry(view) {
         "config", JSON.stringify(self.config, null, 2), { mono: true },
       ));
     }
+    attachStrength(left, self.id);
   }
   if (self.kind === "Paper") {
     left.appendChild(buildEditableField("abstract", self.id, self.abstract, { multiline: true }));
@@ -1493,6 +1498,22 @@ function buildField(label, value, opts = {}) {
     field.appendChild(el("div", { class: "hint", style: { color: "var(--muted)", fontSize: "11px" } }, opts.hint));
   }
   return field;
+}
+
+// Derived, so fetched separately rather than read off ``self`` -- the row's
+// own JSON never carries it. Appends a placeholder immediately and fills it
+// in once the request resolves, rather than delaying the whole detail render
+// on one field.
+function attachStrength(container, id) {
+  const field = buildField("strength", "loading…", {
+    hint: "derived from currently-true proves citations; 0.5 is neutral",
+  });
+  container.appendChild(field);
+  const valueEl = field.querySelector(".value");
+  Api.strength(id).then(
+    (r) => { valueEl.textContent = r.strength.toFixed(3); },
+    () => { valueEl.textContent = "—"; },
+  );
 }
 
 function buildEditableField(field, id, value, opts = {}) {

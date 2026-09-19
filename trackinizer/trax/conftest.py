@@ -274,6 +274,7 @@ class FakeClient:
             "title": "next issue",
             "status": "active",
         }
+        self.strength_payload: float = 0.5
 
     def close(self) -> None:
         """Release held resources."""
@@ -535,6 +536,11 @@ class FakeClient:
             dict[str, JSONValue] | None,
             self.next_payload,  # -- fake payload is JSON-shaped.
         )
+
+    def strength_for(self, target_id: uuid.UUID) -> float:
+        """Record a strength query; the fake reports a fixed score."""
+        self.calls.append(("strength_for", (target_id,), {}))
+        return self.strength_payload
 
     def version(self) -> str:
         """Version."""
