@@ -15,7 +15,7 @@ and `grammar.py` together; CI will fail otherwise.
 trax help                                              # top-level help
 trax help issue                                        # per-verb help
 trax issue                                             # list issues
-trax issue summary to "Retry bug" priority to high     # create
+trax issue title to "Retry bug" priority to high       # create
 trax issue 7                                           # show issue 7
 trax issue 7 priority to high                          # mutate
 trax issue 7 blocks issue 8                            # add edge

@@ -9,13 +9,19 @@ from unittest.mock import MagicMock
 import inspect
 import random
 
+import pytest
+
+
+# pytest-postgresql imports psycopg, and psycopg without libpq raises a plain
+# ImportError, which ``importorskip`` passes through unless told otherwise.
+pytest.importorskip("psycopg", exc_type=ImportError)
+
 from port_for import api
+from pytest_postgresql import janitor
 from pytest_postgresql.config import get_config
 from pytest_postgresql.executors.proc import PostgreSQLExecutor
 from pytest_postgresql.factories import process
 from pytest_postgresql.plugin import postgresql_proc
-
-import pytest
 
 from trackinizer import conftest
 
@@ -49,7 +55,8 @@ def test_pg_dsn_reserves_ports_for_seeded_workers(
     executor.logfile = str(tmp_path / "unused.log")
     monkeypatch.setattr(process, "PostgreSQLExecutor", MagicMock(return_value=executor))
     monkeypatch.setattr(process, "DatabaseJanitor", MagicMock())
-    monkeypatch.setattr(conftest, "DatabaseJanitor", MagicMock())
+    # ``pg_dsn`` imports ``DatabaseJanitor`` when it runs, so patch it at the source.
+    monkeypatch.setattr(janitor, "DatabaseJanitor", MagicMock())
     fixture = contextmanager(
         cast(
             Callable[

@@ -180,7 +180,10 @@ markers = [
     "network_together: reaches Together over the network",
     "network_wandb: reaches Weights & Biases over the network",
 ]
-addopts = "-m 'not ci_smoke and not cuda and not integration and not performance and not cluster and not slow' --durations=20 --dist=worksteal"
+# `-p no:pytest_postgresql`: the plugin imports psycopg, which needs libpq, and an
+# autoloaded plugin that fails to import aborts collection. conftest.py loads it
+# only when psycopg can.
+addopts = "-m 'not ci_smoke and not cuda and not integration and not performance and not cluster and not slow' --durations=20 --dist=worksteal -p no:pytest_postgresql"
 timeout = 60
 # "error" = treat all warnings as errors (same as -Werror).
 # Using filterwarnings instead of addopts so we can add exceptions.
