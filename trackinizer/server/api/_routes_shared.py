@@ -6,17 +6,19 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 from uuid import UUID
 
-from fastapi import HTTPException
-
 from trackinizer.wire.seq_ranges import SeqRange, parse_seq_range
 
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from fastapi import Request
+    from fastapi import HTTPException, Request
 
     from trackinizer.lib.postgres import DatabaseEngine
+else:
+    from wrapt import lazy_import
+
+    HTTPException = lazy_import("fastapi", "HTTPException")  # ~120 ms.
 
 
 RoleLiteral = Literal["viewer", "writer", "admin"]
@@ -83,10 +85,6 @@ def iso_format(value: object) -> str | None:
     return value.isoformat()
 
 
-class _App(Protocol):
-    state: _State
-
-
 # ``ChangeIdMiddleware`` parses the header once (rejecting a malformed key with
 # 400) and stashes the validated UUID on ``request.state``; this just reads it,
 # so the parse and its failure branch live in exactly one place. The ``getattr``
@@ -98,3 +96,7 @@ def idempotency_key(request: Request) -> UUID | None:
     if key is not None and not isinstance(key, UUID):
         raise ValueError("Expected key is None or isinstance(key, UUID).")
     return key
+
+
+class _App(Protocol):
+    state: _State

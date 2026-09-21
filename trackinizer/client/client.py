@@ -256,7 +256,7 @@ class Client:
         """Send a DELETE request."""
         return self._request("DELETE", path, body=body)
 
-    # -- Reference resolution
+    # -- Reference resolution.
 
     def resolve_id(self, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
         """Resolve a ref to ``(kind, uuid)``.
@@ -334,7 +334,7 @@ class Client:
             out.append((kind, ref.uuid))
         return out
 
-    # -- Reads
+    # -- Reads.
 
     def list_kind(
         self,
@@ -607,6 +607,42 @@ class Client:
             )
         ]
 
+    def search_sessions(
+        self,
+        query: str,
+        *,
+        semantic: bool = True,
+        limit: int = 20,
+    ) -> dict[str, JSONValue]:
+        """Search captured sessions: embeddings + full text, RRF-merged.
+
+        Args:
+          query: The search query text.
+          semantic: Request the embedding arm; the server degrades to
+            full-text-only when no session embedder is configured.
+          limit: Maximum merged hits.
+
+        Returns:
+          body: ``{"hits": [...], "semantic": bool, "degraded": bool}`` -- each
+            hit carries its ``session_id``/``part``/``idx`` position, title,
+            score, source, and snippet.
+
+        """
+        where = "/api/web/search_sessions"
+        return dict(
+            _require_mapping(
+                self.get(
+                    where,
+                    params={
+                        "q": query,
+                        "semantic": "true" if semantic else "false",
+                        "limit": limit,
+                    },
+                ),
+                where,
+            ),
+        )
+
     def cost_for(self, target_id: uuid.UUID, *, deep: bool = False) -> dict[str, float]:
         """Fetch cost breakdown by field name; optionally include related rows.
 
@@ -627,7 +663,7 @@ class Client:
             ),
         )
 
-    # -- Writes
+    # -- Writes.
 
     def submit(
         self,

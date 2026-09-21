@@ -24,7 +24,7 @@ import pytest_asyncio
 
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.api._regex_guard import regex_failures_as_400
-from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.errors import ValidationError
 from trackinizer.wire.bodies import SubmitIssue

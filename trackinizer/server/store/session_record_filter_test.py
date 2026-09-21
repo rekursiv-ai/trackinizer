@@ -26,7 +26,8 @@ from trackinizer.lib.agent.types.sessions import (
     ToolCall,
     UserMessage,
 )
-from trackinizer.server.embedder import StubEmbedder
+from trackinizer.lib.custom_json import json_freeze
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.types.session_records import SessionRecordRow
@@ -69,6 +70,16 @@ async def _session_with(
             SessionRecordRow.of(session_id=session_id, part=0, idx=idx, record=record)
             for idx, record in enumerate(records)
         ],
+    )
+    # Record readers bound by the live manifest prefix (idx < records), so seed a
+    # manifest covering every appended row -- production writes both together.
+    _ = await store.upsert_session_manifest(
+        session_id,
+        name="s.jsonl",
+        metadata=json_freeze({}),
+        ir_id=uuid4(),
+        format="claude",
+        records=len(records),
     )
     return session_id
 

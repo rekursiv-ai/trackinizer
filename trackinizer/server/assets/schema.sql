@@ -142,6 +142,145 @@ CREATE INDEX IF NOT EXISTS idx_inquiry_embeddings_model
     ON inquiry_embeddings (model);
 
 
+-- Per-record session embeddings: the vector surface over ``session_records``
+-- (design: docs/private/session_indexing.md). One row per INDEX UNIT -- a
+-- record's field ("content" whole/chunked, or a machine-output "head") as
+-- selected by a SemanticMapper policy (server/semantic_mapper.py).
+--
+-- ``halfvec`` (dimension-free, no typmod): several session embedders with
+-- DIFFERENT native dims coexist here, keyed by ``model`` -- Qwen/Octen truncate
+-- to 1024, jina-v5-text-nano stores 768, jina-v5-text-small stores 1024. A
+-- dimension-free column cannot carry ONE global HNSW index (pgvector rejects it:
+-- "column does not have dimensions"), so each model gets a PARTIAL index casting
+-- to its fixed dim (below). Requires pgvector >= 0.7 (production 0.8.6, pglite
+-- 0.8.1). Deliberately NOT 384 or a second ``vector``
+-- column: the measured unit inventory (2026-09-19) at 2560 fp32 is ~40 GB of
+-- index for <1 MTEB point over 1024.
+--
+-- ``mapper`` names the POLICY that produced the unit, ``model`` the embedder;
+-- both key the row so a policy change and a model change are separately
+-- re-backfillable, side by side, like ``inquiry_embeddings.model``.
+--
+-- ``text_md5`` is the re-embed trigger: a claude compaction rewrites a part's
+-- records in place (``restart`` upserts), so a sweep re-embeds exactly the
+-- rows where ``md5(r.text) IS DISTINCT FROM e.text_md5`` -- one predicate
+-- serves both backfill and live ingest.
+--
+-- No FK to ``session_records``: the retype runner and compaction restarts
+-- DELETE+reinsert record rows, and a CASCADE would silently drop vectors that
+-- one ``text_md5`` sweep would otherwise reconcile. Orphans are reaped by the
+-- same sweep. The session-level FK still bounds the lifetime.
+CREATE TABLE IF NOT EXISTS session_embeddings (
+    session_id  UUID NOT NULL REFERENCES inquiries(id) ON DELETE CASCADE,
+    part        INTEGER NOT NULL,
+    idx         INTEGER NOT NULL,
+    field       TEXT NOT NULL,
+    chunk       INTEGER NOT NULL DEFAULT 0 CHECK (chunk >= 0),
+    mapper      TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    embedding   halfvec NOT NULL,
+    text_md5    TEXT NOT NULL,
+    created     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_id, part, idx, field, chunk, mapper, model)
+);
+
+-- One partial HNSW per shipped model over cosine distance (``<=>``), each
+-- casting the dimension-free column to that model's stored dim. A query hits its
+-- partial only with the same cast expression (server/store/session_search.py).
+-- Future models are indexed by the idempotent code-side ensure-step
+-- (store/session_index.ensure_model_index); these seven are the shipped set the
+-- migration parity gate covers. Kept in step with schema.023.sql.
+CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_stub_1024
+    ON session_embeddings USING hnsw ((embedding::halfvec(1024)) halfvec_cosine_ops)
+    WHERE model = 'stub-1024';
+
+CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_qwen3_embedding_0_6b_1024
+    ON session_embeddings USING hnsw ((embedding::halfvec(1024)) halfvec_cosine_ops)
+    WHERE model = 'qwen3-embedding-0.6b@1024';
+
+CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_qwen3_embedding_4b_1024
+    ON session_embeddings USING hnsw ((embedding::halfvec(1024)) halfvec_cosine_ops)
+    WHERE model = 'qwen3-embedding-4b@1024';
+
+CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_qwen3_embedding_8b_1024
+    ON session_embeddings USING hnsw ((embedding::halfvec(1024)) halfvec_cosine_ops)
+    WHERE model = 'qwen3-embedding-8b@1024';
+
+CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_octen_embedding_8b_1024
+    ON session_embeddings USING hnsw ((embedding::halfvec(1024)) halfvec_cosine_ops)
+    WHERE model = 'octen-embedding-8b@1024';
+
+CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_jina_embeddings_v5_text_nano_768
+    ON session_embeddings USING hnsw ((embedding::halfvec(768)) halfvec_cosine_ops)
+    WHERE model = 'jina-embeddings-v5-text-nano@768';
+
+CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_jina_embeddings_v5_text_small_1024
+    ON session_embeddings USING hnsw ((embedding::halfvec(1024)) halfvec_cosine_ops)
+    WHERE model = 'jina-embeddings-v5-text-small@1024';
+
+
+-- Freshness markers for the embedding sweep (design: docs/private/
+-- session_indexing.md). One row per (record, mapper, model) the sweep touched,
+-- carrying the ``md5(text)`` it was reconciled at.
+--
+-- Why a separate table rather than keying freshness on a ``session_embeddings``
+-- row: an fts-only record (a machine-output head, a SystemMessage, a Thinking
+-- block) has NO vector, so there is no embedding row to hang a marker on. Before
+-- this table the sweep RAISED on such a record, because an fts-only record would
+-- write no row, read as never-up-to-date, and re-embed forever. The marker
+-- decouples "swept at this md5" from "has a vector", so every swept record --
+-- embedded or not -- reads up-to-date on the next pass.
+--
+-- Keyed by ``model`` as well as ``mapper``: the follow service maintains several
+-- models side by side (an A/B challenger), each swept independently, so a marker
+-- must be per-(mapper, model) or model B would read model A's marker as fresh and
+-- never embed. An fts-only record gets one redundant-but-harmless marker per
+-- model rather than a second, model-less marker shape.
+--
+-- No FK to ``session_records`` (same reasoning as ``session_embeddings``): the
+-- retype runner and compaction restarts DELETE+reinsert record rows, and a
+-- CASCADE would drop markers a ``text_md5`` sweep would otherwise reconcile. The
+-- session-level FK bounds the lifetime.
+CREATE TABLE IF NOT EXISTS session_index_state (
+    session_id  UUID NOT NULL REFERENCES inquiries(id) ON DELETE CASCADE,
+    part        INTEGER NOT NULL,
+    idx         INTEGER NOT NULL,
+    mapper      TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    text_md5    TEXT NOT NULL,
+    created     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_id, part, idx, mapper, model)
+);
+
+
+-- Replay-only bodies for heavy record kinds: the cold half of the hot/cold
+-- split (design: docs/private/session_indexing.md "Storage split").
+--
+-- The twin of ``session_ciphertext``: same key, same one-transaction write
+-- with its record, spliced back only on replay (``read_session_records``
+-- ``plaintext_only=False``). The main ``session_records`` row keeps a HEAD of
+-- ``text`` for search/feed and a stub payload; the full payload and text land
+-- here, zstd-compressed per row.
+--
+-- ``payload_zst`` holds the compressed ORIGINAL payload JSON text (key order
+-- intact -- byte-exact replay depends on it, same reason the hot column is
+-- ``json`` not ``jsonb``); ``text_zst`` the full search projection the head
+-- was cut from. Compressed because tool output is boilerplate-heavy: TOAST's
+-- per-value pglz on ~7 kB values left 12 GB of content occupying ~24 GB of
+-- heap+toast, while zstd on this corpus measures 5-10x. One row per record
+-- rather than one batch per part so the splice stays the same correlated
+-- subquery the ciphertext join uses, and a single record's expand in the
+-- console decompresses one value, not a whole part.
+CREATE TABLE IF NOT EXISTS session_bodies (
+    session_id  UUID NOT NULL REFERENCES inquiries(id) ON DELETE CASCADE,
+    part        INTEGER NOT NULL,
+    idx         INTEGER NOT NULL,
+    payload_zst BYTEA NOT NULL,
+    text_zst    BYTEA NOT NULL,
+    PRIMARY KEY (session_id, part, idx)
+);
+
+
 -- Edge catalog (validated by the CHECK on this table). Every edge is stored
 -- child -> parent (from = the younger/dependent vertex, to = its older parent);
 -- see ``docs/epistemy.md`` and ``types/edges.py``.

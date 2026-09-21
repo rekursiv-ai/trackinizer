@@ -53,7 +53,7 @@ from trackinizer.server.auth import (
     verify_secret,
 )
 from trackinizer.server.config import Config
-from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.session import (
     SESSION_COOKIE_NAME,
     read_session_cookie,

@@ -26,7 +26,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib import postgres
-from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.sql import load_sql
 from trackinizer.server.store.core import Store
@@ -247,6 +247,188 @@ async def test_session_records_context_id_check_rejects_a_forward_reference(
             await conn.execute(insert, sid, 4, 5)
         # Naming itself is legal, and is what claude actually writes.
         await conn.execute(insert, sid, 6, 6)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_022_then_023_matches_the_baseline_shape(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """The session-index tables built by 022+023 equal the fresh-install ones.
+
+    Bootstrap builds the baseline shape (dimension-free ``embedding`` + one
+    partial HNSW per shipped model, from schema.sql). This drops the tables (as
+    a pre-022 database lacks them), replays ``schema.022`` THEN ``schema.023`` --
+    the full chain an existing database runs -- and compares columns AND indexes.
+    Replaying 022 alone would (correctly) diverge: 023 is what widens the column
+    and swaps the single global index for the per-model partials.
+    """
+    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
+    columns = (
+        "SELECT table_name, column_name, data_type, is_nullable, column_default "
+        "FROM information_schema.columns WHERE table_schema = 'public' "
+        "AND table_name = ANY($1::text[]) ORDER BY table_name, ordinal_position"
+    )
+    indexes = (
+        "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' "
+        "AND tablename = ANY($1::text[]) ORDER BY indexdef"
+    )
+    tables = ["session_embeddings", "session_bodies"]
+    async with scratch_engine.acquire() as conn:
+        base_cols = [dict(r) for r in await conn.fetch(columns, tables)]
+        base_idx = [str(r["indexdef"]) for r in await conn.fetch(indexes, tables)]
+        assert {r["table_name"] for r in base_cols} == set(tables), (
+            "the baseline did not create every session-index table"
+        )
+        # The baseline ships one partial HNSW per model; there must be several.
+        assert (
+            sum(1 for d in base_idx if "hnsw" in d) >= _SHIPPED_PARTIAL_INDEX_COUNT
+        ), base_idx
+
+        await conn.execute("DROP TABLE session_embeddings, session_bodies")
+        await conn.execute(load_sql("schema.022"))
+        await conn.execute(load_sql("schema.023"))
+        migrated_cols = [dict(r) for r in await conn.fetch(columns, tables)]
+        migrated_idx = [str(r["indexdef"]) for r in await conn.fetch(indexes, tables)]
+
+    assert migrated_cols == base_cols
+    assert set(migrated_idx) == set(base_idx)
+
+
+# The seven partial HNSW indexes schema.023 + the baseline ship (six real models
+# + the stub). The parity test asserts the baseline carries at least this many;
+# an exact match is enforced by the column/index set-equality above.
+_SHIPPED_PARTIAL_INDEX_COUNT = 7
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_023_preserves_existing_1024_rows_byte_for_byte(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """Widening ``embedding`` to dimension-free ``halfvec`` keeps stored rows exact.
+
+    A pre-023 database holds ``halfvec(1024)`` rows. Dropping the typmod is a
+    metadata-only change, so an existing vector must read back byte-identical
+    after 023 -- the guard against a migration that silently requantizes the
+    corpus.
+    """
+    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
+    async with scratch_engine.acquire() as conn:
+        # Rebuild the PRE-023 shape: halfvec(1024) + the single global index.
+        await conn.execute("DROP TABLE session_embeddings")
+        await conn.execute(load_sql("schema.022"))
+        session_id = uuid.uuid4()
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
+            "'tester@example.com', 'row survives 023')",
+            session_id,
+        )
+        vector = "[" + ",".join("0.0123456" for _ in range(1024)) + "]"
+        await conn.execute(
+            "INSERT INTO session_embeddings "
+            "(session_id, part, idx, field, chunk, mapper, model, embedding, "
+            "text_md5) VALUES ($1, 0, 0, 'content', 0, 'footprint', "
+            "'qwen3-embedding-4b@1024', $2, 'abc')",
+            session_id,
+            vector,
+        )
+        before = await conn.fetchval(
+            "SELECT embedding::text FROM session_embeddings WHERE session_id = $1",
+            session_id,
+        )
+        await conn.execute(load_sql("schema.023"))
+        after = await conn.fetchval(
+            "SELECT embedding::text FROM session_embeddings WHERE session_id = $1",
+            session_id,
+        )
+    assert before == after
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_024_matches_the_baseline_shape(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """The ``session_index_state`` table 024 builds equals the fresh-install one.
+
+    Bootstrap builds the baseline shape (which carries ``session_index_state``).
+    This drops it (as a pre-024 database lacks it), replays ``schema.024``, and
+    compares columns AND indexes -- the parity check neither file can make about
+    itself, since each is read by a disjoint population.
+    """
+    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
+    columns = (
+        "SELECT table_name, column_name, data_type, is_nullable, column_default "
+        "FROM information_schema.columns WHERE table_schema = 'public' "
+        "AND table_name = ANY($1::text[]) ORDER BY table_name, ordinal_position"
+    )
+    indexes = (
+        "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' "
+        "AND tablename = ANY($1::text[]) ORDER BY indexdef"
+    )
+    tables = ["session_index_state"]
+    async with scratch_engine.acquire() as conn:
+        base_cols = [dict(r) for r in await conn.fetch(columns, tables)]
+        base_idx = [str(r["indexdef"]) for r in await conn.fetch(indexes, tables)]
+        assert {r["table_name"] for r in base_cols} == set(tables), (
+            "the baseline did not create session_index_state"
+        )
+
+        await conn.execute("DROP TABLE session_index_state")
+        await conn.execute(load_sql("schema.024"))
+        migrated_cols = [dict(r) for r in await conn.fetch(columns, tables)]
+        migrated_idx = [str(r["indexdef"]) for r in await conn.fetch(indexes, tables)]
+
+    assert migrated_cols == base_cols
+    assert set(migrated_idx) == set(base_idx)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_024_backfills_markers_from_existing_vectors(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """024 seeds a marker per existing embedding group so nothing re-embeds.
+
+    A pre-024 database has ``session_embeddings`` rows but no marker table.
+    After 024, every embedded record must read up-to-date -- one marker per
+    ``(session_id, part, idx, mapper, model)`` group, carrying that group's md5.
+    """
+    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
+    session_id = uuid.uuid4()
+    async with scratch_engine.acquire() as conn:
+        # Rebuild the PRE-024 state: embeddings present, no marker table.
+        await conn.execute("DROP TABLE session_index_state")
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
+            "'tester@example.com', 'marker backfill')",
+            session_id,
+        )
+        vector = "[" + ",".join("0.01" for _ in range(1024)) + "]"
+        # Two chunk units of ONE record share a single md5 -> one marker.
+        for chunk in (0, 1):
+            await conn.execute(
+                "INSERT INTO session_embeddings "
+                "(session_id, part, idx, field, chunk, mapper, model, embedding, "
+                "text_md5) VALUES ($1, 0, 0, 'content', $2, 'footprint-v1', "
+                "'qwen3-embedding-4b@1024', $3, 'sharedmd5')",
+                session_id,
+                chunk,
+                vector,
+            )
+        await conn.execute(load_sql("schema.024"))
+        markers = await conn.fetch(
+            "SELECT part, idx, mapper, model, text_md5 FROM session_index_state "
+            "WHERE session_id = $1",
+            session_id,
+        )
+    assert len(markers) == 1
+    assert markers[0]["text_md5"] == "sharedmd5"
+    assert markers[0]["mapper"] == "footprint-v1"
+    assert markers[0]["model"] == "qwen3-embedding-4b@1024"
 
 
 if __name__ == "__main__":

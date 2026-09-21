@@ -30,6 +30,7 @@ from trackinizer.lib.custom_json import (
 )
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.cascade import _CascadeAuditMixin
+from trackinizer.server.store.session_bodies import decode_body, spliced_payload
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.session_records import SessionRecordRow
@@ -355,11 +356,22 @@ class _SessionIRMixin(_CascadeAuditMixin):
 
         """
         bytes_column = (
-            "NULL::bytea AS bytes"
+            "NULL::bytea AS bytes, NULL::bytea AS body_payload, "
+            "NULL::bytea AS body_text"
             if plaintext_only
             else "(SELECT c.bytes FROM session_ciphertext c "
             "WHERE c.session_id = r.session_id AND c.part = r.part "
-            "AND c.idx = r.idx) AS bytes"
+            "AND c.idx = r.idx) AS bytes, "
+            # The body sidecar splices exactly as the ciphertext does: a
+            # replay reader re-inflates the offloaded payload/text, while
+            # ``plaintext_only`` (search, feed) serves the hot head and never
+            # decompresses (``store/session_bodies.py``).
+            "(SELECT b.payload_zst FROM session_bodies b "
+            "WHERE b.session_id = r.session_id AND b.part = r.part "
+            "AND b.idx = r.idx) AS body_payload, "
+            "(SELECT b.text_zst FROM session_bodies b "
+            "WHERE b.session_id = r.session_id AND b.part = r.part "
+            "AND b.idx = r.idx) AS body_text"
         )
         async with self.engine.acquire() as conn:
             rows = await conn.fetch(
@@ -400,6 +412,8 @@ class _SessionIRMixin(_CascadeAuditMixin):
             text_value = row["text"]
             assert isinstance(text_value, str)
             bytes_value = row["bytes"]
+            body_payload = row["body_payload"]
+            body_text = row["body_text"]
             if context_id_value is not None and not isinstance(context_id_value, int):
                 raise ValueError(
                     "Expected context_id_value is None or isinstance(context_id_value, int).",
@@ -419,6 +433,21 @@ class _SessionIRMixin(_CascadeAuditMixin):
                 raise ValueError(
                     "Expected bytes_value is None or isinstance(bytes_value, bytes).",
                 )
+            if body_payload is not None and not isinstance(body_payload, bytes):
+                raise ValueError(
+                    "Expected body_payload is None or isinstance(body_payload, bytes).",
+                )
+            if body_text is not None and not isinstance(body_text, bytes):
+                raise ValueError(
+                    "Expected body_text is None or isinstance(body_text, bytes).",
+                )
+            # An offloaded body splices back over the stub on a replay read;
+            # ``plaintext_only`` selected NULLs above, so the head passes
+            # through untouched there.
+            if not plaintext_only:
+                payload_value = spliced_payload(payload_value, body_payload)
+                if body_text is not None:
+                    text_value = decode_body(body_text)
             result.append(
                 SessionRecordRow(
                     session_id=session_id_value,

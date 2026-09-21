@@ -20,7 +20,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib import postgres
-from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.store.core import Store
 from trackinizer.wire.bodies import SubmitIssue
@@ -47,7 +47,7 @@ async def wide_store(pg_dsn: str) -> AsyncIterator[Store]:
         max_size=_WIDE_POOL_SIZE,
     ) as engine:
         store = Store(engine, embed=StubEmbedder())
-        await store.bootstrap()  # idempotent: CREATE TABLE IF NOT EXISTS
+        await store.bootstrap()  # Idempotent: CREATE TABLE IF NOT EXISTS.
         async with engine.acquire() as conn:
             await conn.execute("TRUNCATE inquiries, change_log CASCADE")
         yield store
@@ -96,3 +96,9 @@ async def test_32_true_concurrent_claimants_on_4_issues_exactly_4_win(
     assert len(won) == 4
     assert set(won) == set(issues)
     assert results.count(None) == 28
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.main import test_main
+
+    test_main(__file__)

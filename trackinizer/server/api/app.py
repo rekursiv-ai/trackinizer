@@ -39,6 +39,7 @@ from trackinizer.server.config import (
     build_embedder,
     build_engine,
 )
+from trackinizer.server.embedders import registry
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store
 from trackinizer.server.subscriber import push_changes_to_live_subscribers
@@ -53,6 +54,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from starlette.types import ASGIApp, Message, Receive, Scope
+
+    from trackinizer.types.embedder import QueryEmbedder
 
 
 _logger = logging.getLogger(__name__)
@@ -141,6 +144,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             # the schema is in place.
             async with engine.acquire() as conn:
                 await seed_no_auth_user(conn)
+        # Resolve the session-search embedder ONCE at startup and cache it on
+        # app.state (web.py reads it there). A real model is degraded to None
+        # when its weights are absent -- never downloaded in-band -- and warmed
+        # in the background when present, so the first query pays inference
+        # only.
+        warm_task = _resolve_session_embedder(app, config)
         # Subscriber push: copies committed change rows into subscribers'
         # live-session inbound queues (doorbell-driven; see subscriber_push).
         push_task = asyncio.create_task(
@@ -152,6 +161,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             push_task.cancel()
             with suppress(asyncio.CancelledError):
                 await push_task
+            if warm_task is not None:
+                warm_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await warm_task
         # Bracket the engine teardown so an operator (and the shutdown-latency
         # investigation) can see where time goes: a gap BEFORE this line is
         # uvicorn draining in-flight connections; a gap until "engine closed"
@@ -159,6 +172,49 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         # server log alongside uvicorn's own "Shutting down" lines.
         _logger.info("shutdown: closing engine")
     _logger.info("shutdown: engine closed")
+
+
+# ``registry.weights_present`` is torch-free: a stub / unset name returns True
+# without importing anything heavy, and a real model imports only its own module
+# (transitively torch) to probe the HF cache -- so a full-text-only server never
+# pays the import.
+# Returns the warm-up task when one was scheduled (weights present), else ``None`` (no
+# model, or degraded because weights are absent).
+def _resolve_session_embedder(
+    app: FastAPI,
+    config: Config,
+) -> asyncio.Task[None] | None:
+    """Cache the session embedder on ``app.state``; degrade or warm as needed."""
+    name = config.session_embedder
+    embedder = registry.build_session_embedder(name)
+    if embedder is None:
+        app.state.session_embedder = None
+        return None
+    if registry.is_weightless(name):
+        # A stub has no weights to load, so it is ready immediately and needs no
+        # background warm.
+        app.state.session_embedder = embedder
+        return None
+    if registry.weights_present(name):
+        # A real model with cached weights is ready. Warm the lazy load off the
+        # request path so the first query pays inference only, not the load.
+        app.state.session_embedder = embedder
+        return asyncio.create_task(_warm_session_embedder(embedder))
+    _logger.error(
+        "session embedder %r configured but its weights are NOT in the HF "
+        "cache; semantic session search is DISABLED (full-text only). "
+        "Run `python -m trackinizer.server.prep_models` on this host "
+        "to download them, then restart. A request will NEVER download "
+        "them in-band.",
+        name,
+    )
+    app.state.session_embedder = None
+    return None
+
+
+async def _warm_session_embedder(embedder: QueryEmbedder) -> None:
+    """Trigger the embedder's lazy weight load once, in the background."""
+    _ = await embedder.embed_query("warm")
 
 
 def _build_app() -> FastAPI:

@@ -37,10 +37,38 @@ dependencies = [
     "lark>=1.1",
     # shell parsing: lifts a captured `cat`/`echo >` into a typed file result
     "bashlex>=0.18",
+    # session-body compression (the read path decompresses zstd blobs). The
+    # stdlib `compression.zstd` is 3.14-only; the package validates on 3.12.
+    "zstandard>=0.25.0",
     # lazy imports
     "wrapt",
     # filesystem watching
     "watchdog>=6.0.0 ; sys_platform == 'darwin'",
+    # Semantic session search (TRACKINIZER_SESSION_EMBEDDER=<model>@<dim>, e.g.
+    # qwen3-embedding-4b@1024): the embedders run the model's ONNX graph in-process
+    # via ONNX Runtime, and the startup weight-presence check reads the HF cache.
+    # Unconditional -- semantic search is a first-class feature, so every install
+    # carries the model path. The imports are still deferred at runtime
+    # (TYPE_CHECKING + wrapt lazy_import for numpy, function-local imports for
+    # onnxruntime / huggingface_hub) so `import trackinizer` costs nothing until
+    # something embeds. No torch: ONNX Runtime is the whole inference stack, which
+    # keeps the install off the ~GB torch + CUDA wheels the CPU serving path never
+    # needs; the dev-time `tools/export_onnx.py` (torch, never shipped) converts a
+    # model to ONNX offline.
+    #
+    # onnxruntime: the inference runtime. `>=1.20` for the graph-optimization and
+    # provider APIs the loader relies on; a GPU host installs `onnxruntime-gpu`
+    # for the CUDA execution provider (same import name, so no code change).
+    "onnxruntime>=1.20",
+    # tokenizers: loads each model's `tokenizer.json` (the Rust engine transformers
+    # wraps). `>=0.20` covers `enable_padding(direction=)` and `encode_batch`.
+    "tokenizers>=0.20",
+    # numpy: pooling, truncation, and L2-normalization of the ONNX output.
+    "numpy>=1.26",
+    # huggingface-hub: `hf_hub_download` (resolve the ONNX graph + tokenizer) and
+    # `try_to_load_from_cache` (no-network weight check). A conservative floor
+    # guaranteeing both across the current cache era.
+    "huggingface-hub>=0.30.0",
 ]
 
 [dependency-groups]
@@ -68,7 +96,7 @@ typecheck = [
     "basedpyright>=1.40.1",
     "ty>=0.0.82",
     "rekursiv-ai-typeshed",
-    "hatchling>=1.32.1",  # packages/rekursiv-ai-typeshed/rekursiv_ai_typeshed/hatch_build.py subscripts its two-parameter BuildHookInterface.
+    "hatchling>=1.32.4",  # packages/rekursiv-ai-typeshed/rekursiv_ai_typeshed/hatch_build.py subscripts its one-parameter BuildHookInterface.
     "asyncpg-stubs>=0.31.2",
 ]
 "pre-commit" = [

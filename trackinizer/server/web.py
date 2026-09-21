@@ -48,8 +48,15 @@ from trackinizer.server.auth import (
     current_user,
     require_role,
 )
+from trackinizer.server.config import Config, ConfigError
+from trackinizer.server.embedders import registry
 from trackinizer.server.notify import iter_sse_events, tx
 from trackinizer.server.regex_timeout import apply_regex_statement_timeout
+from trackinizer.server.semantic_mapper_footprint import FootprintMapper
+from trackinizer.server.store.session_search import (
+    SessionSearchHit,
+    search_session_records,
+)
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.edges import Edge
@@ -78,6 +85,24 @@ router = APIRouter()
 def get_store(request: Request) -> Store:
     """Return the process-wide store."""
     return _state(request).store
+
+
+_SESSION_SEARCH_MAX_LIMIT: Final = 200
+_SESSION_SEARCH_MAPPER: Final = FootprintMapper().name
+
+
+class _QueryEmbedder(Protocol):
+    """A session embedder that can embed a query with its instruction prefix."""
+
+    name: str
+    dim: int
+
+    async def embed_query(self, text: str) -> list[float]:
+        """Embed a search query on the query-side manifold."""
+        ...
+
+
+_UNSET: Final = object()
 
 
 # -- Read routes -------------------------------------------------------------
@@ -154,6 +179,75 @@ async def web_search(
         with regex_failures_as_400():
             rows = await conn.fetch(sql, *params)
     return [_row_to_dict(r) for r in rows]
+
+
+@router.get("/search_sessions")
+async def web_search_sessions(
+    request: Request,
+    q: str,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
+    semantic: bool = True,
+    limit: int = 20,
+    model: str = "",
+    dim: int | None = None,
+) -> WebView:
+    """Hybrid session search: embeddings + scoped tsvector, RRF-merged.
+
+    Runs the full-text arm always, and the semantic arm only when ``semantic``
+    is requested AND a session embedder is available. With no embedder the route
+    degrades to full-text-only rather than 500 -- a keyword search must never
+    trigger a model load -- and flags the degrade in the response
+    (``degraded: true``, ``semantic: false``). The query embedding uses the
+    embedder's query-side prefix; the corpus stayed prefix-free at ingest.
+
+    Args:
+      request: FastAPI request object for middleware access.
+      q: The search query. Full-text terms feed ``websearch_to_tsquery``.
+      identity: Authenticated user, validated to have viewer role.
+      semantic: Request the embedding arm (default true); ignored when no
+        session embedder is available.
+      limit: Maximum merged hits, 1-200.
+      model: Optional A/B override -- a bare slug or full ``slug@dim`` of an
+        embedder to query INSTEAD of the serving default (its rows must already
+        be swept). Unknown names are a 400. Empty uses the process default.
+      dim: Optional dim override paired with ``model`` (a Matryoshka model
+        accepts any dim in its range); must agree with any ``@dim`` in ``model``.
+
+    Returns:
+      body: ``{"hits": [...], "semantic": bool, "degraded": bool}`` -- each hit
+        carries ``session_id``/``part``/``idx`` (where the console opens),
+        ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``.
+
+    """
+    del identity
+    if limit < 1 or limit > _SESSION_SEARCH_MAX_LIMIT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"limit must be in [1, {_SESSION_SEARCH_MAX_LIMIT}]",
+        )
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="q must be non-empty")
+    embedder = _search_embedder(request, semantic=semantic, model=model, dim=dim)
+    query_vector = await embedder.embed_query(q) if embedder is not None else None
+    degraded = semantic and embedder is None
+    hits = await search_session_records(
+        get_store(request).engine,
+        query_vector=query_vector,
+        query_text=q,
+        mapper=_SESSION_SEARCH_MAPPER,
+        model=embedder.name if embedder is not None else "",
+        # The cast dim comes from the SELECTED embedder (override or default), so
+        # the cosine arm hits that model's partial index. Unused when the arm is
+        # skipped; 1 is a valid placeholder the query never reaches.
+        dim=embedder.dim if embedder is not None else 1,
+        limit=limit,
+    )
+    return {
+        "hits": [_session_hit_to_dict(hit) for hit in hits],
+        "semantic": query_vector is not None,
+        "degraded": degraded,
+    }
 
 
 @router.get("/recent_changes")
@@ -785,6 +879,21 @@ def _graph_edge(row: asyncpg.Record) -> WebView:
 
 # Kind-specific columns surface only when populated on this row; NULL columns are
 # omitted so the JSON doesn't carry irrelevant nulls per kind.
+def _session_hit_to_dict(hit: SessionSearchHit) -> WebView:
+    """Flatten one ``SessionSearchHit`` to JSON for the console."""
+    return {
+        "session_id": str(hit.session_id),
+        "part": hit.part,
+        "idx": hit.idx,
+        "field": hit.field,
+        "chunk": hit.chunk,
+        "score": hit.score,
+        "source": hit.source,
+        "snippet": hit.snippet,
+        "title": hit.title,
+    }
+
+
 def _row_to_dict(row: asyncpg.Record) -> WebView:
     """Flatten an ``inquiries`` row to JSON for the SPA."""
     out: WebView = {
@@ -972,6 +1081,13 @@ def _add_edge_annotation(ref: WebView, row: asyncpg.Record) -> None:
 class _AppState(Protocol):
     store: Store
     engine: DatabaseEngine
+    # Populated lazily by ``_session_embedder``; ``config`` is set by the app
+    # lifespan (absent in the duck-typed test apps, hence the getattr reads).
+    config: object
+    session_embedder: _QueryEmbedder | None
+    # A/B override embedders, cached per stored name by ``_override_embedder`` so
+    # repeated ``?model=`` queries reuse one loaded model.
+    session_embedder_overrides: dict[str, _QueryEmbedder]
 
 
 class _AppLike(Protocol):
@@ -1016,3 +1132,81 @@ def _record_uuid(row: asyncpg.Record, key: str) -> UUID:
 def _isoformat(value: object) -> str:
     """ISO-format a datetime; fall back to ``str()`` for non-datetimes."""
     return value.isoformat() if isinstance(value, datetime) else str(value)
+
+
+# Built once per process from ``config.session_embedder`` and cached on
+# ``app.state`` -- a real embedder still loads its weights lazily on the first
+# ``embed_query``, so caching the instance is cheap and only the first semantic
+# search pays the model load. ``None`` (unset knob or no config) means the
+# semantic arm is unavailable and the route degrades.
+def _session_embedder(request: Request) -> _QueryEmbedder | None:
+    """Return the process's default session-search embedder, or ``None``."""
+    state = _state(request)
+    cached = getattr(state, "session_embedder", _UNSET)
+    if cached is not _UNSET:
+        return cast("_QueryEmbedder | None", cached)
+    # ``isinstance`` narrowing, not ``getattr(config, ...)``: the lifespan
+    # stores a real ``Config`` (``api/app.py``), so a typed read means a field
+    # rename breaks type-checking here instead of silently disabling the
+    # semantic arm. Duck-typed test apps carry no config and read as None.
+    config: object = getattr(state, "config", None)
+    name = config.session_embedder if isinstance(config, Config) else ""
+    dim = config.session_embedder_dim if isinstance(config, Config) else None
+    embedder = cast(
+        "_QueryEmbedder | None",
+        registry.build_session_embedder(name, dim=dim),
+    )
+    state.session_embedder = embedder
+    return embedder
+
+
+# The A/B override: ``?model=`` (optionally ``?dim=``) selects a challenger
+# embedder distinct from the serving default, WITHOUT disturbing
+# ``state.session_embedder``. Instances are cached per ``(name, dim)`` on
+# ``state.session_embedder_overrides`` so repeated A/B queries reuse one model --
+# a real model loads ~8 GB of weights on first ``embed_query``, so rebuilding per
+# request would reload them every query. Two dims of one model are DISTINCT cache
+# entries (different truncated vectors, different stored identity). The cache is
+# bounded by the registry (a handful of keys), so no eviction is needed. An
+# unknown name/dim is a client error (400), not a degrade -- degrade is for a
+# configured model whose weights are absent, which the lazy-load path handles.
+def _override_embedder(
+    request: Request,
+    name: str,
+    dim: int | None,
+) -> _QueryEmbedder:
+    """Return the cached A/B override embedder for ``(name, dim)``; 400 if unknown."""
+    state = _state(request)
+    cache = getattr(state, "session_embedder_overrides", _UNSET)
+    if cache is _UNSET:
+        cache = {}
+        state.session_embedder_overrides = cache
+    overrides = cast("dict[tuple[str, int | None], _QueryEmbedder]", cache)
+    key = (name, dim)
+    cached = overrides.get(key)
+    if cached is not None:
+        return cached
+    try:
+        embedder = registry.build_session_embedder(name, dim=dim)
+    except ConfigError as err:
+        raise HTTPException(status_code=400, detail=str(err)) from err
+    if embedder is None:
+        raise HTTPException(status_code=400, detail="model must be non-empty")
+    typed = cast("_QueryEmbedder", embedder)
+    overrides[key] = typed
+    return typed
+
+
+def _search_embedder(
+    request: Request,
+    *,
+    semantic: bool,
+    model: str,
+    dim: int | None,
+) -> _QueryEmbedder | None:
+    """Select the query embedder: the ``model``/``dim`` override, else the default."""
+    if not semantic:
+        return None
+    if model:
+        return _override_embedder(request, model, dim)
+    return _session_embedder(request)

@@ -41,7 +41,7 @@ from trackinizer.server.store.change_id_slot import (
 )
 from trackinizer.server.store.edit import _EditMixin
 from trackinizer.server.store.submit import _SubmitMixin
-from trackinizer.server.values import vetted_sql
+from trackinizer.server.values import manifest_bound, vetted_sql
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.inquiries import Inquiry
@@ -476,6 +476,10 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             params.append(actor)
             clauses.append(f"i.owner = ${len(params)}")
         params.append(limit)
+        # Exclude stale tail rows a compaction-restart left beyond the live
+        # manifest prefix (``idx < m.records``); see ``values.manifest_bound``.
+        manifest_join, manifest_predicate = manifest_bound("e")
+        clauses.append(manifest_predicate)
         where = " AND ".join(clauses)
         # ``tail`` takes the newest page (DESC) then restores ascending order in
         # Python, so the wire shape is always oldest-first regardless of which
@@ -485,7 +489,8 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             "SELECT e.session_id, e.part, e.idx, e.kind, e.created, e.timestamp, "
             "e.model, e.payload, e.text, "
             "i.owner, i.agentsession_rooms, i.agentsession_cli "
-            "FROM session_records e JOIN inquiries i ON i.id = e.session_id "
+            "FROM session_records e JOIN inquiries i ON i.id = e.session_id ",
+            manifest_join,
             "WHERE ",
             where,
             " ORDER BY e.created ",

@@ -575,6 +575,8 @@ class _EditMixin(_CascadeAuditMixin):
         assert isinstance(issue, Issue)
         return issue
 
+    # Unlike :meth:`_replay_field_change` the subject is not known up front --
+    # discovering which issue was claimed is the point -- so the audit row supplies it.
     async def _replay_claim(
         self,
         conn: Conn,
@@ -582,12 +584,7 @@ class _EditMixin(_CascadeAuditMixin):
         owner: Inquiry.Actor,
         actor: Inquiry.Actor,
     ) -> Issue | None:
-        """Return the issue a committed claim under this key already took.
-
-        Unlike :meth:`_replay_field_change` the subject is not known up front
-        -- discovering which issue was claimed is the point -- so the audit
-        row supplies it.
-        """
+        """Return the issue a committed claim under this key already took."""
         client_change_id = _peek_client_change_id()
         if client_change_id is None:
             return None

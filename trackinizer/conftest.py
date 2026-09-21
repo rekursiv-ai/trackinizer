@@ -36,7 +36,7 @@ from trackinizer.lib.testing.userdirs_fixture import (
     isolate_user_dirs,
     pytest_configure,
 )
-from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.store.core import Store
 

@@ -22,7 +22,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.postgres.testing import reset_schema
-from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store import read
 from trackinizer.server.store.core import Store
 from trackinizer.server.values import vetted_sql

@@ -10,7 +10,7 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import IntCodec
+from trackinizer.lib.custom_json import DictCodec, IntCodec, loads
 from trackinizer.trax import verbs
 from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.grammar import (
@@ -2035,6 +2035,62 @@ def test_whole_collection_views_never_exceed_server_cap(client: FakeClient) -> N
         for call in (c for c in client.calls if c[0] == "list_kind"):
             kwargs = call[-1]
             assert IntCodec.coerce(kwargs["limit"], 0) <= MAX_LIST_LIMIT, verb
+
+
+def test_search_dispatches_semantic_by_default(client: FakeClient) -> None:
+    run(["search-sessions", "advisory lock"], client)
+    calls = [c for c in client.calls if c[0] == "search_sessions"]
+    assert calls
+    query, kwargs = calls[0][1][0], calls[0][2]
+    assert query == "advisory lock"
+    assert kwargs["semantic"] is True
+    assert kwargs["limit"] == 20
+
+
+def test_search_no_semantic_flag_opts_out(client: FakeClient) -> None:
+    run(["search-sessions", "lock", "--no-semantic"], client)
+    calls = [c for c in client.calls if c[0] == "search_sessions"]
+    assert calls
+    assert calls[0][2]["semantic"] is False
+
+
+def test_search_limit_is_passed_through(client: FakeClient) -> None:
+    run(["search-sessions", "lock", "--limit", "5"], client)
+    calls = [c for c in client.calls if c[0] == "search_sessions"]
+    assert calls
+    assert calls[0][2]["limit"] == 5
+
+
+def test_search_text_output_shows_hit_and_position(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["search-sessions", "advisory lock"], client)
+    out = capsys.readouterr().out
+    assert "deploy log" in out  # The hit's session title.
+    assert "#0/3" in out  # part/idx position the console opens at.
+    assert "advisory lock acquired" in out  # The snippet.
+
+
+def test_search_text_output_flags_degradation(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client.session_hits = {"hits": [], "semantic": False, "degraded": True}
+    run(["search-sessions", "lock"], client)
+    out = capsys.readouterr().out
+    assert "semantic search unavailable" in out
+
+
+def test_search_json_output_is_the_raw_body(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["search-sessions", "lock", "--format", "json"], client)
+    out = capsys.readouterr().out
+    body = DictCodec.coerce(loads(out))
+    assert "hits" in body
+    assert body["semantic"] is True
 
 
 # Folded in from former crasher_test.py.

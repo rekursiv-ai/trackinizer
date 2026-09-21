@@ -1885,6 +1885,79 @@ class Recent(Command):
             echo(render.format_changes(list(rows)), nl=False)
 
 
+class Search(Command):
+    """Search captured sessions: embeddings + full text, RRF-merged."""
+
+    # NOT ``search``: that verb was retired (the filter grammar subsumed
+    # inquiry search; ``cli_test.test_search_verb_is_gone`` pins its removal).
+    # Session search is a distinct surface over ``session_records``, so it takes
+    # its own, previously-unused name rather than resurrecting the retired one.
+    names = ("search-sessions",)
+    help = HelpPage(
+        usage='trax search-sessions "QUERY" [OPTIONS]',
+        summary="Search captured agent sessions by meaning and by keyword.",
+        arguments=(("QUERY", "The search text (quote multi-word queries)."),),
+        options=(
+            ("--limit INT", "Maximum hits to return (default 20)."),
+            (
+                "--no-semantic",
+                "Full-text only; skip the embedding arm even if available.",
+            ),
+            ("--format TEXT", "text|json."),
+        ),
+        examples=(
+            'trax search-sessions "advisory lock deadlock"',
+            'trax search-sessions "retry backoff" --limit 5',
+            'trax search-sessions "postgres" --no-semantic',
+            'trax search-sessions "deploy" --format json',
+        ),
+    )
+
+    @classmethod
+    @override
+    def make_parser(cls) -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser(
+            prog="trax search-sessions",
+            description=cls.__doc__,
+        )
+        parser.add_argument("query", metavar="QUERY", help="search text")
+        parser.add_argument("--limit", type=_positive_int, default=20)
+        # Semantic on by default; the server degrades to full-text-only when no
+        # session embedder is configured, so this flag is a caller opt-OUT.
+        parser.add_argument(
+            "--semantic",
+            dest="semantic",
+            default=True,
+            action=argparse.BooleanOptionalAction,
+        )
+        parser.add_argument(
+            "--format",
+            dest="format_",
+            default="text",
+            choices=("text", "json"),
+        )
+        return parser
+
+    @classmethod
+    @override
+    def run(
+        cls,
+        verb: str,
+        args: argparse.Namespace,
+        client_factory: Callable[[], Client],
+    ) -> None:
+        del verb
+        body = client_factory().search_sessions(
+            _arg_str(args, "query"),
+            semantic=bool(getattr(args, "semantic", True)),
+            limit=_arg_int(args, "limit"),
+        )
+        if _arg_str(args, "format_") == "json":
+            echo(render.format_json(body), nl=False)
+        else:
+            echo(render.format_session_hits(body), nl=False)
+
+
 class Id(Command):
     """Show one row by its global id, regardless of kind.
 
@@ -2017,8 +2090,8 @@ Options:
             return
         print_rows([row], _arg_str(args, "format_"))
 
-    @staticmethod
-    def _claim_owner(tail: Sequence[str]) -> str | None:
+    @classmethod
+    def _claim_owner(cls, tail: Sequence[str]) -> str | None:
         """Return the owner from an `owner to ACTOR` tail, or None if absent."""
         if not tail:
             return None

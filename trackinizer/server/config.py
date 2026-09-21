@@ -14,7 +14,7 @@ import uuid
 
 from trackinizer.lib.postgres import DatabaseEngine, PGliteEngine, PostgresEngine
 from trackinizer.lib.userdirs import data_dir
-from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 
 
@@ -57,6 +57,9 @@ class ConfigFlags(Protocol):
     pglite_tcp: bool
     dsn: str
     embedder: str
+    session_embedder: str
+    session_embedder_dim: int | None
+    session_embedders: str
     web: bool
     session_max_age_seconds: int
     no_auth: bool
@@ -76,7 +79,9 @@ class Config:
         the DB must be reached over a port -- a non-co-located client or a TCP
         healthcheck.
       dsn: Postgres DSN when ``engine == 'pg'``.
-      embedder: Embedder backend name.
+      embedder: Embedder backend name (inquiry_embeddings, 384-dim).
+      session_embedder: Embedder backend name for session_embeddings
+        semantic search (1024-dim); empty disables the semantic arm.
       web: Mount the SPA when true.
       oauth_google_client_id: Google OAuth client id. ``None`` makes the
         OAuth routes 503; bearer auth is unaffected.
@@ -99,6 +104,28 @@ class Config:
     pglite_tcp: bool = False
     dsn: str = ""
     embedder: str = "stub"
+    # The session-search embedder used to embed QUERIES (the serving default),
+    # separate from ``embedder`` (inquiry_embeddings' 384-dim). Its value is the
+    # embedder's full stored identity (``qwen3-embedding-4b@1024``, not a bare
+    # ``qwen3-embedding-4b``) -- one canonical spelling that is the config knob,
+    # the registry key, ``session_embeddings.model``, and the partial-index
+    # WHERE, all at once. Empty degrades the route to full-text only rather than
+    # loading a model on a keyword search. See ``embedders.registry``.
+    session_embedder: str = ""
+    # An optional output-dim override for the serving embedder, applied when it is
+    # a bare slug (a dim that isn't a choice needn't be spelled). ``None`` uses the
+    # model's registered default. A Matryoshka model accepts any dim in its range;
+    # the registry validates and mints the ``slug@dim`` identity. Redundant when
+    # ``session_embedder`` already carries an ``@dim`` suffix (they must agree).
+    # Env: ``TRACKINIZER_SESSION_EMBEDDER_DIM``.
+    session_embedder_dim: int | None = None
+    # The set of embedders the sweep/backfill MAINTAINS (writes rows for), as
+    # opposed to the single one that serves queries. Several models coexist in
+    # ``session_embeddings`` (keyed by model), so the corpus can carry vectors
+    # for a challenger while ``session_embedder`` still serves the incumbent.
+    # Defaults to just the serving embedder; set a superset to backfill A/B
+    # candidates. Env: comma-separated ``TRACKINIZER_SESSION_EMBEDDERS``.
+    session_embedders: tuple[str, ...] = ()
     web: bool = False
     oauth_google_client_id: str | None = None
     oauth_google_client_secret: str | None = None
@@ -124,6 +151,13 @@ class Config:
             pglite_tcp=os.environ.get("TRACKINIZER_PGLITE_TCP") == "1",
             dsn=os.environ.get("TRACKINIZER_DSN", ""),
             embedder=os.environ.get("TRACKINIZER_EMBEDDER", "stub"),
+            session_embedder=os.environ.get("TRACKINIZER_SESSION_EMBEDDER", ""),
+            session_embedder_dim=_parse_optional_dim(
+                os.environ.get("TRACKINIZER_SESSION_EMBEDDER_DIM", ""),
+            ),
+            session_embedders=_parse_session_embedders(
+                os.environ.get("TRACKINIZER_SESSION_EMBEDDERS", ""),
+            ),
             web=os.environ.get("TRACKINIZER_WEB") == "1",
             oauth_google_client_id=os.environ.get("TRACKINIZER_GOOGLE_CLIENT_ID")
             or None,
@@ -155,6 +189,9 @@ class Config:
             pglite_tcp=flags.pglite_tcp,
             dsn=flags.dsn,
             embedder=flags.embedder,
+            session_embedder=flags.session_embedder,
+            session_embedder_dim=flags.session_embedder_dim,
+            session_embedders=_parse_session_embedders(flags.session_embedders),
             web=flags.web,
             # OAuth secrets come from the environment only, never CLI flags.
             oauth_google_client_id=os.environ.get("TRACKINIZER_GOOGLE_CLIENT_ID")
@@ -168,6 +205,21 @@ class Config:
             session_max_age_seconds=flags.session_max_age_seconds,
             auth_disabled=flags.no_auth,
         )
+
+    def maintained_embedders(self) -> tuple[str, ...]:
+        """Return the embedders the sweep/backfill should maintain.
+
+        An explicit :attr:`session_embedders` wins; otherwise the serving
+        :attr:`session_embedder` is the sole maintained model (and an unset
+        serving embedder maintains nothing).
+
+        Returns:
+          names: The stored embedder identities whose rows the sweep keeps.
+
+        """
+        if self.session_embedders:
+            return self.session_embedders
+        return (self.session_embedder,) if self.session_embedder else ()
 
 
 def session_max_age_from_env() -> int:
@@ -252,6 +304,24 @@ def build_embedder(name: str) -> Embedder:
     if name == "stub":
         return StubEmbedder()
     raise ConfigError(f"unknown embedder {name!r}")
+
+
+def _parse_session_embedders(raw: str) -> tuple[str, ...]:
+    """Parse a comma-separated embedder list, trimming blanks."""
+    return tuple(name.strip() for name in raw.split(",") if name.strip())
+
+
+def _parse_optional_dim(raw: str) -> int | None:
+    """Parse an optional integer dim env value; empty/blank is ``None``."""
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        return int(stripped)
+    except ValueError:
+        raise ConfigError(
+            f"TRACKINIZER_SESSION_EMBEDDER_DIM must be an integer, got {raw!r}",
+        ) from None
 
 
 # ``stale_seconds``: an ephemeral workdir older than this is assumed abandoned by a

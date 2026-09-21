@@ -21,7 +21,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.postgres.testing import reset_schema
-from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.change_id_slot import set_client_change_id
 from trackinizer.server.store.core import Store
 from trackinizer.types.errors import ConflictError, NotFoundError
@@ -355,3 +355,9 @@ async def test_a_failure_before_commit_rolls_back_the_owner_write(
     row = await store.get_inquiry(issue)
     assert isinstance(row, Issue)
     assert row.owner is None
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.main import test_main
+
+    test_main(__file__)

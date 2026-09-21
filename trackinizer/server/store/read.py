@@ -25,7 +25,7 @@ from trackinizer.server.sql_fragments import (
     PROVES_BELIEF_SQL,
 )
 from trackinizer.server.store.shared import _StoreShared
-from trackinizer.server.values import vetted_sql
+from trackinizer.server.values import manifest_bound, vetted_sql
 from trackinizer.types.change_log import Change
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import NotFoundError
@@ -581,10 +581,20 @@ async def _record_texts(
     }
     if not kinds or not ids:
         return {}
+    # Exclude stale tail rows beyond the live manifest prefix so a shrunk part's
+    # dropped records never feed a filter clause (see values.manifest_bound). The
+    # join binds each record to its OWN part's manifest, so the per-part bound
+    # holds even though the aggregate groups across parts.
+    join, predicate = manifest_bound("r")
     found = await conn.fetch(
-        "SELECT session_id, kind, array_agg(text) AS texts FROM session_records "
-        "WHERE session_id = ANY($1::uuid[]) AND kind = ANY($2::text[]) "
-        "GROUP BY session_id, kind",
+        vetted_sql(
+            "SELECT r.session_id, r.kind, array_agg(r.text) AS texts "
+            "FROM session_records r ",
+            join,
+            "WHERE r.session_id = ANY($1::uuid[]) AND r.kind = ANY($2::text[]) AND ",
+            predicate,
+            " GROUP BY r.session_id, r.kind",
+        ),
         list(ids),
         list(kinds),
     )

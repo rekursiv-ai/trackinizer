@@ -33,6 +33,7 @@ from trackinizer.server.api.app import (
     validation_handler,
 )
 from trackinizer.server.config import Config
+from trackinizer.server.embedders import qwen3_4b
 from trackinizer.types.errors import (
     ConflictError,
     NotFoundError,
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
     import pytest
 
     from trackinizer.server.store.core import Store
+    from trackinizer.types.embedder import QueryEmbedder
 
 
 class TestCLIHelpers:
@@ -319,6 +321,85 @@ class TestAuthDisabledWarning:
 
     def test_no_seed_when_auth_enabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
         assert not self._seeded_no_auth_user(monkeypatch, auth_disabled=False)
+
+
+class TestSessionEmbedderResolution:
+    """``_resolve_session_embedder`` decides degrade-vs-warm without downloading."""
+
+    def test_unset_knob_leaves_embedder_none(self) -> None:
+        app = FastAPI()
+        task = trackinizer.server.api.app._resolve_session_embedder(
+            app,
+            Config(session_embedder=""),
+        )
+        assert task is None
+        assert cast(object, app.state.session_embedder) is None
+
+    def test_stub_is_ready_without_a_warm_task(self) -> None:
+        """A weightless stub is set immediately; no warm task, no download."""
+        app = FastAPI()
+        task = trackinizer.server.api.app._resolve_session_embedder(
+            app,
+            Config(session_embedder="stub-1024"),
+        )
+        assert task is None  # Nothing to warm.
+        embedder = cast("QueryEmbedder | None", app.state.session_embedder)
+        assert embedder is not None
+        assert embedder.name == "stub-1024"
+
+    def test_qwen_without_weights_degrades_and_logs_prep(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Weights absent -> embedder None (degrade), prep command logged, NO download."""
+        monkeypatch.setattr(qwen3_4b, "weights_present", lambda: False)
+        app = FastAPI()
+        with caplog.at_level(logging.ERROR):
+            task = trackinizer.server.api.app._resolve_session_embedder(
+                app,
+                Config(session_embedder="qwen3-embedding-4b@1024"),
+            )
+        assert task is None
+        assert cast(object, app.state.session_embedder) is None
+        assert "prep_models" in caplog.text
+
+    def test_qwen_with_weights_sets_embedder_and_schedules_warm(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Weights present -> embedder set + a warm task scheduled (no query embed here)."""
+        monkeypatch.setattr(qwen3_4b, "weights_present", lambda: True)
+        warmed: list[str] = []
+
+        async def _fake_warm(embedder: QueryEmbedder) -> None:
+            await _record_warm(embedder, warmed)
+
+        async def _drive() -> tuple[object, object]:
+            app = FastAPI()
+            # Replace the real warm coroutine so the test never loads a model.
+            monkeypatch.setattr(
+                trackinizer.server.api.app,
+                "_warm_session_embedder",
+                _fake_warm,
+            )
+            task = trackinizer.server.api.app._resolve_session_embedder(
+                app,
+                Config(session_embedder="qwen3-embedding-4b@1024"),
+            )
+            assert task is not None
+            await task
+            return cast(object, app.state.session_embedder), task
+
+        embedder, _task = asyncio.run(_drive())
+        assert embedder is not None
+        assert warmed == ["warmed"]  # The warm task ran, without downloading.
+
+
+async def _record_warm(embedder: object, sink: list[str]) -> None:
+    """Stand-in warm coroutine: records that it ran, embeds nothing."""
+    del embedder
+    sink.append("warmed")
 
 
 if __name__ == "__main__":

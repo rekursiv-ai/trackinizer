@@ -5,6 +5,7 @@ from __future__ import annotations
 from trackinizer.server.values import (
     byline_strs,
     canonical_strs,
+    manifest_bound,
     vec_to_text,
 )
 
@@ -14,6 +15,17 @@ class TestPureFunctions:
         assert vec_to_text([1.0, -2.5, 0.0]).startswith("[")
         assert vec_to_text([1.0, 2.0]).endswith("]")
         assert "," in vec_to_text([1.0, 2.0])
+
+    def test_manifest_bound_joins_and_predicates_on_the_alias(self) -> None:
+        join, predicate = manifest_bound("r")
+        assert "JOIN session_manifests m" in join
+        assert "m.session_id = r.session_id AND m.part = r.part" in join
+        assert predicate == "r.idx < m.records"
+
+    def test_manifest_bound_binds_a_different_alias(self) -> None:
+        join, predicate = manifest_bound("e")
+        assert "m.session_id = e.session_id AND m.part = e.part" in join
+        assert predicate == "e.idx < m.records"
 
 
 class TestModels:

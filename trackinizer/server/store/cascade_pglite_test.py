@@ -11,7 +11,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.postgres.testing import reset_schema
-from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.change_id_slot import set_client_change_id
 from trackinizer.server.store.core import Store
 from trackinizer.types.cost import Cost

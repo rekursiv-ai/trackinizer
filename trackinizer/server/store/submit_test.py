@@ -21,7 +21,7 @@ from trackinizer.conftest import (
 )
 from trackinizer.lib.custom_json import DictCodec, loads
 from trackinizer.lib.postgres import DatabaseEngine
-from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,

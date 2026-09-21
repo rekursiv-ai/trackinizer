@@ -14,9 +14,39 @@ __all__ = [
     "canonical_strs",
     "empty_optional_to_none",
     "list_or_none",
+    "manifest_bound",
     "vec_to_text",
     "vetted_sql",
 ]
+
+
+def manifest_bound(alias: str) -> tuple[str, str]:
+    """Return the SQL to bound a record scan by its part's live manifest prefix.
+
+    A compaction-restart can SHRINK a part (``session_manifests.records`` drops),
+    leaving tail rows ``idx >= records`` inert -- never deleted, so every reader
+    MUST exclude them (``schema.sql`` states the contract: readers take
+    ``idx < records``). This returns the two fragments a record-reading query
+    splices: an INNER JOIN to ``session_manifests`` and the ``idx < m.records``
+    predicate. The JOIN is inner on purpose -- a part whose manifest is missing
+    has no bound and drops to empty, which is the "reads as empty" rule rather
+    than a branch (see the reference site ``session_ir.read_session_records``).
+
+    Args:
+      alias: The record-row table alias in the caller's query (e.g. ``"r"``);
+        the manifest is always aliased ``m``.
+
+    Returns:
+      join: The ``JOIN session_manifests m ON ...`` clause (place after FROM).
+      predicate: The ``<alias>.idx < m.records`` clause (AND into the WHERE).
+
+    """
+    join = (
+        f"JOIN session_manifests m "
+        f"ON m.session_id = {alias}.session_id AND m.part = {alias}.part "
+    )
+    predicate = f"{alias}.idx < m.records"
+    return join, predicate
 
 
 def vetted_sql(*parts: str) -> str:

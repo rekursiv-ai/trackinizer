@@ -1705,6 +1705,16 @@ class TestIntegrationEndToEnd:
                     sid,
                     tie,
                 )
+                # read_feed bounds by the live manifest prefix (idx < records), so
+                # each seeded row needs a manifest covering it -- production writes
+                # both together.
+                await conn.execute(
+                    "INSERT INTO session_manifests "
+                    "(session_id, part, name, metadata, ir_id, format, records) "
+                    "VALUES ($1, 0, 's.jsonl', '{}'::json, gen_random_uuid(), "
+                    "'claude', 1)",
+                    sid,
+                )
 
         page1 = await integ_store.read_feed(limit=1)
         assert len(page1) == 1

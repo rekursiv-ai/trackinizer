@@ -434,7 +434,7 @@ flags documented here.
 ```
 verb_name   ::= "help" | "profile" | "next" | "recent"
              |  "cost" | "blocked" | "board" | "graph" | "id"
-             |  "version" | "send" | "run"
+             |  "version" | "send" | "run" | "search-sessions"
 ```
 
 A leading token that is neither a verb nor a kind is a FILTER FIELD, and the
@@ -464,6 +464,12 @@ kinds resolve first, so a field can never shadow a command.
 - `trax board [--width INT]` -- Issues grouped by status.
 - `trax graph [--open-only]` -- dependency tree.
 - `trax version` -- print the CLI version.
+- `trax search-sessions "QUERY" [--limit INT] [--no-semantic] [--format
+  text|json]` -- search captured sessions by meaning (embeddings) and keyword
+  (full text), RRF-merged. Semantic is on by default; the server degrades to
+  full-text-only when no session embedder is configured. `--no-semantic` opts
+  out. (Named `search-sessions`, not `search`: the bare `search` verb was
+  retired when the filter grammar subsumed inquiry search.)
 - `trax send @actor[:room] TEXT...` -- inject a message into a live agent
   session addressed by its routing name (its `run --as` owner).
 - `trax run claude|gemini|codex [--out FILE] [--verbose] [--dry-run]
@@ -908,6 +914,14 @@ trax issue title re retry --limit 10
 
 ```trax
 trax recent --limit 20
+```
+
+```trax
+trax search-sessions "advisory lock deadlock"
+```
+
+```trax
+trax search-sessions "retry backoff" --limit 5 --no-semantic
 ```
 
 ```trax

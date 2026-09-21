@@ -17,7 +17,7 @@ from trackinizer.server.config import (
     build_engine,
     parse_engine,
 )
-from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.embedders.stub import StubEmbedder
 
 
 if TYPE_CHECKING:
@@ -185,6 +185,31 @@ class TestSessionMaxAge:
             Config.from_env()
 
 
+class TestSessionEmbedderDim:
+    """``session_embedder_dim`` is an optional int from env and CLI."""
+
+    def test_from_env_reads_the_dim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "512")
+        assert Config.from_env().session_embedder_dim == 512
+
+    def test_from_env_absent_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TRACKINIZER_SESSION_EMBEDDER_DIM", raising=False)
+        assert Config.from_env().session_embedder_dim is None
+
+    def test_from_env_non_integer_raises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "big")
+        with pytest.raises(ConfigError):
+            Config.from_env()
+
+    def test_from_args_reads_the_dim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TRACKINIZER_SESSION_EMBEDDER_DIM", raising=False)
+        config = Config.from_args(_server_args(session_embedder_dim=256))
+        assert config.session_embedder_dim == 256
+
+
 def _patch_data_dir(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
     """Redirect ``config.data_dir`` at ``root`` so workdir tests stay in tmp."""
 
@@ -203,6 +228,9 @@ def _server_args(**overrides: object) -> ConfigFlags:
         "pglite_tcp": False,
         "dsn": "",
         "embedder": "stub",
+        "session_embedder": "",
+        "session_embedder_dim": None,
+        "session_embedders": "",
         "web": False,
         "no_auth": False,
         "session_max_age_seconds": 30 * 24 * 60 * 60,

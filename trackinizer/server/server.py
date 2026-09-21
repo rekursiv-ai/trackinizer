@@ -37,6 +37,7 @@ from trackinizer.server.config import (
     ConfigFlags,
     session_max_age_from_env,
 )
+from trackinizer.server.embedders.registry import EMBEDDERS
 
 
 logger = logging.getLogger(__name__)
@@ -186,6 +187,38 @@ def _parse_args(
         help="Embedding backend (default: stub).",
     )
     parser.add_argument(
+        "--session-embedder",
+        dest="session_embedder",
+        default="",
+        choices=_session_embedder_choices(),
+        help=(
+            "Session-search embedder that serves QUERIES, named by its full "
+            "stored identity (e.g. qwen3-embedding-4b@1024); empty = "
+            "full-text-only search (default)."
+        ),
+    )
+    parser.add_argument(
+        "--session-embedder-dim",
+        dest="session_embedder_dim",
+        type=int,
+        default=None,
+        help=(
+            "Optional output-dim override for --session-embedder when it is a bare "
+            "slug (a Matryoshka model accepts any dim in its range). Omit to use "
+            "the model's registered default; must agree with any @dim suffix."
+        ),
+    )
+    parser.add_argument(
+        "--session-embedders",
+        dest="session_embedders",
+        default="",
+        help=(
+            "Comma-separated embedders the sweep/backfill MAINTAINS (writes rows "
+            "for), a superset of --session-embedder for A/B backfill. Empty = "
+            "just the serving embedder."
+        ),
+    )
+    parser.add_argument(
         "--web",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -241,6 +274,16 @@ def _session_ttl_default() -> int:
         # Same translation _configure_app performs: library code raises
         # ConfigError, and the CLI is the one place that turns it into an exit.
         raise SystemExit(str(err)) from err
+
+
+# Derived from the registry so a new model in ``EMBEDDERS`` becomes selectable without
+# editing this list. ``stub`` / ``stub-1024`` are the test embedders; then both the
+# full stored identities (``slug@dim``) and the bare slugs (a bare slug resolves to
+# the registered default dim, or pairs with ``--session-embedder-dim``).
+def _session_embedder_choices() -> list[str]:
+    """Return the ``--session-embedder`` choices: empty, stubs, models, bare slugs."""
+    slugs = {key.split("@", 1)[0] for key in EMBEDDERS}
+    return ["", "stub", "stub-1024", *sorted(EMBEDDERS), *sorted(slugs)]
 
 
 def _positive_session_ttl(value: str) -> int:

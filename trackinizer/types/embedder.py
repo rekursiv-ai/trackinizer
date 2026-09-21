@@ -15,15 +15,49 @@ class Embedder(Protocol):
     ``Embedder | Sequence[Embedder]`` argument.
     """
 
-    name: str
-
     dim: int
 
+    @property
+    def name(self) -> str:
+        """Stored model identity, keying this embedder's rows.
+
+        A read-only property (not a bare attribute) so an implementation may
+        COMPUTE it -- ``StubEmbedder`` derives ``stub`` / ``stub-<dim>`` from
+        its dim -- while a plain class attribute (``QwenEmbedder.name``) still
+        satisfies it.
+        """
+        ...
+
     async def embed(self, text: str) -> list[float]:
-        """Return ``text`` as a unit vector of length :attr:`dim`.
+        """Return ``text`` as a document unit vector of length :attr:`dim`.
 
         Args:
           text: Text.
+
+        Returns:
+          result: The list[float].
+
+        """
+        ...
+
+
+@runtime_checkable
+class QueryEmbedder(Embedder, Protocol):
+    """An ``Embedder`` that also embeds search QUERIES.
+
+    The session-search path needs a query-side embedding; a model with a
+    corpus/query asymmetry (an instruction prefix) applies it in
+    :meth:`embed_query` and NOT in :meth:`embed`. This is narrower than
+    :class:`Embedder` on purpose: the inquiry-embedding path (``Store``) never
+    queries, so its embedders need not implement this, and the session path
+    (``build_session_embedder``) returns this type.
+    """
+
+    async def embed_query(self, text: str) -> list[float]:
+        """Return a search query as a unit vector of length :attr:`dim`.
+
+        Args:
+          text: The search query.
 
         Returns:
           result: The list[float].

@@ -23,7 +23,7 @@ from trackinizer.lib.agent.sessions import (
 )
 from trackinizer.lib.agent.types.sessions import SessionRecord, Thinking
 from trackinizer.lib.custom_json import DictCodec, json_freeze
-from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.trax.run.errors import CiphertextDroppedError

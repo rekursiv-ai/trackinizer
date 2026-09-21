@@ -24,7 +24,7 @@ from trackinizer.lib.custom_json import (
     json_freeze,
     json_unfreeze,
 )
-from trackinizer.server.embedder import StubEmbedder
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.session_records import SessionRecordRow
 

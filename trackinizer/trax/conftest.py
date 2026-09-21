@@ -266,6 +266,23 @@ class FakeClient:
             },
         ]
         self.cost_payload: dict[str, float] = {"agent_usd": 1.0, "resource_usd": 2.0}
+        self.session_hits: dict[str, object] = {
+            "hits": [
+                {
+                    "session_id": str(self.target_id),
+                    "part": 0,
+                    "idx": 3,
+                    "field": "content",
+                    "chunk": 0,
+                    "score": 0.0164,
+                    "source": "both",
+                    "snippet": "advisory lock acquired",
+                    "title": "deploy log",
+                },
+            ],
+            "semantic": True,
+            "degraded": False,
+        }
         self.next_payload: dict[str, object] | None = {
             "id": str(self.target_id),
             "kind": "Issue",
@@ -602,6 +619,19 @@ class FakeClient:
             list[dict[str, JSONValue]],
             cast(object, list(self.changes)),  # -- fake changes are JSON-shaped.
         )
+
+    def search_sessions(
+        self,
+        query: str,
+        *,
+        semantic: bool = True,
+        limit: int = 20,
+    ) -> dict[str, JSONValue]:
+        """Search sessions."""
+        self.calls.append(
+            ("search_sessions", (query,), {"semantic": semantic, "limit": limit}),
+        )
+        return cast("dict[str, JSONValue]", cast(object, dict(self.session_hits)))
 
     def cost_for(self, target_id: uuid.UUID, *, deep: bool = False) -> dict[str, float]:
         """Cost for."""

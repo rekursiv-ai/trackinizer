@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, cast
+from typing import Protocol, cast, override
 from unittest.mock import AsyncMock
 
 import asyncio
@@ -18,7 +18,7 @@ from trackinizer.conftest import (
     new_uuid,
 )
 from trackinizer.lib.postgres import DatabaseEngine
-from trackinizer.server.embedder import StubEmbedder, _xorshift_floats
+from trackinizer.server.embedders.stub import StubEmbedder, _xorshift_floats
 from trackinizer.server.sql import schema_migrations
 from trackinizer.server.store.core import Store
 from trackinizer.wire.bodies import SubmitIssue
@@ -52,6 +52,18 @@ class TestStubEmbedder:
         assert await emb.embed("foo") == await emb.embed("foo")
         assert await emb.embed("foo") != await emb.embed("bar")
 
+    def test_name_carries_non_default_dim(self) -> None:
+        """The stored name distinguishes a 384 stub from a 1024 stub.
+
+        384 MUST stay the literal ``"stub"`` (it keys existing
+        ``inquiry_embeddings`` rows); a non-default dim carries its width so
+        the config knob ``stub-1024`` and the DB identity agree, and a 384 and
+        1024 stub are never confused for one model.
+        """
+        assert StubEmbedder().name == "stub"
+        assert StubEmbedder(dim=384).name == "stub"
+        assert StubEmbedder(dim=1024).name == "stub-1024"
+
 
 class _NamedStub(StubEmbedder):
     """StubEmbedder variant with a configurable ``name`` so multiple embedders.
@@ -60,7 +72,13 @@ class _NamedStub(StubEmbedder):
     """
 
     def __init__(self, name: str) -> None:
-        self.name = name
+        self._name = name
+
+    # Override the base's computed ``name`` property with the fixed value.
+    @property
+    @override
+    def name(self) -> str:
+        return self._name
 
 
 class TestStoreEmbedders:

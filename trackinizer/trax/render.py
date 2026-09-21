@@ -11,7 +11,13 @@ import json
 import shutil
 import sys
 
-from trackinizer.lib.custom_json import DictCodec, FloatCodec, ListCodec, StrCodec
+from trackinizer.lib.custom_json import (
+    DictCodec,
+    FloatCodec,
+    IntCodec,
+    ListCodec,
+    StrCodec,
+)
 from trackinizer.trax.context import err_stream, out_stream
 from trackinizer.types.edges import EDGE_POLICIES, Edge
 
@@ -388,6 +394,40 @@ def format_changes(rows: Sequence[Mapping[str, object]]) -> str:
             f"{_format_actor(change)}",
         )
         lines.extend(f"  {line}" for line in _format_change_delta(change))
+    return "\n".join(lines) + "\n"
+
+
+def format_session_hits(body: Mapping[str, object]) -> str:
+    """Render session-search hits, one per line, with a degrade banner.
+
+    Args:
+      body: The ``{"hits": [...], "semantic": bool, "degraded": bool}`` route
+        response.
+
+    Returns:
+      result: Newline-terminated text; a banner when the semantic arm was
+        requested but unavailable.
+
+    """
+    hits = ListCodec.mappings(body.get("hits"))
+    lines: list[str] = []
+    if body.get("degraded"):
+        lines.append("(semantic search unavailable; showing full-text results only)")
+    if not hits:
+        return ("\n".join([*lines, "(no matches)"])) + "\n"
+    for raw in hits:
+        hit = DictCodec.coerce(raw)
+        session = str(hit.get("session_id", ""))[:8]
+        part = IntCodec.coerce(hit.get("part"))
+        idx = IntCodec.coerce(hit.get("idx"))
+        score = FloatCodec.coerce(hit.get("score"))
+        lines.append(
+            f"{score:.4f}  {StrCodec.coerce(hit.get('source')):8}  "
+            f"{session}#{part}/{idx}  {StrCodec.coerce(hit.get('title'))}",
+        )
+        snippet = StrCodec.coerce(hit.get("snippet")).strip()
+        if snippet:
+            lines.append(f"  {snippet}")
     return "\n".join(lines) + "\n"
 
 
