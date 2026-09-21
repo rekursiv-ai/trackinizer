@@ -22,11 +22,12 @@ from trackinizer.server.semantic_mapper_footprint import FootprintMapper
 from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_embed import sweep_session_embeddings
 from trackinizer.server.store.session_index import index_name_for
-from trackinizer.server.tools import backfill_embedding, model_buckets
+from trackinizer.server.tools import backfill_embedding
 
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from pathlib import Path
     from uuid import UUID
 
     from trackinizer.lib.postgres import PostgresEngine
@@ -380,26 +381,100 @@ def test_format_eta_is_a_question_mark_when_idle_or_done() -> None:
     assert backfill_embedding._format_eta(0, 5.0) == "?"
 
 
-def test_resolve_vram_gb_uses_the_override_when_given() -> None:
-    """An explicit ``--gpu-vram-gb`` wins over any device query."""
-    assert backfill_embedding._resolve_vram_gb("cuda:0", 42.0) == 42.0
+class _FakeCompiler:
+    """Records the bytes save/load the mega-cache seam calls torch with.
+
+    ``save_returns_none`` models torch's documented no-artifact case:
+    ``save_cache_artifacts`` returns ``None`` when there is nothing to serialize
+    (the live crash that motivated this seam's None handling).
+    """
+
+    def __init__(self, *, save_returns_none: bool = False) -> None:
+        self.loaded: bytes | None = None
+        self.saved_calls = 0
+        self._save_returns_none = save_returns_none
+
+    def load_cache_artifacts(self, blob: bytes) -> object:
+        """Record the loaded blob (mirrors ``torch.compiler.load_cache_artifacts``)."""
+        self.loaded = blob
+        return None
+
+    def save_cache_artifacts(self) -> tuple[bytes, object] | None:
+        """Return fresh cache bytes, or None when there is nothing to serialize."""
+        self.saved_calls += 1
+        if self._save_returns_none:
+            return None
+        return b"COMPILED-ARTIFACTS", None
 
 
-def test_resolve_vram_gb_falls_back_to_reference_on_cpu() -> None:
-    """A CPU worker never queries a device; it uses the reference card size."""
-    assert backfill_embedding._resolve_vram_gb("cpu", None) == (
-        model_buckets.REFERENCE_VRAM_GB
-    )
-
-
-def test_resolve_vram_gb_falls_back_when_query_unavailable(
+def test_load_compile_cache_loads_when_the_file_exists(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    """A CUDA device with no device query resolves to the reference card size."""
-    monkeypatch.setattr(backfill_embedding, "_nvidia_smi_total_vram_gb", lambda: None)
-    assert backfill_embedding._resolve_vram_gb("cuda:0", None) == (
-        model_buckets.REFERENCE_VRAM_GB
-    )
+    """A present cache file is fed to ``load_cache_artifacts``."""
+    fake = _FakeCompiler()
+    monkeypatch.setattr(backfill_embedding, "_compiler", lambda: fake)
+    path = tmp_path / "compile.bin"
+    path.write_bytes(b"WARMED-CACHE")
+    backfill_embedding._load_compile_cache(path)
+    assert fake.loaded == b"WARMED-CACHE"
+
+
+def test_load_compile_cache_is_a_noop_on_first_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A missing cache file (cold first run) loads nothing and does not error."""
+    fake = _FakeCompiler()
+    monkeypatch.setattr(backfill_embedding, "_compiler", lambda: fake)
+    backfill_embedding._load_compile_cache(tmp_path / "absent.bin")
+    assert fake.loaded is None
+
+
+def test_save_compile_cache_writes_the_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A clean exit saves the compiled artifacts to the path, creating parents."""
+    fake = _FakeCompiler()
+    monkeypatch.setattr(backfill_embedding, "_compiler", lambda: fake)
+    path = tmp_path / "nested" / "compile.bin"  # Parent does not exist yet.
+    backfill_embedding._save_compile_cache(path)
+    assert fake.saved_calls == 1
+    assert path.read_bytes() == b"COMPILED-ARTIFACTS"
+
+
+def test_save_compile_cache_tolerates_a_none_return(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """``save_cache_artifacts`` returning None writes nothing and does not crash.
+
+    torch returns None when there is nothing to serialize (all cache hits, or a
+    build whose dynamo artifacts are unserializable). The live run crashed both
+    workers at clean exit on the unhandled None; this pins the skip-and-continue.
+    """
+    fake = _FakeCompiler(save_returns_none=True)
+    monkeypatch.setattr(backfill_embedding, "_compiler", lambda: fake)
+    path = tmp_path / "compile.bin"
+    backfill_embedding._save_compile_cache(path)
+    assert fake.saved_calls == 1
+    assert not path.exists()  # Nothing written; no crash.
+
+
+def test_compile_cache_round_trips_through_the_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Bytes saved by one worker load into the next (the whole point)."""
+    saver = _FakeCompiler()
+    monkeypatch.setattr(backfill_embedding, "_compiler", lambda: saver)
+    path = tmp_path / "compile.bin"
+    backfill_embedding._save_compile_cache(path)
+    loader = _FakeCompiler()
+    monkeypatch.setattr(backfill_embedding, "_compiler", lambda: loader)
+    backfill_embedding._load_compile_cache(path)
+    assert loader.loaded == b"COMPILED-ARTIFACTS"
 
 
 if __name__ == "__main__":

@@ -1,18 +1,35 @@
-"""Length-bucketed embed core for the GPU backfill runner.
+"""Length-bucketed, statically compiled embed core for the GPU backfill runner.
 
-Motivation: batching texts of similar length keeps the padded forward tensor
-small, so throughput is dominated by real tokens rather than pad. Each text
-routes to the smallest edge ``>= its true token count``; a bucket runs one
-forward per ``rows[edge]`` rows at the ``(rows, edge)`` shape, and a ragged
-tail row-pads to the full row count with masked pad rows that the caller slices
-back off.
+Motivation (measured live in production 2026-09-20): ``torch.compile(dynamic=True)``
+over an 11-shape mixed-length corpus stalls badly -- dynamic guards re-trace as
+shapes drift -- while ``compile(dynamic=False, fullgraph=True)`` over a FIXED set
+of padded shapes is markedly faster. The price of static compilation is that
+every forward must be one of exactly ``len(edges)`` shapes; this module enforces
+that.
 
-Inference is ONNX Runtime, never torch: the session's graph optimization owns
-what ``torch.compile`` did before, so there is no compile step and no dynamo
-recompile-limit knob to pin. The runner (``backfill_embedding.py``) owns the
-read/write stages and the 3-stage overlap; this owns the embed transform,
-whole-pool. The live CPU ingest path stays in
-``server/embedders/_base.py`` and does NOT use this bucketing.
+The core:
+
+1. Tokenize ONCE (true token count per text). Route each text to the smallest
+   edge ``>= count`` (:func:`route`) -- by TRUE tokens, never a ``chars // 4``
+   estimate, which truncates dense text.
+2. Per edge, batch ``rows[edge]`` rows -- the caller-supplied per-edge row
+   counts. The runner derives them from the model spec, the measured card, and
+   the chosen dim (``bucket_boundaries.derive_rows`` via
+   ``model_buckets.resolve_plan``); this core owns routing and the fixed-shape
+   forward, not the memory model.
+3. A ragged tail batch row-pads to the bucket's FULL row count with masked
+   pad rows and slices the real rows back out -- so every forward is one of the
+   declared ``(rows, edge)`` shapes.
+4. :func:`configure_recompile_limits` pins the per-code-object
+   ``recompile_limit`` to ``len(edges)`` (the true invariant: a shape beyond the
+   set must fail loudly) while leaving the GLOBAL
+   ``accumulated_recompile_limit`` non-binding -- setting the accumulated limit
+   to ``len(edges)`` kills legitimate warmup across a 36-layer model's hundreds
+   of compiled frames (a dead run, live 2026-09-20).
+
+The runner (``backfill_embedding.py``) owns the read/write stages and the 3-stage
+overlap; this owns the embed transform, whole-pool. The live CPU ingest path
+stays in ``server/embedders/qwen_family.py`` and does NOT use this bucketing.
 """
 
 from __future__ import annotations
@@ -25,30 +42,25 @@ import asyncio
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    import numpy as np
+    from torch.nn import functional
+
+    import torch
+
+    from trackinizer.types.embedder import ModelOutput
 else:
     from wrapt import lazy_import
 
-    np = lazy_import("numpy")
+    torch = lazy_import("torch")
+    functional = lazy_import("torch.nn.functional")
 
 
-__all__ = ["Session", "TokenBatcher", "embed_bucketed", "route"]
-
-
-class Session(Protocol):
-    """The one ONNX Runtime call the bucket core makes: ``run``.
-
-    Structural so a test injects a fake session and the real
-    ``onnxruntime.InferenceSession`` satisfies it without a nominal dependency.
-    """
-
-    def run(
-        self,
-        output_names: list[str],
-        input_feed: dict[str, np.ndarray],
-    ) -> list[np.ndarray]:
-        """Return the model outputs for ``input_feed``."""
-        ...
+__all__ = [
+    "ForwardModel",
+    "TokenBatcher",
+    "configure_recompile_limits",
+    "embed_bucketed",
+    "route",
+]
 
 
 def route(token_count: int, edges: Sequence[int]) -> int:
@@ -74,11 +86,10 @@ def route(token_count: int, edges: Sequence[int]) -> int:
 class TokenBatcher(Protocol):
     """The tokenizer contract the bucket core needs: count + row-padded batch.
 
-    A real implementation wraps a ``tokenizers`` tokenizer; tests inject a fake.
-    ``count`` is the routing key (true tokens); ``pad_batch`` builds the
-    ``(rows, seq)`` forward inputs (``input_ids`` + ``attention_mask``) for one
-    bucket, padded to the FULL row count with masked tail rows, ready to feed the
-    ONNX session.
+    A real implementation wraps a HF tokenizer; tests inject a fake. ``count``
+    is the routing key (true tokens); ``pad_batch`` builds the ``(rows, seq)``
+    forward inputs (``input_ids`` + ``attention_mask``) for one bucket, padded to
+    the FULL row count with masked tail rows, ready to splat as ``model(**batch)``.
     """
 
     def count(self, text: str) -> int:
@@ -91,13 +102,21 @@ class TokenBatcher(Protocol):
         *,
         rows: int,
         seq: int,
-    ) -> dict[str, np.ndarray]:
+    ) -> dict[str, torch.Tensor]:
         """Return the ``(rows, seq)`` forward batch (input_ids + attention_mask)."""
         ...
 
 
+class ForwardModel(Protocol):
+    """The model call the core makes: a batch dict in, a model output out."""
+
+    def __call__(self, **batch: torch.Tensor) -> ModelOutput:
+        """Return the forward output (``last_hidden_state``) for ``batch``."""
+        ...
+
+
 async def embed_bucketed(
-    session: Session,
+    model: ForwardModel,
     tokenizer: TokenBatcher,
     texts: list[str],
     *,
@@ -112,8 +131,13 @@ async def embed_bucketed(
     sliced back), pools the last token, truncates to ``dim``, and L2-normalizes.
     Order is preserved across the routing permutation.
 
+    The per-edge row counts come from the caller (the runner derives them from the
+    model spec, the measured card, and the chosen dim via
+    ``model_buckets.resolve_plan``); this core owns only the routing and the
+    fixed-shape forward, not the memory model.
+
     Args:
-      session: The ONNX Runtime session running the model's graph.
+      model: The forward callable (a compiled model in production).
       tokenizer: Token counter + row-pad mask builder.
       texts: Document texts to embed.
       edges: Ascending bucket edges (the static shape set).
@@ -141,7 +165,7 @@ async def embed_bucketed(
             chunk = slots[start : start + edge_rows]
             chunk_vectors = await asyncio.to_thread(
                 _embed_one_bucket,
-                session,
+                model,
                 tokenizer,
                 [texts[slot] for slot in chunk],
                 rows=edge_rows,
@@ -153,13 +177,32 @@ async def embed_bucketed(
     return vectors
 
 
+def configure_recompile_limits(edges: Sequence[int]) -> None:
+    """Pin torch dynamo's recompile limits for a static shape set.
+
+    Sets the PER-CODE-OBJECT ``recompile_limit`` to ``len(edges)`` -- the true
+    invariant, so a shape beyond the declared set fails loudly rather than
+    silently compiling more -- and the GLOBAL ``accumulated_recompile_limit`` to
+    a non-binding ``len(edges) * 1000``. Setting the accumulated limit to
+    ``len(edges)`` kills legitimate warmup across a 36-layer model's hundreds of
+    compiled frames (a dead run, live 2026-09-20).
+
+    Args:
+      edges: The static bucket edges; ``len`` is the per-frame recompile budget.
+
+    """
+    config = _dynamo_config()
+    config.recompile_limit = len(edges)
+    config.accumulated_recompile_limit = len(edges) * 1000
+
+
 # Runs inside ``asyncio.to_thread``: the forward is GPU/CPU-bound and must not
 # touch the event loop.
 # ``texts`` has at most ``rows`` entries; the mask pads to the full ``rows`` with all-
 # zero (masked) tail rows so the forward shape is invariant, then the output keeps only
 # the ``len(texts)`` real rows.
 def _embed_one_bucket(
-    session: Session,
+    model: ForwardModel,
     tokenizer: TokenBatcher,
     texts: list[str],
     *,
@@ -169,27 +212,34 @@ def _embed_one_bucket(
 ) -> list[list[float]]:
     """Forward one bucket at the fixed ``(rows, seq)`` shape; return real rows."""
     batch = tokenizer.pad_batch(texts, rows=rows, seq=seq)
-    hidden = session.run(["last_hidden_state"], batch)[0]
-    pooled = _last_token_pool(hidden)
+    with torch.no_grad():
+        output = model(**batch)
+    pooled = _last_token_pool(output.last_hidden_state)
     truncated = pooled[: len(texts), :dim]
-    normalized = _l2_normalize(truncated)
-    # ``ndarray.tolist()`` is typed ``Any``; the 2-D float32 array yields exactly
-    # ``list[list[float]]``.
-    return cast(list[list[float]], normalized.astype(np.float32).tolist())
+    normalized = functional.normalize(truncated, p=2, dim=1)
+    listed = cast(object, normalized.to(torch.float32).cpu().tolist())
+    return cast("list[list[float]]", listed)
 
 
 # Left-padded per the Qwen recipe: the last real token is at position -1 for
 # every row, so the pooled vector is the hidden state at -1. Padded tail rows
 # pool a meaningless vector but are sliced off by the ``len(texts)`` cut.
-def _last_token_pool(last_hidden_states: np.ndarray) -> np.ndarray:
+def _last_token_pool(last_hidden_states: torch.Tensor) -> torch.Tensor:
     """Return each row's last-position hidden state (left-padded)."""
     return last_hidden_states[:, -1]
 
 
-# A zero row (never a real embedding -- only a fully-masked pad row) keeps a unit-1
-# denominator so it stays all-zero rather than dividing by zero.
-def _l2_normalize(vectors: np.ndarray) -> np.ndarray:
-    """Return ``vectors`` L2-normalized along the last axis (float32)."""
-    as_float = vectors.astype(np.float32)
-    norms = np.linalg.norm(as_float, axis=1, keepdims=True)
-    return as_float / np.clip(norms, a_min=1e-12, a_max=None)
+def _dynamo_config() -> _DynamoConfig:
+    """Return torch._dynamo.config (indirected so a test can inject a fake)."""
+    import torch._dynamo  # noqa: PLC0415 -- deferred so importing this module pulls no torch.
+
+    # ``torch._dynamo.config`` is torch's own recompile-limit config surface; it
+    # has no public alias, so the private access is the only path.
+    return cast("_DynamoConfig", torch._dynamo.config)  # noqa: SLF001 -- torch's own config; no public alias exists.
+
+
+class _DynamoConfig(Protocol):
+    """The two recompile-limit knobs :func:`configure_recompile_limits` sets."""
+
+    recompile_limit: int
+    accumulated_recompile_limit: int

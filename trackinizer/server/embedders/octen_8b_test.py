@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from trackinizer.server.embedders._base import QUERY_INSTRUCT
-from trackinizer.server.embedders._qwen_fakes import install_capturing
 from trackinizer.server.embedders.octen_8b import (
     OCTEN_TRUNCATED_DIM,
     OctenEmbedder,
 )
+from trackinizer.server.embedders.qwen_fakes import install_capturing
+from trackinizer.server.embedders.qwen_family import QUERY_INSTRUCT
 from trackinizer.types.embedder import Embedder, QueryEmbedder
 
 

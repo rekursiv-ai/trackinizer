@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 from uuid import UUID
 
@@ -38,8 +39,6 @@ import asyncio
 import hashlib
 import multiprocessing
 import os
-import shutil
-import subprocess
 import time
 
 from trackinizer.lib.postgres import PostgresEngine
@@ -118,6 +117,7 @@ def main() -> int:
                     model=model,
                     dim=flags.dim,
                     gpu_vram_gb=flags.gpu_vram_gb,
+                    compile_cache=flags.compile_cache,
                 ),
                 queue,
             ),
@@ -166,6 +166,7 @@ class Flags(Protocol):
     model: str
     dim: int | None
     gpu_vram_gb: float | None
+    compile_cache: Path
     follow: bool
     interval_sec: int
 
@@ -187,6 +188,8 @@ class _WorkerConfig:
       model: The embedder identity (bare slug or ``slug@dim``).
       dim: Optional output-dim override; ``None`` uses the model's default.
       gpu_vram_gb: Optional VRAM override; ``None`` queries the pinned device.
+      compile_cache: Path to the persisted dynamo/inductor mega-cache; loaded at
+        start if present, saved on clean exit.
 
     """
 
@@ -197,6 +200,7 @@ class _WorkerConfig:
     model: str
     dim: int | None
     gpu_vram_gb: float | None
+    compile_cache: Path
 
 
 def _add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -264,6 +268,17 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Override the per-card VRAM (GB) the bucket rows are derived for; "
         "omit to query the pinned device (containers may misreport memory).",
+    )
+    parser.add_argument(
+        "--compile-cache",
+        dest="compile_cache",
+        type=Path,
+        default=Path(
+            "/opt/scratch/caches/torch/compile-artifacts/backfill-embedding.bin",
+        ),
+        help="Path to the persisted dynamo/inductor mega-cache. Loaded at worker "
+        "start when present (skips cold re-tracing), saved on clean exit. Default "
+        "is under the shared scratch torch cache.",
     )
     parser.add_argument(
         "--follow",
@@ -407,11 +422,14 @@ def _queued(key: RecordKey) -> QueuedKey:
 
 def _worker_entry(config: _WorkerConfig, queue: Queue[PageTask | None]) -> None:
     """Pin this process to one GPU (or CPU when ``gpu`` is empty); run its loop."""
-    # Must precede the first onnxruntime import in this process: the CUDA
-    # execution provider reads CUDA_VISIBLE_DEVICES once at init, so the embedder
-    # sees one card ("cuda:0" is the pinned device; "" hides every GPU -> a CPU
-    # worker on the CPU provider).
+    # BOTH must precede the first torch import in this process (torch reads them
+    # once at init): CUDA_VISIBLE_DEVICES so the embedder sees one card ("cuda:0"
+    # is the pinned device; "" hides every GPU -> CPU worker), and
+    # PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True so the allocator can grow a
+    # segment instead of OOMing on fragmentation -- the live OOM trace flagged its
+    # absence explicitly.
     os.environ["CUDA_VISIBLE_DEVICES"] = config.gpu
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     if not config.gpu:
         # Cap intra-op threads so N CPU workers share the box instead of each
         # claiming every core and thrashing.
@@ -420,39 +438,75 @@ def _worker_entry(config: _WorkerConfig, queue: Queue[PageTask | None]) -> None:
     asyncio.run(_worker(config, "cuda:0" if config.gpu else "cpu", queue))
 
 
-# An explicit ``--gpu-vram-gb`` wins (containers can misreport device memory).
-# Otherwise the pinned CUDA device's total memory is read from ``nvidia-smi``; a
-# CPU worker or a host without it falls back to the reference card size. ONNX
-# Runtime exposes no device-memory API, and querying nvidia-smi (already the ops
-# GPU-detection path) is the torch-free query -- no new dependency.
+# An explicit ``--gpu-vram-gb`` wins (containers can misreport device memory). Otherwise
+# the pinned CUDA device's total memory is queried; a CPU worker or a torch without CUDA
+# falls back to the reference card size.
 def _resolve_vram_gb(device: str, override: float | None) -> float:
     """Return the card's usable VRAM: the explicit override, else a device query."""
     if override is not None:
         return override
-    if not device.startswith("cuda"):
-        return model_buckets.REFERENCE_VRAM_GB
-    return _nvidia_smi_total_vram_gb() or model_buckets.REFERENCE_VRAM_GB
+    import torch  # noqa: PLC0415 -- worker-only; keep config-time import torch-free.
+
+    if device.startswith("cuda") and torch.cuda.is_available():
+        # Cast the boundary like ``_compiler`` below: with the export gate's
+        # useLibraryCodeForTypes=false and no torch stub shipped, the properties
+        # object is Unknown there, so its ``total_memory`` read must be typed
+        # here rather than inferred from torch.
+        props = cast("_DeviceProperties", torch.cuda.get_device_properties(0))
+        return props.total_memory / 1e9
+    return model_buckets.REFERENCE_VRAM_GB
 
 
-def _nvidia_smi_total_vram_gb() -> float | None:
-    """Return device 0's total VRAM in GB via ``nvidia-smi``, else ``None``."""
-    smi = shutil.which("nvidia-smi")
-    if smi is None:
-        return None
-    result = subprocess.run(  # noqa: S603 -- fixed argv, resolved nvidia-smi path.
-        [smi, "--query-gpu=memory.total", "--format=csv,noheader,nounits", "--id=0"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        return None
-    first = result.stdout.strip().splitlines()[0] if result.stdout.strip() else ""
-    try:
-        # nvidia-smi reports total memory in MiB; convert to GB (1e9 bytes).
-        return int(first) * (1 << 20) / 1e9
-    except ValueError:
-        return None
+class _DeviceProperties(Protocol):
+    """The one ``get_device_properties`` field the VRAM query reads (bytes)."""
+
+    total_memory: int
+
+
+def _compiler() -> _Compiler:
+    """Return ``torch.compiler`` (indirected so a test can inject a fake)."""
+    import torch  # noqa: PLC0415 -- worker-only; keep config-time import torch-free.
+
+    return cast("_Compiler", torch.compiler)
+
+
+class _Compiler(Protocol):
+    """The two mega-cache calls the worker makes on ``torch.compiler``."""
+
+    def load_cache_artifacts(self, artifact_bytes: bytes) -> object:
+        """Prime the compile caches from a prior run's serialized artifacts."""
+        ...
+
+    def save_cache_artifacts(self) -> tuple[bytes, object] | None:
+        """Serialize the compile caches (bytes at element 0), or None if empty."""
+        ...
+
+
+# The dynamo/inductor mega-cache: torch re-traces the static shape set from scratch
+# every process (tens of minutes cold for a 36-layer model x N shapes). Persisting the
+# artifacts across restarts turns that into a one-time bill -- the whole point on a
+# restart-prone one-shot backfill. Load-when-present tolerates a cold first run; save is
+# best-effort on a CLEAN exit only (a crashed process leaves the prior cache intact).
+def _load_compile_cache(path: Path) -> None:
+    """Prime torch's compile caches from ``path`` if a prior run wrote it."""
+    if not path.exists():
+        return
+    _compiler().load_cache_artifacts(path.read_bytes())
+
+
+# ``save_cache_artifacts`` returns ``None`` when there is nothing to serialize (its
+# documented no-artifact case -- e.g. every compile product was a cache hit, or the
+# build's dynamo artifacts are not serializable). That is not an error: skip the write
+# with a notice and leave any prior cache intact.
+def _save_compile_cache(path: Path) -> None:
+    """Serialize torch's compile caches to ``path`` (creating parent dirs)."""
+    saved = _compiler().save_cache_artifacts()
+    if saved is None:
+        print(f"compile-cache: nothing to save, keeping {path}", flush=True)
+        return
+    artifacts, _info = saved
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _ = path.write_bytes(artifacts)
 
 
 # One record pool awaiting embed, or awaiting write once vectors attach.
@@ -470,15 +524,19 @@ async def _worker(
 ) -> None:
     """Run the 3-stage pipeline: read pages, embed pools, write vectors."""
     mapper = FootprintMapper()
-    # ``build_backfill_embedder`` rejects a stub/disabled name and resolves
-    # ``(model, dim)`` to the full stored identity; the CUDA execution provider
-    # handles device placement and ONNX Runtime owns graph optimization.
+    # The registry applies each model's compile policy (Qwen family compiles the
+    # forward on cuda -- measured 2.79x on a 5090, dynamic shapes; CPU and Jina
+    # do not). ``build_backfill_embedder`` rejects a stub/disabled name and
+    # resolves ``(model, dim)`` to the full stored identity.
     embedder = registry.build_backfill_embedder(
         config.model,
         device=device,
         batch_size=config.batch_size,
         dim=config.dim,
     )
+    # Prime torch's compile caches from a prior run BEFORE the first forward warms
+    # them, so a restart pays the dynamo/inductor tracing bill once, not per process.
+    _load_compile_cache(config.compile_cache)
     # Derive this card's bucket plan ONCE: edges are corpus+arch, rows scale with
     # the measured (or overridden) VRAM and the chosen dim. An unknown model logs
     # a warning and falls back to conservative rows (never another model's tuning).
@@ -533,6 +591,9 @@ async def _worker(
                 pending=pending,
             ),
         )
+    # Clean exit only (a crash never reaches here, leaving the prior cache intact):
+    # persist this run's freshly warmed compile artifacts for the next process.
+    _save_compile_cache(config.compile_cache)
     print(f"{name} DONE in {time.monotonic() - start:.0f}s", flush=True)
 
 
@@ -621,8 +682,8 @@ async def _read_stage(
 class _BucketEmbedder(Protocol):
     """An embedder offering the length-bucketed static-shape backfill path.
 
-    Only ``QwenFamilyEmbedder`` implements ``embed_bucketed_batch`` (the Jina
-    embedders and ``StubEmbedder`` do not). This runner feature-detects it to
+    Only ``QwenFamilyEmbedder`` implements ``embed_bucketed_batch`` (Jina's custom
+    ``encode`` and ``StubEmbedder`` do not). This runner feature-detects it to
     route through the fixed-shape core; every other embedder uses ``embed_batch``.
     Defined here (its only user) rather than in ``session_embed`` so it is not a
     private protocol unused in its own module.
@@ -660,10 +721,10 @@ async def _embed_stage(
     await writes.put(None)
 
 
-# A ``_BucketEmbedder`` routes by true token length into the fixed shape set -- it owns
-# its own ordering, so no pre-sort here. Any other embedder falls back to the
-# length-sorted ``embed_batch`` path (a batch pads to its longest text, so sorting keeps
-# a short text off a long text's pad).
+# A ``_BucketEmbedder`` (QwenFamilyEmbedder with ``compile_forward``) routes by true
+# token length into the fixed shape set -- it owns its own ordering, so no pre-sort
+# here. Any other embedder falls back to the length-sorted ``embed_batch`` path (a batch
+# pads to its longest text, so sorting keeps a short text off a long text's pad).
 async def _embed_pool(
     embedder: Embedder,
     texts: list[str],

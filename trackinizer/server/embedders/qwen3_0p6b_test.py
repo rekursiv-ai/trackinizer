@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from trackinizer.server.embedders._qwen_fakes import install_capturing
 from trackinizer.server.embedders.qwen3_0p6b import (
     QWEN_TRUNCATED_DIM,
     Qwen06BEmbedder,
 )
+from trackinizer.server.embedders.qwen_fakes import install_capturing
 from trackinizer.types.embedder import Embedder, QueryEmbedder
 
 
