@@ -20,11 +20,11 @@ from trackinizer.server.config import ConfigError
 from trackinizer.server.embedders import registry
 
 
-def test_importing_registry_pulls_no_heavy_ml() -> None:
-    """The registry (and thus config) imports without dragging in the ML stack.
+def test_importing_registry_pulls_no_torch() -> None:
+    """The registry (and thus config) must import without dragging in torch.
 
     Probed in a FRESH interpreter, not against this process's ``sys.modules``:
-    under xdist a sibling test on the same worker may have imported onnxruntime
+    under xdist a sibling test on the same worker may have imported torch
     already, so an in-process assertion measures worker history, not the
     registry's own import graph. The subprocess resolves the module by its
     import name so the check survives the standalone export's different depth.
@@ -34,11 +34,11 @@ def test_importing_registry_pulls_no_heavy_ml() -> None:
     assert package.__file__ is not None
     source = (
         "import sys; "
-        "assert 'onnxruntime' not in sys.modules; "
         "assert 'torch' not in sys.modules; "
+        "assert 'transformers' not in sys.modules; "
         "import MODULE; "
-        "assert 'onnxruntime' not in sys.modules; "
-        "assert 'torch' not in sys.modules"
+        "assert 'torch' not in sys.modules; "
+        "assert 'transformers' not in sys.modules"
     ).replace("MODULE", module)
     probe = subprocess.run(  # noqa: S603 -- argv is this module's own import path.
         [sys.executable, "-c", source],

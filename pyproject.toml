@@ -45,30 +45,35 @@ dependencies = [
     # filesystem watching
     "watchdog>=6.0.0 ; sys_platform == 'darwin'",
     # Semantic session search (TRACKINIZER_SESSION_EMBEDDER=<model>@<dim>, e.g.
-    # qwen3-embedding-4b@1024): the embedders run the model's ONNX graph in-process
-    # via ONNX Runtime, and the startup weight-presence check reads the HF cache.
-    # Unconditional -- semantic search is a first-class feature, so every install
-    # carries the model path. The imports are still deferred at runtime
-    # (TYPE_CHECKING + wrapt lazy_import for numpy, function-local imports for
-    # onnxruntime / huggingface_hub) so `import trackinizer` costs nothing until
-    # something embeds. No torch: ONNX Runtime is the whole inference stack, which
-    # keeps the install off the ~GB torch + CUDA wheels the CPU serving path never
-    # needs; the dev-time `tools/export_onnx.py` (torch, never shipped) converts a
-    # model to ONNX offline.
+    # qwen3-embedding-4b@1024): the embedders run in-process transformers + torch,
+    # and the startup weight-presence check reads the HF cache. Unconditional --
+    # semantic search is a first-class feature, so every install carries the model
+    # path. The imports are still deferred at runtime (TYPE_CHECKING + wrapt
+    # lazy_import for torch/transformers, a function-local import for
+    # huggingface_hub) so `import trackinizer` costs nothing until something embeds.
     #
-    # onnxruntime: the inference runtime. `>=1.20` for the graph-optimization and
-    # provider APIs the loader relies on; a GPU host installs `onnxruntime-gpu`
-    # for the CUDA execution provider (same import name, so no code change).
-    "onnxruntime>=1.20",
-    # tokenizers: loads each model's `tokenizer.json` (the Rust engine transformers
-    # wraps). `>=0.20` covers `enable_padding(direction=)` and `encode_batch`.
-    "tokenizers>=0.20",
-    # numpy: pooling, truncation, and L2-normalization of the ONNX output.
-    "numpy>=1.26",
-    # huggingface-hub: `hf_hub_download` (resolve the ONNX graph + tokenizer) and
-    # `try_to_load_from_cache` (no-network weight check). A conservative floor
+    # torch: floor matches the version the monorepo pins and tests
+    # (`torch==2.11.0`). The specifier here is deliberately index-free, so the
+    # PUBLISHED wheel metadata carries a bare `torch>=2.11.0`: an end-user
+    # `pip install trackinizer` on linux resolves torch from PyPI = the CUDA
+    # build, and GPU backfill (`torch.compile`) works out of the box. The CPU
+    # wheel is pinned ONLY for OUR lock/CI resolution, in `[tool.uv.sources]`
+    # below (uv-only, stripped from the built wheel), so `uv sync --frozen` in
+    # export/validation CI installs +cpu and never downloads the ~2.5 GB CUDA
+    # stack that fills the runner disk.
+    "torch>=2.11.0",
+    # transformers: AutoModel/AutoTokenizer. Floor matches the monorepo
+    # (`>=4.57.0`); `from_pretrained(..., dtype=)` needs the modern `dtype`
+    # kwarg (the pre-4.56 name was `torch_dtype`).
+    "transformers>=4.57.0",
+    # huggingface-hub: `try_to_load_from_cache` (no-network weight check) and the
+    # snapshot cache layout. Unfloored in the monorepo; a conservative floor
     # guaranteeing both across the current cache era.
     "huggingface-hub>=0.30.0",
+    # peft: the jina-embeddings-v5 models load task adapters as PEFT modules
+    # (their trust_remote_code `encode` requires it). Floor matches the monorepo
+    # (`peft>=0.21.0`); only the jina embedders reach it, lazily.
+    "peft>=0.21.0",
 ]
 
 [dependency-groups]
@@ -635,5 +640,20 @@ rekursiv-ai-typeshed = [
 [tool.uv.pip]
 compile-bytecode = true
 
+# CPU torch index, consulted ONLY for the `torch` source pin below (explicit =
+# true keeps every other package off it). This governs OUR lock resolution, not
+# the published wheel: the wheel's `torch>=2.11.0` stays index-free (PyPI = CUDA
+# on linux), while `uv sync --frozen` / `--refresh-public-lockfile` here resolve
+# the +cpu build so export/validation CI never pulls the ~2.5 GB CUDA stack.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.uv.sources]
 rekursiv-ai-typeshed = { path = "packages/rekursiv-ai-typeshed" }
+# uv-only (stripped from the built wheel). Linux -> CPU wheel for lock/CI;
+# non-linux falls through to PyPI (macOS torch has no +cpu variant).
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
+]

@@ -2,7 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+
+if TYPE_CHECKING:
+    import torch
+
+
+class ModelOutput(Protocol):
+    """The one field of a transformer forward output the poolers read.
+
+    Shared by the live embedder (:mod:`trackinizer.server.embedders.qwen_family`)
+    and the batch backfill core
+    (:mod:`trackinizer.server.tools.bucket_embed`); both call ``model(**batch)``
+    and read ``last_hidden_state`` to last-token-pool. Defined here (not in
+    either caller) so the two share one contract rather than duplicating it.
+    """
+
+    last_hidden_state: torch.Tensor
 
 
 @runtime_checkable

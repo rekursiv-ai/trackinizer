@@ -1,9 +1,11 @@
 """Unit tests for QwenEmbedder that never download the model.
 
-These prove the wiring around the model -- lazy load, protocol shape, and the
-truncate-then-normalize order -- against a fake tiny ONNX session injected at
-the module's ``_load`` seam, so they run in milliseconds and need no network.
-Real weights are validated out of band, never in the unit suite.
+The real weights (~8 GB) are exercised by the ``network_huggingface`` test at
+the bottom (rolls up to the integration tier), skipped by default. These prove
+the wiring around the
+model -- lazy load, protocol shape, and the truncate-then-normalize order --
+against a fake tiny model injected at the module's ``_load`` seam, so they run
+in milliseconds and need no network.
 """
 
 from __future__ import annotations
@@ -11,18 +13,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, override
 
 import pytest
+import torch
 
-from trackinizer.server.embedders._base import QUERY_INSTRUCT
-from trackinizer.server.embedders._qwen_fakes import (
-    FakeEncoding,
-    FakeSession,
-    FakeTokenizer,
-)
 from trackinizer.server.embedders.octen_8b import OctenEmbedder
 from trackinizer.server.embedders.qwen3_4b import (
     QWEN_TRUNCATED_DIM,
     QwenEmbedder,
 )
+from trackinizer.server.embedders.qwen_family import QUERY_INSTRUCT
 from trackinizer.server.tools import bucket_embed
 from trackinizer.types.embedder import Embedder
 
@@ -30,22 +28,73 @@ from trackinizer.types.embedder import Embedder
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from onnxruntime import InferenceSession
+
+class _FakeTokenizer:
+    """Minimal left-padding tokenizer: maps texts to a fixed 2-token batch."""
+
+    def __call__(
+        self,
+        texts: list[str],
+        **_kwargs: object,
+    ) -> _FakeBatch:
+        rows = len(texts)
+        return _FakeBatch(
+            {
+                "input_ids": torch.zeros((rows, 2), dtype=torch.long),
+                "attention_mask": torch.ones((rows, 2), dtype=torch.long),
+            },
+        )
 
 
-def _install_fake(monkeypatch: pytest.MonkeyPatch) -> FakeSession:
-    """Patch the module ``_load`` seam to return the fake tokenizer + session."""
-    session = FakeSession(truncated_dim=QWEN_TRUNCATED_DIM)
+class _FakeBatch(dict[str, torch.Tensor]):
+    """A ``dict``-like batch that supports ``.to(device)`` and ``**batch``."""
 
-    def fake_load(device: str) -> tuple[FakeTokenizer, FakeSession]:
-        session.loaded_on = device
-        return FakeTokenizer(), session
+    def to(self, device: str) -> _FakeBatch:
+        del device
+        return self
+
+
+class _FakeModel:
+    """Returns a hidden state whose last-token vector has a heavy >1024 tail.
+
+    The native pooled vector is ``[1]*1024`` in the prefix and ``[8]*(N-1024)``
+    in the tail. Normalizing the full vector THEN slicing would leave the
+    1024-prefix far short of unit norm (the tail carries most of the mass);
+    slicing THEN normalizing yields a unit vector. The test asserts unit norm,
+    so it fails unless the slice precedes the normalize.
+    """
+
+    native_dim = QWEN_TRUNCATED_DIM + 512
+
+    def __init__(self) -> None:
+        self.loaded_on = "unset"
+
+    def __call__(self, **batch: torch.Tensor) -> _FakeOutput:
+
+        rows = batch["attention_mask"].shape[0]
+        prefix = torch.ones((rows, 2, QWEN_TRUNCATED_DIM))
+        tail = torch.full((rows, 2, self.native_dim - QWEN_TRUNCATED_DIM), 8.0)
+        return _FakeOutput(last_hidden_state=torch.cat([prefix, tail], dim=2))
+
+
+class _FakeOutput:
+    def __init__(self, *, last_hidden_state: torch.Tensor) -> None:
+        self.last_hidden_state = last_hidden_state
+
+
+def _install_fake(monkeypatch: pytest.MonkeyPatch) -> _FakeModel:
+    """Patch the module ``_load`` seam to return the fake tokenizer+model."""
+    model = _FakeModel()
+
+    def fake_load(device: str) -> tuple[_FakeTokenizer, _FakeModel]:
+        model.loaded_on = device
+        return _FakeTokenizer(), model
 
     monkeypatch.setattr(
         "trackinizer.server.embedders.qwen3_4b._load",
         fake_load,
     )
-    return session
+    return model
 
 
 def test_satisfies_the_embedder_protocol() -> None:
@@ -65,9 +114,9 @@ def test_constructing_does_not_load_the_model(monkeypatch: pytest.MonkeyPatch) -
     """Lazy load: the shape's contract is that ``__init__`` costs no weights."""
     calls: list[str] = []
 
-    def tripwire(device: str) -> tuple[FakeTokenizer, FakeSession]:
+    def tripwire(device: str) -> tuple[_FakeTokenizer, _FakeModel]:
         calls.append(device)
-        return FakeTokenizer(), FakeSession(truncated_dim=QWEN_TRUNCATED_DIM)
+        return _FakeTokenizer(), _FakeModel()
 
     monkeypatch.setattr("trackinizer.server.embedders.qwen3_4b._load", tripwire)
     _ = QwenEmbedder()
@@ -78,11 +127,11 @@ def test_constructing_does_not_load_the_model(monkeypatch: pytest.MonkeyPatch) -
 async def test_first_embed_loads_then_reuses(monkeypatch: pytest.MonkeyPatch) -> None:
     """The model loads on first embed and is reused on the second."""
     calls: list[str] = []
-    fake = FakeSession(truncated_dim=QWEN_TRUNCATED_DIM)
+    fake = _FakeModel()
 
-    def counting_load(device: str) -> tuple[FakeTokenizer, FakeSession]:
+    def counting_load(device: str) -> tuple[_FakeTokenizer, _FakeModel]:
         calls.append(device)
-        return FakeTokenizer(), fake
+        return _FakeTokenizer(), fake
 
     monkeypatch.setattr(
         "trackinizer.server.embedders.qwen3_4b._load",
@@ -124,21 +173,21 @@ async def test_embed_batch_preserves_order_and_count(
 @pytest.mark.asyncio
 async def test_embed_batch_empty_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     """No texts means no forward pass and no vectors."""
-    session = _install_fake(monkeypatch)
+    model = _install_fake(monkeypatch)
     assert await QwenEmbedder().embed_batch([]) == []
-    assert session.loaded_on == "unset"  # Empty input never even loads.
+    assert model.loaded_on == "unset"  # Empty input never even loads.
 
 
-class _CapturingTokenizer(FakeTokenizer):
+class _CapturingTokenizer(_FakeTokenizer):
     """A tokenizer that records the exact texts it was handed."""
 
     def __init__(self) -> None:
         self.seen: list[list[str]] = []
 
     @override
-    def encode_batch(self, texts: list[str]) -> list[FakeEncoding]:
+    def __call__(self, texts: list[str], **kwargs: object) -> _FakeBatch:
         self.seen.append(list(texts))
-        return super().encode_batch(texts)
+        return super().__call__(texts, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -154,9 +203,9 @@ async def test_query_side_prefixes_document_side_does_not(
     """
     tokenizer = _CapturingTokenizer()
 
-    def fake_load(device: str) -> tuple[_CapturingTokenizer, FakeSession]:
+    def fake_load(device: str) -> tuple[_CapturingTokenizer, _FakeModel]:
         del device
-        return tokenizer, FakeSession(truncated_dim=QWEN_TRUNCATED_DIM)
+        return tokenizer, _FakeModel()
 
     monkeypatch.setattr("trackinizer.server.embedders.qwen3_4b._load", fake_load)
     embedder = QwenEmbedder()
@@ -171,20 +220,23 @@ async def test_query_side_prefixes_document_side_does_not(
 
 
 @pytest.mark.asyncio
-async def test_embed_bucketed_batch_prefixes_documents(
+async def test_embed_bucketed_batch_prefixes_and_configures_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The bucketed path applies doc_prefix and forwards to the static core.
+    """The bucketed path applies doc_prefix and pins recompile limits ONCE.
 
     Glue over ``bucket_embed`` (whose routing/shape logic is tested there): this
-    checks the embedder-side contract -- documents carry ``doc_prefix`` and the
-    static shape core is invoked with the session/dim/edges.
+    checks the embedder-side contract -- documents carry ``doc_prefix``, the
+    static shape core is invoked with the model/dim/edges, and
+    ``configure_recompile_limits`` runs exactly once across calls (re-pinning the
+    global accumulated limit mid-run clipped warmup live).
     """
     _install_fake(monkeypatch)
+    configures: list[tuple[int, ...]] = []
     seen_texts: list[list[str]] = []
 
     async def fake_embed_bucketed(
-        session: InferenceSession,
+        model: bucket_embed.ForwardModel,
         tokenizer: bucket_embed.TokenBatcher,
         texts: list[str],
         *,
@@ -192,10 +244,14 @@ async def test_embed_bucketed_batch_prefixes_documents(
         rows: Mapping[int, int],
         dim: int,
     ) -> list[list[float]]:
-        del session, tokenizer, edges, rows, dim
+        del model, tokenizer, edges, rows, dim
         seen_texts.append(list(texts))
         return [[0.0] for _ in texts]
 
+    def record_configure(edges: Sequence[int]) -> None:
+        configures.append(tuple(edges))
+
+    monkeypatch.setattr(bucket_embed, "configure_recompile_limits", record_configure)
     monkeypatch.setattr(bucket_embed, "embed_bucketed", fake_embed_bucketed)
 
     embedder = QwenEmbedder()  # doc_prefix "" for stock Qwen.
@@ -203,6 +259,7 @@ async def test_embed_bucketed_batch_prefixes_documents(
     _ = await embedder.embed_bucketed_batch(["one", "two"], edges=(32, 8192), rows=plan)
     _ = await embedder.embed_bucketed_batch(["three"], edges=(32, 8192), rows=plan)
 
+    assert configures == [(32, 8192)]  # Configured once, not per call.
     assert seen_texts == [["one", "two"], ["three"]]  # doc_prefix "" for Qwen.
 
 
@@ -212,15 +269,15 @@ async def test_embed_bucketed_batch_applies_octen_doc_prefix(
 ) -> None:
     """A doc_prefix model prepends it on the bucketed path too (Octen ``"- "``)."""
 
-    def fake_load(device: str) -> tuple[FakeTokenizer, FakeSession]:
+    def fake_load(device: str) -> tuple[_FakeTokenizer, _FakeModel]:
         del device
-        return FakeTokenizer(), FakeSession(truncated_dim=QWEN_TRUNCATED_DIM)
+        return _FakeTokenizer(), _FakeModel()
 
     monkeypatch.setattr("trackinizer.server.embedders.octen_8b._load", fake_load)
     seen: list[list[str]] = []
 
     async def fake_embed_bucketed(
-        session: InferenceSession,
+        model: bucket_embed.ForwardModel,
         tokenizer: bucket_embed.TokenBatcher,
         texts: list[str],
         *,
@@ -228,10 +285,14 @@ async def test_embed_bucketed_batch_applies_octen_doc_prefix(
         rows: Mapping[int, int],
         dim: int,
     ) -> list[list[float]]:
-        del session, tokenizer, edges, rows, dim
+        del model, tokenizer, edges, rows, dim
         seen.append(list(texts))
         return [[0.0] for _ in texts]
 
+    def noop_configure(edges: Sequence[int]) -> None:
+        del edges
+
+    monkeypatch.setattr(bucket_embed, "configure_recompile_limits", noop_configure)
     monkeypatch.setattr(bucket_embed, "embed_bucketed", fake_embed_bucketed)
 
     _ = await OctenEmbedder().embed_bucketed_batch(
@@ -240,6 +301,42 @@ async def test_embed_bucketed_batch_applies_octen_doc_prefix(
         rows={32: 4, 8192: 2},
     )
     assert seen == [["- doc"]]  # Octen's documented document prefix.
+
+
+@pytest.mark.network_huggingface
+@pytest.mark.asyncio
+async def test_real_model_embeds_meaningfully() -> None:
+    """The real weights: unit norm, dim 1024, deterministic, semantics hold.
+
+    Downloads Qwen3-Embedding-4B (~8 GB) through the provisioned HF cache. The
+    ``network_huggingface`` resource marker rolls up to the ``integration`` tier
+    (skipped by default) via ``resource_markers.py``; never hand-write the rollup.
+    """
+    embedder = QwenEmbedder()
+    cat_a = "The cat sat on the warm windowsill in the sun."
+    cat_b = "A kitten napped on the sunny window ledge."
+    finance = "Quarterly revenue exceeded analyst expectations."
+
+    vectors = await embedder.embed_batch([cat_a, cat_b, finance])
+    again = await embedder.embed(cat_a)
+
+    assert all(len(v) == 1024 for v in vectors)
+    for v in vectors:
+        norm = sum(x * x for x in v) ** 0.5
+        # bf16 CPU inference (see qwen3_4b._load): the vector is normalized
+        # in bf16 then cast to fp32, so unit norm holds only to bf16 precision
+        # (~3 sig figs). halfvec(1024) storage is itself fp16, so this is the
+        # real precision the column keeps -- not a looser bar to pass.
+        assert abs(norm - 1.0) < 5e-3
+    # Deterministic across calls (same dtype, same math).
+    assert max(abs(a - b) for a, b in zip(vectors[0], again, strict=True)) < 1e-4
+
+    def cosine(a: list[float], b: list[float]) -> float:
+        return sum(x * y for x, y in zip(a, b, strict=True))
+
+    near = cosine(vectors[0], vectors[1])
+    far = cosine(vectors[0], vectors[2])
+    assert near > far  # Two cat sentences beat cat-vs-finance.
 
 
 if __name__ == "__main__":

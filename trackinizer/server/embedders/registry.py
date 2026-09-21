@@ -3,7 +3,7 @@
 The single place that maps a ``session_embedder`` config value to an embedder
 instance and its weight-presence check. Every entry imports its model module
 INSIDE its thunk, so importing this registry (which config.py does at config
-time) pulls no onnxruntime -- only the chosen model's ``build`` loads a session.
+time) pulls no torch -- only the chosen model's ``build`` reaches transformers.
 
 The registry keys are the STABLE stored identities (``session_embeddings.model``
 values): the empty string disables the semantic arm, ``stub``/``stub-<dim>`` are
@@ -38,9 +38,9 @@ if TYPE_CHECKING:
 else:
     from wrapt import lazy_import
 
-    # Each model module pulls onnxruntime on FIRST attribute access only;
+    # Each model module pulls torch/transformers on FIRST attribute access only;
     # binding them as lazy_import proxies keeps importing this registry (which
-    # runs at config time) onnxruntime-free while staying top-level (no PLC0415).
+    # runs at config time) torch-free while staying top-level (no PLC0415).
     qwen3_0p6b = lazy_import("trackinizer.server.embedders.qwen3_0p6b")
     qwen3_4b = lazy_import("trackinizer.server.embedders.qwen3_4b")
     qwen3_8b = lazy_import("trackinizer.server.embedders.qwen3_8b")
@@ -79,10 +79,11 @@ class ModelEntry:
       spec: The model's :class:`~bucket_boundaries.TransformerSpec` when it is a
         Matryoshka model (its ``min_dim..max_dim`` is the valid ``--dim`` range),
         or ``None`` for a fixed-dim model (only :attr:`default_dim` is valid).
-      build: ``dim -> `` fresh CPU embedder at that dim (loads ONNX inside).
-      backfill: ``(device, batch_size, dim) -> `` embedder for the GPU pipeline
-        (the CUDA execution provider; ONNX Runtime owns graph optimization, so
-        there is no per-model compile policy).
+      build: ``dim -> `` fresh CPU embedder at that dim (imports torch inside).
+      backfill: ``(device, batch_size, dim) -> `` embedder for the GPU pipeline,
+        applying the model's compile policy (Qwen-family compiles the forward on
+        cuda -- measured 2.79x on a 5090; Jina does not, its custom ``encode``
+        may not route through the forward we compile).
       weights_present: No-network cache check for this model's weights.
 
     """
@@ -207,18 +208,33 @@ def build_backfill_embedder(
     return entry.backfill(device, batch_size, resolved_dim)
 
 
-def _build(cls: Callable[..., QueryEmbedder], dim: int) -> QueryEmbedder:
-    """Construct a CPU embedder at ``dim``."""
+def _qwen_build(cls: Callable[..., QueryEmbedder], dim: int) -> QueryEmbedder:
+    """Construct a Qwen-family CPU embedder at ``dim``."""
     return cls(dim=dim)
 
 
-def _backfill(
+def _qwen_backfill(
     cls: Callable[..., QueryEmbedder],
     device: str,
     batch_size: int,
     dim: int,
 ) -> QueryEmbedder:
-    """Construct an embedder at ``dim`` on ``device`` for the backfill pipeline."""
+    """Construct a Qwen-family embedder at ``dim``, compiling the forward on cuda."""
+    return cls(
+        device=device,
+        batch_size=batch_size,
+        dim=dim,
+        compile_forward=device.startswith("cuda"),
+    )
+
+
+def _jina_backfill(
+    cls: Callable[..., QueryEmbedder],
+    device: str,
+    batch_size: int,
+    dim: int,
+) -> QueryEmbedder:
+    """Construct a Jina embedder at ``dim`` (no compile flag until measured)."""
     return cls(device=device, batch_size=batch_size, dim=dim)
 
 
@@ -228,8 +244,8 @@ def _qwen3_0p6b_entry() -> ModelEntry:
         slug="qwen3-embedding-0.6b",
         default_dim=1_024,
         spec=bucket_boundaries.QWEN3_0P6B,
-        build=lambda dim: _build(qwen3_0p6b.Qwen06BEmbedder, dim),
-        backfill=lambda device, batch_size, dim: _backfill(
+        build=lambda dim: _qwen_build(qwen3_0p6b.Qwen06BEmbedder, dim),
+        backfill=lambda device, batch_size, dim: _qwen_backfill(
             qwen3_0p6b.Qwen06BEmbedder,
             device,
             batch_size,
@@ -245,8 +261,8 @@ def _qwen3_4b_entry() -> ModelEntry:
         slug="qwen3-embedding-4b",
         default_dim=1_024,
         spec=bucket_boundaries.QWEN3_4B,
-        build=lambda dim: _build(qwen3_4b.QwenEmbedder, dim),
-        backfill=lambda device, batch_size, dim: _backfill(
+        build=lambda dim: _qwen_build(qwen3_4b.QwenEmbedder, dim),
+        backfill=lambda device, batch_size, dim: _qwen_backfill(
             qwen3_4b.QwenEmbedder,
             device,
             batch_size,
@@ -262,8 +278,8 @@ def _qwen3_8b_entry() -> ModelEntry:
         slug="qwen3-embedding-8b",
         default_dim=1_024,
         spec=bucket_boundaries.QWEN3_8B,
-        build=lambda dim: _build(qwen3_8b.Qwen8BEmbedder, dim),
-        backfill=lambda device, batch_size, dim: _backfill(
+        build=lambda dim: _qwen_build(qwen3_8b.Qwen8BEmbedder, dim),
+        backfill=lambda device, batch_size, dim: _qwen_backfill(
             qwen3_8b.Qwen8BEmbedder,
             device,
             batch_size,
@@ -279,8 +295,8 @@ def _octen_8b_entry() -> ModelEntry:
         slug="octen-embedding-8b",
         default_dim=1_024,
         spec=bucket_boundaries.OCTEN_8B,
-        build=lambda dim: _build(octen_8b.OctenEmbedder, dim),
-        backfill=lambda device, batch_size, dim: _backfill(
+        build=lambda dim: _qwen_build(octen_8b.OctenEmbedder, dim),
+        backfill=lambda device, batch_size, dim: _qwen_backfill(
             octen_8b.OctenEmbedder,
             device,
             batch_size,
@@ -297,7 +313,7 @@ def _jina_v5_text_nano_entry() -> ModelEntry:
         default_dim=768,
         spec=None,  # Fixed-dim: only the native 768 validates.
         build=lambda dim: jina_v5_text_nano.JinaV5NanoEmbedder(dim=dim),
-        backfill=lambda device, batch_size, dim: _backfill(
+        backfill=lambda device, batch_size, dim: _jina_backfill(
             jina_v5_text_nano.JinaV5NanoEmbedder,
             device,
             batch_size,
@@ -314,7 +330,7 @@ def _jina_v5_text_small_entry() -> ModelEntry:
         default_dim=1_024,
         spec=None,  # Fixed-dim: only the native 1024 validates.
         build=lambda dim: jina_v5_text_small.JinaV5SmallEmbedder(dim=dim),
-        backfill=lambda device, batch_size, dim: _backfill(
+        backfill=lambda device, batch_size, dim: _jina_backfill(
             jina_v5_text_small.JinaV5SmallEmbedder,
             device,
             batch_size,
