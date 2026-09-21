@@ -22,8 +22,6 @@ import uuid
 
 from pytest_postgresql.config import get_config
 from pytest_postgresql.exceptions import ExecutableMissingException
-from pytest_postgresql.executors.proc import PostgreSQLExecutor
-from pytest_postgresql.janitor import DatabaseJanitor
 
 import pytest
 import pytest_asyncio
@@ -250,7 +248,20 @@ def pg_dsn(request: pytest.FixtureRequest) -> Iterator[str]:
     (``pg_config`` / ``initdb`` on ``PATH``). When that toolchain is
     absent -- as on machines without a system Postgres -- these
     integration tests skip cleanly instead of erroring at setup.
+
+    The same holds for libpq. Without it psycopg cannot load, the root
+    conftest leaves the pytest-postgresql plugin unregistered, and the
+    imports below are what notice.
     """
+    try:
+        from pytest_postgresql.executors.proc import (  # noqa: PLC0415 -- The executors package imports psycopg, which needs libpq.
+            PostgreSQLExecutor,
+        )
+        from pytest_postgresql.janitor import (  # noqa: PLC0415 -- Imports psycopg, which needs libpq.
+            DatabaseJanitor,
+        )
+    except ImportError as exc:
+        pytest.skip(f"PostgreSQL client library unavailable: {exc}")
     # Seeded workers can choose the same ports while their peers are between
     # reservation and server startup. The plugin's five retries cannot cover
     # six such peers; allow a collision for every other worker's reservation.
