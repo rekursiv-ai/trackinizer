@@ -225,6 +225,78 @@ def test_negated_regex_filter_is_forwarded_to_list_kind(client: FakeClient) -> N
     assert forwarded == (Filter(field="title", op="nre", value="row"),)
 
 
+def test_receipt_id_flag_reaches_list_kind_with_the_query_filters(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--receipt-id`` rides the same ``list_kind`` call as the parsed filters.
+
+    The fake evaluates it like the server: exact membership in
+    ``config.executions[].receipt``, before the window, so only the Experiment
+    recording the receipt prints -- not the one with a different receipt nor
+    the one with no config.
+    """
+    client.rows.extend(
+        [
+            {
+                "id": str(uuid.uuid4()),
+                "kind": "Experiment",
+                "seq": 7,
+                "status": "complete",
+                "title": "recorded receipt",
+                "config": {"executions": [{"receipt": "R123"}]},
+            },
+            {
+                "id": str(uuid.uuid4()),
+                "kind": "Experiment",
+                "seq": 8,
+                "status": "complete",
+                "title": "other receipt",
+                "config": {"executions": [{"receipt": "R1234"}]},
+            },
+        ],
+    )
+    run(["experiment", "status", "is", "complete", "--receipt-id", "R123"], client)
+    list_calls = [c for c in client.calls if c[0] == "list_kind"]
+    assert len(list_calls) == 1
+    assert list_calls[0][1] == ("Experiment",)
+    assert list_calls[0][2]["receipt_id"] == "R123"
+    assert list_calls[0][2]["filters"] == (
+        Filter(field="status", op="is", value="complete"),
+    )
+    out = capsys.readouterr().out
+    assert "Experiment#7" in out
+    assert "Experiment#8" not in out
+    assert "Experiment#2" not in out
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["issue", "--receipt-id", "R123"],
+        ["experiment", "issue", "--receipt-id", "R123"],
+        ["experiment", "2", "--receipt-id", "R123"],
+        ["experiment", "title", "to", "new", "--receipt-id", "R123"],
+        ["title", "re", "row", "--receipt-id", "R123"],
+        ["issue", "--receipt-id="],
+        ["experiment", "--receipt-id="],
+    ],
+)
+def test_receipt_id_flag_is_refused_outside_an_experiment_list(
+    client: FakeClient,
+    argv: list[str],
+) -> None:
+    """The flag is refused, not ignored, wherever it cannot narrow an Experiment list.
+
+    That covers another kind, a kind union, a row show, a create, and the
+    kindless query -- and nothing reaches the client, so a create carrying the
+    flag never writes.
+    """
+    with pytest.raises(ClientError, match="receipt-id"):
+        run(argv, client)
+    assert client.calls == []
+
+
 def test_kind_filter_kind_alias_resolves_to_issue_kind(
     client: FakeClient,
     capsys: pytest.CaptureFixture[str],
