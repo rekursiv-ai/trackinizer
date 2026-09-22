@@ -21,12 +21,7 @@ import importlib
 
 
 def _postgres_plugins() -> tuple[str, ...]:
-    """Name the pytest-postgresql plugin, if psycopg can load libpq here.
-
-    Returns:
-      plugins: ``("pytest_postgresql.plugin",)``, or ``()`` without libpq.
-
-    """
+    """Name the pytest-postgresql plugin, if psycopg can load libpq here."""
     try:
         importlib.import_module("psycopg")
     except ImportError:

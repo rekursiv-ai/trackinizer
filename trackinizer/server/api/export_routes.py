@@ -88,12 +88,10 @@ def export_lines(graph: GraphExport) -> Iterator[bytes]:
             yield _line({"table": table, "row": row})
 
 
+# ``allow_nan=False`` because the output must parse anywhere: a non-finite float is a
+# bug to surface here, not a bare ``NaN`` a strict reader rejects.
 def _line(value: object) -> bytes:
-    """One compact JSON object and its newline.
-
-    ``allow_nan=False`` because the output must parse anywhere: a non-finite
-    float is a bug to surface here, not a bare ``NaN`` a strict reader rejects.
-    """
+    """One compact JSON object and its newline."""
     text = json.dumps(
         value,
         default=_as_json,
@@ -105,15 +103,7 @@ def _line(value: object) -> bytes:
 
 
 def _as_json(value: object) -> str:
-    """Spell the column types JSON has no literal for.
-
-    Args:
-      value: A value ``json`` could not encode on its own.
-
-    Returns:
-      text: ``str`` of a UUID, ISO 8601 of a timestamp.
-
-    """
+    """Spell the column types JSON has no literal for."""
     if isinstance(value, UUID):
         return str(value)
     if isinstance(value, date):

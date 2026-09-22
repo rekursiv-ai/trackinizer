@@ -807,8 +807,8 @@ class TestMissingResourceIs404:
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
-        engine.conn.fetchval.return_value = "Belief"  # claimable kind probe
-        engine.conn.fetch.return_value = []  # no proving edges
+        engine.conn.fetchval.return_value = "Belief"  # Claimable kind probe.
+        engine.conn.fetch.return_value = []  # No proving edges.
         r = client.get(f"/api/inquiries/{new_uuid()}/confidence")
         assert r.status_code == 200
         assert DictCodec.coerce(r.json())["confidence"] == 0.5

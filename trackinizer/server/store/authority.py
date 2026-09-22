@@ -124,23 +124,20 @@ class _AuthorityMixin(_StoreShared):
         return written
 
 
+# Only nodes that are the dependency (target) of at least one edge carry a meaningful
+# score; every other node has no authority in this relation and its column reads NULL.
+#
+# The reset is scoped to rows that currently hold a score (``column IS NOT NULL``)
+# rather than the whole table: a node that lost its last inbound edge since the previous
+# sweep still had a score to clear, so this catches it without rewriting every unrelated
+# row each sweep.
 async def _write_scores(
     conn: Conn,
     column: str,
     edges: Sequence[Edge],
     scores: dict[UUID, float],
 ) -> int:
-    """Write one relation's scores; NULL every node its graph never reaches.
-
-    Only nodes that are the dependency (target) of at least one edge carry a
-    meaningful score; every other node has no authority in this relation and its
-    column reads NULL.
-
-    The reset is scoped to rows that currently hold a score (``column IS NOT
-    NULL``) rather than the whole table: a node that lost its last inbound edge
-    since the previous sweep still had a score to clear, so this catches it
-    without rewriting every unrelated row each sweep.
-    """
+    """Write one relation's scores; NULL every node its graph never reaches."""
     reached = {edge.dependency for edge in edges}
     await conn.execute(
         vetted_sql(
