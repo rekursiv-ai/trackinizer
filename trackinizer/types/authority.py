@@ -27,19 +27,6 @@ if TYPE_CHECKING:
 __all__ = ["Edge", "pagerank", "relation_edges"]
 
 
-DAMPING: float = 0.85
-"""Standard PageRank damping: the probability a walk follows an edge rather than
-teleporting to a uniform-random node. 0.85 is Bring & Page's original value."""
-
-MAX_ITERATIONS: int = 100
-"""Hard cap on power-iteration passes; convergence (below :data:`TOLERANCE`)
-normally stops the loop far sooner."""
-
-TOLERANCE: float = 1e-9
-"""L1 change between successive score vectors below which iteration stops: the
-fixed point is reached to well past display precision."""
-
-
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Edge:
     """One weighted dependency edge ``dependent -> dependency``.
@@ -64,9 +51,9 @@ def pagerank(
     nodes: Sequence[UUID],
     edges: Sequence[Edge],
     *,
-    damping: float = DAMPING,
-    max_iterations: int = MAX_ITERATIONS,
-    tolerance: float = TOLERANCE,
+    damping: float = 0.85,
+    max_iterations: int = 100,
+    tolerance: float = 1e-9,
 ) -> dict[UUID, float]:
     """Return each node's PageRank authority, summing to 1 over ``nodes``.
 
@@ -81,8 +68,11 @@ def pagerank(
       edges: Weighted ``dependent -> dependency`` edges; endpoints outside
         ``nodes`` are ignored.
       damping: Follow-edge probability; the complement teleports uniformly.
-      max_iterations: Power-iteration cap.
-      tolerance: L1 convergence threshold.
+        Defaults to Bring & Page's original 0.85.
+      max_iterations: Hard cap on power-iteration passes; convergence normally
+        stops the loop far sooner.
+      tolerance: L1 change between successive score vectors below which
+        iteration stops.
 
     Returns:
       authority: ``node -> score`` for every id in ``nodes``, summing to 1.

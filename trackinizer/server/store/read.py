@@ -27,7 +27,7 @@ from trackinizer.server.sql_fragments import (
 )
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import manifest_bound, vetted_sql
-from trackinizer.types.belief_confidence import NEUTRAL_CONFIDENCE, fold_confidence
+from trackinizer.types.belief_confidence import fold_confidence
 from trackinizer.types.change_log import Change
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import NotFoundError
@@ -382,14 +382,12 @@ class _ReadMixin(_StoreShared):
         async with self.engine.acquire() as new_conn:
             return await self._confidence_walk(new_conn, belief_id)
 
+    # Confidence is defined only for the kinds a ``proves`` edge can target
+    # (Belief/Experiment). For any other kind the proves graph is always empty, so
+    # folding it would return a misleading neutral 0.5 -- a real number for a question
+    # that does not apply. Return None instead.
     async def _confidence_walk(self, conn: Conn, belief_id: UUID) -> float | None:
-        """Resolve derived confidence, or None if absent or a non-claimable kind.
-
-        Confidence is defined only for the kinds a ``proves`` edge can target
-        (Belief/Experiment). For any other kind the proves graph is always
-        empty, so folding it would return a misleading neutral 0.5 -- a real
-        number for a question that does not apply. Return None instead.
-        """
+        """Resolve derived confidence, or None if absent or a non-claimable kind."""
         kind = await conn.fetchval(
             "SELECT kind FROM inquiries WHERE id = $1",
             belief_id,
@@ -413,7 +411,7 @@ class _ReadMixin(_StoreShared):
         # a node revisited mid-walk means a corrupted graph, which must degrade
         # to neutral rather than recurse forever.
         if node_id in visiting:
-            return NEUTRAL_CONFIDENCE
+            return fold_confidence(0.0)
         visiting.add(node_id)
         log_odds = 0.0
         for row in await conn.fetch(PROVING_EDGES_SQL, node_id):

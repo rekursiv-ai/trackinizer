@@ -6,23 +6,19 @@ import math
 
 import pytest
 
-from trackinizer.types.belief_confidence import (
-    NEUTRAL_CONFIDENCE,
-    fold_confidence,
-    logistic,
-)
+from trackinizer.types.belief_confidence import fold_confidence, logistic
 
 
 def test_no_evidence_is_neutral() -> None:
-    assert fold_confidence(0.0) == NEUTRAL_CONFIDENCE
+    assert fold_confidence(0.0) == 0.5
 
 
 def test_support_lifts_above_neutral() -> None:
-    assert fold_confidence(1.0) > NEUTRAL_CONFIDENCE
+    assert fold_confidence(1.0) > 0.5
 
 
 def test_attack_lowers_below_neutral() -> None:
-    assert fold_confidence(-1.0) < NEUTRAL_CONFIDENCE
+    assert fold_confidence(-1.0) < 0.5
 
 
 def test_is_symmetric_about_neutral() -> None:

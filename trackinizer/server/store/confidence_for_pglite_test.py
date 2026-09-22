@@ -18,7 +18,7 @@ import pytest_asyncio
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
-from trackinizer.types.belief_confidence import NEUTRAL_CONFIDENCE, fold_confidence
+from trackinizer.types.belief_confidence import fold_confidence
 from trackinizer.wire.bodies import (
     SubmitBelief,
     SubmitExperiment,
@@ -87,7 +87,7 @@ async def test_non_claimable_kind_is_none_not_a_bogus_neutral(store: Store) -> N
 async def test_no_evidence_is_neutral(store: Store) -> None:
     belief_id = await _proven_belief(store, "Unsupported claim")
 
-    assert await store.confidence_for(belief_id) == pytest.approx(NEUTRAL_CONFIDENCE)
+    assert await store.confidence_for(belief_id) == pytest.approx(0.5)
 
 
 @pytest.mark.db_pglite
@@ -106,7 +106,7 @@ async def test_a_positive_citation_lifts_confidence(store: Store) -> None:
     # Experiment citer is claimable, so its own (evidence-free) confidence is
     # neutral 0.5, weighting the 0.8 valence: log-odds = 0.5 * 0.8.
     assert await store.confidence_for(claim) == pytest.approx(
-        fold_confidence(NEUTRAL_CONFIDENCE * 0.8),
+        fold_confidence(0.5 * 0.8),
     )
 
 
@@ -131,7 +131,7 @@ async def test_symmetric_support_and_attack_cancel(store: Store) -> None:
         valence=-0.6,
     )
 
-    assert await store.confidence_for(claim) == pytest.approx(NEUTRAL_CONFIDENCE)
+    assert await store.confidence_for(claim) == pytest.approx(0.5)
 
 
 @pytest.mark.db_pglite

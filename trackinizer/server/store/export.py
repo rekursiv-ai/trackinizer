@@ -65,7 +65,7 @@ _SKIPPED_COLUMNS: Final[Mapping[str, frozenset[str]]] = {
 }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class GraphExport:
     """Every exported row, read in one snapshot.
 
@@ -114,17 +114,7 @@ class _ExportMixin(_StoreShared):
 
 
 async def _exported_columns(conn: Conn) -> dict[str, tuple[tuple[str, bool], ...]]:
-    """Each exported table's columns in order, flagged when stored as ``json``.
-
-    Args:
-      conn: Open connection inside the export's snapshot.
-
-    Returns:
-      columns: Table name to ``(column, is_json)`` pairs. ``is_json`` marks the
-        plain ``json`` type, which asyncpg returns as text; ``jsonb`` already
-        decodes through the connection's codec.
-
-    """
+    """Each exported table's columns in order, flagged when stored as ``json``."""
     rows = await conn.fetch(
         "SELECT table_name, column_name, data_type "
         "FROM information_schema.columns "
@@ -147,17 +137,7 @@ async def _read_table(
     table: str,
     columns: tuple[tuple[str, bool], ...],
 ) -> tuple[dict[str, object], ...]:
-    """Every row of ``table``, in its export order, as plain Python values.
-
-    Args:
-      conn: Open connection inside the export's snapshot.
-      table: A name from :data:`EXPORT_TABLES`.
-      columns: The table's ``(column, is_json)`` pairs, in column order.
-
-    Returns:
-      rows: One dict per row, keyed by column name in column order.
-
-    """
+    """Every row of ``table``, in its export order, as plain Python values."""
     select = ", ".join(f'"{name}"' for name, _ in columns)
     records = await conn.fetch(
         vetted_sql("SELECT ", select, " FROM ", table, " ORDER BY ", _ORDER_BY[table]),

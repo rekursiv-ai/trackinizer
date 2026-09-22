@@ -20,12 +20,7 @@ from __future__ import annotations
 import math
 
 
-__all__ = ["NEUTRAL_CONFIDENCE", "fold_confidence", "logistic"]
-
-
-NEUTRAL_CONFIDENCE: float = 0.5
-"""Confidence of a node with no currently-true ``proves`` evidence: log-odds 0
-folds through the logistic to exactly one half."""
+__all__ = ["fold_confidence", "logistic"]
 
 
 def logistic(x: float) -> float:
