@@ -2,9 +2,7 @@
 
 These prove the wiring around the model -- lazy load, protocol shape, and the
 truncate-then-normalize order -- against a fake tiny model injected at the
-module's ``_load`` seam, so they run in milliseconds and need no network. The
-family recipe on real weights is exercised in ``qwen3_0p6b_test``: the 4B
-weights (~8 GB in bf16) do not fit a hosted CI runner's memory.
+module's ``_load`` seam, so they run in milliseconds and need no network.
 """
 
 from __future__ import annotations
