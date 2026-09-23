@@ -1,11 +1,10 @@
 """Unit tests for QwenEmbedder that never download the model.
 
-The real weights (~8 GB) are exercised by the ``network_huggingface`` test at
-the bottom (rolls up to the integration tier), skipped by default. These prove
-the wiring around the
-model -- lazy load, protocol shape, and the truncate-then-normalize order --
-against a fake tiny model injected at the module's ``_load`` seam, so they run
-in milliseconds and need no network.
+These prove the wiring around the model -- lazy load, protocol shape, and the
+truncate-then-normalize order -- against a fake tiny model injected at the
+module's ``_load`` seam, so they run in milliseconds and need no network. The
+family recipe on real weights is exercised in ``qwen3_0p6b_test``: the 4B
+weights (~8 GB in bf16) do not fit a hosted CI runner's memory.
 """
 
 from __future__ import annotations
@@ -301,52 +300,6 @@ async def test_embed_bucketed_batch_applies_octen_doc_prefix(
         rows={32: 4, 8192: 2},
     )
     assert seen == [["- doc"]]  # Octen's documented document prefix.
-
-
-@pytest.mark.network_huggingface
-@pytest.mark.asyncio
-async def test_real_model_embeds_meaningfully() -> None:
-    """The real weights: unit norm, dim 1024, deterministic, semantics hold.
-
-    Downloads Qwen3-Embedding-4B (~8 GB) through the provisioned HF cache. The
-    ``network_huggingface`` resource marker rolls up to the ``integration`` tier
-    (skipped by default) via ``resource_markers.py``; never hand-write the rollup.
-    """
-    embedder = QwenEmbedder()
-    cat_a = "The cat sat on the warm windowsill in the sun."
-    cat_b = "A kitten napped on the sunny window ledge."
-    finance = "Quarterly revenue exceeded analyst expectations."
-
-    vectors = await embedder.embed_batch([cat_a, cat_b, finance])
-    again = await embedder.embed(cat_a)
-
-    assert all(len(v) == 1024 for v in vectors)
-    for v in vectors:
-        norm = sum(x * x for x in v) ** 0.5
-        # bf16 CPU inference (see qwen3_4b._load): the vector is normalized
-        # in bf16 then cast to fp32, so unit norm holds only to bf16 precision
-        # (~3 sig figs). halfvec(1024) storage is itself fp16, so this is the
-        # real precision the column keeps -- not a looser bar to pass.
-        assert abs(norm - 1.0) < 5e-3
-    # Determinism is bit-exact for an IDENTICAL call: same text, same batch
-    # shape, same call reproduces the vector exactly. It is NOT asserted across
-    # batch shapes: ``embed([cat_a])`` left-pads cat_a to its own length while
-    # ``embed_batch([cat_a, cat_b, finance])`` pads it to the longest of three,
-    # so cat_a's tokens sit at different positions over a different sequence
-    # length. In bf16 the fused attention kernel then accumulates in a
-    # host-dependent order, so the two shapes agree only to bf16 precision on
-    # some CPUs and diverge (~2e-3) on others -- a false invariant that failed
-    # on a host CI never minted against. The real, portable guarantee is
-    # same-shape reproducibility.
-    repeat = await embedder.embed(cat_a)
-    assert repeat == again
-
-    def cosine(a: list[float], b: list[float]) -> float:
-        return sum(x * y for x, y in zip(a, b, strict=True))
-
-    near = cosine(vectors[0], vectors[1])
-    far = cosine(vectors[0], vectors[2])
-    assert near > far  # Two cat sentences beat cat-vs-finance.
 
 
 if __name__ == "__main__":
