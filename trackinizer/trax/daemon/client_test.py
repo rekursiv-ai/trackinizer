@@ -6,8 +6,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import contextlib
+import functools
+import inspect
 import os
 import socket
+import subprocess
+import sys
 import tempfile
 import threading
 
@@ -303,6 +307,96 @@ class TestDelegate:
             delegate(["issue"], socket_override=sock, source_version="v1")
 
         assert seen[0].protocol_version == PROTOCOL_VERSION
+
+    def test_returns_none_when_a_freshly_spawned_daemon_reports_stale(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """The stale sentinel is never a result, even from a daemon just spawned.
+
+        Returning it printed its empty body and exited 75: ``trax`` went silent
+        on every invocation whose spawned daemon loaded different source.
+        """
+        sock = tmp_path / "traxd.sock"
+        with contextlib.ExitStack() as stack:
+            monkeypatch.setattr(
+                subprocess,
+                "Popen",
+                functools.partial(_serve_on_spawn, stack, sock),
+            )
+            assert (
+                delegate(["issue"], socket_override=sock, source_version="v2") is None
+            )
+
+    def test_spawned_daemon_imports_the_clients_source(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A same-named package in the caller's cwd must not shadow the client's.
+
+        ``python -m`` puts its working directory first on ``sys.path``, so a
+        daemon spawned from inside another checkout imported THAT checkout,
+        answered every request stale, and shut down -- on every invocation.
+        """
+        shadow = tmp_path
+        for part in delegate.__module__.split("."):
+            shadow /= part
+            shadow.mkdir()
+            (shadow / "__init__.py").touch()
+        monkeypatch.chdir(tmp_path)
+        spawned: list[dict[str, object]] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                subprocess,
+                "Popen",
+                functools.partial(_refuse_spawn, spawned),
+            )
+            delegate(
+                ["issue"],
+                socket_override=tmp_path / "s.sock",
+                source_version="v1",
+            )
+
+        # ``-c`` resolves imports exactly as the daemon's ``-m`` does: cwd first.
+        probe = subprocess.run(  # noqa: S603 -- fixed interpreter and argv.
+            [
+                sys.executable,
+                "-c",
+                f"import {delegate.__module__} as m; print(m.__file__)",
+            ],
+            cwd=cast(Path | None, spawned[0].get("cwd")),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert (
+            Path(probe.stdout.strip()).resolve()
+            == Path(inspect.getfile(delegate)).resolve()
+        )
+
+
+def _refuse_spawn(
+    spawned: list[dict[str, object]],
+    *args: object,
+    **kwargs: object,
+) -> None:
+    """Record a spawn's keyword arguments, then fail it as the OS would."""
+    del args
+    spawned.append(kwargs)
+    raise OSError("spawn refused by test")
+
+
+def _serve_on_spawn(
+    stack: contextlib.ExitStack[bool | None],
+    path: Path,
+    *args: object,
+    **kwargs: object,
+) -> None:
+    """Stand in for the daemon spawn: start the fake daemon on ``path``."""
+    del args, kwargs
+    stack.enter_context(serving(path))
 
 
 if __name__ == "__main__":
