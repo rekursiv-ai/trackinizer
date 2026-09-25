@@ -30,6 +30,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
+_CWD: Final = Path(__file__).resolve().parent
+
 _CLI_MODULE: Final = __name__.rsplit(".", maxsplit=2)[0]
 """The ``trax`` package -- this module's own name minus ``daemon.client``.
 
@@ -142,16 +144,15 @@ def delegate(
         # local socket address must leave the original in-process CLI working.
         return None
     response = _try_once(argv, path, source_version)
-    if response is not None and response.exit_code != STALE_EXIT_CODE:
-        return response
-    if response is not None:
+    if response is None and spawn and _spawn(path):
+        response = _try_once(argv, path, source_version)
+    if response is None or response.exit_code == STALE_EXIT_CODE:
         # Stale daemon: it is shutting itself down, but this invocation must
         # not wait for the replacement to warm up. Run in-process; the next
-        # one gets the fresh daemon.
+        # one gets the fresh daemon. Checked after the spawn too: the stale
+        # reply has an empty body, so returning it prints nothing and exits 75.
         return None
-    if not spawn or not _spawn(path):
-        return None
-    return _try_once(argv, path, source_version)
+    return response
 
 
 # TWO spellings, and the second is why this is not a verb lookup:
@@ -264,6 +265,10 @@ def _request(argv: Sequence[str], source_version: str) -> Request:
 # survives the shell that started it and does not hold the terminal open -- without it,
 # the invoking shell hangs on exit.
 #
+# ``cwd`` is the root THIS module was imported from, because ``-m`` puts the working
+# directory first on ``sys.path``. Inherited from a caller inside another checkout, the
+# daemon imported that checkout's package, answered every request stale, and exited.
+#
 # Readiness is a successful connect, not the socket file appearing: a stale file from a
 # killed daemon exists immediately, and waiting on existence would report ready before
 # anything is listening.
@@ -277,6 +282,7 @@ def _spawn(path: Path) -> bool:
     try:
         subprocess.Popen(  # noqa: S603 -- fixed interpreter and module path.
             [sys.executable, "-m", _CLI_MODULE, SERVE_FLAG],
+            cwd=_CWD.parents[__name__.count(".") - 1],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
