@@ -1293,7 +1293,8 @@ def _parse_edge_action(
     # is malformed input either way; the order just makes it deterministic.
     metadata, consumed_metadata = edge_metadata(tokens[offset:])
     merged, valence_injected = _apply_valence_alias(
-        edge, {**inbound, **dict(pre_meta), **metadata}
+        edge,
+        {**inbound, **dict(pre_meta), **metadata},
     )
     return EdgeAction(
         edge=edge,
@@ -1313,7 +1314,8 @@ def _parse_edge_action(
 # must keep it off an existing edge's annotation path so a note-only edit never
 # clobbers the stored valence.
 def _apply_valence_alias(
-    edge: Edge, metadata: dict[str, object]
+    edge: Edge,
+    metadata: dict[str, object],
 ) -> tuple[dict[str, object], bool]:
     """Resolve a citation alias's valence convention into a concrete ``valence``."""
     if edge.valence_default is None:

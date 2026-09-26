@@ -812,7 +812,11 @@ class Kind(Command):
         _target_kind, tgt_id = client.resolve_id(target)
         actor = resolve_actor(_arg_str(args, "actor"), client)
         result = client.add_edge(
-            src_id, tgt_id, relation[0], actor=actor, reason=_arg_str(args, "reason")
+            src_id,
+            tgt_id,
+            relation[0],
+            actor=actor,
+            reason=_arg_str(args, "reason"),
         )
         verb = "added" if result.created else "exists"
         echo(f"{verb}: {source} {relation[0]} {target}")
@@ -920,11 +924,12 @@ class Kind(Command):
         shown = edge_kind
         # The echo shows the spelling the action carries: a dis* write stores
         # (or annotates) the against-polarity, so echoing the base kind would
-        # confirm the opposite of what was asked.
+        # confirm the opposite of what was asked. valence_negate is only True
+        # on the citation spellings, whose base kinds are exactly this
+        # mapping's keys.
         shown = edge_kind
-        if valence_negate and edge_kind in _NEGATIVE_CITATION_TITLE:
-            typed_kind = cast(Edge.Kind, edge_kind)
-            shown = _NEGATIVE_CITATION_TITLE[typed_kind]
+        if valence_negate:
+            shown = _NEGATIVE_CITATION_TITLE[cast(Edge.Kind, edge_kind)]
         if result.created:
             echo(f"added: {source} {shown} {target}")
         elif result.changed:
