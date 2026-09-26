@@ -890,10 +890,16 @@ class Kind(Command):
             labels=edge_labels,
             reason=_arg_str(args, "reason"),
         )
+        # The echo shows the spelling the write carries: a negative-valence
+        # citation was typed (and stored) as a dis* action, so echoing the
+        # base kind would confirm the opposite of what was asked.
+        shown = edge_kind
+        if edge_kind in _NEGATIVE_CITATION_TITLE and (valence or 0.0) < 0:
+            shown = _NEGATIVE_CITATION_TITLE[edge_kind]
         if result.created:
-            echo(f"added: {source} {edge_kind} {target}")
+            echo(f"added: {source} {shown} {target}")
         elif result.changed:
-            echo(f"annotated: {source} {edge_kind} {target}")
+            echo(f"annotated: {source} {shown} {target}")
 
     @classmethod
     def run_create(
