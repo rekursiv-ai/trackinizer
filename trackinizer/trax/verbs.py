@@ -56,6 +56,7 @@ from trackinizer.trax.parser import (
     consume_ref,
     parse_actions,
     parse_bulk_apply,
+    parse_export_selector,
     parse_list_query,
     parse_metric_action,
     parse_subject_list,
@@ -2661,14 +2662,17 @@ Notes:
 
 
 class Export(Command):
-    """Write the whole graph as JSON lines, for backup or a mirror."""
+    """Write the graph, or one label selector's subgraph, as JSON lines."""
 
     names = ("export",)
     help = """\
-Usage: trax export
+Usage: trax export [labels <op> <value> ...]
 
 Examples:
   trax export > graph.jsonl                     back up the whole graph
+  trax export labels is org:rekursiv            one org's subgraph
+  trax export labels is org:rekursiv labels nre '^machine:'
+                                                that org, minus device rows
 
 Notes:
   One JSON object per line. The first names the format and the schema
@@ -2677,12 +2681,23 @@ Notes:
   row plus experiment metrics and agent-session records. Leaves out
   embeddings, encrypted thinking, and users and API keys. An unchanged
   graph exports byte-for-byte the same. Read-only: nothing imports it yet.
+
+  A selector clause reads like any other filter (labels is x, labels nre x)
+  and several AND together. It picks the inquiries; edges come along when
+  BOTH ends were picked, and each row of every other table when the inquiry
+  it hangs off was. The header then carries the selector, so a reader can
+  tell a subgraph from a backup.
 """
 
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        return argparse.ArgumentParser(prog="trax export", description=cls.__doc__)
+        parser = argparse.ArgumentParser(
+            prog="trax export",
+            description=cls.__doc__,
+        )
+        parser.add_argument("selector", nargs="*")
+        return parser
 
     @classmethod
     @override
@@ -2692,8 +2707,9 @@ Notes:
         args: argparse.Namespace,
         client_factory: Callable[[], Client],
     ) -> None:
-        del verb, args
-        for line in client_factory().export():
+        del verb
+        selector = parse_export_selector(cast("list[str]", args.selector))
+        for line in client_factory().export(selector=selector):
             echo(line)
 
 

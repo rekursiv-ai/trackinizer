@@ -58,7 +58,7 @@ from trackinizer.wire.routes import (
     inquiry_field_path,
 )
 from trackinizer.wire.seq_ranges import SeqRange, format_interval
-from trackinizer.wire.wire_export import EXPORT_API_PATH
+from trackinizer.wire.wire_export import EXPORT_API_PATH, EXPORT_FILTER_PARAM
 
 
 logger = logging.getLogger(__name__)
@@ -542,19 +542,36 @@ class Client:
             raise ClientError(f"/api/version returned a malformed payload: {payload!r}")
         return str(payload["sha"])
 
-    def export(self) -> Iterator[str]:
+    def export(self, *, selector: Sequence[Filter] = ()) -> Iterator[str]:
         """Stream the logical export (``wire.wire_export``), one line at a time.
 
         Lines are yielded as they arrive, so a large graph is never held
         whole. Not retried, unlike :meth:`_request`: a failure part-way would
         restart the stream and hand the caller its first lines twice.
 
+        Args:
+          selector: Filter clauses narrowing the export to a subgraph, ANDed.
+            Empty exports the whole graph.
+
         Yields:
           line: One JSON object, without its trailing newline.
 
         """
+        params = {
+            EXPORT_FILTER_PARAM: [
+                json.dumps(
+                    {"field": filt.field, "op": filt.op, "value": filt.value},
+                    separators=(",", ":"),
+                )
+                for filt in selector
+            ],
+        }
         try:
-            with self._http.stream("GET", EXPORT_API_PATH) as response:
+            with self._http.stream(
+                "GET",
+                EXPORT_API_PATH,
+                params=params,
+            ) as response:
                 if response.status_code >= 400:
                     _ = response.read()
                     raise ClientError(

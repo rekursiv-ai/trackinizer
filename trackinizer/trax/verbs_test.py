@@ -1946,10 +1946,45 @@ def test_export_writes_each_line_to_stdout(
     run(["export"], client)
 
     assert [c[0] for c in client.calls] == ["export"]
+    assert client.calls[0][2] == {"selector": ()}
     assert capsys.readouterr().out == (
         '{"format":"trackinizer-export","version":1,"migrations":[]}\n'
         '{"table":"inquiries","row":{"title":"canned"}}\n'
     )
+
+
+def test_export_sends_its_selector_clauses_in_order(client: FakeClient) -> None:
+    """``labels is x labels nre y`` reaches the client as two ANDed clauses."""
+    run(
+        ["export", "labels", "is", "org:rekursiv", "labels", "nre", "^machine:"],
+        client,
+    )
+
+    assert client.calls[0][2] == {
+        "selector": (
+            Filter(field="labels", op="is", value="org:rekursiv"),
+            Filter(field="labels", op="nre", value="^machine:"),
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        pytest.param(["labels"], id="no-op"),
+        pytest.param(["labels", "is"], id="no-value"),
+        pytest.param(["labels", "wat", "x"], id="unknown-op"),
+    ],
+)
+def test_a_malformed_export_selector_is_refused_before_the_request(
+    client: FakeClient,
+    tokens: list[str],
+) -> None:
+    """A half-written clause must not fall through to exporting everything."""
+    with pytest.raises(ClientError):
+        run(["export", *tokens], client)
+
+    assert client.calls == []
 
 
 def test_kindless_filter_queries_every_kind(client: FakeClient) -> None:

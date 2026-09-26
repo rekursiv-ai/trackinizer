@@ -587,9 +587,9 @@ class FakeClient:
         self.calls.append(("version", (), {}))
         return "testsha"
 
-    def export(self) -> Iterator[str]:
+    def export(self, *, selector: Sequence[Filter] = ()) -> Iterator[str]:
         """Two canned export lines: a header and one row."""
-        self.calls.append(("export", (), {}))
+        self.calls.append(("export", (), {"selector": tuple(selector)}))
         yield '{"format":"trackinizer-export","version":1,"migrations":[]}'
         yield '{"table":"inquiries","row":{"title":"canned"}}'
 

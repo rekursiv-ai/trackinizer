@@ -229,7 +229,7 @@ VERB_ARG: /\S+/
 //   board [--width V]
 //   confidence issue|artifact|experiment|paper|belief|codechange|webresult|websearch|agentsession SEQ [--format text|json]
 //   cost issue|artifact|experiment|paper|belief|codechange|webresult|websearch|agentsession SEQ [--deep] [--format text|json]
-//   export
+//   export [SELECTOR]
 //   graph [--open-only]
 //   help [TOPIC]
 //   id UUID [--format table|json] [--changes]
