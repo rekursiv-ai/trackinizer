@@ -517,9 +517,7 @@ def test_edge_valence_default_is_marked_injected() -> None:
     assert edge.valence_injected is True
     assert edge.metadata.get("valence") == -0.5
 
-    actions = parse_actions(
-        ["disproves", "belief", "2", "valence", "to", "0.95"]
-    )
+    actions = parse_actions(["disproves", "belief", "2", "valence", "to", "0.95"])
     edge = cast(EdgeAction, actions[0])
     assert edge.valence_injected is False
     assert edge.metadata.get("valence") == -0.95

@@ -923,7 +923,8 @@ class Kind(Command):
         # confirm the opposite of what was asked.
         shown = edge_kind
         if valence_negate and edge_kind in _NEGATIVE_CITATION_TITLE:
-            shown = _NEGATIVE_CITATION_TITLE[edge_kind]
+            typed_kind = cast(Edge.Kind, edge_kind)
+            shown = _NEGATIVE_CITATION_TITLE[typed_kind]
         if result.created:
             echo(f"added: {source} {shown} {target}")
         elif result.changed:
