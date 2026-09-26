@@ -842,6 +842,8 @@ class Kind(Command):
         args: argparse.Namespace,
         *,
         client_factory: Callable[[], Client],
+        valence_injected: bool = False,
+        valence_negate: bool = False,
     ) -> None:
         """Link an edge that carries metadata, upserting it in one call.
 
@@ -858,6 +860,12 @@ class Kind(Command):
           target: Target row for the edge.
           metadata: Priority, note, valence, labels.
           args: CLI namespace (actor).
+          valence_injected: The metadata valence is the spelling's polarity
+            default, not a user-supplied value -- applied to a fresh edge,
+            never allowed to overwrite the stored valence of an existing
+            one.
+          valence_negate: The spelling is a ``dis*`` alias -- the echo and
+            the stored sign carry the against-polarity.
           client_factory: Callable that creates a client.
 
         """
@@ -868,6 +876,22 @@ class Kind(Command):
         priority = cast(int | None, metadata.get("priority"))
         note = cast(str | None, metadata.get("note"))
         valence = cast(float | None, metadata.get("valence"))
+        if valence_injected and valence is not None:
+            # The spelling's polarity default is a fallback, not a user value:
+            # a fresh edge takes it, but an edge that already exists keeps its
+            # stored valence -- a note-only edit must not clobber it. One read
+            # settles create-vs-annotate before the upsert.
+            _k, _sid, payload = client.get_inquiry(source)
+            peer = next(
+                (
+                    row
+                    for row in cls._relation_rows(payload, (edge_kind, False))
+                    if str(row.get("id") or "") == str(tgt_id)
+                ),
+                None,
+            )
+            if peer is not None:
+                valence = None
         # An empty ``labels`` list PRESENT in metadata is an explicit
         # clear-to-empty (``label del`` emptied it); absent means "no labels
         # arg". ``None`` threads the clear through ``add_edge`` to the labels
@@ -894,7 +918,11 @@ class Kind(Command):
         # citation was typed (and stored) as a dis* action, so echoing the
         # base kind would confirm the opposite of what was asked.
         shown = edge_kind
-        if edge_kind in _NEGATIVE_CITATION_TITLE and (valence or 0.0) < 0:
+        # The echo shows the spelling the action carries: a dis* write stores
+        # (or annotates) the against-polarity, so echoing the base kind would
+        # confirm the opposite of what was asked.
+        shown = edge_kind
+        if valence_negate and edge_kind in _NEGATIVE_CITATION_TITLE:
             shown = _NEGATIVE_CITATION_TITLE[edge_kind]
         if result.created:
             echo(f"added: {source} {shown} {target}")
@@ -1294,6 +1322,8 @@ class Kind(Command):
             target,
             action.metadata,
             args,
+            valence_injected=action.valence_injected,
+            valence_negate=action.edge.valence_negate,
             client_factory=client_factory,
         )
 
