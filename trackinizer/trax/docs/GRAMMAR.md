@@ -527,7 +527,7 @@ the same commit.
 `google_scholar_cluster_id`, `google_scholar_cites_id`,
 `abstract`, `publication_type`, `venue`, `subvenue`, `publish_date`, `query`,
 `provider`, `sha`, `url`,
-`cli`, `cli_session_id`, `started`.
+`cli`, `cli_session_id`, `started`, `recorded`.
 
 ### List fields (`LIST_FIELDS`)
 

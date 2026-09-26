@@ -419,6 +419,28 @@ class Inquiry:
     documented on :attr:`produces`.
     """
 
+    recorded: datetime | None = field(
+        default=None,
+        metadata=ColumnSpec(sql_type="TIMESTAMPTZ"),
+    )
+    """When the knowledge this row holds was originally recorded, as the
+    CLIENT declares it. ``None`` for a row that was born here, which is the
+    normal case: then :attr:`created` already answers the question.
+
+    Declared provenance, not audit. The server cannot know when a worklog
+    entry was written or a decision taken, so a backfilled row would
+    otherwise collapse its whole history to import time and sort as though
+    every entry happened at once. :attr:`created` and :attr:`modified` stay
+    server-stamped and authoritative for audit; this says nothing about when
+    the row reached the database, and a reader comparing the two sees exactly
+    how far back the import reached.
+
+    The same shape as :attr:`AgentSession.started` and
+    :attr:`Paper.publish_date`: a datetime the client owns because the truth
+    lives outside this system. Editable rather than immutable, for the same
+    reason ``publish_date`` is: a backfill that dated a batch wrongly is
+    corrected in place, not by superseding rows that are otherwise right."""
+
     created: datetime = field(default_factory=lambda: datetime.now(UTC))
     """When the inquiry was first recorded."""
 

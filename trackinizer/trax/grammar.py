@@ -776,6 +776,12 @@ _FIELDS: tuple[Field, ...] = (
         help="session start time (ISO 8601)",
     ),
     Field(
+        cli_name="recorded",
+        payload_key="recorded",
+        shape="scalar",
+        help="when the knowledge originated, for backfills (ISO 8601)",
+    ),
+    Field(
         cli_name="label",
         payload_key="labels",
         shape="list",

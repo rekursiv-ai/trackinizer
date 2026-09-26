@@ -57,6 +57,17 @@ CREATE TABLE IF NOT EXISTS inquiries (
     description    TEXT,
     labels         TEXT[],
     subscribers    TEXT[],
+    -- Declared provenance, supplied by the CLIENT: when the knowledge this row
+    -- holds was originally recorded. NULL means the row was born here, where
+    -- ``created`` already answers the question. Nullable and never defaulted --
+    -- a server-side stand-in would make every row claim a provenance it has not
+    -- got. ``created`` / ``modified`` below stay server-stamped and remain the
+    -- audit truth; this one says nothing about when the row reached the DB.
+    -- Same shape as ``agentsession_started`` / ``paper_publish_date``, but on
+    -- the base because any kind can be backfilled. Hand-written rather than
+    -- generated: ``generate_inquiry_kind_columns`` emits only the per-kind
+    -- columns, and a base column belongs with its siblings above.
+    recorded       TIMESTAMPTZ,
     marginal_cost_agent_usd    NUMERIC(14, 6) NOT NULL DEFAULT 0,
     marginal_cost_resource_usd NUMERIC(14, 6) NOT NULL DEFAULT 0,
     -- Derived load-bearing (PageRank) scores, one per citation-relation graph.

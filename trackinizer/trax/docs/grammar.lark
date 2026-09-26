@@ -158,11 +158,11 @@ group_create: KIND (inline_field | cost_action | safe_meta | EDGE edge_meta)+ (e
 VERB: "search-sessions" | "confidence" | "authority" | "blocked" | "profile" | "version" | "export" | "recent" | "board" | "graph" | "cost" | "help" | "next" | "send" | "run" | "id"
 KIND: "agentsession" | "codechange" | "experiment" | "webresult" | "websearch" | "artifact" | "belief" | "issue" | "paper"
 EDGE_KEYWORD: "disfavored_by" | "superseded_by" | "broadened_by" | "disproved_by" | "narrowed_by" | "produced_by" | "required_by" | "blocked_by" | "favored_by" | "supersedes" | "disfavors" | "disproves" | "proved_by" | "broadens" | "cited_by" | "produced" | "produces" | "requires" | "narrows" | "blocks" | "favors" | "proves" | "cites"
-FIELD: "google_scholar_cluster_id" | "google_scholar_cites_id" | "publication_type" | "cli_session_id" | "publish_date" | "description" | "confidence" | "validation" | "judgement" | "abstract" | "priority" | "provider" | "subvenue" | "account" | "outcome" | "started" | "config" | "source" | "status" | "owner" | "query" | "title" | "venue" | "cli" | "sha" | "url"
+FIELD: "google_scholar_cluster_id" | "google_scholar_cites_id" | "publication_type" | "cli_session_id" | "publish_date" | "description" | "confidence" | "validation" | "judgement" | "abstract" | "priority" | "provider" | "recorded" | "subvenue" | "account" | "outcome" | "started" | "config" | "source" | "status" | "owner" | "query" | "title" | "venue" | "cli" | "sha" | "url"
 LIST_FIELD: "subscribers" | "issue_kind" | "subscriber" | "issuekind" | "authors" | "author" | "labels" | "label" | "kind"
 REF_LIST_FIELD: "codechanges" | "codechange"
 COST_FIELD: "resource-cost" | "agent-cost"
-FILTER_FIELD: "google_scholar_cluster_id" | "uncategorized_tool_result" | "google_scholar_cites_id" | "agent_to_agent_message" | "shell_command_result" | "agent_status_result" | "context_compaction" | "web_search_results" | "assistant_message" | "file_write_result" | "incomplete_record" | "file_edit_result" | "file_read_result" | "publication_type" | "web_fetch_result" | "cli_session_id" | "system_message" | "context_state" | "resource-cost" | "publish_date" | "user_message" | "codechanges" | "description" | "subscribers" | "agent-cost" | "codechange" | "confidence" | "issue_kind" | "subscriber" | "validation" | "issuekind" | "judgement" | "tool_call" | "abstract" | "modified" | "priority" | "provider" | "subvenue" | "thinking" | "account" | "authors" | "created" | "outcome" | "started" | "author" | "labels" | "source" | "status" | "stderr" | "stdout" | "label" | "owner" | "query" | "stdin" | "title" | "venue" | "kind" | "cli" | "seq" | "sha" | "url" | "id"
+FILTER_FIELD: "google_scholar_cluster_id" | "uncategorized_tool_result" | "google_scholar_cites_id" | "agent_to_agent_message" | "shell_command_result" | "agent_status_result" | "context_compaction" | "web_search_results" | "assistant_message" | "file_write_result" | "incomplete_record" | "file_edit_result" | "file_read_result" | "publication_type" | "web_fetch_result" | "cli_session_id" | "system_message" | "context_state" | "resource-cost" | "publish_date" | "user_message" | "codechanges" | "description" | "subscribers" | "agent-cost" | "codechange" | "confidence" | "issue_kind" | "subscriber" | "validation" | "issuekind" | "judgement" | "tool_call" | "abstract" | "modified" | "priority" | "provider" | "recorded" | "subvenue" | "thinking" | "account" | "authors" | "created" | "outcome" | "started" | "author" | "labels" | "source" | "status" | "stderr" | "stdout" | "label" | "owner" | "query" | "stdin" | "title" | "venue" | "kind" | "cli" | "seq" | "sha" | "url" | "id"
 FILTER_OP: "nre" | "ge" | "gt" | "is" | "le" | "lt" | "ne" | "re"
 VALUELESS_OP: "notnull" | "isnull"
 TO: "to"
@@ -200,7 +200,7 @@ VERB_ARG: /\S+/
 //   confidence/valence: a float (valence in [-1,1], sign = for/against)
 //   config: one standard JSON object; readable/editable, not filterable
 // FIELD VALIDITY (a field is writable only on these kinds):
-//   any kind: account, agent-cost, description, label, labels, owner, resource-cost, status, subscriber, subscribers, title
+//   any kind: account, agent-cost, description, label, labels, owner, recorded, resource-cost, status, subscriber, subscribers, title
 //   Issue: + issue_kind, issuekind, kind, priority, validation
 //   Experiment: + codechange, codechanges, config, outcome
 //   Paper: + abstract, author, authors, google_scholar_cites_id, google_scholar_cluster_id, publication_type, publish_date, source, subvenue, venue

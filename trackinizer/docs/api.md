@@ -356,6 +356,7 @@ cli_session_id              yes  no     yes
 started                     yes  no     yes
 rooms                       yes  yes    yes
 codechanges                 yes  yes    yes
+recorded                    yes  no     yes     declared provenance
 id                          no   no     no      immutable
 kind                        no   no     no      immutable
 seq                         no   no     no      immutable
@@ -363,6 +364,14 @@ created                     no   no     no      immutable
 modified                    no   no     no      server-managed
 projected edge fields       no   no     no      mutate via /api/edges
 ```
+
+`recorded` is the one datetime the client owns on every kind: when the
+knowledge a row holds was originally recorded, for history imported from
+somewhere else. It is unset on a row born here, where `created` already
+answers the question, and setting it never moves `created` or `modified`,
+which the server stamps either way and which remain the audit truth. A value
+without a timezone offset is refused, since a date read out of a file has no
+single meaning.
 
 
 ### 2.4 Edge fields

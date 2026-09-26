@@ -431,6 +431,67 @@ async def test_migration_024_backfills_markers_from_existing_vectors(
     assert markers[0]["model"] == "qwen3-embedding-4b@1024"
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_026_matches_the_baseline_shape(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """The ``recorded`` columns 026 adds equal the fresh-install ones.
+
+    Bootstrap builds the baseline shape (which carries them). This drops all
+    three (as a pre-026 database lacks them), replays ``schema.026``, and
+    compares columns -- the parity check neither file can make about itself,
+    since each is read by a disjoint population.
+    """
+    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
+    columns = (
+        "SELECT table_name, column_name, data_type, is_nullable, column_default "
+        "FROM information_schema.columns WHERE table_schema = 'public' "
+        "AND column_name LIKE '%recorded' ORDER BY table_name, column_name"
+    )
+    async with scratch_engine.acquire() as conn:
+        base_cols = [dict(r) for r in await conn.fetch(columns)]
+        assert {str(r["table_name"]) for r in base_cols} == {
+            "inquiries",
+            "change_log",
+        }, "the baseline did not create the recorded columns"
+
+        await conn.execute("ALTER TABLE inquiries DROP COLUMN recorded")
+        await conn.execute("ALTER TABLE change_log DROP COLUMN old_recorded")
+        await conn.execute("ALTER TABLE change_log DROP COLUMN new_recorded")
+        await conn.execute(load_sql("schema.026"))
+        migrated_cols = [dict(r) for r in await conn.fetch(columns)]
+
+    assert migrated_cols == base_cols
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_026_gates_the_mirror_on_the_change_kind(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """026's validated gates refuse a mirror written under the wrong kind.
+
+    The fresh install states this as an unnamed CHECK inside CREATE TABLE and
+    026 as a named one it can VALIDATE, so the rule is worth asserting rather
+    than assumed from two spellings of it.
+    """
+    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
+    async with scratch_engine.acquire() as conn:
+        await conn.execute("ALTER TABLE inquiries DROP COLUMN recorded")
+        await conn.execute("ALTER TABLE change_log DROP COLUMN old_recorded")
+        await conn.execute("ALTER TABLE change_log DROP COLUMN new_recorded")
+        await conn.execute(load_sql("schema.026"))
+
+        with pytest.raises(asyncpg.exceptions.CheckViolationError):
+            await conn.execute(
+                "INSERT INTO change_log (id, actor, subject_id, subject_kind, kind, "
+                "new_recorded) VALUES ($1, 'tester', $2, 'Issue', 'title', now())",
+                uuid.uuid4(),
+                uuid.uuid4(),
+            )
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 

@@ -410,6 +410,39 @@ class _EditMixin(_CascadeAuditMixin):
             actor=actor,
         )
 
+    async def set_recorded(
+        self,
+        target_id: UUID,
+        value: datetime | None,
+        *,
+        api_key_id: UUID | None = None,
+        actor: Inquiry.Actor,
+    ) -> UUID | None:
+        """Edit the client-declared time the row's knowledge originated.
+
+        Editable rather than set-once, so a backfill that dated a batch
+        wrongly is corrected in place. The edit is audited like any other,
+        and ``created`` / ``modified`` are untouched: this never rewrites
+        when the row actually reached the database.
+
+        Args:
+          target_id: Inquiry whose ``recorded`` should change.
+          value: The declared origin time, or ``None`` to clear it.
+          api_key_id: Authenticated credential recorded in the audit entry.
+          actor: Identity recorded in the audit entry.
+
+        Returns:
+          change_id: The audit entry's id, or ``None`` when unchanged.
+
+        """
+        return await self._set_field(
+            target_id,
+            value,
+            column="recorded",
+            api_key_id=api_key_id,
+            actor=actor,
+        )
+
     async def transition_owner(
         self,
         target_id: UUID,

@@ -63,6 +63,9 @@ class Snapshot:
     not an ``account`` edit; the field is required on the row but a snapshot
     side is populated only for the matching change kind."""
 
+    recorded: datetime | None = None
+    """Mirrors :attr:`Inquiry.recorded`, the client-declared origin time."""
+
     peer_id: UUID | None = None
     """The edge neighbor's id, on edge and dependency events."""
 
@@ -205,6 +208,7 @@ class Change:
         "account",
         "subscribers",
         "marginal_cost",
+        "recorded",
         # Issue-only.
         "issue_kind",
         "issue_validation",
@@ -348,6 +352,7 @@ class _SnapshotKwargs(TypedDict, total=False):
     labels: tuple[str, ...] | None
     owner: Inquiry.Actor | None
     account: Inquiry.Actor | None
+    recorded: datetime | None
     peer_id: UUID | None
     peer_kind: Inquiry.InquiryKind | None
     peer_edge_kind: Edge.Kind | None
