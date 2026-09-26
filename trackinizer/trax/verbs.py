@@ -1837,6 +1837,11 @@ def run_set_field(
     client = client_factory()
     _, target_id = client.resolve_id(ref)
     value = _resolve_set_value(action, client)
+    if isinstance(value, str) and value == "":
+        # `field to ""` means "unset": an empty string is not a legal value
+        # for typed fields (a datetime 422s on it), and blank-to-None is the
+        # house convention server-side.
+        value = None
     client.edit(
         target_id,
         action.field,
