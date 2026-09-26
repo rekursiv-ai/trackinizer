@@ -507,6 +507,22 @@ def test_edge_metadata_labels_to_resolves_csv() -> None:
     assert edge.metadata.get("labels") == ["a", "b"]
 
 
+def test_edge_valence_default_is_marked_injected() -> None:
+    """A spelling's polarity default is marked, so the verb can keep it off
+    an existing edge's annotation path (a note-only edit must not clobber
+    the stored valence); a user-typed valence is never marked.
+    """
+    actions = parse_actions(["disproves", "belief", "2"])
+    edge = cast(EdgeAction, actions[0])
+    assert edge.valence_injected is True
+    assert edge.metadata.get("valence") == -0.5
+
+    actions = parse_actions(["disproves", "belief", "2", "valence", "to", "0.95"])
+    edge = cast(EdgeAction, actions[0])
+    assert edge.valence_injected is False
+    assert edge.metadata.get("valence") == -0.95
+
+
 def test_edge_priority_bad_value_raises_client_error() -> None:
     with pytest.raises(ClientError, match="priority must be an int"):
         parse_actions(["blocked_by", "issue", "5", "edge", "priority", "to", "oops"])

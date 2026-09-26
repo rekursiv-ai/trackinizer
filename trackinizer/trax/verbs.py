@@ -811,7 +811,13 @@ class Kind(Command):
         _source_kind, src_id = client.resolve_id(source)
         _target_kind, tgt_id = client.resolve_id(target)
         actor = resolve_actor(_arg_str(args, "actor"), client)
-        result = client.add_edge(src_id, tgt_id, relation[0], actor=actor)
+        result = client.add_edge(
+            src_id,
+            tgt_id,
+            relation[0],
+            actor=actor,
+            reason=_arg_str(args, "reason"),
+        )
         verb = "added" if result.created else "exists"
         echo(f"{verb}: {source} {relation[0]} {target}")
         _kind, _target_id, payload = client.get_inquiry(subject)
@@ -840,6 +846,8 @@ class Kind(Command):
         args: argparse.Namespace,
         *,
         client_factory: Callable[[], Client],
+        valence_injected: bool = False,
+        valence_negate: bool = False,
     ) -> None:
         """Link an edge that carries metadata, upserting it in one call.
 
@@ -856,6 +864,12 @@ class Kind(Command):
           target: Target row for the edge.
           metadata: Priority, note, valence, labels.
           args: CLI namespace (actor).
+          valence_injected: The metadata valence is the spelling's polarity
+            default, not a user-supplied value -- applied to a fresh edge,
+            never allowed to overwrite the stored valence of an existing
+            one.
+          valence_negate: The spelling is a ``dis*`` alias -- the echo and
+            the stored sign carry the against-polarity.
           client_factory: Callable that creates a client.
 
         """
@@ -866,6 +880,22 @@ class Kind(Command):
         priority = cast(int | None, metadata.get("priority"))
         note = cast(str | None, metadata.get("note"))
         valence = cast(float | None, metadata.get("valence"))
+        if valence_injected and valence is not None:
+            # The spelling's polarity default is a fallback, not a user value:
+            # a fresh edge takes it, but an edge that already exists keeps its
+            # stored valence -- a note-only edit must not clobber it. One read
+            # settles create-vs-annotate before the upsert.
+            _k, _sid, payload = client.get_inquiry(source)
+            peer = next(
+                (
+                    row
+                    for row in cls._relation_rows(payload, (edge_kind, False))
+                    if str(row.get("id") or "") == str(tgt_id)
+                ),
+                None,
+            )
+            if peer is not None:
+                valence = None
         # An empty ``labels`` list PRESENT in metadata is an explicit
         # clear-to-empty (``label del`` emptied it); absent means "no labels
         # arg". ``None`` threads the clear through ``add_edge`` to the labels
@@ -886,11 +916,24 @@ class Kind(Command):
             note=note or "",
             valence=valence,
             labels=edge_labels,
+            reason=_arg_str(args, "reason"),
         )
+        # The echo shows the spelling the write carries: a negative-valence
+        # citation was typed (and stored) as a dis* action, so echoing the
+        # base kind would confirm the opposite of what was asked.
+        shown = edge_kind
+        # The echo shows the spelling the action carries: a dis* write stores
+        # (or annotates) the against-polarity, so echoing the base kind would
+        # confirm the opposite of what was asked. valence_negate is only True
+        # on the citation spellings, whose base kinds are exactly this
+        # mapping's keys.
+        shown = edge_kind
+        if valence_negate:
+            shown = _NEGATIVE_CITATION_TITLE[cast(Edge.Kind, edge_kind)]
         if result.created:
-            echo(f"added: {source} {edge_kind} {target}")
+            echo(f"added: {source} {shown} {target}")
         elif result.changed:
-            echo(f"annotated: {source} {edge_kind} {target}")
+            echo(f"annotated: {source} {shown} {target}")
 
     @classmethod
     def run_create(
@@ -1285,6 +1328,8 @@ class Kind(Command):
             target,
             action.metadata,
             args,
+            valence_injected=action.valence_injected,
+            valence_negate=action.edge.valence_negate,
             client_factory=client_factory,
         )
 
@@ -1828,6 +1873,11 @@ def run_set_field(
     client = client_factory()
     _, target_id = client.resolve_id(ref)
     value = _resolve_set_value(action, client)
+    if isinstance(value, str) and value == "":
+        # `field to ""` means "unset": an empty string is not a legal value
+        # for typed fields (a datetime 422s on it), and blank-to-None is the
+        # house convention server-side.
+        value = None
     client.edit(
         target_id,
         action.field,
