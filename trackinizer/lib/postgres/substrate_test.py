@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -12,6 +13,7 @@ import os
 import subprocess
 import threading
 import time
+import uuid
 
 from py_pglite import PGliteManager
 
@@ -71,16 +73,25 @@ async def test_pglite_persistent_restart_retains_rows(tmp_path: Path) -> None:
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio
-async def test_pglite_listen_notify_round_trips_payload(tmp_path: Path) -> None:
+@pytest.mark.asyncio(loop_scope="session")
+async def test_pglite_listen_notify_round_trips_payload(
+    pglite_engine: PGliteEngine,
+) -> None:
     """PGlite exposes the same listen/notify surface as external Postgres."""
-    async with PGliteEngine(workdir=tmp_path / "pg", extensions=()) as engine:
-        notifications = engine.listen("events")
-        next_payload = asyncio.create_task(_anext(notifications))
+    channel = f"events-{uuid.uuid4().hex}"
+    notifications = pglite_engine.listen(channel)
+    next_payload = asyncio.create_task(_anext(notifications))
+    try:
         await asyncio.sleep(0)
-        await engine.notify("events", "payload-1")
+        await pglite_engine.notify(channel, "payload-1")
         assert await next_payload == "payload-1"
+    finally:
+        if not next_payload.done():
+            next_payload.cancel()
+            with suppress(asyncio.CancelledError):
+                await next_payload
         await notifications.aclose()
+    assert not pglite_engine._bus._subscribers[channel]
 
 
 @pytest.mark.asyncio
