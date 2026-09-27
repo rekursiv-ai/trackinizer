@@ -8,12 +8,14 @@ sessions that already existed when the run started.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable, Iterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, TextIO, cast, override
 
+import asyncio
 import json
 import os
 import shutil
@@ -31,8 +33,10 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
 )
 from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
+from trackinizer.lib.posix import follow
 from trackinizer.lib.posix.follow import follow_tree
 from trackinizer.lib.posix.relay import ThreadedRelay
+from trackinizer.lib.posix.testing import poll_fsevents
 from trackinizer.trax.run import session
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
@@ -66,6 +70,14 @@ def short_queue_drain_interval(monkeypatch: pytest.MonkeyPatch) -> None:
     """Preserve flush ticks and rearm backoff without production-sized waits."""
     monkeypatch.setattr(session, "_QUEUE_DRAIN_SEC", 0.005)
     monkeypatch.setattr(session, "_WATCH_REARM_SEC", 0.01)
+
+
+# Writes reported: a whole-file session is rewritten in place, and the drain learns of a
+# rewrite only from its write event -- it holds no kqueue per file.
+@pytest.fixture(autouse=True)
+def prompt_fsevents(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Watch on a poll rather than on ``fseventsd``'s schedule; see ``poll_fsevents``."""
+    poll_fsevents(monkeypatch, writes=True)
 
 
 class _RecordingSink(Sink):
@@ -856,11 +868,11 @@ class TestTheWatchIsArmedBeforeTheChildSpawns:
         monkeypatch.setattr(session, "ThreadedRelay", _WritingRelay)
         monkeypatch.setattr(shutil, "which", _always_found)
 
-        # Not 0.0: the relay exits the instant it writes, so the quiesce is the
-        # only window the drain gets before ``stop``; ten drain intervals, with
-        # the loop's final pass as the backstop.
+        # No quiesce: the relay exits the instant it writes, and the drain reads
+        # the files to their ends at ``stop``. A window here would only hide a
+        # drain that went back to waiting for FSEvents to name the file.
         rc = session._spawn_and_drain(
-            RunConfig(cli_name="claude", quiesce_seconds=0.05),
+            RunConfig(cli_name="claude", quiesce_seconds=0.0),
             ClaudeAdapter(),
             sink,
             _Stats(),
@@ -869,6 +881,69 @@ class TestTheWatchIsArmedBeforeTheChildSpawns:
         assert rc == 0
         texts = _texts(sink)
         assert texts == ["first"], "the CLI's first record raced the watch"
+
+
+# FSEvents was measured naming a new file 0.1s to 4.6s after the write under load, and
+# sometimes not within 10s. A watch that arms and never reports holds that window open,
+# which no timing in a test reproduces reliably.
+@pytest.fixture
+def silent_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Arm every watch but report no write, on either platform's backend."""
+    monkeypatch.setattr(follow, "_watch_fsevents", _silent_fsevents)
+    monkeypatch.setattr(follow, "_inotify_events", _silent_inotify)
+
+
+@asynccontextmanager
+async def _silent_fsevents(
+    *directories: Path,
+    queue: asyncio.Queue[Path] | None = None,
+) -> AsyncGenerator[AsyncIterator[set[Path]]]:
+    del directories, queue
+    yield _silence()
+
+
+def _silent_inotify(fd: int, watches: dict[int, Path]) -> AsyncIterator[set[Path]]:
+    del fd, watches
+    return _silence()
+
+
+async def _silence() -> AsyncIterator[set[Path]]:
+    """Neither report nor end, as a watch the kernel has not reached yet."""
+    _ = await asyncio.Event().wait()
+    yield set()
+
+
+@pytest.mark.usefixtures("silent_kernel")
+class TestAWriteNothingAnnouncedIsReadAtExit:
+    """A file the kernel has not named when the CLI exits is still captured.
+
+    On macOS a NEW session file is found only when FSEvents names it. The drain
+    cancelled its follower once ``stop`` was set, so a CLI that wrote and
+    exited before FSEvents caught up lost its whole transcript -- the macOS
+    flake in ``test_a_write_racing_the_spawn_is_still_captured``. Once the CLI
+    has exited its files are final, so the drain reads them rather than
+    waiting on a notification.
+    """
+
+    def test_a_line_file_is_read(self, tmp_path: Path) -> None:
+        stats, _sink = _drain_once(
+            _FakeAdapter(tmp_path),
+            lambda: _write(tmp_path / "mine.jsonl", lines=2),
+            expected=0,
+        )
+
+        assert stats.counts == {"UserMessage": 2}, "an unannounced file was lost"
+
+    def test_a_whole_file_is_read(self, tmp_path: Path) -> None:
+        log = tmp_path / "session-x.json"
+
+        _stats, sink = _drain_once(
+            _WholeFileAdapter(tmp_path),
+            lambda: log.write_text(json.dumps({"messages": ["hello"]})),
+            expected=0,
+        )
+
+        assert _texts(sink) == ["hello"], "an unannounced file was lost"
 
 
 class TestFollowerRearmsAfterAFailure:
@@ -899,6 +974,7 @@ class TestFollowerRearmsAfterAFailure:
             match = cast(Callable[[Path], bool], kwargs.pop("match"))
             replay = cast(bool, kwargs.pop("replay"))
             resume = cast(frozenset[Path], kwargs.pop("resume"))
+            until = cast(asyncio.Event, kwargs.pop("until"))
             on_armed = kwargs.pop("on_armed")
             assert on_armed is not None
 
@@ -912,6 +988,7 @@ class TestFollowerRearmsAfterAFailure:
                 replay=replay,
                 resume=resume,
                 on_armed=armed,
+                until=until,
             )
 
         monkeypatch.setattr(session, "follow_tree", flaky)

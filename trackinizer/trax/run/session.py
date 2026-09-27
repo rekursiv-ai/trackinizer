@@ -15,7 +15,8 @@ Three things run side by side:
    and types them into the CLI via the relay.
 
 When the CLI exits, the wrapper drains pending lines for a short quiesce
-window, closes the sink, and exits with the CLI's status.
+window, reads the session files to their ends, closes the sink, and exits
+with the CLI's status.
 
 ``--dry-run`` skips spawning the CLI and replays existing session files
 (the same per-shape drain as the live path), useful for adapter development
@@ -938,6 +939,7 @@ async def _drain_until_stopped(
     """Follow the session logs and drain the queues until ``stop``."""
     watched = tuple(d for d in adapter.session_dirs() if d.is_dir())
     lines: asyncio.Queue[_Captured] = asyncio.Queue()
+    finish = asyncio.Event()
     follower = (
         asyncio.create_task(
             _follow_session_files(
@@ -952,6 +954,7 @@ async def _drain_until_stopped(
                     else frozenset()
                 ),
                 armed=armed,
+                until=finish,
             ),
         )
         if watched
@@ -986,14 +989,15 @@ async def _drain_until_stopped(
             with contextlib.suppress(TimeoutError):
                 captured = await asyncio.wait_for(lines.get(), _QUEUE_DRAIN_SEC)
                 _emit_line(adapter, sink, stats, config, captured)
-        # A final pass: the CLI's last write may land between the last wake
-        # and ``stop``, and a session-end record often does exactly that.
-        # The wait lets the follower run at least once -- a caller that set
-        # ``stop`` before entering (a replay, a test) skipped the loop body
-        # entirely, so nothing has been delivered yet.
-        with contextlib.suppress(TimeoutError):
-            captured = await asyncio.wait_for(lines.get(), _QUEUE_DRAIN_SEC)
-            _emit_line(adapter, sink, stats, config, captured)
+        # The CLI has exited (or the replay is done), so its files are final:
+        # the follower reads them to their ends and returns. Cancelling it
+        # instead lost any file the kernel had not named yet -- on macOS a new
+        # file waits on FSEvents, measured up to 4.6s late under load and
+        # sometimes not within 10s, so a CLI that wrote and exited inside that
+        # window left an empty transcript.
+        finish.set()
+        if follower is not None:
+            await follower
         await _drain_queues(
             adapter,
             sink,
@@ -1015,13 +1019,15 @@ async def _drain_until_stopped(
 # transient and external (an inotify instance or watch limit hit while another process
 # churns directories), and a follower that returned would leave the drain loop ticking
 # against a queue nothing fills -- capture dead for the rest of the run, with one log
-# line an hour earlier as the only sign.
+# line an hour earlier as the only sign. It returns once ``until`` is set and the files
+# have been read to their ends.
 async def _follow_session_files(
     adapter: Adapter,
     watched: tuple[Path, ...],
     baseline: frozenset[Path],
     lines: asyncio.Queue[_Captured],
     *,
+    until: asyncio.Event,
     replay: bool = False,
     resume: frozenset[Path] = frozenset(),
     armed: threading.Event | None = None,
@@ -1076,13 +1082,16 @@ async def _follow_session_files(
             lines,
             bodies,
             mine,
+            until=until,
             replay=replay or rearming,
             resume=resume,
             armed=armed,
         )
+        if until.is_set():
+            return
         rearming = True
-        # Only a failure returns; a healthy watch iterates until cancelled.
-        # Back off so a persistent refusal is not a hot retry loop.
+        # Before ``until``, only a failure returns. Back off so a persistent
+        # refusal is not a hot retry loop.
         await asyncio.sleep(_WATCH_REARM_SEC)
 
 
@@ -1093,18 +1102,19 @@ async def _watch_session_files(
     bodies: dict[Path, str],
     mine: Callable[[Path], bool],
     *,
+    until: asyncio.Event,
     replay: bool,
     resume: frozenset[Path] = frozenset(),
     armed: threading.Event | None = None,
 ) -> None:
-    """Arm one watch and feed it until it fails; the caller rearms."""
+    """Arm one watch and feed it until it fails or ``until`` ends it."""
     try:
         if adapter.whole_file:
             # Gemini rewrites ONE json object in place, so a line is a fragment
             # of it and parses as nothing. Its body is re-read whole on each
             # change instead; the watch says which file changed, which is all
             # the old poll's ``(size, mtime)`` stamp was determining.
-            async with follow_dir(*watched) as changed:
+            async with follow_dir(*watched, until=until) as changed:
                 if armed is not None:
                     armed.set()
                 if replay:
@@ -1125,6 +1135,7 @@ async def _watch_session_files(
             replay=replay,
             resume=resume,
             on_armed=None if armed is None else armed.set,
+            until=until,
         ):
             lines.put_nowait(
                 _Captured(

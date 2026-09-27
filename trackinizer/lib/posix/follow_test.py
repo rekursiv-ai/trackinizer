@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from functools import partial, partialmethod
 from pathlib import Path
@@ -21,6 +21,32 @@ import pytest
 
 from trackinizer.lib.posix import follow
 from trackinizer.lib.posix.follow import follow_dir, follow_file
+from trackinizer.lib.posix.testing import poll_fsevents
+
+
+@pytest.fixture(autouse=True)
+def hermetic_fsevents() -> Iterator[pytest.MonkeyPatch]:
+    """Watch on a poll rather than on ``fseventsd``'s schedule; see ``poll_fsevents``.
+
+    Writes are not reported, so a line follower's reads must come from its
+    per-file kqueue -- as they must under FSEvents, which holds an append
+    until its writer closes.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        poll_fsevents(patch, writes=False)
+        yield patch
+
+
+@pytest.fixture
+def fsevents_reports_writes(hermetic_fsevents: pytest.MonkeyPatch) -> None:
+    """Report writes too, as FSEvents does once the writer has closed."""
+    poll_fsevents(hermetic_fsevents, writes=True)
+
+
+@pytest.fixture
+def real_fsevents(hermetic_fsevents: pytest.MonkeyPatch) -> None:
+    """Watch with the host's own backend."""
+    hermetic_fsevents.undo()
 
 
 @pytest.fixture
@@ -280,6 +306,7 @@ def test_wakes_on_file_creation(tmp_path: Path) -> None:
     assert asyncio.run(run()) == {tmp_path / "session.jsonl"}
 
 
+@pytest.mark.usefixtures("fsevents_reports_writes")
 def test_wakes_on_append(tmp_path: Path) -> None:
     """Appending to an existing file wakes the caller."""
     target = tmp_path / "session.jsonl"
@@ -294,6 +321,7 @@ def test_wakes_on_append(tmp_path: Path) -> None:
     assert asyncio.run(run()) == {target}
 
 
+@pytest.mark.usefixtures("fsevents_reports_writes")
 def test_wakes_on_rewrite(tmp_path: Path) -> None:
     """A whole-file rewrite wakes the caller.
 
@@ -1105,6 +1133,119 @@ async def _collect_lines(
             return
 
 
+# FSEvents was measured naming a new file 0.1s to 4.6s after the write under load, and
+# sometimes not within 10s. A watch that arms and never reports holds that window open,
+# which no timing in a test reproduces reliably.
+@pytest.fixture
+def silent_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Arm every watch but report no write, on either platform's backend."""
+    monkeypatch.setattr(follow, "_watch_fsevents", _silent_fsevents)
+    monkeypatch.setattr(follow, "_inotify_events", _silent_inotify)
+
+
+@asynccontextmanager
+async def _silent_fsevents(
+    *directories: Path,
+    queue: asyncio.Queue[Path] | None = None,
+) -> AsyncGenerator[AsyncIterator[set[Path]]]:
+    del directories, queue
+    yield _silence()
+
+
+def _silent_inotify(fd: int, watches: dict[int, Path]) -> AsyncIterator[set[Path]]:
+    del fd, watches
+    return _silence()
+
+
+async def _silence() -> AsyncIterator[set[Path]]:
+    """Neither report nor end, as a watch the kernel has not reached yet."""
+    _ = await asyncio.Event().wait()
+    yield set()
+
+
+@pytest.mark.usefixtures("silent_kernel")
+class TestUntil:
+    """``until`` ends a follow by reading what is on disk, not by a cancel.
+
+    A new file is found only once the kernel names it. A caller that cancels
+    its follower when the writer exits loses any file not yet named; one that
+    sets ``until`` instead gets every line the writer left.
+    """
+
+    def test_tree_reads_a_file_the_watch_never_named(self, tmp_path: Path) -> None:
+        target = tmp_path / "s.jsonl"
+
+        async def run() -> list[follow.Line]:
+            until = asyncio.Event()
+            armed = asyncio.Event()
+            lines = follow.follow_tree(
+                tmp_path,
+                match=lambda p: p.suffix == ".jsonl",
+                on_armed=armed.set,
+                until=until,
+            )
+            task = asyncio.create_task(_every_line(lines))
+            await asyncio.wait_for(armed.wait(), 5.0)
+            _ = target.write_text("one\ntwo\n")
+            until.set()
+            return await asyncio.wait_for(task, 5.0)
+
+        assert asyncio.run(run()) == [
+            follow.Line(path=target, text="one"),
+            follow.Line(path=target, text="two"),
+        ]
+
+    def test_tree_reads_only_the_unread_tail_of_matching_files(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """History stays skipped and the predicate still applies at the end."""
+        old = tmp_path / "old.jsonl"
+        _ = old.write_text("history\n")
+
+        async def run() -> list[tuple[Path, str]]:
+            until = asyncio.Event()
+            armed = asyncio.Event()
+            lines = follow.follow_tree(
+                tmp_path,
+                match=lambda p: p.suffix == ".jsonl",
+                on_armed=armed.set,
+                until=until,
+            )
+            task = asyncio.create_task(_every_line(lines))
+            await asyncio.wait_for(armed.wait(), 5.0)
+            with old.open("a") as handle:
+                _ = handle.write("appended\n")
+            _ = (tmp_path / "notes.txt").write_text("ignored\n")
+            until.set()
+            return [(line.path, line.text) for line in await asyncio.wait_for(task, 5)]
+
+        assert asyncio.run(run()) == [(old, "appended")]
+
+    def test_dir_names_every_file_once_until_is_set(self, tmp_path: Path) -> None:
+        nested = tmp_path / "day" / "s.jsonl"
+
+        async def run() -> list[set[Path]]:
+            until = asyncio.Event()
+            async with follow_dir(tmp_path, until=until) as changed:
+                nested.parent.mkdir()
+                _ = nested.write_text("{}\n")
+                until.set()
+                return await asyncio.wait_for(_every_wake(changed), 5.0)
+
+        assert asyncio.run(run()) == [{nested}]
+
+
+async def _every_line(lines: AsyncIterator[follow.Line]) -> list[follow.Line]:
+    """Collect ``lines`` until the follow ends."""
+    return [line async for line in lines]
+
+
+async def _every_wake(changed: AsyncIterator[set[Path]]) -> list[set[Path]]:
+    """Collect ``changed`` until the watch ends."""
+    return [paths async for paths in changed]
+
+
 class TestPlatformDispatch:
     """Each platform reaches its own backend.
 
@@ -1163,6 +1304,13 @@ class TestPlatformDispatch:
         asyncio.run(_open_and_close(tmp_path))
         assert opened == [(tmp_path,)]
 
+    # A wall-clock bound, so off the unit tier: on macOS this waits on fseventsd, which
+    # reported the write up to 4.6s late under load 11 and not within 10s under load
+    # 20 -- a unit test that passes or fails with the machine's load. On Linux every
+    # other test in this file already runs on a real inotify watch, so the unit tier
+    # loses nothing there.
+    @pytest.mark.bench_wallclock
+    @pytest.mark.usefixtures("real_fsevents")
     def test_the_host_reaches_a_real_backend(self, tmp_path: Path) -> None:
         """Unmocked, on whatever this is: a watch opens and reports a write.
 
@@ -1450,18 +1598,24 @@ async def _live_replacement(root: Path) -> None:
 
 
 @pytest.mark.skipif(platform.system() != "Darwin", reason="macOS vnode descriptors")
-def test_tree_cancellation_closes_descriptors(tmp_path: Path) -> None:
-    """Repeated cancellation leaves no vnode or observer descriptors open."""
+@pytest.mark.parametrize("until", [False, True])
+def test_tree_cancellation_closes_descriptors(tmp_path: Path, *, until: bool) -> None:
+    """Repeated cancellation leaves no kqueue or vnode descriptors open."""
     before = len(list(Path("/dev/fd").iterdir()))
-    asyncio.run(_cancel_live_tree(tmp_path))
+    asyncio.run(_cancel_live_tree(tmp_path, until=until))
     assert len(list(Path("/dev/fd").iterdir())) == before
 
 
-async def _cancel_live_tree(root: Path) -> None:
+async def _cancel_live_tree(root: Path, *, until: bool) -> None:
     target = root / "log"
     target.write_text("seed\n")
     for _ in range(3):
-        lines = follow.follow_tree(root, match=lambda p: p == target, replay=True)
+        lines = follow.follow_tree(
+            root,
+            match=lambda p: p == target,
+            replay=True,
+            until=asyncio.Event() if until else None,
+        )
         assert _is_async_generator(lines)
         async with contextlib.aclosing(lines):
             assert (await asyncio.wait_for(anext(lines), 2)).text == "seed"
@@ -1850,6 +2004,13 @@ def test_settled_writer_needs_no_close(
     *,
     writer_predates_follow: bool,
 ) -> None:
+    """A file that predates the follow is watched eagerly, not on first report.
+
+    The polled watch never reports the file (it existed when the watch armed)
+    and never reports a write, so each append can only arrive through the
+    kqueue watch armed up front. Real FSEvents may report the file's creation
+    seconds late, which would arm that watch on discovery and hide its absence.
+    """
     asyncio.run(
         _settled_writer(tmp_path, writer_predates_follow=writer_predates_follow),
     )
@@ -1858,8 +2019,6 @@ def test_settled_writer_needs_no_close(
 async def _settled_writer(root: Path, *, writer_predates_follow: bool) -> None:
     target = root / "log"
     target.write_text("history\n")
-    # Recent creation events can mask missing eager vnode watches.
-    await asyncio.sleep(3)
     armed = asyncio.Event()
     lines = follow.follow_tree(root, match=lambda p: p == target, on_armed=armed.set)
     assert _is_async_generator(lines)
@@ -1871,8 +2030,6 @@ async def _settled_writer(root: Path, *, writer_predates_follow: bool) -> None:
             pending = asyncio.create_task(anext(lines))
             try:
                 await asyncio.wait_for(armed.wait(), 5)
-                await asyncio.sleep(3)
-                assert not pending.done()
                 if writer is None:
                     writer = stack.enter_context(target.open("a"))
                 for index in range(3):

@@ -37,7 +37,7 @@ named them.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
-from contextlib import aclosing, asynccontextmanager, closing
+from contextlib import aclosing, asynccontextmanager, closing, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Final, Protocol, cast
@@ -126,6 +126,7 @@ async def follow_tree(
     replay: bool = False,
     resume: frozenset[Path] = frozenset(),
     on_armed: Callable[[], None] | None = None,
+    until: asyncio.Event | None = None,
 ) -> AsyncIterator[Line]:
     """Yield each line gained by any matching file under ``directories``.
 
@@ -152,6 +153,11 @@ async def follow_tree(
         output it is following -- has no other way to know when doing so is
         safe: arming happens on the first ``anext``, which it cannot await
         before the writer exists.
+      until: Once set, read every matching file to its end one last time and
+        stop. Set it when the writer has exited, rather than cancelling: a new
+        file is found only once the kernel names it, which can be seconds
+        late, so a cancelled follow may never read it. The last read lists
+        the trees instead. ``None`` follows until cancelled.
 
     Yields:
       line: A :class:`Line` naming the file, the text, and whether that file
@@ -197,7 +203,12 @@ async def follow_tree(
             cursor = cursors[path]
             for index, line in enumerate(cursor.drain()):
                 yield Line(path=path, text=line, restart=cursor.restarted and not index)
-        async for paths in changed:
+        wakes = (
+            changed
+            if until is None
+            else _until(changed, until=until, directories=directories)
+        )
+        async for paths in wakes:
             for path in sorted(paths):
                 if not match(path):
                     continue
@@ -369,7 +380,10 @@ NUL-padded to that length."""
 
 
 @asynccontextmanager
-async def follow_dir(*directories: Path) -> AsyncGenerator[AsyncIterator[set[Path]]]:
+async def follow_dir(
+    *directories: Path,
+    until: asyncio.Event | None = None,
+) -> AsyncGenerator[AsyncIterator[set[Path]]]:
     """Yield an iterator of changed paths, waking when the kernel says so.
 
     Each iteration returns every path that changed since the last one, so a
@@ -383,6 +397,9 @@ async def follow_dir(*directories: Path) -> AsyncGenerator[AsyncIterator[set[Pat
       *directories: Directories to watch. Every one must exist: a watch that
         silently covered fewer than asked would leave the caller believing a
         directory is covered with no way to learn otherwise.
+      until: Once set, the iterator names every file under ``directories``
+        once more, whether or not the kernel reported it, and ends. See
+        :func:`follow_tree`. ``None`` iterates until the context exits.
 
     Yields:
       changed: Iterator whose every item is a set of changed paths.
@@ -398,7 +415,11 @@ async def follow_dir(*directories: Path) -> AsyncGenerator[AsyncIterator[set[Pat
     system = platform.system()
     if system == "Darwin":
         async with _watch_fsevents(*directories) as changed:
-            yield changed
+            yield (
+                changed
+                if until is None
+                else _until(changed, until=until, directories=directories)
+            )
         return
     if system != "Linux":
         raise NotImplementedError(
@@ -407,7 +428,12 @@ async def follow_dir(*directories: Path) -> AsyncGenerator[AsyncIterator[set[Pat
         )
     fd, watches = _inotify_fd(*directories)
     try:
-        yield _inotify_events(fd, watches)
+        changed = _inotify_events(fd, watches)
+        yield (
+            changed
+            if until is None
+            else _until(changed, until=until, directories=directories)
+        )
     finally:
         os.close(fd)
 
@@ -782,6 +808,45 @@ async def _vnode_changes(
             watch(path)
         if selected:
             yield selected
+
+
+# A cancel would end the follow on whatever the kernel had reported, and FSEvents under
+# load was measured naming a new file 0.1s to 4.6s after the write, or not within 10s:
+# a writer that exited inside that window lost the file for good. Once the writer is
+# gone its files are final, so a listing reports what no event may ever name --
+# ``_rescan``'s answer to a dropped event, and GNU ``tail --pid``'s last read.
+async def _until(
+    changed: AsyncIterator[set[Path]],
+    *,
+    until: asyncio.Event,
+    directories: tuple[Path, ...],
+) -> AsyncGenerator[set[Path]]:
+    """Pass ``changed`` through until ``until`` is set; then list every file, and end."""
+    stopping = asyncio.ensure_future(until.wait())
+    step = asyncio.ensure_future(anext(changed))
+    try:
+        while True:
+            _ = await asyncio.wait(
+                (step, stopping),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stopping.done():
+                break
+            yield step.result()
+            step = asyncio.ensure_future(anext(changed))
+    finally:
+        _ = stopping.cancel()
+        # The step is still inside ``changed``, and the caller closes that next:
+        # closing an async generator that is mid-step raises.
+        if step.cancel():
+            with suppress(asyncio.CancelledError):
+                await step
+    yield {
+        path
+        for directory in directories
+        for path in directory.rglob("*")
+        if path.is_file()
+    }
 
 
 class _Cursor:
