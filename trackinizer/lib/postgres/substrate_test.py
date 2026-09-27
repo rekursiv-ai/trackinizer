@@ -10,7 +10,9 @@ from unittest.mock import AsyncMock, MagicMock
 import asyncio
 import hashlib
 import os
+import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -92,6 +94,50 @@ async def test_pglite_listen_notify_round_trips_payload(
                 await next_payload
         await notifications.aclose()
     assert not pglite_engine._bus._subscribers[channel]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.cli_python_subprocess
+@pytest.mark.parametrize(("persist", "use_tcp"), [(False, True), (True, False)])
+def test_pglite_node_exits_when_its_python_parent_is_killed(
+    tmp_path: Path,
+    *,
+    persist: bool,
+    use_tcp: bool,
+) -> None:
+    """A SIGKILLed engine owner must not leave its Node manager running forever.
+
+    SIGKILL runs no Python teardown, so nothing signals Node; only the manager
+    can notice that its parent is gone. The two cases cover both transports and
+    both storage modes.
+    """
+    with subprocess.Popen(  # noqa: S603 -- sys.executable running this module's helper.
+        [
+            sys.executable,
+            "-c",
+            (
+                "import asyncio; from pathlib import Path;"
+                f"from {_hold_engine.__module__} import {_hold_engine.__name__};"
+                f"asyncio.run({_hold_engine.__name__}(Path({str(tmp_path / 'pg')!r}),"
+                f" persist={persist}, use_tcp={use_tcp}))"
+            ),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    ) as holder:
+        try:
+            assert holder.stdout is not None
+            node_pid = int(holder.stdout.readline())
+        finally:
+            holder.kill()
+    try:
+        deadline = time.monotonic() + 5
+        while _pid_alive(node_pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _pid_alive(node_pid), "Node manager outlived its killed parent"
+    finally:
+        with suppress(ProcessLookupError):
+            os.kill(node_pid, signal.SIGKILL)
 
 
 @pytest.mark.asyncio
@@ -637,6 +683,31 @@ def test_link_shared_node_modules_leaves_existing_tree(
 async def _anext[T](items: AsyncGenerator[T, None]) -> T:
     """Return the next item from an async generator."""
     return await anext(items)
+
+
+async def _hold_engine(workdir: Path, *, persist: bool, use_tcp: bool) -> None:
+    """Start an engine, write its Node pid to stdout, and block until killed."""
+    engine = PGliteEngine(
+        workdir=workdir,
+        extensions=(),
+        persist=persist,
+        use_tcp=use_tcp,
+    )
+    await engine.__aenter__()
+    assert engine._manager is not None
+    assert engine._manager.process is not None
+    sys.stdout.write(f"{engine._manager.process.pid}\n")
+    sys.stdout.flush()
+    await asyncio.Event().wait()
+
+
+def _pid_alive(pid: int) -> bool:
+    """Probe ``pid`` with signal 0, which checks existence without delivering."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 def _make_conn() -> AsyncMock:

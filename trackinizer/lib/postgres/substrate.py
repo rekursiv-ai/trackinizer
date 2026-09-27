@@ -35,7 +35,6 @@ import uuid
 from asyncpg import Connection, Record
 from asyncpg.pool import PoolConnectionProxy
 from py_pglite import PGliteConfig, PGliteManager
-from py_pglite.extensions import SUPPORTED_EXTENSIONS
 
 import asyncpg
 import asyncpg.pool
@@ -44,7 +43,13 @@ from trackinizer.lib.userdirs import cache_dir
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
+    from collections.abc import (
+        AsyncGenerator,
+        Awaitable,
+        Callable,
+        Mapping,
+        Sequence,
+    )
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -169,10 +174,11 @@ class _ConnGuard:
 class PGliteEngine:
     """In-process Postgres via ``py-pglite``; in-process ``asyncio.Queue`` bus.
 
-    When ``persist=True`` (the default) the engine writes its own
-    ``pglite_manager.js`` with ``dataDir`` set to ``<workdir>/<PGLITE_DATA_DIRNAME>``
-    so the database survives process restarts. ``persist=False`` falls back
-    to py-pglite's default in-memory script (useful for tests).
+    The engine always writes its own ``pglite_manager.js``. With ``persist=True``
+    (the default) it opens ``dataDir`` at ``<workdir>/<PGLITE_DATA_DIRNAME>`` so the
+    database survives process restarts; ``persist=False`` keeps it in memory
+    (useful for tests). Either way the Node manager exits once the Python process
+    that started it is gone (see :func:`_write_manager_js`).
 
     Concurrency caveat: PGlite does not lock its ``dataDir``. Running two
     ``PGliteEngine`` instances against the same ``workdir`` concurrently
@@ -289,12 +295,7 @@ class PGliteEngine:
                 log_level="ERROR",
                 timeout=10,
             )
-            if self._persist:
-                _write_persistent_manager_js_tcp(
-                    workdir,
-                    port=port,
-                    extensions=self._extensions,
-                )
+            listen: dict[str, str | int] = {"host": "127.0.0.1", "port": port}
         else:
             # Unix domain socket (default): the path is unique per instance, so
             # there is no port to race -- the EADDRINUSE collision class is gone
@@ -306,15 +307,15 @@ class PGliteEngine:
                 log_level="ERROR",
                 timeout=10,
             )
-            if self._persist:
-                # Generate our own script with ``dataDir`` baked in *before*
-                # py-pglite checks; ``_setup_work_dir`` then leaves our file
-                # alone. It listens on the unique socket path py-pglite expects.
-                _write_persistent_manager_js_unix(
-                    workdir,
-                    socket_path=config.socket_path,
-                    extensions=self._extensions,
-                )
+            listen = {"path": config.socket_path}
+        # Written *before* py-pglite checks for a script, so ``_setup_work_dir``
+        # leaves ours alone. Never py-pglite's own: it outlives a killed parent.
+        _write_manager_js(
+            workdir,
+            listen=listen,
+            data_dir=workdir / PGLITE_DATA_DIRNAME if self._persist else None,
+            extensions=self._extensions,
+        )
         # Symlink the shared node_modules so py-pglite skips its per-workdir
         # ``npm install`` (a ~20 MB install per fresh tmp dir otherwise).
         await asyncio.to_thread(_link_shared_node_modules, workdir)
@@ -922,27 +923,9 @@ _EXTENSION_JS: Final = {
 The single source of truth for how the vendored Node env loads each PGlite
 extension. As of ``pglite`` 0.5 pgvector ships as the standalone
 ``@electric-sql/pglite-pgvector`` package (it left the core ``pglite``
-``/vector`` subpath). :func:`_align_pyglite_extension_modules` pushes this map
-into ``py_pglite.extensions.SUPPORTED_EXTENSIONS`` at import so the
-non-persistent boot path (which delegates its ``pglite_manager.js`` to
-py-pglite) and the persistent path (which writes its own JS from this map) load
-the extension from the same, correct module.
+``/vector`` subpath). py-pglite 0.5.3's own table still names that old subpath;
+it goes unread because :func:`_write_manager_js` always supplies the script.
 """
-
-
-# py-pglite 0.5.3 still maps pgvector to the pre-0.5 core subpath ``@electric-
-# sql/pglite/vector``, which the bumped ``pglite`` no longer exports. The non-persistent
-# manager generates its ``pglite_manager.js`` from
-# ``py_pglite.extensions.SUPPORTED_EXTENSIONS``, so left unpatched it would ``require``
-# a missing module and the Node boot fails with ``ERR_PACKAGE_PATH_NOT_EXPORTED``.
-# Reconcile the two tables here, keeping :data:`_EXTENSION_JS` the single authority.
-def _align_pyglite_extension_modules() -> None:
-    """Override py-pglite's extension module paths with :data:`_EXTENSION_JS`."""
-    for name, (symbol, module) in _EXTENSION_JS.items():
-        SUPPORTED_EXTENSIONS[name] = {"name": symbol, "module": module}
-
-
-_align_pyglite_extension_modules()
 
 
 # Best-effort: the socket is closed before PGlite's Node rebinds the port, so a
@@ -956,10 +939,7 @@ def _pick_free_port() -> int:
         return cast(int, s.getsockname()[1])
 
 
-# Shared by the Unix- and TCP-socket persist templates: each validates the extension
-# names against :data:`_EXTENSION_JS` and emits the ``require()`` lines plus the
-# ``{name: symbol, ...}`` object literal PGlite expects.
-def _persist_js_extension_parts(extensions: Sequence[str]) -> tuple[str, str]:
+def _manager_js_extension_parts(extensions: Sequence[str]) -> tuple[str, str]:
     """Return ``(require_lines, extensions_object)`` JS fragments for a manager."""
     ext_requires: list[str] = []
     ext_configs: list[str] = []
@@ -977,48 +957,57 @@ def _persist_js_extension_parts(extensions: Sequence[str]) -> tuple[str, str]:
     return ext_requires_str, extensions_obj
 
 
-# Matches py-pglite's Unix-socket template -- ``path:``-mode ``PGLiteSocketServer``,
-# stale-socket cleanup, SIGINT/SIGTERM handlers -- with ``new PGlite({dataDir,
-# extensions})`` added. The data dir is absolute (under ``workdir``) so it survives Node
-# cwd changes. Listens on the unique ``socket_path`` py-pglite minted, so there is no
-# port to race. Not idempotent: the caller unlinks any stale file first.
-def _write_persistent_manager_js_unix(
+# Matches py-pglite's templates -- a ``PGLiteSocketServer`` on the listener py-pglite
+# expects (``path`` for its unique Unix socket, or ``host``/``port``), stale-socket
+# cleanup, SIGINT/SIGTERM handlers -- with two additions: ``dataDir`` when the
+# database persists (absolute, under ``workdir``, so it survives Node cwd changes),
+# and the orphan check below. Not idempotent: the caller unlinks any stale file first.
+#
+# The orphan check: py-pglite starts Node under ``setsid``, so a Python parent that
+# dies without ``PGliteEngine._shutdown`` (SIGKILL from pytest-timeout, an OOM kill, a
+# crashed xdist worker) signals nothing to it. Node then serves an unreachable socket
+# under init indefinitely, at ~330 MB each. Stdin EOF is no substitute: py-pglite
+# passes Python's own stdin through, which may be ``/dev/null`` (EOF at once) or
+# outlive Python. Reparenting changes ``process.ppid`` on macOS and Linux, so polling
+# it catches every such death and runs the SIGTERM shutdown. The baseline is Node's
+# first ``process.ppid``, read before the slow ``require``s, not ``os.getpid()`` baked
+# in by Python: a ``node`` wrapper that spawns the real binary as its child would
+# mismatch a baked pid on the first tick and stop every healthy manager.
+def _write_manager_js(
     workdir: Path,
     *,
-    socket_path: str,
+    listen: Mapping[str, str | int],
+    data_dir: Path | None,
     extensions: Sequence[str],
 ) -> None:
-    """Write a Unix-socket ``pglite_manager.js`` opening a persistent ``dataDir``."""
-    data_dir = workdir / PGLITE_DATA_DIRNAME
-    ext_requires_str, extensions_obj = _persist_js_extension_parts(extensions)
+    """Write the ``pglite_manager.js`` that serves PGlite on ``listen``."""
+    ext_requires_str, extensions_obj = _manager_js_extension_parts(extensions)
+    data_dir_js = f"dataDir: {json.dumps(str(data_dir))}," if data_dir else ""
     script = f"""\
+const PARENT_PID = process.ppid;
 const {{ PGlite }} = require('@electric-sql/pglite');
 const {{ PGLiteSocketServer }} = require('@electric-sql/pglite-socket');
 const {{ existsSync }} = require('fs');
 const {{ unlink }} = require('fs/promises');
 {ext_requires_str}
 
-const SOCKET_PATH = {json.dumps(socket_path)};
-
-async function cleanup() {{
-    if (existsSync(SOCKET_PATH)) {{
-        try {{ await unlink(SOCKET_PATH); }} catch (err) {{}}
-    }}
-}}
+const LISTEN = {json.dumps(dict(listen))};
 
 async function startServer() {{
     try {{
         const db = new PGlite({{
-            dataDir: {json.dumps(str(data_dir))},
+            {data_dir_js}
             extensions: {extensions_obj}
         }});
-        await cleanup();
-        const server = new PGLiteSocketServer({{
-            db,
-            path: SOCKET_PATH,
-        }});
+        if (LISTEN.path && existsSync(LISTEN.path)) {{
+            try {{ await unlink(LISTEN.path); }} catch (err) {{}}
+        }}
+        const server = new PGLiteSocketServer({{ db, ...LISTEN }});
         await server.start();
-        console.log(`Server started on socket ${{SOCKET_PATH}}`);
+        const where = LISTEN.path
+            ? `socket ${{LISTEN.path}}`
+            : `TCP ${{LISTEN.host}}:${{LISTEN.port}}`;
+        console.log(`Server started on ${{where}}`);
 
         const shutdown = async () => {{
             try {{ await server.stop(); }} catch (err) {{}}
@@ -1027,56 +1016,12 @@ async function startServer() {{
         }};
         process.on('SIGINT', shutdown);
         process.on('SIGTERM', shutdown);
-    }} catch (err) {{
-        console.error('Failed to start PGlite server:', err);
-        process.exit(1);
-    }}
-}}
-
-startServer();
-"""
-    (workdir / "pglite_manager.js").write_text(script)
-
-
-# The TCP counterpart of :func:`_write_persistent_manager_js_unix`: a
-# ``host``/``port``-mode ``PGLiteSocketServer`` on ``127.0.0.1:{port}``. Only used when
-# the engine is opened with ``use_tcp=True``; ``port`` is baked into the script, so the
-# caller unlinks any stale file before each start.
-def _write_persistent_manager_js_tcp(
-    workdir: Path,
-    *,
-    port: int,
-    extensions: Sequence[str],
-) -> None:
-    """Write a TCP ``pglite_manager.js`` opening a persistent ``dataDir``."""
-    data_dir = workdir / PGLITE_DATA_DIRNAME
-    ext_requires_str, extensions_obj = _persist_js_extension_parts(extensions)
-    script = f"""\
-const {{ PGlite }} = require('@electric-sql/pglite');
-const {{ PGLiteSocketServer }} = require('@electric-sql/pglite-socket');
-{ext_requires_str}
-
-async function startServer() {{
-    try {{
-        const db = new PGlite({{
-            dataDir: {json.dumps(str(data_dir))},
-            extensions: {extensions_obj}
-        }});
-        const server = new PGLiteSocketServer({{
-            db,
-            host: '127.0.0.1',
-            port: {port},
-        }});
-        await server.start();
-        console.log(`Server started on TCP 127.0.0.1:{port}`);
-
-        const shutdown = async () => {{
-            try {{ await server.stop(); }} catch (err) {{}}
-            try {{ await db.close(); }} catch (err) {{}}
-            process.exit(0);
-        }};
-        process.on('SIGINT', shutdown);
-        process.on('SIGTERM', shutdown);
+        const orphanCheck = setInterval(() => {{
+            if (process.ppid === PARENT_PID) return;
+            clearInterval(orphanCheck);
+            shutdown();
+        }}, 1000);
+        orphanCheck.unref();
     }} catch (err) {{
         console.error('Failed to start PGlite server:', err);
         process.exit(1);
