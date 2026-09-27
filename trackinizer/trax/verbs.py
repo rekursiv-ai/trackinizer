@@ -52,6 +52,7 @@ from trackinizer.trax.grammar import (
     field_value,
     validate_writable_fields,
 )
+from trackinizer.trax.install import TARGETS, InstallError, install, uninstall
 from trackinizer.trax.parser import (
     consume_ref,
     parse_actions,
@@ -2658,6 +2659,87 @@ Notes:
     ) -> None:
         del verb, args
         echo(client_factory().version())
+
+
+class Install(Command):
+    """Copy the bundled authoring skills into an agent's skill directory."""
+
+    names = ("install",)
+    help = """\
+Usage: trax install [--target claude|cursor|codex] [--project] [--uninstall]
+                    [--dry-run]
+
+Examples:
+  trax install                                  install for Claude Code (user)
+  trax install --project                        install into ./.claude/skills
+  trax install --target cursor --project        install into ./.cursor/skills
+  trax install --dry-run                        show where it would land
+  trax install --uninstall                      remove the installed skills
+
+Notes:
+  The skills teach an agent how to author each inquiry kind -- one per kind,
+  plus the trax grammar. They ship inside the package, where no agent looks;
+  this copies them where agents read. Cursor and codex read project-local
+  skills only, so they require --project. Re-running upgrades in place.
+"""
+
+    @classmethod
+    @override
+    def make_parser(cls) -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser(
+            prog="trax install",
+            description=cls.__doc__,
+        )
+        parser.add_argument(
+            "--target",
+            default="claude",
+            choices=sorted(TARGETS),
+            help="Which agent's skill directory to write (default: claude).",
+        )
+        parser.add_argument(
+            "--project",
+            action="store_true",
+            help="Install into the current project instead of your home.",
+        )
+        parser.add_argument(
+            "--uninstall",
+            action="store_true",
+            help="Remove the installed skills instead of writing them.",
+        )
+        parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Report the destination without writing.",
+        )
+        return parser
+
+    @classmethod
+    @override
+    def run(
+        cls,
+        verb: str,
+        args: argparse.Namespace,
+        client_factory: Callable[[], Client],
+    ) -> None:
+        del verb, client_factory  # Local file operation; the server is not involved.
+        target = TARGETS[cast(str, args.target)]
+        uninstalling = _arg_bool(args, "uninstall")
+        project = _arg_bool(args, "project")
+        dry_run = _arg_bool(args, "dry_run")
+        try:
+            if uninstalling:
+                removed = uninstall(target, project=project)
+                echo(f"removed: {removed}" if removed else "not installed")
+                return
+            dest, count = install(target, project=project, dry_run=dry_run)
+            echo(
+                f"{'would install' if dry_run else 'installed'}: "
+                f"{count} skill files -> {dest}",
+            )
+            if not dry_run:
+                echo(f"  {target.label} will now discover them as 'trax'.")
+        except InstallError as err:
+            raise ClientError(str(err)) from err
 
 
 class Export(Command):
