@@ -171,7 +171,8 @@ async def read_session_records_route(
     Args:
       session_id: AgentSession ID to read from.
       request: FastAPI request (carries auth and store).
-      part: File index (0-based).
+      part: Which file, as ``GET .../parts`` numbers it; ``-1`` holds turns
+        backfilled from the retired event log.
       after_idx: Exclusive lower bound on idx (cursor-based paging).
       limit: Max rows per page.
       plaintext_only: Omit ciphertext.
@@ -185,8 +186,9 @@ async def read_session_records_route(
             status_code=400,
             detail=f"limit must be in [1, {MAX_LIST_LIMIT}]",
         )
-    if part < 0:
-        raise HTTPException(status_code=400, detail="part must be >= 0")
+    # ``part`` is not range-checked. The listing names the reserved ``-1``, and a
+    # reader fetches every part it names, so refusing one blanks the transcript.
+    # A number no file resolved to has no manifest and reads as empty.
     store = get_store(request)
     await _require_session(store, session_id)
     rows = await store.read_session_records(

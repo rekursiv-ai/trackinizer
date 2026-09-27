@@ -7,7 +7,7 @@ guards.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final, cast, get_args
+from typing import TYPE_CHECKING, Final, cast, get_args
 
 import re
 import subprocess
@@ -20,13 +20,23 @@ import pytest
 from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec, loads
 from trackinizer.server.api import meta_routes
 from trackinizer.server.version import build_sha
+from trackinizer.types.columns import column_specs
 from trackinizer.types.edges import (
     Edge,
     edge_labels,
     edge_topology,
 )
 from trackinizer.types.inquiries import Belief, Inquiry, Issue, Paper
+from trackinizer.wire.bodies import SubmitBelief, SubmitIssue, SubmitPaper
 from trackinizer.wire.routes import field_owner_kind
+
+
+if TYPE_CHECKING:
+    import uuid
+
+    import httpx2
+
+    from trackinizer.server.store.core import Store
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -139,6 +149,102 @@ def test_edges_route_serves_topology_and_labels(client: TestClient) -> None:
     # The dropped dis-edge kinds carry no entry (valence sign now).
     for gone in ("disproves", "disfavors", "refutes_experiment"):
         assert gone not in body
+
+
+def test_edges_route_adds_each_kinds_annotations(client: TestClient) -> None:
+    """Each kind lists the annotations it takes, beside the keys it already had.
+
+    The v2 UI guessed them from the topology (priority where an edge joins Issue
+    to Issue); a new kind or a changed rule silently broke the guess. Which
+    annotations each kind takes against the annotate route is pinned on PGlite
+    below; here, the shape: additive, the ``Edge`` field names in field order.
+    """
+    body = DictCodec.coerce(loads(client.get("/api/meta/edges").content))
+    columns = list(column_specs(Edge))
+    for kind in edge_topology():
+        entry = DictCodec.coerce(body[kind])
+        assert set(entry) == {
+            "from_kinds",
+            "to_kinds",
+            "forward",
+            "inverse",
+            "annotations",
+        }
+        taken = ListCodec.coerce(entry["annotations"], str)
+        assert taken == [column for column in columns if column in taken], kind
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_served_annotations_are_what_the_annotate_route_takes_on_a_real_engine(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """``/api/meta/edges`` serves exactly the annotations each kind's route accepts.
+
+    Every annotation is set on one edge of every kind through
+    ``PUT /api/edges/.../<annotation>``: each accepted value must be a served
+    annotation and each refusal (422) an unserved one, so the served policy and
+    the enforced one cannot drift.
+    """
+    http, store = pglite_route_client
+    edges = await _one_edge_per_kind(store)
+    served = {
+        kind: ListCodec.coerce(DictCodec.coerce(rule)["annotations"], str)
+        for kind, rule in DictCodec.coerce(
+            loads((await http.get("/api/meta/edges")).content),
+        ).items()
+    }
+    values: dict[str, object] = {
+        "priority": 10,
+        "note": "why",
+        "valence": 0.25,
+        "labels": ["x"],
+    }
+    assert set(values) == set(column_specs(Edge))
+    accepted: dict[str, list[str]] = {}
+    for kind, (from_id, to_id) in edges.items():
+        accepted[kind] = []
+        for annotation, value in values.items():
+            response = await http.put(
+                f"/api/edges/{from_id}/{kind}/{to_id}/{annotation}",
+                json={"value": value},
+            )
+            assert response.status_code in {200, 422}, response.text
+            if response.status_code == 200:
+                accepted[kind].append(annotation)
+    assert accepted == served
+
+
+async def _one_edge_per_kind(store: Store) -> dict[str, tuple[uuid.UUID, uuid.UUID]]:
+    """Link one ``(from_id, to_id)`` pair per edge kind, each newer to older."""
+    account = "alice@example.com"
+    issue_old, issue_new = [
+        await store.submit_issue(SubmitIssue(account=account, title=title))
+        for title in ("older", "newer")
+    ]
+    belief = await store.submit_belief(SubmitBelief(account=account, title="claim"))
+    paper_old, paper_new = [
+        await store.submit_paper(SubmitPaper(account=account, title=title))
+        for title in ("cited", "citing")
+    ]
+    edges: dict[str, tuple[uuid.UUID, uuid.UUID]] = {
+        "narrows": (issue_new, issue_old),
+        "requires": (issue_new, issue_old),
+        "produced_by": (belief, issue_old),
+        "proves": (paper_new, belief),
+        "favors": (paper_old, belief),
+        "supersedes": (paper_new, paper_old),
+        "cites_paper": (paper_new, paper_old),
+    }
+    assert set(edges) == set(edge_topology())
+    for kind, (from_id, to_id) in edges.items():
+        await store.add_edge(
+            from_id=from_id,
+            to_id=to_id,
+            edge_kind=cast(Edge.Kind, kind),
+            actor="alice",
+        )
+    return edges
 
 
 def test_spa_does_not_hardcode_enum_lists() -> None:

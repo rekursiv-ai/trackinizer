@@ -101,6 +101,10 @@ def format_field_value(value: object) -> str:
       result: Single string with items newline-separated if a list.
 
     """
+    # The server sends an unset field as ``null``; print it as nothing, as the
+    # empty ``""`` and ``[]`` it used to send printed.
+    if value is None:
+        return ""
     if isinstance(value, list):
         return "\n".join(str(item) for item in cast(list[object], value))
     if isinstance(value, dict):
@@ -340,7 +344,7 @@ def format_show(
             )
         )
     )
-    if "codechanges" in self_view:
+    if self_view.get("codechanges") is not None:
         ids = ListCodec.coerce(self_view["codechanges"], str)
         lines.append(f"  codechanges: {len(ids)} entries")
         lines.extend(f"    - {cid}" for cid in ids)

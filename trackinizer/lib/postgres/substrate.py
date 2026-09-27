@@ -177,8 +177,9 @@ class PGliteEngine:
     The engine always writes its own ``pglite_manager.js``. With ``persist=True``
     (the default) it opens ``dataDir`` at ``<workdir>/<PGLITE_DATA_DIRNAME>`` so the
     database survives process restarts; ``persist=False`` keeps it in memory
-    (useful for tests). Either way the Node manager exits once the Python process
-    that started it is gone (see :func:`_write_manager_js`).
+    (useful for tests). Either way the script corrects how PGlite answers a
+    statement that fails mid extended protocol, and the Node manager exits once
+    the Python process that started it is gone (see :func:`_write_manager_js`).
 
     Concurrency caveat: PGlite does not lock its ``dataDir``. Running two
     ``PGliteEngine`` instances against the same ``workdir`` concurrently
@@ -309,7 +310,8 @@ class PGliteEngine:
             )
             listen = {"path": config.socket_path}
         # Written *before* py-pglite checks for a script, so ``_setup_work_dir``
-        # leaves ours alone. Never py-pglite's own: it outlives a killed parent.
+        # leaves ours alone. Never py-pglite's own: it lacks the protocol fix, and
+        # it outlives a killed parent.
         _write_manager_js(
             workdir,
             listen=listen,
@@ -959,9 +961,20 @@ def _manager_js_extension_parts(extensions: Sequence[str]) -> tuple[str, str]:
 
 # Matches py-pglite's templates -- a ``PGLiteSocketServer`` on the listener py-pglite
 # expects (``path`` for its unique Unix socket, or ``host``/``port``), stale-socket
-# cleanup, SIGINT/SIGTERM handlers -- with two additions: ``dataDir`` when the
+# cleanup, SIGINT/SIGTERM handlers -- with three additions: ``dataDir`` when the
 # database persists (absolute, under ``workdir``, so it survives Node cwd changes),
-# and the orphan check below. Not idempotent: the caller unlinks any stale file first.
+# the ReadyForQuery correction, and the orphan check, both below. Not idempotent:
+# the caller unlinks any stale file first.
+#
+# The correction: PGlite answers the extended-protocol message that raises an error
+# with the ErrorResponse *and* a ReadyForQuery, then answers the Sync with a second
+# one (measured on pglite 0.5.3 and 0.5.8 through ``execProtocolRaw``). Postgres
+# sends ReadyForQuery only for Sync and simple Query. asyncpg treats the extra one
+# as a protocol violation: arriving while idle it closes the connection ("protocol
+# is in an unexpected state"); arriving after its next query it misframes that
+# reply. Replies to Parse, Bind, Describe, Execute, Close and Flush therefore drop
+# ReadyForQuery. ``pglite-socket`` passes one message per call, so the first byte
+# is that message's type (a startup packet's is a length byte, and passes through).
 #
 # The orphan check: py-pglite starts Node under ``setsid``, so a Python parent that
 # dies without ``PGliteEngine._shutdown`` (SIGKILL from pytest-timeout, an OOM kill, a
@@ -992,13 +1005,36 @@ const {{ unlink }} = require('fs/promises');
 {ext_requires_str}
 
 const LISTEN = {json.dumps(dict(listen))};
+const NO_READY_FOR_QUERY = new Set([...'PBDECH'].map((c) => c.charCodeAt(0)));
+const READY_FOR_QUERY = 'Z'.charCodeAt(0);
+
+function answerReadyForQueryOnlyOnSync(db) {{
+    const stream = db.execProtocolRawStream.bind(db);
+    db.execProtocolRawStream = async (message, options) => {{
+        if (!NO_READY_FOR_QUERY.has(message[0])) return stream(message, options);
+        const replies = [];
+        await stream(message, {{
+            ...options,
+            onRawData: (data) => replies.push(Buffer.from(data)),
+        }});
+        const reply = Buffer.concat(replies);
+        const kept = [];
+        for (let at = 0; at < reply.length; ) {{
+            const end = at + 1 + reply.readInt32BE(at + 1);
+            if (reply[at] !== READY_FOR_QUERY) kept.push(reply.subarray(at, end));
+            at = end;
+        }}
+        if (kept.length > 0) options.onRawData(new Uint8Array(Buffer.concat(kept)));
+    }};
+    return db;
+}}
 
 async function startServer() {{
     try {{
-        const db = new PGlite({{
+        const db = answerReadyForQueryOnlyOnSync(new PGlite({{
             {data_dir_js}
             extensions: {extensions_obj}
-        }});
+        }}));
         if (LISTEN.path && existsSync(LISTEN.path)) {{
             try {{ await unlink(LISTEN.path); }} catch (err) {{}}
         }}

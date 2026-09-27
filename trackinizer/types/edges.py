@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Final, Literal, Self, cast, get_args
 from uuid import UUID
 
 from trackinizer.lib.custom_json import ListCodec
-from trackinizer.types.columns import ColumnSpec, Row
+from trackinizer.types.columns import ColumnSpec, Row, column_specs
 from trackinizer.types.inquiries import Artifact, Inquiry, Issue
 
 
@@ -592,6 +592,29 @@ def edge_labels() -> dict[str, dict[str, str]]:
     return {
         kind: {"forward": policy.forward_label, "inverse": policy.inverse_label}
         for kind, policy in EDGE_POLICIES.items()
+    }
+
+
+def edge_annotations() -> dict[str, list[str]]:
+    """``edge_kind -> annotations`` it takes, in :class:`Edge` field order.
+
+    Read from each annotation's :attr:`ColumnSpec.applies_to_edge_kinds`, which
+    the annotate path's validators (``server/primitives.py``) and the schema's
+    edge CHECK also read, so the served list is the enforced one. Served at
+    ``/api/meta/edges`` beside the topology and labels.
+
+    Returns:
+      annotations: Edge kind -> the annotation fields an edge of that kind takes.
+
+    """
+    specs = column_specs(Edge)
+    return {
+        kind: [
+            name
+            for name, spec in specs.items()
+            if spec.applies_to_edge_kinds is None or kind in spec.applies_to_edge_kinds
+        ]
+        for kind in EDGE_POLICIES
     }
 
 

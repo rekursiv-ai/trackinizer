@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 import asyncio
@@ -225,25 +226,31 @@ async def _warm_session_embedder(embedder: QueryEmbedder) -> None:
     _ = await embedder.embed_query("warm")
 
 
+# Every route module's router, in inclusion order. ``_build_app`` includes them, and
+# the web app's schema dump builds its own app from the same tuple rather than
+# copying the module-level ``app``, which tests reconfigure.
+ROUTERS: Final = (
+    admin_routes.router,
+    auth_routes.router,
+    edge.router,
+    edit.router,
+    export_routes.router,
+    meta_routes.router,
+    metrics_routes.router,
+    oauth_routes.router,
+    query.router,
+    session_ir_routes.router,
+    sessions_routes.router,
+    submit.router,
+)
+
+
 def _build_app() -> FastAPI:
     """Assemble the application: middleware, then every route module's router."""
     built = FastAPI(title="Trackinizer", lifespan=lifespan)
     built.add_middleware(ChangeIdMiddleware)
     built.add_middleware(RequestLoggingMiddleware)
-    for router in (
-        admin_routes.router,
-        auth_routes.router,
-        edge.router,
-        edit.router,
-        export_routes.router,
-        meta_routes.router,
-        metrics_routes.router,
-        oauth_routes.router,
-        query.router,
-        session_ir_routes.router,
-        sessions_routes.router,
-        submit.router,
-    ):
+    for router in ROUTERS:
         built.include_router(router)
     return built
 
@@ -307,14 +314,24 @@ class _RequestLogSpan:
             return
         self.logged = True
         duration_sec = time.perf_counter() - self.started
-        _logger.info(
+        # Percent-encode what the client sent, as uvicorn's access log does:
+        # decoded, a newline in it forges a whole log line and a space forges a
+        # field, from any request, authenticated or not (S6-06).
+        method = quote(self.method)
+        path = quote(self.path)
+        # A failure is logged at WARNING, the level a deployment that keeps its
+        # logs small runs at, with the request id the web app shows beside the
+        # error, so a user's report finds this line. Every other request stays
+        # INFO: a line per request is volume such a deployment turns off.
+        _logger.log(
+            logging.WARNING if outcome == "failure" else logging.INFO,
             "event=trackinizer_request_completed stage=http_request "
             "outcome=%s method=%s path=%s status_code=%d "
             "response_start_sec=%.6f duration_sec=%.6f request_id=%s "
             "worker_pid=%d error_type=%s",
             outcome,
-            self.method,
-            self.path,
+            method,
+            path,
             self.status_code,
             self.response_start_sec,
             duration_sec,
@@ -325,8 +342,8 @@ class _RequestLogSpan:
                 "event": "trackinizer_request_completed",
                 "stage": "http_request",
                 "outcome": outcome,
-                "method": self.method,
-                "path": self.path,
+                "method": method,
+                "path": path,
                 "status_code": self.status_code,
                 "response_start_sec": self.response_start_sec,
                 "duration_sec": duration_sec,

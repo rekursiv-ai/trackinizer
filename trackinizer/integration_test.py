@@ -1825,7 +1825,7 @@ class TestIntegrationEndToEnd:
         Proves the Phase-1a web read path against the real schema: the
         ``agentsession_*`` columns surface as bare ``cli`` / ``cli_session_id``
         / ``started`` keys, ISO-formatted timestamps, and a live session
-        (``ended IS NULL``) omits ``ended``.
+        (``ended IS NULL``) reads ``ended: null``.
         """
         sid = await integ_store.submit_agentsession(
             SubmitAgentSession(
@@ -1858,9 +1858,8 @@ class TestIntegrationEndToEnd:
                 assert StrCodec.coerce(self_view["kind"]) == "AgentSession"
                 assert self_view["cli"] == "claude"
                 assert self_view["cli_session_id"] == "sess-9"
-                # Minted with no explicit ``started``; a live session has no
-                # ``ended`` key at all.
-                assert "ended" not in self_view
+                # A live session has not ended.
+                assert self_view["ended"] is None
         finally:
             app.dependency_overrides.pop(current_user, None)
 

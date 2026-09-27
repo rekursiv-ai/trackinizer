@@ -232,6 +232,28 @@ fresh per attempt), so `emit_change` re-raises and the outer
 `subject_id`, so a `(actor, subject_id, kind)` match is a clean
 replay.
 
+### Known gaps
+
+Tracked as trax Issue#21632. A keyed retry of these writes is **not**
+replayed; it runs again against the data as it is now:
+
+- **A field write that changed nothing.** It writes no audit row, so
+  there is nothing for its key to find. If someone changed the field
+  after the first attempt, the retry overwrites their change.
+- **The edge routes** (create, annotate, remove). The retry re-adds an
+  edge someone removed since, or removes one someone added back.
+- **Purge.** The retry finds the row gone and answers 404.
+- **A batch's edges.** The items replay; the edges carry no key and are
+  added again if absent.
+
+Web v2 does not rely on the server for these. After an unanswered write
+it re-reads the stored value before resending: already the intended
+value means done, still the old one means resend, and anything else is
+a conflict it shows the user. The trax client's retry loop has no such
+check. The planned fix is one idempotency layer for every keyed write,
+storing each request's response for 24 hours (task A19 in the web v2
+plan).
+
 ## Consequences (the visible deviations)
 
 Each subsection below is one place where trackinizer's behavior

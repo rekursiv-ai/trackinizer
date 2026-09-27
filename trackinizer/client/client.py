@@ -1361,7 +1361,7 @@ class Client:
 
         Args:
           session_id: AgentSession ID to read from.
-          part: File index within the session (0-based).
+          part: File index within the session; -1 is the legacy backfill.
           after_idx: Exclusive lower bound (idx > this); -1 starts from 0.
           limit: Max rows per page request.
           plaintext_only: Omit ciphertext; set for viewers, not replays.

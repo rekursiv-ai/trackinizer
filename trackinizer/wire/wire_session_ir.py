@@ -159,7 +159,11 @@ class ManifestBody(BaseModel):
 class PartBody(BaseModel):
     """One part of a session, as ``GET .../parts`` lists it."""
 
-    part: int = Field(ge=0)
+    part: int
+    """Which file. Not bounded below: turns backfilled from the retired event
+    log sit at the reserved ``-1`` (migration 020), and a ``ge=0`` here made
+    the whole listing of such a session a 500."""
+
     name: str
     format: str
     records: int = Field(ge=0)
@@ -258,9 +262,9 @@ class AppendRecordsRequest(BaseModel):
 class AppendRecordsResponse(BaseModel):
     """What one append did: which part, and how much was new."""
 
-    part: int | None = Field(default=None, ge=0)
+    part: int | None = None
     """The part the named file resolved to, or ``None`` when the request named
-    no file (a slash-command-only append)."""
+    no file (a slash-command-only append). Unbounded, as in :class:`PartBody`."""
 
     written: int = Field(ge=0)
     skipped: int = Field(ge=0)
@@ -277,7 +281,9 @@ class ReadPartsResponse(BaseModel):
 class ReadRecordsResponse(BaseModel):
     """One page of a part's records, in ``idx`` order."""
 
-    part: int = Field(ge=0)
+    part: int
+    """The part requested: any the listing names, ``-1`` included."""
+
     records: list[RecordBody] = Field(default_factory=list)
 
 

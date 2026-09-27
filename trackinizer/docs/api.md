@@ -237,11 +237,37 @@ GET /api/web/recent_changes
 GET /api/web/recent_changes?limit=N
 GET /api/web/lookup/<uuid>
 GET /api/web/get/<uuid>
+GET /api/web/graph
+GET /api/web/graph?limit=N
 GET /api/web/subscribe
 GET /api/web/feed
 GET /api/web/feed?after_created=<iso>&after_session=<uuid>&after_seq=N
 GET /api/web/feed?since=<iso>&until=<iso>&room=<room>&actor=<actor>&limit=N&tail=<bool>
+GET /app/
+GET /app/<file>
 ```
+
+`/api/web/search` splits `q` on whitespace and returns rows matching every
+term. A bare term is a case-insensitive substring of `title` or
+`description`; `title:RE` and `description:RE` are case-insensitive regexes.
+Only `"` groups words into one term. `'` and `\` are ordinary characters, so
+`don't` and `title:\d+` mean what they say.
+
+`/api/web/graph` returns the `limit` most recently created inquiries (default
+1000, at most 5000) plus every older inquiry an edge links to them, and those
+edges. A `limit` outside 1 to 5000 answers 400: the whole graph is never one
+response.
+
+`/app/` exists only when the server runs with `--app-dir DIR`. It serves
+the web app built in `DIR`, with `DIR/index.html` at `/app/`, to any
+signed-in role. Signed out, `/app/` and `/app/index.html` answer 302 to
+`/auth/login_page?next=<path>`, and every other file answers 401; without
+session login configured, the page answers 401 too. `DIR` is resolved on
+every request: it may be missing (404) or be a symlink swapped to a new
+build without a restart. A path that leaves `DIR`, through `..` or a
+symlink, answers 404. Every `/app/` response, errors included, carries
+`Cache-Control: private, no-cache`, so shared caches never store it and
+browsers revalidate the entry page after a new build lands.
 
 ### 1.21 Agent-session ingest
 
@@ -269,12 +295,20 @@ handling: `design_subscriber.md`.
 
 ```
 GET /api/version
+GET /api/meta/edges
 ```
 
 `GET /api/version` is unauthenticated and store-free, returning
 `{"sha": "<hex>"}` (the running build, from `$TRACKINIZER_SHA` or
 `git HEAD`, else `"unknown"`). A 404 means the live binary predates the
 endpoint -- itself a staleness signal.
+
+`GET /api/meta/edges`, also unauthenticated, maps each edge kind to
+`{from_kinds, to_kinds, forward, inverse, annotations}`: the inquiry kinds
+each stored end admits, the relation read from the child (`narrows`) and
+from the parent (`narrowed_by`), and the annotations an edge of that kind
+takes, in the order `priority`, `note`, `valence`, `labels`. Setting any
+other annotation on it answers 422.
 
 ### 1.23 Export
 
@@ -739,6 +773,18 @@ action          -> {"ok": true}
 }
 ```
 
+`self` is the inquiry as `GET /api/inquiries/<uuid>` returns it, with every
+field of its kind and `null` for an unset one, less the relation fields
+(`produces`, `narrows`, `proves` and the rest). `edges` and `backlinks` carry
+those relations instead, grouped by edge kind. Each peer has its `id`, `kind`,
+`seq`, `title`, `status` and `peer_created` (when the peer was created); a
+Belief adds its `judgement`, and an Issue with a priority adds it as
+`peer_priority`. The edge's own `priority`, `note`, `valence` and `labels`
+ride on the same peer when set, so in a parent's list an edge `priority`
+overrides the child's `peer_priority`. `changes` holds the latest 50
+changes, newest first, ties in `created` broken by descending `id`. Each
+`/api/web/search` result has the shape of `self`.
+
 ### 3.23 SSE event
 
 ```
@@ -793,7 +839,7 @@ produced (section 3.13). The sole exception is the admin user-DELETE
 ### 4.2 Roles
 
 ```
-viewer  GET /api/**, GET /api/web/**, GET /api/me/**
+viewer  GET /api/**, GET /api/web/**, GET /api/me/**, GET /app/**
 writer  viewer + inquiry/edge create/mutate/delete
 admin   writer + /api/admin/**
 ```

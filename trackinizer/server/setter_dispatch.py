@@ -2,9 +2,9 @@
 
 The Inquiry hierarchy in ``types/inquiries.py`` declares each editable
 column via ``field(metadata=column(...))``. That metadata carries the
-*declarative* facts -- which kinds the column applies to, whether the
-public setter forwards a ``reason`` -- in one place (the dataclass), in
-the shape autosql codegen consumes. The change kind is the column's flat
+*declarative* facts -- which kinds the column applies to, its SQL type
+and checks -- in one place (the dataclass), in the shape autosql codegen
+consumes. The change kind is the column's flat
 storage name (see :func:`storage_name`), derived rather than declared.
 
 :data:`RUNTIME_HOOKS` below holds the *behavioral* per-column hooks

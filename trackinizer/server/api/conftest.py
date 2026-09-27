@@ -12,6 +12,7 @@ pattern).
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Final
 from unittest.mock import (
     DEFAULT,  # pyright: ignore[reportAny] -- unittest.mock stubs DEFAULT as Any.
@@ -21,17 +22,22 @@ import uuid
 
 from fastapi.testclient import TestClient
 
+import httpx2
 import pytest
+import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine, make_store
+from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.api.app import app
 from trackinizer.server.auth import AuthIdentity, Role, current_user
+from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.store.core import Store
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import AsyncIterator, Generator, Iterator
 
-    from trackinizer.server.store.core import Store
+    from trackinizer.lib.postgres import PGliteEngine
 
 
 # Stable test principal injected by ``route_client``. Pinned UUIDs +
@@ -108,15 +114,53 @@ def route_client() -> Iterator[tuple[TestClient, Store, FakeEngine]]:
     """
     store, engine = make_store()
     answer_account_active(engine)
-    # Save prior app.state so an integration test that runs before us
-    # (and sets a real engine via lifespan) isn't wiped out by ours.
+    with _serving(engine, store, make_test_identity()):
+        yield TestClient(app), store, engine
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def pglite_route_client(
+    pglite_engine: PGliteEngine,
+) -> AsyncIterator[tuple[httpx2.AsyncClient, Store]]:
+    """Async client for the whole ``app`` over a fresh PGlite ``Store``, as a writer.
+
+    The whole app, not one router, so each request crosses the
+    ``Idempotency-Key`` middleware and the domain-error handlers as it does in
+    production. Async because the engine lives on the session loop, which
+    ``TestClient``'s own loop cannot drive. Tests using it declare
+    ``@pytest.mark.asyncio(loop_scope="session")``.
+    """
+    await reset_schema(pglite_engine)
+    store = Store(pglite_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    # Not raising app exceptions, so a crash reads as the 500 a client gets.
+    transport = httpx2.ASGITransport(app=app, raise_app_exceptions=False)
+    # Keyless: ``change_log.api_key_id`` references ``api_keys``, empty here, so the
+    # route tests' pinned key id would fail every audit write.
+    with _serving(pglite_engine, store, make_test_identity(api_key_id=None)):
+        async with httpx2.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as http:
+            yield http, store
+
+
+# Saves the prior ``app.state`` so an integration test that ran before (and set a real
+# engine via lifespan) is not wiped out, and restores it after.
+@contextmanager
+def _serving(
+    engine: object,
+    store: Store,
+    identity: AuthIdentity,
+) -> Generator[None]:
+    """Serve ``store`` from the global ``app`` to ``identity``, for one test."""
     prev_engine = getattr(app.state, "engine", None)
     prev_store = getattr(app.state, "store", None)
     app.state.engine = engine
     app.state.store = store
-    install_identity(make_test_identity())
+    install_identity(identity)
     try:
-        yield TestClient(app), store, engine
+        yield
     finally:
         clear_identity_override()
         if prev_engine is None:

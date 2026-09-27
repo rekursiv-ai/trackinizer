@@ -189,13 +189,12 @@ async def _set_value(
             reason=reason,
         )
     method = cast(_SetterMethod, getattr(store, str(route.set_method)))
-    extra = {"reason": reason} if route.supports_reason else {}
     return await method(
         target_id,
         value,
         api_key_id=identity.api_key_id,
         actor=actor,
-        **extra,
+        reason=reason,
     )
 
 
@@ -232,6 +231,7 @@ async def _run_patch(
         body.value,
         api_key_id=identity.api_key_id,
         actor=actor,
+        reason=body.reason,
     )
 
 
@@ -276,6 +276,7 @@ async def _run_compare_and_set(
             to=cast(Inquiry.Actor | None, body.value),
             api_key_id=identity.api_key_id,
             actor=actor,
+            reason=body.reason,
         )
     if route.column == "status":
         return await store.transition_status(

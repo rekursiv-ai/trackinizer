@@ -18,6 +18,7 @@ from fastapi import APIRouter
 from trackinizer.server.version import build_sha
 from trackinizer.types.edges import (
     Edge,
+    edge_annotations,
     edge_labels,
     edge_topology,
 )
@@ -109,24 +110,29 @@ async def fields_route() -> dict[str, str]:
 
 @router.get("/api/meta/edges")
 async def edges_route() -> dict[str, dict[str, list[str] | str]]:
-    """Return the edge topology + labels.
+    """Return the edge topology, labels and annotations.
 
-    ``edge_kind -> {from_kinds, to_kinds, forward, inverse}``).
+    ``edge_kind -> {from_kinds, to_kinds, forward, inverse, annotations}``.
 
-        The SPA derives BOTH its edge picker (which kinds each edge admits on each
-        stored endpoint) and its ``edgeDisplayName`` relation labels from this
-        instead of hard-coding either. The topology backs the schema CHECK and is
-        pinned to it by ``server/edge_topology_test``, so a citation-direction or
-        label change updates one server place and the SPA follows -- it can no
-        longer hold a stale hand-typed copy.
+    The SPA derives its edge picker (which kinds each edge admits on each stored
+    endpoint), its ``edgeDisplayName`` relation labels, and which annotations
+    (``priority``, ``note``, ``valence``, ``labels``) it offers on an edge from
+    this instead of hard-coding any of them. The topology backs the schema CHECK
+    and is pinned to it by ``server/edge_topology_test``; the annotations are the
+    ones the annotate path enforces. A change updates one server place and the
+    SPA follows.
 
     Returns:
-      result: The dict[str, dict[str, list[str] | str]].
+      edges: Edge kind -> its topology, labels and annotations.
 
     """
     topology = edge_topology()
     labels = edge_labels()
-    return {kind: {**topology[kind], **labels[kind]} for kind in topology}
+    annotations = edge_annotations()
+    return {
+        kind: {**topology[kind], **labels[kind], "annotations": annotations[kind]}
+        for kind in topology
+    }
 
 
 class _LiteralAlias(Protocol):

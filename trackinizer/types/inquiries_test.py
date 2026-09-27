@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import cast, get_args
 
 import pytest
 
 from trackinizer.conftest import new_uuid
+from trackinizer.types import inquiries
 from trackinizer.types.change_log import Change, Snapshot
-from trackinizer.types.columns import Row
+from trackinizer.types.columns import ColumnSpec, Row, column_specs
 from trackinizer.types.cost import Cost
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import (
@@ -138,6 +140,44 @@ class TestRowConverters:
         e = Experiment.from_row(row)
         assert e.outcome == "peaks at 76.46%"
         assert e.codechanges == (cc_id,)
+
+    def test_row_to_array_column_follows_its_column_spec(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A hand-kept list of array fields missed any array column added after
+        # it (R20). Retyping ``validation`` as ``TEXT[]`` stands in for that new
+        # column: its spec alone must make ``from_row`` hand back a tuple.
+        specs = column_specs(Issue)
+        widened = {
+            **specs,
+            "validation": replace(specs["validation"], sql_type="TEXT[]"),
+        }
+
+        def widened_specs(cls: object) -> dict[str, ColumnSpec]:
+            del cls
+            return widened
+
+        monkeypatch.setattr(inquiries, "column_specs", widened_specs)
+        now = datetime.now(UTC)
+        row = cast(
+            Row,
+            {
+                "id": new_uuid(),
+                "seq": 1,
+                "owner": None,
+                "account": "alice",
+                "status": "active",
+                "title": "t",
+                "description": None,
+                "labels": None,
+                "subscribers": None,
+                "issue_validation": ["a", "b"],
+                "created": now,
+                "modified": now,
+            },
+        )
+        assert Issue.from_row(row).validation == ("a", "b")
 
 
 class TestModels:

@@ -62,9 +62,6 @@ class InquiryFieldRoute:
     compare_and_set: bool
     """Whether PUT accepts ``expected`` for compare-and-set."""
 
-    supports_reason: bool
-    """Whether the setter takes an audit ``reason``."""
-
     element_type: object | None
     """PATCH element type (``FieldOp[element_type]``) for a list column;
     ``None`` when the column is not list-augmentable."""
@@ -257,7 +254,6 @@ def _route_for(column: str, flat: FlatColumn) -> InquiryFieldRoute:
             put=True,
             delete=True,
             compare_and_set=False,
-            supports_reason=spec.supports_reason,
             element_type=flat.value_type,
             set_method=None,
             patch=True,
@@ -273,7 +269,6 @@ def _route_for(column: str, flat: FlatColumn) -> InquiryFieldRoute:
         put=not spec.immutable,
         delete=not spec.immutable and not spec.required,
         compare_and_set=spec.compare_and_set,
-        supports_reason=spec.supports_reason,
         element_type=_element_type(flat.value_type) if stem else None,
         set_method=None if spec.immutable else f"set_{column}",
         patch=bool(stem),

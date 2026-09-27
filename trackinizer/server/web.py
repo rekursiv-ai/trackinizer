@@ -5,6 +5,8 @@ Adds:
 
 - ``GET /`` -- the single-page SPA (``assets/index.html``).
 - ``GET /static/*`` -- the SPA's static assets (when present).
+- ``GET /app/*`` -- a separately built web app, for signed-in users only
+  (``--app-dir``).
 - ``GET /api/web/search`` -- cross-kind ILIKE search over title/description.
 - ``GET /api/web/recent_changes`` -- the most-recent ``change_log`` rows
   with their snapshots flattened to JSON.
@@ -23,8 +25,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from datetime import datetime
+from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Final, Literal, Protocol, cast, get_args
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Final,
+    Literal,
+    Protocol,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 from urllib.parse import quote
 from uuid import UUID
 
@@ -40,8 +53,10 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from trackinizer.lib.custom_json import FloatCodec, IntCodec, ListCodec
+from trackinizer.server.api._deps import tag_row
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.auth import (
     AuthIdentity,
@@ -60,7 +75,7 @@ from trackinizer.server.store.session_search import (
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.edges import Edge
-from trackinizer.types.inquiries import Inquiry
+from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry, InquiryEdge
 from trackinizer.wire.wire_sessions import FeedCursor, FeedResponse
 
 
@@ -104,6 +119,9 @@ class _QueryEmbedder(Protocol):
 
 _UNSET: Final = object()
 
+# See ``_AppRoute``: shared caches must never store an /app/ response.
+_APP_CACHE_CONTROL: Final = "private, no-cache"
+
 
 # -- Read routes -------------------------------------------------------------
 
@@ -118,8 +136,10 @@ async def web_search(
 ) -> list[WebView]:
     """Cross-kind search.
 
-    Grammar: every bare token must match across ``title``/``description``; ``title:re``
-    / ``description:re`` = field-scoped regex.
+    Grammar: whitespace separates terms and every term must match. A bare term
+    matches ``title`` or ``description`` as a case-insensitive substring;
+    ``title:RE`` / ``description:RE`` match a case-insensitive regex. Only ``"``
+    groups a phrase: ``'`` and backslashes are ordinary characters.
 
     Args:
       request: FastAPI request object for middleware access.
@@ -129,7 +149,7 @@ async def web_search(
       limit: Maximum results, 1-1000.
 
     Returns:
-      matches: Matching inquiry views flattened to lightweight projection.
+      matches: Matching inquiries, each as ``self`` in ``/get`` renders it.
 
     """
     del identity
@@ -314,13 +334,18 @@ async def web_get(
 ) -> WebView:
     """Single inquiry + edges + backlinks + recent changes, for the SPA.
 
+    ``self`` is the inquiry as ``GET /api/inquiries/{id}`` serves it, unset fields
+    ``null``, less the relation fields: ``edges`` and ``backlinks`` carry those,
+    grouped by edge kind with each peer's title and status. ``changes`` holds the
+    latest 50, newest first.
+
     Args:
       target_id: UUID of the node to fetch.
       request: FastAPI request object for middleware access.
       identity: Authenticated user, validated to have viewer role.
 
     Returns:
-      view: Complete node record with all outbound and inbound edges.
+      view: ``self``, ``edges``, ``backlinks`` and ``changes``.
 
     """
     del identity
@@ -335,8 +360,8 @@ async def web_get(
         edges = await _edges_for(conn, target_id, direction="outbound")
         backlinks = await _edges_for(conn, target_id, direction="inbound")
         changes = await conn.fetch(
-            _CHANGE_SELECT
-            + " WHERE c.subject_id = $1 ORDER BY c.created DESC LIMIT 50",
+            _CHANGE_SELECT + " WHERE c.subject_id = $1"
+            " ORDER BY c.created DESC, c.id DESC LIMIT 50",
             target_id,
         )
     return {
@@ -365,7 +390,7 @@ async def web_graph(
     is pulled back in, so an old-but-still-cited node (e.g. a foundational paper
     a new belief proves) stays visible and no edge is left dangling. The
     returned node count is therefore the recent N plus their older neighbours.
-    ``limit=0`` returns the whole graph (unbounded -- only for small datasets).
+    ``limit`` is 1 to 5000: the whole graph is never one response.
 
     Nodes are the light projection (id, kind, seq, title, status, created,
     belief judgement/confidence), ordered by ``created`` ascending so the replay
@@ -376,31 +401,18 @@ async def web_graph(
     Args:
       request: FastAPI request object for middleware access.
       identity: Authenticated user, validated to have viewer role.
-      limit: Cap to N most-recent nodes (0 unbounded).
+      limit: Cap to N most-recent nodes, 1 to 5000.
 
     Returns:
       graph: Nodes and edges for replay visualization, ordered by created time.
 
     """
     del identity
-    if limit < 0 or limit > 50_000:
-        raise HTTPException(status_code=400, detail="limit must be in [0, 50000]")
+    # Any viewer may call this, and the whole graph measured 92k nodes, 29 MB and
+    # 8.8 s on production. 5000 is the largest cap ``graph.html`` offers.
+    if limit < 1 or limit > 5_000:
+        raise HTTPException(status_code=400, detail="limit must be in [1, 5000]")
     async with get_store(request).engine.acquire() as conn:
-        if limit == 0:
-            node_rows = await conn.fetch(
-                vetted_sql(
-                    "SELECT ",
-                    _GRAPH_NODE_COLS,
-                    " FROM inquiries ORDER BY created ASC, id ASC",
-                ),
-            )
-            edge_rows = await conn.fetch(
-                "SELECT from_id, to_id, edge_kind, valence FROM edges",
-            )
-            return {
-                "nodes": [_graph_node(r) for r in node_rows],
-                "edges": [_graph_edge(r) for r in edge_rows],
-            }
         # 1. The most-recent ``limit`` node ids.
         recent = await conn.fetch(
             "SELECT id FROM inquiries ORDER BY created DESC, id DESC LIMIT $1",
@@ -581,7 +593,8 @@ _CHANGE_SELECT: Final = (
 
 _PEER_COLUMNS: Final = (
     "t.kind AS peer_kind, t.seq AS peer_seq, t.title AS peer_title, "
-    "t.status AS peer_status, t.belief_judgement AS peer_judgement"
+    "t.status AS peer_status, t.belief_judgement AS peer_judgement, "
+    "t.created AS peer_created, t.issue_priority AS peer_priority"
 )
 """SELECT fragment for the joined inquiry on the far end of an edge."""
 
@@ -623,22 +636,29 @@ def attach(
     *,
     assets_dir: Path | None = None,
     static_dir: Path | None = None,
+    app_dir: Path | None = None,
 ) -> None:
-    """Mount the read-API router, the SPA at ``/``, and ``/static/*``.
+    """Mount the read-API router, the SPA at ``/``, ``/static/*`` and ``/app/*``.
 
     ``/static`` is served from ``static_dir`` when given, else from the SPA's
     own ``assets/static`` -- the runtime override lets an operator serve files
     written after deploy (e.g. a generated report) without copying them into
     the source tree, while the default keeps the SPA's bundled assets working.
 
-    Idempotent: a second call is a no-op. ``server.py`` attaches the
-    module-global app at import, so a re-import or test reuse must not stack
-    duplicate routes (TRK-SRV-002).
+    ``/app/`` serves a separately built web app from ``app_dir``, only to
+    signed-in callers, with ``index.html`` at ``/app/``. The directory is
+    resolved on every request, so it may be missing at startup (``/app/``
+    answers 404) or be a symlink swapped to a new build without a restart.
+
+    Idempotent: a second call is a no-op, so the first call's directories win.
+    ``server._configure_app`` attaches the module-global app, and a test that
+    reuses it must not stack duplicate routes (TRK-SRV-002).
 
     Args:
       app: FastAPI instance to mount routes on.
-      assets_dir: Directory to serve at /assets (overrides bundled SPA).
+      assets_dir: Directory holding the SPA's HTML pages (overrides bundled SPA).
       static_dir: Directory to serve at /static (overrides bundled default).
+      app_dir: Directory of a built web app to serve at /app/; unset mounts none.
 
     """
     if getattr(app.state, "web_attached", False):
@@ -650,6 +670,15 @@ def attach(
     static = static_dir or (assets / "static")
     if static.is_dir():
         app.mount("/static", StaticFiles(directory=str(static)), name="static")
+
+    if app_dir is not None:
+        # ``check_dir=False`` lets the server start before a build exists.
+        app.add_api_route(
+            "/app/{path:path}",
+            _AppRoute(files=StaticFiles(directory=app_dir, check_dir=False)),
+            methods=["GET"],
+            include_in_schema=False,
+        )
 
     _add_page_route(app, "/", assets / "index.html")
     _add_page_route(app, "/graph", assets / "graph.html")
@@ -670,8 +699,73 @@ class _PageRoute:
         identity: Annotated[AuthIdentity | None, Depends(optional_identity)],
     ) -> Response:
         if self.admin_only:
-            return _serve_admin_page(request, identity, self.page_path)
-        return _serve_if_authed(request, identity, self.page_path)
+            return _serve_admin_page(
+                request,
+                identity=identity,
+                page_path=self.page_path,
+            )
+        return _serve_if_authed(request, identity=identity, page_path=self.page_path)
+
+
+# Files are served through ``get_response`` from a route, not by mounting the
+# ``StaticFiles`` app: a mount has no dependency injection for the session check, and
+# it answers 500 to every request while the directory is missing (its ``check_config``
+# raises), where this answers 404. ``lookup_path`` re-resolves the directory's
+# ``realpath`` per request and refuses any path that leaves it, symlinks included.
+#
+# Every response, errors included, carries ``_APP_CACHE_CONTROL``. A shared cache in
+# front of the server may store responses by file extension (Cloudflare does for
+# ``.js``, 404s included; measured on production), which would hand one user's copy
+# of the app to anyone and pin a 401 or 404 for everyone. ``private`` keeps shared
+# caches out, and ``no-cache`` makes browsers revalidate, so a new build's entry page
+# is seen as soon as it lands.
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _AppRoute:
+    files: StaticFiles
+
+    async def __call__(
+        self,
+        request: Request,
+        path: str,
+        identity: Annotated[AuthIdentity | None, Depends(optional_identity)],
+    ) -> Response:
+        try:
+            response = await self._respond(request, path or "index.html", identity)
+        except StarletteHTTPException as err:
+            raise HTTPException(
+                status_code=err.status_code,
+                detail=err.detail,
+                headers={**(err.headers or {}), "Cache-Control": _APP_CACHE_CONTROL},
+            ) from err
+        response.headers["Cache-Control"] = _APP_CACHE_CONTROL
+        return response
+
+    async def _respond(
+        self,
+        request: Request,
+        path: str,
+        identity: AuthIdentity | None,
+    ) -> Response:
+        if identity is not None:
+            try:
+                return await self.files.get_response(path, scope=request.scope)
+            except StarletteHTTPException as err:
+                # Starlette answers 401 when it cannot read a file. For a signed-in
+                # caller that would read as "signed out"; an unreadable build is
+                # the deploy's fault.
+                if err.status_code != 401:
+                    raise
+                raise HTTPException(
+                    status_code=500,
+                    detail="the app build is not readable by the server",
+                ) from err
+        # Only the entry page redirects: a script or stylesheet cannot use a login page.
+        # ``_redirect_when_unauthed`` also returns ``None`` when session login is not
+        # configured, where the old pages are served to anyone; the app is not.
+        redirect = _redirect_when_unauthed(request, identity=identity)
+        if redirect is None or path != "index.html":
+            raise HTTPException(status_code=401, detail="not authenticated")
+        return redirect
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -716,7 +810,7 @@ def _serve_admin_page(
     page_path: Path,
 ) -> Response:
     """Return the admin page for admins; redirect/403 otherwise."""
-    redirect = _redirect_when_unauthed(request, identity)
+    redirect = _redirect_when_unauthed(request, identity=identity)
     if redirect is not None:
         return redirect
     if identity is None or identity.role != "admin":
@@ -733,7 +827,7 @@ def _serve_if_authed(
     page_path: Path,
 ) -> Response:
     """Return ``page_path`` when signed in, else a 302 to the login page."""
-    redirect = _redirect_when_unauthed(request, identity)
+    redirect = _redirect_when_unauthed(request, identity=identity)
     if redirect is not None:
         return redirect
     return FileResponse(page_path)
@@ -786,12 +880,20 @@ def _feed_cursor(
     return (created, session_id, IntCodec.coerce(part, 0), seq)
 
 
-# Fields: ``title``, ``description``. Bare tokens search both.
+# Fields: ``title``, ``description``. Bare tokens search both. ``shlex.split`` reads
+# the query as a shell line, which is wrong twice: ``\`` escapes the next character,
+# so ``title:\d+`` reached Postgres as ``d+``, and ``'`` opens a quote, so ``don't``
+# failed as unterminated. Only ``"`` groups, the grammar the search box's
+# placeholder in ``assets/index.html`` states. ``#`` is not a comment either.
 def _parse_query(q: str) -> list[tuple[str | None, str]]:
     """Tokenize a search query into ``(field, pattern)`` terms."""
-    tokens = shlex.split(q)
+    lexer = shlex.shlex(q, posix=True)
+    lexer.whitespace_split = True
+    lexer.quotes = '"'
+    lexer.escape = ""
+    lexer.commenters = ""
     out: list[tuple[str | None, str]] = []
-    for tok in tokens:
+    for tok in lexer:
         if not tok:
             continue
         if ":" in tok and not tok.startswith(":"):
@@ -894,75 +996,31 @@ def _session_hit_to_dict(hit: SessionSearchHit) -> WebView:
     }
 
 
+# The one inquiry serializer, so ``/get`` and ``GET /api/inquiries/{id}`` agree field
+# for field, ``null`` for unset. The relation fields are dropped rather than served
+# empty: ``from_row`` reads no edges, and ``web_get`` sends them as ``edges`` /
+# ``backlinks``.
 def _row_to_dict(row: asyncpg.Record) -> WebView:
-    """Flatten an ``inquiries`` row to JSON for the SPA."""
-    out: WebView = {
-        "id": str(_record_uuid(row, "id")),
-        "kind": _record_str(row, "kind"),
-        "seq": _record_int(row, "seq"),
-        "owner": row["owner"] or "",
-        "account": row["account"],
-        "status": _record_str(row, "status"),
-        "title": row["title"] or "",
-        "description": row["description"] or "",
-        "labels": ListCodec.coerce(row["labels"], str),
-        "subscribers": ListCodec.coerce(row["subscribers"], str),
-        "marginal_cost": {
-            "agent_usd": FloatCodec.coerce(row["marginal_cost_agent_usd"], None),
-            "resource_usd": FloatCodec.coerce(row["marginal_cost_resource_usd"], None),
-        },
-        "created": _isoformat(_record_datetime(row, "created")),
-        "modified": _isoformat(_record_datetime(row, "modified")),
+    """Serialize an ``inquiries`` row as its kind's dataclass, less its relations."""
+    kind = cast(Inquiry.InquiryKind, _record_str(row, "kind"))
+    inquiry = KIND_TO_CLASS[kind].from_row(row)
+    relations = _relation_fields(type(inquiry))
+    return {
+        key: value for key, value in tag_row(inquiry).items() if key not in relations
     }
-    # (bare wire key, prefixed storage column). The SPA detail view is
-    # kind-scoped, so it speaks the bare field name; the column is the
-    # flat storage name.
-    for key, column in (
-        ("judgement", "belief_judgement"),
-        ("confidence", "belief_confidence"),
-        ("issue_kind", "issue_kind"),
-        ("validation", "issue_validation"),
-        ("priority", "issue_priority"),
-        ("outcome", "experiment_outcome"),
-        ("abstract", "paper_abstract"),
-        ("publication_type", "paper_publication_type"),
-        ("venue", "paper_venue"),
-        ("subvenue", "paper_subvenue"),
-        ("source", "paper_source"),
-        ("google_scholar_cluster_id", "paper_google_scholar_cluster_id"),
-        ("google_scholar_cites_id", "paper_google_scholar_cites_id"),
-        ("sha", "codechange_sha"),
-        ("url", "webresult_url"),
-        ("query", "websearch_query"),
-        ("provider", "websearch_provider"),
-        ("cli", "agentsession_cli"),
-        ("cli_session_id", "agentsession_cli_session_id"),
-    ):
-        if column in row and row[column] is not None:
-            out[key] = row[column]
-    # Timestamps are TIMESTAMPTZ; ISO-format them like ``created`` / ``modified``
-    # rather than leaking raw datetimes.
-    for key, column in (
-        ("started", "agentsession_started"),
-        ("ended", "agentsession_ended"),
-        ("publish_date", "paper_publish_date"),
-    ):
-        if column in row and row[column] is not None:
-            out[key] = _isoformat(row[column])
-    if "agentsession_rooms" in row and row["agentsession_rooms"] is not None:
-        out["rooms"] = ListCodec.coerce(row["agentsession_rooms"], str)
-    if "paper_authors" in row and row["paper_authors"] is not None:
-        out["authors"] = ListCodec.coerce(row["paper_authors"], str)
-    if "experiment_codechanges" in row and row["experiment_codechanges"] is not None:
-        out["codechanges"] = [
-            str(uid) for uid in ListCodec.coerce(row["experiment_codechanges"], UUID)
-        ]
-    # ``experiment_config`` is JSONB -> the registered codec already decoded it
-    # to a dict; surface it verbatim (unlike the scalar columns above, it is not
-    # ISO-formatted). Only present on Experiment rows.
-    if "experiment_config" in row and row["experiment_config"] is not None:
-        out["config"] = row["experiment_config"]
-    return out
+
+
+@cache
+def _relation_fields(cls: type[Inquiry]) -> frozenset[str]:
+    """Fields typed as edge endpoints, which only the ``edges`` table fills."""
+    hints = get_type_hints(cls)
+    relations: set[str] = set()
+    for f in fields(cls):
+        hint = cast(object, hints[f.name])
+        peer: object = get_args(hint)[0] if get_origin(hint) is tuple else None
+        if isinstance(peer, type) and issubclass(peer, InquiryEdge):
+            relations.add(f.name)
+    return frozenset(relations)
 
 
 # Identity columns surface at top level; the flat ``old_*`` / ``new_*`` snapshot columns
@@ -1019,17 +1077,22 @@ def _snapshot_to_dict(row: asyncpg.Record, *, prefix: str) -> WebView:
     return out
 
 
+# ``peer_priority`` is the peer's own priority; ``priority`` on the same ref is the
+# edge's (``_add_edge_annotation``), which overrides it in that parent's list.
 def _peer_ref(row: asyncpg.Record, peer_id: UUID) -> WebView:
-    """Build a UI ref ``{id, kind, seq, title, status, judgement?}``."""
+    """Build a UI ref ``{id, kind, seq, title, status, peer_created, ...}``."""
     out: WebView = {
         "id": str(peer_id),
         "kind": _record_str(row, "peer_kind"),
         "seq": _record_int(row, "peer_seq"),
         "title": row["peer_title"] or "",
         "status": _record_str(row, "peer_status"),
+        "peer_created": _isoformat(_record_datetime(row, "peer_created")),
     }
     if row["peer_judgement"] is not None:
         out["judgement"] = row["peer_judgement"]
+    if row["peer_priority"] is not None:
+        out["peer_priority"] = row["peer_priority"]
     return out
 
 

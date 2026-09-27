@@ -375,6 +375,11 @@ class _EdgeMixin(_CascadeAuditMixin):
         )
         return True
 
+    # Known gap (trax Issue#21632): a keyed retry of add_edge, set_edge_annotation
+    # or remove_edge is not replayed. It runs again against the edge as it is now:
+    # it adds back an edge someone removed since the first attempt, or removes one
+    # someone added back. Web v2 re-reads the edge before it resends; one
+    # idempotency layer for every keyed write closes the gap for every client.
     async def add_edge(
         self,
         *,
@@ -465,6 +470,7 @@ class _EdgeMixin(_CascadeAuditMixin):
                 actor=actor,
             )
 
+    # Not replayed on a keyed retry; see the known gap above add_edge (Issue#21632).
     async def set_edge_annotation(
         self,
         *,
@@ -864,6 +870,7 @@ class _EdgeMixin(_CascadeAuditMixin):
             actor=actor,
         )
 
+    # Not replayed on a keyed retry; see the known gap above add_edge (Issue#21632).
     async def remove_edge(
         self,
         *,

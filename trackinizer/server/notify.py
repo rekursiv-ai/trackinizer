@@ -27,9 +27,9 @@ if TYPE_CHECKING:
 # rejected: a ROLLBACK hitting one of these is moot (a dead/closed connection
 # has already discarded its transaction), so the error-path cleanup swallows
 # them and lets the ORIGINAL exception -- the real failure the caller is
-# mid-raise on -- propagate. ``InternalClientError`` covers asyncpg's
-# "protocol is in an unexpected state" when pglite drops the socket mid-reply
-# under load.
+# mid-raise on -- propagate. ``InternalClientError`` is asyncpg's error for a
+# reply it cannot frame ("protocol is in an unexpected state"), after which the
+# connection is unusable.
 _DEAD_CONN_ERRORS = (
     asyncpg.PostgresConnectionError,
     asyncpg.InterfaceError,
@@ -70,19 +70,17 @@ async def tx(conn: Conn) -> AsyncGenerator[None]:
     """Explicit ``BEGIN``/``COMMIT``; pglite hangs on asyncpg's ``transaction()``.
 
     The error-path ``ROLLBACK`` goes through the EXTENDED protocol
-    (``conn.fetch``) rather than the simple-query path (``conn.execute``): after a
-    statement aborts the transaction, ``pglite`` 0.5 frames the reply to a
-    *simple* ``ROLLBACK`` with no ``CommandComplete`` status tag, which crashes
-    asyncpg's parser (``'NoneType' has no attribute 'decode'``) and corrupts the
-    connection -- swallowing the real error the caller is mid-raise on. The
-    extended protocol is framed correctly. ``BEGIN``/``COMMIT`` run after a
-    *successful* statement, which pglite frames correctly, so they stay on the
-    simple path.
+    (``conn.fetch``) rather than the simple-query path (``conn.execute``). PGlite
+    answers a statement that fails with an extra ReadyForQuery; the PGlite
+    substrate drops it (``trackinizer.lib.postgres.substrate._write_manager_js``), but a
+    server that let it through would misframe the reply to a *simple*
+    ``ROLLBACK`` sent right after, crashing asyncpg's parser and swallowing the
+    real error the caller is mid-raise on. ``BEGIN``/``COMMIT`` follow a
+    *successful* statement, so they stay on the simple path.
 
     The error-path ``ROLLBACK`` is best-effort. The statement that aborted the
-    transaction can also leave the connection itself half-dead -- under load
-    pglite may drop the socket mid-reply, so even the extended-protocol
-    ``ROLLBACK`` raises ``ConnectionDoesNotExistError`` /
+    transaction can also leave the connection itself dead, so even the
+    extended-protocol ``ROLLBACK`` raises ``ConnectionDoesNotExistError`` /
     ``InternalClientError``. A dead connection has already discarded its
     transaction, so that secondary failure is moot; swallowing it (see
     :data:`_DEAD_CONN_ERRORS`) lets the ORIGINAL exception -- the real failure --

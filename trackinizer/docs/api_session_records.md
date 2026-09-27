@@ -283,8 +283,8 @@ drop every session's ciphertext without rewriting a single record.
 ```
 ManifestBody   name (min_length 1), metadata JSON, ir_id uuid,
                format str = '', records int >= 0
-PartBody       part int >= 0, name, format, records int >= 0,
-               metadata JSON, ir_id uuid?
+PartBody       part int (-1 is the legacy backfill, §3.5), name, format,
+               records int >= 0, metadata JSON, ir_id uuid?
 ```
 
 `ManifestBody` is re-sent with EVERY append batch, not written once, because
@@ -407,7 +407,8 @@ unknown session  any <id> not an AgentSession row -> 404
 ```
 records:
 param           type   default  notes
-part            int    0        >= 0 else 400
+part            int    0        any part the listing names, -1 included; a
+                                part with no manifest reads empty
 after_idx       int    -1       EXCLUSIVE lower bound, not an offset
 limit           int    50       min 1; max 1000 else 400
 plaintext_only  bool   false    skip the ciphertext splice

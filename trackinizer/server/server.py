@@ -103,6 +103,7 @@ class _Flags(ConfigFlags, Protocol):
     port: int
     timeout_keep_alive: int
     static_dir: Path | None
+    app_dir: Path | None
     log_level: str | None
 
 
@@ -115,7 +116,7 @@ def _configure_app(flags: _Flags) -> None:
         # the one place that turns a bad config into a clean process exit.
         raise SystemExit(str(err)) from err
     if flags.web:
-        web.attach(app, static_dir=flags.static_dir)
+        web.attach(app, static_dir=flags.static_dir, app_dir=flags.app_dir)
 
 
 def _parse_args(
@@ -232,6 +233,19 @@ def _parse_args(
             "bundled assets/static. Lets an operator publish files written "
             "after deploy (e.g. a generated report) without writing into the "
             "source tree. Unset keeps the bundled assets."
+        ),
+    )
+    parser.add_argument(
+        "--app-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Serve a separately built web app from DIR at /app/, only to "
+            "signed-in users; /app/ serves DIR/index.html. DIR is resolved on "
+            "every request, so it may be missing at startup (404 until a build "
+            "lands) or a symlink swapped to a new build without a restart. "
+            "Unset serves nothing at /app/."
         ),
     )
     parser.add_argument(

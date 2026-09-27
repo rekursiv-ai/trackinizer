@@ -62,10 +62,6 @@ class ColumnSpec(UserDict[str, "ColumnSpec"]):
     applies_to_edge_kinds: frozenset[str] | None = None
     """Edge kinds where the column may be non-NULL; ``None`` means all."""
 
-    supports_reason: bool = False
-    """The edit can carry a ``reason`` onto the change row (status,
-    marginal_cost, judgement, confidence)."""
-
     sql_type: str = ""
     """PostgreSQL column type, e.g. ``"TEXT"`` or ``"NUMERIC(14, 6)"``.
     Used by SQL codegen only."""

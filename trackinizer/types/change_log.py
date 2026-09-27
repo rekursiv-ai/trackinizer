@@ -17,8 +17,9 @@ if TYPE_CHECKING:
 
 
 # Snapshot fields stored as Postgres arrays, normalized with
-# tuple(value or ()) on read. Same idea as _TUPLE_COLUMNS in inquiries.py,
-# but these are the change_log mirror columns rather than projections.
+# tuple(value or ()) on read. Inquiry rows derive this from each field's
+# ColumnSpec (an ``sql_type`` ending in ``[]``); the change_log mirror columns
+# have no ColumnSpec, so they are listed here.
 _SNAPSHOT_TUPLE_FIELDS: frozenset[str] = frozenset(
     {
         "labels",

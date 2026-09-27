@@ -363,6 +363,50 @@ class TestRoutes:
             for sql in sqls
         )
 
+    @pytest.mark.parametrize(
+        ("method", "field", "row", "body"),
+        [
+            ("PUT", "title", {"title": "old", "kind": "Issue"}, {"value": "new"}),
+            (
+                "PATCH",
+                "labels",
+                {"labels": [], "kind": "Issue"},
+                {"op": "add", "value": "x"},
+            ),
+            (
+                "PUT",
+                "owner",
+                {"owner": None, "kind": "Issue"},
+                {"value": "w", "mode": "cas", "expected": None},
+            ),
+        ],
+    )
+    def test_reason_is_stored_on_every_field_write(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        method: str,
+        field: str,
+        row: dict[str, object],
+        body: dict[str, object],
+    ) -> None:
+        # ``reason`` is accepted on every field body, so every field write records it
+        # on its ``change_log`` row rather than only status/judgement/confidence (R04).
+        client, _store, engine = route_client
+        set_field_row(engine.conn, row)
+        r = client.request(
+            method,
+            f"/api/inquiries/{new_uuid()}/{field}",
+            json={**body, "reason": "audit-why"},
+        )
+        assert r.status_code == 200, r.text
+        inserts = [
+            c.args
+            for c in engine.conn.execute.call_args_list
+            if isinstance(c.args[0], str) and "INSERT INTO change_log" in c.args[0]
+        ]
+        assert inserts
+        assert "audit-why" in inserts[-1][1:]
+
     def test_cas_mode_without_expected_is_422(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],

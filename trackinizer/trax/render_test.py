@@ -32,6 +32,18 @@ class TestBasicFormats:
         assert render.format_table([]) == "(no rows)\n"
         assert render.format_changes([]) == "(no changes)\n"
 
+    def test_field_value_none_prints_nothing(self) -> None:
+        # ``/api/web/get`` sends an unset field as ``null``; it prints as the empty
+        # ``""`` and ``[]`` it used to send did, never as ``None``.
+        assert render.format_field_value(None) == ""
+
+    def test_show_omits_codechanges_when_unset(self) -> None:
+        payload = _show_payload()
+        view = cast(dict[str, object], payload["self"])
+        view["codechanges"] = None
+        text = render.format_show(payload)
+        assert "codechanges" not in text
+
     def test_field_value_dict_renders_indented_json(self) -> None:
         """A dict field (Experiment ``config``) prints as JSON, not repr."""
         assert render.format_field_value({"lr": 0.1}) == '{\n  "lr": 0.1\n}'

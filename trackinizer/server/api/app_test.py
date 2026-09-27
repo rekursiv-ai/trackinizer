@@ -10,8 +10,10 @@ import asyncio
 import logging
 
 from fastapi import FastAPI, Request
+from fastapi.testclient import TestClient
 
 import asyncpg
+import pytest
 
 from trackinizer.conftest import FakeEngine, make_store
 from trackinizer.lib.custom_json import (
@@ -23,6 +25,7 @@ from trackinizer.lib.custom_json import (
     loads,
 )
 from trackinizer.server.api.app import (
+    RequestLoggingMiddleware,
     check_violation_handler,
     conflict_handler,
     fk_violation_handler,
@@ -44,9 +47,7 @@ import trackinizer.server.api.app
 
 
 if TYPE_CHECKING:
-    from fastapi.testclient import TestClient
-
-    import pytest
+    from starlette.types import Receive, Scope, Send
 
     from trackinizer.server.store.core import Store
     from trackinizer.types.embedder import QueryEmbedder
@@ -206,6 +207,43 @@ class TestRequestLogging:
         assert StrCodec.coerce(fields.get("request_id")) == request_id
         assert StrCodec.coerce(fields.get("outcome")) == "rejected"
         assert IntCodec.coerce(fields.get("status_code"), 0) == 404
+
+    # Production runs at WARNING, so only a failure's line is kept there: raised to
+    # WARNING, it carries the request id the web app shows beside the error.
+    @pytest.mark.parametrize(
+        ("answer", "level"),
+        [("raise", logging.WARNING), (503, logging.WARNING), (404, logging.INFO)],
+    )
+    def test_a_failure_is_logged_at_warning_and_the_rest_at_info(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        answer: str | int,
+        level: int,
+    ) -> None:
+        async def endpoint(scope: Scope, receive: Receive, send: Send) -> None:
+            del scope, receive
+            if answer == "raise":
+                raise RuntimeError("boom")
+            await send({"type": "http.response.start", "status": answer, "headers": []})
+            await send({"type": "http.response.body", "body": b""})
+
+        client = TestClient(
+            RequestLoggingMiddleware(endpoint),
+            raise_server_exceptions=False,
+        )
+        request_id = uuid4()
+        with caplog.at_level(logging.INFO):
+            client.get("/api/a b", headers={"X-Request-ID": str(request_id)})
+
+        record = next(
+            record
+            for record in caplog.records
+            if getattr(record, "event", "") == "trackinizer_request_completed"
+        )
+        assert record.levelno == level
+        assert f"request_id={request_id}" in record.getMessage()
+        # Encoded as uvicorn's access log does, so a path cannot forge a field.
+        assert "path=/api/a%20b " in record.getMessage()
 
 
 class TestAuthDisabledWarning:

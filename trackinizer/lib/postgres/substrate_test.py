@@ -97,6 +97,28 @@ async def test_pglite_listen_notify_round_trips_payload(
 
 
 @pytest.mark.db_pglite
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persist", [True, False])
+async def test_pglite_connection_survives_a_failed_extended_query(
+    tmp_path: Path,
+    persist: bool,
+) -> None:
+    """A statement that fails mid extended protocol leaves the connection usable."""
+    async with (
+        PGliteEngine(workdir=tmp_path / "pg", extensions=(), persist=persist) as engine,
+        engine.acquire() as conn,
+    ):
+        await conn.execute("CREATE TABLE keyed (id int PRIMARY KEY)")
+        await conn.execute("INSERT INTO keyed (id) VALUES ($1)", 1)
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await conn.execute("INSERT INTO keyed (id) VALUES ($1)", 1)
+        # A second ReadyForQuery for the failed statement arrives after asyncpg has
+        # answered the caller; the pause lets it land while the connection is idle.
+        await asyncio.sleep(0.2)
+        assert await conn.fetchval("SELECT count(*) FROM keyed") == 1
+
+
+@pytest.mark.db_pglite
 @pytest.mark.cli_python_subprocess
 @pytest.mark.parametrize(("persist", "use_tcp"), [(False, True), (True, False)])
 def test_pglite_node_exits_when_its_python_parent_is_killed(

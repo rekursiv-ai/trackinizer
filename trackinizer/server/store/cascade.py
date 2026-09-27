@@ -405,7 +405,10 @@ class _CascadeAuditMixin(_StoreShared):
                     extra_subscribers=extra_subscribers,
                 )
             except asyncpg.UniqueViolationError as err:
-                await conn.execute("ROLLBACK TO SAVEPOINT emit_change")
+                # Extended protocol, as in ``tx()``'s ROLLBACK and for the same
+                # reason (see its docstring): right after the failed INSERT, a
+                # misframed simple-query reply would turn this replay into a 500.
+                _ = await conn.fetch("ROLLBACK TO SAVEPOINT emit_change")
                 existing = await conn.fetchrow(
                     "SELECT actor, subject_id, kind, subscribers_snapshot "
                     "FROM change_log WHERE id = $1",
@@ -590,6 +593,10 @@ class _CascadeAuditMixin(_StoreShared):
             return
         buffer.append(Notification(engine=self.engine, subject_id=subject_id))
 
+    # Known gap (trax Issue#21632): a keyed retry of a purge that landed is not
+    # replayed. It finds the row gone and answers 404. Web v2 reads a purge's 404
+    # after an unanswered first attempt as done; one idempotency layer for every
+    # keyed write closes the gap for every client.
     async def purge(
         self,
         target_id: UUID,

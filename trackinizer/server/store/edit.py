@@ -81,6 +81,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         if not value.strip():
             # Mirror ``SubmitBase.title`` / ``EditTitle.title``
@@ -130,6 +131,7 @@ class _EditMixin(_CascadeAuditMixin):
                 new=Snapshot(title=value),
                 api_key_id=api_key_id,
                 actor=actor,
+                reason=reason,
             )
             return change_id
 
@@ -162,6 +164,11 @@ class _EditMixin(_CascadeAuditMixin):
             )
         return row
 
+    # Known gap (trax Issue#21632): only a field write that changed something is
+    # replayed, because its key is its change row's id. A write that changed nothing
+    # writes no row, so a keyed retry of it runs as a new write and overwrites a
+    # change made since the first attempt. Web v2 re-reads the field before it
+    # resends; one idempotency layer for every keyed write closes the gap.
     async def _replay_field_change(
         self,
         conn: Conn,
@@ -271,6 +278,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -278,6 +286,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="description",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     # The single mutation pipeline that every ``set_X`` setter delegates into. Replaces
@@ -389,7 +398,7 @@ class _EditMixin(_CascadeAuditMixin):
                 new=_snapshot_field(column, new_value, prefix="new_"),
                 api_key_id=api_key_id,
                 actor=actor,
-                reason=reason if spec.supports_reason else "",
+                reason=reason,
                 extra_subscribers=extra_subs,
             )
             return change_id
@@ -401,6 +410,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -408,6 +418,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="owner",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def transition_owner(
@@ -418,6 +429,7 @@ class _EditMixin(_CascadeAuditMixin):
         to: Inquiry.Actor | None,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Compare-and-set owner while holding the inquiry row lock.
 
@@ -428,6 +440,7 @@ class _EditMixin(_CascadeAuditMixin):
           to: New owner; ``None`` releases ownership.
           api_key_id: Authenticated credential recorded in the audit entry.
           actor: Identity recorded in the audit entry.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           change_id: Audit change identifier, or ``None`` for a no-op.
@@ -478,6 +491,7 @@ class _EditMixin(_CascadeAuditMixin):
                 new=Snapshot(owner=new_owner),
                 api_key_id=api_key_id,
                 actor=actor,
+                reason=reason,
             )
             return change_id
 
@@ -638,6 +652,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Re-point the row's account to ``value``.
 
@@ -656,6 +671,7 @@ class _EditMixin(_CascadeAuditMixin):
           value: The new account identifier (non-empty string).
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -672,6 +688,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="account",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_status(
@@ -893,6 +910,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         if value is not None and not value:
             raise ConflictError("issue_kind must have at least one entry")
@@ -902,6 +920,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="issue_kind",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_validation(
@@ -911,6 +930,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -918,6 +938,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="issue_validation",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_priority(
@@ -927,6 +948,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -934,6 +956,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="issue_priority",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_outcome(
@@ -943,6 +966,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -950,6 +974,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="experiment_outcome",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_config(
@@ -959,6 +984,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -966,6 +992,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="experiment_config",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_abstract(
@@ -975,6 +1002,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -982,6 +1010,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="paper_abstract",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_authors(
@@ -991,6 +1020,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -998,6 +1028,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="paper_authors",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def add_author(
@@ -1007,6 +1038,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Atomically append one author to a Paper's byline.
 
@@ -1015,6 +1047,7 @@ class _EditMixin(_CascadeAuditMixin):
           author: Author name to append.
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -1026,6 +1059,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="paper_authors",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
             include=True,
         )
 
@@ -1042,6 +1076,7 @@ class _EditMixin(_CascadeAuditMixin):
         column: str,
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
+        reason: str = "",
         include: bool,
         validate_item: (Callable[[Conn], Awaitable[None]] | None) = None,
     ) -> UUID | None:
@@ -1058,6 +1093,7 @@ class _EditMixin(_CascadeAuditMixin):
                 column=column,
                 api_key_id=api_key_id,
                 actor=actor,
+                reason=reason,
                 include=include,
                 validate_item=validate_item,
             )
@@ -1075,6 +1111,7 @@ class _EditMixin(_CascadeAuditMixin):
         column: str,
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
+        reason: str = "",
         include: bool,
         validate_item: (Callable[[Conn], Awaitable[None]] | None) = None,
     ) -> UUID | None:
@@ -1180,6 +1217,7 @@ class _EditMixin(_CascadeAuditMixin):
             new=_snapshot_field(column, new_value, prefix="new_"),
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
             extra_subscribers=extra_subs,
         )
         return change_id
@@ -1191,6 +1229,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Atomically remove one author from a Paper's byline.
 
@@ -1199,6 +1238,7 @@ class _EditMixin(_CascadeAuditMixin):
           author: Author name to remove.
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -1210,6 +1250,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="paper_authors",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
             include=False,
         )
 
@@ -1220,6 +1261,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -1227,6 +1269,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="paper_publication_type",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_venue(
@@ -1236,6 +1279,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -1243,6 +1287,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="paper_venue",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_subvenue(
@@ -1252,6 +1297,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -1259,6 +1305,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="paper_subvenue",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_publish_date(
@@ -1268,6 +1315,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -1275,6 +1323,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="paper_publish_date",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_source(
@@ -1284,6 +1333,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Edit a :class:`Paper`'s ``source``.
 
@@ -1299,6 +1349,7 @@ class _EditMixin(_CascadeAuditMixin):
           value: The new source identifier (scheme:value form, or None to clear).
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -1315,6 +1366,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="paper_source",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_google_scholar_cluster_id(
@@ -1324,6 +1376,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Edit a :class:`Paper`'s ``google_scholar_cluster_id`` (Scholar data-cid.
 
@@ -1337,6 +1390,7 @@ class _EditMixin(_CascadeAuditMixin):
           value: Google Scholar cluster ID (or None to clear).
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -1348,6 +1402,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="paper_google_scholar_cluster_id",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_google_scholar_cites_id(
@@ -1357,6 +1412,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Edit a :class:`Paper`'s ``google_scholar_cites_id`` (Scholar cites_id.
 
@@ -1370,6 +1426,7 @@ class _EditMixin(_CascadeAuditMixin):
           value: Google Scholar cites ID (or None to clear).
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -1381,6 +1438,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="paper_google_scholar_cites_id",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_query(
@@ -1390,6 +1448,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -1397,6 +1456,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="websearch_query",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_provider(
@@ -1406,6 +1466,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -1413,6 +1474,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="websearch_provider",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_labels(
@@ -1422,6 +1484,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -1429,6 +1492,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="labels",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_subscribers(
@@ -1438,6 +1502,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -1445,6 +1510,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="subscribers",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def add_subscriber(
@@ -1454,6 +1520,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Atomically add ``subscriber`` to ``target_id``'s subscribers.
 
@@ -1466,6 +1533,7 @@ class _EditMixin(_CascadeAuditMixin):
           subscriber: Subscriber identifier to add.
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -1477,6 +1545,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="subscribers",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
             include=True,
         )
 
@@ -1487,6 +1556,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Atomically remove ``subscriber`` from ``target_id``'s subscribers.
 
@@ -1498,6 +1568,7 @@ class _EditMixin(_CascadeAuditMixin):
           subscriber: Subscriber identifier to remove.
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -1509,6 +1580,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="subscribers",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
             include=False,
         )
 
@@ -1519,6 +1591,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Atomically add one label.
 
@@ -1527,6 +1600,7 @@ class _EditMixin(_CascadeAuditMixin):
           label: Label string to add.
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -1538,6 +1612,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="labels",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
             include=True,
         )
 
@@ -1548,6 +1623,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Atomically remove one label.
 
@@ -1556,6 +1632,7 @@ class _EditMixin(_CascadeAuditMixin):
           label: Label string to remove.
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -1567,6 +1644,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="labels",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
             include=False,
         )
 
@@ -1577,6 +1655,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Atomically add one issue_kind to an Issue's category set.
 
@@ -1585,6 +1664,7 @@ class _EditMixin(_CascadeAuditMixin):
           kind: Issue kind to add.
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -1596,6 +1676,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="issue_kind",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
             include=True,
         )
 
@@ -1606,6 +1687,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Atomically remove one issue_kind.
 
@@ -1614,6 +1696,7 @@ class _EditMixin(_CascadeAuditMixin):
           kind: Issue kind to remove.
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -1625,6 +1708,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="issue_kind",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
             include=False,
         )
 
@@ -1635,6 +1719,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Atomically append one CodeChange UUID to an Experiment.
 
@@ -1646,6 +1731,7 @@ class _EditMixin(_CascadeAuditMixin):
           codechange_id: UUID of the CodeChange to append.
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -1657,6 +1743,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="experiment_codechanges",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
             include=True,
             validate_item=lambda conn: validate_list_references(
                 conn,
@@ -1672,6 +1759,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Atomically remove one CodeChange UUID from an Experiment.
 
@@ -1680,6 +1768,7 @@ class _EditMixin(_CascadeAuditMixin):
           codechange_id: UUID of the CodeChange to remove.
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -1691,6 +1780,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="experiment_codechanges",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
             include=False,
         )
 
@@ -1701,6 +1791,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -1708,6 +1799,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="experiment_codechanges",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_sha(
@@ -1717,6 +1809,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -1724,6 +1817,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="codechange_sha",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_url(
@@ -1733,6 +1827,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -1740,6 +1835,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="webresult_url",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_cli(
@@ -1749,6 +1845,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -1756,6 +1853,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="agentsession_cli",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_cli_session_id(
@@ -1765,6 +1863,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -1772,6 +1871,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="agentsession_cli_session_id",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_started(
@@ -1781,6 +1881,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -1788,6 +1889,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="agentsession_started",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def set_rooms(
@@ -1797,6 +1899,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         return await self._set_field(
             target_id,
@@ -1804,6 +1907,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="agentsession_rooms",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
         )
 
     async def add_room(
@@ -1813,6 +1917,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Atomically add one room to a session's membership.
 
@@ -1821,6 +1926,7 @@ class _EditMixin(_CascadeAuditMixin):
           room: Room identifier to add.
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -1832,6 +1938,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="agentsession_rooms",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
             include=True,
         )
 
@@ -1842,6 +1949,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
+        reason: str = "",
     ) -> UUID | None:
         """Atomically remove one room from a session's membership.
 
@@ -1850,6 +1958,7 @@ class _EditMixin(_CascadeAuditMixin):
           room: Room identifier to remove.
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
+          reason: Optional audit context, stored on the change log entry.
 
         Returns:
           result: The UUID | None.
@@ -1861,6 +1970,7 @@ class _EditMixin(_CascadeAuditMixin):
             column="agentsession_rooms",
             api_key_id=api_key_id,
             actor=actor,
+            reason=reason,
             include=False,
         )
 

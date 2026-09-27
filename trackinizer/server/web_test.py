@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
 import json
+import os
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request
@@ -17,25 +18,46 @@ from fastapi.testclient import TestClient
 
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     import asyncpg
+
+    from trackinizer.lib.postgres import PGliteEngine
 else:
     from wrapt import lazy_import
 
     asyncpg = lazy_import("asyncpg")
 
 import pytest
+import pytest_asyncio
 
-from trackinizer.conftest import FakeEngine, make_conn, new_uuid
-from trackinizer.lib.custom_json import DictCodec
+from trackinizer.conftest import FakeEngine, make_conn, make_store, new_uuid
+from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec
 from trackinizer.lib.postgres import Conn
+from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server import web
+from trackinizer.server.api.query import get_inquiry_route
 from trackinizer.server.auth import AuthIdentity, current_user
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.route_iter import (
     iter_routes,
     registered_paths,
 )
+from trackinizer.server.store.core import Store
+from trackinizer.types.columns import column_specs, storage_name
 from trackinizer.types.edges import Edge
-from trackinizer.types.inquiries import Inquiry
+from trackinizer.types.inquiries import INQUIRY_CLASSES, KIND_TO_CLASS, Inquiry
+from trackinizer.wire.bodies import (
+    SubmitAgentSession,
+    SubmitArtifact,
+    SubmitBelief,
+    SubmitCodeChange,
+    SubmitExperiment,
+    SubmitIssue,
+    SubmitPaper,
+    SubmitWebResult,
+    SubmitWebSearch,
+)
 from trackinizer.wire.wire_sessions import FeedEvent
 
 
@@ -51,6 +73,27 @@ _TEST_IDENTITY = AuthIdentity(
     api_key_id=uuid.UUID("33333333-3333-3333-3333-333333333333"),
     email="webtest@example.com",
     role="viewer",
+)
+
+# The relations ``GET /api/inquiries/{id}`` projects onto the row. The web detail
+# serves them as ``edges`` / ``backlinks`` instead, with each peer's title and status.
+_EDGE_RELATIONS: Final = frozenset(
+    {
+        "supersedes",
+        "superseded_by",
+        "produces",
+        "produced_by",
+        "narrows",
+        "narrowed_by",
+        "requires",
+        "required_by",
+        "proves",
+        "proved_by",
+        "favors",
+        "favored_by",
+        "cites",
+        "cited_by",
+    },
 )
 
 
@@ -118,6 +161,28 @@ def _inquiry_row(**overrides: object) -> dict[str, object]:
     return row
 
 
+def _null_row(kind: Inquiry.InquiryKind) -> dict[str, object]:
+    """Return a ``SELECT *`` row of ``kind`` with every nullable column NULL."""
+    now = datetime(2026, 5, 18, tzinfo=UTC)
+    row: dict[str, object] = {
+        "id": new_uuid(),
+        "kind": kind,
+        "seq": 1,
+        "account": "alice@example.com",
+        "status": "active",
+        "title": "title",
+        "marginal_cost_agent_usd": 0.0,
+        "marginal_cost_resource_usd": 0.0,
+        "created": now,
+        "modified": now,
+    }
+    for cls in INQUIRY_CLASSES:
+        for name, spec in column_specs(cls).items():
+            if spec.flatten is None:
+                row.setdefault(storage_name(name, spec), None)
+    return row
+
+
 def _change_row(**overrides: object) -> dict[str, object]:
     now = datetime(2026, 5, 18, tzinfo=UTC)
     row: dict[str, object] = {
@@ -153,6 +218,24 @@ class TestQueryHelpers:
     def test_parse_query_raises_on_unterminated_quote(self) -> None:
         with pytest.raises(ValueError, match="quot"):
             web._parse_query('"unterminated')
+
+    def test_parse_query_keeps_regex_backslashes(self) -> None:
+        # Shell escaping ate the backslash outside quotes, so ``title:\d+``
+        # reached Postgres as ``d+`` (R30).
+        assert web._parse_query(r'title:\d+ description:"\bx\b" a\b') == [
+            ("title", r"\d+"),
+            ("description", r"\bx\b"),
+            (None, r"a\b"),
+        ]
+
+    def test_parse_query_reads_apostrophes_and_hashes_literally(self) -> None:
+        # An apostrophe opened a shell quote that never closed, so ``don't``
+        # was a 400 (R30). Only ``"`` groups a phrase.
+        assert web._parse_query("""don't title:"it's here" Issue#12""") == [
+            (None, "don't"),
+            ("title", "it's here"),
+            (None, "Issue#12"),
+        ]
 
     def test_parse_query_rejects_empty_field_value(self) -> None:
         # ``title:`` with no pattern is almost certainly a user typo;
@@ -197,6 +280,33 @@ class TestQueryHelpers:
 
 
 class TestSerialization:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("kind", sorted(KIND_TO_CLASS))
+    async def test_self_is_the_inquiry_route_less_its_edges(
+        self,
+        kind: Inquiry.InquiryKind,
+    ) -> None:
+        # ``/api/web/get`` hand-listed its columns, turned NULL owner and
+        # description into ``""`` and NULL lists into ``[]``, and dropped unset
+        # kind fields, so the two reads of one row disagreed (R17). ``self``
+        # must be what ``GET /api/inquiries/{id}`` serves, less the relations
+        # that ``edges`` and ``backlinks`` carry instead.
+        row = _null_row(kind)
+        target_id = cast(uuid.UUID, row["id"])
+        store, engine = make_store()
+        engine.conn.fetchrow = AsyncMock(return_value=row)
+        engine.conn.fetch = AsyncMock(return_value=[])
+        request = cast(Request, _request(store, engine))
+        canonical = await get_inquiry_route(
+            target_id,
+            request,
+            identity=_TEST_IDENTITY,
+        )
+        detail = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
+        assert detail["self"] == {
+            key: value for key, value in canonical.items() if key not in _EDGE_RELATIONS
+        }
+
     def test_row_to_dict_includes_kind_specific_values(self) -> None:
         target_id = new_uuid()
         out = web._row_to_dict(
@@ -240,11 +350,6 @@ class TestSerialization:
         assert out["google_scholar_cluster_id"] == "vexaDfEelKEJ"
         assert out["google_scholar_cites_id"] == "4727085927710188680"
 
-    def test_row_to_dict_omits_google_scholar_handles_when_absent(self) -> None:
-        out = web._row_to_dict(cast("asyncpg.Record", _inquiry_row(kind="Paper")))
-        assert "google_scholar_cluster_id" not in out
-        assert "google_scholar_cites_id" not in out
-
     def test_row_to_dict_surfaces_experiment_config(self) -> None:
         cfg = {"lr": 3e-4, "batch": 32, "nested": {"warmup": 100}}
         out = web._row_to_dict(
@@ -256,15 +361,6 @@ class TestSerialization:
         # JSONB is decoded to a dict by the codec; surfaced verbatim, not
         # ISO-formatted or stringified.
         assert out["config"] == cfg
-
-    def test_row_to_dict_omits_config_when_absent(self) -> None:
-        out = web._row_to_dict(
-            cast(
-                "asyncpg.Record",
-                _inquiry_row(kind="Experiment", experiment_config=None),
-            ),
-        )
-        assert "config" not in out
 
     def test_row_to_dict_surfaces_agentsession_fields(self) -> None:
         started = datetime(2026, 5, 18, 9, tzinfo=UTC)
@@ -285,8 +381,8 @@ class TestSerialization:
         assert out["cli_session_id"] == "abc-123"
         # TIMESTAMPTZ columns are ISO-formatted, not raw datetimes.
         assert out["started"] == started.isoformat()
-        # A live session (ended IS NULL) omits the key entirely.
-        assert "ended" not in out
+        # A live session has not ended: NULL, as ``/api/inquiries`` says it.
+        assert out["ended"] is None
         # Rooms surface as a plain list for the SPA addressing UI.
         assert out["rooms"] == ["sear", "lab"]
         json.dumps(out)
@@ -321,12 +417,15 @@ class TestSerialization:
 
     def test_peer_ref_and_isoformat(self) -> None:
         peer_id = new_uuid()
+        created = datetime(2026, 5, 18, tzinfo=UTC)
         row = {
             "peer_kind": "Belief",
             "peer_seq": 4,
             "peer_title": None,
             "peer_status": "active",
             "peer_judgement": "proven",
+            "peer_created": created,
+            "peer_priority": None,
         }
         assert web._peer_ref(cast("asyncpg.Record", row), peer_id) == {
             "id": str(peer_id),
@@ -335,7 +434,18 @@ class TestSerialization:
             "title": "",
             "status": "active",
             "judgement": "proven",
+            "peer_created": created.isoformat(),
         }
+        issue = {
+            **row,
+            "peer_kind": "Issue",
+            "peer_judgement": None,
+            "peer_priority": 0,
+        }
+        # Priority 0 is the most urgent, not an absent one.
+        assert (
+            web._peer_ref(cast("asyncpg.Record", issue), peer_id)["peer_priority"] == 0
+        )
         assert web._isoformat(datetime(2026, 5, 18, tzinfo=UTC)).startswith("2026")
         assert web._isoformat("x") == "x"
 
@@ -372,6 +482,8 @@ class TestEdgeHelpers:
                         "peer_title": "peer",
                         "peer_status": "active",
                         "peer_judgement": None,
+                        "peer_created": datetime(2026, 5, 18, tzinfo=UTC),
+                        "peer_priority": 20,
                     },
                 ],
                 [
@@ -387,6 +499,8 @@ class TestEdgeHelpers:
                         "peer_title": "back",
                         "peer_status": "complete",
                         "peer_judgement": None,
+                        "peer_created": datetime(2026, 5, 19, tzinfo=UTC),
+                        "peer_priority": None,
                     },
                 ],
             ],
@@ -398,7 +512,8 @@ class TestEdgeHelpers:
             direction="inbound",
         )
         edge = cast(list[dict[str, object]], edges["narrows"])[0]
-        assert edge["priority"] == 10
+        # The edge's priority and the peer's own ride side by side.
+        assert (edge["priority"], edge["peer_priority"]) == (10, 20)
         assert edge["note"] == "edge note"
         assert edge["valence"] == 0.5
         assert edge["labels"] == ["edge-label"]
@@ -587,20 +702,44 @@ class TestRoutes:
             )
 
     @pytest.mark.asyncio
+    async def test_web_get_breaks_change_time_ties_by_id(self) -> None:
+        # Changes can share ``created``; ordering by it alone left their order,
+        # and which of them made the 50-row page, to the planner (R21).
+        target_id = new_uuid()
+        engine = FakeEngine()
+        request = _request(_Store(engine=engine), engine)
+        engine.conn.fetchrow = AsyncMock(return_value=_inquiry_row(id=target_id))
+        engine.conn.fetch = AsyncMock(return_value=[])
+        await web.web_get(target_id, cast(Request, request), identity=_TEST_IDENTITY)
+        changes_sql = engine.conn.fetch.call_args_list[-1].args[0]
+        assert isinstance(changes_sql, str)
+        assert "ORDER BY c.created DESC, c.id DESC LIMIT 50" in changes_sql
+
+    @pytest.mark.asyncio
     async def test_web_graph_returns_nodes_and_edges(self) -> None:
-        # The graph endpoint is the whole-graph aggregate the SPA paints from:
-        # every inquiry as a typed node (oldest first, so a replay animation
-        # adds them in creation order) plus every edge as a typed directed
-        # link. Nodes carry only the light projection the graph view needs
-        # (id, kind, seq, title, created), not the full per-kind detail.
+        # The graph endpoint is the aggregate the SPA paints from: each inquiry
+        # as a typed node (oldest first, so a replay animation adds them in
+        # creation order) plus each edge as a typed directed link. Nodes carry
+        # only the light projection the graph view needs (id, kind, seq, title,
+        # created), not the full per-kind detail.
         early = datetime(2026, 5, 18, 8, tzinfo=UTC)
         late = datetime(2026, 5, 18, 9, tzinfo=UTC)
         root_id, child_id = new_uuid(), new_uuid()
         engine = FakeEngine()
         store = _Store(engine=engine)
         request = _request(store, engine)
+        edge_rows = [
+            {
+                "from_id": child_id,
+                "to_id": root_id,
+                "edge_kind": "favors",
+                "valence": 0.4,
+            },
+        ]
         engine.conn.fetch = AsyncMock(
             side_effect=[
+                [{"id": child_id}, {"id": root_id}],
+                edge_rows,
                 [
                     {
                         "id": root_id,
@@ -623,21 +762,12 @@ class TestRoutes:
                         "belief_confidence": None,
                     },
                 ],
-                [
-                    {
-                        "from_id": child_id,
-                        "to_id": root_id,
-                        "edge_kind": "favors",
-                        "valence": 0.4,
-                    },
-                ],
             ],
         )
-        # limit=0 is the unbounded whole-graph path (two fetches: nodes, edges).
         graph = await web.web_graph(
             cast(Request, request),
             identity=_TEST_IDENTITY,
-            limit=0,
+            limit=2,
         )
         nodes = cast(list[dict[str, object]], graph["nodes"])
         edges = graph["edges"]
@@ -665,9 +795,9 @@ class TestRoutes:
         ]
         # Nodes must be ordered by ``created`` ascending so the replay
         # animation lands them in the order they were authored.
-        node_sql = engine.conn.fetch.call_args_list[0].args[0]
+        node_sql = engine.conn.fetch.call_args_list[2].args[0]
         assert isinstance(node_sql, str)
-        assert "ORDER BY created" in node_sql
+        assert "ORDER BY created ASC" in node_sql
 
     @pytest.mark.asyncio
     async def test_web_graph_omits_null_valence(self) -> None:
@@ -680,7 +810,7 @@ class TestRoutes:
         request = _request(store, engine)
         engine.conn.fetch = AsyncMock(
             side_effect=[
-                [],
+                [{"id": a}],
                 [
                     {
                         "from_id": a,
@@ -689,12 +819,13 @@ class TestRoutes:
                         "valence": None,
                     },
                 ],
+                [],
             ],
         )
         graph = await web.web_graph(
             cast(Request, request),
             identity=_TEST_IDENTITY,
-            limit=0,
+            limit=1,
         )
         assert graph["edges"] == [
             {"from_id": str(a), "to_id": str(b), "edge_kind": "narrows"},
@@ -768,17 +899,28 @@ class TestRoutes:
         assert "to_id = ANY" in edge_sql
 
     @pytest.mark.asyncio
-    async def test_web_graph_rejects_bad_limit(self) -> None:
+    async def test_web_graph_caps_limit_at_5000(self) -> None:
+        # ``limit=0`` served the whole graph to any viewer: 92k nodes and 29 MB
+        # in 8.8 s on production (S11). 5000 is the largest cap ``graph.html``
+        # offers.
         engine = FakeEngine()
         store = _Store(engine=engine)
         request = _request(store, engine)
-        for bad in (-1, 99_999):
-            with pytest.raises(HTTPException):
+        engine.conn.fetch = AsyncMock(return_value=[])
+        for bad in (-1, 0, 5_001):
+            with pytest.raises(HTTPException) as caught:
                 await web.web_graph(
                     cast(Request, request),
                     identity=_TEST_IDENTITY,
                     limit=bad,
                 )
+            assert caught.value.status_code == 400
+        graph = await web.web_graph(
+            cast(Request, request),
+            identity=_TEST_IDENTITY,
+            limit=5_000,
+        )
+        assert graph == {"nodes": [], "edges": []}
 
     @pytest.mark.asyncio
     async def test_subscribe_streams_sse(self) -> None:
@@ -1222,6 +1364,382 @@ class TestPhase4Pages:
         r = client.get("/console")
         assert r.status_code == 200
         assert r.text == "CONSOLE-PAGE"
+
+
+# ---- A separately built web app at /app/ ----------------------------------
+
+
+def _write_build(root: Path, *, marker: str) -> Path:
+    """Write a minimal built web app (entry page plus one asset) at ``root``."""
+    (root / "assets").mkdir(parents=True)
+    (root / "index.html").write_text(f"INDEX-{marker}")
+    (root / "assets" / "app.js").write_text(f"// {marker}")
+    return root
+
+
+def _build_app_dir_app(
+    tmp_path: Path,
+    app_dir: Path,
+    *,
+    with_session: bool = True,
+) -> FastAPI:
+    """Build a fresh FastAPI serving ``app_dir`` at ``/app/`` and no old pages."""
+    assets = tmp_path / "no-pages"
+    assets.mkdir()
+    app = FastAPI()
+    if with_session:
+        app.state.config = _SessionStub()
+    web.attach(app, assets_dir=assets, app_dir=app_dir)
+    return app
+
+
+class TestAppDir:
+    def test_signed_out_page_redirects_to_login_with_next(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # The entry page redirects exactly as ``/`` does, so a signed-out
+        # visitor lands back on the app after signing in.
+        app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
+        _install_identity(app, None)
+        client = TestClient(app, follow_redirects=False)
+        for path in ("/app/", "/app/index.html?tab=x"):
+            r = client.get(path)
+            assert r.status_code == 302, path
+            location = urlparse(r.headers["location"])
+            assert location.path == "/auth/login_page"
+            assert parse_qs(location.query)["next"] == [path]
+
+    def test_signed_out_asset_is_401(self, tmp_path: Path) -> None:
+        # A script or stylesheet cannot follow a redirect to the login page,
+        # so it gets 401. A missing file answers the same, which keeps a
+        # signed-out caller from probing what a build contains.
+        app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
+        _install_identity(app, None)
+        client = TestClient(app, follow_redirects=False)
+        for path in ("/app/assets/app.js", "/app/assets/missing.js"):
+            r = client.get(path)
+            assert r.status_code == 401, path
+            assert "// a" not in r.text
+
+    def test_signed_out_page_is_401_without_session_login(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # The old pages are served to anyone when session login is not
+        # configured. The app is private, so it is not.
+        app = _build_app_dir_app(
+            tmp_path,
+            _write_build(tmp_path / "b", marker="a"),
+            with_session=False,
+        )
+        _install_identity(app, None)
+        client = TestClient(app, follow_redirects=False)
+        r = client.get("/app/")
+        assert r.status_code == 401
+        assert "INDEX-a" not in r.text
+
+    def test_signed_in_viewer_loads_assets(self, tmp_path: Path) -> None:
+        app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
+        _install_identity(app, _viewer_identity())
+        client = TestClient(app)
+        r = client.get("/app/assets/app.js")
+        assert r.status_code == 200
+        assert r.text == "// a"
+
+    def test_app_root_serves_index_html(self, tmp_path: Path) -> None:
+        app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
+        _install_identity(app, _viewer_identity())
+        client = TestClient(app)
+        for path in ("/app/", "/app/index.html", "/app"):
+            r = client.get(path)
+            assert r.status_code == 200, path
+            assert r.text == "INDEX-a"
+
+    def test_missing_directory_answers_404_until_a_build_lands(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # A failed or pending build must never stop the server: a missing
+        # directory answers 404, and a build that lands later is served without
+        # a restart. The flag's wiring is tested in ``server_test.py``.
+        build = tmp_path / "build"
+        app = _build_app_dir_app(tmp_path, build)
+        _install_identity(app, _viewer_identity())
+        client = TestClient(app)
+        assert client.get("/app/").status_code == 404
+        _write_build(build, marker="late")
+        r = client.get("/app/")
+        assert r.status_code == 200
+        assert r.text == "INDEX-late"
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 directory")
+    def test_unreadable_build_is_a_server_error_not_signed_out(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Starlette answers 401 when it cannot read a file. For a signed-in
+        # caller that would read as "signed out"; a deploy that wrote the build
+        # with the wrong permissions is the server's fault.
+        build = _write_build(tmp_path / "b", marker="a")
+        (build / "assets").chmod(0o000)
+        try:
+            app = _build_app_dir_app(tmp_path, build)
+            _install_identity(app, _viewer_identity())
+            r = TestClient(app).get("/app/assets/app.js")
+        finally:
+            (build / "assets").chmod(0o755)
+        assert r.status_code == 500
+        assert r.headers.get("cache-control") == "private, no-cache"
+
+    def test_swapped_symlink_serves_the_new_build_without_restart(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # A deploy points a ``current`` symlink at a new build with an atomic
+        # rename; the next request must see it.
+        old = _write_build(tmp_path / "builds" / "old", marker="old")
+        new = _write_build(tmp_path / "builds" / "new", marker="new")
+        current = tmp_path / "current"
+        current.symlink_to(old)
+        app = _build_app_dir_app(tmp_path, current)
+        _install_identity(app, _viewer_identity())
+        client = TestClient(app)
+        assert client.get("/app/").text == "INDEX-old"
+        staged = tmp_path / "current.next"
+        staged.symlink_to(new)
+        staged.replace(current)
+        assert client.get("/app/").text == "INDEX-new"
+        assert client.get("/app/assets/app.js").text == "// new"
+
+    def test_path_traversal_is_refused(self, tmp_path: Path) -> None:
+        build = _write_build(tmp_path / "b", marker="a")
+        secret = tmp_path / "secret.txt"
+        secret.write_text("SECRET")
+        (build / "escape.txt").symlink_to(secret)
+        app = _build_app_dir_app(tmp_path, build)
+        _install_identity(app, _viewer_identity())
+        client = TestClient(app)
+        for path in (
+            "/app/%2e%2e/secret.txt",
+            "/app/..%2fsecret.txt",
+            "/app/assets/..%2f..%2fsecret.txt",
+            f"/app/{secret}",
+            "/app/escape.txt",
+        ):
+            r = client.get(path)
+            assert r.status_code == 404, path
+            assert "SECRET" not in r.text
+
+    def test_static_stays_public_beside_the_app(self, tmp_path: Path) -> None:
+        static = tmp_path / "static"
+        static.mkdir()
+        (static / "report.html").write_text("REPORT")
+        app = FastAPI()
+        app.state.config = _SessionStub()
+        web.attach(
+            app,
+            assets_dir=tmp_path,
+            static_dir=static,
+            app_dir=_write_build(tmp_path / "b", marker="a"),
+        )
+        _install_identity(app, None)
+        client = TestClient(app)
+        r = client.get("/static/report.html")
+        assert r.status_code == 200
+        assert r.text == "REPORT"
+        assert client.get("/app/assets/app.js").status_code == 401
+
+    def test_every_response_forbids_shared_caches(self, tmp_path: Path) -> None:
+        # A shared cache in front of the server (Cloudflare stores ``.js`` by
+        # extension there, 404s included) must never store an /app/ response:
+        # a signed-in user's copy would be served to anyone, and a cached 401 or
+        # 404 would break the app for everyone. ``private`` keeps shared caches
+        # out; ``no-cache`` makes browsers revalidate, so a deploy's new entry
+        # page is seen at once.
+        app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
+        cases: tuple[tuple[AuthIdentity | None, str, int], ...] = (
+            (_viewer_identity(), "/app/", 200),
+            (_viewer_identity(), "/app/assets/app.js", 200),
+            (_viewer_identity(), "/app/assets/missing.js", 404),
+            (None, "/app/", 302),
+            (None, "/app/assets/app.js", 401),
+        )
+        for identity, path, status in cases:
+            _install_identity(app, identity)
+            r = TestClient(app, follow_redirects=False).get(path)
+            assert r.status_code == status, path
+            assert r.headers.get("cache-control") == "private, no-cache", path
+
+    def test_app_is_off_unless_a_directory_is_given(self, tmp_path: Path) -> None:
+        app = FastAPI()
+        web.attach(app, assets_dir=tmp_path)
+        assert not any(path.startswith("/app") for path in registered_paths(app))
+
+
+# ---- Read routes on a real engine ----------------------------------------
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def pglite_store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
+    """Return a bootstrapped Store over the session's shared PGlite engine."""
+    await reset_schema(pglite_engine)
+    store = Store(pglite_engine, embed=StubEmbedder())
+    await store.bootstrap()
+    yield store
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_self_is_the_inquiry_route_on_a_real_engine(pglite_store: Store) -> None:
+    """Every kind, bare and filled, reads the same through both routes (R17).
+
+    asyncpg decodes each column type its own way, so the agreement is checked
+    here as well as against the mock rows.
+    """
+    account = "alice@example.com"
+    started = datetime(2026, 5, 18, 9, tzinfo=UTC)
+    ids = await pglite_store.submit_batch(
+        [
+            SubmitIssue(account=account, title="bare"),
+            SubmitArtifact(account=account, title="bare"),
+            SubmitExperiment(account=account, title="bare"),
+            SubmitPaper(account=account, title="bare"),
+            SubmitBelief(account=account, title="bare"),
+            SubmitCodeChange(account=account, title="bare"),
+            SubmitWebResult(account=account, title="bare"),
+            SubmitWebSearch(account=account, title="bare"),
+            SubmitAgentSession(account=account, title="bare"),
+            SubmitIssue(
+                account=account,
+                title="filled",
+                owner="bob",
+                description="d",
+                labels=["x"],
+                issue_kind=["bug"],
+                priority=10,
+            ),
+            SubmitExperiment(
+                account=account,
+                title="filled",
+                outcome="ok",
+                config={"lr": 0.1, "nested": {"warmup": 100}},
+            ),
+            SubmitPaper(
+                account=account,
+                title="filled",
+                authors=["a", "b"],
+                publish_date=started,
+                source="doi:10.1/x",
+            ),
+            SubmitAgentSession(
+                account=account,
+                title="filled",
+                cli="claude",
+                started=started,
+                rooms=["lab"],
+            ),
+        ],
+    )
+    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    for target_id in ids:
+        canonical = await get_inquiry_route(
+            target_id,
+            request,
+            identity=_TEST_IDENTITY,
+        )
+        detail = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
+        assert detail["self"] == {
+            key: value for key, value in canonical.items() if key not in _EDGE_RELATIONS
+        }
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_peers_carry_their_own_created_and_priority_on_a_real_engine(
+    pglite_store: Store,
+) -> None:
+    """Each peer carries its own ``created`` and priority beside the edge's.
+
+    The timeline places a neighbour by when it was created, and a parent's list
+    shows a child's own priority where the edge sets none (COLD-17). Neither
+    reached the peer refs, so each cost a request per neighbour.
+    """
+    account = "alice@example.com"
+    parent = await pglite_store.submit_issue(
+        SubmitIssue(account=account, title="parent", priority=10),
+    )
+    child = await pglite_store.submit_issue(SubmitIssue(account=account, title="child"))
+    await pglite_store.add_edge(
+        from_id=child,
+        to_id=parent,
+        edge_kind="narrows",
+        actor="alice",
+    )
+    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    parent_view = await web.web_get(parent, request, identity=_TEST_IDENTITY)
+    child_view = await web.web_get(child, request, identity=_TEST_IDENTITY)
+    (child_ref,) = ListCodec.coerce(
+        DictCodec.coerce(parent_view["backlinks"])["narrows"],
+    )
+    (parent_ref,) = ListCodec.coerce(DictCodec.coerce(child_view["edges"])["narrows"])
+    child_ref, parent_ref = DictCodec.coerce(child_ref), DictCodec.coerce(parent_ref)
+    assert (
+        parent_ref["peer_created"] == DictCodec.coerce(parent_view["self"])["created"]
+    )
+    assert parent_ref["peer_priority"] == 10
+    assert child_ref["peer_created"] == DictCodec.coerce(child_view["self"])["created"]
+    # Neither the child nor the edge has a priority, so the ref carries neither.
+    assert "peer_priority" not in child_ref
+    assert "priority" not in child_ref
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_web_get_breaks_change_time_ties_by_id_on_a_real_engine(
+    pglite_store: Store,
+) -> None:
+    """Changes stamped with one ``created`` come back in id order (R21)."""
+    target_id = await pglite_store.submit_issue(
+        SubmitIssue(account="alice@example.com", title="t0"),
+    )
+    for step in range(1, 5):
+        await pglite_store.set_title(target_id, f"t{step}", actor="alice")
+    async with pglite_store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE change_log SET created = $1 WHERE subject_id = $2",
+            datetime(2026, 5, 18, tzinfo=UTC),
+            target_id,
+        )
+    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    detail = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
+    change_ids = [
+        StrCodec.coerce(DictCodec.coerce(change)["id"])
+        for change in ListCodec.coerce(detail["changes"])
+    ]
+    assert len(change_ids) == 5
+    assert change_ids == sorted(change_ids, reverse=True)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_search_keeps_backslashes_and_apostrophes_on_a_real_engine(
+    pglite_store: Store,
+) -> None:
+    r"""``\d`` reaches Postgres as a digit class, and ``'`` is a letter (R30)."""
+    for title in ("build 42 passes", "don't panic", "plain words"):
+        await pglite_store.submit_issue(
+            SubmitIssue(account="alice@example.com", title=title),
+        )
+    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    for q, titles in (
+        (r"title:\d+", ["build 42 passes"]),
+        (r'title:"\d+"', ["build 42 passes"]),
+        ("don't", ["don't panic"]),
+        ('title:"don\'t pan"', ["don't panic"]),
+    ):
+        rows = await web.web_search(request, q=q, identity=_TEST_IDENTITY)
+        assert [row["title"] for row in rows] == titles, q
 
 
 if __name__ == "__main__":

@@ -8,11 +8,14 @@ import argparse
 import inspect
 import logging
 
+from fastapi import FastAPI
+
 import pytest
 import uvicorn
 import uvicorn.server
 
 from trackinizer.lib.postgres import PostgresEngine
+from trackinizer.server import server
 from trackinizer.server.api.app import app
 from trackinizer.server.config import (
     Config,
@@ -31,6 +34,7 @@ from trackinizer.server.server import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)
@@ -153,6 +157,24 @@ class TestPureFunctions:
         assert flags.engine == "pg"
         assert flags.dsn == "x"
         assert flags.port == 9000
+
+    def test_app_dir_flag_reaches_web_attach(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # ``--app-dir`` must reach ``web.attach`` through ``_configure_app``; a
+        # directory that does not exist yet is accepted, since a build may land
+        # after startup.
+        flags, remaining = _parse_args(
+            argparse.ArgumentParser(),
+            ["--app-dir", str(tmp_path / "not-built-yet")],
+        )
+        assert remaining == []
+        fresh = FastAPI()
+        monkeypatch.setattr(server, "app", fresh)
+        server._configure_app(flags)
+        assert "/app/{path:path}" in registered_paths(fresh)
 
 
 class TestCLIHelpers:

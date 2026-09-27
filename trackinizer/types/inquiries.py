@@ -248,7 +248,6 @@ class Inquiry:
     status: Status = field(
         default="active",
         metadata=ColumnSpec(
-            supports_reason=True,
             sql_type="TEXT",
             sql_check="status IN ('active', 'complete', 'abandoned', 'invalid')",
             required=True,
@@ -285,7 +284,6 @@ class Inquiry:
     marginal_cost: Cost = field(
         default_factory=Cost,
         metadata=ColumnSpec(
-            supports_reason=True,
             flatten=Cost,
             flatten_prefix="marginal_cost_",
         ),
@@ -506,7 +504,9 @@ class Inquiry:
             if col not in row:
                 continue
             value = row[col]
-            if value is not None and f.name in _TUPLE_COLUMNS:
+            # An array column comes back a list; the frozen dataclass holds a
+            # tuple. The spec is the one place an array is declared.
+            if value is not None and spec is not None and spec.sql_type.endswith("[]"):
                 value = tuple(ListCodec.coerce(value))
             kwargs[f.name] = value
         return cast(_InquiryConstructor[Self], cls)(**kwargs)
@@ -539,21 +539,6 @@ class ArtifactEdge(InquiryEdge):
 
 class _InquiryConstructor[Instance](Protocol):
     def __call__(self, **kwargs: object) -> Instance: ...
-
-
-# Genuine Postgres array COLUMNS on ``inquiries`` that ``Inquiry.from_row``
-# coerces to a Python tuple. The relationship projection fields (``produces``,
-# ``proves``, ``narrowed_by``, ...) are NOT here: they are not row columns
-# at all but tuples of :class:`InquiryEdge` built by the projection layer from the
-# ``edges`` table, so ``from_row`` skips them (they default to ``()``).
-_TUPLE_COLUMNS: frozenset[str] = frozenset(
-    {
-        "codechanges",
-        "issue_kind",
-        "rooms",
-        "authors",
-    },
-)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -1018,7 +1003,6 @@ class Belief(Artifact):
         default=None,
         metadata=ColumnSpec(
             applies_to_inquiry_kinds=frozenset({"Belief"}),
-            supports_reason=True,
             sql_type="TEXT",
             sql_check=(
                 "judgement IN ('proven', 'disproven', 'unproven', 'undecidable')"
@@ -1033,7 +1017,6 @@ class Belief(Artifact):
         default=None,
         metadata=ColumnSpec(
             applies_to_inquiry_kinds=frozenset({"Belief"}),
-            supports_reason=True,
             sql_type="DOUBLE PRECISION",
             sql_check="confidence >= 0 AND confidence <= 1",
         ),
