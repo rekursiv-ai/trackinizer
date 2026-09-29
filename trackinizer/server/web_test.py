@@ -32,7 +32,14 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine, make_conn, make_store, new_uuid
-from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec
+from trackinizer.lib.custom_json import (
+    DictCodec,
+    FloatCodec,
+    IntCodec,
+    ListCodec,
+    StrCodec,
+    loads,
+)
 from trackinizer.lib.postgres import Conn
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server import web
@@ -938,7 +945,9 @@ class TestRoutes:
             chunks.append(chunk)
         # Wire shape is ``{"id": ...}`` JSON -- the SPA's onmessage does
         # ``JSON.parse(e.data).id``, so a bare uuid silently breaks it.
-        assert b"".join(chunks) == f'data: {{"id": "{subject_id}"}}\n\n'.encode()
+        assert b"".join(chunks) == (
+            f': open\n\ndata: {{"id": "{subject_id}"}}\n\n'.encode()
+        )
 
     def test_attach_mounts_routes_static_and_index(self, tmp_path: Path) -> None:
         assets = tmp_path
@@ -1012,7 +1021,7 @@ class TestRoutes:
         )
         chunks = [chunk async for chunk in response.body_iterator]
         # Only the well-formed payload survives.
-        assert chunks == [f'data: {{"id": "{good_id}"}}\n\n'.encode()]
+        assert chunks == [b": open\n\n", f'data: {{"id": "{good_id}"}}\n\n'.encode()]
 
 
 class TestFeedRoute:
@@ -1740,6 +1749,88 @@ async def test_search_keeps_backslashes_and_apostrophes_on_a_real_engine(
     ):
         rows = await web.web_search(request, q=q, identity=_TEST_IDENTITY)
         assert [row["title"] for row in rows] == titles, q
+
+
+class TestSubscribeProbe:
+    """The stream probe sends frames on the caller's schedule, then ends cleanly."""
+
+    @classmethod
+    def _get(
+        cls,
+        **params: float | bool,
+    ) -> tuple[int, dict[str, str], list[dict[str, object]]]:
+        """Stream the probe; return its status, headers and parsed frames."""
+        app = FastAPI()
+        app.state.engine = FakeEngine()
+        app.state.store = AsyncMock()
+        web.attach(app)
+        app.dependency_overrides[current_user] = _viewer
+        with TestClient(app).stream(
+            "GET",
+            "/api/web/subscribe/probe",
+            params=params,
+        ) as r:
+            body = b"".join(r.iter_bytes())
+            status, headers = r.status_code, dict(r.headers)
+        if status != 200:
+            return status, headers, []
+        frames = [
+            DictCodec.coerce(loads(frame.removeprefix(b"data: ")))
+            for frame in body.split(b"\n\n")[:-1]
+        ]
+        return status, headers, frames
+
+    def test_frames_follow_the_schedule_then_the_stream_ends(self) -> None:
+        status, headers, frames = self._get(
+            first_after_sec=0.02,
+            every_sec=0.02,
+            for_sec=0.09,
+        )
+        assert status == 200
+        assert headers["content-type"].startswith("text/event-stream")
+        assert "no-transform" not in headers.get("cache-control", "")
+        # Frames at 0.02, 0.04, 0.06 and 0.08 s; none at or after for_sec.
+        assert [IntCodec.coerce(f["seq"]) for f in frames] == [0, 1, 2, 3]
+        elapsed = [FloatCodec.coerce(f["t"]) for f in frames]
+        assert elapsed[0] >= 0.02
+        assert elapsed == sorted(elapsed)
+        assert elapsed[-1] < 0.09
+
+    def test_one_frame_without_an_interval(self) -> None:
+        # One byte, then silence until for_sec: the idle-cut experiment.
+        _, _, frames = self._get(first_after_sec=0, for_sec=0.05)
+        assert [IntCodec.coerce(f["seq"]) for f in frames] == [0]
+
+    def test_no_bytes_when_the_first_is_due_after_the_end(self) -> None:
+        # Headers only: the experiment for a proxy that holds them.
+        status, _, frames = self._get(first_after_sec=0.05, for_sec=0.05)
+        assert status == 200
+        assert frames == []
+
+    def test_forbid_transform_marks_the_response(self) -> None:
+        _, headers, _ = self._get(for_sec=0.01, forbid_transform=True)
+        assert "no-transform" in headers["cache-control"]
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"first_after_sec": -1},
+            {"every_sec": -0.5},
+            {"for_sec": 0},
+            {"for_sec": 601},
+            {"first_after_sec": float("nan")},
+        ],
+    )
+    def test_out_of_range_schedules_are_refused(
+        self,
+        params: dict[str, float],
+    ) -> None:
+        status, _, _ = self._get(**params)
+        assert status == 400
+
+
+async def _viewer() -> AuthIdentity:
+    return _TEST_IDENTITY
 
 
 if __name__ == "__main__":

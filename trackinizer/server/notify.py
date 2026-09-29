@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
+import asyncio
 import json
 import logging
 
@@ -18,7 +19,7 @@ from trackinizer.lib.postgres import DatabaseEngine
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+    from collections.abc import AsyncGenerator, Sequence
 
     from trackinizer.lib.postgres import Conn
 
@@ -134,35 +135,74 @@ async def notify_after_commit() -> AsyncGenerator[None]:
     await _publish_notifications(notifications)
 
 
-async def iter_sse_events(engine: DatabaseEngine) -> AsyncIterator[bytes]:
+async def iter_sse_events(
+    engine: DatabaseEngine,
+    *,
+    keepalive_sec: float = 25.0,
+) -> AsyncGenerator[bytes]:
     r"""Relay each ``NOTIFY_CHANNEL`` payload as one SSE ``data:`` frame.
 
     Each frame is ``{"id": "<uuid>"}`` -- the shape ``_notify_payload``
     emits and the SPA's ``EventSource`` parses. Both SSE routes call this so
     they share one generator and one wire contract.
 
+    The stream opens with an SSE comment and sends another after every
+    ``keepalive_sec`` without a frame; ``EventSource`` ignores comment lines.
+    A proxy in front of production holds the response headers until the first
+    body byte, and the Cloudflare edge answers 524 after 125 s without one and
+    cuts a stream idle for 125 s, so a quiet stream never opened in the browser.
+
     Args:
       engine: Database connection to listen on.
+      keepalive_sec: Longest silence before a keep-alive comment; must stay
+        well under the edge's 125 s idle cutoff.
 
     Yields:
-      item: SSE-formatted frames (bytes with id and newline).
+      item: SSE-formatted frames (bytes with id and newline) and comments.
 
     """
-    async for payload in engine.listen(NOTIFY_CHANNEL):
-        try:
-            payload_data = DictCodec.coerce(loads(payload))
-            subject_id = StrCodec.coerce(payload_data["id"])
-        except (json.JSONDecodeError, KeyError, TypeError):
-            # Drop one bad payload rather than kill the stream, but LOG it: a
-            # silent ``continue`` would hide a payload-shape regression (the
-            # producer and this relay drifting apart).
-            logging.getLogger(__name__).warning(
-                "dropping malformed NOTIFY payload on %s: %r",
-                NOTIFY_CHANNEL,
-                payload,
-            )
-            continue
-        yield f"data: {json.dumps({'id': subject_id})}\n\n".encode()
+    yield b": open\n\n"
+    payloads = engine.listen(NOTIFY_CHANNEL)
+    # One ``anext`` stays pending across keep-alives: ``asyncio.wait_for``
+    # would cancel it, which throws into the listen generator and ends the
+    # subscription.
+    pending = asyncio.ensure_future(anext(payloads))
+    try:
+        while True:
+            done, _ = await asyncio.wait({pending}, timeout=keepalive_sec)
+            if not done:
+                yield b": keepalive\n\n"
+                continue
+            try:
+                payload = pending.result()
+            except StopAsyncIteration:
+                return
+            pending = asyncio.ensure_future(anext(payloads))
+            frame = _sse_frame(payload)
+            if frame:
+                yield frame
+    finally:
+        pending.cancel()
+        await asyncio.wait({pending})
+        await payloads.aclose()
+
+
+def _sse_frame(payload: str) -> bytes:
+    """One SSE ``data:`` frame for a NOTIFY payload; empty for a malformed one."""
+    try:
+        payload_data = DictCodec.coerce(loads(payload))
+        subject_id = StrCodec.coerce(payload_data["id"])
+    except (json.JSONDecodeError, KeyError, TypeError):
+        # Drop one bad payload rather than kill the stream, but LOG it: a
+        # silent drop would hide a payload-shape regression (the producer
+        # and this relay drifting apart).
+        logging.getLogger(__name__).warning(
+            "dropping malformed NOTIFY payload on %s: %r",
+            NOTIFY_CHANNEL,
+            payload,
+        )
+        return b""
+    return f"data: {json.dumps({'id': subject_id})}\n\n".encode()
 
 
 # Failures are logged and swallowed: the transaction already committed, so raising would

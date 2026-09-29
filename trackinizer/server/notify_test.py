@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import TYPE_CHECKING, cast, override
 
+import asyncio
 import json
 
 import pytest
@@ -17,12 +18,17 @@ from trackinizer.conftest import (
 from trackinizer.lib.postgres import Conn, DatabaseEngine
 from trackinizer.server.notify import (
     NOTIFICATION_BUFFER,
+    NOTIFY_CHANNEL,
     Notification,
     _publish_notifications,
     iter_sse_events,
     notify_after_commit,
     tx,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 class TestTx:
@@ -124,10 +130,81 @@ class TestSseEvents:
                 frame async for frame in iter_sse_events(cast(DatabaseEngine, engine))
             ]
         # Only the well-formed payload yields a frame.
-        assert frames == [b'data: {"id": "abc-123"}\n\n']
-        # Both malformed payloads were logged (one per drop).
-        drops = [r for r in caplog.records if "malformed" in r.message.lower()]
-        assert len(drops) == 2
+        assert frames == [b": open\n\n", b'data: {"id": "abc-123"}\n\n']
+        # Both malformed payloads were logged (one per drop), naming the
+        # channel and the payload, so an operator can find the producer.
+        assert [
+            (r.name, r.getMessage()) for r in caplog.records if r.levelname == "WARNING"
+        ] == [
+            (
+                "trackinizer.server.notify",
+                f"dropping malformed NOTIFY payload on {NOTIFY_CHANNEL}: {payload!r}",
+            )
+            for payload in ["not json", '{"no_id": true}']
+        ]
+
+    @pytest.mark.asyncio
+    async def test_quiet_stream_opens_at_once(self) -> None:
+        # A proxy in front of production holds response headers until the first
+        # body byte; a stream with no change never opened and got a 524 at 125 s.
+        engine = _QueueEngine()
+        stream = iter_sse_events(cast(DatabaseEngine, engine))
+        async with asyncio.timeout(1):
+            assert await anext(stream) == b": open\n\n"
+        await stream.aclose()
+
+    @pytest.mark.asyncio
+    async def test_quiet_stream_sends_keepalives_and_still_relays(self) -> None:
+        # A keep-alive must not end the subscription: cancelling a pending
+        # ``anext`` would close the engine's listen generator.
+        engine = _QueueEngine()
+        stream = iter_sse_events(cast(DatabaseEngine, engine), keepalive_sec=0.01)
+        async with asyncio.timeout(1):
+            assert await anext(stream) == b": open\n\n"
+            assert await anext(stream) == b": keepalive\n\n"
+            assert await anext(stream) == b": keepalive\n\n"
+            engine.queue.put_nowait('{"id": "abc-123"}')
+            frame = await anext(stream)
+            while frame == b": keepalive\n\n":
+                frame = await anext(stream)
+        assert frame == b'data: {"id": "abc-123"}\n\n'
+        assert engine.channels == [NOTIFY_CHANNEL]
+        await stream.aclose()
+
+    @pytest.mark.asyncio
+    async def test_closing_the_stream_ends_the_subscription(self) -> None:
+        # A client that disconnects must not leave its queue on the bus.
+        engine = _QueueEngine()
+        stream = iter_sse_events(cast(DatabaseEngine, engine), keepalive_sec=0.01)
+        async with asyncio.timeout(1):
+            await anext(stream)
+            await anext(stream)
+        assert engine.listening == 1
+        await stream.aclose()
+        assert engine.listening == 0
+
+
+class _QueueEngine(FakeEngine):
+    """A ``FakeEngine`` whose listen waits on a queue, as a quiet channel does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.queue: asyncio.Queue[str] = asyncio.Queue()
+        self.listening = 0
+        self.channels: list[str] = []
+
+    @override
+    def listen(self, channel: str) -> AsyncGenerator[str]:
+        self.channels.append(channel)
+        return self._listen()
+
+    async def _listen(self) -> AsyncGenerator[str]:
+        self.listening += 1
+        try:
+            while True:
+                yield await self.queue.get()
+        finally:
+            self.listening -= 1
 
 
 if __name__ == "__main__":

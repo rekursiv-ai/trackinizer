@@ -41,8 +41,11 @@ from typing import (
 from urllib.parse import quote
 from uuid import UUID
 
+import asyncio
+import math
 import re
 import shlex
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
@@ -80,7 +83,7 @@ from trackinizer.wire.wire_sessions import FeedCursor, FeedResponse
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import AsyncGenerator, Sequence
 
     import asyncpg
 
@@ -472,6 +475,73 @@ async def web_subscribe(
     del identity
     engine = _state(request).engine
     return StreamingResponse(iter_sse_events(engine), media_type="text/event-stream")
+
+
+_PROBE_MAX_SEC: Final = 600.0
+
+
+@router.get("/subscribe/probe")
+async def web_subscribe_probe(
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
+    first_after_sec: float = 0.0,
+    every_sec: float = 0.0,
+    for_sec: float = 60.0,
+    forbid_transform: bool = False,
+) -> StreamingResponse:
+    """Stream probe frames on the caller's schedule, to test the proxy path.
+
+    Answers what the live stream meets between this server and a browser
+    without a redeploy: whether a hop holds the headers until the first body
+    byte (a late ``first_after_sec``), whether it cuts an idle stream
+    (``every_sec`` 0 and a long ``for_sec``), and whether ``forbid_transform``
+    changes either. Each frame is ``data: {"seq": n, "t": <seconds since the
+    request>}``, so a client can tell a frame held on the way from one sent
+    late. The server ends the stream at ``for_sec``, so an earlier end is a
+    proxy's cut.
+
+    Args:
+      identity: Authenticated user, validated to have viewer role.
+      first_after_sec: Seconds before the first frame; none at or past
+        ``for_sec``.
+      every_sec: Seconds between frames after the first, at least 0.01; 0
+        sends one frame.
+      for_sec: Seconds until the server ends the stream.
+      forbid_transform: Send ``Cache-Control: no-transform``, which tells a proxy
+        not to compress or otherwise rewrite the body.
+
+    Returns:
+      stream: Server-sent probe frames.
+
+    Raises:
+      HTTPException: 400 when a duration is outside ``[0, 600]``, ``for_sec``
+        is 0, or ``every_sec`` is between 0 and 0.01.
+
+    """
+    del identity
+    schedule = (first_after_sec, every_sec, for_sec)
+    if (
+        any(math.isnan(sec) or sec < 0 or sec > _PROBE_MAX_SEC for sec in schedule)
+        or for_sec == 0
+        or 0 < every_sec < 0.01
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"first_after_sec, every_sec and for_sec must be in "
+                f"[0, {_PROBE_MAX_SEC:g}]; for_sec above 0; every_sec 0 or at "
+                f"least 0.01"
+            ),
+        )
+    return StreamingResponse(
+        _probe_frames(
+            first_after_sec=first_after_sec,
+            every_sec=every_sec,
+            for_sec=for_sec,
+        ),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-transform"} if forbid_transform else None,
+    )
 
 
 @router.get("/feed")
@@ -1273,3 +1343,23 @@ def _search_embedder(
     if model:
         return _override_embedder(request, model, dim)
     return _session_embedder(request)
+
+
+async def _probe_frames(
+    *,
+    first_after_sec: float,
+    every_sec: float,
+    for_sec: float,
+) -> AsyncGenerator[bytes]:
+    """Frames from ``first_after_sec`` every ``every_sec``, then silence to ``for_sec``."""
+    start = time.monotonic()
+    due_sec = first_after_sec
+    seq = 0
+    while due_sec < for_sec:
+        await asyncio.sleep(due_sec - (time.monotonic() - start))
+        yield f'data: {{"seq": {seq}, "t": {time.monotonic() - start:.3f}}}\n\n'.encode()
+        if every_sec == 0:
+            break
+        seq += 1
+        due_sec += every_sec
+    await asyncio.sleep(for_sec - (time.monotonic() - start))
