@@ -11,7 +11,7 @@ import pytest
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.custom_json import DictCodec, IntCodec, loads
-from trackinizer.trax import verbs
+from trackinizer.trax import cli, verbs
 from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.grammar import (
     VALID_KINDS,
@@ -3560,6 +3560,110 @@ def test_an_unresumable_target_reports_why_rather_than_raising(
     """
     with pytest.raises(ClientError, match="Resumable: claude, codex"):
         run(["agentsession", "1", "run", "gemini"], client)
+
+
+def test_workspace_show_uses_current_revision_and_renders_updated_state(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A visual write reads the revision first and reports the returned state."""
+    workspace_id = uuid.uuid4()
+    instance_id = uuid.uuid4()
+    record_id = uuid.uuid4()
+
+    class WorkspaceClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object, object]] = []
+
+        def get(self, path: str) -> dict[str, object]:
+            self.calls.append(("get", path, None))
+            return {
+                "id": str(workspace_id),
+                "revision": 8,
+                "visuals": [],
+                "focused_instance": None,
+            }
+
+        def post(self, path: str, *, body: object) -> dict[str, object]:
+            self.calls.append(("post", path, body))
+            return {
+                "id": str(workspace_id),
+                "revision": 9,
+                "visuals": [
+                    {
+                        "id": str(instance_id),
+                        "type": "trax.chat",
+                        "version": 1,
+                        "placement": "side",
+                        "record_id": str(record_id),
+                        "params": {},
+                    },
+                ],
+                "focused_instance": str(instance_id),
+            }
+
+    client = WorkspaceClient()
+    cli.parse_and_run(
+        [
+            "workspace",
+            str(workspace_id),
+            "show",
+            "trax.chat",
+            "--record",
+            str(record_id),
+            "--placement",
+            "side",
+        ],
+        client_factory=lambda: cast(Client, client),
+    )
+
+    assert client.calls[0] == ("get", f"/api/workspaces/{workspace_id}", None)
+    assert client.calls[1][0:2] == (
+        "post",
+        f"/api/workspaces/{workspace_id}/operations",
+    )
+    body = cast(dict[str, object], client.calls[1][2])
+    assert body["revision"] == 8
+    assert body["operation"] == {
+        "kind": "show",
+        "visual_type": "trax.chat",
+        "placement": "side",
+        "record_id": str(record_id),
+        "params": {},
+    }
+    output = capsys.readouterr().out
+    assert f"workspace {workspace_id} revision 9" in output
+    assert f"trax.chat {instance_id} side record={record_id}" in output
+
+    for arguments, expected in (
+        (
+            ["hide", str(instance_id)],
+            {"kind": "hide", "instance_id": str(instance_id)},
+        ),
+        (
+            ["focus", str(instance_id)],
+            {"kind": "focus", "instance_id": str(instance_id)},
+        ),
+        (
+            ["place", str(instance_id), "floating"],
+            {
+                "kind": "place",
+                "instance_id": str(instance_id),
+                "placement": "floating",
+            },
+        ),
+    ):
+        call_index = len(client.calls)
+        cli.parse_and_run(
+            ["workspace", str(workspace_id), *arguments],
+            client_factory=lambda: cast(Client, client),
+        )
+        assert client.calls[call_index][0] == "get"
+        operation_call = client.calls[call_index + 1]
+        assert operation_call[0] == "post"
+        assert cast(dict[str, object], operation_call[2]) == {
+            "revision": 8,
+            "operation": expected,
+        }
 
 
 if __name__ == "__main__":

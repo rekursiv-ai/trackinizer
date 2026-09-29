@@ -29,10 +29,14 @@ from trackinizer.server.api import (
     meta_routes,
     metrics_routes,
     oauth_routes,
+    preset_routes,
     query,
     session_ir_routes,
     sessions_routes,
     submit,
+    timeline_routes,
+    visuals_routes,
+    workspace_routes,
 )
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
 from trackinizer.server.auth import seed_no_auth_user
@@ -238,10 +242,14 @@ ROUTERS: Final = (
     meta_routes.router,
     metrics_routes.router,
     oauth_routes.router,
+    preset_routes.router,
     query.router,
     session_ir_routes.router,
     sessions_routes.router,
     submit.router,
+    timeline_routes.router,
+    visuals_routes.router,
+    workspace_routes.router,
 )
 
 

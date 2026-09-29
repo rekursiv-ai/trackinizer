@@ -405,6 +405,16 @@ class TestRouteRequiresAuth:
         assert r.status_code == 401
 
 
+def test_api_key_cannot_enable_visual_workspace(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    """Only an interactive browser session can opt its account in."""
+    client, _store, engine = route_client
+    response = client.put("/api/me/visual-workspace", json={"enabled": True})
+    assert response.status_code == 403
+    assert not engine.conn.fetchval.called
+
+
 def _sql(call: _Call) -> str:
     """Narrow a recorded mock argument to the SQL string passed by production."""
     sql = call.args[0]

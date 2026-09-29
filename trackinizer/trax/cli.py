@@ -48,6 +48,7 @@ from trackinizer.trax.verbs import (
     Search,
     Send,
     Version,
+    Workspace,
     run_list_query,
 )
 
@@ -171,6 +172,7 @@ DISPATCHERS: tuple[type[Command], ...] = (
     Send,
     Version,
     Export,
+    Workspace,
     Help,
     Profiles,
 )

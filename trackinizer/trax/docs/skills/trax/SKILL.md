@@ -1,8 +1,8 @@
 ---
 name: trax
 description: >
-  ALWAYS invoke this skill for Trackinizer/trax work tracking and inquiry records: issues, beliefs, papers, experiments, codechanges, web results/searches, sessions, costs, board. Do not hand-write trax records directly -- invoke this skill first.
-argument-hint: "[help|next|blocked|board|graph|search|recent|cost|profile|<kind>] ..."
+  ALWAYS invoke this skill for Trackinizer/trax work tracking, inquiry records, and visual workspaces: issues, beliefs, papers, experiments, codechanges, web results/searches, sessions, costs, board, workspace. Do not hand-write trax records directly -- invoke this skill first.
+argument-hint: "[help|next|blocked|board|graph|search|recent|cost|profile|workspace|<kind>] ..."
 user-invocable: true
 tools: Bash, Read, Write, Edit, Glob, Grep
 ---
@@ -332,6 +332,32 @@ touching the deployed database.
 
 Inspection: `trax graph --open-only`, `trax search <terms> --kind issue`,
 `trax recent`, `trax cost issue 7 --deep`, `trax issue 7 --changes`.
+
+## Agent-controlled canvas
+
+When a paired chat message includes a `workspace_id`, use that ID to inspect or
+change the user's canvas. The agent's trax profile must point at the same server
+as the browser workspace, and the session using its API key must be paired to
+that workspace. Read the state before choosing an instance ID:
+
+```bash
+trax workspace WORKSPACE_UUID
+trax workspace WORKSPACE_UUID show trax.chat --record RECORD_UUID --placement side
+trax workspace WORKSPACE_UUID show trax.subgraph --record RECORD_UUID --placement side
+trax workspace WORKSPACE_UUID show trax.timeline --record RECORD_UUID --placement side
+trax workspace WORKSPACE_UUID focus INSTANCE_UUID
+trax workspace WORKSPACE_UUID place INSTANCE_UUID floating
+trax workspace WORKSPACE_UUID hide INSTANCE_UUID
+```
+
+The catalog registers `trax.browse`, `trax.chat`, `trax.subgraph`, and
+`trax.timeline`. The timeline accepts Issue and Experiment records and shows
+bounded dated directions, results, and signed evidence. The context graph
+follows the selected record's Issue lineage and highlights it.
+Each write reads
+the current revision and prints the resulting state. If another change wins the
+race and the server returns 409, read the workspace again before retrying.
+Pairing and disconnecting remain browser actions.
 
 ## Decomposing a large task
 

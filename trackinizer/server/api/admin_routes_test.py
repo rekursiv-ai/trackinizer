@@ -990,6 +990,7 @@ class TestProfileRoute:
             return_value={
                 "name": "Alice",
                 "last_login": datetime(2026, 1, 1, tzinfo=UTC),
+                "visual_workspace_enabled": False,
             },
         )
         r = client.get("/api/me/profile")
@@ -998,6 +999,7 @@ class TestProfileRoute:
         assert body["email"]
         assert body["role"] == "admin"
         assert body["name"] == "Alice"
+        assert body["visual_workspace_enabled"] is False
         last_login = body["last_login"]
         assert isinstance(last_login, str)
         assert last_login.startswith("2026")

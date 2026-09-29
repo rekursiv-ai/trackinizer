@@ -46,6 +46,7 @@ from trackinizer.wire.wire_sessions import (
     SessionEndResponse,
     SessionStart,
     SessionStartResponse,
+    WorkspaceMessageContext,
 )
 
 
@@ -969,7 +970,7 @@ class FakeClient:
         session_id: uuid.UUID,
         *,
         wait_sec: float = 0.0,
-    ) -> list[tuple[str, str | None, str | None]]:
+    ) -> list[tuple[str, str | None, str | None, WorkspaceMessageContext | None]]:
         """Drain inbound."""
         self.calls.append(("drain_inbound", (session_id,), {"wait_sec": wait_sec}))
         return []

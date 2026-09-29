@@ -38,11 +38,13 @@ from trackinizer.server.auth import (
 __all__ = [
     "CreateTokenBody",
     "TokenRoleChangeBody",
+    "VisualWorkspacePreference",
     "create_token_route",
     "list_tokens_route",
     "profile_route",
     "revoke_token_route",
     "set_token_role_route",
+    "set_visual_workspace_preference",
 ]
 
 
@@ -73,6 +75,12 @@ class TokenRoleChangeBody(BaseModel):
     role: RoleLiteral
 
 
+class VisualWorkspacePreference(BaseModel):
+    """The user's opt-in for the agent-guided canvas."""
+
+    enabled: bool
+
+
 @router.get("/api/me/profile")
 async def profile_route(
     request: Request,
@@ -91,25 +99,67 @@ async def profile_route(
       identity: Authenticated user from Bearer token or session cookie.
 
     Returns:
-      result: JSON with user_id, email, name, role, last_login.
+      result: JSON with user_id, email, name, role, last_login, and canvas opt-in.
 
     """
     engine = engine_of(request)
     async with engine.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT name, last_login FROM users WHERE id = $1",
+            "SELECT name, last_login, visual_workspace_enabled "
+            "FROM users WHERE id = $1",
             identity.user_id,
         )
     name = identity.email if row is None else row["name"]
     assert isinstance(name, str)
     last_login = None if row is None else row["last_login"]
+    workspace_enabled = False if row is None else row["visual_workspace_enabled"]
+    assert isinstance(workspace_enabled, bool)
     return {
         "user_id": str(identity.user_id),
         "email": identity.email,
         "name": name,
         "role": identity.role,
         "last_login": iso_format(last_login),
+        "visual_workspace_enabled": workspace_enabled,
     }
+
+
+@router.put(
+    "/api/me/visual-workspace",
+    response_model=VisualWorkspacePreference,
+)
+async def set_visual_workspace_preference(
+    body: VisualWorkspacePreference,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_user)],
+) -> VisualWorkspacePreference:
+    """Set the caller's opt-in for the visual canvas.
+
+    Args:
+      body: Desired canvas availability.
+      request: FastAPI request with a database engine.
+      identity: Authenticated account owner.
+
+    Returns:
+      preference: The stored account choice.
+
+    """
+    if identity.api_key_id is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Visual workspace opt-in requires an interactive session",
+        )
+    async with engine_of(request).acquire() as conn:
+        enabled = await conn.fetchval(
+            "UPDATE users SET visual_workspace_enabled = $1 "
+            "WHERE id = $2 RETURNING visual_workspace_enabled",
+            body.enabled,
+            identity.user_id,
+        )
+    if enabled is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    assert isinstance(enabled, bool)
+    return VisualWorkspacePreference(enabled=enabled)
 
 
 @router.post("/api/me/tokens")

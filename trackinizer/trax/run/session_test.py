@@ -57,6 +57,7 @@ from trackinizer.trax.run.session import (
 )
 from trackinizer.trax.run.sink import Sink
 from trackinizer.trax.run.slash import SlashCommand
+from trackinizer.wire.wire_sessions import WorkspaceMessageContext
 
 
 if TYPE_CHECKING:
@@ -1914,13 +1915,13 @@ class _BatchClient:
         session_id: uuid.UUID,
         *,
         wait_sec: float = 0.0,
-    ) -> list[tuple[str, str | None, str | None]]:
+    ) -> list[tuple[str, str | None, str | None, WorkspaceMessageContext | None]]:
         del session_id, wait_sec
         self.drains += 1
         if self.drains > 1:
             _real_pause(0.02)
             return []
-        return [(text, None, None) for text in self._texts]
+        return [(text, None, None, None) for text in self._texts]
 
 
 class _SessionSink:
@@ -1970,7 +1971,7 @@ class _WaitingClient:
         session_id: uuid.UUID,
         *,
         wait_sec: float = 0.0,
-    ) -> list[tuple[str, str | None, str | None]]:
+    ) -> list[tuple[str, str | None, str | None, WorkspaceMessageContext | None]]:
         del session_id
         self.waits.append(wait_sec)
         # A real hold blocks in the transport, not in ``time.sleep``: a fake
@@ -1991,7 +1992,7 @@ class _FailingClient:
         session_id: uuid.UUID,
         *,
         wait_sec: float = 0.0,
-    ) -> list[tuple[str, str | None, str | None]]:
+    ) -> list[tuple[str, str | None, str | None, WorkspaceMessageContext | None]]:
         del session_id, wait_sec
         self.attempts += 1
         raise RuntimeError("back-channel down")
@@ -2010,6 +2011,45 @@ class TestRenderInbound:
     def test_bare_text_when_no_context(self) -> None:
         # Neither room nor attested sender: inject the message verbatim.
         assert _render_inbound("go", None, None) == "go"
+
+    def test_workspace_chat_context_is_delivered_separately_from_user_text(
+        self,
+    ) -> None:
+        context = WorkspaceMessageContext.model_validate(
+            {
+                "workspace_id": "c5286865-67b6-4bd8-ab51-e06e10c326c5",
+                "record_id": "889ffcb2-cf44-43e7-9806-eb08428c6203",
+                "record": {
+                    "id": "889ffcb2-cf44-43e7-9806-eb08428c6203",
+                    "kind": "Issue",
+                    "seq": 21_706,
+                    "title": "ARC3 effort\nwith a newline",
+                },
+                "visible_visuals": [
+                    {
+                        "id": "2de97e19-2624-4e89-804e-f19e7248eec3",
+                        "type": "trax.chat",
+                    },
+                ],
+            },
+        )
+
+        rendered = _render_inbound(
+            "What led here?",
+            "viewer@example.com",
+            None,
+            context=context,
+        )
+
+        assert rendered == (
+            "viewer@example.com: What led here?\n"
+            f"Trackinizer context (verify with trax): {context.model_dump_json()}"
+            "\nCanvas commands: trax workspace c5286865-67b6-4bd8-ab51-e06e10c326c5; "
+            "to show the context graph for this record, run "
+            "trax workspace c5286865-67b6-4bd8-ab51-e06e10c326c5 "
+            "show trax.subgraph --record 889ffcb2-cf44-43e7-9806-eb08428c6203 "
+            "--placement side"
+        )
 
 
 _ENVELOPE = json.dumps(

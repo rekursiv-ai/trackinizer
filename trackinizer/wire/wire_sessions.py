@@ -69,6 +69,9 @@ __all__ = [
     "SessionEndResponse",
     "SessionStart",
     "SessionStartResponse",
+    "WorkspaceMessageContext",
+    "WorkspaceRecordContext",
+    "WorkspaceVisibleVisual",
 ]
 
 
@@ -249,6 +252,35 @@ class InboundEnqueueRequest(BaseModel):
     text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
 
 
+class WorkspaceRecordContext(BaseModel):
+    """A graph record targeted by chat, with a bounded title preview."""
+
+    id: uuid.UUID
+    kind: str
+    seq: int
+    title: str = Field(max_length=512)
+
+
+class WorkspaceVisibleVisual(BaseModel):
+    """A visual present on the canvas when a message was sent."""
+
+    id: uuid.UUID
+    type: str
+
+
+class WorkspaceMessageContext(BaseModel):
+    """Server-derived canvas context attached to an inbound message."""
+
+    workspace_id: uuid.UUID
+    record_id: uuid.UUID | None = None
+    """Persisted target ID, including records on a separate read profile."""
+
+    record: WorkspaceRecordContext | None = None
+    visible_visuals: list[WorkspaceVisibleVisual]
+    agent_instructions: str | None = Field(default=None, max_length=8_192)
+    continuation_record_id: uuid.UUID | None = None
+
+
 class InboundDrainItem(BaseModel):
     """One message drained for a session, with its attested sender.
 
@@ -264,6 +296,8 @@ class InboundDrainItem(BaseModel):
     room: str | None = None
     """The room a routed message was scoped to, for the ``[room] sender:``
     injection prefix; ``None`` for a direct (session-id) enqueue."""
+
+    context: WorkspaceMessageContext | None = None
 
     _validate_room = field_validator("room", mode="after")(staticmethod(_reject_blank))
 

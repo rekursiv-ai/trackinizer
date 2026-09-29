@@ -582,6 +582,7 @@ CREATE TABLE IF NOT EXISTS users (
     name        TEXT NOT NULL,
     role        TEXT NOT NULL CHECK (role IN ('viewer', 'writer', 'admin')),
     status      TEXT NOT NULL CHECK (status IN ('active', 'disabled')),
+    visual_workspace_enabled BOOLEAN NOT NULL DEFAULT FALSE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     last_login  TIMESTAMPTZ
 );
@@ -887,3 +888,39 @@ CREATE TABLE IF NOT EXISTS session_slash_commands (
     args        TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (session_id, seq)
 );
+
+-- Per-user canvas state. The companion receipt table makes retried operations
+-- return the original result without applying them twice. Added in 026.
+CREATE TABLE IF NOT EXISTS visual_workspaces (
+    id          UUID PRIMARY KEY,
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    is_default  BOOLEAN NOT NULL DEFAULT TRUE,
+    revision    BIGINT NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    state       JSONB NOT NULL CHECK (jsonb_typeof(state) = 'object'),
+    session_id  UUID REFERENCES inquiries(id) ON DELETE SET NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    modified_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_visual_workspaces_default_user
+    ON visual_workspaces (user_id) WHERE is_default;
+
+CREATE TABLE IF NOT EXISTS visual_workspace_operations (
+    workspace_id UUID NOT NULL REFERENCES visual_workspaces(id) ON DELETE CASCADE,
+    key          UUID NOT NULL,
+    request_hash TEXT NOT NULL,
+    response     JSONB NOT NULL CHECK (jsonb_typeof(response) = 'object'),
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (workspace_id, key)
+);
+
+-- Durable canvas views and workflows. Added in 027; session attachment is transient.
+CREATE TABLE IF NOT EXISTS visual_workspace_presets (
+    id          UUID PRIMARY KEY,
+    user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 120),
+    state       JSONB NOT NULL CHECK (jsonb_typeof(state) = 'object'),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    modified_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS idx_visual_workspace_presets_user_modified
+    ON visual_workspace_presets (user_id, modified_at DESC, id DESC);

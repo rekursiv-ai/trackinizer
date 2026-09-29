@@ -177,6 +177,18 @@ wheels = [
 ]
 
 [[package]]
+name = "configgle"
+version = "1.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/61/1b/15a8bb8b8716d02ba41144a1bde1304db6ef2e9a5120c9275b24da2827ad/configgle-1.4.0.tar.gz", hash = "sha256:0a038b8e38144137afd02b5e57249390c4955fbbbd9346d088bc8ef9389042c0", size = 202481, upload-time = "2026-08-20T01:45:23.592Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1e/b0/bfe4eb5109110bd14554ce4e5d3c9194ab31554e9b665d190f45362930f4/configgle-1.4.0-py3-none-any.whl", hash = "sha256:7a8b79e96faa420b359153ecb0604173381491dcaad51a06c8c8027df13c44f2", size = 74483, upload-time = "2026-08-20T01:45:22.183Z" },
+]
+
+[[package]]
 name = "distlib"
 version = "0.4.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1443,6 +1455,7 @@ source = { editable = "." }
 dependencies = [
     { name = "asyncpg" },
     { name = "bashlex" },
+    { name = "configgle" },
     { name = "fastapi" },
     { name = "httpx2" },
     { name = "huggingface-hub" },
@@ -1525,6 +1538,7 @@ typecheck = [
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "bashlex", specifier = ">=0.18" },
+    { name = "configgle", specifier = ">=1.4.0" },
     { name = "fastapi", specifier = ">=0.123.9" },
     { name = "httpx2", specifier = ">=2.12" },
     { name = "huggingface-hub", specifier = ">=0.30.0" },

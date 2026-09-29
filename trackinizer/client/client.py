@@ -97,6 +97,7 @@ if TYPE_CHECKING:
         SessionEndResponse,
         SessionStart,
         SessionStartResponse,
+        WorkspaceMessageContext,
     )
 else:
     from wrapt import lazy_import
@@ -1619,12 +1620,18 @@ class Client:
         session_id: uuid.UUID,
         *,
         wait_sec: float = 0.0,
-    ) -> list[tuple[str, str | None, str | None]]:
+    ) -> list[
+        tuple[
+            str,
+            str | None,
+            str | None,
+            WorkspaceMessageContext | None,
+        ]
+    ]:
         """Drain pending inbound messages for a session, oldest first.
 
-        Returns ``(text, source, room)`` triples so the caller (``trax run``)
-        can render the ``[room] sender:`` injection context without a
-        wire-type import.
+        Returns ``(text, source, room, context)`` tuples so ``trax run``
+        can inject both routed messages and server-derived canvas context.
 
         Args:
           session_id: Session whose queue to drain.
@@ -1636,7 +1643,7 @@ class Client:
             client aborts the very wait it asked for.
 
         Returns:
-          result: The list[tuple[str, str | None, str | None]].
+          result: Inbound text, attested sender, room, and optional canvas context.
 
         """
         where = wire_sessions.session_inbound_path(session_id)
@@ -1650,7 +1657,7 @@ class Client:
             timeout=wait_sec + 10.0 if wait_sec else None,
         )
         drained = _validate_model(wire_sessions.DrainInboundResponse, response, where)
-        return [(m.text, m.source, m.room) for m in drained.messages]
+        return [(m.text, m.source, m.room, m.context) for m in drained.messages]
 
     def send_message(
         self,

@@ -49,6 +49,9 @@ _LEFT_OUT: Final = frozenset(
         "session_embeddings",
         "session_index_state",
         "users",
+        "visual_workspace_operations",
+        "visual_workspace_presets",
+        "visual_workspaces",
     },
 )
 """Tables the export omits on purpose; ``wire_export.EXPORT_TABLES`` says why."""

@@ -1532,6 +1532,63 @@ class TestSessionMethods:
         assert seen["path"] == f"/api/sessions/{sid}/end"
         assert resp.id == sid
 
+    def test_inbound_drain_preserves_workspace_context(self) -> None:
+        session_id = uuid.uuid4()
+        workspace_id = uuid.uuid4()
+        record_id = uuid.uuid4()
+        visual_id = uuid.uuid4()
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            assert request.url.path == f"/api/sessions/{session_id}/inbound"
+            return httpx2.Response(
+                200,
+                json={
+                    "messages": [
+                        {
+                            "text": "What led here?",
+                            "source": "viewer@example.com",
+                            "context": {
+                                "workspace_id": str(workspace_id),
+                                "record_id": str(record_id),
+                                "agent_instructions": "Trace the evidence.",
+                                "continuation_record_id": str(record_id),
+                                "record": {
+                                    "id": str(record_id),
+                                    "kind": "Issue",
+                                    "seq": 21_706,
+                                    "title": "ARC3 effort",
+                                },
+                                "visible_visuals": [
+                                    {"id": str(visual_id), "type": "trax.chat"},
+                                ],
+                            },
+                        },
+                    ],
+                },
+            )
+
+        with Client("http://server") as client:
+            _install_mock_transport(client, handler)
+            drained = client.drain_inbound(session_id)
+
+        assert len(drained) == 1
+        text, source, room, context = drained[0]
+        assert (text, source, room) == ("What led here?", "viewer@example.com", None)
+        assert context is not None
+        assert context.model_dump(mode="json") == {
+            "workspace_id": str(workspace_id),
+            "record_id": str(record_id),
+            "agent_instructions": "Trace the evidence.",
+            "continuation_record_id": str(record_id),
+            "record": {
+                "id": str(record_id),
+                "kind": "Issue",
+                "seq": 21_706,
+                "title": "ARC3 effort",
+            },
+            "visible_visuals": [{"id": str(visual_id), "type": "trax.chat"}],
+        }
+
 
 class TestExport:
     def test_yields_each_line_without_its_newline(self) -> None:

@@ -201,6 +201,7 @@ POST /auth/logout
 
 ```
 GET  /api/me/profile
+PUT  /api/me/visual-workspace
 GET  /api/me/tokens
 POST /api/me/tokens
 POST /api/me/tokens/<uuid>/revoke
@@ -320,6 +321,55 @@ The whole graph as JSON lines (`application/x-ndjson`), for backup or a
 public mirror: every inquiry, edge, and change-log row, plus experiment
 metrics and agent-session records, read in one snapshot. Viewer role, like
 any read. Read-only; nothing imports it yet. Line shape: section 3.24.
+
+### 1.24 Visual catalog and workspace
+
+```
+GET  /api/visuals
+POST /api/workspaces
+GET  /api/workspaces/<uuid>
+GET  /api/workspaces/sessions/connectable
+PUT  /api/workspaces/<uuid>/connection
+POST /api/workspaces/<uuid>/operations
+```
+
+`GET /api/visuals` returns safe descriptors and the default visual type. It
+does not fetch graph data or start a session. Each descriptor has a stable
+`type`, `version`, title, description, requirements, default size, and bounded
+parameter schema.
+
+`PUT /api/me/visual-workspace` sets the signed-in user's canvas opt-in from
+an interactive browser session. API keys cannot change that choice.
+`GET /api/me/profile` includes `visual_workspace_enabled`; its default is
+false. Canvas routes return 403 while it is false.
+
+`POST /api/workspaces` creates or reopens the signed-in user's default canvas.
+The response has `id`, `revision`, `visuals`, `focused_instance`, and
+`connected_session_id`.
+`GET /api/workspaces/<uuid>` returns that state only to its owner.
+
+The browser pairs a live AgentSession with `PUT /connection`, supplying the
+current `revision` and `session_id`. Null disconnects. The session must have
+been opened by an unrevoked API key owned by that account. API keys cannot
+change the pairing. A stale revision returns 409 with the current workspace.
+`GET /api/workspaces/sessions/connectable` lists at most 100 such live
+sessions for the interactive browser's picker; API keys cannot call it.
+
+An operation body has `revision` and one `operation`: `show`, `hide`, `focus`,
+or `place`. The caller supplies a UUID `Idempotency-Key` header. The server
+locks the workspace, checks the revision, validates the visual type and
+parameters, and returns the new state. Retrying a recent body with the same
+key returns the original state. The latest 64 receipts are retained; an older
+retry receives a stale-revision 409 after its receipt expires. Reusing a
+retained key for another body returns 409.
+Both that conflict and a stale revision include `current` with the live
+workspace. An API key can operate only while its own live session is paired;
+that check also runs before replaying an idempotency receipt.
+The current browser polls the workspace every two seconds; workspace events
+are planned for a later slice.
+
+Viewer access is enough to change one's own canvas. Workspace operations do
+not edit trax records or add entries to `change_log`.
 
 ## 2. Glossary
 
@@ -831,15 +881,17 @@ Not exported: `inquiry_embeddings` (derived), `session_ciphertext`
 500  server fault
 ```
 
-Every mutating route -- including `DELETE` (field unset, inquiry purge,
-edge remove) -- returns `200` with a body carrying the `change_id` it
-produced (section 3.13). The sole exception is the admin user-DELETE
-(`DELETE /api/admin/users/<uuid>`), which returns `204` with no body.
+Inquiry and edge mutations -- including `DELETE` (field unset, inquiry
+purge, edge remove) -- return `200` with a body carrying the `change_id`
+they produced (section 3.13). Admin user-DELETE returns `204` with no body.
+Workspace mutations return canvas state; they do not produce a graph change.
 
 ### 4.2 Roles
 
 ```
-viewer  GET /api/**, GET /api/web/**, GET /api/me/**, GET /app/**
+viewer  GET /api/**, GET /api/web/**, GET /api/me/**, GET /app/**,
+        PUT /api/me/visual-workspace,
+        POST /api/workspaces, POST /api/workspaces/<uuid>/operations
 writer  viewer + inquiry/edge create/mutate/delete
 admin   writer + /api/admin/**
 ```

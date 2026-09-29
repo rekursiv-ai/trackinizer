@@ -23,7 +23,7 @@ from trackinizer.server.auth import (
     assert_account_active,
     require_role,
 )
-from trackinizer.server.inbound import Inbound
+from trackinizer.server.inbound import Inbound, InboundReplayConflictError
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.bodies import SubmitAgentSession
 from trackinizer.wire.wire_sessions import (
@@ -149,10 +149,13 @@ async def session_inbound_enqueue_route(
     # ``/api/messages`` send) so a retry reusing the ``Idempotency-Key`` is a
     # no-op instead of a double-injection. The receipt reports the current
     # queue depth -- unchanged on a replay because nothing was re-enqueued.
-    inbound.send_once(
-        _idempotency_key(request),
-        [(session_id, Inbound(text=body.text, source=identity.email))],
-    )
+    try:
+        inbound.send_once(
+            _idempotency_key(request),
+            [(session_id, Inbound(text=body.text, source=identity.email))],
+        )
+    except InboundReplayConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     return InboundEnqueueResponse(queued=inbound.pending(session_id))
 
 
@@ -236,7 +239,10 @@ async def send_message_route(
     # dedup check and double-enqueue. A replay returns the original receipt;
     # an empty non-replayed delivery is not recorded (the retry stays a real
     # send once a session comes live).
-    delivered = inbound.send_once(idempotency_key, targets)
+    try:
+        delivered = inbound.send_once(idempotency_key, targets)
+    except InboundReplayConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     return SendMessageResponse(delivered=delivered)
 
 
@@ -290,7 +296,13 @@ async def session_inbound_drain_route(
     )
     return DrainInboundResponse(
         messages=[
-            InboundDrainItem(text=m.text, source=m.source, room=m.room) for m in drained
+            InboundDrainItem(
+                text=m.text,
+                source=m.source,
+                room=m.room,
+                context=m.context,
+            )
+            for m in drained
         ],
     )
 

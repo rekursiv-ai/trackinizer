@@ -29,6 +29,8 @@ import asyncio
 import logging
 import threading
 
+from trackinizer.wire.wire_sessions import WorkspaceMessageContext
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,6 +46,21 @@ class Inbound:
     room: str | None = None
     """The room a routed send was scoped to; threads into the ``[room]
     sender:`` injection prefix. ``None`` for a direct (session-id) enqueue."""
+
+    context: WorkspaceMessageContext | None = None
+
+
+class InboundReplayConflictError(Exception):
+    """An idempotency key was reused for a different scoped message."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _SendReceipt:
+    """Original send result retained for retry-safe responses."""
+
+    delivered: tuple[UUID, ...]
+    fingerprint: str | None = None
+    queued: int | None = None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -73,7 +90,7 @@ class InboundQueue:
         default_factory=lambda: defaultdict(deque),
     )
 
-    _seen_sends: OrderedDict[UUID, list[UUID]] = field(default_factory=OrderedDict)
+    _seen_sends: OrderedDict[UUID, _SendReceipt] = field(default_factory=OrderedDict)
 
     # Callers blocked in ``await_messages``, by session. A list, not one event
     # per session: two waiters must both wake, or the second hangs to its
@@ -118,16 +135,72 @@ class InboundQueue:
             if key is not None:
                 seen = self._seen_sends.get(key)
                 if seen is not None:
-                    return seen
+                    if seen.fingerprint is not None:
+                        raise InboundReplayConflictError(
+                            "Idempotency-Key already used for a workspace message",
+                        )
+                    return list(seen.delivered)
             delivered: list[UUID] = []
             for session_id, message in targets:
                 self._append_capped(session_id, message)
                 delivered.append(session_id)
             if key is not None and delivered:
-                self._seen_sends[key] = delivered
-                while len(self._seen_sends) > self.max_seen_keys:
-                    self._seen_sends.popitem(last=False)
+                self._remember(
+                    key,
+                    _SendReceipt(delivered=tuple(delivered)),
+                )
             return delivered
+
+    def send_scoped_once(
+        self,
+        key: UUID,
+        session_id: UUID,
+        message: Inbound,
+        *,
+        fingerprint: str,
+    ) -> int:
+        """Queue once and replay the original depth for one scoped message.
+
+        Args:
+          key: Idempotency key.
+          session_id: Paired live session.
+          message: Text and server-derived canvas context.
+          fingerprint: Hash of the attested request and target.
+
+        Returns:
+          queued: Pending depth when the original send completed.
+
+        Raises:
+          InboundReplayConflictError: Key already names another send.
+
+        """
+        with self._lock:
+            seen = self._seen_sends.get(key)
+            if seen is not None:
+                if seen.fingerprint != fingerprint:
+                    raise InboundReplayConflictError(
+                        "Idempotency-Key already used for another message",
+                    )
+                if seen.queued is None:
+                    raise RuntimeError("Scoped send receipt has no queue depth")
+                return seen.queued
+            self._append_capped(session_id, message)
+            queued = len(self._queues[session_id])
+            self._remember(
+                key,
+                _SendReceipt(
+                    delivered=(session_id,),
+                    fingerprint=fingerprint,
+                    queued=queued,
+                ),
+            )
+            return queued
+
+    def _remember(self, key: UUID, receipt: _SendReceipt) -> None:
+        """Retain a bounded receipt under the caller's queue lock."""
+        self._seen_sends[key] = receipt
+        while len(self._seen_sends) > self.max_seen_keys:
+            self._seen_sends.popitem(last=False)
 
     def enqueue(self, session_id: UUID, message: Inbound) -> int:
         """Append ``message`` for ``session_id``; return the pending count.

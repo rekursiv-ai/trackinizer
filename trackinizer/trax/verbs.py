@@ -2697,6 +2697,136 @@ Notes:
             echo(line)
 
 
+class Workspace(Command):
+    """Read or operate the visual workspace paired with an agent."""
+
+    names = ("workspace",)
+    help = HelpPage(
+        usage="trax workspace WORKSPACE_UUID [show TYPE | hide UUID | focus UUID | place UUID PLACEMENT]",
+        summary="Read a workspace or change its visible modules.",
+        options=(("--record UUID", "Record target for a shown visual."),),
+        examples=(
+            "trax workspace 11111111-1111-1111-1111-111111111111",
+            "trax workspace UUID show trax.chat --record RECORD_UUID --placement side",
+            "trax workspace UUID hide INSTANCE_UUID",
+        ),
+        notes=("Mutations fetch the current revision before applying one operation.",),
+    )
+
+    @classmethod
+    @override
+    def make_parser(cls) -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser(prog="trax workspace", description=cls.__doc__)
+        parser.add_argument("workspace_id")
+        parser.add_argument(
+            "action",
+            nargs="?",
+            choices=("show", "hide", "focus", "place"),
+        )
+        parser.add_argument("subject", nargs="*")
+        parser.add_argument("--record")
+        parser.add_argument("--placement", choices=("main", "side", "floating"))
+        return parser
+
+    @classmethod
+    @override
+    def run(
+        cls,
+        verb: str,
+        args: argparse.Namespace,
+        client_factory: Callable[[], Client],
+    ) -> None:
+        del verb
+        flags = cast(_WorkspaceArgs, args)
+        workspace_id = _workspace_uuid(flags.workspace_id, "workspace")
+        path = f"/api/workspaces/{workspace_id}"
+        client = client_factory()
+        current = client.get(path)
+        if flags.action is None:
+            if flags.subject or flags.record or flags.placement:
+                raise ClientError("workspace read does not accept operation arguments")
+            _print_workspace(current)
+            return
+        operation = _workspace_operation(flags)
+        revision = IntCodec.coerce(DictCodec.coerce(current).get("revision"))
+        updated = client.post(
+            f"{path}/operations",
+            body={"revision": revision, "operation": operation},
+        )
+        _print_workspace(updated)
+
+
+def _workspace_operation(args: _WorkspaceArgs) -> dict[str, object]:
+    """Build one validated workspace operation from CLI arguments."""
+    subject = list(args.subject)
+    operation: dict[str, object]
+    if args.action == "show":
+        if len(subject) != 1:
+            raise ClientError("show requires one visual type")
+        operation = {"kind": "show", "visual_type": subject[0], "params": {}}
+        if args.placement is not None:
+            operation["placement"] = args.placement
+        if args.record is not None:
+            operation["record_id"] = str(_workspace_uuid(args.record, "record"))
+    elif args.action in {"hide", "focus"}:
+        if len(subject) != 1 or args.record is not None or args.placement is not None:
+            raise ClientError(f"{args.action} requires one instance UUID")
+        operation = {
+            "kind": args.action,
+            "instance_id": str(_workspace_uuid(subject[0], "instance")),
+        }
+    else:
+        if (
+            len(subject) != 2
+            or args.record is not None
+            or args.placement is not None
+            or subject[1] not in {"main", "side", "floating"}
+        ):
+            raise ClientError("place requires an instance UUID and placement")
+        operation = {
+            "kind": "place",
+            "instance_id": str(_workspace_uuid(subject[0], "instance")),
+            "placement": subject[1],
+        }
+    return operation
+
+
+def _print_workspace(payload: object) -> None:
+    """Print workspace and visual identifiers in a compact readable form."""
+    state = DictCodec.coerce(payload)
+    workspace_id = StrCodec.coerce(state.get("id"), "unknown")
+    revision = IntCodec.coerce(state.get("revision"))
+    focused = StrCodec.coerce(state.get("focused_instance"), "none")
+    echo(f"workspace {workspace_id} revision {revision} focused {focused}")
+    visuals = ListCodec.mappings(state.get("visuals"))
+    if not visuals:
+        echo("  (no visuals)")
+        return
+    for visual in visuals:
+        instance_id = StrCodec.coerce(visual.get("id"), "unknown")
+        visual_type = StrCodec.coerce(visual.get("type"), "unknown")
+        placement = StrCodec.coerce(visual.get("placement"), "main")
+        record_id = StrCodec.coerce(visual.get("record_id"))
+        target = f" record={record_id}" if record_id else ""
+        echo(f"  {visual_type} {instance_id} {placement}{target}")
+
+
+def _workspace_uuid(value: str, label: str) -> uuid.UUID:
+    """Parse one UUID and report malformed command-line identifiers clearly."""
+    try:
+        return uuid.UUID(value)
+    except ValueError as error:
+        raise ClientError(f"{label} is not a valid UUID: {value!r}") from error
+
+
+class _WorkspaceArgs(Protocol):
+    workspace_id: str
+    action: str | None
+    subject: list[str]
+    record: str | None
+    placement: str | None
+
+
 # The leading ``@`` is optional; a single ``:`` separates an optional room.
 def _parse_target(target: str) -> tuple[str, str | None]:
     """Split a ``@actor[:room]`` target into ``(actor, room)``."""

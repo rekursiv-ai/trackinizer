@@ -74,5 +74,8 @@ Left out on purpose, and why:
   blobs, which retention exists to drop.
 * ``users``, ``api_keys``, ``allowlist`` -- credentials and access control,
   not the graph.
+* ``visual_workspaces``, ``visual_workspace_operations``,
+  ``visual_workspace_presets`` -- per-user canvas state, saved workflows, and
+  operation receipts, not account-agnostic graph records.
 * ``applied_migrations`` -- carried in the header instead.
 """

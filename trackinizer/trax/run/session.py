@@ -68,6 +68,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from datetime import datetime
 
+    from trackinizer.wire.wire_sessions import WorkspaceMessageContext
+
 
 _logger = logging.getLogger(__name__)
 
@@ -733,8 +735,8 @@ def _inbound_poll_loop(
             # server-side, so the batch is already gone from the queue: one
             # message that cannot be typed must not take its siblings with it,
             # since no later drain will ever return them again.
-            for text, source, room in batch:
-                _deliver_one(relay, text, source, room, stream=stream)
+            for text, source, room, context in batch:
+                _deliver_one(relay, text, source, room, context=context, stream=stream)
             warned = False  # Recovered; allow a fresh warning next outage.
             # No sleep: the request itself was the wait, so re-arming
             # immediately is what keeps the channel continuously parked.
@@ -762,11 +764,14 @@ def _deliver_one(
     source: str | None,
     room: str | None,
     *,
+    context: WorkspaceMessageContext | None,
     stream: bool,
 ) -> None:
     """Submit one inbound message; a failure is logged, not propagated."""
     try:
-        relay.submit(_render_inbound(text, source, room, stream=stream))
+        relay.submit(
+            _render_inbound(text, source, room, context=context, stream=stream),
+        )
     except Exception:
         _logger.warning(
             "trax run: could not deliver an inbound message; "
@@ -794,10 +799,11 @@ def _render_inbound(
     source: str | None,
     room: str | None,
     *,
+    context: WorkspaceMessageContext | None = None,
     stream: bool = False,
 ) -> str:
     """Decorate an inbound message with its routing context for injection."""
-    if source == "trackinizer" and not stream:
+    if context is None and source == "trackinizer" and not stream:
         agent_message = _envelope_agent_message(text)
         if agent_message is not None:
             return agent_message
@@ -806,7 +812,20 @@ def _render_inbound(
         prefix += f"[{room}] "
     if source:
         prefix += f"{source}: "
-    return f"{prefix}{text}"
+    rendered = f"{prefix}{text}"
+    if context is not None:
+        rendered += (
+            f"\nTrackinizer context (verify with trax): {context.model_dump_json()}"
+        )
+        rendered += f"\nCanvas commands: trax workspace {context.workspace_id}"
+        if context.record_id is not None:
+            rendered += (
+                "; to show the context graph for this record, run "
+                f"trax workspace {context.workspace_id} "
+                "show trax.subgraph "
+                f"--record {context.record_id} --placement side"
+            )
+    return rendered
 
 
 def _envelope_agent_message(text: str) -> str | None:
