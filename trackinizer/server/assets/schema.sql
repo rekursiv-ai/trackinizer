@@ -924,3 +924,26 @@ CREATE TABLE IF NOT EXISTS visual_workspace_presets (
 );
 CREATE INDEX IF NOT EXISTS idx_visual_workspace_presets_user_modified
     ON visual_workspace_presets (user_id, modified_at DESC, id DESC);
+
+-- Shared reports are identified separately from their immutable revisions.
+-- Each revision owns a generic Artifact linked to the producing Issue.
+CREATE TABLE IF NOT EXISTS visual_reports (
+    id          UUID PRIMARY KEY,
+    -- Historical target survives an ordinary graph-row purge.
+    issue_id    UUID NOT NULL,
+    created_by  UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+CREATE TABLE IF NOT EXISTS visual_report_revisions (
+    report_id    UUID NOT NULL REFERENCES visual_reports(id) ON DELETE RESTRICT,
+    revision     INTEGER NOT NULL CHECK (revision >= 1),
+    artifact_id  UUID NOT NULL UNIQUE,
+    author_id    UUID REFERENCES users(id) ON DELETE SET NULL,
+    author_email TEXT NOT NULL,
+    content      JSONB NOT NULL CHECK (jsonb_typeof(content) = 'object'),
+    publish_key  UUID NOT NULL,
+    request_hash TEXT NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (report_id, revision),
+    UNIQUE (author_id, publish_key)
+);

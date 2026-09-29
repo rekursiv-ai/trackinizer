@@ -117,3 +117,50 @@ user pairs a live session before sending another message. The next message
 carries saved guidance and the continuation record in its typed context.
 Presets never store session credentials. Existing browser-only saved inquiry
 queries remain a separate feature.
+
+## Publish a shared report
+
+An authenticated writer can publish a report revision with `POST /api/reports`.
+The request names an existing Issue, a title, a summary, and either `format:
+"structured"` with sections or `format: "html"` with a bounded HTML string.
+Supply an `Idempotency-Key` UUID. The server creates an Artifact linked to the
+Issue by `produced_by` in the same transaction. A retry with the same request
+and key returns the same revision; a different request with that key returns
+409. Pass the returned `report_id` in the next publish to append revision 2.
+
+Structured findings require a claim, measured result, denominator, split,
+uncertainty, and citations. A citation can name a record alone, or name a
+`proves` or `favors` edge from that record to a `claim_id`. Publication copies
+the record title and signed edge value into the revision. Later graph edits
+cannot change what the report cited. For example:
+
+```json
+{
+  "issue_id": "<issue-uuid>",
+  "title": "ARC3 directions",
+  "summary": "Measured outcomes and open questions.",
+  "format": "structured",
+  "sections": [{
+    "title": "Representation",
+    "summary": "The wider representation improved the held-out score.",
+    "details": "Matched runs on the frozen split.",
+    "findings": [{
+      "claim": "Wider features improved the score",
+      "outcome": {"result": "12 wins", "denominator": 16, "split": "held-out"},
+      "uncertainty": "The sample is small.",
+      "citations": [{
+        "record_id": "<source-uuid>",
+        "claim_id": "<belief-uuid>",
+        "edge_kind": "favors"
+      }]
+    }]
+  }]
+}
+```
+
+Any signed-in teammate can read the exact revision at
+`/app/#/report/<report-id>/<revision>` or through
+`GET /api/reports/<report-id>/revisions/<revision>`. An agent can show it on a
+canvas with `visual_type: "trax.report"` and params `report_id` and `revision`.
+The renderer loads only when shown. Custom HTML runs in an opaque-origin iframe
+with a restrictive content security policy; it cannot read the app's session.

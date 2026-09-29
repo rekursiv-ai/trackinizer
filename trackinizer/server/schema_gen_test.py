@@ -204,6 +204,7 @@ class TestSchema:
             "schema.025.sql",
             "schema.026.sql",
             "schema.027.sql",
+            "schema.028.sql",
         ]
 
     def test_canonical_schema_contains_artifact_audit_columns(self) -> None:

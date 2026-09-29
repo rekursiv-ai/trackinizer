@@ -77,5 +77,7 @@ Left out on purpose, and why:
 * ``visual_workspaces``, ``visual_workspace_operations``,
   ``visual_workspace_presets`` -- per-user canvas state, saved workflows, and
   operation receipts, not account-agnostic graph records.
+* ``visual_reports``, ``visual_report_revisions`` -- shared report presentation
+  and author identity; the linked Artifact and graph citations export above.
 * ``applied_migrations`` -- carried in the header instead.
 """

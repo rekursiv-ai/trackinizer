@@ -49,6 +49,8 @@ _LEFT_OUT: Final = frozenset(
         "session_embeddings",
         "session_index_state",
         "users",
+        "visual_report_revisions",
+        "visual_reports",
         "visual_workspace_operations",
         "visual_workspace_presets",
         "visual_workspaces",

@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 __all__ = [
     "BrowseVisual",
     "ChatVisual",
+    "ReportVisual",
     "SubgraphVisual",
     "Visual",
     "VisualCatalogBody",
@@ -181,6 +182,46 @@ class SubgraphVisual:
         )
 
 
+class ReportVisual:
+    """An exact immutable revision of a shared report."""
+
+    class Config(Fig["ReportVisual"]):
+        title: str = "Report"
+        """Name shown in the Configure panel."""
+
+    def __init__(self, config: Config) -> None:
+        self.title = config.title
+
+    def describe(self) -> VisualDescription:
+        """Describe the report renderer without loading report content.
+
+        Returns:
+          description: Inert catalog entry for versioned reports.
+
+        """
+        return VisualDescription(
+            type="trax.report",
+            version=1,
+            title=self.title,
+            description="Read an immutable shared report revision.",
+            requires=[],
+            default_size="wide",
+            parameter_schema={
+                "report_id": ParameterDescription(
+                    type="string",
+                    default="",
+                    max_length=36,
+                ),
+                "revision": ParameterDescription(
+                    type="integer",
+                    default=1,
+                    minimum=1,
+                    maximum=10_000,
+                ),
+            },
+        )
+
+
 class TimelineVisual:
     """A bounded chronology of an Issue's directions and evidence."""
 
@@ -234,6 +275,7 @@ class Workspace:
                 ChatVisual.Config(),
                 SubgraphVisual.Config(),
                 TimelineVisual.Config(),
+                ReportVisual.Config(),
             ],
         )
         """Configured visual modules available to a workspace."""

@@ -31,11 +31,17 @@ def test_visual_catalog_has_default_browse_chat_and_context_graph(
     assert set(by_type) == {
         "trax.browse",
         "trax.chat",
+        "trax.report",
         "trax.subgraph",
         "trax.timeline",
     }
     assert by_type["trax.browse"]["version"] == 1
     assert by_type["trax.chat"]["requires"] == ["session"]
+    assert by_type["trax.report"]["requires"] == []
+    assert set(DictCodec.coerce(by_type["trax.report"]["parameter_schema"])) == {
+        "report_id",
+        "revision",
+    }
     assert by_type["trax.subgraph"]["requires"] == ["record"]
     assert by_type["trax.timeline"]["requires"] == ["record"]
     direction_schema = DictCodec.coerce(
