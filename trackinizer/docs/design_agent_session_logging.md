@@ -636,7 +636,7 @@ dependency. The missing piece is a server route that holds the request
 open.
 
 The interval is a keyword default on the loop function, reachable from
-tests but not from `RunConfig`. PR #122 proposes promoting it to a config
+tests but not from `RunConfig`. A later change may promote it to a config
 field. Either way that makes it tunable, not event-driven.
 
 ### e. Two capture gaps found along the way

@@ -127,7 +127,7 @@ class TestSilent:
         assert MAPPER.units(kind="UserMessage", text="") == ()
 
 
-# The footprint table of ``docs/private/session_indexing.md`` as a literal:
+# The session-indexing footprint table as a literal:
 # kind -> (fts, embed, shape). ``shape`` is "full" for whole/chunked prose,
 # "head" for a truncated machine-output head, "silent" for no units. This is
 # the conformance oracle -- FootprintMapper behavior for every kind must match

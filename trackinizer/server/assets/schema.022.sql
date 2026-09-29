@@ -19,8 +19,8 @@
 -- live ingest.
 
 -- ============================================================================
--- Per-record session embeddings: the vector surface over ``session_records``
--- (design: docs/private/session_indexing.md). One row per INDEX UNIT -- a
+-- Per-record session embeddings: the vector surface over ``session_records``.
+-- One row per INDEX UNIT -- a
 -- record's field ("content" whole/chunked, or a machine-output "head") as
 -- selected by a SemanticMapper policy (server/semantic_mapper.py).
 --

@@ -663,7 +663,7 @@ class SubmitBatch(BaseModel):
 class ActorMixin(BaseModel):
     """Mixin: an ``actor`` provenance string for the audit row.
 
-    ``actor`` is free-form (``"jvdillon"``, ``"claude-opus"``,
+    ``actor`` is free-form (``"alice"``, ``"claude-opus"``,
     ``"cron/nightly-import"``). ``None`` lets the route default to the
     authenticated principal's email; pass it explicitly to record a
     distinct provenance, such as an agent acting for a human.

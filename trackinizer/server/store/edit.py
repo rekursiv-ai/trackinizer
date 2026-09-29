@@ -164,11 +164,11 @@ class _EditMixin(_CascadeAuditMixin):
             )
         return row
 
-    # Known gap (trax Issue#21632): only a field write that changed something is
-    # replayed, because its key is its change row's id. A write that changed nothing
-    # writes no row, so a keyed retry of it runs as a new write and overwrites a
-    # change made since the first attempt. Web v2 re-reads the field before it
-    # resends; one idempotency layer for every keyed write closes the gap.
+    # Known gap: only a field write that changed something is replayed, because its
+    # key is its change row's id. A write that changed nothing writes no row, so a
+    # keyed retry of it runs as a new write and overwrites a change made since the
+    # first attempt. A client can re-read the field before it resends; one
+    # idempotency layer for every keyed write closes the gap.
     async def _replay_field_change(
         self,
         conn: Conn,

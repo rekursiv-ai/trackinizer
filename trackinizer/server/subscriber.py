@@ -26,7 +26,7 @@ single-process, so exactly one sweep exists. That is load-bearing:
 against live in the in-memory ``InboundQueue``, so a second sweep in a
 second process would re-derive the same key, miss those receipts, and
 deliver the change twice. Electing a single sweeper by advisory lock is
-step 4 of ``docs/private/workers.md``.
+the planned fix.
 """
 
 from __future__ import annotations

@@ -25,16 +25,6 @@ version. It loads the Chat chunk only when Chat is visible.
    OpenAPI schema. The snapshot tests compare both JSON files with the Python
    catalog, and TypeScript checks the renderer registration.
 
-The snapshot command from the repository root is:
-
-```sh
-uv --quiet run --frozen python -c 'from trackinizer.server.visuals.catalog import default_catalog; print(default_catalog().model_dump_json(indent=2))' > trackinizer/private/web/src/visuals/catalog.preview.json
-uv --quiet run --frozen trackinizer/private/web/scripts/openapi_dump.py
-```
-
-The preview snapshot is used only when local Vite points at an older backend
-that answers 404 for `/api/visuals`. Production reads the route.
-
 ## Change a canvas
 
 First enable the canvas in Settings, then `POST /api/workspaces` with the

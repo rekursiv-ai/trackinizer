@@ -693,9 +693,9 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                         conn=conn,
                     ),
                 )
-            # Known gap (trax Issue#21632): the items replay a keyed retry, but the
-            # edges carry no key. A retry adds each again if it is absent, so an
-            # edge removed since the first attempt comes back.
+            # Known gap: the items replay a keyed retry, but the edges carry no
+            # key. A retry adds each again if it is absent, so an edge removed
+            # since the first attempt comes back.
             for edge in edges:
                 await self._add_edge_on_conn(
                     conn,

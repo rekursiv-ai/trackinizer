@@ -1,6 +1,6 @@
 """Rewrite ``part = -1`` legacy streams through :func:`legacy_retype.retype`.
 
-The impure half of the retype (Issue#20799): reads one session's
+The impure half of the retype: reads one session's
 020-backfilled records, maps the ``legacy/*`` ones through the pure
 :func:`~trackinizer.server.store.legacy_retype.retype`, and REPLACES the
 part's rows in one transaction.

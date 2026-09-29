@@ -593,10 +593,10 @@ class _CascadeAuditMixin(_StoreShared):
             return
         buffer.append(Notification(engine=self.engine, subject_id=subject_id))
 
-    # Known gap (trax Issue#21632): a keyed retry of a purge that landed is not
-    # replayed. It finds the row gone and answers 404. Web v2 reads a purge's 404
-    # after an unanswered first attempt as done; one idempotency layer for every
-    # keyed write closes the gap for every client.
+    # Known gap: a keyed retry of a purge that landed is not replayed. It finds the
+    # row gone and answers 404. A client can read that 404, after an unanswered
+    # first attempt, as done; one idempotency layer for every keyed write closes
+    # the gap for every client.
     async def purge(
         self,
         target_id: UUID,

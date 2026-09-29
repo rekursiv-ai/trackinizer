@@ -14,7 +14,7 @@ memory, so a second process would neither see a send enqueued by the first
 nor its receipts. The two functions :meth:`InboundQueue.enqueue` /
 :meth:`InboundQueue.drain` are the seam: a durable-inbox or multi-process
 upgrade (NOTIFY, a table, Redis) replaces them without touching routes or
-the client. ``docs/private/workers.md`` specs that upgrade -- this class is
+the client. This class is
 the only per-process state standing between the server and ``--workers N``.
 """
 

@@ -928,7 +928,7 @@ async def _embed_batch(embedder: Embedder, texts: list[str]) -> list[list[float]
     return [await embedder.embed(text) for text in texts]
 
 
-# The steady-state ingest path (design: ``docs/private/session_indexing.md``). Each
+# The steady-state ingest path. Each
 # round runs :func:`sweep_session_embeddings` per model; the ``text_md5`` predicate
 # makes an already-swept corpus a cheap no-op, so a drained rescan costs a scan, not re-
 # embedding. Each model's partial HNSW index is ensured once at startup so a fresh model

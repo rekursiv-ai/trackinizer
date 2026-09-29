@@ -1,7 +1,7 @@
 """Sweep ``session_records`` into ``session_embeddings`` under a mapper policy.
 
-The one pass that serves BOTH backfill and live ingest (design:
-``docs/private/session_indexing.md``). It keyset-scans records on the console
+The one pass that serves BOTH backfill and live ingest.
+It keyset-scans records on the console
 feed's own index ``(created, session_id, part, idx)``, asks a
 :class:`~trackinizer.server.semantic_mapper.SemanticMapper` which spans of
 each record to index, and re-embeds exactly the records whose text changed --

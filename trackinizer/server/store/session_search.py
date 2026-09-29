@@ -1,7 +1,7 @@
 """Search the session index: embeddings + scoped tsvector, RRF-merged.
 
-The read half of the session-indexing design (``docs/private/session_indexing.md``
-"Search flow"): an embedding arm (cosine over ``session_embeddings``, HNSW) and
+The read half of the session-indexing design:
+an embedding arm (cosine over ``session_embeddings``, HNSW) and
 a full-text arm (``websearch_to_tsquery`` over ``session_records.search``) that
 reciprocal-rank-fuse into one ranked list of hits, each addressed back to its
 ``(session_id, part, idx)`` so the console can open the session at that record.

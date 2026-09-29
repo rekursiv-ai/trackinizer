@@ -1,6 +1,6 @@
 """Offload heavy record bodies to ``session_bodies``; splice back on replay.
 
-The cold half of the hot/cold split (``docs/private/session_indexing.md``):
+The cold half of the hot/cold split:
 tool-result and file bodies are ~90% of ``session_records``' content but are
 read only by replay, so they move off the hot row into the zstd sidecar and
 the hot row keeps a searchable head.

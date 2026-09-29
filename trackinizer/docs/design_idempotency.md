@@ -234,8 +234,8 @@ replay.
 
 ### Known gaps
 
-Tracked as trax Issue#21632. A keyed retry of these writes is **not**
-replayed; it runs again against the data as it is now:
+A keyed retry of these writes is **not** replayed; it runs again against
+the data as it is now:
 
 - **A field write that changed nothing.** It writes no audit row, so
   there is nothing for its key to find. If someone changed the field
@@ -246,13 +246,12 @@ replayed; it runs again against the data as it is now:
 - **A batch's edges.** The items replay; the edges carry no key and are
   added again if absent.
 
-Web v2 does not rely on the server for these. After an unanswered write
-it re-reads the stored value before resending: already the intended
+A client can make its own retries safe regardless: after an unanswered
+write, re-read the stored value before resending. Already the intended
 value means done, still the old one means resend, and anything else is
-a conflict it shows the user. The trax client's retry loop has no such
+a conflict to show the user. The trax client's retry loop has no such
 check. The planned fix is one idempotency layer for every keyed write,
-storing each request's response for 24 hours (task A19 in the web v2
-plan).
+storing each request's response for 24 hours.
 
 ## Consequences (the visible deviations)
 

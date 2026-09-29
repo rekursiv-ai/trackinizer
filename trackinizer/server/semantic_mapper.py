@@ -1,6 +1,6 @@
 """The semantic-mapping protocol: which text a record contributes to search.
 
-The footprint decision (``docs/private/session_indexing.md``) is POLICY --
+The footprint decision is POLICY --
 which kinds are indexed, head sizes, chunking -- and policy will be iterated
 on. This module fixes the CONTRACT so alternatives swap in without touching
 the store: a :class:`SemanticMapper` turns one stored record into zero or

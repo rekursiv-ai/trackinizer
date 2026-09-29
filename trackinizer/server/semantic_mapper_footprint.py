@@ -1,6 +1,6 @@
 """The v1 footprint policy: prose F(+E), machine-output heads, bodies blobbed.
 
-The ``docs/private/session_indexing.md`` footprint table as a
+The session-indexing footprint table as a
 :class:`~trackinizer.server.semantic_mapper.SemanticMapper`. Four
 classes of record:
 

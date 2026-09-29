@@ -151,8 +151,8 @@ CREATE INDEX IF NOT EXISTS idx_inquiry_embeddings_model
     ON inquiry_embeddings (model);
 
 
--- Per-record session embeddings: the vector surface over ``session_records``
--- (design: docs/private/session_indexing.md). One row per INDEX UNIT -- a
+-- Per-record session embeddings: the vector surface over ``session_records``.
+-- One row per INDEX UNIT -- a
 -- record's field ("content" whole/chunked, or a machine-output "head") as
 -- selected by a SemanticMapper policy (server/semantic_mapper.py).
 --
@@ -228,8 +228,8 @@ CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_jina_embeddings_v5_text_s
     WHERE model = 'jina-embeddings-v5-text-small@1024';
 
 
--- Freshness markers for the embedding sweep (design: docs/private/
--- session_indexing.md). One row per (record, mapper, model) the sweep touched,
+-- Freshness markers for the embedding sweep.
+-- One row per (record, mapper, model) the sweep touched,
 -- carrying the ``md5(text)`` it was reconciled at.
 --
 -- Why a separate table rather than keying freshness on a ``session_embeddings``
@@ -263,7 +263,7 @@ CREATE TABLE IF NOT EXISTS session_index_state (
 
 
 -- Replay-only bodies for heavy record kinds: the cold half of the hot/cold
--- split (design: docs/private/session_indexing.md "Storage split").
+-- split.
 --
 -- The twin of ``session_ciphertext``: same key, same one-transaction write
 -- with its record, spliced back only on replay (``read_session_records``

@@ -1,6 +1,6 @@
 # trax `metric` grammar
 
-Status: design, in build. Owner: Josh (Issue#602 metrics UI).
+Status: design, in build.
 
 `metric` is a row tail on an Experiment (and a cross-experiment query when no
 ref is given). It reads and writes the metric grid a run owns: a value at each
