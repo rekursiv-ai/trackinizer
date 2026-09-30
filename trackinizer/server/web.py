@@ -58,6 +58,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from trackinizer.lib.absent import ABSENT
 from trackinizer.lib.custom_json import FloatCodec, IntCodec, ListCodec
 from trackinizer.server.api._deps import tag_row
 from trackinizer.server.api._regex_guard import regex_failures_as_400
@@ -119,8 +120,6 @@ class _QueryEmbedder(Protocol):
         """Embed a search query on the query-side manifold."""
         ...
 
-
-_UNSET: Final = object()
 
 # See ``_AppRoute``: shared caches must never store an /app/ response.
 _APP_CACHE_CONTROL: Final = "private, no-cache"
@@ -1275,8 +1274,8 @@ def _isoformat(value: object) -> str:
 def _session_embedder(request: Request) -> _QueryEmbedder | None:
     """Return the process's default session-search embedder, or ``None``."""
     state = _state(request)
-    cached = getattr(state, "session_embedder", _UNSET)
-    if cached is not _UNSET:
+    cached = getattr(state, "session_embedder", ABSENT)
+    if cached is not ABSENT:
         return cast("_QueryEmbedder | None", cached)
     # ``isinstance`` narrowing, not ``getattr(config, ...)``: the lifespan
     # stores a real ``Config`` (``api/app.py``), so a typed read means a field
@@ -1310,8 +1309,8 @@ def _override_embedder(
 ) -> _QueryEmbedder:
     """Return the cached A/B override embedder for ``(name, dim)``; 400 if unknown."""
     state = _state(request)
-    cache = getattr(state, "session_embedder_overrides", _UNSET)
-    if cache is _UNSET:
+    cache = getattr(state, "session_embedder_overrides", ABSENT)
+    if cache is ABSENT:
         cache = {}
         state.session_embedder_overrides = cache
     overrides = cast("dict[tuple[str, int | None], _QueryEmbedder]", cache)

@@ -312,9 +312,8 @@ def derive_rows(
 
 _CWD: Final = Path(__file__).resolve().parent
 
-# The exact per-length corpus token histogram shipped as a data fixture (a small
-# deterministic golden, well under the 750 KiB source-control bound). The loader
-# groups lengths to the pad multiple and clamps the tail; see
+# The corpus histogram is pre-grouped to the pad multiple in the fixture. The
+# loader still clamps the tail and accepts ungrouped inputs; see
 # :func:`load_corpus_histogram`.
 CORPUS_HISTOGRAM_PATH: Final = _CWD / "testdata" / "corpus_token_freq_2026-09-20.txt"
 
