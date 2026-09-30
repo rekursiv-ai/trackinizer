@@ -12,9 +12,11 @@ from trackinizer.lib.custom_json import IntCodec, StrCodec
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.notify import tx
 from trackinizer.server.visuals.catalog import default_catalog
+from trackinizer.server.visuals.reports import read_artifact_content_on_conn
 from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
     ConnectableSession,
+    ShowVisual,
     WorkspaceConnection,
     WorkspaceConnectionStatus,
     WorkspaceData,
@@ -25,6 +27,7 @@ from trackinizer.server.visuals.workspaces import (
     initial_data,
 )
 from trackinizer.wire.wire_sessions import (
+    WorkspaceArtifactContent,
     WorkspaceMessageContext,
     WorkspaceRecordContext,
     WorkspaceVisibleVisual,
@@ -54,7 +57,7 @@ class ReplayConflictError(Exception):
 
 
 class WorkspaceDisabledError(Exception):
-    """The account has not enabled the visual canvas."""
+    """The account cannot access a visual canvas."""
 
 
 class WorkspacePairingError(Exception):
@@ -66,13 +69,15 @@ class WorkspaceSessionUnavailableError(Exception):
 
 
 class WorkspaceContextChangedError(Exception):
-    """The chat visual now targets a different record."""
+    """The chat visual now targets a different record or report."""
 
 
 async def workspace_connection_status(
     engine: DatabaseEngine,
     user_id: uuid.UUID,
     workspace_id: uuid.UUID,
+    *,
+    inbound: InboundQueue,
 ) -> WorkspaceConnectionStatus | None:
     """Read the stored pairing directly, including sessions beyond picker cap.
 
@@ -80,12 +85,13 @@ async def workspace_connection_status(
       engine: Database connection source.
       user_id: Authenticated browser account.
       workspace_id: Canvas whose pairing is checked.
+      inbound: In-process poller leases.
 
     Returns:
       status: Direct pairing status, or None for a foreign canvas.
 
     """
-    state = await read_workspace(engine, user_id, workspace_id)
+    state = await read_workspace(engine, user_id, workspace_id, inbound=inbound)
     if state is None:
         return None
     session_id = state.connected_session_id
@@ -107,6 +113,8 @@ async def workspace_connection_status(
         return WorkspaceConnectionStatus(status="unavailable", session_id=session_id)
     if row["status"] != "active" or row["ended"] is not None:
         return WorkspaceConnectionStatus(status="ended", session_id=session_id)
+    if not inbound.has_poller(session_id):
+        return WorkspaceConnectionStatus(status="unavailable", session_id=session_id)
     return WorkspaceConnectionStatus(
         status="live",
         session_id=session_id,
@@ -141,11 +149,6 @@ async def send_workspace_message(
 
     """
     async with engine.acquire() as conn, tx(conn):
-        if not await conn.fetchval(
-            "SELECT visual_workspace_enabled FROM users WHERE id = $1",
-            user_id,
-        ):
-            raise WorkspaceDisabledError("Visual workspace is disabled")
         row = await conn.fetchrow(
             "SELECT id, revision, state, session_id FROM visual_workspaces "
             "WHERE id = $1 AND user_id = $2 FOR SHARE",
@@ -156,10 +159,14 @@ async def send_workspace_message(
             return None
         state = _state_from_row(cast("Mapping[str, object]", row))
         session_id = state.connected_session_id
-        if session_id is None or not await _live_session_owned_by_key(
-            conn,
-            session_id,
-            user_id,
+        if (
+            session_id is None
+            or not inbound.has_poller(session_id)
+            or not await _live_session_owned_by_key(
+                conn,
+                session_id,
+                user_id,
+            )
         ):
             raise WorkspaceSessionUnavailableError("No live paired session")
         if body.chat_instance_id is None and state.visuals:
@@ -175,7 +182,7 @@ async def send_workspace_message(
             record_id = chat.record_id
         if record_id != body.expected_record_id:
             raise WorkspaceContextChangedError(
-                "Chat record changed; refresh before sending.",
+                "Chat target changed; refresh before sending.",
             )
         record = None
         if record_id is not None:
@@ -187,10 +194,22 @@ async def send_workspace_message(
                 record_fields = dict(record_row)
                 record_fields["title"] = StrCodec.coerce(record_fields["title"])[:512]
                 record = WorkspaceRecordContext.model_validate(record_fields)
+        artifact_content = None
+        if record_id is not None and (record is None or record.kind == "Artifact"):
+            revision = await read_artifact_content_on_conn(
+                conn,
+                record_id,
+                include_html=False,
+            )
+            if revision is not None:
+                artifact_content = WorkspaceArtifactContent.model_validate(
+                    revision.model_dump(),
+                )
         context = WorkspaceMessageContext(
             workspace_id=workspace_id,
             record_id=record_id,
             record=record,
+            artifact_content=artifact_content,
             visible_visuals=[
                 WorkspaceVisibleVisual(id=visual.id, type=visual.type)
                 for visual in state.visuals
@@ -222,23 +241,21 @@ async def send_workspace_message(
 async def list_connectable_sessions(
     engine: DatabaseEngine,
     user_id: uuid.UUID,
+    *,
+    inbound: InboundQueue,
 ) -> list[ConnectableSession]:
     """List recent live sessions opened by this user's unrevoked keys.
 
     Args:
       engine: Database connection source.
       user_id: Authenticated browser account.
+      inbound: In-process poller leases.
 
     Returns:
       sessions: Up to 100 pairable sessions, newest first.
 
     """
     async with engine.acquire() as conn:
-        if not await conn.fetchval(
-            "SELECT visual_workspace_enabled FROM users WHERE id = $1",
-            user_id,
-        ):
-            raise WorkspaceDisabledError("Visual workspace is disabled")
         rows = await conn.fetch(
             "SELECT sess.id, sess.title, sess.owner AS actor, "
             "sess.agentsession_cli AS cli FROM inquiries AS sess "
@@ -247,10 +264,16 @@ async def list_connectable_sessions(
             "WHERE credential.user_id = $1 AND credential.revoked_at IS NULL "
             "AND sess.kind = 'AgentSession' AND sess.status = 'active' "
             "AND sess.agentsession_ended IS NULL AND sess.owner IS NOT NULL "
+            "AND sess.id = ANY($2::uuid[]) "
             "ORDER BY sess.created DESC, sess.id DESC LIMIT 100",
             user_id,
+            inbound.active_poller_ids(),
         )
-    return [ConnectableSession.model_validate(dict(row)) for row in rows]
+    return [
+        ConnectableSession.model_validate(dict(row))
+        for row in rows
+        if inbound.has_poller(cast(uuid.UUID, row["id"]))
+    ]
 
 
 async def create_default_workspace(
@@ -270,11 +293,6 @@ async def create_default_workspace(
     workspace_id = uuid.uuid4()
     state = initial_data(default_catalog())
     async with engine.acquire() as conn:
-        if not await conn.fetchval(
-            "SELECT visual_workspace_enabled FROM users WHERE id = $1",
-            user_id,
-        ):
-            raise WorkspaceDisabledError("Visual workspace is disabled")
         await conn.execute(
             "INSERT INTO visual_workspaces (id, user_id, state) VALUES ($1, $2, $3) "
             "ON CONFLICT DO NOTHING",
@@ -297,6 +315,7 @@ async def read_workspace(
     user_id: uuid.UUID,
     workspace_id: uuid.UUID,
     *,
+    inbound: InboundQueue,
     agent_api_key_id: uuid.UUID | None = None,
 ) -> WorkspaceState | None:
     """Read one canvas only when it belongs to the principal.
@@ -305,6 +324,7 @@ async def read_workspace(
       engine: Database connection source.
       user_id: Authenticated owner.
       workspace_id: Requested workspace.
+      inbound: In-process poller leases.
       agent_api_key_id: Agent key requiring a live workspace pairing, if any.
 
     Returns:
@@ -312,11 +332,6 @@ async def read_workspace(
 
     """
     async with engine.acquire() as conn:
-        if not await conn.fetchval(
-            "SELECT visual_workspace_enabled FROM users WHERE id = $1",
-            user_id,
-        ):
-            raise WorkspaceDisabledError("Visual workspace is disabled")
         row = await conn.fetchrow(
             "SELECT id, revision, state, session_id FROM visual_workspaces "
             "WHERE id = $1 AND user_id = $2",
@@ -328,6 +343,7 @@ async def read_workspace(
         state = _state_from_row(cast("Mapping[str, object]", row))
         if agent_api_key_id is not None and (
             state.connected_session_id is None
+            or not inbound.has_poller(state.connected_session_id)
             or not await _live_session_owned_by_key(
                 conn,
                 state.connected_session_id,
@@ -346,6 +362,7 @@ async def apply_workspace_operation(
     key: uuid.UUID,
     body: ApplyWorkspaceOperation,
     *,
+    inbound: InboundQueue,
     agent_api_key_id: uuid.UUID | None = None,
 ) -> WorkspaceState | None:
     """Apply one compare-and-swap operation and persist its replay receipt.
@@ -356,6 +373,7 @@ async def apply_workspace_operation(
       workspace_id: Target workspace.
       key: Idempotency key for this operation.
       body: Expected revision and validated operation.
+      inbound: In-process poller leases.
       agent_api_key_id: Calling API key, or None for browser cookie auth.
 
     Returns:
@@ -369,11 +387,6 @@ async def apply_workspace_operation(
     )
     request_hash = hashlib.sha256(canonical.encode()).hexdigest()
     async with engine.acquire() as conn, tx(conn):
-        if not await conn.fetchval(
-            "SELECT visual_workspace_enabled FROM users WHERE id = $1",
-            user_id,
-        ):
-            raise WorkspaceDisabledError("Visual workspace is disabled")
         row = await conn.fetchrow(
             "SELECT id, revision, state, session_id FROM visual_workspaces "
             "WHERE id = $1 AND user_id = $2 FOR UPDATE",
@@ -385,6 +398,7 @@ async def apply_workspace_operation(
         current = _state_from_row(cast("Mapping[str, object]", row))
         if agent_api_key_id is not None and (
             current.connected_session_id is None
+            or not inbound.has_poller(current.connected_session_id)
             or not await _live_session_owned_by_key(
                 conn,
                 current.connected_session_id,
@@ -405,6 +419,20 @@ async def apply_workspace_operation(
             return WorkspaceState.model_validate(receipt["response"])
         if body.revision != current.revision:
             raise RevisionConflictError(current)
+        if (
+            isinstance(body.operation, ShowVisual)
+            and body.operation.visual_type == "trax.artifact"
+        ):
+            if body.operation.record_id is None:
+                raise ValueError("Artifact visual requires a record target.")
+            if (
+                await conn.fetchval(
+                    "SELECT 1 FROM visual_report_revisions WHERE artifact_id = $1",
+                    body.operation.record_id,
+                )
+                is None
+            ):
+                raise ValueError("Artifact content not found.")
         updated_data = apply_operation(
             WorkspaceData(
                 visuals=current.visuals,
@@ -457,6 +485,8 @@ async def set_workspace_connection(
     user_id: uuid.UUID,
     workspace_id: uuid.UUID,
     body: WorkspaceConnection,
+    *,
+    inbound: InboundQueue,
 ) -> WorkspaceState | None:
     """Pair a live owned session, or disconnect it, with revision control.
 
@@ -465,17 +495,13 @@ async def set_workspace_connection(
       user_id: Authenticated browser account.
       workspace_id: Canvas to connect.
       body: Target session and expected canvas revision.
+      inbound: In-process poller leases.
 
     Returns:
       state: Updated canvas, or None when the account does not own it.
 
     """
     async with engine.acquire() as conn, tx(conn):
-        if not await conn.fetchval(
-            "SELECT visual_workspace_enabled FROM users WHERE id = $1",
-            user_id,
-        ):
-            raise WorkspaceDisabledError("Visual workspace is disabled")
         row = await conn.fetchrow(
             "SELECT id, revision, state, session_id FROM visual_workspaces "
             "WHERE id = $1 AND user_id = $2 FOR UPDATE",
@@ -487,10 +513,13 @@ async def set_workspace_connection(
         current = _state_from_row(cast("Mapping[str, object]", row))
         if body.revision != current.revision:
             raise RevisionConflictError(current)
-        if body.session_id is not None and not await _live_session_owned_by_key(
-            conn,
-            body.session_id,
-            user_id,
+        if body.session_id is not None and (
+            not inbound.has_poller(body.session_id)
+            or not await _live_session_owned_by_key(
+                conn,
+                body.session_id,
+                user_id,
+            )
         ):
             raise ValueError("Session is not live or does not belong to this account.")
         updated = current.model_copy(

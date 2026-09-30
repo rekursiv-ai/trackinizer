@@ -8,7 +8,14 @@ sessions that already existed when the run started.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterable, Iterator
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Callable,
+    Iterable,
+    Iterator,
+    Sequence,
+)
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from functools import partial
@@ -37,6 +44,7 @@ from trackinizer.lib.posix import follow
 from trackinizer.lib.posix.follow import follow_tree
 from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.posix.testing import poll_fsevents
+from trackinizer.trax.profile import LOCALHOST_FALLBACK_URL
 from trackinizer.trax.run import session
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
@@ -453,6 +461,233 @@ class TestSessionScoping:
         texts = _texts(sink)
         assert texts == ["mine"], f"a concurrent run's file was swept in: {texts}"
 
+    def test_simultaneous_claude_runs_in_one_cwd_stay_separate(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Two wrappers armed before either file exists capture their own ID."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(shutil, "which", _always_found)
+        barrier = threading.Barrier(2)
+        sinks = {name: _RecordingSink() for name in ("A", "B")}
+        errors: list[Exception] = []
+        argv_seen: list[Sequence[str]] = []
+
+        class _Relay:
+            def __init__(self, argv: Sequence[str], **kwargs: object) -> None:
+                del kwargs
+                self.argv = argv
+
+            def run(self) -> int:
+                name = threading.current_thread().name
+                argv_seen.append(self.argv)
+                session_id = (
+                    self.argv[self.argv.index("--session-id") + 1]
+                    if "--session-id" in self.argv
+                    else f"00000000-0000-4000-8000-00000000000{int(name == 'B') + 1}"
+                )
+                barrier.wait(timeout=3.0)
+                scope = ClaudeAdapter().session_scope()
+                assert scope is not None
+                scope.mkdir(parents=True, exist_ok=True)
+                (scope / f"{session_id}.jsonl").write_text(
+                    json.dumps(
+                        {
+                            "type": "user",
+                            "uuid": name,
+                            "message": {"role": "user", "content": name},
+                        },
+                    )
+                    + "\n",
+                )
+                _wait_for_events(sinks[name], 1)
+                return 0
+
+        monkeypatch.setattr(session, "ThreadedRelay", _Relay)
+
+        def drive(name: str) -> None:
+            try:
+                _ = session._spawn_and_drain(
+                    RunConfig(cli_name="claude", sync=False, quiesce_seconds=0.02),
+                    ClaudeAdapter(),
+                    sinks[name],
+                    _Stats(),
+                )
+            except (
+                AssertionError,
+                OSError,
+                RuntimeError,
+                threading.BrokenBarrierError,
+            ) as error:
+                errors.append(error)
+
+        workers = [
+            threading.Thread(target=drive, args=(name,), name=name) for name in sinks
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=5.0)
+            assert not worker.is_alive()
+        assert not errors
+        assert {name: _texts(sink) for name, sink in sinks.items()} == {
+            "A": ["A"],
+            "B": ["B"],
+        }
+        assert all("--session-id" in argv for argv in argv_seen)
+
+    def test_simultaneous_codex_runs_in_one_root_stay_separate(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A rollout belongs to the child holding its file, not every watcher."""
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setattr(shutil, "which", _always_found)
+        barrier = threading.Barrier(2)
+        sinks = {name: _RecordingSink() for name in ("A", "B")}
+        errors: list[Exception] = []
+        argv_seen: list[Sequence[str]] = []
+        ids = {
+            "A": "00000000-0000-7000-8000-000000000001",
+            "B": "00000000-0000-7000-8000-000000000002",
+        }
+        pids = {"A": 101, "B": 102}
+
+        def line_reader(self: CodexAdapter) -> Tail:
+            del self
+            return Tail(_line_records)
+
+        def held_by_child(pid: int, path: Path) -> bool:
+            return any(
+                pid == pids[name] and path.stem.endswith(ids[name]) for name in ids
+            )
+
+        class _Relay:
+            def __init__(self, argv: Sequence[str], **kwargs: object) -> None:
+                self.argv = argv
+                self.on_started = cast(
+                    Callable[[int], None] | None,
+                    kwargs.get("on_started"),
+                )
+
+            def run(self) -> int:
+                name = threading.current_thread().name
+                argv_seen.append(self.argv)
+                if self.on_started is not None:
+                    self.on_started(pids[name])
+                barrier.wait(timeout=3.0)
+                day = tmp_path / "sessions" / "2026" / "09" / "29"
+                day.mkdir(parents=True, exist_ok=True)
+                (day / f"rollout-2026-09-29T20-00-00-{ids[name]}.jsonl").write_text(
+                    name + "\n",
+                )
+                _wait_for_events(sinks[name], 1)
+                return 0
+
+        monkeypatch.setattr(CodexAdapter, "reader", line_reader)
+        monkeypatch.setattr(session, "ThreadedRelay", _Relay)
+        monkeypatch.setattr(
+            session,
+            "_path_held_by_child",
+            held_by_child,
+            raising=False,
+        )
+
+        def drive(name: str) -> None:
+            try:
+                _ = session._spawn_and_drain(
+                    RunConfig(cli_name="codex", sync=False, quiesce_seconds=0.02),
+                    CodexAdapter(),
+                    sinks[name],
+                    _Stats(),
+                )
+            except (
+                AssertionError,
+                OSError,
+                RuntimeError,
+                threading.BrokenBarrierError,
+            ) as error:
+                errors.append(error)
+
+        workers = [
+            threading.Thread(target=drive, args=(name,), name=name) for name in sinks
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=5.0)
+            assert not worker.is_alive()
+        assert not errors
+        assert {name: _texts(sink) for name, sink in sinks.items()} == {
+            "A": ["A"],
+            "B": ["B"],
+        }
+        assert all("--no-daemon" in argv for argv in argv_seen)
+
+    def test_codex_exit_banner_recovers_a_late_file_notification(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The final scan still owns a rollout after its writer closed it."""
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setattr(shutil, "which", _always_found)
+        session_id = "00000000-0000-7000-8000-000000000003"
+        sink = _RecordingSink()
+
+        def line_reader(self: CodexAdapter) -> Tail:
+            del self
+            return Tail(_line_records)
+
+        class _Relay:
+            def __init__(self, argv: Sequence[str], **kwargs: object) -> None:
+                del argv
+                self.on_output = cast(
+                    Callable[[bytes], None] | None,
+                    kwargs.get("on_output"),
+                )
+
+            def run(self) -> int:
+                day = tmp_path / "sessions" / "2026" / "09" / "29"
+                day.mkdir(parents=True, exist_ok=True)
+                (day / f"rollout-2026-09-29T20-00-00-{session_id}.jsonl").write_text(
+                    "final\n",
+                )
+                if self.on_output is not None:
+                    self.on_output(b"Session ID: 00000000-0000-")
+                    self.on_output(b"7000-8000-000000000003\r\n")
+                return 0
+
+        def closed_file(pid: int, path: Path) -> bool:
+            del pid, path
+            return False
+
+        monkeypatch.setattr(CodexAdapter, "reader", line_reader)
+        monkeypatch.setattr(session, "ThreadedRelay", _Relay)
+        monkeypatch.setattr(session, "_path_held_by_child", closed_file)
+
+        assert (
+            session._spawn_and_drain(
+                RunConfig(cli_name="codex", sync=False, quiesce_seconds=0.0),
+                CodexAdapter(),
+                sink,
+                _Stats(),
+            )
+            == 0
+        )
+        assert _texts(sink) == ["final"]
+
+    def test_codex_output_only_claims_the_final_banner(self) -> None:
+        """A session ID printed during a turn cannot redirect file ownership."""
+        owner = session._SessionOwner()
+        owner.output(b"Session ID: 00000000-0000-7000-8000-000000000002\r\n")
+        assert owner.session_id is None
+        owner.output(b"Session ID: 00000000-0000-7000-8000-000000000001\r\n")
+        owner.finish_output()
+        assert owner.session_id == "00000000-0000-7000-8000-000000000001"
+
     def test_this_runs_own_file_is_drained(self, tmp_path: Path) -> None:
         """A file created after the watch is armed IS this run's."""
         adapter = _FakeAdapter(tmp_path)
@@ -843,18 +1078,18 @@ class TestTheWatchIsArmedBeforeTheChildSpawns:
         monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
         scope = ClaudeAdapter().session_scope()
         assert scope is not None
-        log = scope / "abc.jsonl"
-        log.parent.mkdir(parents=True)
+        scope.mkdir(parents=True)
         sink = _RecordingSink()
 
         class _WritingRelay:
             """A "CLI" that writes its first record the instant it starts."""
 
-            def __init__(self, argv: object, **kwargs: object) -> None:
-                del argv, kwargs
+            def __init__(self, argv: Sequence[str], **kwargs: object) -> None:
+                del kwargs
+                self.session_id = argv[argv.index("--session-id") + 1]
 
             def run(self) -> int:
-                _ = log.write_text(
+                _ = (scope / f"{self.session_id}.jsonl").write_text(
                     json.dumps(
                         {
                             "type": "user",
@@ -1146,6 +1381,52 @@ class TestStreamQueueIsBounded:
             )
 
         assert limits == [session._STREAM_QUEUE_MAX]
+
+
+class TestFilesystemQueueBackpressure:
+    """A slow sink must stop file reads before they exhaust runner memory."""
+
+    def test_line_follower_waits_for_capacity(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        log = tmp_path / "own.jsonl"
+        log.write_text("first\nsecond\n")
+
+        async def two_lines(
+            *args: object,
+            **kwargs: object,
+        ) -> AsyncIterator[follow.Line]:
+            del args, kwargs
+            yield follow.Line(path=log, text="first", restart=False)
+            yield follow.Line(path=log, text="second", restart=False)
+
+        monkeypatch.setattr(session, "follow_tree", two_lines)
+
+        async def exercise() -> None:
+            lines: asyncio.Queue[session._Captured] = asyncio.Queue(maxsize=1)
+            until = asyncio.Event()
+            watch = asyncio.create_task(
+                session._watch_session_files(
+                    _FakeAdapter(tmp_path),
+                    (tmp_path,),
+                    lines,
+                    {},
+                    lambda path: path == log,
+                    until=until,
+                    replay=False,
+                ),
+            )
+            await asyncio.sleep(0)
+            assert lines.qsize() == 1
+            assert not watch.done(), "the follower did not wait for a full queue"
+            first = await lines.get()
+            await asyncio.wait_for(watch, timeout=1.0)
+            second = await lines.get()
+            assert [first.raw, second.raw] == [b"first", b"second"]
+
+        asyncio.run(exercise())
 
     def test_overflow_is_counted_and_warned(
         self,
@@ -1698,6 +1979,62 @@ class TestRunPreservesClient:
         assert client.close_calls == 0
 
 
+class TestFallbackClientInbound:
+    """The implicit localhost sync client must also receive inbound messages."""
+
+    def test_none_client_starts_the_inbound_worker(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        polling = threading.Event()
+        clients: list[Client] = []
+
+        def watch(*args: object, **kwargs: object) -> None:
+            stop = args[4]
+            armed = kwargs["armed"]
+            assert isinstance(stop, threading.Event)
+            assert isinstance(armed, threading.Event)
+            armed.set()
+            _ = stop.wait(2.0)
+
+        class _Relay:
+            def __init__(self, argv: object, **kwargs: object) -> None:
+                del argv, kwargs
+
+            def run(self) -> int:
+                assert polling.wait(1.0), "the inbound worker never started"
+                return 0
+
+        def poll(client: Client, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            clients.append(client)
+            polling.set()
+
+        def open_sink(config: RunConfig, adapter: Adapter) -> Sink:
+            del config, adapter
+            return _RecordingSink()
+
+        monkeypatch.setattr(
+            session,
+            "_ADAPTERS",
+            {"fake": lambda: _FakeAdapter(tmp_path)},
+        )
+        monkeypatch.setattr(
+            session,
+            "_open_sink",
+            open_sink,
+        )
+        monkeypatch.setattr(session, "_drain_filesystem_loop", watch)
+        monkeypatch.setattr(session, "_inbound_poll_loop", poll)
+        monkeypatch.setattr(session, "ThreadedRelay", _Relay)
+        monkeypatch.setattr(shutil, "which", _always_found)
+
+        assert run(RunConfig(cli_name="fake", client=None, quiesce_seconds=0.0)) == 0
+        assert len(clients) == 1
+        assert clients[0].base_url == LOCALHOST_FALLBACK_URL
+
+
 class TestTeardownRunsEvenWhenTheRelayRaises:
     """A relay failure must still stop the workers before the sink closes.
 
@@ -2049,6 +2386,36 @@ class TestRenderInbound:
             "trax workspace c5286865-67b6-4bd8-ab51-e06e10c326c5 "
             "show trax.subgraph --record 889ffcb2-cf44-43e7-9806-eb08428c6203 "
             "--placement side"
+        )
+
+    def test_artifact_chat_points_to_full_immutable_content(self) -> None:
+        context = WorkspaceMessageContext.model_validate(
+            {
+                "workspace_id": "c5286865-67b6-4bd8-ab51-e06e10c326c5",
+                "record_id": "251c60b8-1604-4e3a-9eda-1b5b046c3a4d",
+                "artifact_content": {
+                    "revision": 1,
+                    "artifact_id": "251c60b8-1604-4e3a-9eda-1b5b046c3a4d",
+                    "issue_id": "c5286865-67b6-4bd8-ab51-e06e10c326c5",
+                    "title": "Atlas",
+                    "summary": "Frozen summary",
+                    "author": "viewer@example.com",
+                    "created_at": "2026-09-30T00:00:00Z",
+                    "scope": "team",
+                    "format": "html",
+                    "citations": [],
+                    "sections": [],
+                },
+                "visible_visuals": [],
+            },
+        )
+
+        rendered = _render_inbound("Explain the source", None, None, context=context)
+
+        assert "trax artifact 251c60b8-1604-4e3a-9eda-1b5b046c3a4d" in rendered
+        assert (
+            "GET /api/artifacts/251c60b8-1604-4e3a-9eda-1b5b046c3a4d/content"
+            in rendered
         )
 
 

@@ -340,10 +340,10 @@ ships `{placeholders}` that `substitute_schema_placeholders()` fills at
   `{change_kinds}` from the PEP-695 `Literal` aliases.
 
 Migrations: `schema_migrations()` yields the `schema.sql` baseline, followed
-by any numbered `schema.NNN.sql` files an evolving deployment accumulates;
+by numbered `schema.NNN.sql` files for existing deployments;
 `Store.bootstrap` applies them under an advisory lock and records each in
-`applied_migrations`. The schema currently ships as a single clean baseline
-(no numbered files). Deploying schema changes is `docs/db_schema_migration.md`.
+`applied_migrations`. The baseline also includes the current schema for fresh
+stores. Deploying schema changes is `docs/db_schema_migration.md`.
 
 ## Wire
 

@@ -21,6 +21,7 @@ the only per-process state standing between the server and ``--workers N``.
 from __future__ import annotations
 
 from collections import OrderedDict, defaultdict, deque
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from uuid import UUID
@@ -28,6 +29,7 @@ from uuid import UUID
 import asyncio
 import logging
 import threading
+import time
 
 from trackinizer.wire.wire_sessions import WorkspaceMessageContext
 
@@ -86,6 +88,12 @@ class InboundQueue:
 
     max_seen_keys: int = 4_096
 
+    poller_ttl_sec: float = 45.0
+
+    _clock: Callable[[], float] = field(default=time.monotonic, repr=False)
+
+    _poller_expires: dict[UUID, float] = field(default_factory=dict)
+
     _queues: dict[UUID, deque[Inbound]] = field(
         default_factory=lambda: defaultdict(deque),
     )
@@ -100,6 +108,61 @@ class InboundQueue:
     )
 
     _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def mark_poller(self, session_id: UUID) -> None:
+        """Renew a session's short lease after an authorized inbound poll.
+
+        Args:
+          session_id: Session whose inbound poll was authorized.
+
+        """
+        with self._lock:
+            now = self._clock()
+            self._poller_expires[session_id] = now + self.poller_ttl_sec
+            if len(self._poller_expires) > 1_024:
+                self._poller_expires = {
+                    sid: expiry
+                    for sid, expiry in self._poller_expires.items()
+                    if expiry > now
+                }
+
+    def has_poller(self, session_id: UUID) -> bool:
+        """Return whether an inbound poll renewed this session's lease recently.
+
+        Args:
+          session_id: Session to check.
+
+        Returns:
+          active: Whether the session's lease is unexpired.
+
+        """
+        with self._lock:
+            expiry = self._poller_expires.get(session_id, 0.0)
+            if expiry <= self._clock():
+                self._poller_expires.pop(session_id, None)
+                return False
+            return True
+
+    def active_poller_ids(self) -> list[UUID]:
+        """Snapshot unexpired poller sessions for database candidate filtering.
+
+        Returns:
+          session_ids: Session ids whose leases are still unexpired.
+
+        """
+        with self._lock:
+            now = self._clock()
+            self._poller_expires = {
+                sid: expiry
+                for sid, expiry in self._poller_expires.items()
+                if expiry > now
+            }
+            return list(self._poller_expires)
+
+    def forget_poller(self, session_id: UUID) -> None:
+        """Revoke a lease when a session ends cleanly."""
+        with self._lock:
+            self._poller_expires.pop(session_id, None)
 
     def send_once(
         self,

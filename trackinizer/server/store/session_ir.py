@@ -48,7 +48,17 @@ else:
     asyncpg = lazy_import("asyncpg")
 
 
-__all__ = ["SessionManifest", "SlashCommandRow", "_SessionIRMixin"]
+__all__ = ["RecentSessionTurn", "SessionManifest", "SlashCommandRow", "_SessionIRMixin"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RecentSessionTurn:
+    """One visible conversation turn in its original part and position."""
+
+    part: int
+    idx: int
+    kind: str
+    content: str
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -461,6 +471,52 @@ class _SessionIRMixin(_CascadeAuditMixin):
                     text=text_value,
                     ciphertext=(None if bytes_value is None else bytes_value.decode()),
                 ),
+            )
+        return result
+
+    async def read_recent_session_turns(
+        self,
+        session_id: UUID,
+        *,
+        limit: int = 20,
+    ) -> list[RecentSessionTurn]:
+        """Read the newest live user and assistant messages across all parts.
+
+        Filters in SQL before limiting, so tool-heavy transcripts do not hide
+        older conversational turns or require many browser round trips.
+
+        Args:
+          session_id: AgentSession whose live parts are read.
+          limit: Maximum visible messages to return.
+
+        Returns:
+          turns: Newest user and assistant messages in display order.
+
+        """
+        async with self.engine.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT r.part, r.idx, r.kind, r.payload->>'content' AS content "
+                "FROM session_records r JOIN session_manifests m "
+                "ON m.session_id = r.session_id AND m.part = r.part "
+                "WHERE r.session_id = $1 AND r.idx < m.records "
+                "AND r.kind IN ('UserMessage', 'AssistantMessage') "
+                "AND r.payload->>'content' <> '' "
+                "ORDER BY r.part DESC, r.idx DESC LIMIT $2",
+                session_id,
+                limit,
+            )
+        result: list[RecentSessionTurn] = []
+        for row in reversed(rows):
+            part = row["part"]
+            idx = row["idx"]
+            kind = row["kind"]
+            content = row["content"]
+            assert isinstance(part, int)
+            assert isinstance(idx, int)
+            assert isinstance(kind, str)
+            assert isinstance(content, str)
+            result.append(
+                RecentSessionTurn(part=part, idx=idx, kind=kind, content=content),
             )
         return result
 

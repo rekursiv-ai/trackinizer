@@ -70,6 +70,7 @@ async def workspace_connection_status_route(
             engine_of(request),
             identity.user_id,
             workspace_id,
+            inbound=get_inbound(request),
         )
     except WorkspaceDisabledError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
@@ -150,7 +151,11 @@ async def connectable_sessions_route(
     if identity.api_key_id is not None:
         raise HTTPException(status_code=403, detail="Browser session required")
     try:
-        return await list_connectable_sessions(engine_of(request), identity.user_id)
+        return await list_connectable_sessions(
+            engine_of(request),
+            identity.user_id,
+            inbound=get_inbound(request),
+        )
     except WorkspaceDisabledError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
 
@@ -186,6 +191,7 @@ async def workspace_connection_route(
             identity.user_id,
             workspace_id,
             body,
+            inbound=get_inbound(request),
         )
     except RevisionConflictError as error:
         return JSONResponse(
@@ -249,6 +255,7 @@ async def read_workspace_route(
             engine_of(request),
             identity.user_id,
             workspace_id,
+            inbound=get_inbound(request),
             agent_api_key_id=identity.api_key_id,
         )
     except WorkspaceDisabledError as error:
@@ -292,6 +299,7 @@ async def workspace_operation_route(
             workspace_id,
             key,
             body,
+            inbound=get_inbound(request),
             agent_api_key_id=identity.api_key_id,
         )
     except RevisionConflictError as error:

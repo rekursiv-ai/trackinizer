@@ -5,8 +5,9 @@ session (minting an ``AgentSession`` inquiry row, server-assigned id) and
 later closes it; the captured records themselves flow through the separate
 ``.../records`` routes in :mod:`server.api.session_ir_routes`.
 
-The mutating routes require the ``writer`` role; the read requires
-``viewer``. Tenant scope is derived by joining to ``inquiries``.
+Capture lifecycle routes permit a viewer to open and close sessions with its
+own API key. Messaging routes require ``writer``. Tenant scope is derived by
+joining to ``inquiries``.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from trackinizer.server.api._deps import get_inbound, get_store
+from trackinizer.server.api.session_access import require_session_write_access
 from trackinizer.server.auth import (
     AuthIdentity,
     assert_account_active,
@@ -51,7 +53,7 @@ router = APIRouter()
 async def session_start_route(
     body: SessionStart,
     request: Request,
-    identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> SessionStartResponse:
     """Open a session: mint an ``AgentSession`` row and return its server id.
 
@@ -73,6 +75,14 @@ async def session_start_route(
 
     """
     store = get_store(request)
+    if identity.role == "viewer" and (
+        identity.api_key_id is None
+        or (body.account is not None and body.account != identity.email)
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Own session key and account required",
+        )
     # An AgentSession is an inquiry like any other, so it carries the same
     # account attribution: default to the authenticated creator, validate it is
     # an active user before minting the row (the gate the submit / edit routes
@@ -99,6 +109,7 @@ async def session_start_route(
         api_key_id=identity.api_key_id,
     )
     row = await _require_session(store, session_id)
+    require_session_write_access(identity, row)
     return SessionStartResponse(
         id=session_id,
         # The event log's continuation seq: 0 for a fresh session, ``max(seq)+1``
@@ -122,10 +133,9 @@ async def session_inbound_enqueue_route(
     stored ``source`` is always the authenticated principal, so an agent
     cannot forge another sender. The request body (:class:`InboundEnqueueRequest`)
     carries no ``source`` at all -- a client that sends one gets 422, not a
-    silently-ignored field. The session must exist; whether its ``trax run`` is
-    still polling is not checked -- delivery is drop-if-absent and the receipt
-    only reports the queue depth. An *ended* session is rejected (409): no
-    poller will ever drain it.
+    silently-ignored field. The session must exist and have a recent inbound
+    poll; an ended or stale session is rejected (409) because no poller will
+    drain it.
 
     Args:
       session_id: UUID of the session to message.
@@ -145,6 +155,8 @@ async def session_inbound_enqueue_route(
             detail=f"session {session_id} has ended; cannot enqueue",
         )
     inbound = get_inbound(request)
+    if not inbound.has_poller(session_id):
+        raise HTTPException(status_code=409, detail="No active inbound poller")
     # One dedup path: route through ``send_once`` (same primitive as the
     # ``/api/messages`` send) so a retry reusing the ``Idempotency-Key`` is a
     # no-op instead of a double-injection. The receipt reports the current
@@ -224,7 +236,11 @@ async def send_message_route(
         # and the enqueue are separate steps, and a concurrent ``end`` between
         # them would otherwise drop the message into a queue nobody drains.
         session = await store.get_inquiry(session_id)
-        if session is None or cast(AgentSession, session).ended is not None:
+        if (
+            session is None
+            or cast(AgentSession, session).ended is not None
+            or not inbound.has_poller(session_id)
+        ):
             continue
         scoped_room = body.room or (rooms[0] if rooms else None)
         targets.append(
@@ -248,17 +264,17 @@ async def send_message_route(
 
 @router.get(
     "/api/sessions/{session_id}/inbound",
-    dependencies=[Depends(require_role("writer"))],
 )
 async def session_inbound_drain_route(
     session_id: UUID,
     request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     wait_sec: float = 0.0,
 ) -> DrainInboundResponse:
     """Drain all pending inbound messages for a session (oldest first).
 
     Read by the session's ``trax run`` to inject queued messages into the CLI.
-    ``writer`` like enqueue. Unknown session -> 404.
+    A viewer key may drain only the session it opened. Unknown session -> 404.
 
     ``wait_sec`` holds the request open until a message arrives, so the caller
     waits instead of asking repeatedly: one held request per session rather
@@ -268,13 +284,13 @@ async def session_inbound_drain_route(
     block. The ceiling keeps a held request shorter than the idle timeout of
     a proxy that would otherwise cut it.
 
-    Writer-gated, not owner-gated: AgentSessions are a shared workspace, so any
-    writer may drain. In practice the session's own ``trax run`` is the only
-    reader, but the route enforces no per-opener restriction.
+    Writers retain shared access to session drains. Viewer access is scoped to
+    the opening API key so reading chat does not grant graph-write permission.
 
     Args:
       session_id: UUID of the session to drain messages from.
       request: Starlette request object.
+      identity: Authenticated reader and, for viewers, the opening key.
       wait_sec: Seconds to hold the request open for a message to arrive
         (clamped to [0, 30]; 0 returns queued messages immediately).
 
@@ -283,8 +299,25 @@ async def session_inbound_drain_route(
         source, room), oldest first, or empty list if none are queued.
 
     """
-    await _require_session(get_store(request), session_id)
+    store = get_store(request)
+    session = await _require_session(store, session_id)
+    if identity.role == "viewer":
+        async with store.engine.acquire() as conn:
+            owned = await conn.fetchval(
+                "SELECT 1 FROM inquiries AS sess "
+                "JOIN api_keys AS credential "
+                "ON credential.id = sess.agentsession_opened_by_api_key_id "
+                "WHERE sess.id = $1 AND credential.id = $2 "
+                "AND credential.user_id = $3 AND credential.revoked_at IS NULL",
+                session_id,
+                identity.api_key_id,
+                identity.user_id,
+            )
+        if not owned:
+            raise HTTPException(status_code=403, detail="Own session key required")
     inbound = get_inbound(request)
+    if session.status == "active" and session.ended is None:
+        inbound.mark_poller(session_id)
     # Ceiling on how long the inbound drain holds a request open. Long enough that
     # a waiting caller re-arms rarely, short enough to stay under the idle timeout
     # of an intermediary that would otherwise cut the connection mid-wait.
@@ -312,7 +345,7 @@ async def session_end_route(
     session_id: UUID,
     body: SessionEnd,
     request: Request,
-    identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> SessionEndResponse:
     """Close a session atomically and release its inbound queue.
 
@@ -335,7 +368,8 @@ async def session_end_route(
 
     """
     store = get_store(request)
-    await _require_session(store, session_id)
+    session = await _require_session(store, session_id)
+    require_session_write_access(identity, session)
     actor = _actor(identity, body.actor)
     # Always stamp a real ``ended``: ``ended IS NULL`` is the "live" predicate
     # (the active/previous split), so a complete session must never leave it
@@ -354,7 +388,9 @@ async def session_end_route(
     # Release any inbound messages queued for a now-dead session (its poller
     # is gone; holding them only leaks the process-local buffer). Only after
     # a clean close, so a failed end doesn't discard undelivered messages.
-    get_inbound(request).drain(session_id)
+    inbound = get_inbound(request)
+    inbound.forget_poller(session_id)
+    inbound.drain(session_id)
     return SessionEndResponse(id=session_id, ended=committed_ended)
 
 

@@ -14,14 +14,15 @@ derived by joining to ``inquiries``, as every session route does.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from trackinizer.lib.custom_json import DictCodec, json_freeze
 from trackinizer.server.api._deps import get_store
-from trackinizer.server.auth import require_role
+from trackinizer.server.api.session_access import require_session_write_access
+from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.store.session_ir import SlashCommandRow
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
@@ -30,7 +31,9 @@ from trackinizer.wire.wire_session_ir import (
     AppendRecordsResponse,
     PartBody,
     ReadPartsResponse,
+    ReadRecentTurnsResponse,
     ReadRecordsResponse,
+    RecentTurnBody,
     RecordBody,
 )
 
@@ -44,12 +47,12 @@ router = APIRouter()
 
 @router.post(
     "/api/sessions/{session_id}/records",
-    dependencies=[Depends(require_role("writer"))],
 )
 async def append_session_records_route(
     session_id: UUID,
     request: Request,
     body: AppendRecordsRequest,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> AppendRecordsResponse:
     """Append one file's records, resolving its part server-side.
 
@@ -66,13 +69,15 @@ async def append_session_records_route(
       session_id: AgentSession ID to append to.
       request: FastAPI request (carries auth and store).
       body: Records, manifest, and slash commands to append.
+      identity: Authenticated writer or viewer who opened this session.
 
     Returns:
       result: AppendRecordsResponse with row counts.
 
     """
     store = get_store(request)
-    await _require_session(store, session_id)
+    session = await _require_session(store, session_id)
+    require_session_write_access(identity, session)
     manifest = body.manifest
     part = (
         None
@@ -199,6 +204,45 @@ async def read_session_records_route(
         plaintext_only=plaintext_only,
     )
     return ReadRecordsResponse(part=part, records=[RecordBody.of(row) for row in rows])
+
+
+@router.get(
+    "/api/sessions/{session_id}/turns",
+    dependencies=[Depends(require_role("viewer"))],
+)
+async def read_recent_session_turns_route(
+    session_id: UUID,
+    request: Request,
+    *,
+    limit: int = 20,
+) -> ReadRecentTurnsResponse:
+    """Read recent conversation turns without transferring intervening tools.
+
+    Args:
+      session_id: AgentSession ID to read from.
+      request: FastAPI request carrying auth and store.
+      limit: Maximum user and assistant turns, from 1 through 100.
+
+    Returns:
+      result: The newest turns in display order across session parts.
+
+    """
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be in [1, 100]")
+    store = get_store(request)
+    await _require_session(store, session_id)
+    turns = await store.read_recent_session_turns(session_id, limit=limit)
+    return ReadRecentTurnsResponse(
+        turns=[
+            RecentTurnBody(
+                part=turn.part,
+                idx=turn.idx,
+                kind=turn.kind,
+                content=turn.content,
+            )
+            for turn in turns
+        ],
+    )
 
 
 async def _require_session(store: Store, session_id: UUID) -> AgentSession:

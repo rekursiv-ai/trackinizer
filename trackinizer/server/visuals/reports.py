@@ -1,4 +1,4 @@
-"""Immutable, team-readable report revisions and their graph provenance."""
+"""Immutable, team-readable Artifact content and its graph provenance."""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from trackinizer.lib.custom_json import FloatCodec, IntCodec, StrCodec
+from trackinizer.lib.custom_json import DictCodec, FloatCodec, IntCodec, StrCodec
 from trackinizer.server.notify import notify_after_commit, tx
+from trackinizer.server.store.change_id_slot import set_client_change_id
 from trackinizer.wire.bodies import SubmitArtifact
 
 
@@ -23,12 +24,12 @@ if TYPE_CHECKING:
     from trackinizer.server.store.core import Store
 
 
-class ReportConflictError(Exception):
-    """A publication key already names different report content."""
+class ArtifactContentConflictError(Exception):
+    """A publication key already names different Artifact content."""
 
 
-class ReportCitationRef(BaseModel):
-    """A graph row and optional signed edge selected for a report citation."""
+class ArtifactCitationRef(BaseModel):
+    """A graph row and optional signed edge selected for an Artifact citation."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -37,14 +38,14 @@ class ReportCitationRef(BaseModel):
     edge_kind: Literal["proves", "favors"] | None = None
 
     @model_validator(mode="after")
-    def validate_edge(self) -> ReportCitationRef:
+    def validate_edge(self) -> ArtifactCitationRef:
         """Require the two coordinates of an evidence edge together."""
         if (self.claim_id is None) != (self.edge_kind is None):
             raise ValueError("Evidence citations need a claim and edge kind.")
         return self
 
 
-class ReportCitation(BaseModel):
+class ArtifactCitation(BaseModel):
     """A publication-time snapshot of one row and optional signed edge."""
 
     record_id: uuid.UUID
@@ -60,15 +61,15 @@ class ReportCitation(BaseModel):
     note: str | None = Field(default=None, max_length=4_000)
 
 
-class ReportFindingDraft(BaseModel):
+class ArtifactFindingDraft(BaseModel):
     """One conclusion with measured outcome and explicit uncertainty."""
 
     model_config = ConfigDict(extra="forbid")
 
     claim: str = Field(min_length=1, max_length=2_000)
-    outcome: ReportOutcome
+    outcome: ArtifactOutcomeDraft
     uncertainty: str = Field(min_length=1, max_length=2_000)
-    citations: list[ReportCitationRef] = Field(default_factory=list, max_length=16)
+    citations: list[ArtifactCitationRef] = Field(min_length=1, max_length=16)
 
     @field_validator("claim", "uncertainty")
     @classmethod
@@ -79,7 +80,7 @@ class ReportFindingDraft(BaseModel):
         return value
 
 
-class ReportSectionDraft(BaseModel):
+class ArtifactSectionDraft(BaseModel):
     """One bounded direction or result, with details closed by default."""
 
     model_config = ConfigDict(extra="forbid")
@@ -87,7 +88,7 @@ class ReportSectionDraft(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     summary: str = Field(max_length=2_000)
     details: str = Field(max_length=8_000)
-    findings: list[ReportFindingDraft] = Field(default_factory=list, max_length=12)
+    findings: list[ArtifactFindingDraft] = Field(default_factory=list, max_length=12)
 
     @field_validator("title", "summary")
     @classmethod
@@ -98,25 +99,25 @@ class ReportSectionDraft(BaseModel):
         return value
 
 
-class ReportFinding(BaseModel):
+class ArtifactFinding(BaseModel):
     """A conclusion whose graph references are frozen at publication."""
 
     claim: str
-    outcome: ReportOutcome
+    outcome: ArtifactOutcome
     uncertainty: str
-    citations: list[ReportCitation]
+    citations: list[ArtifactCitation]
 
 
-class ReportSection(BaseModel):
+class ArtifactSection(BaseModel):
     """A published section with nested details and evidenced findings."""
 
     title: str
     summary: str
     details: str
-    findings: list[ReportFinding]
+    findings: list[ArtifactFinding]
 
 
-class ReportOutcome(BaseModel):
+class ArtifactOutcome(BaseModel):
     """A measured result, denominator, and evaluation split."""
 
     model_config = ConfigDict(extra="forbid")
@@ -134,56 +135,64 @@ class ReportOutcome(BaseModel):
         return value
 
 
-class PublishReport(BaseModel):
+class ArtifactOutcomeDraft(ArtifactOutcome):
+    """A new finding must name a positive evaluation denominator."""
+
+    denominator: int = Field(ge=1, le=9_007_199_254_740_991)
+
+
+class PublishArtifactContent(BaseModel):
     """A bounded publication request, separate from workspace mutations."""
 
     model_config = ConfigDict(extra="forbid")
 
-    report_id: uuid.UUID | None = None
+    previous_artifact_id: uuid.UUID | None = None
     issue_id: uuid.UUID
     title: str = Field(min_length=1, max_length=200)
     summary: str = Field(min_length=1, max_length=4_000)
     format: Literal["html", "structured"]
-    html: str | None = Field(default=None, max_length=2_000_000)
-    sections: list[ReportSectionDraft] = Field(default_factory=list, max_length=24)
-    citations: list[ReportCitationRef] = Field(default_factory=list, max_length=64)
+    html: str | None = None
+    sections: list[ArtifactSectionDraft] = Field(default_factory=list, max_length=24)
+    citations: list[ArtifactCitationRef] = Field(default_factory=list, max_length=64)
 
     @field_validator("title", "summary")
     @classmethod
     def reject_blank(cls, value: str) -> str:
-        """Reject invisible report headings and summaries."""
+        """Reject invisible Artifact headings and summaries."""
         if not value.strip():
-            raise ValueError("Report text must not be blank.")
+            raise ValueError("Artifact text must not be blank.")
         return value
 
     @model_validator(mode="after")
-    def validate_format(self) -> PublishReport:
-        """Keep HTML and structured sections as distinct report formats.
+    def validate_format(self) -> PublishArtifactContent:
+        """Keep HTML and structured sections as distinct Artifact formats.
 
         Returns:
-          report: The validated request.
+          request: The validated publication request.
 
         """
         if self.format == "html" and (not self.html or self.sections):
-            raise ValueError("HTML reports need HTML and no structured sections.")
+            raise ValueError("HTML Artifacts need HTML and no structured sections.")
         if self.format == "structured" and (self.html is not None or not self.sections):
-            raise ValueError("Structured reports need sections and no HTML.")
+            raise ValueError("Structured Artifacts need sections and no HTML.")
         citation_count = len(self.citations) + sum(
             len(finding.citations)
             for section in self.sections
             for finding in section.findings
         )
         if citation_count > 128:
-            raise ValueError("Report has more than 128 citations.")
-        if len(self.model_dump_json().encode("utf-8")) > 2_200_000:
-            raise ValueError("Report payload exceeds 2.2 MB.")
+            raise ValueError("Artifact has more than 128 citations.")
+        if self.format == "html" and self.html is not None:
+            if len(self.html.encode("utf-8")) > 30_000_000:
+                raise ValueError("Artifact file exceeds 30 MB.")
+        elif len(self.model_dump_json().encode("utf-8")) > 30_000_000:
+            raise ValueError("Artifact file exceeds 30 MB.")
         return self
 
 
-class ReportRevision(BaseModel):
-    """An immutable report revision shared with authenticated teammates."""
+class ArtifactContentRevision(BaseModel):
+    """Immutable Artifact content shared with authenticated teammates."""
 
-    report_id: uuid.UUID
     revision: int = Field(ge=1)
     artifact_id: uuid.UUID
     issue_id: uuid.UUID
@@ -194,27 +203,27 @@ class ReportRevision(BaseModel):
     scope: Literal["team"] = "team"
     format: Literal["html", "structured"]
     html: str | None
-    sections: list[ReportSection]
-    citations: list[ReportCitation]
+    sections: list[ArtifactSection]
+    citations: list[ArtifactCitation]
 
 
-async def publish_report(
+async def publish_artifact_content(
     store: Store,
     *,
     user_id: uuid.UUID,
     author: str,
     api_key_id: uuid.UUID | None,
-    body: PublishReport,
+    body: PublishArtifactContent,
     key: uuid.UUID,
-) -> ReportRevision:
-    """Append one report revision and its produced Artifact in one transaction.
+) -> ArtifactContentRevision:
+    """Append one Artifact revision and its graph row in one transaction.
 
     Args:
       store: Shared graph store and database engine.
       user_id: Authenticated publisher.
       author: Server-attested account email.
       api_key_id: Credential used by an agent, if any.
-      body: Bounded report content and graph references.
+      body: Bounded Artifact content and graph references.
       key: Retry-safe publication key.
 
     Returns:
@@ -222,8 +231,10 @@ async def publish_report(
 
     """
     request_hash = hashlib.sha256(body.model_dump_json().encode()).hexdigest()
+    # This key names content publication, not the Artifact's created event.
+    # Otherwise a prior graph submit with the same key can supply its Artifact.
+    set_client_change_id(None)
     async with notify_after_commit(), store.engine.acquire() as conn, tx(conn):
-        await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         if not await conn.fetchval(
             "SELECT 1 FROM users WHERE id = $1 AND status = 'active' FOR UPDATE",
             user_id,
@@ -241,15 +252,15 @@ async def publish_report(
         )
         if replay is not None:
             if replay["request_hash"] != request_hash:
-                raise ReportConflictError("Publication key already used.")
+                raise ArtifactContentConflictError("Publication key already used.")
             return _revision_from_row(cast("Mapping[str, object]", replay))
         issue = await conn.fetchval(
             "SELECT kind FROM inquiries WHERE id = $1 FOR SHARE",
             body.issue_id,
         )
         if issue != "Issue":
-            raise ValueError("Report owner must be an existing Issue.")
-        if body.report_id is None:
+            raise ValueError("Artifact source must be an existing Issue.")
+        if body.previous_artifact_id is None:
             report_id = uuid.uuid4()
             await conn.execute(
                 "INSERT INTO visual_reports (id, issue_id, created_by) "
@@ -259,14 +270,26 @@ async def publish_report(
                 user_id,
             )
         else:
-            report_id = body.report_id
             report = await conn.fetchrow(
-                "SELECT issue_id FROM visual_reports WHERE id = $1 FOR UPDATE",
-                report_id,
+                "SELECT reports.id, reports.issue_id FROM visual_reports AS reports "
+                "JOIN visual_report_revisions AS revisions "
+                "ON revisions.report_id = reports.id "
+                "WHERE revisions.artifact_id = $1 FOR UPDATE OF reports",
+                body.previous_artifact_id,
             )
             if report is None or report["issue_id"] != body.issue_id:
-                raise ValueError("Report does not belong to this Issue.")
-        content = await _snapshot_content(conn, body)
+                raise ValueError("Previous Artifact does not belong to this Issue.")
+            report_id = uuid.UUID(str(report["id"]))
+        content, content_bytes = await _snapshot_content(conn, body)
+        used_bytes = IntCodec.coerce(
+            await conn.fetchval(
+                "SELECT coalesce(sum(content_bytes), 0)::bigint "
+                "FROM visual_report_revisions WHERE author_id = $1",
+                user_id,
+            ),
+        )
+        if used_bytes + content_bytes > 500_000_000:
+            raise ValueError("Publisher Artifact storage exceeds 500 MB.")
         revision = IntCodec.coerce(
             await conn.fetchval(
                 "SELECT coalesce(max(revision), 0) + 1 "
@@ -304,7 +327,8 @@ async def publish_report(
         row = await conn.fetchrow(
             "INSERT INTO visual_report_revisions "
             "(report_id, revision, artifact_id, author_id, author_email, content, "
-            "publish_key, request_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+            "content_bytes, publish_key, request_hash) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) "
             "RETURNING report_id, revision, artifact_id, content, created_at",
             report_id,
             revision,
@@ -312,48 +336,78 @@ async def publish_report(
             user_id,
             author,
             content,
+            content_bytes,
             key,
             request_hash,
         )
         if row is None:
-            raise RuntimeError("Report revision insert returned no row.")
+            raise RuntimeError("Artifact revision insert returned no row.")
         return _revision_from_row(
             {**dict(row), "author": author, "issue_id": body.issue_id},
         )
 
 
-async def read_report_revision(
+async def read_artifact_content(
     store: Store,
-    report_id: uuid.UUID,
-    revision: int,
-) -> ReportRevision | None:
-    """Read one exact revision for any authenticated account.
+    artifact_id: uuid.UUID,
+) -> ArtifactContentRevision | None:
+    """Read the immutable content stored by one Artifact.
 
     Args:
       store: Shared graph store and database engine.
-      report_id: Stable report identity.
-      revision: Immutable revision number.
+      artifact_id: Canonical Artifact identity for this revision.
 
     Returns:
-      report: The requested revision, or None when absent.
+      revision: The requested content, or None when absent.
 
     """
     async with store.engine.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT revisions.report_id, revisions.revision, revisions.artifact_id, "
-            "revisions.content, revisions.created_at, "
-            "revisions.author_email AS author, "
-            "reports.issue_id FROM visual_report_revisions AS revisions "
-            "JOIN visual_reports AS reports ON reports.id = revisions.report_id "
-            "WHERE revisions.report_id = $1 AND revisions.revision = $2",
-            report_id,
-            revision,
-        )
-    return _revision_from_row(cast("Mapping[str, object]", row)) if row else None
+        return await read_artifact_content_on_conn(conn, artifact_id)
 
 
-async def _snapshot_content(conn: Conn, body: PublishReport) -> dict[str, object]:
-    """Resolve row titles and signed edges before freezing report content."""
+async def read_artifact_content_on_conn(
+    conn: Conn,
+    artifact_id: uuid.UUID,
+    *,
+    include_html: bool = True,
+) -> ArtifactContentRevision | None:
+    """Resolve one published Artifact on the caller's transaction connection.
+
+    Args:
+      conn: Connection holding the caller's workspace transaction.
+      artifact_id: Canonical Artifact identity for this revision.
+      include_html: Whether to transfer the potentially large HTML body.
+
+    Returns:
+      revision: The requested content, or None when absent.
+
+    """
+    row = await conn.fetchrow(
+        "SELECT revisions.report_id, revisions.revision, revisions.artifact_id, "
+        "CASE WHEN $2 THEN revisions.content ELSE revisions.content - 'html' END "
+        "AS content, revisions.created_at, "
+        "revisions.author_email AS author, "
+        "reports.issue_id FROM visual_report_revisions AS revisions "
+        "JOIN visual_reports AS reports ON reports.id = revisions.report_id "
+        "WHERE revisions.artifact_id = $1",
+        artifact_id,
+        include_html,
+    )
+    if row is None:
+        return None
+    if include_html:
+        return _revision_from_row(cast("Mapping[str, object]", row))
+    content = DictCodec.coerce(row["content"], default=None)
+    return _revision_from_row(
+        {**dict(row), "content": {**content, "html": None}},
+    )
+
+
+async def _snapshot_content(
+    conn: Conn,
+    body: PublishArtifactContent,
+) -> tuple[dict[str, object], int]:
+    """Resolve row titles and signed edges before freezing Artifact content."""
     cache: CitationCache = {}
     citations = [await _snapshot_cached(conn, ref, cache) for ref in body.citations]
     sections = [await _snapshot_section(conn, draft, cache) for draft in body.sections]
@@ -365,24 +419,25 @@ async def _snapshot_content(conn: Conn, body: PublishReport) -> dict[str, object
         "sections": [section.model_dump(mode="json") for section in sections],
         "citations": [citation.model_dump(mode="json") for citation in citations],
     }
-    if len(json.dumps(content, ensure_ascii=False).encode("utf-8")) > 2_200_000:
-        raise ValueError("Published report exceeds 2.2 MB.")
-    return content
+    content_bytes = len(json.dumps(content, ensure_ascii=False).encode("utf-8"))
+    if body.format == "structured" and content_bytes > 30_000_000:
+        raise ValueError("Artifact file exceeds 30 MB.")
+    return content, content_bytes
 
 
 type CitationCache = dict[
     tuple[uuid.UUID, uuid.UUID | None, str | None],
-    ReportCitation,
+    ArtifactCitation,
 ]
 
 
 async def _snapshot_section(
     conn: Conn,
-    draft: ReportSectionDraft,
+    draft: ArtifactSectionDraft,
     cache: CitationCache,
-) -> ReportSection:
+) -> ArtifactSection:
     """Freeze each finding and citation in one structured section."""
-    return ReportSection(
+    return ArtifactSection(
         title=draft.title,
         summary=draft.summary,
         details=draft.details,
@@ -394,11 +449,11 @@ async def _snapshot_section(
 
 async def _snapshot_finding(
     conn: Conn,
-    draft: ReportFindingDraft,
+    draft: ArtifactFindingDraft,
     cache: CitationCache,
-) -> ReportFinding:
+) -> ArtifactFinding:
     """Freeze a finding and its cited graph evidence."""
-    return ReportFinding(
+    return ArtifactFinding(
         claim=draft.claim,
         outcome=draft.outcome,
         uncertainty=draft.uncertainty,
@@ -408,25 +463,25 @@ async def _snapshot_finding(
 
 async def _snapshot_cached(
     conn: Conn,
-    ref: ReportCitationRef,
+    ref: ArtifactCitationRef,
     cache: CitationCache,
-) -> ReportCitation:
-    """Read each source-edge pair once per report revision."""
+) -> ArtifactCitation:
+    """Read each source-edge pair once per Artifact revision."""
     key = (ref.record_id, ref.claim_id, ref.edge_kind)
     if key not in cache:
         cache[key] = await _snapshot_citation(conn, ref)
     return cache[key]
 
 
-async def _snapshot_citation(conn: Conn, ref: ReportCitationRef) -> ReportCitation:
-    """Copy a live row and optional signed edge into immutable report JSON."""
+async def _snapshot_citation(conn: Conn, ref: ArtifactCitationRef) -> ArtifactCitation:
+    """Copy a live row and optional signed edge into immutable Artifact JSON."""
     record = await conn.fetchrow(
         "SELECT kind, seq, title FROM inquiries WHERE id = $1",
         ref.record_id,
     )
     if record is None:
         raise ValueError("Cited record does not exist.")
-    citation = ReportCitation(
+    citation = ArtifactCitation(
         record_id=ref.record_id,
         kind=StrCodec.coerce(record["kind"]),
         seq=IntCodec.coerce(record["seq"]),
@@ -450,7 +505,7 @@ async def _snapshot_citation(conn: Conn, ref: ReportCitationRef) -> ReportCitati
     note = cast(str | None, edge["note"])
     if note is not None and len(note) > 4_000:
         raise ValueError("Cited edge note exceeds 4,000 characters.")
-    return ReportCitation(
+    return ArtifactCitation(
         record_id=citation.record_id,
         kind=citation.kind,
         seq=citation.seq,
@@ -465,13 +520,12 @@ async def _snapshot_citation(conn: Conn, ref: ReportCitationRef) -> ReportCitati
     )
 
 
-def _revision_from_row(row: Mapping[str, object]) -> ReportRevision:
+def _revision_from_row(row: Mapping[str, object]) -> ArtifactContentRevision:
     """Validate stored JSON and return its exact publication metadata."""
     content = cast("Mapping[str, object]", row["content"])
-    return ReportRevision.model_validate(
+    return ArtifactContentRevision.model_validate(
         {
             **content,
-            "report_id": row["report_id"],
             "revision": row["revision"],
             "artifact_id": row["artifact_id"],
             "issue_id": row["issue_id"],

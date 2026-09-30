@@ -18,6 +18,12 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.inbound import InboundQueue
+from trackinizer.wire.bodies import (
+    SubmitAgentSession,
+    SubmitBelief,
+    SubmitIssue,
+    SubmitPaper,
+)
 
 
 if TYPE_CHECKING:
@@ -180,6 +186,7 @@ async def test_browser_chat_can_target_record_in_separate_read_profile(
     install_identity(make_test_identity())
     started = await client.post("/api/sessions/start", json={"cli": "codex"})
     session_id = StrCodec.coerce(DictCodec.coerce(loads(started.content))["id"])
+    assert (await client.get(f"/api/sessions/{session_id}/inbound")).status_code == 200
     install_identity(make_test_identity(api_key_id=None))
     paired = await client.put(
         f"/api/workspaces/{workspace_id}/connection",
@@ -222,10 +229,10 @@ async def test_browser_chat_can_target_record_in_separate_read_profile(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_workspace_requires_account_opt_in(
+async def test_workspace_preference_does_not_gate_owned_canvas(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
-    """A default account cannot create a canvas until it opts in."""
+    """The UI preference does not prevent an owned report-chat canvas."""
     client, store = pglite_route_client
     async with store.engine.acquire() as conn:
         await conn.execute(
@@ -234,18 +241,16 @@ async def test_workspace_requires_account_opt_in(
             TEST_USER_ID,
         )
     install_identity(make_test_identity(api_key_id=None))
-    refused = await client.post("/api/workspaces")
-    assert refused.status_code == 403
-    enabled = await client.put("/api/me/visual-workspace", json={"enabled": True})
-    assert enabled.status_code == 200
-    assert DictCodec.coerce(loads(enabled.content))["enabled"] is True
     created = await client.post("/api/workspaces")
     assert created.status_code == 200
     workspace_id = StrCodec.coerce(DictCodec.coerce(loads(created.content))["id"])
+    enabled = await client.put("/api/me/visual-workspace", json={"enabled": True})
+    assert enabled.status_code == 200
+    assert DictCodec.coerce(loads(enabled.content))["enabled"] is True
     disabled = await client.put("/api/me/visual-workspace", json={"enabled": False})
     assert disabled.status_code == 200
-    hidden = await client.get(f"/api/workspaces/{workspace_id}")
-    assert hidden.status_code == 403
+    still_owned = await client.get(f"/api/workspaces/{workspace_id}")
+    assert still_owned.status_code == 200
 
 
 @pytest.mark.db_pglite
@@ -299,6 +304,7 @@ async def test_agent_operations_require_explicit_live_session_pairing(
     started = await client.post("/api/sessions/start", json={"cli": "codex"})
     assert started.status_code == 201
     session_id = StrCodec.coerce(DictCodec.coerce(loads(started.content))["id"])
+    assert (await client.get(f"/api/sessions/{session_id}/inbound")).status_code == 200
     operation = {
         "revision": 0,
         "operation": {"kind": "show", "visual_type": "trax.chat"},
@@ -375,6 +381,7 @@ async def test_browser_lists_only_its_connectable_live_sessions(
     started = await client.post("/api/sessions/start", json={"cli": "codex"})
     assert started.status_code == 201
     session_id = StrCodec.coerce(DictCodec.coerce(loads(started.content))["id"])
+    assert (await client.get(f"/api/sessions/{session_id}/inbound")).status_code == 200
     path = "/api/workspaces/sessions/connectable"
     assert (await client.get(path)).status_code == 403
 
@@ -393,6 +400,131 @@ async def test_browser_lists_only_its_connectable_live_sessions(
             TEST_API_KEY_ID,
         )
     assert loads((await client.get(path)).content) == []
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_stale_poller_is_not_connectable_or_messageable(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DB-active session without recent inbound polling is unavailable."""
+    client, store = pglite_route_client
+    now = [100.0]
+    monkeypatch.setattr(
+        app.state,
+        "inbound",
+        InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0]),
+        raising=False,
+    )
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status, visual_workspace_enabled) "
+            "VALUES ($1, 'test-user@example.com', 'Test', 'writer', 'active', TRUE)",
+            TEST_USER_ID,
+        )
+        await conn.execute(
+            "INSERT INTO api_keys (id, user_id, name, secret_hash, prefix, role) "
+            "VALUES ($1, $2, 'agent', 'test-hash', 'trax_test', 'writer')",
+            TEST_API_KEY_ID,
+            TEST_USER_ID,
+        )
+    install_identity(make_test_identity(api_key_id=None))
+    created = await client.post("/api/workspaces")
+    workspace_id = StrCodec.coerce(DictCodec.coerce(loads(created.content))["id"])
+    install_identity(make_test_identity())
+    started = await client.post("/api/sessions/start", json={"cli": "codex"})
+    session_id = StrCodec.coerce(DictCodec.coerce(loads(started.content))["id"])
+    install_identity(make_test_identity(api_key_id=None))
+    picker = "/api/workspaces/sessions/connectable"
+    assert loads((await client.get(picker)).content) == []
+    assert (
+        await client.put(
+            f"/api/workspaces/{workspace_id}/connection",
+            json={"revision": 0, "session_id": session_id},
+        )
+    ).status_code == 422
+
+    install_identity(make_test_identity())
+    assert (await client.get(f"/api/sessions/{session_id}/inbound")).status_code == 200
+    install_identity(make_test_identity(api_key_id=None))
+    assert len(ListCodec.coerce(loads((await client.get(picker)).content))) == 1
+    paired = await client.put(
+        f"/api/workspaces/{workspace_id}/connection",
+        json={"revision": 0, "session_id": session_id},
+    )
+    assert paired.status_code == 200
+    status_path = f"/api/workspaces/{workspace_id}/connection"
+    assert (
+        DictCodec.coerce(loads((await client.get(status_path)).content))["status"]
+        == "live"
+    )
+
+    now[0] = 145.0
+    assert loads((await client.get(picker)).content) == []
+    assert (
+        DictCodec.coerce(loads((await client.get(status_path)).content))["status"]
+        == "unavailable"
+    )
+    assert (
+        await client.post(
+            f"/api/workspaces/{workspace_id}/messages",
+            json={"text": "Cannot deliver to a dead poller"},
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+        )
+    ).status_code == 409
+    assert (
+        await client.put(
+            status_path,
+            json={"revision": 1, "session_id": session_id},
+        )
+    ).status_code == 422
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_connectable_picker_finds_live_session_after_stale_page(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The picker cap applies to live sessions, not the first 100 DB rows."""
+    client, store = pglite_route_client
+    live_id = uuid.uuid4()
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status, visual_workspace_enabled) "
+            "VALUES ($1, 'test-user@example.com', 'Test', 'writer', 'active', TRUE)",
+            TEST_USER_ID,
+        )
+        await conn.execute(
+            "INSERT INTO api_keys (id, user_id, name, secret_hash, prefix, role) "
+            "VALUES ($1, $2, 'agent', 'test-hash', 'trax_test', 'writer')",
+            TEST_API_KEY_ID,
+            TEST_USER_ID,
+        )
+        for index in range(101):
+            await conn.execute(
+                "INSERT INTO inquiries "
+                "(id, kind, seq, status, account, title, owner, "
+                "agentsession_opened_by_api_key_id, agentsession_cli, created) "
+                "VALUES ($1, 'AgentSession', $2, 'active', 'test-user@example.com', "
+                "$3, $4, $5, 'codex', "
+                "clock_timestamp() - ($2::int * interval '1 second'))",
+                live_id if index == 100 else uuid.uuid4(),
+                10_000 + index,
+                f"Session {index}",
+                f"agent-{index}",
+                TEST_API_KEY_ID,
+            )
+    install_identity(make_test_identity())
+    assert (await client.get(f"/api/sessions/{live_id}/inbound")).status_code == 200
+    install_identity(make_test_identity(api_key_id=None))
+    response = await client.get("/api/workspaces/sessions/connectable")
+    assert response.status_code == 200
+    assert [
+        DictCodec.coerce(row)["id"] for row in ListCodec.coerce(loads(response.content))
+    ] == [
+        str(live_id),
+    ]
 
 
 @pytest.mark.db_pglite
@@ -438,6 +570,7 @@ async def test_browser_chat_uses_paired_session_and_persisted_canvas_context(
     install_identity(make_test_identity())
     started = await client.post("/api/sessions/start", json={"cli": "codex"})
     session_id = StrCodec.coerce(DictCodec.coerce(loads(started.content))["id"])
+    assert (await client.get(f"/api/sessions/{session_id}/inbound")).status_code == 200
     install_identity(make_test_identity(api_key_id=None))
     paired = await client.put(
         f"/api/workspaces/{workspace_id}/connection",
@@ -599,6 +732,9 @@ async def test_browser_chat_uses_paired_session_and_persisted_canvas_context(
     second_session_id = StrCodec.coerce(
         DictCodec.coerce(loads(second_started.content))["id"],
     )
+    assert (
+        await client.get(f"/api/sessions/{second_session_id}/inbound")
+    ).status_code == 200
     install_identity(make_test_identity(api_key_id=None))
     second_pair = await client.put(
         f"/api/workspaces/{workspace_id}/connection",
@@ -731,6 +867,328 @@ async def test_workspace_receipts_remain_bounded_without_losing_recent_replay(
     replay = await client.post(path, json=operation, headers={"Idempotency-Key": key})
     assert replay.status_code == 200
     assert loads(replay.content) == loads(shown.content)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_viewer_chats_about_frozen_report_revision_from_own_workspace(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A viewer's message carries only server-read evidence from one revision."""
+    client, store = pglite_route_client
+    monkeypatch.setattr(app.state, "inbound", InboundQueue(), raising=False)
+    viewer_id = uuid.uuid4()
+    viewer_key = uuid.uuid4()
+    viewer_email = "viewer@example.com"
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) VALUES "
+            "($1, 'test-user@example.com', 'Publisher', 'writer', 'active'), "
+            "($2, $3, 'Viewer', 'viewer', 'active')",
+            TEST_USER_ID,
+            viewer_id,
+            viewer_email,
+        )
+        await conn.execute(
+            "INSERT INTO api_keys (id, user_id, name, secret_hash, prefix, role) "
+            "VALUES ($1, $2, 'viewer-agent', 'test-hash', 'trax_view', 'viewer')",
+            viewer_key,
+            viewer_id,
+        )
+    issue_id = await store.submit_issue(
+        SubmitIssue(title="Report owner", account="test-user@example.com"),
+        actor="test-user@example.com",
+    )
+    belief_id = await store.submit_belief(
+        SubmitBelief(title="Scaling helps", account="test-user@example.com"),
+        actor="test-user@example.com",
+    )
+    paper_id = await store.submit_paper(
+        SubmitPaper(title="Measured result", account="test-user@example.com"),
+        actor="test-user@example.com",
+    )
+    await store.add_edge(
+        from_id=paper_id,
+        to_id=belief_id,
+        edge_kind="favors",
+        valence=-0.75,
+        note="Contrary held-out evidence",
+        actor="test-user@example.com",
+    )
+    install_identity(make_test_identity(api_key_id=None))
+    payload = {
+        "issue_id": str(issue_id),
+        "title": "Evidence atlas",
+        "summary": "Frozen result",
+        "format": "structured",
+        "citations": [{"record_id": str(issue_id)}],
+        "sections": [
+            {
+                "title": "Scaling",
+                "summary": "Measured direction",
+                "details": "Matched comparison",
+                "findings": [
+                    {
+                        "claim": "Scaling helps",
+                        "outcome": {
+                            "result": "3 wins",
+                            "denominator": 8,
+                            "split": "held-out",
+                        },
+                        "uncertainty": "Small sample",
+                        "citations": [
+                            {
+                                "record_id": str(paper_id),
+                                "claim_id": str(belief_id),
+                                "edge_kind": "favors",
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+    }
+    published = await client.post(
+        "/api/artifacts/content",
+        json=payload,
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert published.status_code == 201, published.text
+    artifact_id = StrCodec.coerce(
+        DictCodec.coerce(loads(published.content))["artifact_id"],
+    )
+    session_id, _, _ = await store.start_session(
+        SubmitAgentSession(title="Viewer's agent", cli="codex", account=viewer_email),
+        requested_actor="viewer-agent",
+        api_key_id=viewer_key,
+    )
+    install_identity(
+        make_test_identity(
+            user_id=viewer_id,
+            api_key_id=viewer_key,
+            email=viewer_email,
+            role="viewer",
+        ),
+    )
+    assert (await client.get(f"/api/sessions/{session_id}/inbound")).status_code == 200
+    install_identity(
+        make_test_identity(
+            user_id=viewer_id,
+            api_key_id=None,
+            email=viewer_email,
+            role="viewer",
+        ),
+    )
+    created = await client.post("/api/workspaces")
+    assert created.status_code == 200, created.text
+    workspace_id = StrCodec.coerce(DictCodec.coerce(loads(created.content))["id"])
+    paired = await client.put(
+        f"/api/workspaces/{workspace_id}/connection",
+        json={"revision": 0, "session_id": str(session_id)},
+    )
+    assert paired.status_code == 200, paired.text
+    path = f"/api/workspaces/{workspace_id}/operations"
+    missing = await client.post(
+        path,
+        json={
+            "revision": 1,
+            "operation": {
+                "kind": "show",
+                "visual_type": "trax.artifact",
+                "record_id": str(uuid.uuid4()),
+            },
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert missing.status_code == 422
+    shown_report = await client.post(
+        path,
+        json={
+            "revision": 1,
+            "operation": {
+                "kind": "show",
+                "visual_type": "trax.artifact",
+                "record_id": artifact_id,
+            },
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert shown_report.status_code == 200, shown_report.text
+    shown_chat = await client.post(
+        path,
+        json={
+            "revision": 2,
+            "operation": {
+                "kind": "show",
+                "visual_type": "trax.chat",
+                "record_id": artifact_id,
+            },
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert shown_chat.status_code == 200, shown_chat.text
+    chat_id = StrCodec.coerce(
+        DictCodec.coerce(
+            ListCodec.coerce(DictCodec.coerce(loads(shown_chat.content))["visuals"])[
+                -1
+            ],
+        )["id"],
+    )
+    message_path = f"/api/workspaces/{workspace_id}/messages"
+    body = {
+        "text": "What evidence supports this?",
+        "chat_instance_id": chat_id,
+        "expected_record_id": artifact_id,
+    }
+    forged = await client.post(
+        message_path,
+        json={**body, "citations": [{"record_id": str(uuid.uuid4())}]},
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert forged.status_code == 422
+    sent = await client.post(
+        message_path,
+        json=body,
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert sent.status_code == 200, sent.text
+    install_identity(
+        make_test_identity(
+            user_id=viewer_id,
+            api_key_id=viewer_key,
+            email=viewer_email,
+            role="viewer",
+        ),
+    )
+    drained = await client.get(f"/api/sessions/{session_id}/inbound")
+    assert drained.status_code == 200, drained.text
+    messages = ListCodec.coerce(DictCodec.coerce(loads(drained.content))["messages"])
+    context = DictCodec.coerce(DictCodec.coerce(messages[0])["context"])
+    assert context["record_id"] == artifact_id
+    report = DictCodec.coerce(context["artifact_content"])
+    assert report["revision"] == 1
+    assert report["title"] == "Evidence atlas"
+    assert DictCodec.coerce(ListCodec.coerce(report["citations"])[0])[
+        "record_id"
+    ] == str(
+        issue_id,
+    )
+    finding = DictCodec.coerce(
+        ListCodec.coerce(
+            DictCodec.coerce(ListCodec.coerce(report["sections"])[0])["findings"],
+        )[0],
+    )
+    citation = DictCodec.coerce(ListCodec.coerce(finding["citations"])[0])
+    assert citation["valence"] == -0.75
+    assert citation["note"] == "Contrary held-out evidence"
+    other_key = uuid.uuid4()
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO api_keys (id, user_id, name, secret_hash, prefix, role) "
+            "VALUES ($1, $2, 'other-agent', 'test-hash', 'trax_othe', 'viewer')",
+            other_key,
+            viewer_id,
+        )
+    install_identity(
+        make_test_identity(
+            user_id=viewer_id,
+            api_key_id=other_key,
+            email=viewer_email,
+            role="viewer",
+        ),
+    )
+    assert (await client.get(f"/api/sessions/{session_id}/inbound")).status_code == 403
+    install_identity(make_test_identity(api_key_id=None))
+    newer = await client.post(
+        "/api/artifacts/content",
+        json={
+            **payload,
+            "previous_artifact_id": artifact_id,
+            "summary": "Newer result",
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert newer.status_code == 201, newer.text
+    newer_artifact_id = StrCodec.coerce(
+        DictCodec.coerce(loads(newer.content))["artifact_id"],
+    )
+    await store.add_edge(
+        from_id=paper_id,
+        to_id=belief_id,
+        edge_kind="favors",
+        valence=0.5,
+        note="Changed live edge",
+        actor="test-user@example.com",
+    )
+    install_identity(
+        make_test_identity(
+            user_id=viewer_id,
+            api_key_id=None,
+            email=viewer_email,
+            role="viewer",
+        ),
+    )
+    same_revision = await client.post(
+        message_path,
+        json=body,
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert same_revision.status_code == 200, same_revision.text
+    install_identity(
+        make_test_identity(
+            user_id=viewer_id,
+            api_key_id=viewer_key,
+            email=viewer_email,
+            role="viewer",
+        ),
+    )
+    again = await client.get(f"/api/sessions/{session_id}/inbound")
+    repeated = DictCodec.coerce(
+        DictCodec.coerce(
+            ListCodec.coerce(DictCodec.coerce(loads(again.content))["messages"])[0],
+        )["context"],
+    )
+    repeated_report = DictCodec.coerce(repeated["artifact_content"])
+    assert repeated_report["summary"] == "Frozen result"
+    repeated_finding = DictCodec.coerce(
+        ListCodec.coerce(
+            DictCodec.coerce(ListCodec.coerce(repeated_report["sections"])[0])[
+                "findings"
+            ],
+        )[0],
+    )
+    assert (
+        DictCodec.coerce(ListCodec.coerce(repeated_finding["citations"])[0])["valence"]
+        == -0.75
+    )
+    install_identity(
+        make_test_identity(
+            user_id=viewer_id,
+            api_key_id=None,
+            email=viewer_email,
+            role="viewer",
+        ),
+    )
+    retargeted = await client.post(
+        path,
+        json={
+            "revision": 3,
+            "operation": {
+                "kind": "show",
+                "visual_type": "trax.chat",
+                "record_id": newer_artifact_id,
+            },
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert retargeted.status_code == 200, retargeted.text
+    stale = await client.post(
+        message_path,
+        json=body,
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert stale.status_code == 409
 
 
 if __name__ == "__main__":

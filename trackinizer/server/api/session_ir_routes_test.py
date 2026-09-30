@@ -34,9 +34,13 @@ from trackinizer.lib.custom_json import (
     json_freeze,
 )
 from trackinizer.server.api import session_ir_routes
-from trackinizer.server.api.conftest import make_test_identity
+from trackinizer.server.api.conftest import (
+    TEST_API_KEY_ID,
+    install_identity,
+    make_test_identity,
+)
 from trackinizer.server.auth import AuthIdentity, current_user
-from trackinizer.server.store.session_ir import SessionManifest
+from trackinizer.server.store.session_ir import RecentSessionTurn, SessionManifest
 from trackinizer.types.inquiries import AgentSession, Issue
 from trackinizer.types.session_records import SessionRecordRow
 
@@ -288,6 +292,104 @@ class TestReadRecords:
 
         assert response.status_code == 400
         assert not read.await_count
+
+
+class TestRecentTurns:
+    def test_returns_recent_messages_with_part_and_position(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, store, _engine = route_client
+        session_id = uuid.uuid4()
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=AgentSession(cli="codex")),
+        )
+        read = AsyncMock(
+            return_value=[
+                RecentSessionTurn(
+                    part=0,
+                    idx=4,
+                    kind="UserMessage",
+                    content="question",
+                ),
+                RecentSessionTurn(
+                    part=1,
+                    idx=2,
+                    kind="AssistantMessage",
+                    content="answer",
+                ),
+            ],
+        )
+        monkeypatch.setattr(store, "read_recent_session_turns", read)
+
+        response = client.get(f"/api/sessions/{session_id}/turns?limit=2")
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "turns": [
+                {"part": 0, "idx": 4, "kind": "UserMessage", "content": "question"},
+                {"part": 1, "idx": 2, "kind": "AssistantMessage", "content": "answer"},
+            ],
+        }
+        read.assert_awaited_once_with(session_id, limit=2)
+
+    @pytest.mark.parametrize("limit", [0, 101])
+    def test_rejects_invalid_limit(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+        limit: int,
+    ) -> None:
+        client, store, _engine = route_client
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=AgentSession(cli="codex")),
+        )
+        read = AsyncMock(return_value=[])
+        monkeypatch.setattr(store, "read_recent_session_turns", read)
+
+        response = client.get(f"/api/sessions/{uuid.uuid4()}/turns?limit={limit}")
+
+        assert response.status_code == 400
+        read.assert_not_awaited()
+
+
+class TestViewerOwnedCapture:
+    @pytest.mark.parametrize("owns_session", [True, False])
+    def test_viewer_may_append_only_to_own_agent_session(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+        owns_session: bool,
+    ) -> None:
+        client, store, _engine = route_client
+        install_identity(make_test_identity(role="viewer"))
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="codex",
+                    opened_by_api_key_id=TEST_API_KEY_ID
+                    if owns_session
+                    else uuid.uuid4(),
+                ),
+            ),
+        )
+        append = AsyncMock(return_value=(0, 0, 0))
+        monkeypatch.setattr(store, "append_session_records", append)
+
+        response = client.post(
+            f"/api/sessions/{uuid.uuid4()}/records",
+            json={"records": []},
+        )
+
+        assert response.status_code == (200 if owns_session else 403), response.text
+        assert append.await_count == int(owns_session)
 
 
 class TestLegacyPart:

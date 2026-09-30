@@ -21,6 +21,8 @@ from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
+    install_identity,
+    make_test_identity,
 )
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.types.inquiries import AgentSession
@@ -84,6 +86,7 @@ class TestSendMessageIdempotency:
             "get_inquiry",
             AsyncMock(return_value=_live_session()),
         )
+        app.state.inbound.mark_poller(session_id)
         r2 = client.post(
             "/api/messages",
             json={"actor": "scientist", "text": "hello", "room": "sear"},
@@ -113,6 +116,7 @@ class TestSendMessageIdempotency:
             "get_inquiry",
             AsyncMock(return_value=_live_session()),
         )
+        app.state.inbound.mark_poller(session_id)
 
         r1 = client.post(
             "/api/messages",
@@ -258,6 +262,7 @@ class TestInboundEnqueueRejectsSource:
             "get_inquiry",
             AsyncMock(return_value=_live_session()),
         )
+        inbound.mark_poller(session_id)
         r = client.post(
             f"/api/sessions/{session_id}/inbound",
             json={"text": "check the logs"},
@@ -283,6 +288,7 @@ class TestInboundEnqueueRejectsSource:
             "get_inquiry",
             AsyncMock(return_value=_live_session()),
         )
+        inbound.mark_poller(session_id)
         key = str(uuid.uuid4())
         first = client.post(
             f"/api/sessions/{session_id}/inbound",
@@ -359,6 +365,101 @@ class TestSessionStartAccountValidation:
         # The account threaded into the submit body is the authenticated
         # creator's email, not left for the Store to default to the handle.
         assert captured["account"] == TEST_USER_EMAIL
+
+
+class TestViewerOwnedSessionLifecycle:
+    def test_viewer_starts_own_session(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, store, _engine = route_client
+        install_identity(make_test_identity(role="viewer"))
+        session_id = uuid.uuid4()
+        start = AsyncMock(return_value=(session_id, "scientist", 0))
+        monkeypatch.setattr(store, "start_session", start)
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
+        )
+
+        response = client.post("/api/sessions/start", json={"cli": "codex"})
+
+        assert response.status_code == 201, response.text
+        assert DictCodec.coerce(response.json())["id"] == str(session_id)
+        call = start.await_args
+        assert call is not None
+        assert call.kwargs["api_key_id"] == TEST_API_KEY_ID
+
+    def test_viewer_cannot_start_for_another_account(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, store, _engine = route_client
+        install_identity(make_test_identity(role="viewer"))
+        start = AsyncMock()
+        monkeypatch.setattr(store, "start_session", start)
+
+        response = client.post(
+            "/api/sessions/start",
+            json={"cli": "codex", "account": "other@example.com"},
+        )
+
+        assert response.status_code == 403, response.text
+        start.assert_not_awaited()
+
+    def test_viewer_cannot_receive_foreign_start_replay(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, store, _engine = route_client
+        install_identity(make_test_identity(role="viewer"))
+        monkeypatch.setattr(
+            store,
+            "start_session",
+            AsyncMock(return_value=(uuid.uuid4(), "scientist", 0)),
+        )
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session(uuid.uuid4())),
+        )
+
+        response = client.post("/api/sessions/start", json={"cli": "codex"})
+
+        assert response.status_code == 403, response.text
+
+    @pytest.mark.parametrize("owns_session", [True, False])
+    def test_viewer_ends_only_own_session(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+        owns_session: bool,
+    ) -> None:
+        client, store, _engine = route_client
+        install_identity(make_test_identity(role="viewer"))
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(
+                return_value=_live_session(
+                    TEST_API_KEY_ID if owns_session else uuid.uuid4(),
+                ),
+            ),
+        )
+        end = AsyncMock(return_value=datetime(2026, 1, 1, tzinfo=UTC))
+        monkeypatch.setattr(store, "end_session", end)
+
+        response = client.post(
+            f"/api/sessions/{uuid.uuid4()}/end",
+            json={"actor": "scientist"},
+        )
+
+        assert response.status_code == (200 if owns_session else 403), response.text
+        assert end.await_count == int(owns_session)
 
 
 if __name__ == "__main__":

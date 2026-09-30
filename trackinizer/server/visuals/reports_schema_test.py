@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 async def test_report_migration_matches_fresh_schema(
     pglite_engine: PGliteEngine,
 ) -> None:
-    """Report tables and indexes match migration 028 after bootstrap."""
+    """Report tables and indexes match migrations 028 and 030 after bootstrap."""
     await reset_schema(pglite_engine)
     await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
     tables = ["visual_reports", "visual_report_revisions"]
@@ -42,6 +42,7 @@ async def test_report_migration_matches_fresh_schema(
         await conn.execute("DROP TABLE visual_report_revisions")
         await conn.execute("DROP TABLE visual_reports")
         await conn.execute(load_sql("schema.028"))
+        await conn.execute(load_sql("schema.030"))
         migrated_columns = [dict(row) for row in await conn.fetch(columns, tables)]
         migrated_indexes = [dict(row) for row in await conn.fetch(indexes, tables)]
     assert migrated_columns == fresh_columns

@@ -1,4 +1,4 @@
-"""Authenticated publication and exact-version reads of shared reports."""
+"""Authenticated publication and exact-version reads of shared Artifacts."""
 
 from __future__ import annotations
 
@@ -11,38 +11,42 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.visuals.reports import (
-    PublishReport,
-    ReportConflictError,
-    ReportRevision,
-    publish_report,
-    read_report_revision,
+    ArtifactContentConflictError,
+    ArtifactContentRevision,
+    PublishArtifactContent,
+    publish_artifact_content,
+    read_artifact_content,
 )
 
 
 router = APIRouter()
 
 
-@router.post("/api/reports", response_model=ReportRevision, status_code=201)
-async def publish_report_route(
-    body: PublishReport,
+@router.post(
+    "/api/artifacts/content",
+    response_model=ArtifactContentRevision,
+    status_code=201,
+)
+async def publish_artifact_content_route(
+    body: PublishArtifactContent,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     key: Annotated[uuid.UUID, Header(alias="Idempotency-Key")],
-) -> ReportRevision:
+) -> ArtifactContentRevision:
     """Publish a bounded revision and its Issue-produced Artifact atomically.
 
     Args:
-      body: HTML or structured report draft and graph citations.
+      body: HTML or structured Artifact content and graph citations.
       request: Request carrying the graph Store.
       identity: Authenticated writer or agent credential.
       key: Retry-safe publication key.
 
     Returns:
-      revision: Immutable report revision shared with signed-in teammates.
+      revision: Immutable Artifact content shared with signed-in teammates.
 
     """
     try:
-        return await publish_report(
+        return await publish_artifact_content(
             get_store(request),
             user_id=identity.user_id,
             author=identity.email,
@@ -50,38 +54,34 @@ async def publish_report_route(
             body=body,
             key=key,
         )
-    except ReportConflictError as error:
+    except ArtifactContentConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
 
 @router.get(
-    "/api/reports/{report_id}/revisions/{revision}",
-    response_model=ReportRevision,
+    "/api/artifacts/{artifact_id}/content",
+    response_model=ArtifactContentRevision,
 )
-async def read_report_revision_route(
-    report_id: uuid.UUID,
-    revision: int,
+async def read_artifact_content_route(
+    artifact_id: uuid.UUID,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
-) -> ReportRevision:
-    """Read one immutable report revision with deployment-wide team access.
+) -> ArtifactContentRevision:
+    """Read the content held by one Artifact with team access.
 
     Args:
-      report_id: Stable report identity.
-      revision: Exact publication version.
+      artifact_id: Canonical Artifact identity for the publication.
       request: Request carrying the graph Store.
       identity: Authenticated teammate.
 
     Returns:
-      report: Exact revision and its frozen citations.
+      artifact: Exact revision and its frozen citations.
 
     """
     del identity
-    if revision < 1:
-        raise HTTPException(status_code=422, detail="Revision must be positive.")
-    report = await read_report_revision(get_store(request), report_id, revision)
-    if report is None:
-        raise HTTPException(status_code=404, detail="Report revision not found.")
-    return report
+    artifact = await read_artifact_content(get_store(request), artifact_id)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact content not found.")
+    return artifact

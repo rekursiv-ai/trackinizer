@@ -1299,6 +1299,9 @@ class TestIntegrationEndToEnd:
                     json={"cli": "codex", "actor": "scientist", "rooms": ["sear"]},
                 )
                 sid = StrCodec.coerce(_json_object(start)["id"])
+                assert (
+                    await http.get(f"/api/sessions/{sid}/inbound")
+                ).status_code == 200
 
                 # Room-scoped send to the right room reaches the session.
                 hit = await http.post(
@@ -1359,10 +1362,14 @@ class TestIntegrationEndToEnd:
                 transport=transport,
                 base_url="http://testserver",
             ) as http:
-                await http.post(
+                started = await http.post(
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "multi", "rooms": ["a", "b"]},
                 )
+                sid = StrCodec.coerce(_json_object(started)["id"])
+                assert (
+                    await http.get(f"/api/sessions/{sid}/inbound")
+                ).status_code == 200
                 # Bare send: ambiguous across rooms a and b -> 409.
                 bare = await http.post(
                     "/api/messages",
@@ -1416,6 +1423,9 @@ class TestIntegrationEndToEnd:
                     json={"cli": "codex", "actor": "idem", "rooms": ["sear"]},
                 )
                 sid = StrCodec.coerce(_json_object(start)["id"])
+                assert (
+                    await http.get(f"/api/sessions/{sid}/inbound")
+                ).status_code == 200
                 key = str(uuid.uuid4())
                 body = {"actor": "idem", "room": "sear", "text": "once"}
                 first = await http.post(
@@ -1476,6 +1486,9 @@ class TestIntegrationEndToEnd:
                     json={"cli": "codex", "actor": "race", "rooms": ["sear"]},
                 )
                 sid = StrCodec.coerce(_json_object(start)["id"])
+                assert (
+                    await http.get(f"/api/sessions/{sid}/inbound")
+                ).status_code == 200
                 key = str(uuid.uuid4())
                 body = {"actor": "race", "room": "sear", "text": "once"}
                 first, second = await asyncio.gather(
@@ -1770,6 +1783,10 @@ class TestIntegrationEndToEnd:
                     json={"text": "check the logs", "source": "forged"},
                 )
                 assert forged.status_code == 422, forged.text
+
+                assert (
+                    await http.get(f"/api/sessions/{sid}/inbound")
+                ).status_code == 200
 
                 enq = await http.post(
                     f"/api/sessions/{sid}/inbound",

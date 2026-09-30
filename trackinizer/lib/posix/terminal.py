@@ -256,6 +256,11 @@ class Terminal:
         return self._master_fd
 
     @property
+    def pid(self) -> int | None:
+        """Return the child process ID while it is owned by this terminal."""
+        return self._pid if self._pid > 0 else None
+
+    @property
     def submitted(self) -> int:
         """How many messages have been typed in and submitted."""
         return self._submitted

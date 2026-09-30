@@ -71,6 +71,7 @@ async def test_save_on_one_client_and_open_on_another(
     started = await client.post("/api/sessions/start", json={"cli": "codex"})
     assert started.status_code == 201
     session_id = StrCodec.coerce(DictCodec.coerce(loads(started.content))["id"])
+    assert (await client.get(f"/api/sessions/{session_id}/inbound")).status_code == 200
     install_identity(make_test_identity(api_key_id=None))
     paired = await client.put(
         f"/api/workspaces/{workspace_id}/connection",

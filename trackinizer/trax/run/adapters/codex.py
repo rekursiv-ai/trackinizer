@@ -77,10 +77,8 @@ class CodexAdapter:
           result: The Path | None.
 
         """
-        # Codex shards by DATE, not by workspace, so every concurrent run
-        # writes into the same ``<Y>/<M>/<D>/`` directory. There is nothing in
-        # the layout that distinguishes this run's rollout from a sibling's,
-        # so the runner keeps its capture-every-new-match fallback.
+        # Codex shards by DATE, not workspace, so concurrent runs share this
+        # directory. The runner claims the child-held rollout's session ID.
         return None
 
     def session_id_from_path(self, path: Path) -> str | None:

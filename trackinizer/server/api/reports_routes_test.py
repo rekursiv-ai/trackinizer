@@ -15,13 +15,175 @@ from trackinizer.server.api.conftest import (
     install_identity,
     make_test_identity,
 )
-from trackinizer.wire.bodies import SubmitBelief, SubmitIssue, SubmitPaper
+from trackinizer.server.visuals.reports import read_artifact_content_on_conn
+from trackinizer.wire.bodies import (
+    SubmitArtifact,
+    SubmitBelief,
+    SubmitIssue,
+    SubmitPaper,
+)
 
 
 if TYPE_CHECKING:
     import httpx2
 
     from trackinizer.server.store.core import Store
+
+
+@pytest.mark.parametrize("other_publisher", [False, True])
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_report_key_does_not_reuse_an_unrelated_artifact(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    other_publisher: bool,
+) -> None:
+    """A report retry key belongs to the report, not an inquiry creation."""
+    client, store = pglite_route_client
+    teammate_id = uuid.uuid4()
+    teammate_email = "teammate@example.com"
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) VALUES "
+            "($1, $2, 'Publisher', 'writer', 'active'), "
+            "($3, $4, 'Teammate', 'writer', 'active')",
+            TEST_USER_ID,
+            TEST_USER_EMAIL,
+            teammate_id,
+            teammate_email,
+        )
+    key = uuid.uuid4()
+    unrelated_id = await store.submit_artifact(
+        SubmitArtifact(
+            title="Unrelated artifact",
+            account=TEST_USER_EMAIL,
+            idempotency_key=key,
+        ),
+        actor=TEST_USER_EMAIL,
+    )
+    author = teammate_email if other_publisher else TEST_USER_EMAIL
+    issue_id = await store.submit_issue(
+        SubmitIssue(title="Report owner", account=author),
+        actor=author,
+    )
+    if other_publisher:
+        install_identity(
+            make_test_identity(
+                user_id=teammate_id,
+                email=teammate_email,
+                role="writer",
+                api_key_id=None,
+            ),
+        )
+    payload = {
+        "issue_id": str(issue_id),
+        "title": "Direction atlas",
+        "summary": "A cited report.",
+        "format": "html",
+        "html": "<h1>Atlas</h1>",
+        "citations": [{"record_id": str(issue_id)}],
+    }
+    published = await client.post(
+        "/api/artifacts/content",
+        json=payload,
+        headers={"Idempotency-Key": str(key)},
+    )
+    assert published.status_code == 201, published.text
+    artifact_id = uuid.UUID(
+        StrCodec.coerce(DictCodec.coerce(loads(published.content))["artifact_id"]),
+    )
+    assert artifact_id != unrelated_id
+    async with store.engine.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT account FROM inquiries WHERE id = $1",
+                artifact_id,
+            )
+            == author
+        )
+        context = await read_artifact_content_on_conn(
+            conn,
+            artifact_id,
+            include_html=False,
+        )
+        assert context is not None
+        assert context.html is None
+        assert context.title == "Direction atlas"
+    replay = await client.post(
+        "/api/artifacts/content",
+        json=payload,
+        headers={"Idempotency-Key": str(key)},
+    )
+    assert replay.status_code == 201
+    assert loads(replay.content) == loads(published.content)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_artifact_user_storage_quota_is_atomic_and_replayable(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A user at 500 MB cannot publish another file; an old retry still works."""
+    client, store = pglite_route_client
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES ($1, $2, 'Publisher', 'writer', 'active')",
+            TEST_USER_ID,
+            TEST_USER_EMAIL,
+        )
+    issue_id = await store.submit_issue(
+        SubmitIssue(title="Artifact owner", account=TEST_USER_EMAIL),
+        actor=TEST_USER_EMAIL,
+    )
+    payload = {
+        "issue_id": str(issue_id),
+        "title": "Atlas",
+        "summary": "One direction.",
+        "format": "html",
+        "html": "<h1>Atlas</h1>",
+    }
+    key = str(uuid.uuid4())
+    first = await client.post(
+        "/api/artifacts/content",
+        json=payload,
+        headers={"Idempotency-Key": key},
+    )
+    assert first.status_code == 201, first.text
+    async with store.engine.acquire() as conn:
+        stored = await conn.fetchval(
+            "SELECT content_bytes FROM visual_report_revisions WHERE artifact_id = $1",
+            uuid.UUID(
+                StrCodec.coerce(DictCodec.coerce(loads(first.content))["artifact_id"]),
+            ),
+        )
+        assert IntCodec.coerce(stored) > 0
+        await conn.execute(
+            "UPDATE visual_report_revisions SET content_bytes = 499999999 "
+            "WHERE author_id = $1",
+            TEST_USER_ID,
+        )
+    denied = await client.post(
+        "/api/artifacts/content",
+        json={**payload, "title": "Next atlas"},
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert denied.status_code == 422
+    assert "500 MB" in denied.text
+    async with store.engine.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM visual_report_revisions WHERE author_id = $1",
+                TEST_USER_ID,
+            )
+            == 1
+        )
+    replay = await client.post(
+        "/api/artifacts/content",
+        json=payload,
+        headers={"Idempotency-Key": key},
+    )
+    assert replay.status_code == 201
+    assert loads(replay.content) == loads(first.content)
 
 
 @pytest.mark.db_pglite
@@ -54,7 +216,7 @@ async def test_report_publish_is_atomic_immutable_and_team_readable(
         "citations": [{"record_id": str(issue_id)}],
     }
     invalid = await client.post(
-        "/api/reports",
+        "/api/artifacts/content",
         json={**first_payload, "citations": [{"record_id": str(uuid.uuid4())}]},
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
@@ -69,26 +231,25 @@ async def test_report_publish_is_atomic_immutable_and_team_readable(
         )
     key = str(uuid.uuid4())
     first = await client.post(
-        "/api/reports",
+        "/api/artifacts/content",
         json=first_payload,
         headers={"Idempotency-Key": key},
     )
     assert first.status_code == 201, first.text
     published = DictCodec.coerce(loads(first.content))
-    report_id = StrCodec.coerce(published["report_id"])
     artifact_id = StrCodec.coerce(published["artifact_id"])
     assert published["revision"] == 1
     assert published["html"] == first_payload["html"]
 
     replay = await client.post(
-        "/api/reports",
+        "/api/artifacts/content",
         json=first_payload,
         headers={"Idempotency-Key": key},
     )
     assert replay.status_code == 201
     assert loads(replay.content) == loads(first.content)
     conflict = await client.post(
-        "/api/reports",
+        "/api/artifacts/content",
         json={**first_payload, "title": "Changed"},
         headers={"Idempotency-Key": key},
     )
@@ -106,16 +267,25 @@ async def test_report_publish_is_atomic_immutable_and_team_readable(
     assert dict(edge) == {"kind": "Artifact", "edge_kind": "produced_by"}
 
     second = await client.post(
-        "/api/reports",
+        "/api/artifacts/content",
         json={
             **first_payload,
-            "report_id": report_id,
+            "previous_artifact_id": artifact_id,
             "html": "<h1>Atlas revision two</h1>",
         },
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert second.status_code == 201, second.text
-    assert DictCodec.coerce(loads(second.content))["revision"] == 2
+    second_revision = DictCodec.coerce(loads(second.content))
+    assert second_revision["revision"] == 2
+    assert second_revision["artifact_id"] != artifact_id
+    latest = await client.get(
+        f"/api/artifacts/{second_revision['artifact_id']}/content",
+    )
+    assert latest.status_code == 200
+    assert DictCodec.coerce(loads(latest.content))["html"] == (
+        "<h1>Atlas revision two</h1>"
+    )
 
     install_identity(
         make_test_identity(
@@ -125,7 +295,7 @@ async def test_report_publish_is_atomic_immutable_and_team_readable(
             api_key_id=None,
         ),
     )
-    earlier = await client.get(f"/api/reports/{report_id}/revisions/1")
+    earlier = await client.get(f"/api/artifacts/{artifact_id}/content")
     assert earlier.status_code == 200
     revision = DictCodec.coerce(loads(earlier.content))
     assert revision["html"] == "<h1>Atlas revision one</h1>"
@@ -133,16 +303,16 @@ async def test_report_publish_is_atomic_immutable_and_team_readable(
     assert StrCodec.coerce(revision["author"]) == TEST_USER_EMAIL
     async with store.engine.acquire() as conn:
         await conn.execute("DELETE FROM users WHERE id = $1", TEST_USER_ID)
-    preserved = await client.get(f"/api/reports/{report_id}/revisions/1")
+    preserved = await client.get(f"/api/artifacts/{artifact_id}/content")
     assert preserved.status_code == 200
     assert DictCodec.coerce(loads(preserved.content))["author"] == TEST_USER_EMAIL
     await store.purge(issue_id, actor=TEST_USER_EMAIL)
     await store.purge(uuid.UUID(artifact_id), actor=TEST_USER_EMAIL)
-    historical = await client.get(f"/api/reports/{report_id}/revisions/1")
+    historical = await client.get(f"/api/artifacts/{artifact_id}/content")
     assert historical.status_code == 200
     assert DictCodec.coerce(loads(historical.content))["issue_id"] == str(issue_id)
     denied = await client.post(
-        "/api/reports",
+        "/api/artifacts/content",
         json=first_payload,
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
@@ -214,13 +384,13 @@ async def test_structured_report_freezes_signed_evidence(
         ],
     }
     published = await client.post(
-        "/api/reports",
+        "/api/artifacts/content",
         json=payload,
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert published.status_code == 201, published.text
     revision = DictCodec.coerce(loads(published.content))
-    report_id = StrCodec.coerce(revision["report_id"])
+    artifact_id = StrCodec.coerce(revision["artifact_id"])
     sections = ListCodec.coerce(revision["sections"])
     finding = DictCodec.coerce(
         ListCodec.coerce(DictCodec.coerce(sections[0])["findings"])[0],
@@ -242,7 +412,7 @@ async def test_structured_report_freezes_signed_evidence(
         valence=-0.5,
         actor=TEST_USER_EMAIL,
     )
-    earlier = await client.get(f"/api/reports/{report_id}/revisions/1")
+    earlier = await client.get(f"/api/artifacts/{artifact_id}/content")
     assert earlier.status_code == 200
     assert DictCodec.coerce(loads(earlier.content))["sections"] == sections
 
@@ -255,16 +425,15 @@ async def test_structured_report_freezes_signed_evidence(
         actor=TEST_USER_EMAIL,
     )
     oversized_note = await client.post(
-        "/api/reports",
-        json={**payload, "report_id": report_id},
+        "/api/artifacts/content",
+        json={**payload, "previous_artifact_id": artifact_id},
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert oversized_note.status_code == 422
     async with store.engine.acquire() as conn:
         assert (
             await conn.fetchval(
-                "SELECT count(*) FROM visual_report_revisions WHERE report_id = $1",
-                uuid.UUID(report_id),
+                "SELECT count(*) FROM visual_report_revisions",
             )
             == 1
         )

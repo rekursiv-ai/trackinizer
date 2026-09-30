@@ -118,11 +118,15 @@ _REAL_TEXT: Final = (
     " ELSE {col}::float8::text END)"
 )
 
-# One session's records of one kind. Correlated on ``inquiries.id``, which is
-# the row the filter is selecting; ``{col}`` is the record KIND, not a column.
+# One session's LIVE records of one kind. A compaction may shrink the manifest
+# while old tail rows remain stored, so every record read must bind idx to that
+# part's manifest. Correlated on ``inquiries.id``; ``{col}`` is the record KIND.
 _RECORDS_WHERE: Final = (
     "SELECT 1 FROM session_records r "
-    "WHERE r.session_id = inquiries.id AND r.kind = '{col}'"
+    "JOIN session_manifests m "
+    "ON m.session_id = r.session_id AND m.part = r.part "
+    "WHERE r.session_id = inquiries.id AND r.kind = '{col}' "
+    "AND r.idx < m.records"
 )
 
 # An op is absent where the two evaluators would order differently:

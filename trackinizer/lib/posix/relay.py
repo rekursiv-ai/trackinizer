@@ -134,6 +134,8 @@ class Relay:
         session source IS the stream (a wrapped binary with no log to tail).
         Sees every byte the child emits, echoes included. Must not raise or
         block: it runs on the relay's own path, so an escape stops mirroring.
+      on_started: Called with the child PID once it has started, before the
+        relay begins pumping its output. Must not raise or block.
 
     """
 
@@ -145,12 +147,14 @@ class Relay:
         stdout: HasFileno | None = None,
         on_input: Callable[[bytes], None] | None = None,
         on_output: Callable[[bytes], None] | None = None,
+        on_started: Callable[[int], None] | None = None,
     ) -> None:
         self._terminal = terminal
         self._stdin = stdin
         self._stdout = stdout
         self._on_input = on_input
         self._on_output = on_output
+        self._on_started = on_started
         self._interrupted: int | None = None
         self._teardown: asyncio.Task[None] | None = None
 
@@ -173,6 +177,11 @@ class Relay:
         # it: an exception in terminal setup would otherwise leak a live
         # process with nothing left holding its master fd.
         try:
+            if self._on_started is not None:
+                pid = self._terminal.pid
+                if pid is None:
+                    raise RuntimeError("terminal started without a child PID")
+                self._on_started(pid)
             if stdin_fd >= 0:
                 self._terminal.set_winsize(*terminal_size(stdin_fd))
             old_attr = _enter_raw(stdin_fd)
@@ -295,6 +304,7 @@ class ThreadedRelay:
         :class:`~trackinizer.lib.posix.terminal.Terminal`.
       on_input: Observer of the human's raw keystrokes; see :class:`Relay`.
       on_output: Observer of the child's raw output; see :class:`Relay`.
+      on_started: Observer of the child PID; see :class:`Relay`.
 
     """
 
@@ -309,6 +319,7 @@ class ThreadedRelay:
         bracketed_paste: bool = True,
         on_input: Callable[[bytes], None] | None = None,
         on_output: Callable[[bytes], None] | None = None,
+        on_started: Callable[[int], None] | None = None,
     ) -> None:
         self._terminal = Terminal(
             argv,
@@ -318,7 +329,12 @@ class ThreadedRelay:
             terminate_grace_sec=terminate_grace_sec,
             bracketed_paste=bracketed_paste,
         )
-        self._relay = Relay(self._terminal, on_input=on_input, on_output=on_output)
+        self._relay = Relay(
+            self._terminal,
+            on_input=on_input,
+            on_output=on_output,
+            on_started=on_started,
+        )
         # The loop :meth:`run` drives, published once it exists so the other
         # methods can reach it. A threading primitive rather than an asyncio
         # one: the callers waiting on it have no loop.

@@ -118,6 +118,48 @@ async def test_appended_records_read_back_in_order(store: Store) -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_recent_turns_cross_parts_and_ignore_tool_bursts(store: Store) -> None:
+    """The latest messages remain visible after hundreds of tool records."""
+    session_id = await _session(store)
+    first = [UserMessage(content="earlier direction")]
+    second: list[SessionRecord] = [
+        UserMessage(content="latest question"),
+        *[
+            ToolCall(call_id=f"c{index}", name="Read", arguments={"path": "x"})
+            for index in range(350)
+        ],
+        UserMessage(content="trailing question"),
+    ]
+    await store.append_session_records(
+        session_id,
+        await _bounded(store, session_id, first, name="first.jsonl"),
+    )
+    await store.append_session_records(
+        session_id,
+        await _bounded(store, session_id, second, part=1, name="second.jsonl"),
+    )
+
+    turns = await store.read_recent_session_turns(session_id, limit=20)
+
+    assert [(turn.part, turn.idx, turn.kind, turn.content) for turn in turns] == [
+        (0, 0, "UserMessage", "earlier direction"),
+        (1, 0, "UserMessage", "latest question"),
+        (1, 351, "UserMessage", "trailing question"),
+    ]
+    _ = await store.upsert_session_manifest(
+        session_id,
+        name="second.jsonl",
+        metadata=json_freeze({}),
+        ir_id=uuid4(),
+        format="claude",
+        records=1,
+    )
+    live = await store.read_recent_session_turns(session_id, limit=20)
+    assert [turn.content for turn in live] == ["earlier direction", "latest question"]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_a_part_longer_than_one_page_needs_paging(store: Store) -> None:
     """One store read is ONE page; a whole part is the caller's loop.
 

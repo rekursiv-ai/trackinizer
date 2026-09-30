@@ -1586,6 +1586,7 @@ class TestSessionMethods:
                 "seq": 21_706,
                 "title": "ARC3 effort",
             },
+            "artifact_content": None,
             "visible_visuals": [{"id": str(visual_id), "type": "trax.chat"}],
         }
 

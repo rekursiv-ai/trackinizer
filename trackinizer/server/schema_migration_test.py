@@ -133,7 +133,7 @@ async def test_migration_019_matches_the_baseline_shape(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_migration_019_matches_the_baseline_indexes(
+async def test_session_ir_migrations_match_the_baseline_indexes(
     scratch_engine: postgres.PostgresEngine,
 ) -> None:
     """Indexes match too, not just columns.
@@ -157,9 +157,26 @@ async def test_migration_019_matches_the_baseline_indexes(
         for table in _SESSION_IR_TABLES:
             await conn.execute(f"DROP TABLE {table}")
         await conn.execute(load_sql("schema.019"))
+        await conn.execute(load_sql("schema.029"))
         migrated = [dict(r) for r in await conn.fetch(indexes, _SESSION_IR_TABLES)]
 
     assert migrated == baseline
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_recent_turn_index_exists_on_a_fresh_install(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """Fresh bootstrap must include the index the numbered migration installs."""
+    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
+    async with scratch_engine.acquire() as conn:
+        index = await conn.fetchval(
+            "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' "
+            "AND tablename = 'session_records' "
+            "AND indexname = 'idx_session_records_recent_turns'",
+        )
+    assert index is not None
 
 
 @pytest.mark.db_pglite

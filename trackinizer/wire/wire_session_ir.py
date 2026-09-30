@@ -29,7 +29,9 @@ __all__ = [
     "ManifestBody",
     "PartBody",
     "ReadPartsResponse",
+    "ReadRecentTurnsResponse",
     "ReadRecordsResponse",
+    "RecentTurnBody",
     "RecordBody",
     "SlashCommandBody",
     "session_parts_path",
@@ -285,6 +287,21 @@ class ReadRecordsResponse(BaseModel):
     """The part requested: any the listing names, ``-1`` included."""
 
     records: list[RecordBody] = Field(default_factory=list)
+
+
+class RecentTurnBody(BaseModel):
+    """One visible user or assistant message in its capture order."""
+
+    part: int
+    idx: int = Field(ge=0)
+    kind: str
+    content: str
+
+
+class ReadRecentTurnsResponse(BaseModel):
+    """A bounded sequence of the newest conversation turns."""
+
+    turns: list[RecentTurnBody] = Field(default_factory=list)
 
 
 def session_records_path(session_id: UUID) -> str:

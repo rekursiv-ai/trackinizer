@@ -16,6 +16,21 @@ from trackinizer.server.inbound import Inbound, InboundQueue
 
 
 class TestInboundQueue:
+    def test_poller_lease_expires_without_another_poll(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        session = uuid.uuid4()
+
+        assert not queue.has_poller(session)
+        queue.mark_poller(session)
+        assert queue.has_poller(session)
+        now[0] = 144.0
+        assert queue.has_poller(session)
+        now[0] = 145.0
+        assert not queue.has_poller(session)
+        queue.mark_poller(session)
+        assert queue.has_poller(session)
+
     def test_enqueue_then_drain_is_fifo(self) -> None:
         q = InboundQueue()
         sid = uuid.uuid4()

@@ -18,7 +18,7 @@ not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Final
+from typing import Final, Literal
 
 import uuid
 
@@ -69,6 +69,7 @@ __all__ = [
     "SessionEndResponse",
     "SessionStart",
     "SessionStartResponse",
+    "WorkspaceArtifactContent",
     "WorkspaceMessageContext",
     "WorkspaceRecordContext",
     "WorkspaceVisibleVisual",
@@ -221,7 +222,7 @@ class FeedCursor(BaseModel):
 class FeedResponse(BaseModel):
     """One page of the cross-session console feed, oldest first.
 
-    ``events`` is ordered by ``(created, session_id, seq)`` so the console can
+    ``events`` is ordered by ``(created, session_id, part, seq)`` so the console can
     append in order and resume from ``next_after`` on its next poll. The cursor
     is composite (see :class:`FeedCursor`) so a same-``created`` tie split
     across a page boundary is not skipped. ``next_after`` is ``None`` only when
@@ -261,6 +262,64 @@ class WorkspaceRecordContext(BaseModel):
     title: str = Field(max_length=512)
 
 
+class WorkspaceArtifactCitation(BaseModel):
+    """A publication-time graph row and its optional signed edge."""
+
+    record_id: uuid.UUID
+    kind: str
+    seq: int
+    title: str
+    claim_id: uuid.UUID | None = None
+    claim_kind: str | None = None
+    claim_seq: int | None = None
+    claim_title: str | None = None
+    edge_kind: Literal["proves", "favors"] | None = None
+    valence: float | None = Field(default=None, ge=-1, le=1)
+    note: str | None = None
+
+
+class WorkspaceArtifactOutcome(BaseModel):
+    """The measured result frozen in an Artifact finding."""
+
+    result: str
+    denominator: int
+    split: str
+
+
+class WorkspaceArtifactFinding(BaseModel):
+    """One Artifact conclusion and its publication-time evidence."""
+
+    claim: str
+    outcome: WorkspaceArtifactOutcome
+    uncertainty: str
+    citations: list[WorkspaceArtifactCitation]
+
+
+class WorkspaceArtifactSection(BaseModel):
+    """A published section with its evidenced findings."""
+
+    title: str
+    summary: str
+    details: str
+    findings: list[WorkspaceArtifactFinding]
+
+
+class WorkspaceArtifactContent(BaseModel):
+    """Server-read publication metadata and frozen citations for chat."""
+
+    revision: int = Field(ge=1)
+    artifact_id: uuid.UUID
+    issue_id: uuid.UUID
+    title: str
+    summary: str
+    author: str
+    created_at: datetime
+    scope: Literal["team"]
+    format: Literal["html", "structured"]
+    citations: list[WorkspaceArtifactCitation]
+    sections: list[WorkspaceArtifactSection]
+
+
 class WorkspaceVisibleVisual(BaseModel):
     """A visual present on the canvas when a message was sent."""
 
@@ -276,6 +335,7 @@ class WorkspaceMessageContext(BaseModel):
     """Persisted target ID, including records on a separate read profile."""
 
     record: WorkspaceRecordContext | None = None
+    artifact_content: WorkspaceArtifactContent | None = None
     visible_visuals: list[WorkspaceVisibleVisual]
     agent_instructions: str | None = Field(default=None, max_length=8_192)
     continuation_record_id: uuid.UUID | None = None
@@ -305,7 +365,8 @@ class InboundDrainItem(BaseModel):
 class InboundEnqueueResponse(BaseModel):
     """Receipt for an enqueued inbound message.
 
-    ``queued`` is the count pending for the session after this enqueue. It is
+    ``queued`` is the current count pending for the session after this enqueue,
+    including on an idempotent retry. It is
     an honest receipt -- the message is queued for the session's poller, not
     proven delivered; a session whose ``trax run`` is gone never drains it.
     """

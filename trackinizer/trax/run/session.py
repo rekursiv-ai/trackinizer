@@ -26,7 +26,7 @@ or replaying a finished session.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast
@@ -38,10 +38,13 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
+import uuid
 
 from trackinizer.client.client import Client
 from trackinizer.lib.custom_json import DictCodec, loads
@@ -77,6 +80,15 @@ _logger = logging.getLogger(__name__)
 # thread. At the 16KB/line clamp this bounds worst-case retention to ~128MB;
 # in practice lines are small and 8k events is minutes of typical output.
 _STREAM_QUEUE_MAX: Final = 8_192
+
+# A slow sink stops the filesystem follower at this many pending chunks. The
+# watched files retain unread bytes, so waiting for capacity preserves lines
+# without retaining an unbounded second copy in the runner.
+_FILE_QUEUE_MAX: Final = 256
+
+_CODEX_SESSION_BANNER: Final = re.compile(
+    rb"Session ID: ([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})",
+)
 
 # How long to wait before rebuilding a session-log watch that failed. The
 # causes are external and transient (an inotify instance or watch limit hit
@@ -145,6 +157,95 @@ class _Captured:
     raw: bytes
 
     restart: bool = False
+
+
+@dataclass(slots=True, kw_only=True)
+class _SessionOwner:
+    """The one CLI session ID whose files this wrapper may capture."""
+
+    session_id: str | None = None
+    child_pid: int | None = None
+    _output_tail: bytes = b""
+
+    def started(self, pid: int) -> None:
+        """Record the wrapped child's PID for Codex rollout discovery."""
+        self.child_pid = pid
+
+    def output(self, raw: bytes) -> None:
+        """Retain the terminal's end for a clean-exit session ID banner."""
+        self._output_tail = (self._output_tail + raw)[-512:]
+
+    def finish_output(self) -> None:
+        """Use the final Codex banner if descriptor discovery missed the file."""
+        if self.session_id is not None:
+            return
+        found = list(_CODEX_SESSION_BANNER.finditer(self._output_tail))
+        if found and not self._output_tail[found[-1].end() :].strip():
+            self.session_id = found[-1][1].decode()
+
+    def owns(self, adapter: Adapter, path: Path) -> bool:
+        """Claim a Codex ID from its writer, then require it on every file.
+
+        Args:
+          adapter: CLI adapter extracting the ID from the file path.
+          path: Candidate transcript file.
+
+        Returns:
+          owned: Whether this run owns the file.
+
+        """
+        candidate_id = adapter.session_id_from_path(path)
+        if candidate_id is None:
+            return False
+        if self.session_id is None:
+            if self.child_pid is None or not _path_held_by_child(self.child_pid, path):
+                return False
+            self.session_id = candidate_id
+        return candidate_id == self.session_id
+
+
+def _path_held_by_child(pid: int, path: Path) -> bool:
+    """Return whether the wrapped child currently has ``path`` open."""
+    if Path("/proc/self/fd").is_dir():
+        return _path_held_in_proc(pid, path)
+    return _path_held_by_lsof(pid, path)
+
+
+def _path_held_in_proc(pid: int, path: Path) -> bool:
+    """Read the child's live file descriptors on procfs."""
+    try:
+        descriptors = os.scandir(f"/proc/{pid}/fd")
+    except OSError:
+        return False
+    with descriptors:
+        return any(_same_open_file(Path(item.path), path) for item in descriptors)
+
+
+def _same_open_file(descriptor: Path, path: Path) -> bool:
+    """Compare a descriptor symlink to a candidate file despite path aliases."""
+    try:
+        target = descriptor.readlink()
+        return target.is_absolute() and target.samefile(path)
+    except OSError:
+        return False
+
+
+def _path_held_by_lsof(pid: int, path: Path) -> bool:
+    """Read open files on systems without procfs, including macOS."""
+    binary = shutil.which("lsof")
+    if binary is None:
+        return False
+    try:
+        result = subprocess.run(  # noqa: S603 -- fixed lsof binary and argv; no shell.
+            [binary, "-a", "-p", str(pid), "-Fn", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=1.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return any(line == f"n{path}" for line in result.stdout.splitlines())
 
 
 @dataclass(slots=True, kw_only=True)
@@ -271,6 +372,9 @@ def run(config: RunConfig) -> int:
             f"unsupported CLI {config.cli_name!r}; choose one of {sorted(_ADAPTERS)}",
         )
     adapter = factory()
+
+    if config.syncing and config.client is None:
+        config = replace(config, client=Client(base_url=LOCALHOST_FALLBACK_URL))
 
     sink = _open_sink(config, adapter)
     stats = _Stats()
@@ -490,9 +594,8 @@ def _open_sink(config: RunConfig, adapter: Adapter) -> Sink:
 # live path needs no ``tail`` subprocess. When syncing, an inbound-poll thread injects
 # server-queued messages through the relay.
 #
-# To avoid sweeping in unrelated concurrent sessions (these CLIs share one session
-# root), we snapshot the files that exist *before* spawning and drain only files this
-# run creates afterward.
+# The pre-spawn snapshot excludes old files; the CLI's own session ID excludes
+# concurrent new files, including ones created in the same workspace.
 def _spawn_and_drain(
     config: RunConfig,
     adapter: Adapter,
@@ -503,6 +606,21 @@ def _spawn_and_drain(
     _prepare_session_dirs(adapter)
     baseline = _existing_session_files(adapter, config)
     stop = threading.Event()
+    owner: _SessionOwner | None = None
+    if adapter.name == "claude":
+        session_id = (
+            config.cli_session_id
+            or _cli_arg_value(config.cli_args, "--session-id")
+            or _cli_arg_value(config.cli_args, "--resume")
+            or _cli_arg_value(config.cli_args, "-r")
+        )
+        if session_id is None and not {"--continue", "-c"}.intersection(
+            config.cli_args,
+        ):
+            session_id = str(uuid.uuid4())
+        owner = _SessionOwner(session_id=session_id)
+    elif adapter.name == "codex":
+        owner = _SessionOwner(session_id=config.cli_session_id)
 
     # Slash-commands the human types (``/exit``) are handled inside the CLI and
     # never logged, so the drain thread can't see them. The relay tees the
@@ -544,6 +662,7 @@ def _spawn_and_drain(
             slash_queue=slash_queue,
             stream_queue=stream_queue,
             armed=armed,
+            owner=owner,
         ),
         daemon=True,
     )
@@ -576,6 +695,18 @@ def _spawn_and_drain(
         stream_capture = LineCapture(partial(_enqueue_stream_line, stream_queue, stats))
     else:
         argv = [adapter.cli_binary, *config.cli_args]
+        if adapter.name == "claude" and owner is not None:
+            if (
+                owner.session_id is not None
+                and _cli_arg_value(config.cli_args, "--session-id") is None
+                and _cli_arg_value(config.cli_args, "--resume") is None
+                and _cli_arg_value(config.cli_args, "-r") is None
+                and not {"--continue", "-c"}.intersection(config.cli_args)
+                and config.cli_session_id is None
+            ):
+                argv[1:1] = ["--session-id", owner.session_id]
+        elif adapter.name == "codex" and "--no-daemon" not in config.cli_args:
+            argv.insert(1, "--no-daemon")
 
     # Resolve the binary before forking: after ``pty.fork`` a missing binary
     # would fail in the child's ``execvp``, not here, so the parent could not
@@ -610,7 +741,14 @@ def _spawn_and_drain(
         argv,
         env=_routing_env(config, granted_actor=granted_actor),
         on_input=detector.feed,
-        on_output=None if stream_capture is None else stream_capture.feed,
+        on_output=(
+            stream_capture.feed
+            if stream_capture is not None
+            else owner.output
+            if adapter.name == "codex" and owner is not None
+            else None
+        ),
+        on_started=None if owner is None else owner.started,
         bracketed_paste=stream_capture is None,
     )
 
@@ -637,6 +775,8 @@ def _spawn_and_drain(
     # exactly the race ``LockedSink`` and the joins exist to rule out.
     try:
         rc = relay.run()
+        if rc == 0 and adapter.name == "codex" and owner is not None:
+            owner.finish_output()
     finally:
         if stream_capture is not None:
             # Flush a trailing unterminated line so a child that exited mid-line
@@ -658,6 +798,16 @@ def _spawn_and_drain(
         if poll_thread is not None:
             _join_with_watchdog(poll_thread, "inbound poll", deadline=deadline)
     return rc
+
+
+def _cli_arg_value(args: tuple[str, ...], flag: str) -> str | None:
+    """Return a CLI flag's value in split or equals form, if supplied."""
+    for index, arg in enumerate(args):
+        if arg == flag and index + 1 < len(args):
+            return args[index + 1]
+        if arg.startswith(f"{flag}="):
+            return arg.partition("=")[2]
+    return None
 
 
 # A too-short ``join`` made thread ownership non-binding, so ``sink.close`` could race
@@ -818,6 +968,12 @@ def _render_inbound(
             f"\nTrackinizer context (verify with trax): {context.model_dump_json()}"
         )
         rendered += f"\nCanvas commands: trax workspace {context.workspace_id}"
+        if context.artifact_content is not None:
+            rendered += (
+                f"; Artifact: trax artifact {context.artifact_content.artifact_id}; "
+                "full content: GET /api/artifacts/"
+                f"{context.artifact_content.artifact_id}/content"
+            )
         if context.record_id is not None:
             rendered += (
                 "; to show the context graph for this record, run "
@@ -872,8 +1028,8 @@ def _prepare_session_dirs(adapter: Adapter) -> None:
         session_dir.mkdir(parents=True, exist_ok=True)
 
 
-# Files in this set belong to earlier or concurrent sessions; the follower ignores them
-# so this run captures only the session it spawned.
+# Files in this set existed before the child started. The follower ignores them
+# unless this run explicitly materialized one for resume.
 #
 # A ``resume_path`` is EXEMPT: this run materialized it moments ago and is about to
 # continue it, so excluding it would drop the very transcript being resumed -- every
@@ -899,10 +1055,8 @@ def _existing_session_files(
 # CLI had ever used, and re-walking them cost 86ms of every 0.2s pass. The directories
 # are walked ONCE here, to arm a watch; the kernel then names each changed file.
 #
-# ``baseline`` (files present at startup) is skipped so a concurrent session's log is
-# never swept in. There is no mtime floor: it existed to reject a file the pre-fork
-# snapshot raced past, and a watch armed before the spawn reports only what happens
-# after it.
+# ``baseline`` skips files present at startup; the owned session ID distinguishes
+# simultaneous new files. There is no mtime floor: the watch is armed before spawn.
 #
 # ``slash_queue`` carries slash-commands the relay's keystroke detector produced on the
 # main thread; ``stream_queue`` carries events a stream adapter's LineCapture parsed on
@@ -925,6 +1079,7 @@ def _drain_filesystem_loop(
     slash_queue: deque[tuple[SlashCommand, datetime]],
     stream_queue: deque[bytes] | None = None,
     armed: threading.Event | None = None,
+    owner: _SessionOwner | None = None,
 ) -> None:
     """Watch the adapter's session dirs; emit records as lines are appended."""
     asyncio.run(
@@ -938,6 +1093,7 @@ def _drain_filesystem_loop(
             slash_queue=slash_queue,
             stream_queue=stream_queue,
             armed=armed,
+            owner=owner,
         ),
     )
 
@@ -954,10 +1110,11 @@ async def _drain_until_stopped(
     stream_queue: deque[bytes] | None,
     replay: bool = False,
     armed: threading.Event | None = None,
+    owner: _SessionOwner | None = None,
 ) -> None:
     """Follow the session logs and drain the queues until ``stop``."""
     watched = tuple(d for d in adapter.session_dirs() if d.is_dir())
-    lines: asyncio.Queue[_Captured] = asyncio.Queue()
+    lines: asyncio.Queue[_Captured] = asyncio.Queue(maxsize=_FILE_QUEUE_MAX)
     finish = asyncio.Event()
     follower = (
         asyncio.create_task(
@@ -974,6 +1131,7 @@ async def _drain_until_stopped(
                 ),
                 armed=armed,
                 until=finish,
+                owner=owner,
             ),
         )
         if watched
@@ -1016,6 +1174,10 @@ async def _drain_until_stopped(
         # window left an empty transcript.
         finish.set()
         if follower is not None:
+            while not follower.done() or not lines.empty():
+                with contextlib.suppress(TimeoutError):
+                    captured = await asyncio.wait_for(lines.get(), _QUEUE_DRAIN_SEC)
+                    _emit_line(adapter, sink, stats, config, captured)
             await follower
         await _drain_queues(
             adapter,
@@ -1050,6 +1212,7 @@ async def _follow_session_files(
     replay: bool = False,
     resume: frozenset[Path] = frozenset(),
     armed: threading.Event | None = None,
+    owner: _SessionOwner | None = None,
 ) -> None:
     """Feed every line this run's session files gain onto ``lines``."""
     # The subtree this run's own files land in, when the CLI derives one from
@@ -1061,13 +1224,9 @@ async def _follow_session_files(
     def mine(path: Path) -> bool:
         """Whether this run should capture ``path``.
 
-        Three conditions, and the third is what makes ownership more than a
-        timing accident. ``baseline`` excludes what already existed and
-        ``matches_session_file`` excludes what is not a transcript, but
-        between them any NEW match qualifies -- including one a concurrent run
-        in another workspace just created, since both appear under the same
-        watched root. ``scope`` is the CLI's own answer to "which of these is
-        mine"; adapters that cannot tell return ``None`` and this stays off.
+        The baseline excludes old files; the adapter identifies transcripts;
+        the scope narrows workspace-based layouts; and the owned session ID
+        distinguishes new files from simultaneous runs in the same workspace.
 
         Args:
           path: Filesystem path to test for ownership.
@@ -1078,7 +1237,9 @@ async def _follow_session_files(
         """
         if path in baseline or not adapter.matches_session_file(path):
             return False
-        return scope is None or scope in path.parents
+        if scope is not None and scope not in path.parents:
+            return False
+        return owner is None or owner.owns(adapter, path)
 
     # Digest of the body last queued per whole-file session, so one rewrite
     # delivered as two wakes is not read as two turns (see ``_queue_body``).
@@ -1143,10 +1304,10 @@ async def _watch_session_files(
                     for directory in watched:
                         for path in sorted(directory.rglob("*")):
                             if path.is_file() and mine(path):
-                                _queue_body(path, lines, bodies)
+                                await _queue_body(path, lines, bodies)
                 async for paths in changed:
                     for path in sorted(p for p in paths if mine(p)):
-                        _queue_body(path, lines, bodies)
+                        await _queue_body(path, lines, bodies)
             return
         async for followed in follow_tree(
             *watched,
@@ -1156,7 +1317,7 @@ async def _watch_session_files(
             on_armed=None if armed is None else armed.set,
             until=until,
         ):
-            lines.put_nowait(
+            await lines.put(
                 _Captured(
                     path=followed.path,
                     raw=followed.text.encode(),
@@ -1186,7 +1347,7 @@ async def _watch_session_files(
 # object in place, so a same-length edit within a timestamp's granularity leaves both
 # unchanged while the turn is new. Only the digest is kept -- a session file grows to
 # megabytes, and every one of them would otherwise be held for the life of the run.
-def _queue_body(
+async def _queue_body(
     path: Path,
     lines: asyncio.Queue[_Captured],
     bodies: dict[Path, str],
@@ -1198,8 +1359,8 @@ def _queue_body(
     digest = hashlib.sha256(body).hexdigest()
     if bodies.get(path) == digest:
         return
+    await lines.put(_Captured(path=path, raw=body, restart=True))
     bodies[path] = digest
-    lines.put_nowait(_Captured(path=path, raw=body, restart=True))
 
 
 # A read racing the writer's rewrite is routine, not an error: the next change wakes

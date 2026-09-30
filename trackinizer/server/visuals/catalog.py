@@ -10,9 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 __all__ = [
+    "ArtifactVisual",
     "BrowseVisual",
     "ChatVisual",
-    "ReportVisual",
     "SubgraphVisual",
     "Visual",
     "VisualCatalogBody",
@@ -182,43 +182,31 @@ class SubgraphVisual:
         )
 
 
-class ReportVisual:
-    """An exact immutable revision of a shared report."""
+class ArtifactVisual:
+    """An exact immutable published Artifact."""
 
-    class Config(Fig["ReportVisual"]):
-        title: str = "Report"
+    class Config(Fig["ArtifactVisual"]):
+        title: str = "Artifact"
         """Name shown in the Configure panel."""
 
     def __init__(self, config: Config) -> None:
         self.title = config.title
 
     def describe(self) -> VisualDescription:
-        """Describe the report renderer without loading report content.
+        """Describe the Artifact renderer without loading its content.
 
         Returns:
-          description: Inert catalog entry for versioned reports.
+          description: Inert catalog entry for published Artifacts.
 
         """
         return VisualDescription(
-            type="trax.report",
+            type="trax.artifact",
             version=1,
             title=self.title,
-            description="Read an immutable shared report revision.",
-            requires=[],
+            description="Read immutable shared Artifact content.",
+            requires=["record"],
             default_size="wide",
-            parameter_schema={
-                "report_id": ParameterDescription(
-                    type="string",
-                    default="",
-                    max_length=36,
-                ),
-                "revision": ParameterDescription(
-                    type="integer",
-                    default=1,
-                    minimum=1,
-                    maximum=10_000,
-                ),
-            },
+            parameter_schema={},
         )
 
 
@@ -275,7 +263,7 @@ class Workspace:
                 ChatVisual.Config(),
                 SubgraphVisual.Config(),
                 TimelineVisual.Config(),
-                ReportVisual.Config(),
+                ArtifactVisual.Config(),
             ],
         )
         """Configured visual modules available to a workspace."""

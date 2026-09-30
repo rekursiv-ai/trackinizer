@@ -97,15 +97,14 @@ class Adapter(Protocol):
 
         ``session_dirs()`` is deliberately wide -- a root, so a project
         directory minted mid-run is still covered. That width is what makes a
-        concurrent run's brand-new file indistinguishable from this run's:
-        both appear under the watched root after it was armed, and a
-        first-seen-wins rule captures whichever writes first.
+        concurrent run's brand-new file indistinguishable from this run's
+        without a session ID: both appear under the watched root after arming.
 
         A CLI that derives its directory from the working directory (claude
         encodes the cwd; gemini hashes it) can say so here, and the runner
         drops anything outside it. ``None`` means the CLI offers no such
-        signal -- codex shards by DATE, which every concurrent run shares --
-        and the run falls back to capturing every new match.
+        signal -- codex shards by DATE, which every concurrent run shares.
+        The runner then claims the child-held rollout's session ID instead.
 
         Returns:
           result: The Path | None.

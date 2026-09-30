@@ -816,6 +816,10 @@ CREATE INDEX IF NOT EXISTS idx_session_records_search
 CREATE INDEX IF NOT EXISTS idx_session_records_kind
     ON session_records (session_id, kind);
 
+CREATE INDEX IF NOT EXISTS idx_session_records_recent_turns
+    ON session_records (session_id, part DESC, idx DESC)
+    WHERE kind IN ('UserMessage', 'AssistantMessage');
+
 -- The cross-session console feed is a keyset scan over exactly this tuple
 -- (``store/session.py::read_feed``), polled every 1.5s by every open console.
 -- Without the index that ORDER BY is a sequential scan plus a sort over the
@@ -944,6 +948,7 @@ CREATE TABLE IF NOT EXISTS visual_report_revisions (
     publish_key  UUID NOT NULL,
     request_hash TEXT NOT NULL,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    content_bytes BIGINT NOT NULL CHECK (content_bytes > 0),
     PRIMARY KEY (report_id, revision),
     UNIQUE (author_id, publish_key)
 );

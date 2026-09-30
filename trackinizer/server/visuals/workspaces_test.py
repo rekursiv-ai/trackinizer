@@ -18,6 +18,7 @@ from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
     ShowVisual,
     WorkspaceData,
+    WorkspaceMessageRequest,
     apply_operation,
     initial_data,
 )
@@ -130,6 +131,51 @@ def test_operation_rejects_misspelled_record_context() -> None:
                 },
             },
         )
+
+
+def test_chat_artifact_uses_the_same_record_target() -> None:
+    """Chat uses the Artifact ID as its sole target and rejects a second shape."""
+    artifact_id = uuid.uuid4()
+    shown = apply_operation(
+        initial_data(default_catalog()),
+        ShowVisual(kind="show", visual_type="trax.chat", record_id=artifact_id),
+        default_catalog(),
+    )
+    assert shown.visuals[-1].record_id == artifact_id
+    with pytest.raises(ValidationError):
+        ShowVisual.model_validate(
+            {
+                "kind": "show",
+                "visual_type": "trax.chat",
+                "record_id": str(artifact_id),
+                "report_target": {"artifact_id": str(artifact_id)},
+            },
+        )
+    with pytest.raises(ValidationError):
+        WorkspaceMessageRequest.model_validate(
+            {
+                "text": "hello",
+                "expected_report_target": {"artifact_id": str(artifact_id)},
+            },
+        )
+
+
+def test_artifact_visual_requires_record_target() -> None:
+    """An Artifact tile uses the same record target as other visuals."""
+    catalog = default_catalog()
+    with pytest.raises(ValueError, match="record target"):
+        apply_operation(
+            initial_data(catalog),
+            ShowVisual(kind="show", visual_type="trax.artifact"),
+            catalog,
+        )
+    artifact_id = uuid.uuid4()
+    shown = apply_operation(
+        initial_data(catalog),
+        ShowVisual(kind="show", visual_type="trax.artifact", record_id=artifact_id),
+        catalog,
+    )
+    assert shown.visuals[-1].record_id == artifact_id
 
 
 if __name__ == "__main__":

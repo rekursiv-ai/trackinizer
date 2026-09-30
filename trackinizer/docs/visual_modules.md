@@ -86,7 +86,7 @@ remains the fallback view.
 Chat previews captured turns from the first browser message in its recent
 window. It hides transport context and collapses long turns. The full
 transcript remains available on the session record page. Subgraph, timeline,
-and report visuals can build on the same catalog and operation path.
+and Artifact visuals use the same catalog and operation path.
 
 ## Save and reopen a workflow
 
@@ -108,21 +108,26 @@ carries saved guidance and the continuation record in its typed context.
 Presets never store session credentials. Existing browser-only saved inquiry
 queries remain a separate feature.
 
-## Publish a shared report
+## Publish shared Artifact content
 
-An authenticated writer can publish a report revision with `POST /api/reports`.
-The request names an existing Issue, a title, a summary, and either `format:
-"structured"` with sections or `format: "html"` with a bounded HTML string.
-Supply an `Idempotency-Key` UUID. The server creates an Artifact linked to the
-Issue by `produced_by` in the same transaction. A retry with the same request
-and key returns the same revision; a different request with that key returns
-409. Pass the returned `report_id` in the next publish to append revision 2.
+An authenticated writer publishes with `POST /api/artifacts/content`. The
+request names an existing Issue, a title, a summary, and either `format:
+"structured"` with sections or `format: "html"` with HTML content. Supply an
+`Idempotency-Key` UUID. The server creates an Artifact linked to the Issue by
+`produced_by` in the same transaction. A retry with the same request and key
+returns the same Artifact; a different request with that key returns 409. To
+publish another revision, pass `previous_artifact_id` with an existing Artifact
+ID from the series. The new revision receives its own Artifact ID.
+
+Each HTML file or structured content body is limited to 30 MB. A publisher may
+store up to 500 MB in total; every revision counts. The server checks the
+account quota in the publication transaction and rejects an excess with 422.
 
 Structured findings require a claim, measured result, denominator, split,
 uncertainty, and citations. A citation can name a record alone, or name a
 `proves` or `favors` edge from that record to a `claim_id`. Publication copies
-the record title and signed edge value into the revision. Later graph edits
-cannot change what the report cited. For example:
+the record title and signed edge value into the Artifact. Later graph edits
+cannot change what it cited. For example:
 
 ```json
 {
@@ -149,8 +154,10 @@ cannot change what the report cited. For example:
 ```
 
 Any signed-in teammate can read the exact revision at
-`/app/#/report/<report-id>/<revision>` or through
-`GET /api/reports/<report-id>/revisions/<revision>`. An agent can show it on a
-canvas with `visual_type: "trax.report"` and params `report_id` and `revision`.
-The renderer loads only when shown. Custom HTML runs in an opaque-origin iframe
-with a restrictive content security policy; it cannot read the app's session.
+`/app/#/lookup/<artifact-id>` or through
+`GET /api/artifacts/<artifact-id>/content`. An agent can show it on a canvas
+with `visual_type: "trax.artifact"` and `record_id` set to the Artifact ID.
+The renderer loads only when shown. `Chat about this` uses the same `record_id`;
+the agent receives frozen citations and a link to the full content. Custom HTML
+runs in an opaque-origin iframe with a restrictive content security policy;
+it cannot read the app's session.

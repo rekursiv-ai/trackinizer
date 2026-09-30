@@ -240,6 +240,34 @@ async def test_the_two_evaluators_select_the_same_rows(store: Store) -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_record_filters_ignore_stale_tail_after_compaction(store: Store) -> None:
+    """Both evaluators use the live manifest prefix after a part shrinks."""
+    session_id = await _session_with(
+        store,
+        [
+            UserMessage(content="kept"),
+            ToolCall(call_id="stale", name="Read", arguments={"path": "gone"}),
+        ],
+    )
+    _ = await store.upsert_session_manifest(
+        session_id,
+        name="s.jsonl",
+        metadata=json_freeze({}),
+        ir_id=uuid4(),
+        format="claude",
+        records=1,
+    )
+
+    for clause in (
+        Filter(field="tool_call", op="notnull", value=""),
+        Filter(field="tool_call", op="re", value="gone"),
+    ):
+        assert session_id not in await _matching(store, clause, lowering=False)
+        assert session_id not in await _matching(store, clause)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_a_pattern_with_no_word_characters_still_matches(store: Store) -> None:
     """The tsvector prefilter must not drop rows the regex would keep.
 

@@ -81,11 +81,14 @@ class WorkspaceMessageRequest(BaseModel):
 
     text: str = Field(min_length=1, max_length=16_384)
     chat_instance_id: uuid.UUID | None = None
-    expected_record_id: uuid.UUID | None
+    expected_record_id: uuid.UUID | None = None
 
 
 class WorkspaceMessageReceipt(BaseModel):
-    """The paired session and pending queue depth after a send."""
+    """The paired session and queue depth recorded by the original send.
+
+    An idempotent replay returns that original depth, even after a drain.
+    """
 
     session_id: uuid.UUID
     queued: int

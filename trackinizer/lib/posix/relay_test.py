@@ -508,6 +508,20 @@ class TestSignalHandling:
 class TestThreadedRelay:
     """The relay as a synchronous caller sees it: run blocks, submit crosses."""
 
+    def test_started_callback_names_the_child_process(self) -> None:
+        """File owners can identify the child before its first log write."""
+        pids: list[int] = []
+        output = bytearray()
+        relay = ThreadedRelay(
+            ["sh", "-c", "echo $$"],
+            on_started=pids.append,
+            on_output=output.extend,
+        )
+
+        assert relay.run() == 0
+        assert len(pids) == 1
+        assert str(pids[0]).encode() in output
+
     def test_run_returns_the_childs_status(self) -> None:
         assert ThreadedRelay(["sh", "-c", "exit 5"]).run() == 5
 
