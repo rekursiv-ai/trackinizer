@@ -17,7 +17,7 @@ from trackinizer.server.visuals.workspace_store import (
     ReplayConflictError,
     RevisionConflictError,
     WorkspaceDisabledError,
-    _state_from_row,
+    state_from_row,
 )
 from trackinizer.server.visuals.workspaces import (
     FloatingRect,
@@ -178,7 +178,7 @@ async def create_preset(
         )
         if row is None:
             return None
-        source = _state_from_row(cast("Mapping[str, object]", row))
+        source = state_from_row(cast("Mapping[str, object]", row))
         request_hash = _request_hash("create", body)
         receipt = await conn.fetchrow(
             "SELECT request_hash, response FROM visual_workspace_operations "
@@ -280,7 +280,7 @@ async def open_preset(
         )
         if row is None:
             return None
-        current = _state_from_row(cast("Mapping[str, object]", row))
+        current = state_from_row(cast("Mapping[str, object]", row))
         request_hash = _request_hash("open", body, preset_id=preset_id)
         receipt = await conn.fetchrow(
             "SELECT request_hash, response FROM visual_workspace_operations "

@@ -30,6 +30,7 @@ from trackinizer.server.server import (
     logger,
     main,
 )
+from trackinizer.server.visuals.catalog import Workspace
 
 
 if TYPE_CHECKING:
@@ -175,6 +176,39 @@ class TestPureFunctions:
         monkeypatch.setattr(server, "app", fresh)
         server._configure_app(flags)
         assert "/app/{path:path}" in registered_paths(fresh)
+
+    def test_addon_override_reaches_the_deployments_visuals(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        flags, _ = _parse_args(
+            argparse.ArgumentParser(),
+            argv=["--addon-override", "visuals.default_visual=trax.chat"],
+        )
+        fresh = FastAPI()
+        monkeypatch.setattr(server, "app", fresh)
+        server._configure_app(flags)
+        catalog: object = getattr(fresh.state, "visual_catalog", None)
+        assert isinstance(catalog, Workspace)
+        assert catalog.default_visual == "trax.chat"
+
+    @pytest.mark.parametrize(
+        ("argv", "message"),
+        [
+            (["--addons", "no.such.factory"], "Cannot import module"),
+            (["--addon-override", "nope=1"], "no field"),
+        ],
+    )
+    def test_a_bad_deployment_exits_with_a_message(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        argv: list[str],
+        message: str,
+    ) -> None:
+        flags, _ = _parse_args(argparse.ArgumentParser(), argv=argv)
+        monkeypatch.setattr(server, "app", FastAPI())
+        with pytest.raises(SystemExit, match=message):
+            server._configure_app(flags)
 
 
 class TestCLIHelpers:

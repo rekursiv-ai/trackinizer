@@ -1,29 +1,35 @@
 # Visual modules
 
 The server chooses which visuals exist. `server/visuals/catalog.py` composes
-their trusted configgle `Fig` configurations and returns safe descriptions
-through `GET /api/visuals`. The browser selects a renderer by visual type and
-version. It loads the Chat chunk only when Chat is visible.
+their trusted configgle `Fig` configurations into a `Workspace`. A deployment
+supplies its own `Workspace`; the default is `default_workspace()`. Every
+route reads that one catalog and returns safe descriptions through
+`GET /api/visuals`. The default visual must not require a record. The
+browser selects a renderer by visual type and version. It loads the Chat chunk
+only when Chat is visible.
 
 ## Add a visual
 
 1. Give the visual a namespaced type such as `trax.timeline` and version 1.
    Keep the type stable. Raise the version when old saved parameters cannot
    render correctly.
-2. Add a provider with a nested `Config(Fig[...])` and a cheap `describe()`.
-   Put its config in `Workspace.Config.visuals`. Catalog reads must not query
+2. Add a `StaticVisual.Config` entry for a visual without parameters, or a
+   provider with a nested `Config(Fig[...])` and a cheap `describe()`. Put its
+   config in `Workspace.Config.visuals`. Catalog reads must not query
    the graph or start a session.
 3. Describe accepted parameters in `parameter_schema`. Each parameter needs
    a valid default. Integers need minimum and maximum; strings need
    `max_length` at most 512. Graph data endpoints must page or cap results.
-   Browser input is validated against the descriptor. Never pass browser
-   JSON to configgle `deserialize()`.
-4. Add a renderer to `private/web/src/visuals/registry.tsx` using a dynamic
-   import. Add the type and version to `renderer-versions.json`. An unavailable
-   renderer produces an error inside its tile.
-5. Regenerate `catalog.preview.json` from the backend catalog and dump the
-   OpenAPI schema. The snapshot tests compare both JSON files with the Python
-   catalog, and TypeScript checks the renderer registration.
+   A parameter accepts only the bounds of its type. The descriptor is the
+   single source of a parameter's default and maximum; routes read those
+   limits from it. Browser input is validated against the descriptor. Never
+   pass browser JSON to configgle `deserialize()`.
+4. Register a renderer for the type and version in the web client, loaded with
+   a dynamic import. An unavailable renderer produces an error inside its
+   tile.
+5. Regenerate the client's catalog preview and the OpenAPI schema from the
+   backend catalog so the snapshot tests and the client type check agree with
+   it.
 
 ## Change a canvas
 

@@ -18,6 +18,7 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.inbound import InboundQueue
+from trackinizer.server.visuals.catalog import StaticVisual, Workspace
 from trackinizer.wire.bodies import (
     SubmitAgentSession,
     SubmitBelief,
@@ -1189,6 +1190,47 @@ async def test_viewer_chats_about_frozen_report_revision_from_own_workspace(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert stale.status_code == 409
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_workspace_uses_the_deployments_configured_catalog(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new canvas opens on the configured default and rejects unlisted visuals."""
+    client, store = pglite_route_client
+    configured = Workspace.Config(
+        visuals=[
+            StaticVisual.Config(type="x.notes", title="Notes", description="Notes."),
+            StaticVisual.Config(type="x.log", title="Log", description="Log."),
+        ],
+        default_visual="x.log",
+    ).make()
+    monkeypatch.setattr(app.state, "visual_catalog", configured, raising=False)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES ($1, 'test-user@example.com', 'Test', 'writer', 'active')",
+            TEST_USER_ID,
+        )
+    install_identity(make_test_identity(api_key_id=None))
+    created = await client.post("/api/workspaces")
+    assert created.status_code == 200
+    initial = DictCodec.coerce(loads(created.content))
+    assert [
+        DictCodec.coerce(item)["type"] for item in ListCodec.coerce(initial["visuals"])
+    ] == ["x.log"]
+    shown = await client.post(
+        f"/api/workspaces/{StrCodec.coerce(initial['id'])}/operations",
+        json={
+            "revision": 0,
+            "operation": {"kind": "show", "visual_type": "trax.chat"},
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert shown.status_code == 422
+    assert "Unknown visual type" in shown.text
 
 
 if __name__ == "__main__":

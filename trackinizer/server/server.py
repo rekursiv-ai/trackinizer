@@ -28,8 +28,10 @@ else:
 
     uvicorn = lazy_import("uvicorn")  # ~90 ms; main() launches the server.
 
+from trackinizer.addons.deployment import DeploymentError, deployment_config
 from trackinizer.lib.userdirs import data_dir
 from trackinizer.server import web
+from trackinizer.server.api.addons_routes import attach_deployment
 from trackinizer.server.api.app import app
 from trackinizer.server.config import (
     Config,
@@ -105,13 +107,25 @@ class _Flags(ConfigFlags, Protocol):
     static_dir: Path | None
     app_dir: Path | None
     log_level: str | None
+    addons: str
+    addon_override: list[str]
 
 
 def _configure_app(flags: _Flags) -> None:
-    """Attach config (and the web UI) to the module-level app."""
+    """Attach config, the deployment (and the web UI) to the module-level app."""
     try:
         app.state.config = Config.from_args(flags)
-    except ConfigError as err:
+        # Routers must be mounted before uvicorn starts the app, so the
+        # deployment is built here rather than in the lifespan, which only
+        # starts its services.
+        attach_deployment(
+            app,
+            deployment=deployment_config(
+                flags.addons,
+                overrides=flags.addon_override,
+            ).make(),
+        )
+    except (ConfigError, DeploymentError) as err:
         # Library code raises ConfigError (a plain Exception); the CLI is
         # the one place that turns a bad config into a clean process exit.
         raise SystemExit(str(err)) from err
@@ -275,6 +289,28 @@ def _parse_args(
         "--log-level",
         default=None,
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+    )
+    parser.add_argument(
+        "--addons",
+        default=os.environ.get("TRACKINIZER_ADDONS", ""),
+        metavar="FACTORY",
+        help=(
+            "Dotted path to a function returning the Deployment config this "
+            "server runs: its visuals, and its addons, whose server services "
+            "start in this process and whose routes mount under "
+            "/api/addons/<name>. Empty runs the default visuals and no addons "
+            "(default: $TRACKINIZER_ADDONS)."
+        ),
+    )
+    parser.add_argument(
+        "--addon-override",
+        action="append",
+        default=[],
+        metavar="PATH=VALUE",
+        help=(
+            "configgle override on the --addons Deployment config, e.g. "
+            "ADDON.FIELD=VALUE, or ADDON=null to switch an addon off. Repeatable."
+        ),
     )
     flags, remaining = parser.parse_known_args(argv)
     return cast(_Flags, flags), remaining

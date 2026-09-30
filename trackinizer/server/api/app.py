@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import quote
 from uuid import UUID, uuid4
@@ -19,8 +20,11 @@ from starlette.types import Send
 
 import asyncpg
 
+from trackinizer.addons.addon import ServerContext
+from trackinizer.addons.deployment import Deployment, supervise
 from trackinizer.lib.custom_json import IntCodec, SchemaError
 from trackinizer.server.api import (
+    addons_routes,
     admin_routes,
     auth_routes,
     edge,
@@ -39,6 +43,7 @@ from trackinizer.server.api import (
     visuals_routes,
     workspace_routes,
 )
+from trackinizer.server.api.addons_routes import deployment_of
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
 from trackinizer.server.auth import seed_no_auth_user
 from trackinizer.server.authority_sweep import authority_sweep_loop
@@ -51,6 +56,7 @@ from trackinizer.server.embedders import registry
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store
 from trackinizer.server.subscriber import push_changes_to_live_subscribers
+from trackinizer.server.visuals.catalog import default_workspace
 from trackinizer.types.errors import (
     ConflictError,
     NotFoundError,
@@ -166,9 +172,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         # Authority sweep: recomputes the derived load-bearing (PageRank)
         # columns off the request path, coalescing edge-change bursts.
         authority_task = asyncio.create_task(authority_sweep_loop(app.state.store))
+        addon_tasks = _start_addon_services(
+            deployment_of(app),
+            context=ServerContext(store=app.state.store, inbound=app.state.inbound),
+        )
         try:
             yield
         finally:
+            for addon_task in addon_tasks:
+                addon_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await addon_task
             push_task.cancel()
             with suppress(asyncio.CancelledError):
                 await push_task
@@ -231,10 +245,27 @@ async def _warm_session_embedder(embedder: QueryEmbedder) -> None:
     _ = await embedder.embed_query("warm")
 
 
+# Each addon service is supervised on its own: a crash is logged and the service
+# restarted with backoff, so a failing addon never takes the API down with it.
+def _start_addon_services(
+    deployment: Deployment,
+    context: ServerContext,
+) -> list[asyncio.Task[None]]:
+    """Start every server service of ``deployment``; return their tasks."""
+    return [
+        asyncio.create_task(
+            supervise(f"{name}.{service.name}", run=partial(service.run, context)),
+        )
+        for name, manifest in deployment.manifests.items()
+        for service in manifest.server_services
+    ]
+
+
 # Every route module's router, in inclusion order. ``_build_app`` includes them, and
 # the web app's schema dump builds its own app from the same tuple rather than
 # copying the module-level ``app``, which tests reconfigure.
 ROUTERS: Final = (
+    addons_routes.router,
     admin_routes.router,
     auth_routes.router,
     edge.router,
@@ -262,6 +293,10 @@ def _build_app() -> FastAPI:
     built.add_middleware(RequestLoggingMiddleware)
     for router in ROUTERS:
         built.include_router(router)
+    # The visual routes read the catalog from ``app.state.visual_catalog``, so it
+    # is set on every app; ``attach_deployment`` swaps in a configured one.
+    built.state.deployment = Deployment.Config().make()
+    built.state.visual_catalog = default_workspace()
     return built
 
 

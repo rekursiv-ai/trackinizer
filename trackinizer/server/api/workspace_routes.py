@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from trackinizer.server.api._deps import get_inbound
 from trackinizer.server.api._routes_shared import engine_of
+from trackinizer.server.api.visuals_routes import visual_catalog
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.inbound import InboundReplayConflictError
 from trackinizer.server.visuals.workspace_store import (
@@ -228,7 +229,11 @@ async def create_workspace_route(
     if identity.api_key_id is not None:
         raise HTTPException(status_code=403, detail="Browser session required")
     try:
-        return await create_default_workspace(engine_of(request), identity.user_id)
+        return await create_default_workspace(
+            engine_of(request),
+            user_id=identity.user_id,
+            catalog=visual_catalog(request).catalog(),
+        )
     except WorkspaceDisabledError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
 
@@ -299,6 +304,7 @@ async def workspace_operation_route(
             workspace_id,
             key,
             body,
+            catalog=visual_catalog(request).catalog(),
             inbound=get_inbound(request),
             agent_api_key_id=identity.api_key_id,
         )

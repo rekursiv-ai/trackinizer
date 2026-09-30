@@ -123,7 +123,7 @@ class ArtifactOutcome(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     result: str = Field(min_length=1, max_length=2_000)
-    denominator: int = Field(ge=0, le=9_007_199_254_740_991)
+    denominator: int = Field(ge=0, le=2**53 - 1)
     split: str = Field(min_length=1, max_length=500)
 
     @field_validator("result", "split")
@@ -138,7 +138,7 @@ class ArtifactOutcome(BaseModel):
 class ArtifactOutcomeDraft(ArtifactOutcome):
     """A new finding must name a positive evaluation denominator."""
 
-    denominator: int = Field(ge=1, le=9_007_199_254_740_991)
+    denominator: int = Field(ge=1, le=2**53 - 1)
 
 
 class PublishArtifactContent(BaseModel):

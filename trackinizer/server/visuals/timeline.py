@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
 
 
 if TYPE_CHECKING:
     from trackinizer.lib.postgres import Conn
+
+
+_EVIDENCE_LIMIT: Final = 6
+"""Signed citations shown per Experiment; one extra row sets the truncation flag."""
 
 
 async def load_timeline(
@@ -23,11 +27,17 @@ async def load_timeline(
     Args:
       conn: Database connection.
       target_id: Issue or Experiment selected in the canvas.
-      direction_limit: Number of direct directions plus one sentinel.
-      results_per_direction: Result rows per Issue plus one sentinel.
+      direction_limit: Direct directions to return. One extra row is fetched
+        internally to set `directions_truncated`.
+      results_per_direction: Results to return per Issue. One extra row is
+        fetched internally to set `results_truncated`.
 
     Returns:
-      timeline: Bounded timeline payload, or None for unsupported/missing rows.
+      timeline: Bounded timeline payload, or None when the record is missing.
+
+    Raises:
+      UnsupportedTimelineTargetError: When the record is neither an Issue nor
+        an Experiment.
 
     """
     target = await conn.fetchrow(_record_query(), target_id)
@@ -188,7 +198,7 @@ async def _load_record_results(
             "JOIN inquiries c ON c.id=e.to_id WHERE e.from_id=$1 "
             "AND e.edge_kind IN ('proves','favors') ORDER BY c.created, c.id LIMIT $2",
             values["id"],
-            7,
+            _EVIDENCE_LIMIT + 1,
         )
         evidence = [
             {
@@ -197,13 +207,13 @@ async def _load_record_results(
                 "valence": item["valence"],
                 "note": item["note"],
             }
-            for item in evidence_rows[:6]
+            for item in evidence_rows[:_EVIDENCE_LIMIT]
         ]
         result.append(
             {
                 "record": _record(row),
                 "evidence": evidence,
-                "evidence_truncated": len(evidence_rows) > 6,
+                "evidence_truncated": len(evidence_rows) > _EVIDENCE_LIMIT,
             },
         )
     return result

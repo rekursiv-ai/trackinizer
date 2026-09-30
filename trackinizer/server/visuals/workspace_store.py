@@ -11,7 +11,6 @@ import uuid
 from trackinizer.lib.custom_json import IntCodec, StrCodec
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.notify import tx
-from trackinizer.server.visuals.catalog import default_catalog
 from trackinizer.server.visuals.reports import read_artifact_content_on_conn
 from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
@@ -38,6 +37,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
+    from trackinizer.server.visuals.catalog import VisualCatalogBody
 
 
 class RevisionConflictError(Exception):
@@ -157,7 +157,7 @@ async def send_workspace_message(
         )
         if row is None:
             return None
-        state = _state_from_row(cast("Mapping[str, object]", row))
+        state = state_from_row(cast("Mapping[str, object]", row))
         session_id = state.connected_session_id
         if (
             session_id is None
@@ -279,19 +279,22 @@ async def list_connectable_sessions(
 async def create_default_workspace(
     engine: DatabaseEngine,
     user_id: uuid.UUID,
+    *,
+    catalog: VisualCatalogBody,
 ) -> WorkspaceState:
     """Return the user's default canvas, creating it once across races.
 
     Args:
       engine: Database connection source.
       user_id: Owner of the default canvas.
+      catalog: Trusted visual definitions and the initial selection.
 
     Returns:
       state: The existing or newly created workspace.
 
     """
     workspace_id = uuid.uuid4()
-    state = initial_data(default_catalog())
+    state = initial_data(catalog)
     async with engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO visual_workspaces (id, user_id, state) VALUES ($1, $2, $3) "
@@ -307,7 +310,7 @@ async def create_default_workspace(
         )
     if row is None:
         raise RuntimeError("default workspace insert was not visible")
-    return _state_from_row(cast("Mapping[str, object]", row))
+    return state_from_row(cast("Mapping[str, object]", row))
 
 
 async def read_workspace(
@@ -340,7 +343,7 @@ async def read_workspace(
         )
         if row is None:
             return None
-        state = _state_from_row(cast("Mapping[str, object]", row))
+        state = state_from_row(cast("Mapping[str, object]", row))
         if agent_api_key_id is not None and (
             state.connected_session_id is None
             or not inbound.has_poller(state.connected_session_id)
@@ -362,6 +365,7 @@ async def apply_workspace_operation(
     key: uuid.UUID,
     body: ApplyWorkspaceOperation,
     *,
+    catalog: VisualCatalogBody,
     inbound: InboundQueue,
     agent_api_key_id: uuid.UUID | None = None,
 ) -> WorkspaceState | None:
@@ -373,6 +377,7 @@ async def apply_workspace_operation(
       workspace_id: Target workspace.
       key: Idempotency key for this operation.
       body: Expected revision and validated operation.
+      catalog: Trusted descriptor set the operation is validated against.
       inbound: In-process poller leases.
       agent_api_key_id: Calling API key, or None for browser cookie auth.
 
@@ -395,7 +400,7 @@ async def apply_workspace_operation(
         )
         if row is None:
             return None
-        current = _state_from_row(cast("Mapping[str, object]", row))
+        current = state_from_row(cast("Mapping[str, object]", row))
         if agent_api_key_id is not None and (
             current.connected_session_id is None
             or not inbound.has_poller(current.connected_session_id)
@@ -441,7 +446,7 @@ async def apply_workspace_operation(
                 continuation_record_id=current.continuation_record_id,
             ),
             body.operation,
-            default_catalog(),
+            catalog,
         )
         updated = WorkspaceState(
             id=current.id,
@@ -510,7 +515,7 @@ async def set_workspace_connection(
         )
         if row is None:
             return None
-        current = _state_from_row(cast("Mapping[str, object]", row))
+        current = state_from_row(cast("Mapping[str, object]", row))
         if body.revision != current.revision:
             raise RevisionConflictError(current)
         if body.session_id is not None and (
@@ -538,6 +543,28 @@ async def set_workspace_connection(
         return updated
 
 
+def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
+    """Validate stored JSON before returning it as API state.
+
+    Args:
+      row: A `visual_workspaces` row with id, revision, state and session_id.
+
+    Returns:
+      state: The validated workspace state.
+
+    """
+    data = WorkspaceData.model_validate(row["state"])
+    return WorkspaceState(
+        id=cast(uuid.UUID, row["id"]),
+        revision=IntCodec.coerce(row["revision"]),
+        connected_session_id=cast(uuid.UUID | None, row["session_id"]),
+        visuals=data.visuals,
+        focused_instance=data.focused_instance,
+        agent_instructions=data.agent_instructions,
+        continuation_record_id=data.continuation_record_id,
+    )
+
+
 async def _live_session_owned_by_key(
     conn: Conn,
     session_id: uuid.UUID,
@@ -560,18 +587,4 @@ async def _live_session_owned_by_key(
             user_id,
             api_key_id,
         ),
-    )
-
-
-def _state_from_row(row: Mapping[str, object]) -> WorkspaceState:
-    """Validate stored JSON before returning it as API state."""
-    data = WorkspaceData.model_validate(row["state"])
-    return WorkspaceState(
-        id=cast(uuid.UUID, row["id"]),
-        revision=IntCodec.coerce(row["revision"]),
-        connected_session_id=cast(uuid.UUID | None, row["session_id"]),
-        visuals=data.visuals,
-        focused_instance=data.focused_instance,
-        agent_instructions=data.agent_instructions,
-        continuation_record_id=data.continuation_record_id,
     )

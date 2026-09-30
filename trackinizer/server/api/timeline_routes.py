@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from trackinizer.lib.custom_json import IntCodec
 from trackinizer.server.api._deps import get_store
+from trackinizer.server.api.visuals_routes import visual_catalog
 from trackinizer.server.auth import require_role
 from trackinizer.server.visuals.timeline import (
     UnsupportedTimelineTargetError,
     load_timeline,
 )
+
+
+if TYPE_CHECKING:
+    from trackinizer.server.visuals.catalog import ParameterDescription
 
 
 router = APIRouter()
@@ -53,7 +59,7 @@ class TimelineExperiment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     record: TimelineRecord
-    evidence: list[TimelineEvidence] = Field(max_length=6)
+    evidence: list[TimelineEvidence]
     evidence_truncated: bool
 
 
@@ -63,7 +69,7 @@ class TimelineDirection(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     issue: TimelineRecord
-    results: list[TimelineExperiment] = Field(max_length=5)
+    results: list[TimelineExperiment]
     results_truncated: bool
 
 
@@ -75,11 +81,11 @@ class EvidenceTimelineResponse(BaseModel):
     target: TimelineRecord
     issue: TimelineRecord | None
     selected_result: TimelineExperiment | None
-    root_results: list[TimelineExperiment] = Field(max_length=5)
+    root_results: list[TimelineExperiment]
     root_results_truncated: bool
-    directions: list[TimelineDirection] = Field(max_length=12)
+    directions: list[TimelineDirection]
     directions_truncated: bool
-    unresolved_questions: list[TimelineRecord] = Field(max_length=12)
+    unresolved_questions: list[TimelineRecord]
 
 
 @router.get(
@@ -89,29 +95,45 @@ class EvidenceTimelineResponse(BaseModel):
 async def evidence_timeline_route(
     record_id: UUID,
     request: Request,
-    direction_limit: Annotated[int, Query(ge=1, le=12)] = 8,
-    results_per_direction: Annotated[int, Query(ge=1, le=5)] = 3,
+    direction_limit: Annotated[int | None, Query()] = None,
+    results_per_direction: Annotated[int | None, Query()] = None,
 ) -> EvidenceTimelineResponse:
     """Return an Issue or Experiment timeline with hard bounded SQL limits.
 
     Args:
       record_id: Selected Issue or Experiment UUID.
       request: Request with the shared Store.
-      direction_limit: Number of direct child Issues to return, at most 12.
-      results_per_direction: Experiments per Issue, at most five.
+      direction_limit: Direct child Issues to return; the catalog sets the default
+        and maximum.
+      results_per_direction: Experiments per Issue; the catalog sets the default
+        and maximum.
 
     Returns:
       timeline: Bounded record, result, and signed evidence projection.
 
     """
+    descriptor = visual_catalog(request).visual("trax.timeline")
+    if descriptor is None:
+        raise HTTPException(status_code=404, detail="Timeline visual is not enabled")
+    schema = descriptor.parameter_schema
+    direction_count = _bounded(
+        "direction_limit",
+        requested=direction_limit,
+        schemas=schema,
+    )
+    result_count = _bounded(
+        "results_per_direction",
+        requested=results_per_direction,
+        schemas=schema,
+    )
     store = get_store(request)
     try:
         async with store.engine.acquire() as conn:
             result = await load_timeline(
                 conn,
                 record_id,
-                direction_limit=direction_limit,
-                results_per_direction=results_per_direction,
+                direction_limit=direction_count,
+                results_per_direction=result_count,
             )
     except UnsupportedTimelineTargetError as error:
         raise HTTPException(
@@ -121,3 +143,21 @@ async def evidence_timeline_route(
     if result is None:
         raise HTTPException(status_code=404, detail="Issue or Experiment not found")
     return EvidenceTimelineResponse.model_validate(result)
+
+
+def _bounded(
+    name: str,
+    requested: int | None,
+    schemas: dict[str, ParameterDescription],
+) -> int:
+    """Apply the catalog default and reject a value outside its bounds."""
+    schema = schemas[name]
+    value = IntCodec.coerce(schema.default if requested is None else requested)
+    minimum = IntCodec.coerce(schema.minimum)
+    maximum = IntCodec.coerce(schema.maximum)
+    if value < minimum or value > maximum:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{name} must be between {minimum} and {maximum}.",
+        )
+    return value

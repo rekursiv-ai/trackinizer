@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING
 import pytest
 
 from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec, loads
-from trackinizer.server.visuals.catalog import BrowseVisual, ChatVisual, Workspace
+from trackinizer.server.api.app import app
+from trackinizer.server.visuals.catalog import StaticVisual, Workspace
 
 
 if TYPE_CHECKING:
@@ -59,15 +60,43 @@ def test_visual_catalog_has_default_browse_chat_and_context_graph(
 def test_visual_config_composes_titles_and_rejects_invalid_identity() -> None:
     """A contributor can configure modules without publishing duplicate IDs."""
     configured = Workspace.Config(
-        visuals=[BrowseVisual.Config(title="Explore"), ChatVisual.Config()],
+        visuals=[
+            StaticVisual.Config(type="trax.browse", title="Explore"),
+            StaticVisual.Config(type="trax.chat", title="Chat"),
+        ],
         default_visual="trax.browse",
     ).make()
     assert configured.catalog().visuals[0].title == "Explore"
 
     with pytest.raises(ValueError, match="unique"):
-        Workspace.Config(visuals=[BrowseVisual.Config(), BrowseVisual.Config()]).make()
+        Workspace.Config(
+            visuals=[
+                StaticVisual.Config(type="trax.browse", title="Browse"),
+                StaticVisual.Config(type="trax.browse", title="Again"),
+            ],
+        ).make()
     with pytest.raises(ValueError, match="registered"):
-        Workspace.Config(visuals=[ChatVisual.Config()]).make()
+        Workspace.Config(
+            visuals=[StaticVisual.Config(type="trax.chat", title="Chat")],
+        ).make()
+
+
+def test_visuals_route_serves_the_deployments_configured_catalog(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The route projects app.state.visual_catalog instead of building its own."""
+    client, _, _ = route_client
+    configured = Workspace.Config(
+        visuals=[StaticVisual.Config(type="x.notes", title="Notes")],
+        default_visual="x.notes",
+    ).make()
+    monkeypatch.setattr(app.state, "visual_catalog", configured, raising=False)
+    body = DictCodec.coerce(loads(client.get("/api/visuals").content))
+    assert StrCodec.coerce(body["default_visual"]) == "x.notes"
+    assert [
+        DictCodec.coerce(item)["title"] for item in ListCodec.coerce(body["visuals"])
+    ] == ["Notes"]
 
 
 if __name__ == "__main__":

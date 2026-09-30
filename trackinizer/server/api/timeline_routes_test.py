@@ -10,6 +10,12 @@ import uuid
 import pytest
 
 from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec, loads
+from trackinizer.server.api.app import app
+from trackinizer.server.visuals.catalog import (
+    StaticVisual,
+    TimelineVisual,
+    Workspace,
+)
 
 
 if TYPE_CHECKING:
@@ -35,7 +41,7 @@ async def test_timeline_caps_rows_and_preserves_signed_claim_edges(
     async with store.engine.acquire() as conn:
         await _insert_row(
             conn,
-            root_id,
+            record_id=root_id,
             kind="Issue",
             seq=1,
             title="Root investigation " * 300,
@@ -46,7 +52,7 @@ async def test_timeline_caps_rows_and_preserves_signed_claim_edges(
             issue_kind = ["question"] if direction_index == 0 else ["task"]
             await _insert_row(
                 conn,
-                direction_id,
+                record_id=direction_id,
                 kind="Issue",
                 seq=direction_index + 2,
                 title=f"Direction {direction_index}",
@@ -55,7 +61,7 @@ async def test_timeline_caps_rows_and_preserves_signed_claim_edges(
             )
             await _insert_edge(
                 conn,
-                direction_id,
+                from_id=direction_id,
                 from_kind="Issue",
                 to_id=root_id,
                 to_kind="Issue",
@@ -64,7 +70,7 @@ async def test_timeline_caps_rows_and_preserves_signed_claim_edges(
             for claim_index, claim_id in enumerate(claim_ids[direction_index]):
                 await _insert_row(
                     conn,
-                    claim_id,
+                    record_id=claim_id,
                     kind="Belief",
                     seq=direction_index * 8 + claim_index + 1,
                     title=f"Claim {direction_index}-{claim_index}",
@@ -74,7 +80,7 @@ async def test_timeline_caps_rows_and_preserves_signed_claim_edges(
             for result_index, result_id in enumerate(result_ids[direction_index]):
                 await _insert_row(
                     conn,
-                    result_id,
+                    record_id=result_id,
                     kind="Experiment",
                     seq=direction_index * 3 + result_index + 1,
                     title=f"Result {direction_index}-{result_index}",
@@ -88,7 +94,7 @@ async def test_timeline_caps_rows_and_preserves_signed_claim_edges(
                 )
                 await _insert_edge(
                     conn,
-                    result_id,
+                    from_id=result_id,
                     from_kind="Experiment",
                     to_id=direction_id,
                     to_kind="Issue",
@@ -97,7 +103,7 @@ async def test_timeline_caps_rows_and_preserves_signed_claim_edges(
                 for claim_index, claim_id in enumerate(claim_ids[direction_index]):
                     await _insert_edge(
                         conn,
-                        result_id,
+                        from_id=result_id,
                         from_kind="Experiment",
                         to_id=claim_id,
                         to_kind="Belief",
@@ -167,7 +173,7 @@ async def test_experiment_anchor_keeps_the_selected_result_in_its_issue_timeline
     async with store.engine.acquire() as conn:
         await _insert_row(
             conn,
-            issue_id,
+            record_id=issue_id,
             kind="Issue",
             seq=1,
             title="Direction",
@@ -175,7 +181,7 @@ async def test_experiment_anchor_keeps_the_selected_result_in_its_issue_timeline
         )
         await _insert_row(
             conn,
-            selected_id,
+            record_id=selected_id,
             kind="Experiment",
             seq=1,
             title="Selected result",
@@ -184,7 +190,7 @@ async def test_experiment_anchor_keeps_the_selected_result_in_its_issue_timeline
         )
         await _insert_edge(
             conn,
-            selected_id,
+            from_id=selected_id,
             from_kind="Experiment",
             to_id=issue_id,
             to_kind="Issue",
@@ -193,7 +199,7 @@ async def test_experiment_anchor_keeps_the_selected_result_in_its_issue_timeline
         for index, result_id in enumerate(other_ids):
             await _insert_row(
                 conn,
-                result_id,
+                record_id=result_id,
                 kind="Experiment",
                 seq=index + 2,
                 title=f"Newer result {index}",
@@ -202,7 +208,7 @@ async def test_experiment_anchor_keeps_the_selected_result_in_its_issue_timeline
             )
             await _insert_edge(
                 conn,
-                result_id,
+                from_id=result_id,
                 from_kind="Experiment",
                 to_id=issue_id,
                 to_kind="Issue",
@@ -236,7 +242,7 @@ async def test_orphan_experiment_has_no_issue_but_keeps_its_selected_result(
     async with store.engine.acquire() as conn:
         await _insert_row(
             conn,
-            experiment_id,
+            record_id=experiment_id,
             kind="Experiment",
             seq=1,
             title="Standalone result",
@@ -264,7 +270,7 @@ async def test_timeline_explains_unsupported_record_kind(
     async with store.engine.acquire() as conn:
         await _insert_row(
             conn,
-            belief_id,
+            record_id=belief_id,
             kind="Belief",
             seq=1,
             title="A belief",
@@ -289,10 +295,78 @@ async def test_timeline_rejects_parameters_outside_the_catalog_bounds(
     assert response.status_code == 422
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_timeline_limits_come_from_the_configured_catalog(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raised ceiling serves more than twelve directions; a lowered one rejects."""
+    client, store = pglite_route_client
+    root_id = uuid.uuid4()
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+    async with store.engine.acquire() as conn:
+        await _insert_row(
+            conn,
+            record_id=root_id,
+            kind="Issue",
+            seq=1,
+            title="Root",
+            created=started,
+        )
+        for index in range(14):
+            direction_id = uuid.uuid4()
+            await _insert_row(
+                conn,
+                record_id=direction_id,
+                kind="Issue",
+                seq=index + 2,
+                title=f"Direction {index}",
+                created=started + timedelta(days=index + 1),
+            )
+            await _insert_edge(
+                conn,
+                from_id=direction_id,
+                from_kind="Issue",
+                to_id=root_id,
+                to_kind="Issue",
+                edge_kind="narrows",
+            )
+    monkeypatch.setattr(
+        app.state,
+        "visual_catalog",
+        Workspace.Config(
+            visuals=[
+                StaticVisual.Config(type="x.notes", title="Notes"),
+                TimelineVisual.Config(direction_limit=20),
+            ],
+            default_visual="x.notes",
+        ).make(),
+        raising=False,
+    )
+    raised = await client.get(
+        f"/api/visuals/timeline/{root_id}",
+        params={"direction_limit": 14},
+    )
+    assert raised.status_code == 200, raised.text
+    assert _direction_titles(raised.content) == [
+        f"Direction {index}" for index in range(14)
+    ]
+    defaulted = await client.get(f"/api/visuals/timeline/{root_id}")
+    assert _direction_titles(defaulted.content) == [
+        f"Direction {index}" for index in range(8)
+    ]
+    too_many = await client.get(
+        f"/api/visuals/timeline/{root_id}",
+        params={"direction_limit": 21},
+    )
+    assert too_many.status_code == 422
+
+
 async def _insert_row(
     conn: Conn,
-    record_id: uuid.UUID,
     *,
+    record_id: uuid.UUID,
     kind: str,
     seq: int,
     title: str,
@@ -319,8 +393,8 @@ async def _insert_row(
 
 async def _insert_edge(
     conn: Conn,
-    from_id: uuid.UUID,
     *,
+    from_id: uuid.UUID,
     from_kind: str,
     to_id: uuid.UUID,
     to_kind: str,
@@ -339,6 +413,15 @@ async def _insert_edge(
         valence,
         note,
     )
+
+
+def _direction_titles(content: bytes) -> list[object]:
+    """Return the Issue titles of a timeline response's directions, in order."""
+    directions = ListCodec.coerce(DictCodec.coerce(loads(content))["directions"])
+    return [
+        DictCodec.coerce(DictCodec.coerce(item)["issue"])["title"]
+        for item in directions
+    ]
 
 
 if __name__ == "__main__":
