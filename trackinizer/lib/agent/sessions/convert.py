@@ -35,7 +35,7 @@ import sys
 import threading
 import time
 
-from trackinizer.lib.agent.sessions import claude, codex, gemini, normalized
+from trackinizer.lib.agent.sessions import claude, codex, gemini, normalized, sagent
 from trackinizer.lib.agent.sessions.fuse import chain, fuse, names_of, unfuse
 from trackinizer.lib.custom_json import DictCodec, loads
 
@@ -275,6 +275,11 @@ def detect_format(native: str) -> Format:
             document = {}
         if "sessionId" in document and "messages" in document:
             return "gemini"
+    # Before the line walk: sagent's ``context_override`` records carry a
+    # ``payload`` key, which the walk would read as codex. Detected so a sagent
+    # file is refused by name; it is read-only, so it is no ``convert`` format.
+    if sagent.is_sagent(native):
+        return "sagent"
     for line in native.splitlines():
         if not line.strip():
             continue
