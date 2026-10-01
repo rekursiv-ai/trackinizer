@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 import argparse
 import asyncio
+import logging
 import signal
 
 from trackinizer.addons.addon import StandaloneContext
@@ -71,6 +72,7 @@ def main() -> int:
             )
             return 0
         name = flags.addon or _only(deployment)
+        _configure_logging(flags.log_level)
         serve_standalone(
             name,
             manifest=deployment.manifest(name),
@@ -157,6 +159,7 @@ class Flags(Protocol):
     addon: str
     override: list[str]
     profile: str
+    log_level: str
 
 
 def _add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -190,6 +193,18 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
         default="",
         help="Saved trax profile for the services' client; default resolves as trax.",
     )
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="run: level for loop's own loggers; other libraries log WARNING and up.",
+    )
+
+
+def _configure_logging(level: str) -> None:
+    """Log ``loop``'s records at ``level`` to stderr, other libraries' at WARNING."""
+    logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("loop").setLevel(level)
 
 
 def _only(deployment: Deployment) -> str:

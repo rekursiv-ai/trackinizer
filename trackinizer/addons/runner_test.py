@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import field
+from typing import TYPE_CHECKING
 
 import asyncio
+import logging
 import runpy
 import signal
 import sys
@@ -17,6 +19,10 @@ from trackinizer.addons.addon import AddonManifest, StandaloneContext
 from trackinizer.addons.deployment import Deployment, DeploymentError
 from trackinizer.addons.runner import main, run_standalone, serve_standalone
 from trackinizer.client.client import Client
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 class _Recorder:
@@ -90,6 +96,15 @@ class TwoAddons(OneAddon):
     """Has no standalone service."""
 
 
+@pytest.fixture
+def loop_logger() -> Iterator[logging.Logger]:
+    """Yield the ``loop`` logger, restoring its level: ``run`` sets it globally."""
+    package = logging.getLogger("loop")
+    level = package.level
+    yield package
+    package.setLevel(level)
+
+
 def one_addon() -> OneAddon:
     """Return a deployment with the one addon that stops the runner."""
     return OneAddon()
@@ -147,6 +162,26 @@ def test_run_serves_the_only_addon_until_signalled(
     monkeypatch.setenv("TRACKINIZER_URL", "http://127.0.0.1:9")
     monkeypatch.setattr(sys, "argv", ["addons", "run", f"{__name__}.one_addon"])
     assert main() == 0
+
+
+@pytest.mark.parametrize(
+    ("flags", "level"),
+    [([], logging.INFO), (["--log-level", "DEBUG"], logging.DEBUG)],
+)
+def test_run_logs_the_loop_packages_at_the_chosen_level(
+    monkeypatch: pytest.MonkeyPatch,
+    loop_logger: logging.Logger,
+    flags: list[str],
+    level: int,
+) -> None:
+    monkeypatch.setenv("TRACKINIZER_URL", "http://127.0.0.1:9")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["addons", "run", f"{__name__}.one_addon", *flags],
+    )
+    assert main() == 0
+    assert loop_logger.level == level
 
 
 def test_run_takes_a_named_addon(

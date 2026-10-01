@@ -9,7 +9,6 @@ use, so callers use the same API and wire format in either environment.
 from __future__ import annotations
 
 from functools import cache
-from io import BytesIO
 from typing import TYPE_CHECKING, Protocol, cast
 
 
@@ -27,12 +26,15 @@ class _CompressionModule(Protocol):
     def decompress(self, data: bytes) -> bytes: ...
 
 
-class _Reader(Protocol):
-    def read(self) -> bytes: ...
+class _DecompressionObject(Protocol):
+    eof: bool
+    unused_data: bytes
+
+    def decompress(self, data: bytes) -> bytes: ...
 
 
 class _ZstdDecompressor(Protocol):
-    def stream_reader(self, source: BytesIO) -> _Reader: ...
+    def decompressobj(self) -> _DecompressionObject: ...
 
 
 class _ZstandardModule(_CompressionModule, Protocol):
@@ -47,7 +49,7 @@ class _Backend(Protocol):
 
 def compress(data: bytes, *, level: int | None = None) -> bytes:
     """Compress ``data`` as a zstandard frame."""
-    return _backend().compress(data, level)
+    return _backend().compress(data, level=level)
 
 
 def decompress(data: bytes) -> bytes:
@@ -58,6 +60,9 @@ def decompress(data: bytes) -> bytes:
 
     Returns:
       result: The decompressed bytes.
+
+    Raises:
+      ValueError: The input is malformed or contains an incomplete frame.
 
     """
     return _backend().decompress(data)
@@ -70,7 +75,7 @@ class _StdlibBackend:
     def compress(self, data: bytes, level: int | None) -> bytes:
         if level is None:
             return self._module.compress(data)
-        return self._module.compress(data, level)
+        return self._module.compress(data, level=level)
 
     def decompress(self, data: bytes) -> bytes:
         try:
@@ -86,12 +91,20 @@ class _PackageBackend:
     def compress(self, data: bytes, level: int | None) -> bytes:
         if level is None:
             return self._module.compress(data)
-        return self._module.compress(data, level)
+        return self._module.compress(data, level=level)
 
     def decompress(self, data: bytes) -> bytes:
         try:
-            reader = self._module.ZstdDecompressor().stream_reader(BytesIO(data))
-            return reader.read()
+            decompressor = self._module.ZstdDecompressor()
+            chunks: list[bytes] = []
+            while True:
+                decoder = decompressor.decompressobj()
+                chunks.append(decoder.decompress(data))
+                if not decoder.eof:
+                    raise ValueError("Incomplete zstandard frame")
+                data = decoder.unused_data
+                if not data:
+                    return b"".join(chunks)
         except self._module.ZstdError as error:
             raise ValueError(str(error)) from None
 

@@ -456,8 +456,7 @@ def _assert_transcript_synced(base_url: str, *, cli: str) -> None:
 
 
 @pytest.mark.cli_python_subprocess
-@pytest.mark.cli_claude
-@pytest.mark.cli_codex
+@pytest.mark.cli_real_llm
 def test_trax_run_claude_syncs_session(server: str) -> None:
     """A real ``claude -p`` run captures and syncs its session to the DB."""
     if shutil.which("claude") is None:
@@ -472,8 +471,7 @@ def test_trax_run_claude_syncs_session(server: str) -> None:
 
 
 @pytest.mark.cli_python_subprocess
-@pytest.mark.cli_claude
-@pytest.mark.cli_codex
+@pytest.mark.cli_real_llm
 def test_trax_run_codex_syncs_session(server: str) -> None:
     """A real ``codex exec`` run captures and syncs its session to the DB."""
     if shutil.which("codex") is None:
@@ -951,8 +949,7 @@ def _assert_injection_or_skip(cli: str, result: _InjectionResult) -> None:
 
 
 @pytest.mark.cli_python_subprocess
-@pytest.mark.cli_claude
-@pytest.mark.cli_codex
+@pytest.mark.cli_real_llm
 def test_injection_reaches_real_claude_end_to_end(server: str) -> None:
     """The full messaging loop drives a live, interactive claude.
 
@@ -973,8 +970,7 @@ def test_injection_reaches_real_claude_end_to_end(server: str) -> None:
 
 
 @pytest.mark.cli_python_subprocess
-@pytest.mark.cli_claude
-@pytest.mark.cli_codex
+@pytest.mark.cli_real_llm
 def test_injection_reaches_real_codex_end_to_end(server: str) -> None:
     """The full messaging loop drives a live, interactive codex.
 
