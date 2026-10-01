@@ -27,6 +27,18 @@ All notable trackinizer changes are documented here. This project follows
   so the file works as a backup that outlives a datadir and as input to a
   mirror. Embeddings, session ciphertext, and auth tables are left out.
 
+### Fixed
+
+- `trax run claude -- --resume <session-id>` (also `--resume=<id>` and
+  `-r <id>`) captures the session it continues. The transcript existed before
+  the run, so it was skipped as an earlier run's and the session stored no
+  events; it is now followed from its start and re-attaches the AgentSession
+  that captured it, the same as `trax agentsession <id> run claude`.
+- `trax run claude -- --resume`, `-r` or `--continue` without a session id no
+  longer gets `--session-id` added, which claude rejects without
+  `--fork-session`. A `--fork-session` run is given one, so its new transcript
+  is captured.
+
 ## 0.1.4 - 2026-08-20
 
 ### Added

@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, TextIO, cast, override
+from typing import TYPE_CHECKING, ClassVar, TextIO, cast, override
 
 import asyncio
 import json
@@ -697,6 +697,199 @@ class TestSessionScoping:
             expected=3,
         )
         assert stats.counts == {"UserMessage": 3}
+
+
+def _claude_line(text: str) -> str:
+    """One claude user record carrying ``text``, newline-terminated."""
+    return (
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": text,
+                "message": {"role": "user", "content": text},
+            },
+        )
+        + "\n"
+    )
+
+
+def _ignore_argv(argv: Sequence[str]) -> None:
+    """Act as a CLI that writes nothing."""
+    del argv
+
+
+class TestRawClaudeResume:
+    """``trax run claude -- --resume ...`` captures the session it continues.
+
+    The ``trax agentsession <id> run claude`` route names the transcript it
+    materialized, so the runner exempts it from ``baseline``. A resume typed
+    after ``--`` named no file at all: claude appended to a transcript the
+    pre-spawn snapshot had already classified as an earlier run's, and the run
+    stored nothing.
+    """
+
+    _OLD: ClassVar[str] = "11111111-1111-4111-8111-111111111111"
+
+    class _Sink(_RecordingSink):
+        """Also notes which CLI session ids were known when the session opened."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.known_at_open: list[str] | None = None
+
+        @override
+        def open(self) -> str | None:
+            self.known_at_open = list(self.cli_session_ids)
+            return None
+
+    @pytest.fixture
+    def scope(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Return the cwd's claude project directory, holding one earlier session."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr(shutil, "which", _always_found)
+        scope = ClaudeAdapter().session_scope()
+        assert scope is not None
+        scope.mkdir(parents=True)
+        _ = (scope / f"{self._OLD}.jsonl").write_text(_claude_line("before"))
+        return scope
+
+    @staticmethod
+    def _spawn(
+        monkeypatch: pytest.MonkeyPatch,
+        cli_args: tuple[str, ...],
+        act: Callable[[Sequence[str]], None],
+    ) -> tuple[TestRawClaudeResume._Sink, list[Sequence[str]]]:
+        """Run the real spawn path with a relay that calls ``act(argv)``."""
+        sink = TestRawClaudeResume._Sink()
+        argv_seen: list[Sequence[str]] = []
+
+        class _Relay:
+            def __init__(self, argv: Sequence[str], **kwargs: object) -> None:
+                del kwargs
+                self.argv = argv
+
+            def run(self) -> int:
+                argv_seen.append(self.argv)
+                act(self.argv)
+                return 0
+
+        monkeypatch.setattr(session, "ThreadedRelay", _Relay)
+        rc = session._spawn_and_drain(
+            RunConfig(cli_name="claude", cli_args=cli_args, quiesce_seconds=0.0),
+            ClaudeAdapter(),
+            sink,
+            _Stats(),
+        )
+        assert rc == 0
+        return sink, argv_seen
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [
+            ("--resume", _OLD),
+            (f"--resume={_OLD}",),
+            ("-r", _OLD),
+        ],
+        ids=["split", "equals", "short"],
+    )
+    def test_a_resume_by_id_captures_the_file_it_appends_to(
+        self,
+        scope: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        spelling: tuple[str, ...],
+    ) -> None:
+        """Followed from offset 0 and correlated, as the agentsession route is.
+
+        Re-reading ``before`` is what the materialized resume does too: a
+        record's key is its position in the file, so the turns the session
+        already holds land back on their own keys, and the server re-attaches
+        the AgentSession stamped with this id instead of opening a second one.
+        """
+
+        def append(argv: Sequence[str]) -> None:
+            del argv
+            with (scope / f"{self._OLD}.jsonl").open("a") as log:
+                _ = log.write(_claude_line("after"))
+
+        sink, argv_seen = self._spawn(monkeypatch, spelling, append)
+
+        assert _texts(sink) == ["before", "after"]
+        assert sink.known_at_open == [self._OLD]
+        assert argv_seen == [["claude", *spelling]]
+
+    @pytest.mark.parametrize(
+        "spelling",
+        [("--resume",), ("-r",), ("--continue",), ("-c",), ("--resume", "fix bug")],
+        ids=["picker", "short-picker", "continue", "short-continue", "search"],
+    )
+    def test_a_resume_claude_picks_itself_is_not_given_a_session_id(
+        self,
+        scope: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        spelling: tuple[str, ...],
+    ) -> None:
+        """Claude refuses ``--session-id`` beside a resume without a fork.
+
+        Verified against claude 2.1.286: ``--session-id can only be used with
+        --continue or --resume if --fork-session is also specified``. Adding
+        one to a bare ``--resume`` (the interactive picker) or ``--continue``
+        stops the CLI before it starts.
+        """
+        del scope
+        _sink, argv_seen = self._spawn(monkeypatch, spelling, _ignore_argv)
+
+        assert argv_seen == [["claude", *spelling]]
+
+    def test_a_forked_resume_is_pinned_to_a_fresh_id(
+        self,
+        scope: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``--fork-session`` writes a NEW file, so the run must name its id.
+
+        Without one the runner owned the ORIGINAL id, which the fork never
+        writes to, and captured nothing. ``--session-id`` is the one spelling
+        claude accepts beside a resume, so the fork's file is known up front.
+        """
+
+        def fork(argv: Sequence[str]) -> None:
+            minted = argv[argv.index("--session-id") + 1]
+            _ = (scope / f"{minted}.jsonl").write_text(
+                _claude_line("before") + _claude_line("forked"),
+            )
+
+        sink, argv_seen = self._spawn(
+            monkeypatch,
+            ("--resume", self._OLD, "--fork-session"),
+            fork,
+        )
+
+        assert _texts(sink) == ["before", "forked"]
+        (argv,) = argv_seen
+        assert argv[argv.index("--session-id") + 1] != self._OLD
+
+    def test_a_resumed_run_does_not_adopt_a_siblings_new_file(
+        self,
+        scope: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Another run's session minted in the same cwd stays that run's."""
+
+        def append_beside_a_sibling(argv: Sequence[str]) -> None:
+            del argv
+            _ = (scope / "22222222-2222-4222-8222-222222222222.jsonl").write_text(
+                _claude_line("sibling"),
+            )
+            with (scope / f"{self._OLD}.jsonl").open("a") as log:
+                _ = log.write(_claude_line("after"))
+
+        sink, _argv_seen = self._spawn(
+            monkeypatch,
+            ("--resume", self._OLD),
+            append_beside_a_sibling,
+        )
+
+        assert _texts(sink) == ["before", "after"]
 
 
 class TestAppendedLineDrain:
