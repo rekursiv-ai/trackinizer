@@ -324,6 +324,19 @@ async def publish_artifact_content(
             actor=author,
             caused_by=uuid.UUID(str(cause)),
         )
+        if body.previous_artifact_id is not None:
+            # Revisions stay immutable, so this edge is what leads a reader of an
+            # old link to the latest one ("Superseded by" in v2).
+            await store.insert_edge_and_audit(
+                conn,
+                subject_id=artifact_id,
+                subject_kind="Artifact",
+                to_id=body.previous_artifact_id,
+                edge_kind="supersedes",
+                api_key_id=api_key_id,
+                actor=author,
+                caused_by=uuid.UUID(str(cause)),
+            )
         row = await conn.fetchrow(
             "INSERT INTO visual_report_revisions "
             "(report_id, revision, artifact_id, author_id, author_email, content, "

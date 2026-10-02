@@ -321,6 +321,146 @@ async def test_report_publish_is_atomic_immutable_and_team_readable(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_next_revision_supersedes_the_one_it_updates(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """An old revision's link leads to its successor; a replay adds no edge."""
+    client, store = pglite_route_client
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES ($1, $2, 'Publisher', 'writer', 'active')",
+            TEST_USER_ID,
+            TEST_USER_EMAIL,
+        )
+    issue_id = await store.submit_issue(
+        SubmitIssue(title="Site owner", account=TEST_USER_EMAIL),
+        actor=TEST_USER_EMAIL,
+    )
+    payload = {
+        "issue_id": str(issue_id),
+        "title": "Site",
+        "summary": "A published site.",
+        "format": "html",
+        "html": "<h1>One</h1>",
+    }
+    first = await client.post(
+        "/api/artifacts/content",
+        json=payload,
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert first.status_code == 201, first.text
+    first_id = uuid.UUID(
+        StrCodec.coerce(DictCodec.coerce(loads(first.content))["artifact_id"]),
+    )
+    second_payload = {
+        **payload,
+        "html": "<h1>Two</h1>",
+        "previous_artifact_id": str(first_id),
+    }
+    key = str(uuid.uuid4())
+    second = await client.post(
+        "/api/artifacts/content",
+        json=second_payload,
+        headers={"Idempotency-Key": key},
+    )
+    assert second.status_code == 201, second.text
+    second_id = uuid.UUID(
+        StrCodec.coerce(DictCodec.coerce(loads(second.content))["artifact_id"]),
+    )
+    replay = await client.post(
+        "/api/artifacts/content",
+        json=second_payload,
+        headers={"Idempotency-Key": key},
+    )
+    assert replay.status_code == 201
+    async with store.engine.acquire() as conn:
+        edges = await conn.fetch(
+            "SELECT from_id, to_id FROM edges WHERE edge_kind = 'supersedes'",
+        )
+    assert [(row["from_id"], row["to_id"]) for row in edges] == [
+        (second_id, first_id),
+    ]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_html_route_serves_the_revision_as_a_sandboxed_page(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A signed-in teammate opens the exact HTML as a page, never same-origin."""
+    client, store = pglite_route_client
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES ($1, $2, 'Publisher', 'writer', 'active')",
+            TEST_USER_ID,
+            TEST_USER_EMAIL,
+        )
+    issue_id = await store.submit_issue(
+        SubmitIssue(title="Site owner", account=TEST_USER_EMAIL),
+        actor=TEST_USER_EMAIL,
+    )
+    page = "<!doctype html><title>Site</title><h1>Hello</h1>"
+    published = await client.post(
+        "/api/artifacts/content",
+        json={
+            "issue_id": str(issue_id),
+            "title": "Site",
+            "summary": "A published site.",
+            "format": "html",
+            "html": page,
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert published.status_code == 201, published.text
+    artifact_id = StrCodec.coerce(
+        DictCodec.coerce(loads(published.content))["artifact_id"],
+    )
+
+    response = await client.get(f"/api/artifacts/{artifact_id}/html")
+    assert response.status_code == 200
+    assert response.text == page
+    assert response.headers["content-type"] == "text/html; charset=utf-8"
+    policy = [
+        part.strip() for part in response.headers["content-security-policy"].split(";")
+    ]
+    assert policy[0] == "sandbox allow-scripts allow-popups"
+    assert "frame-ancestors 'self'" in policy
+    assert "connect-src 'none'" in policy
+    assert any(
+        part.startswith("script-src") and "https://cdnjs.cloudflare.com" in part
+        for part in policy
+    )
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["cache-control"] == "private"
+
+    missing = await client.get(f"/api/artifacts/{uuid.uuid4()}/html")
+    assert missing.status_code == 404
+
+    teammate = uuid.uuid4()
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES ($1, 'viewer@example.com', 'Viewer', 'viewer', 'active')",
+            teammate,
+        )
+    install_identity(
+        make_test_identity(
+            user_id=teammate,
+            email="viewer@example.com",
+            role="viewer",
+            api_key_id=None,
+        ),
+    )
+    shared = await client.get(f"/api/artifacts/{artifact_id}/html")
+    assert shared.status_code == 200
+    assert shared.text == page
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_structured_report_freezes_signed_evidence(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
@@ -415,6 +555,7 @@ async def test_structured_report_freezes_signed_evidence(
     earlier = await client.get(f"/api/artifacts/{artifact_id}/content")
     assert earlier.status_code == 200
     assert DictCodec.coerce(loads(earlier.content))["sections"] == sections
+    assert (await client.get(f"/api/artifacts/{artifact_id}/html")).status_code == 404
 
     await store.add_edge(
         from_id=paper_id,

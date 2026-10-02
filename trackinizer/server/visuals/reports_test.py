@@ -8,10 +8,13 @@ from pydantic import ValidationError
 
 import pytest
 
+from trackinizer.conftest import make_store, queue_field_rows
+from trackinizer.lib.custom_json import StrCodec
 from trackinizer.server.visuals.reports import (
     ArtifactContentRevision,
     ArtifactFindingDraft,
     PublishArtifactContent,
+    read_artifact_content,
 )
 
 
@@ -139,6 +142,40 @@ def test_html_limit_counts_utf8_bytes() -> None:
                 "html": "😀" * 7_500_001,
             },
         )
+
+
+@pytest.mark.asyncio
+async def test_read_artifact_content_returns_the_stored_revision_or_none() -> None:
+    """A read resolves one exact revision, with its HTML, on one connection."""
+    store, engine = make_store()
+    artifact_id = uuid.uuid4()
+    queue_field_rows(
+        engine.conn,
+        {
+            "report_id": uuid.uuid4(),
+            "revision": 2,
+            "artifact_id": artifact_id,
+            "content": {
+                "title": "Site",
+                "summary": "A published site.",
+                "format": "html",
+                "html": "<h1>Hi</h1>",
+                "sections": [],
+                "citations": [],
+            },
+            "created_at": "2026-10-01T00:00:00Z",
+            "author": "publisher@example.com",
+            "issue_id": uuid.uuid4(),
+        },
+        None,
+    )
+    revision = await read_artifact_content(store, artifact_id)
+    assert revision is not None
+    assert (revision.revision, revision.html) == (2, "<h1>Hi</h1>")
+    sql, *params = engine.conn.fetchrow.call_args.args
+    assert "WHERE revisions.artifact_id = $1" in StrCodec.coerce(sql)
+    assert params == [artifact_id, True]
+    assert await read_artifact_content(store, uuid.uuid4()) is None
 
 
 def test_nested_citations_have_a_global_limit() -> None:
