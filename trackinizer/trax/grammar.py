@@ -252,6 +252,10 @@ class EdgeAction:
     metadata: Mapping[str, object]
     remove: bool = False
     annotate: bool = False
+    valence_injected: bool = False
+    """The metadata valence is this spelling's polarity default, not a
+    user-supplied value: it must reach a fresh edge, but it must never
+    overwrite the stored valence of an edge that already exists."""
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

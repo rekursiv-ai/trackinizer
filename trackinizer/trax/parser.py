@@ -1292,12 +1292,16 @@ def _parse_edge_action(
     # then post-target -- so post-target overrides pre. Setting the same key twice
     # is malformed input either way; the order just makes it deterministic.
     metadata, consumed_metadata = edge_metadata(tokens[offset:])
-    merged = _apply_valence_alias(edge, {**inbound, **dict(pre_meta), **metadata})
+    merged, valence_injected = _apply_valence_alias(
+        edge,
+        {**inbound, **dict(pre_meta), **metadata},
+    )
     return EdgeAction(
         edge=edge,
         target=target,
         metadata=merged,
         annotate=bool(merged),
+        valence_injected=valence_injected,
     ), pre_consumed + consumed + 1 + consumed_metadata
 
 
@@ -1305,15 +1309,21 @@ def _parse_edge_action(
 # ``-0.5``. Either way the polarity is the SPELLING and the value is the magnitude, so a
 # user-supplied valence must be non-negative on BOTH branches: the positive spelling
 # stores it as-is, the ``dis*`` spelling negates it. For a non-citation alias
-# (``valence_default`` unset) the metadata passes through.
-def _apply_valence_alias(edge: Edge, metadata: dict[str, object]) -> dict[str, object]:
+# (``valence_default`` unset) the metadata passes through. The second return value
+# marks an INJECTED polarity default: it must reach a fresh edge, but the caller
+# must keep it off an existing edge's annotation path so a note-only edit never
+# clobbers the stored valence.
+def _apply_valence_alias(
+    edge: Edge,
+    metadata: dict[str, object],
+) -> tuple[dict[str, object], bool]:
     """Resolve a citation alias's valence convention into a concrete ``valence``."""
     if edge.valence_default is None:
-        return metadata
+        return metadata, False
     given = metadata.get("valence")
     if given is None:
         metadata["valence"] = edge.valence_default
-        return metadata
+        return metadata, True
     value = FloatCodec.coerce(given)
     if value < 0:
         # The magnitude is non-negative; the for/against polarity is carried by
@@ -1326,4 +1336,4 @@ def _apply_valence_alias(edge: Edge, metadata: dict[str, object]) -> dict[str, o
             f"(the spelling sets the for/against polarity); got {value}",
         )
     metadata["valence"] = -value if edge.valence_negate else value
-    return metadata
+    return metadata, False
