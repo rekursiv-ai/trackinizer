@@ -237,6 +237,54 @@ class _UnknownClause:
 _Clause = _KindClause | _RangeClause | _FilterClause | _MutationClause | _UnknownClause
 
 
+# Its own parser rather than ``parse_list_query``'s: that one reads kinds and seq
+# ranges too, and an export selector takes neither. Same CLI spelling though, so
+# ``labels nre '^machine:'`` means here exactly what it means in a list query.
+def parse_export_selector(tokens: Sequence[str]) -> tuple[Filter, ...]:
+    """Parse ``<field> <op> [value]`` triples into export selector clauses.
+
+    Args:
+      tokens: The export command's positional tokens.
+
+    Returns:
+      selector: One filter per clause, in the order given.
+
+    Raises:
+      ClientError: If a clause is malformed or names a field or op that is
+        not a filter.
+
+    """
+    clauses: list[Filter] = []
+    index = 0
+    while index < len(tokens):
+        field = tokens[index]
+        if index + 1 >= len(tokens):
+            raise ClientError(
+                f"export selector clause {field!r} needs an operator "
+                f"(e.g. {field} is <value>)",
+            )
+        op = tokens[index + 1]
+        if op not in FILTER_OPS:
+            raise ClientError(
+                f"unknown filter operator {op!r} after field {field!r}",
+            )
+        if op in VALUELESS_FILTER_OPS:
+            value, index = "", index + 2
+        elif index + 2 >= len(tokens):
+            raise ClientError(f"export selector clause '{field} {op}' needs a value")
+        else:
+            value, index = tokens[index + 2], index + 3
+        # ``Filter`` runs every rule decidable from the clause alone, so a bad
+        # regex or an over-long operand is refused here rather than by the server.
+        try:
+            clauses.append(
+                Filter(field=canonical_filter_field(field), op=op, value=value),
+            )
+        except ValueError as err:
+            raise ClientError(str(err)) from err
+    return tuple(clauses)
+
+
 def parse_bulk_apply(
     kind: Inquiry.InquiryKind,
     tokens: Sequence[str],

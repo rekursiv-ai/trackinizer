@@ -223,6 +223,12 @@ PGlite datadir it is not tied to the storage internals that wrote it, and an
 unchanged graph exports the same bytes twice. Line format:
 [`docs/api.md`](trackinizer/docs/api.md) section 3.24.
 
+`trax export labels is org:rekursiv labels nre '^machine:'` writes the
+subgraph those clauses match instead. Clauses read like any other filter and
+AND together; the inquiries decide the subgraph, and an edge comes along only
+when both of its ends did. The header names the selector, so a reader can
+tell a slice from a backup.
+
 ## Package dependency graph
 
 Four layers, two legs sharing one contract spine. An arrow means
