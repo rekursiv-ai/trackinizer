@@ -8,6 +8,7 @@ from typing import Final, cast
 
 import functools
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -444,6 +445,11 @@ def test_a_multi_file_session_is_joined_then_split_back_byte_for_byte(
     project = tmp_path / "project"
     before = _session(project / "before-clear.jsonl", _claude_session())
     after = _session(project / "after-clear.jsonl", _claude_session())
+    # Parts join in write order. Linux stamps mtimes from a coarse clock, so two
+    # back-to-back writes often share one, and the tie then sorts by name, which
+    # puts "after" first. Date `before` a second earlier to state the order.
+    written = after.stat().st_mtime_ns - 1_000_000_000
+    os.utime(before, ns=(written, written))
 
     result = convert_file(project, "auto", None, False)
 

@@ -205,7 +205,10 @@ async def _attach_typing(
             while shown not in mirrored:
                 mirrored += _read_available(out_r)
                 await asyncio.sleep(0.01)
-        _ = os.write(stdin_w, then)
+        # Guarded like `typed`: when the child has already exited, the attach has
+        # closed its end, and macOS fails even an empty write with EPIPE.
+        if then:
+            _ = os.write(stdin_w, then)
         status = await asyncio.wait_for(attaching, 5.0)
         mirrored += _read_available(out_r)
     finally:
