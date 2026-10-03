@@ -160,6 +160,26 @@ class SubmitBase(_CostFields):
     labels: list[str] | None = None
     subscribers: list[Inquiry.Actor] | None = None
 
+    recorded: datetime | None = None
+    """When the knowledge this row holds was originally recorded, declared by
+    the client; see :attr:`Inquiry.recorded`.
+
+    For backfilled history. ``None`` (the normal case) means the row was born
+    here and ``created`` already says when. Setting it does not change
+    ``created`` or ``modified``, which the server stamps either way, so an
+    import is honest about both its own time and the corpus's."""
+
+    # Naive input is refused rather than assumed UTC: a worklog date read out of a
+    # file carries no zone, and guessing one silently shifts a backfilled corpus by
+    # up to a day. The caller knows which zone it meant; this cannot.
+    @field_validator("recorded", mode="after")
+    @classmethod
+    def _validate_recorded(cls, value: datetime | None) -> datetime | None:
+        """Reject a timezone-naive ``recorded``, which has no single meaning."""
+        if value is not None and value.tzinfo is None:
+            raise ValueError("recorded must carry a timezone offset")
+        return value
+
     @field_validator("subscribers", mode="after")
     @classmethod
     def _validate_subscribers(cls, value: list[str] | None) -> list[str] | None:

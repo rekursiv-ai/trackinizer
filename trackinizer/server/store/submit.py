@@ -371,6 +371,11 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     "subscribers": (
                         canonical_strs(req.subscribers) if req.subscribers else None
                     ),
+                    # Declared by the client, never stamped here: an unset
+                    # ``recorded`` stays NULL rather than defaulting to now,
+                    # which would make every row claim a provenance it has not
+                    # got and leave a backfill indistinguishable from live work.
+                    "recorded": req.recorded,
                     **(extras or {}),
                 },
             )
