@@ -773,6 +773,9 @@ function warmSimulation() {
   if (!animating) Graph.d3ReheatSimulation();
 }
 
+// Largest zoom fitView may choose; manual zoom is not limited.
+const MAX_FIT_ZOOM = 4;
+
 // Zoom to frame all nodes, but only once positions are real: a graph whose
 // nodes are still at the origin (just added, not yet simulated) has a
 // zero-size bbox, and zoomToFit on it zooms to a degenerate scale (blank
@@ -790,6 +793,15 @@ function fitView() {
   const w = bbox.x[1] - bbox.x[0];
   const h = bbox.y[1] - bbox.y[0];
   if (!Number.isFinite(w) || !Number.isFinite(h)) return;
+  // A lone node (or a tight cluster) has a near-zero bbox, and zoomToFit would
+  // zoom until one node fills the canvas. Center it at a readable zoom instead.
+  const el = document.getElementById("graph");
+  const fitZoom = Math.min((el.clientWidth - 140) / w, (el.clientHeight - 140) / h);
+  if (!(fitZoom <= MAX_FIT_ZOOM)) {
+    Graph.centerAt((bbox.x[0] + bbox.x[1]) / 2, (bbox.y[0] + bbox.y[1]) / 2, 450);
+    Graph.zoom(MAX_FIT_ZOOM, 450);
+    return;
+  }
   // getGraphBbox returns node CENTERS (ignores radius); the generous padding
   // clears the largest (clamped ~18u) node and gives top/bottom breathing room.
   Graph.zoomToFit(450, 70, visible);

@@ -27,6 +27,11 @@ All notable trackinizer changes are documented here. This project follows
   so the file works as a backup that outlives a datadir and as input to a
   mirror. Embeddings, session ciphertext, and auth tables are left out.
 
+### Fixed
+
+- The `/graph` view no longer fills the canvas with one node when the graph has
+  a single node or a tight cluster. Fit view now caps its zoom at 4x.
+
 ## 0.1.4 - 2026-08-20
 
 ### Added
