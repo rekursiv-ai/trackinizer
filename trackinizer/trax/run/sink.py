@@ -743,6 +743,13 @@ class ResilientSink(Sink):
     def session_id(self) -> UUID | None:
         return self._primary.session_id
 
+    # The runner feeds this wrapper, but the primary is what tells the server how each
+    # file spells its bytes, and it reads that off the file's reader.
+    @property
+    @override
+    def readers(self) -> dict[Path, Tail]:
+        return self._primary.readers
+
     # The runner opens the sink before spawning the child CLI, so an open failure
     # (server unreachable) must degrade like any other rather than abort the run. The
     # session then opens when the server is back, on the first send.
@@ -943,6 +950,12 @@ class LockedSink(Sink):
     def session_id(self) -> UUID | None:
         with self._lock:
             return self._inner.session_id
+
+    # Shares the inner sink's readers, for the reason ``ResilientSink`` gives.
+    @property
+    @override
+    def readers(self) -> dict[Path, Tail]:
+        return self._inner.readers
 
     @override
     def open(self) -> str | None:

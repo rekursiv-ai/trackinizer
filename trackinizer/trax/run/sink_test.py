@@ -1486,6 +1486,46 @@ class _BlockingSink(Sink):
         self._record("close", "exit")
 
 
+class TestWrappedSinksSendEachFilesEncoding:
+    """A synced run tells the server how each file spells its bytes.
+
+    The runner feeds the outermost wrapper, so a reader the wrapper kept for itself
+    was invisible to the server sink inside, and every manifest declared nothing.
+    A resumed transcript is then written back in different bytes than the CLI wrote.
+    """
+
+    def test_the_runner_stack_sends_what_a_bare_server_sink_sends(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        line = (
+            b'{"type":"user","sessionId":"s","uuid":"u1",'
+            b'"timestamp":"2026-10-03T12:00:00Z",'
+            b'"message":{"role":"user","content":"\\u00e9t\\u00e9"}}\n'
+        )
+        bare_client, wrapped_client = _FakeClient(), _FakeClient()
+        bare = _instant_sink(bare_client)
+        wrapped = LockedSink(
+            ResilientSink(
+                _instant_sink(wrapped_client),
+                fallback_path=tmp_path / "fallback.jsonl",
+            ),
+        )
+
+        for sink in (bare, wrapped):
+            _ = sink.feed(ClaudeAdapter(), path=tmp_path / "s.jsonl", raw=line)
+            sink.flush()
+
+        declared = [manifest.metadata for manifest in bare_client.manifests]
+        assert declared != [{}], "the bare sink declared nothing either"
+        assert [manifest.metadata for manifest in wrapped_client.manifests] == declared
+
+
+def _instant_sink(client: _FakeClient) -> TrackinizerSink:
+    """Return a server sink that sends each record as soon as it is flushed."""
+    return TrackinizerSink(cast(Client, client), cli="claude", flush_interval_sec=0.0)
+
+
 class TestLockedSink:
     """A :class:`LockedSink` serializes cross-thread access to the wrapped sink.
 
