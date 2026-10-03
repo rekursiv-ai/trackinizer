@@ -38,6 +38,7 @@ class GeminiAdapter:
     name: str = "gemini"
     cli_binary: str = "gemini"
     whole_file: bool = True
+    parent_session_env: frozenset[str] = frozenset[str]()
 
     @property
     def _tmp_dir(self) -> Path:

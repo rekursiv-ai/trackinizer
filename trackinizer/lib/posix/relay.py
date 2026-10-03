@@ -41,17 +41,77 @@ import termios
 import threading
 import tty
 
+from trackinizer.lib.posix.host import Host
 from trackinizer.lib.posix.terminal import Terminal, reset_terminal_modes, write_all
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Mapping, Sequence
+    from collections.abc import (
+        AsyncIterator,
+        Callable,
+        Collection,
+        Coroutine,
+        Mapping,
+        Sequence,
+    )
     from pathlib import Path
 
+    from trackinizer.lib.posix.host import HostSpec
 
-__all__ = ["HasFileno", "Relay", "ThreadedRelay", "real_fd", "terminal_size"]
+
+__all__ = [
+    "Child",
+    "HasFileno",
+    "Relay",
+    "ThreadedRelay",
+    "real_fd",
+    "terminal_size",
+]
 
 _logger = logging.getLogger(__name__)
+
+
+class Child(Protocol):
+    """What a :class:`Relay` drives: a child it starts, sizes, reads, and stops.
+
+    A :class:`~trackinizer.lib.posix.terminal.Terminal` is the local case. The other
+    is a child some other process hosts, reached over its socket -- the relay
+    neither knows nor cares which, since raw mode, resizing, and handing the
+    terminal back are the same either way.
+    """
+
+    @property
+    def pid(self) -> int | None:
+        """The child's PID when this process owns it, else None."""
+        ...
+
+    async def start(self) -> None:
+        """Start the child, or connect to it."""
+        ...
+
+    def set_winsize(self, rows: int, cols: int) -> None:
+        """Give the child this geometry."""
+        ...
+
+    def output(self) -> AsyncIterator[bytes]:
+        """Yield the child's output until it ends."""
+        ...
+
+    async def write(self, data: bytes) -> bool:
+        """Send keystrokes; False once nothing more can be sent."""
+        ...
+
+    async def terminate(self) -> None:
+        """Stop relaying to the child; safe to repeat."""
+        ...
+
+    async def wait(self) -> int:
+        """Return the child's exit status."""
+        ...
+
+    async def close(self) -> None:
+        """Release what :meth:`start` acquired; idempotent."""
+        ...
 
 
 class HasFileno(Protocol):
@@ -141,7 +201,7 @@ class Relay:
 
     def __init__(
         self,
-        terminal: Terminal,
+        terminal: Child,
         *,
         stdin: HasFileno | None = None,
         stdout: HasFileno | None = None,
@@ -297,11 +357,15 @@ class ThreadedRelay:
       argv: The child command and its arguments.
       cwd: Directory to run the child in; the caller's when None.
       env: Extra environment for the child.
+      drop_env: Inherited variables the child must not see; see
+        :class:`~trackinizer.lib.posix.terminal.Terminal`.
       enter_delay_sec: Gap between a submitted paste and its Enter.
       terminate_grace_sec: How long the child gets to honor TERM before its
         process group is killed; see :class:`~trackinizer.lib.posix.terminal.Terminal`.
       bracketed_paste: Which submission protocol the child reads; see
         :class:`~trackinizer.lib.posix.terminal.Terminal`.
+      host: Serve the child to attachable viewers rather than to this
+        process's terminal; see :class:`~trackinizer.lib.posix.host.Host`.
       on_input: Observer of the human's raw keystrokes; see :class:`Relay`.
       on_output: Observer of the child's raw output; see :class:`Relay`.
       on_started: Observer of the child PID; see :class:`Relay`.
@@ -314,9 +378,11 @@ class ThreadedRelay:
         *,
         cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
+        drop_env: Collection[str] = (),
         enter_delay_sec: float = 0.15,
         terminate_grace_sec: float = 1.0,
         bracketed_paste: bool = True,
+        host: HostSpec | None = None,
         on_input: Callable[[bytes], None] | None = None,
         on_output: Callable[[bytes], None] | None = None,
         on_started: Callable[[int], None] | None = None,
@@ -325,15 +391,28 @@ class ThreadedRelay:
             argv,
             cwd=cwd,
             env=env,
+            drop_env=drop_env,
             enter_delay_sec=enter_delay_sec,
             terminate_grace_sec=terminate_grace_sec,
             bracketed_paste=bracketed_paste,
         )
-        self._relay = Relay(
-            self._terminal,
-            on_input=on_input,
-            on_output=on_output,
-            on_started=on_started,
+        # Either front drives the same terminal, so ``submit`` and ``terminate``
+        # below work unchanged whether a human's terminal or a socket fronts it.
+        self._front = (
+            Relay(
+                self._terminal,
+                on_input=on_input,
+                on_output=on_output,
+                on_started=on_started,
+            )
+            if host is None
+            else Host(
+                self._terminal,
+                spec=host,
+                on_input=on_input,
+                on_output=on_output,
+                on_started=on_started,
+            )
         )
         # The loop :meth:`run` drives, published once it exists so the other
         # methods can reach it. A threading primitive rather than an asyncio
@@ -392,7 +471,7 @@ class ThreadedRelay:
         self._loop = asyncio.get_running_loop()
         self._running.set()
         try:
-            return await self._relay.serve()
+            return await self._front.serve()
         finally:
             self._running.clear()
 

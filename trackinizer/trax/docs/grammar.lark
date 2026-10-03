@@ -223,7 +223,8 @@ VERB_ARG: /\S+/
 //   next=next unblocked Issue; blocked/board/graph=Issue views;
 //   recent=audit feed; cost=cost rollup; id=show row by uuid;
 //   profile=manage server profiles; send=message a live agent session;
-//   run=wrap an agent CLI (claude/gemini/codex) and sync its session.
+//   run=wrap an agent CLI (claude/gemini/codex) and sync its session;
+//     --detach hosts it past this terminal, reached by run ls/attach/log/send/stop.
 //   authority issue|artifact|experiment|paper|belief|codechange|webresult|websearch|agentsession SEQ [--format text|json]
 //   blocked
 //   board [--width V]
@@ -236,7 +237,12 @@ VERB_ARG: /\S+/
 //   next [CLAIM] [--format text|json|ids] [--as/--actor V] [--reason V]
 //   profile [NAME] [ url|actor|token [to V] | current NAME | del ]
 //   recent [--limit V] [--format text|json]
-//   run claude|gemini|codex|sh [--out V] [--verbose] [--dry-run] [--no-sync] [--as V] [--room V]
+//   run attach NAME
+//   run claude|gemini|codex|sh [--out V] [--verbose] [--dry-run] [--no-sync] [--as V] [--room V] [--detach] [--name V]
+//   run log NAME [-f/--follow]
+//   run ls
+//   run send NAME TEXT...
+//   run stop NAME
 //   search-sessions QUERY [--limit V] [--semantic/--no-semantic] [--format text|json]
 //   send TARGET TEXT...
 //   version

@@ -36,7 +36,7 @@ import termios
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping, Sequence
+    from collections.abc import AsyncIterator, Collection, Mapping, Sequence
     from pathlib import Path
 
 
@@ -184,6 +184,10 @@ class Terminal:
         child inherits the caller's, which makes a run depend on the operator's
         shell. On, it sees only ``env`` plus the few variables a process cannot
         work without (see :data:`ESSENTIAL_ENV`).
+      drop_env: Inherited variables the child must not see. Narrower than
+        ``clean_env``: for a caller that keeps the operator's environment but
+        knows a few names in it describe the CALLER -- a parent session's
+        identity -- rather than configure the child. ``env`` still wins.
       enter_delay_sec: Gap between a paste and its Enter. Must exceed codex's
         120ms paste-Enter suppression window or the Enter is swallowed and the
         line never submits.
@@ -204,6 +208,7 @@ class Terminal:
         cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
         clean_env: bool = False,
+        drop_env: Collection[str] = (),
         enter_delay_sec: float = 0.15,
         terminate_grace_sec: float = 1.0,
         winsize: tuple[int, int] = (24, 80),
@@ -213,6 +218,7 @@ class Terminal:
         self._cwd = cwd
         self._env = dict(env or {})
         self._clean_env = clean_env
+        self._drop_env = frozenset(drop_env)
         self._enter_delay_sec = enter_delay_sec
         self._terminate_grace_sec = terminate_grace_sec
         self._winsize = winsize
@@ -333,7 +339,11 @@ class Terminal:
                 name: os.environ[name] for name in ESSENTIAL_ENV if name in os.environ
             }
         else:
-            env = dict(os.environ)
+            env = {
+                name: value
+                for name, value in os.environ.items()
+                if name not in self._drop_env
+            }
         # A TUI on a pty needs ``TERM``; a non-tty parent environment may lack
         # it, which degrades rendering and input handling.
         _ = env.setdefault("TERM", "xterm-256color")
@@ -380,6 +390,15 @@ class Terminal:
                 termios.TIOCSWINSZ,
                 struct.pack("HHHH", rows, cols, 0, 0),
             )
+
+    def redraw(self) -> None:
+        """Ask the child to repaint its screen; a no-op once it is gone.
+
+        The kernel signals ``SIGWINCH`` only when :meth:`set_winsize` CHANGES
+        the geometry, so a viewer arriving at the size the child already has
+        would get no repaint and see a stale screen until the next one.
+        """
+        _ = self._signal(signal.SIGWINCH)
 
     async def write(self, data: bytes) -> bool:
         """Send raw bytes to the child; False once it is gone.

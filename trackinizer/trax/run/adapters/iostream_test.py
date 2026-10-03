@@ -31,6 +31,9 @@ class TestAdapter:
         assert tuple(adapter.session_dirs()) == ()
         assert adapter.session_scope() is None
 
+    def test_claims_no_file_even_one_that_looks_like_a_log(self) -> None:
+        assert not IOStreamAdapter().matches_session_file(Path("session.jsonl"))
+
     def test_names_no_cli_binary(self) -> None:
         """The command comes from the ``--`` args, not the adapter.
 

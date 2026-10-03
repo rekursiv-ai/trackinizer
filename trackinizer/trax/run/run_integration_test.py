@@ -35,6 +35,7 @@ import enum
 import os
 import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -52,6 +53,7 @@ from trackinizer.lib.agent.types.sessions import SessionRecord, UserMessage
 from trackinizer.lib.custom_json import DictCodec, IntCodec, ListCodec
 from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.postgres import PGliteEngine
+from trackinizer.lib.userdirs import state_dir
 from trackinizer.server.api import query, session_ir_routes, sessions_routes
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.embedders.stub import StubEmbedder
@@ -463,7 +465,15 @@ def test_trax_run_claude_syncs_session(server: str) -> None:
         pytest.skip("claude binary not on PATH")
     rc = _run_capture(
         "claude",
-        ("-p", "--output-format", "stream-json", "--verbose", _PROMPT),
+        (
+            "-p",
+            "--model",
+            "haiku",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            _PROMPT,
+        ),
         server,
     )
     _skip_if_cli_unauthenticated("claude", rc, server)
@@ -530,6 +540,7 @@ class _LineAdapter:
     name: str = "fakeline"
     cli_binary: str = "fakeline"
     whole_file: bool = False
+    parent_session_env: frozenset[str] = frozenset[str]()
 
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -694,6 +705,76 @@ def test_inbound_injection_reaches_child_end_to_end(server: str) -> None:
         assert not relay_thread.is_alive(), "relay did not stop"
         assert not poller.is_alive(), "inbound poller did not stop"
         client.close()
+
+
+@pytest.mark.cli_python_subprocess
+def test_detached_run_syncs_and_receives_inbound(server: str) -> None:
+    """A ``--detach`` host is a whole ``trax run``, not a lesser one.
+
+    It opens the synced session before it reports ready, a message routed to
+    that session reaches the hosted child, and a stop ends the session.
+    """
+    name = f"detached-{uuid.uuid4().hex[:8]}"
+    child = "import sys\nfor line in sys.stdin:\n    print('ECHO:' + line.strip(), flush=True)\n"
+    launched = _trax_cli(
+        server,
+        "run",
+        "--detach",
+        "--name",
+        name,
+        "--as",
+        name,
+        "sh",
+        "--",
+        sys.executable,
+        "-u",
+        "-c",
+        child,
+    )
+    assert launched.returncode == 0, launched.stderr
+    scrollback = (
+        state_dir() / "rekursiv-ai" / "trax" / "run" / "hosts" / name / "scrollback.log"
+    )
+    try:
+        row = _latest_session_row(server, cli="sh")
+        assert row is not None
+        client = Client(base_url=server)
+        assert client.enqueue_inbound(uuid.UUID(str(row["id"])), "routed hello") >= 1
+        client.close()
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            if scrollback.exists() and b"routed hello" in scrollback.read_bytes():
+                break
+            time.sleep(0.1)
+        assert b"ECHO:" in scrollback.read_bytes()
+        assert b"routed hello" in scrollback.read_bytes()
+    finally:
+        stopped = _trax_cli(server, "run", "stop", name)
+    assert stopped.returncode == 0, stopped.stderr
+    ended = _latest_session_row(server, cli="sh")
+    assert ended is not None
+    assert ended.get("ended") is not None, "stopping the host did not end its session"
+
+
+# ``-m`` resolves the package from the working directory, so the CLI runs from the root
+# THIS checkout's package was imported from. The URL is passed explicitly because the
+# trax conftest scrubs ``TRACKINIZER_URL`` from the test process's own environment.
+def _trax_cli(server: str, *argv: str) -> subprocess.CompletedProcess[str]:
+    """Run the ``trax`` CLI against ``server`` in a fresh process."""
+    package = RunConfig.__module__.rsplit(".", 2)[0]
+    root = Path(sys.modules[RunConfig.__module__].__file__ or "").parents[
+        RunConfig.__module__.count(".")
+    ]
+    return subprocess.run(  # noqa: S603 -- fixed interpreter and module; test argv.
+        [sys.executable, "-m", package, *argv],
+        cwd=root,
+        env={**os.environ, "TRACKINIZER_URL": server},
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
 
 
 class _InjectionResult(enum.Enum):
@@ -959,9 +1040,13 @@ def test_injection_reaches_real_claude_end_to_end(server: str) -> None:
     """
     if shutil.which("claude") is None:
         pytest.skip("claude binary not on PATH")
+    # No ``--dangerously-skip-permissions``: it now opens an acceptance dialog
+    # defaulting to "No, exit", the injected prompt lands in that dialog, and
+    # the test can only time out and skip. The question needs no tool, so no
+    # permission prompt stands in the way without it.
     result = _drive_real_cli_injection(
         "claude",
-        ["--dangerously-skip-permissions"],
+        ["--model", "haiku"],
         server,
         _INJECTION_PROMPT,
         _INJECTION_ANSWER,

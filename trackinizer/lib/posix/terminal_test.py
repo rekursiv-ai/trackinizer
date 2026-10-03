@@ -655,6 +655,69 @@ class TestLifecycle:
         assert asyncio.run(run()) == 0
         assert out.read_text() == "scientist"
 
+    def test_dropped_env_never_reaches_the_child(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A dropped name is absent; an explicit ``env`` entry still wins.
+
+        A nested agent CLI that inherits its launcher's session marker treats
+        itself as that session's child -- claude then saves no transcript, and
+        a wrapper capturing that transcript records nothing.
+        """
+        out = tmp_path / "env.txt"
+        monkeypatch.setenv("PARENT_MARKER", "1")
+        monkeypatch.setenv("PARENT_ROOMS", "lab")
+        monkeypatch.setenv("KEPT", "yes")
+        child = (
+            "import os,pathlib;"
+            f"pathlib.Path({str(out)!r}).write_text(repr(("
+            "os.environ.get('PARENT_MARKER'),"
+            "os.environ.get('PARENT_ROOMS'),"
+            "os.environ.get('KEPT'))))"
+        )
+
+        async def run() -> int:
+            async with Terminal(
+                [sys.executable, "-c", child],
+                env={"PARENT_ROOMS": "own"},
+                drop_env=("PARENT_MARKER", "PARENT_ROOMS"),
+            ) as term:
+                return await term.wait()
+
+        assert asyncio.run(run()) == 0
+        assert out.read_text() == repr((None, "own", "yes"))
+
+    def test_redraw_signals_the_child(self, tmp_path: Path) -> None:
+        """A repaint request arrives as SIGWINCH even at an unchanged size."""
+        out = tmp_path / "winch.txt"
+        child = (
+            "import pathlib,signal,sys,time\n"
+            "def winch(*_):\n"
+            f"    pathlib.Path({str(out)!r}).write_text('WINCH')\n"
+            "    sys.exit(0)\n"
+            "signal.signal(signal.SIGWINCH, winch)\n"
+            "print('ready', flush=True)\n"
+            "time.sleep(30)\n"
+        )
+
+        async def run() -> int:
+            async with Terminal([sys.executable, "-u", "-c", child]) as term:
+                ready = bytearray()
+                async for chunk in term.output():
+                    ready += chunk
+                    if b"ready" in ready:
+                        break
+                term.redraw()
+                return await term.wait()
+
+        assert asyncio.run(run()) == 0
+        assert out.read_text() == "WINCH"
+
+    def test_redraw_on_a_released_terminal_is_harmless(self) -> None:
+        Terminal(["cat"]).redraw()
+
     def test_cwd_is_an_actual_chdir(self, tmp_path: Path) -> None:
         """The child's kernel-reported directory is ``cwd``, not just ``PWD``.
 

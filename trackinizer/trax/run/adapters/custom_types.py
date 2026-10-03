@@ -11,7 +11,7 @@ and writes it back out as any CLI's native format.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 
 if TYPE_CHECKING:
@@ -21,26 +21,7 @@ if TYPE_CHECKING:
     from trackinizer.trax.run.adapters.tail import Tail
 
 
-__all__ = ["Adapter", "Capture", "StreamAdapter"]
-
-
-type Capture = Literal["pty", "pipe"]
-"""How a wrapped child is spawned, and therefore what its capture can say.
-
-Measured on a child printing three lines then one to stderr:
-
-* ``"pty"`` -- one terminal for both output streams, so the kernel interleaves
-  them before any reader sees a byte and ``Stderr`` is not recoverable. Lines
-  arrive as they are printed (0.01s, 0.31s, 0.61s), because libc line-buffers
-  on a tty. The child gets a real terminal, which is what a TUI needs.
-* ``"pipe"`` -- three real descriptors, so ``Stdin``, ``Stdout``, and
-  ``Stderr`` are all distinguishable. Nothing arrives until 0.91s, when the
-  child exits and flushes its block buffer; flushing is the CHILD's business
-  (``python -u``, ``stdbuf -oL``) and a child killed first loses what it held.
-
-So the two are not better and worse: one buys separation, the other buys a
-terminal and liveness.
-"""
+__all__ = ["Adapter", "StreamAdapter"]
 
 
 class Adapter(Protocol):
@@ -61,6 +42,16 @@ class Adapter(Protocol):
     and feeds that -- which the reader takes as the whole session again, and
     the chunk is marked a restart so each record lands back on the position it
     already held.
+    """
+
+    parent_session_env: frozenset[str]
+    """Inherited variables that name the session which LAUNCHED ``trax run``.
+
+    The runner drops them from the wrapped CLI's environment. An agent that
+    runs ``trax run`` hands its own environment down, and a CLI finding its
+    launcher's markers acts as that launcher's child: claude, given
+    ``CLAUDE_CODE_CHILD_SESSION``, keeps no transcript -- and the transcript
+    is what the runner captures, so the run records nothing at all.
     """
 
     def session_dirs(self) -> Iterable[Path]:
@@ -168,14 +159,3 @@ class StreamAdapter(Adapter, Protocol):
 
     stream_source: bool
     """Marker: True on every stream adapter; absent on file adapters."""
-
-    capture: Capture
-    """How the child is spawned, which decides what can be distinguished.
-
-    Not a preference: a file adapter has no choice at all. Claude and codex
-    are TUIs whose injected messages must be indistinguishable from typed
-    ones, and owning the pty master is what makes that true -- so ``"pty"`` is
-    their only mode and they do not carry this field. A stream adapter names
-    one because both are usable and they trade against each other; see
-    :data:`Capture`.
-    """

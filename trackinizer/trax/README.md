@@ -58,6 +58,28 @@ trax run codex --out /tmp/events.jsonl -- "your prompt"  # local JSONL at PATH
 trax run codex --dry-run                                 # tail existing files, no spawn
 ```
 
+### Detached runs
+
+`--detach` hosts the CLI in a background process that outlives the
+terminal, so a long-running agent needs no tmux. Capture, sync, and
+inbound delivery are the same as a foreground run; the command returns
+once the host is up. Each host has a name (`--name`, else the `--as`
+name, else the CLI) and keeps every byte the CLI writes, in order, as
+its scrollback.
+
+```bash
+trax run --detach --name lead --as lead claude -- --model haiku
+trax run ls                         # hosts: running / exited N / lost
+trax run attach lead                # drive it here; Ctrl-\ detaches
+trax run log lead --follow          # scrollback, then live output
+trax run send lead "status?"        # type a message in and press Enter
+trax run stop lead                  # stop it; waits until it has exited
+```
+
+State lives under `state_dir()/rekursiv-ai/trax/run/hosts/<name>/`:
+`host.json`, `scrollback.log`, and `host.log` (the runner's own
+messages, the first place to look when a host fails to start).
+
 Adapters live in [`run/adapters/`](run/adapters/); each one knows where
 its CLI writes session JSONL and how to map a line to an `Event`. See
 [`docs/cli-scraping-investigation.md`](../docs/cli-scraping-investigation.md)

@@ -14,9 +14,10 @@ read), while ``convert`` still reports a conversion out of this format as
 lossy, because a stream cannot say which ACT produced it.
 
 Reading a scrape back from a FILE yields only :class:`Stdout`: a file holds no
-descriptors. The distinction is made at capture, where the fds still exist
-(:mod:`~trackinizer.trax.run.adapters.iostream`), and travels on the
-record from there.
+descriptors. A live capture does too, today: the child runs on a pty, where
+the kernel merges its streams before trax sees a byte (see
+:mod:`~trackinizer.trax.run.adapters.iostream`). The other two kinds are
+for a source that still has the descriptors apart.
 """
 
 from __future__ import annotations

@@ -59,6 +59,7 @@ from trackinizer.trax.grammar import (
     WRITE_FIELDS_CLI,
 )
 from trackinizer.trax.profile import Profiles
+from trackinizer.trax.run import detach
 from trackinizer.trax.run.materialize import RESUMABLE_TARGETS
 from trackinizer.trax.run.session import build_parser
 from trackinizer.types.inquiries import (
@@ -482,6 +483,16 @@ def _verb_usage(verb: str, parser: argparse.ArgumentParser) -> str:
     return f"//   {' '.join(parts)}"
 
 
+def _subcommands(parser: argparse.ArgumentParser) -> dict[str, argparse.ArgumentParser]:
+    """Return ``parser``'s subcommand parsers by name; empty when it has none."""
+    # Only a subparsers action maps its choices to parsers; any other's are a list.
+    actions = parser._actions  # noqa: SLF001 -- The grammar generator inspects the parser's private construction seam.
+    for action in actions:
+        if isinstance(action.choices, dict):
+            return dict(cast(dict[str, argparse.ArgumentParser], action.choices))
+    return {}
+
+
 # Covers every non-kind dispatcher plus ``run`` (special-cased in the CLI) and
 # ``profile`` (whose ``rest`` hides a hand-parsed sub-grammar stated inline).
 def _verb_lines() -> list[str]:
@@ -494,6 +505,12 @@ def _verb_lines() -> list[str]:
             continue  # `kind` dispatcher, or profile (handled below)
         lines.append(_verb_usage(verb, dispatcher.make_parser()))
     lines.append(_verb_usage("run", build_parser()))
+    # ``run``'s host commands dispatch before its own parser does, so each one is a
+    # usage line of its own, from the host parser's subcommands.
+    lines.extend(
+        _verb_usage(f"run {name}", parser=subparser)
+        for name, subparser in _subcommands(detach.build_parser()).items()
+    )
     # Profile parses ``rest`` by hand; its sub-grammar is fixed, stated directly.
     lines.append("//   profile [NAME] [ url|actor|token [to V] | current NAME | del ]")
     lines = sorted(lines)
@@ -561,7 +578,8 @@ def _semantics_block() -> str:
         "//   next=next unblocked Issue; blocked/board/graph=Issue views;",
         "//   recent=audit feed; cost=cost rollup; id=show row by uuid;",
         "//   profile=manage server profiles; send=message a live agent session;",
-        "//   run=wrap an agent CLI (claude/gemini/codex) and sync its session.",
+        "//   run=wrap an agent CLI (claude/gemini/codex) and sync its session;",
+        "//     --detach hosts it past this terminal, reached by run ls/attach/log/send/stop.",
         *_verb_lines(),
     ]
     return "\n".join(lines)

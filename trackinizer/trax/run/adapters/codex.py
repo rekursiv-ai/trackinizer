@@ -47,6 +47,7 @@ class CodexAdapter:
     name: str = "codex"
     cli_binary: str = "codex"
     whole_file: bool = False
+    parent_session_env: frozenset[str] = frozenset[str]()
 
     @property
     def _sessions_dir(self) -> Path:

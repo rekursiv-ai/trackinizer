@@ -39,6 +39,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -49,9 +50,11 @@ import uuid
 from trackinizer.client.client import Client
 from trackinizer.lib.custom_json import DictCodec, loads
 from trackinizer.lib.posix.follow import follow_dir, follow_tree
+from trackinizer.lib.posix.host import HostSpec
 from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.userdirs import state_dir
 from trackinizer.trax.profile import LOCALHOST_FALLBACK_URL
+from trackinizer.trax.run import detach
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.custom_types import Adapter, StreamAdapter
@@ -341,6 +344,14 @@ class RunConfig:
     quiesce_seconds: float = 1.0
     """Seconds to keep draining after the CLI exits."""
 
+    host: HostSpec | None = None
+    """Serve the CLI to attachable viewers instead of this process's terminal.
+
+    Set by ``--detach``, in the background process it launches; see
+    :mod:`~trackinizer.trax.run.detach`. Capture, sync, and inbound
+    delivery are unchanged -- only who sees the terminal differs.
+    """
+
     SUPPORTED_CLIS: ClassVar[tuple[str, ...]] = tuple(_ADAPTERS)
 
     @property
@@ -403,6 +414,10 @@ def build_parser() -> argparse.ArgumentParser:
             "Wrap an agent CLI and tail its session log. "
             f"Supported: {', '.join(RunConfig.SUPPORTED_CLIS)}."
         ),
+        epilog=(
+            "A --detach host is reached by name: trax run ls | attach NAME | "
+            "log NAME [-f] | send NAME TEXT | stop NAME."
+        ),
     )
     parser.add_argument(
         "cli",
@@ -455,6 +470,19 @@ def build_parser() -> argparse.ArgumentParser:
             "Repeatable to join several rooms."
         ),
     )
+    parser.add_argument(
+        "--detach",
+        action="store_true",
+        help=(
+            "Run in a background host that outlives this terminal; return once "
+            "it is up. Reach it with trax run attach|log|send|stop NAME."
+        ),
+    )
+    parser.add_argument(
+        "--name",
+        default=None,
+        help="The --detach host's name. Defaults to the --as name, else the CLI.",
+    )
     return parser
 
 
@@ -505,18 +533,55 @@ def main(
         AgentSession.
 
     Returns:
-      exit_code: The wrapped CLI's exit status.
+      exit_code: The wrapped CLI's exit status; for ``--detach``, whether the
+        host came up.
 
     """
+    if argv and argv[0] in detach.HOST_COMMANDS:
+        return detach.main(argv)
     if "--" in argv:
         idx = argv.index("--")
         trax_argv = argv[:idx]
-        cli_argv = argv[idx + 1 :]
+        cli_argv = tuple(argv[idx + 1 :])
     else:
         trax_argv = argv
         cli_argv = ()
     parser = build_parser()
     flags = cast(_Flags, parser.parse_args(trax_argv))
+    if flags.name is not None and not flags.detach:
+        parser.error("--name names a --detach host")
+    if flags.detach and flags.dry_run:
+        parser.error("--detach hosts a live CLI, and --dry-run spawns none")
+    start = partial(
+        _run_flags,
+        flags=flags,
+        cli_argv=cli_argv,
+        client_factory=client_factory,
+        resume_path=resume_path,
+        cli_session_id=cli_session_id,
+    )
+    if flags.detach:
+        return detach.launch(
+            flags.name or flags.actor or flags.cli,
+            command=shlex.join((flags.cli, *cli_argv)),
+            start=start,
+        )
+    return start(None)
+
+
+# The client is built HERE, inside whichever process runs the CLI: a ``--detach`` host
+# calls this after forking, so the launcher never opens a connection the host would
+# inherit half-used.
+def _run_flags(
+    host: HostSpec | None,
+    *,
+    flags: _Flags,
+    cli_argv: tuple[str, ...],
+    client_factory: Callable[[], Client] | None,
+    resume_path: Path | None,
+    cli_session_id: str | None,
+) -> int:
+    """Run the parsed ``trax run`` invocation, served at ``host`` when given."""
     # ``syncing`` off the parsed flags, not off a half-built config: the client
     # is then an ordinary constructor argument and ``RunConfig`` stays frozen.
     syncing = flags.sync and flags.out is None and not flags.dry_run
@@ -534,6 +599,7 @@ def main(
             client=client_factory() if syncing and client_factory else None,
             resume_path=resume_path,
             cli_session_id=cli_session_id,
+            host=host,
         ),
     )
 
@@ -603,24 +669,28 @@ def _spawn_and_drain(
     stats: _Stats,
 ) -> int:
     """Run the CLI on a PTY while daemon threads drain logs and inject inbound."""
+    owner = _session_owner(adapter, config)
+    # A stream adapter names no binary of its own: the command is the ``--``
+    # args verbatim (``trax run sh -- bash -c '...'``).
+    if isinstance(adapter, StreamAdapter) and not config.cli_args:
+        raise SystemExit(
+            f"trax run {adapter.name}: no command given; "
+            f"usage: trax run {adapter.name} -- CMD [ARGS...]",
+        )
+    argv = (
+        list(config.cli_args)
+        if isinstance(adapter, StreamAdapter)
+        else _cli_argv(adapter, config, owner)
+    )
+    # Resolve the binary before forking: after ``pty.fork`` a missing binary
+    # would fail in the child's ``execvp``, not here, so the parent could not
+    # turn it into a clean ``SystemExit``. Checked before any worker starts, so
+    # refusing leaves nothing to stop.
+    if shutil.which(argv[0]) is None:
+        raise SystemExit(f"trax run: {argv[0]} not found in PATH")
     _prepare_session_dirs(adapter)
     baseline = _existing_session_files(adapter, config)
     stop = threading.Event()
-    owner: _SessionOwner | None = None
-    if adapter.name == "claude":
-        session_id = (
-            config.cli_session_id
-            or _cli_arg_value(config.cli_args, "--session-id")
-            or _cli_arg_value(config.cli_args, "--resume")
-            or _cli_arg_value(config.cli_args, "-r")
-        )
-        if session_id is None and not {"--continue", "-c"}.intersection(
-            config.cli_args,
-        ):
-            session_id = str(uuid.uuid4())
-        owner = _SessionOwner(session_id=session_id)
-    elif adapter.name == "codex":
-        owner = _SessionOwner(session_id=config.cli_session_id)
 
     # Slash-commands the human types (``/exit``) are handled inside the CLI and
     # never logged, so the drain thread can't see them. The relay tees the
@@ -644,6 +714,16 @@ def _spawn_and_drain(
     # ``maxlen`` drops OLDEST on overflow -- capture prefers a visible gap
     # over runner OOM, matching the inbound queue's stance.
     stream_queue: deque[bytes] = deque(maxlen=_STREAM_QUEUE_MAX)
+    # A stream run's capture source is the PTY stream, not a session log, so a
+    # line-framing observer queues each completed line. Lines go into
+    # ``stream_queue`` -- NOT straight into the sink: framing runs on the
+    # relay's IO path, where a blocking ``sink.feed`` (a slow server POST)
+    # would stall terminal mirroring and input delivery.
+    stream_capture = (
+        LineCapture(partial(_enqueue_stream_line, stream_queue, stats))
+        if isinstance(adapter, StreamAdapter)
+        else None
+    )
     # Set once the kernel watch is armed. ``Thread.start`` returns when the
     # thread is SCHEDULED, not when it has run, and the relay forks the CLI on
     # the next statement -- so without waiting here the child can write its
@@ -675,46 +755,6 @@ def _spawn_and_drain(
             "starting the CLI anyway (early output may not be captured)\n",
         )
 
-    # A stream adapter names no binary of its own: the command is the ``--``
-    # args verbatim (``trax run sh -- bash -c '...'``). Its capture source is
-    # the PTY stream, not a session log, so a line-framing observer queues
-    # each completed line. Lines go into ``stream_queue`` -- NOT straight
-    # into the sink: framing runs on the relay's IO path, where a blocking
-    # ``sink.feed`` (a slow server POST) would stall terminal mirroring and
-    # input delivery.
-    stream_capture: LineCapture | None = None
-    if isinstance(adapter, StreamAdapter):
-        if not config.cli_args:
-            stop.set()
-            drain_thread.join(timeout=1.0)
-            raise SystemExit(
-                f"trax run {adapter.name}: no command given; "
-                f"usage: trax run {adapter.name} -- CMD [ARGS...]",
-            )
-        argv = list(config.cli_args)
-        stream_capture = LineCapture(partial(_enqueue_stream_line, stream_queue, stats))
-    else:
-        argv = [adapter.cli_binary, *config.cli_args]
-        if adapter.name == "claude" and owner is not None:
-            if (
-                owner.session_id is not None
-                and _cli_arg_value(config.cli_args, "--session-id") is None
-                and _cli_arg_value(config.cli_args, "--resume") is None
-                and _cli_arg_value(config.cli_args, "-r") is None
-                and not {"--continue", "-c"}.intersection(config.cli_args)
-                and config.cli_session_id is None
-            ):
-                argv[1:1] = ["--session-id", owner.session_id]
-        elif adapter.name == "codex" and "--no-daemon" not in config.cli_args:
-            argv.insert(1, "--no-daemon")
-
-    # Resolve the binary before forking: after ``pty.fork`` a missing binary
-    # would fail in the child's ``execvp``, not here, so the parent could not
-    # turn it into a clean ``SystemExit``.
-    if shutil.which(argv[0]) is None:
-        stop.set()
-        drain_thread.join(timeout=1.0)
-        raise SystemExit(f"trax run: {argv[0]} not found in PATH")
     # Open the session eagerly (before fork) so the server-granted routing
     # handle is in the child env from the start: an agent inside must know its
     # real address (``scientist#2`` on a collision), not the requested name
@@ -737,16 +777,27 @@ def _spawn_and_drain(
     # A plain line-reading child (IO-stream run) gets newline-terminated
     # injection: the TUI bracketed-paste protocol would deliver its escape
     # sentinels as literal bytes to a canonical-mode ``read``.
+    #
+    # The CLI is a new top-level session, so whatever names the LAUNCHING one
+    # stays behind: the adapter's markers (see ``parent_session_env``) and our
+    # own routing pair -- a run with no rooms would otherwise inherit its
+    # launcher's ``TRAX_ROOMS`` and believe it is reachable where it is not.
+    #
+    # Codex alone prints its session id as it exits, so its owner alone reads
+    # the terminal -- and alone looks for that banner once the CLI is gone.
+    banner_reader = owner if adapter.name == "codex" else None
     relay = ThreadedRelay(
         argv,
         env=_routing_env(config, granted_actor=granted_actor),
+        drop_env=adapter.parent_session_env | {"TRAX_ACTOR", "TRAX_ROOMS"},
+        host=config.host,
         on_input=detector.feed,
         on_output=(
             stream_capture.feed
             if stream_capture is not None
-            else owner.output
-            if adapter.name == "codex" and owner is not None
             else None
+            if banner_reader is None
+            else banner_reader.output
         ),
         on_started=None if owner is None else owner.started,
         bracketed_paste=stream_capture is None,
@@ -775,8 +826,8 @@ def _spawn_and_drain(
     # exactly the race ``LockedSink`` and the joins exist to rule out.
     try:
         rc = relay.run()
-        if rc == 0 and adapter.name == "codex" and owner is not None:
-            owner.finish_output()
+        if rc == 0 and banner_reader is not None:
+            banner_reader.finish_output()
     finally:
         if stream_capture is not None:
             # Flush a trailing unterminated line so a child that exited mid-line
@@ -798,6 +849,54 @@ def _spawn_and_drain(
         if poll_thread is not None:
             _join_with_watchdog(poll_thread, "inbound poll", deadline=deadline)
     return rc
+
+
+# Claude names its transcript after its session id, so knowing the id up front is what
+# tells this run's file from a concurrent run's in the same project. A run that names
+# none -- no ``--session-id``, no resume -- gets one minted here and handed to claude; a
+# ``--continue`` picks a session claude chooses, so it stays unknown until observed.
+# Codex mints its own, so only a resumed codex run knows it in advance.
+def _session_owner(adapter: Adapter, config: RunConfig) -> _SessionOwner | None:
+    """Return the CLI session this run captures, or None when it cannot say."""
+    if adapter.name == "claude":
+        session_id = (
+            config.cli_session_id
+            or _cli_arg_value(config.cli_args, "--session-id")
+            or _cli_arg_value(config.cli_args, "--resume")
+            or _cli_arg_value(config.cli_args, "-r")
+        )
+        if session_id is None and not {"--continue", "-c"}.intersection(
+            config.cli_args,
+        ):
+            session_id = str(uuid.uuid4())
+        return _SessionOwner(session_id=session_id)
+    if adapter.name == "codex":
+        return _SessionOwner(session_id=config.cli_session_id)
+    return None
+
+
+# A minted claude id is passed as ``--session-id`` -- only when nothing else names the
+# session, or claude would be handed two.
+def _cli_argv(
+    adapter: Adapter,
+    config: RunConfig,
+    owner: _SessionOwner | None,
+) -> list[str]:
+    """Return the argv that spawns a file adapter's CLI."""
+    argv = [adapter.cli_binary, *config.cli_args]
+    if adapter.name == "claude" and owner is not None:
+        if (
+            owner.session_id is not None
+            and _cli_arg_value(config.cli_args, "--session-id") is None
+            and _cli_arg_value(config.cli_args, "--resume") is None
+            and _cli_arg_value(config.cli_args, "-r") is None
+            and not {"--continue", "-c"}.intersection(config.cli_args)
+            and config.cli_session_id is None
+        ):
+            argv[1:1] = ["--session-id", owner.session_id]
+    elif adapter.name == "codex" and "--no-daemon" not in config.cli_args:
+        argv.insert(1, "--no-daemon")
+    return argv
 
 
 def _cli_arg_value(args: tuple[str, ...], flag: str) -> str | None:
@@ -1575,3 +1674,5 @@ class _Flags(Protocol):
     sync: bool
     actor: str | None
     rooms: list[str] | None
+    detach: bool
+    name: str | None

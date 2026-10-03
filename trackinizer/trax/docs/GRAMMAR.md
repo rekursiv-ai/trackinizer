@@ -475,10 +475,16 @@ kinds resolve first, so a field can never shadow a command.
   retired when the filter grammar subsumed inquiry search.)
 - `trax send @actor[:room] TEXT...` -- inject a message into a live agent
   session addressed by its routing name (its `run --as` owner).
-- `trax run claude|gemini|codex [--out FILE] [--verbose] [--dry-run]
-  [--no-sync] [--as NAME] [--room ROOM]...` -- wrap an agent CLI, tail its
-  session log, and sync turn events. `--as NAME` is the session's owner /
-  routing handle (others address it `@NAME`), uniquified on collision.
+- `trax run claude|gemini|codex|sh [--out FILE] [--verbose] [--dry-run]
+  [--no-sync] [--as NAME] [--room ROOM]... [--detach] [--name NAME]` --
+  wrap an agent CLI, tail its session log, and sync turn events. `--as NAME`
+  is the session's owner / routing handle (others address it `@NAME`),
+  uniquified on collision. `--detach` runs it in a background host that
+  outlives the terminal, named by `--name` (else the `--as` name, else the
+  CLI).
+- `trax run ls | attach NAME | log NAME [-f] | send NAME TEXT... | stop NAME`
+  -- reach a detached host: list hosts, drive one from this terminal
+  (Ctrl-\ detaches), print its scrollback, type a message in, or stop it.
 
 ## 8. Profile command
 

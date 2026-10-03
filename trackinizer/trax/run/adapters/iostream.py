@@ -7,12 +7,15 @@ wrapped script, not trax -- the contract is line-delimited UTF-8 text in both
 directions (stdin lines arrive via the inbound poller's injection; output lines
 are captured verbatim).
 
-Piped by default, unlike every other adapter. A pipe run keeps the child's
-three descriptors apart, so a line remembers which stream it crossed -- and
-that distinction is the only structure a scrape has. The cost is the tty:
-``--capture pty`` buys one back (liveness, and a child that wants a terminal)
-at the price of ``Stderr``, which the kernel has already merged into the output
-by the time trax sees a byte. See :data:`Capture`.
+The child runs on a pty, like every other adapter, so every captured line is a
+``Stdout``: the kernel merges stderr into the one terminal before trax sees a
+byte. Pipes would keep the streams apart, and were measured against it: on a
+child printing three lines then one to stderr, the pty delivered each line as
+printed (0.01s, 0.31s, 0.61s) while the pipes delivered nothing until the
+child exited at 0.91s and flushed its block buffer -- and a child killed first
+loses what it held. Liveness wins, and the pty is also what lets a
+``--detach`` host serve the child to a viewer. A command that needs stderr
+apart redirects it itself.
 """
 
 from __future__ import annotations
@@ -20,7 +23,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final
 
 import logging
-import re
 
 from trackinizer.trax.run.adapters import scrape
 from trackinizer.trax.run.adapters.tail import Tail
@@ -30,20 +32,9 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
     from pathlib import Path
 
-    from trackinizer.trax.run.adapters.custom_types import Capture
-
 
 __all__ = ["IOStreamAdapter", "LineCapture"]
 
-
-# Terminal escape sequences a child may emit, stripped so captured lines are
-# the text, not the rendering: CSI (colors, cursor movement), OSC (title-set,
-# ``\x1b]0;...\x07`` or ST-terminated), and DCS/APC/PM string sequences.
-_ANSI_ESCAPES: Final = re.compile(
-    rb"\x1b\[[0-9;?]*[a-zA-Z]"  # CSI.
-    rb"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC, BEL- or ST-terminated.
-    rb"|\x1b[PX^_][^\x1b]*\x1b\\",  # DCS/SOS/PM/APC, ST-terminated.
-)
 
 # One captured line's byte cap. Enforced at INGEST (``LineCapture.feed``),
 # not only at line emit: the cap exists for a child that never emits a
@@ -57,8 +48,8 @@ class IOStreamAdapter:
 
     Every file-tailing method is vacuous -- there is no log. The runner
     detects the empty :attr:`cli_binary`, takes the command from the ``--``
-    args, and attaches a :class:`LineCapture` per stream that feeds each
-    completed line to this adapter's normalizer.
+    args, and frames the pty's output with a :class:`LineCapture` that feeds
+    each completed line to this adapter's normalizer.
 
     The READER is the configurable seam: a new stream dialect (say JSON-lines
     into richer records) is this class returning a different one, with its own
@@ -70,8 +61,8 @@ class IOStreamAdapter:
     name: str = "sh"
     cli_binary: str = ""
     whole_file: bool = False
+    parent_session_env: frozenset[str] = frozenset[str]()
     stream_source: bool = True
-    capture: Capture = "pipe"
 
     def session_dirs(self) -> Iterable[Path]:
         """Return the directories this CLI writes sessions under."""

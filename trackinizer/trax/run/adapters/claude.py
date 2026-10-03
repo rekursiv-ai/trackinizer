@@ -44,6 +44,13 @@ class ClaudeAdapter:
     name: str = "claude"
     cli_binary: str = "claude"
     whole_file: bool = False
+    # Measured: launched from inside a Claude Code session, the wrapped claude
+    # inherited ``CLAUDE_CODE_CHILD_SESSION``, saved no transcript, and the run
+    # captured nothing while the model answered. The other two name the
+    # launching session itself, which a new top-level session is not.
+    parent_session_env: frozenset[str] = frozenset(
+        {"CLAUDE_CODE_CHILD_SESSION", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID"},
+    )
 
     @property
     def _projects_dir(self) -> Path:
