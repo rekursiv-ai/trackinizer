@@ -490,6 +490,8 @@ def test_trax_run_codex_syncs_session(server: str) -> None:
         "codex",
         (
             "exec",
+            "-m",
+            "gpt-6-luna",
             "--skip-git-repo-check",
             "-c",
             "model_reasoning_summary=detailed",
@@ -1072,7 +1074,7 @@ def test_injection_reaches_real_codex_end_to_end(server: str) -> None:
     # a deadline elapse skips (inconclusive) instead of failing red.
     result = _drive_real_cli_injection(
         "codex",
-        ["--dangerously-bypass-approvals-and-sandbox"],
+        ["-m", "gpt-6-luna", "--dangerously-bypass-approvals-and-sandbox"],
         server,
         _INJECTION_PROMPT,
         _INJECTION_ANSWER,
