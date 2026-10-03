@@ -54,6 +54,7 @@ from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter
 from trackinizer.trax.run.adapters.tail import Tail
+from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.session import (
     RunConfig,
     _cli_argv,
@@ -69,15 +70,18 @@ from trackinizer.trax.run.session import (
     resume_argv,
     run,
 )
-from trackinizer.trax.run.sink import Sink
+from trackinizer.trax.run.sink import ResilientSink, Sink, TrackinizerSink
 from trackinizer.trax.run.slash import SlashCommand
-from trackinizer.wire.wire_sessions import WorkspaceMessageContext
+from trackinizer.wire.wire_sessions import (
+    SessionStartResponse,
+    WorkspaceMessageContext,
+)
 
 
 if TYPE_CHECKING:
     from trackinizer.trax.run.adapters.custom_types import Adapter
-    from trackinizer.trax.run.custom_types import Event
-    from trackinizer.wire.wire_session_ir import RecordBody
+    from trackinizer.wire.wire_session_ir import AppendRecordsResponse, RecordBody
+    from trackinizer.wire.wire_sessions import SessionStart
 
 
 @pytest.fixture(autouse=True)
@@ -2887,6 +2891,53 @@ class TestInboundBatchSurvivesOneBadMessage:
         )
 
 
+class TestInboundSurvivesACaptureDegrade:
+    """A failed upload moves capture to a local file; the agent must still hear.
+
+    Inbound needs only the server session id, which a degrade used to drop: the
+    poller then idled for the rest of the run while the server, still seeing a
+    live session, told every sender its message was delivered.
+    """
+
+    def test_a_degraded_run_still_receives_inbound(self, tmp_path: Path) -> None:
+        client = _UploadOutageClient(["still listening"])
+        fallback_path = tmp_path / "fallback.jsonl"
+        sink = ResilientSink(
+            TrackinizerSink(cast(Client, client), "claude", flush_interval_sec=0.0),
+            fallback_path=fallback_path,
+        )
+        sink.emit(
+            "claude",
+            Event(record=UserMessage(content="hi"), path=tmp_path / "s.jsonl"),
+        )
+        sink.flush()
+        relay = _RecordingRelay()
+        stop = threading.Event()
+
+        worker = threading.Thread(
+            target=lambda: _inbound_poll_loop(
+                cast(Client, client),
+                sink,
+                cast(ThreadedRelay, relay),
+                stop,
+                poll_interval=0.01,
+            ),
+            daemon=True,
+        )
+        worker.start()
+        try:
+            deadline = time.monotonic() + 3.0
+            while not relay.submitted and time.monotonic() < deadline:
+                time.sleep(0.01)
+        finally:
+            stop.set()
+            worker.join(timeout=5.0)
+
+        assert '"hi"' in fallback_path.read_text(), "capture never degraded"
+        assert relay.submitted == ["still listening"]
+        assert client.drained_for == {client.session}
+
+
 class _BatchClient:
     """Returns one batch of messages, then nothing (the queue is drained)."""
 
@@ -2906,6 +2957,36 @@ class _BatchClient:
             _real_pause(0.02)
             return []
         return [(text, None, None, None) for text in self._texts]
+
+
+class _UploadOutageClient(_BatchClient):
+    """Opens a session and serves its inbound queue, but every upload fails."""
+
+    def __init__(self, texts: list[str]) -> None:
+        super().__init__(texts)
+        self.session = uuid.uuid4()
+        self.drained_for: set[uuid.UUID] = set()
+
+    def session_start(self, body: SessionStart) -> SessionStartResponse:
+        return SessionStartResponse(id=self.session, seq=0, actor=body.actor)
+
+    def append_records(
+        self,
+        session_id: uuid.UUID,
+        **fields: object,
+    ) -> AppendRecordsResponse:
+        del session_id, fields
+        raise RuntimeError("upload failed")
+
+    @override
+    def drain_inbound(
+        self,
+        session_id: uuid.UUID,
+        *,
+        wait_sec: float = 0.0,
+    ) -> list[tuple[str, str | None, str | None, WorkspaceMessageContext | None]]:
+        self.drained_for.add(session_id)
+        return super().drain_inbound(session_id, wait_sec=wait_sec)
 
 
 class _SessionSink:

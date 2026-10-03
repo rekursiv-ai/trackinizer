@@ -430,6 +430,26 @@ class TestTrackinizerSink:
         assert len(client.appended) == 1
         assert [b.idx for b in client.appended[0][2]] == [0]
 
+    def test_the_runner_defaults_send_fifty_at_once_and_stream_within_a_second(
+        self,
+    ) -> None:
+        now = [0.0]
+        client = _FakeClient()
+        sink = TrackinizerSink(cast(Client, client), "claude", clock=lambda: now[0])
+        for n in range(49):
+            sink.emit("claude", _event(str(n)))
+        assert client.appended == []
+        sink.emit("claude", _event("49"))
+        assert _sent_positions(client) == [list(range(50))]
+
+        sink.emit("claude", _event("paused"))
+        now[0] = 0.99
+        sink.flush()
+        assert _sent_positions(client) == [list(range(50))]
+        now[0] = 1.0
+        sink.flush()
+        assert _sent_positions(client) == [list(range(50)), [50]]
+
     def test_flush_on_empty_buffer_is_noop(self) -> None:
         client = _FakeClient()
         sink = TrackinizerSink(cast(Client, client), "claude")
@@ -676,6 +696,19 @@ class _FlakyFlushClient(_FakeClient):
         )
 
 
+class _UnreachableClient(_FlakyFlushClient):
+    """A server that stops answering after the session opens: no upload, no end."""
+
+    @override
+    def session_end(
+        self,
+        session_id: UUID,
+        body: SessionEnd | None = None,
+    ) -> SessionEndResponse:
+        del session_id, body
+        raise RuntimeError("server gone")
+
+
 class TestTrackinizerSinkCloseFlushOrdering:
     """A flush failure during ``close`` must not silently drop the buffer."""
 
@@ -843,6 +876,11 @@ class _FailingSessionIdPrimary(_FailingOpenPrimary):
         raise RuntimeError("server unreachable")
 
 
+def _sent_positions(client: _FakeClient) -> list[list[int]]:
+    """Return the record positions of each upload ``client`` received, in order."""
+    return [[body.idx for body in bodies] for _, _, bodies, _ in client.appended]
+
+
 def _fallback_texts(path: Path) -> list[str]:
     """Return the ``text`` of each record row the fallback file holds."""
     texts: list[str] = []
@@ -928,6 +966,74 @@ class TestResilientSink:
             for line in fallback_path.read_text(encoding="utf-8").splitlines()
         ]
         assert idxs == [0, 1]
+
+    def test_a_degrade_keeps_the_server_session_and_still_ends_it(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """One failed upload moves capture to a file, never the session itself.
+
+        Inbound needs only the session id: a poller that lost it stopped for the
+        rest of the run while the server kept reporting deliveries. And a run
+        that never ended its session left it ``active`` for good.
+        """
+        client = _FlakyFlushClient()
+        primary = TrackinizerSink(
+            cast(Client, client),
+            "claude",
+            batch_size=50,
+            flush_interval_sec=0.0,
+        )
+        fallback_path = tmp_path / "fallback.jsonl"
+        sink = ResilientSink(primary, fallback_path=fallback_path)
+        sink.emit("claude", _event("one"))
+        sink.flush()
+
+        assert sink.session_id == client._id
+        sink.emit("claude", _event("two"))
+        sink.close()
+        assert _fallback_texts(fallback_path) == ["one", "two"]
+        assert client.ended == [client._id]
+        assert client.append_attempts == 1
+
+    def test_a_failed_end_after_a_degrade_is_reported_not_raised(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        client = _UnreachableClient()
+        primary = TrackinizerSink(
+            cast(Client, client),
+            "claude",
+            batch_size=50,
+            flush_interval_sec=0.0,
+        )
+        sink = ResilientSink(primary, fallback_path=tmp_path / "fallback.jsonl")
+        sink.emit("claude", _event("one"))
+        sink.flush()
+
+        sink.close()
+
+        assert "could not close the server session (server gone)" in (
+            capsys.readouterr().err
+        )
+
+    def test_each_fallback_line_is_on_disk_before_close(self, tmp_path: Path) -> None:
+        """A run killed before ``close`` keeps every line it already wrote."""
+        fallback_path = tmp_path / "fallback.jsonl"
+        sink = ResilientSink(_ExplodingSink(), fallback_path=fallback_path)
+        sink.emit("claude", _event("one"))
+
+        assert _fallback_texts(fallback_path) == ["one"]
+        sink.close()
+
+    def test_the_fallback_directory_is_created(self, tmp_path: Path) -> None:
+        fallback_path = tmp_path / "state" / "trax" / "run" / "fallback.jsonl"
+        sink = ResilientSink(_ExplodingSink(), fallback_path=fallback_path)
+        sink.emit("claude", _event("one"))
+        sink.close()
+
+        assert _fallback_texts(fallback_path) == ["one"]
 
     def test_open_failure_degrades_to_fallback(self, tmp_path: Path) -> None:
         """A primary whose ``open`` raises must degrade, not abort the run.

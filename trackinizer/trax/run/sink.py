@@ -406,8 +406,9 @@ class TrackinizerSink(Sink):
         # One IR id per file, minted on first send: the manifest records what
         # the file declared, and a fresh id per BATCH would rewrite it.
         self._ir_ids: dict[Path, UUID] = {}
-        self._oldest_buffered_at: float | None = None
-        self._closed = False
+        # Set whenever the buffer fills from empty, so this value is never read.
+        self._oldest_buffered_at: float | None = None  # pragma: no mutate
+        self._closed = False  # pragma: no mutate -- read only for truthiness.
 
     @property
     def granted_actor(self) -> str | None:
@@ -657,19 +658,23 @@ class ResilientSink(Sink):
 
     def __init__(self, primary: Sink, *, fallback_path: Path) -> None:
         self._primary: Sink | None = primary
+        # Still the primary after a degrade: a failed upload moves capture to a
+        # file, and says nothing about the server session, which stays open.
+        self._session = primary
         self._fallback_path = fallback_path
         self._fallback: FileSink | None = None
         # Last adapter name seen, to label replayed buffer events on degrade
-        # (the primary's buffered bodies don't carry the adapter name).
-        self._adapter_for_fallback = ""
+        # (the primary's buffered bodies don't carry the adapter name). Never read
+        # before an emit sets it: only an emit buffers a body.
+        self._adapter_for_fallback = ""  # pragma: no mutate
 
+    # Kept after a degrade, not dropped with capture: inbound needs only this id,
+    # and a poller that lost it stopped for the rest of the run -- an agent alive
+    # but deaf.
     @property
     @override
     def session_id(self) -> UUID | None:
-        # The poller wants the live server session: only the primary
-        # (TrackinizerSink) has one. Once degraded to the local fallback there
-        # is no session, so inbound polling correctly stops.
-        return self._primary.session_id if self._primary is not None else None
+        return self._session.session_id
 
     @override
     def open(self) -> str | None:
@@ -750,13 +755,21 @@ class ResilientSink(Sink):
         # the fallback writes through; nothing is ever pending at this layer.
         return []
 
+    # A degraded run still ends the server session it opened, or that session stays
+    # ``active`` for good. Its buffer was drained into the fallback when it degraded,
+    # so closing it re-sends no record; and it is best-effort, since the server may
+    # be what failed in the first place.
     @override
     def close(self) -> None:
-        if self._primary is not None:
-            try:
-                self._primary.close()
-            except Exception as err:  # noqa: BLE001 -- close failures degrade like emit failures.
+        try:
+            self._session.close()
+        except Exception as err:  # noqa: BLE001 -- close failures degrade like emit failures.
+            if self._primary is not None:
                 self._degrade(err)
+            else:
+                sys.stderr.write(
+                    f"[trax run] could not close the server session ({err})\n",
+                )
         if self._fallback is not None:
             self._fallback.close()
 
@@ -779,8 +792,12 @@ class ResilientSink(Sink):
 
     def _ensure_fallback(self) -> FileSink:
         if self._fallback is None:
-            self._fallback_path.parent.mkdir(parents=True, exist_ok=True)
-            handle = self._fallback_path.open("a", buffering=1, encoding="utf-8")
+            path = self._fallback_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # json.dumps escapes non-ASCII, so no encoding is ever exercised.
+            handle = path.open("a", encoding="utf-8")  # pragma: no mutate
+            # Line by line, so a run killed before ``close`` keeps what it wrote.
+            handle.reconfigure(line_buffering=True)
             self._fallback = FileSink(handle)
         return self._fallback
 
