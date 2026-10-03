@@ -8,9 +8,10 @@ normalizes it into IR records. Four exist -- two that record, two that wrap:
 - :class:`TrackinizerSink` -- opt-in via ``--sync``. Opens a Session row
   on the server, batches records to the ingest API (retry + idempotency
   handled by the client), and closes the session on exit.
-- :class:`ResilientSink` -- wraps a primary sink (the Trackinizer one) and
-  degrades to a local :class:`FileSink` on its first failure, so a server
-  outage never crashes the drain thread or corrupts the wrapped terminal.
+- :class:`ResilientSink` -- wraps a primary sink (the Trackinizer one). When the
+  server fails it captures to a local :class:`FileSink`, and when the server is
+  back it catches up, so an outage neither crashes the drain thread, corrupts
+  the wrapped terminal, nor leaves the server missing part of the run.
 - :class:`LockedSink` -- wraps any sink in one lock so the runner's drain,
   inbound-poll, and main threads serialize their ``emit`` / ``flush`` /
   ``session_id`` / ``close`` calls instead of racing (R2R-024).
@@ -28,6 +29,9 @@ into the TUI and never written to the log -- so it travels its own way
 
 from __future__ import annotations
 
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import IO, TYPE_CHECKING, Protocol, cast, override
 from uuid import UUID, uuid4
@@ -41,6 +45,7 @@ from trackinizer.lib.custom_json import JSON, json_freeze
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_session_ir import (
+    MAX_RECORD_BATCH,
     ManifestBody,
     RecordBody,
     SlashCommandBody,
@@ -49,7 +54,6 @@ from trackinizer.wire.wire_sessions import SessionEnd, SessionStart
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
 
     from trackinizer.client.client import Client
@@ -68,10 +72,10 @@ class Sink(Protocol):
 
     Every implementation below SUBCLASSES this rather than matching it
     structurally, and marks each method ``@override``. Structural conformance
-    is silent when it lapses: the degrade seam reaches ``drain_pending`` by
-    name, so a rename on one sink leaves the others satisfying the Protocol
-    while that one strands its buffer. Declaring the base makes the same
-    mistake a type error.
+    is silent when it lapses: the degrade seam reaches ``pending`` by name, so
+    a rename on one sink leaves the others satisfying the Protocol while that
+    one strands its buffer. Declaring the base makes the same mistake a type
+    error.
     """
 
     @property
@@ -226,20 +230,38 @@ class Sink(Protocol):
         """
         ...
 
-    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
-        """Remove and return events buffered but not yet delivered.
+    def sync(self) -> None:
+        """Send everything buffered now, however recent; raise if it cannot be sent.
 
-        The degrade seam: when a primary sink fails, ``ResilientSink``
-        replays these seq-stamped bodies into the local fallback so a flush
-        failure loses nothing (REV-02). On the Protocol -- not reached via
-        ``getattr`` -- so a rename is a type error instead of a silent
-        buffer loss. A sink that delivers synchronously returns ``[]``.
+        What :class:`ResilientSink` calls to learn whether the server is back:
+        unlike :meth:`flush`, it never waits for a batch to age.
+        """
+        self.flush()
+
+    def pending(self) -> list[tuple[Path, RecordBody]]:
+        """Return the events buffered but not yet delivered, leaving them buffered.
+
+        The degrade seam: when a primary sink fails, ``ResilientSink`` writes
+        these position-stamped bodies to the local file so a flush failure loses
+        nothing (REV-02), while the primary keeps them to send once the server
+        is back. On the Protocol -- not reached via ``getattr`` -- so a rename
+        is a type error instead of a silent buffer loss. A sink that delivers
+        synchronously returns ``[]``.
 
         Returns:
           pending: List of (path, RecordBody) tuples waiting for delivery.
 
         """
         ...
+
+    def positions(self) -> dict[Path, int]:
+        """Return the position the next record of each file will take.
+
+        Returns:
+          positions: Next position per file; empty for a sink that numbers nothing.
+
+        """
+        return {}
 
     def close(self) -> None:
         """Flush and release resources; idempotent."""
@@ -300,9 +322,22 @@ class FileSink(Sink):
         )
 
     @override
-    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
+    def pending(self) -> list[tuple[Path, RecordBody]]:
         # Every emit writes through immediately; nothing is ever buffered.
         return []
+
+    @override
+    def positions(self) -> dict[Path, int]:
+        return dict(self._next_idx)
+
+    def continue_from(self, positions: dict[Path, int]) -> None:
+        """Continue each file's numbering from ``positions``, as another sink left it.
+
+        Args:
+          positions: The position the next record of each file takes.
+
+        """
+        self._next_idx.update(positions)
 
     def write_body(self, adapter_name: str, path: Path, body: RecordBody) -> None:
         """Write a pre-built :class:`RecordBody`, preserving its own ``idx``.
@@ -354,10 +389,12 @@ class TrackinizerSink(Sink):
     """Open a Session, batch events to the ingest API, close on exit.
 
     The session opens on whichever comes first: an explicit :meth:`open` or
-    the first event. The runner calls ``open`` before forking the child, so a
+    the first send. The runner calls ``open`` before forking the child, so a
     live run opens eagerly -- the server-granted routing handle has to be in
-    the child's environment from the start (#453). Nothing else does, so a
-    caller that captures no events still leaves no empty Session row. Events
+    the child's environment from the start (#453). Opening at the first SEND
+    rather than the first event means taking an event never needs the server,
+    so a run that could not open its session buffers until it can. A caller
+    that captures no events still leaves no empty Session row. Events
     flush on two triggers: the
     buffer reaching ``batch_size`` (a busy burst), or :meth:`flush` finding
     the buffer older than ``flush_interval_sec`` (a quiet session the drain
@@ -387,6 +424,9 @@ class TrackinizerSink(Sink):
         self._batch_size = batch_size
         self._flush_interval_sec = flush_interval_sec
         self._clock = clock
+        # When the run began. A session that could not open then (the server was
+        # down) still records the run's real start when it opens later.
+        self._started = datetime.now(UTC)
         self._session_id: UUID | None = None
         self._granted_actor: str | None = None
         # The CLI's own session id, discovered mid-run and backfilled at close
@@ -427,7 +467,6 @@ class TrackinizerSink(Sink):
     @override
     def emit(self, adapter_name: str, event: Event) -> None:
         del adapter_name  # The session already names its CLI.
-        self._ensure_session()
         idx = self._next_idx.get(event.path, 0)
         if event.restart or idx < self._overwrite_until.get(event.path, 0):
             self._restarted.add(event.path)
@@ -451,7 +490,6 @@ class TrackinizerSink(Sink):
 
     @override
     def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
-        self._ensure_session()
         if not self._buffer and not self._slash:
             self._oldest_buffered_at = self._clock()
         self._slash.append(
@@ -500,7 +538,7 @@ class TrackinizerSink(Sink):
                 cli=self._cli,
                 actor=self._actor,
                 rooms=list(self._rooms) or None,
-                started=datetime.now(UTC),
+                started=self._started,
                 # Sent when already known, which is the RESUME case: the
                 # server re-attaches the AgentSession whose stored id matches
                 # rather than minting a second one. A fresh run has none yet
@@ -525,22 +563,28 @@ class TrackinizerSink(Sink):
             )
 
     @override
-    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
-        """Remove and return records buffered but not yet sent to the server.
+    def pending(self) -> list[tuple[Path, RecordBody]]:
+        """Return the records buffered but not yet sent to the server.
 
-        The escape hatch for :class:`ResilientSink`: when this sink fails and
-        the wrapper degrades to a local file, the already-buffered (but
-        unflushed) bodies would otherwise be lost. Each carries its own
-        position, so the fallback replays them verbatim.
+        What :class:`ResilientSink` writes to its local file when this sink fails,
+        so the file holds them even if the server never comes back. They stay
+        buffered here, to be sent once it does. Each carries its own position, so
+        the file stores them verbatim.
         """
-        pending = self._buffer
-        self._buffer = []
-        self._oldest_buffered_at = None
-        return pending
+        return list(self._buffer)
+
+    @override
+    def positions(self) -> dict[Path, int]:
+        return dict(self._next_idx)
+
+    @override
+    def sync(self) -> None:
+        self._flush()
 
     # One part per request: the server resolves a part from the file's basename, so
     # records from two files cannot share a request without one of them landing under
-    # the wrong part.
+    # the wrong part. A part holding more than one request may carry -- a backlog a
+    # server outage built up -- goes in several, each a restart if the batch is.
     #
     # Buffered slash commands ride the FIRST request, so they commit in the same
     # transaction as the turns around them. A batch with no records at all still sends
@@ -548,36 +592,39 @@ class TrackinizerSink(Sink):
     # belongs to no part.
     def _flush(self) -> None:
         """Send each file's records as its own batch."""
-        if self._session_id is None or not (self._buffer or self._slash):
+        if not (self._buffer or self._slash):
             return
+        self._ensure_session()
+        session_id = cast("UUID", self._session_id)
         by_path: dict[Path, list[RecordBody]] = {}
         for path, body in self._buffer:
             by_path.setdefault(path, []).append(body)
         for path, bodies in by_path.items():
-            self._client.append_records(
-                self._session_id,
-                name=path.name,
-                manifest=ManifestBody(
+            for start in range(0, len(bodies), MAX_RECORD_BATCH):
+                self._client.append_records(
+                    session_id,
                     name=path.name,
-                    metadata=self._metadata_for(path),
-                    ir_id=self._ir_ids.setdefault(path, uuid4()),
-                    format=self._cli,
-                    records=self._next_idx.get(path, 0),
-                ),
-                records=bodies,
-                restart=path in self._restarted,
-                slash_commands=self._slash,
-            )
-            # Cleared only once the request RETURNED. A command's ``seq`` is
-            # server-assigned, so a resend after a failure partway through
-            # would store a second copy rather than collide -- unlike a
-            # record, whose derived key makes a retry a no-op.
-            self._slash = []
+                    manifest=ManifestBody(
+                        name=path.name,
+                        metadata=self._metadata_for(path),
+                        ir_id=self._ir_ids.setdefault(path, uuid4()),
+                        format=self._cli,
+                        records=self._next_idx.get(path, 0),
+                    ),
+                    records=bodies[start : start + MAX_RECORD_BATCH],
+                    restart=path in self._restarted,
+                    slash_commands=self._slash,
+                )
+                # Cleared only once the request RETURNED. A command's ``seq`` is
+                # server-assigned, so a resend after a failure partway through
+                # would store a second copy rather than collide -- unlike a
+                # record, whose derived key makes a retry a no-op.
+                self._slash = []
             self._restarted.discard(path)
             # Sent with the first part only; the rest carry records alone.
             self._buffer = [entry for entry in self._buffer if entry[0] != path]
         if self._slash:
-            self._client.append_records(self._session_id, slash_commands=self._slash)
+            self._client.append_records(session_id, slash_commands=self._slash)
             self._slash = []
         self._buffer = []
         self._oldest_buffered_at = None
@@ -646,149 +693,209 @@ def _record_body(idx: int, event: Event) -> RecordBody:
 
 
 class ResilientSink(Sink):
-    """Wrap a primary sink and degrade to a local file on its first failure.
+    """Keep a run capturing through a server outage, and catch up when it ends.
 
-    Sync runs in the drain thread, so an unhandled sink error there crashes
-    the thread, dumps a traceback into the wrapped CLI's live terminal, and
-    silently stops all capture. This wrapper makes a sync failure non-fatal:
-    the first exception from the primary sink swaps in a local
-    :class:`FileSink`, warns once on stderr, and every later event flows to
-    the file. The wrapped CLI never sees the failure.
+    Sync runs in the drain thread, so an unhandled sink error there would crash
+    the thread, dump a traceback into the wrapped CLI's live terminal, and stop
+    all capture. Instead, the primary sink's first failure warns once on stderr
+    and starts holding every call, in order, while also writing it to a local
+    :class:`FileSink` -- the copy that survives even if the server never comes
+    back. Every ``retry_sec`` the held calls are replayed into the primary and
+    sent; once that succeeds, the run is back on the server and the server has
+    every record. A record's key is its position, so one re-sent after a failure
+    partway through a batch is stored once.
+
+    Args:
+      primary: The sink that reaches the server.
+      fallback_path: Where the local copy goes.
+      retry_sec: How long to wait after failing to reach the server before
+        trying again.
+      clock: Monotonic seconds, for the retry schedule.
+
     """
 
-    def __init__(self, primary: Sink, *, fallback_path: Path) -> None:
-        self._primary: Sink | None = primary
-        # Still the primary after a degrade: a failed upload moves capture to a
-        # file, and says nothing about the server session, which stays open.
-        self._session = primary
+    def __init__(
+        self,
+        primary: Sink,
+        *,
+        fallback_path: Path,
+        retry_sec: float = 30.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._primary = primary
         self._fallback_path = fallback_path
         self._fallback: FileSink | None = None
+        self._held: deque[_Held] = deque()
+        self._retry_sec = retry_sec
+        self._clock = clock
+        # When to next try the server; ``None`` while it is reachable.
+        self._retry_at: float | None = None
         # Last adapter name seen, to label replayed buffer events on degrade
         # (the primary's buffered bodies don't carry the adapter name). Never read
         # before an emit sets it: only an emit buffers a body.
         self._adapter_for_fallback = ""  # pragma: no mutate
 
-    # Kept after a degrade, not dropped with capture: inbound needs only this id,
+    # Kept through an outage, not dropped with capture: inbound needs only this id,
     # and a poller that lost it stopped for the rest of the run -- an agent alive
-    # but deaf.
+    # but deaf. A session that could not open yet answers ``None`` until it does.
     @property
     @override
     def session_id(self) -> UUID | None:
-        return self._session.session_id
+        return self._primary.session_id
 
+    # The runner opens the sink before spawning the child CLI, so an open failure
+    # (server unreachable) must degrade like any other rather than abort the run. The
+    # session then opens when the server is back, on the first send.
     @override
     def open(self) -> str | None:
-        # Eager open routes through the primary server sink; the local fallback
-        # has no session, so a degraded sink returns None. The runner opens the
-        # sink before spawning the child CLI, so an open failure (server
-        # unreachable) must degrade like emit/flush rather than abort the run.
-        if self._primary is not None:
-            try:
-                return self._primary.open()
-            except Exception as err:  # noqa: BLE001 -- an open failure degrades like an emit failure.
-                self._degrade(err)
-        return None
+        try:
+            return self._primary.open()
+        except Exception as err:  # noqa: BLE001 -- an open failure degrades like an emit failure.
+            _ = self._degrade(err)
+            return None
 
     @override
     def set_cli_session_id(self, cli_session_id: str) -> None:
-        # Guarded like every other primary call: the runner invokes this from
-        # the drain thread on each captured line, so an unguarded raise here
-        # ends capture -- the exact failure this wrapper exists to prevent.
-        if self._primary is not None:
-            try:
-                self._primary.set_cli_session_id(cli_session_id)
-            except Exception as err:  # noqa: BLE001 -- a backfill failure degrades like an emit failure.
-                self._degrade(err)
+        self._forward(
+            _Held(
+                apply=lambda sink: sink.set_cli_session_id(cli_session_id),
+                taken_before_sending=True,
+            ),
+            mirror=lambda fallback: fallback.set_cli_session_id(cli_session_id),
+        )
 
     @override
     def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
-        if self._primary is not None:
-            try:
-                self._primary.emit_slash_command(command, at)
-                return
-            except Exception as err:  # noqa: BLE001 -- any sink failure must degrade, not crash the drain thread.
-                self._degrade(err)
-        self._ensure_fallback().emit_slash_command(command, at)
+        self._forward(
+            _Held(
+                apply=lambda sink: sink.emit_slash_command(command, at),
+                taken_before_sending=True,
+            ),
+            mirror=lambda fallback: fallback.emit_slash_command(command, at),
+        )
 
     @override
     def restart(self, path: Path) -> None:
-        if self._primary is not None:
-            try:
-                self._primary.restart(path)
-                return
-            except Exception as err:  # noqa: BLE001 -- any sink failure must degrade, not crash the drain thread.
-                self._degrade(err)
-        self._ensure_fallback().restart(path)
+        self._forward(
+            _Held(apply=lambda sink: sink.restart(path), taken_before_sending=False),
+            mirror=lambda fallback: fallback.restart(path),
+        )
 
     @override
     def emit(self, adapter_name: str, event: Event) -> None:
         self._adapter_for_fallback = adapter_name
-        if self._primary is not None:
-            try:
-                self._primary.emit(adapter_name, event)
-                return
-            except Exception as err:  # noqa: BLE001 -- any sink failure must degrade, not crash the drain thread.
-                replayed = self._degrade(err)
-            # A primary that buffers (``TrackinizerSink``) has already taken
-            # this event, so ``_degrade`` just replayed it into the fallback;
-            # writing it again here would record one turn twice, under two
-            # seqs. A primary that raised before buffering replays nothing, so
-            # this is the event's only chance to be recorded.
-            if replayed:
-                return
-        self._ensure_fallback().emit(adapter_name, event)
+        self._forward(
+            _Held(
+                apply=lambda sink: sink.emit(adapter_name, event),
+                taken_before_sending=True,
+            ),
+            mirror=lambda fallback: fallback.emit(adapter_name, event),
+        )
 
     @override
     def flush(self) -> None:
-        if self._primary is not None:
+        if self._retry_at is None:
             try:
                 self._primary.flush()
-                return
             except Exception as err:  # noqa: BLE001 -- a flush failure degrades like an emit failure.
-                self._degrade(err)
+                _ = self._degrade(err)
+        elif self._clock() >= self._retry_at:
+            self._catch_up()
         if self._fallback is not None:
             self._fallback.flush()
 
     @override
-    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
-        # The primary's buffer is replayed into the fallback on degrade, and
-        # the fallback writes through; nothing is ever pending at this layer.
+    def pending(self) -> list[tuple[Path, RecordBody]]:
+        # The local file writes through, and what the primary holds is its own to
+        # report; nothing is ever pending at this layer.
         return []
 
-    # A degraded run still ends the server session it opened, or that session stays
-    # ``active`` for good. Its buffer was drained into the fallback when it degraded,
-    # so closing it re-sends no record; and it is best-effort, since the server may
-    # be what failed in the first place.
+    # A run still down at exit tries once more, whatever the backoff says, and still
+    # ends the session it opened, or that session stays ``active`` for good. Ending
+    # it is best-effort, since the server may be what failed. What the server never
+    # got is said once, with where the whole run is.
     @override
     def close(self) -> None:
+        if self._retry_at is not None:
+            self._catch_up()
         try:
-            self._session.close()
-        except Exception as err:  # noqa: BLE001 -- close failures degrade like emit failures.
-            if self._primary is not None:
-                self._degrade(err)
-            else:
-                sys.stderr.write(
-                    f"[trax run] could not close the server session ({err})\n",
-                )
+            self._primary.close()
+        except Exception as err:  # noqa: BLE001 -- reported at exit, never raised.
+            sys.stderr.write(f"[trax run] could not close the server session ({err})\n")
+        unsent = self._primary.pending()
+        if unsent and self._retry_at is None:
+            # The close's own send failed: these never reached the local file.
+            self._write_locally(unsent)
+        if unsent or self._held:
+            sys.stderr.write(
+                "[trax run] the server is missing part of this run; "
+                f"all of it is at {self._fallback_path}\n",
+            )
         if self._fallback is not None:
             self._fallback.close()
 
-    # Any events the primary had buffered but not yet sent are replayed into the
-    # fallback first, in order, so a flush failure loses nothing (REV-02).
+    # A call that failed is held only if the primary did not keep it: an emit it
+    # buffered before failing to send is in its pending records, which the local
+    # file just received, and holding it too would record one turn twice.
+    def _forward(self, held: _Held, *, mirror: Callable[[FileSink], None]) -> None:
+        """Make ``held`` on the primary, or hold it and write it locally."""
+        if self._retry_at is None:
+            try:
+                held.apply(self._primary)
+                return
+            except Exception as err:  # noqa: BLE001 -- degrade, never crash capture.
+                if self._degrade(err) and held.taken_before_sending:
+                    return
+        self._held.append(held)
+        mirror(self._ensure_fallback())
+
+    def _catch_up(self) -> None:
+        """Replay the held calls into the primary and send everything, or wait."""
+        try:
+            self._replay_held()
+            self._primary.sync()
+        except Exception:  # noqa: BLE001 -- still down; retried later.
+            self._retry_at = self._clock() + self._retry_sec
+            return
+        self._retry_at = None
+        sys.stderr.write("[trax run] sync recovered; the server has caught up\n")
+
+    # In order, so the primary numbers each record exactly as the local file did. A
+    # held call the primary took before failing to send is not held again.
+    def _replay_held(self) -> None:
+        """Make each held call on the primary in turn; raise at the first failure."""
+        while self._held:
+            held = self._held.popleft()
+            try:
+                held.apply(self._primary)
+            except Exception:
+                if not held.taken_before_sending:
+                    self._held.appendleft(held)
+                raise
+
+    # What the primary had buffered but not sent goes to the local file too, so the
+    # file holds the whole run from here on (REV-02); the primary keeps it to send
+    # on recovery.
     def _degrade(self, err: Exception) -> bool:
-        """Abandon the primary sink and route the rest to a local file."""
-        primary, self._primary = self._primary, None
-        if primary is None:
-            raise ValueError("degrade is only reachable with a live primary")
+        """Start holding calls; return whether the primary had records buffered."""
+        self._retry_at = self._clock() + self._retry_sec
         sys.stderr.write(
             f"[trax run] sync failed ({err}); "
-            f"falling back to local capture at {self._fallback_path}\n",
+            f"falling back to local capture at {self._fallback_path} "
+            "until the server is back\n",
         )
-        fallback = self._ensure_fallback()
-        pending = primary.drain_pending()
-        for path, body in pending:
-            fallback.write_body(self._adapter_for_fallback, path, body)
+        pending = self._primary.pending()
+        self._write_locally(pending)
         return bool(pending)
+
+    # The file numbers each part from where the primary left off, as the server does,
+    # and keeps each record's own position.
+    def _write_locally(self, records: list[tuple[Path, RecordBody]]) -> None:
+        """Write records the primary holds unsent to the local file."""
+        fallback = self._ensure_fallback()
+        fallback.continue_from(self._primary.positions())
+        for path, body in records:
+            fallback.write_body(self._adapter_for_fallback, path, body)
 
     def _ensure_fallback(self) -> FileSink:
         if self._fallback is None:
@@ -883,9 +990,19 @@ class LockedSink(Sink):
             self._inner.flush()
 
     @override
-    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
+    def sync(self) -> None:
         with self._lock:
-            return self._inner.drain_pending()
+            self._inner.sync()
+
+    @override
+    def pending(self) -> list[tuple[Path, RecordBody]]:
+        with self._lock:
+            return self._inner.pending()
+
+    @override
+    def positions(self) -> dict[Path, int]:
+        with self._lock:
+            return self._inner.positions()
 
     @override
     def close(self) -> None:
@@ -904,3 +1021,14 @@ class LockedSink(Sink):
             self._inner.close()
         finally:
             self._lock.release()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Held:
+    """One call a run made while the server was unreachable, to make again later."""
+
+    apply: Callable[[Sink], None]
+
+    taken_before_sending: bool
+    """Whether the primary keeps the call even if it then fails to send: true for
+    anything it only buffers, false for a restart, which sends first."""

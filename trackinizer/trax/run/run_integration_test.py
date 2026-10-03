@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from collections import deque
 from contextlib import ExitStack, asynccontextmanager, closing, nullcontext, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Self, TextIO, cast, override
@@ -42,6 +43,7 @@ import time
 import uuid
 
 from fastapi import FastAPI
+from starlette.responses import Response
 
 import httpx2
 import pytest
@@ -67,14 +69,16 @@ from trackinizer.trax.run.session import (
     _Stats,
     run,
 )
-from trackinizer.trax.run.sink import Sink, TrackinizerSink
+from trackinizer.trax.run.sink import ResilientSink, Sink, TrackinizerSink
 from trackinizer.types.session_records import _BY_KIND
 from trackinizer.wire.wire_sessions import SessionStart, SessionStartResponse
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Awaitable, Callable, Iterator
     from datetime import datetime
+
+    from starlette.requests import Request
 
     from trackinizer.trax.run.custom_types import Event
     from trackinizer.trax.run.slash import SlashCommand
@@ -641,6 +645,123 @@ def test_capture_streams_incrementally_before_close(
 
 
 @pytest.mark.cli_python_subprocess
+def test_a_synced_run_catches_the_server_up_after_an_outage(tmp_path: Path) -> None:
+    """A run that lost the server mid-session ends with the server holding all of it.
+
+    The hosted outage this models answered 502/530 from the edge while the run went
+    on working. Records captured during it reach the server once it answers again,
+    each exactly once and in order, and the session still ends.
+    """
+    outage = threading.Event()
+    app = _build_app(tmp_path / "pglite")
+    _ = app.middleware("http")(_Edge(outage=outage))
+
+    session_root = tmp_path / "sessions"
+    session_root.mkdir()
+    adapter = _LineAdapter(session_root)
+    fallback = tmp_path / "fallback.jsonl"
+    log = session_root / "live.jsonl"
+    with _ServerThread(app, _free_port()) as srv:
+        sink = ResilientSink(
+            TrackinizerSink(
+                Client(base_url=srv.base_url),
+                cli=adapter.name,
+                flush_interval_sec=0.2,
+            ),
+            fallback_path=fallback,
+            retry_sec=1.0,
+        )
+        stop = threading.Event()
+        worker = threading.Thread(
+            target=lambda: _drain_filesystem_loop(
+                adapter,
+                sink,
+                _Stats(),
+                RunConfig(cli_name=adapter.name, quiesce_seconds=0.5),
+                stop,
+                baseline=frozenset(),
+                slash_queue=deque(),
+            ),
+            daemon=True,
+        )
+        worker.start()
+        try:
+            # Re-appended until one lands: the drain arms its watch a moment after
+            # start, and a line written before that is never reported.
+            _wait_for(
+                lambda: _appended(log, text="before") and _texts(srv.base_url) != [],
+            )
+            outage.set()
+            _append_until(log, text="during", landed=fallback.exists)
+            outage.clear()
+            _wait_for(lambda: "during" in _texts(srv.base_url))
+            _append_until(
+                log,
+                text="after",
+                landed=lambda: "after" in _texts(srv.base_url),
+            )
+        finally:
+            stop.set()
+            worker.join(timeout=5.0)
+            sink.close()
+
+        texts = _texts(srv.base_url)
+        row = _latest_session_row(srv.base_url, cli=adapter.name)
+    first_during = texts.index("during")
+    assert set(texts[:first_during]) == {"before"}
+    assert texts[first_during:] == ["during", "after"], texts
+    assert row is not None
+    assert row.get("ended") is not None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Edge:
+    """HTTP middleware that answers as a down edge would while ``outage`` is set."""
+
+    outage: threading.Event
+
+    async def __call__(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        if self.outage.is_set():
+            return Response(status_code=502)
+        return await call_next(request)
+
+
+def _texts(base_url: str) -> list[str]:
+    """Return the text of each record the line adapter's session holds, in order."""
+    return [
+        str(record["text"])
+        for record in _latest_session_records(base_url, cli=_LineAdapter.name)
+    ]
+
+
+def _appended(log: Path, *, text: str) -> bool:
+    """Append ``text`` as a line and wait a beat for the drain; return True."""
+    with log.open("a") as handle:
+        _ = handle.write(f"{text}\n")
+    time.sleep(0.3)
+    return True
+
+
+def _append_until(log: Path, *, text: str, landed: Callable[[], bool]) -> None:
+    """Append ``text`` as a line, once, then wait for ``landed``."""
+    with log.open("a") as handle:
+        _ = handle.write(f"{text}\n")
+    _wait_for(landed)
+
+
+def _wait_for(condition: Callable[[], bool], *, timeout_sec: float = 20.0) -> None:
+    """Poll ``condition`` until it holds, failing the test at the timeout."""
+    deadline = time.monotonic() + timeout_sec
+    while not condition():
+        assert time.monotonic() < deadline, "timed out waiting for the run"
+        time.sleep(0.1)
+
+
+@pytest.mark.cli_python_subprocess
 def test_inbound_injection_reaches_child_end_to_end(server: str) -> None:
     """Full loop: HTTP enqueue -> poller -> relay -> child receives it.
 
@@ -1124,7 +1245,7 @@ class _StubSessionSink(Sink):
         pass
 
     @override
-    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
+    def pending(self) -> list[tuple[Path, RecordBody]]:
         return []
 
     @override

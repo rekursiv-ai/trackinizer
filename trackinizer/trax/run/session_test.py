@@ -72,6 +72,7 @@ from trackinizer.trax.run.session import (
 )
 from trackinizer.trax.run.sink import ResilientSink, Sink, TrackinizerSink
 from trackinizer.trax.run.slash import SlashCommand
+from trackinizer.wire.wire_session_ir import AppendRecordsResponse
 from trackinizer.wire.wire_sessions import (
     SessionStartResponse,
     WorkspaceMessageContext,
@@ -80,7 +81,7 @@ from trackinizer.wire.wire_sessions import (
 
 if TYPE_CHECKING:
     from trackinizer.trax.run.adapters.custom_types import Adapter
-    from trackinizer.wire.wire_session_ir import AppendRecordsResponse, RecordBody
+    from trackinizer.wire.wire_session_ir import RecordBody
     from trackinizer.wire.wire_sessions import SessionStart
 
 
@@ -151,7 +152,7 @@ class _RecordingSink(Sink):
         self.flushes += 1
 
     @override
-    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
+    def pending(self) -> list[tuple[Path, RecordBody]]:
         return []
 
     @override
@@ -2938,6 +2939,57 @@ class TestInboundSurvivesACaptureDegrade:
         assert client.drained_for == {client.session}
 
 
+class TestInboundAfterALateOpen:
+    """A run started while the server was down hears once its session opens."""
+
+    def test_messages_arrive_once_the_server_comes_back(self, tmp_path: Path) -> None:
+        client = _ServerComesBackClient(["now you hear me"])
+        now = [0.0]
+        sink = ResilientSink(
+            TrackinizerSink(
+                cast(Client, client),
+                cli="claude",
+                flush_interval_sec=0.0,
+            ),
+            fallback_path=tmp_path / "fallback.jsonl",
+            retry_sec=30.0,
+            clock=lambda: now[0],
+        )
+        assert sink.open() is None
+        sink.emit(
+            "claude",
+            Event(record=UserMessage(content="hi"), path=tmp_path / "s.jsonl"),
+        )
+        relay = _RecordingRelay()
+        stop = threading.Event()
+        worker = threading.Thread(
+            target=lambda: _inbound_poll_loop(
+                cast(Client, client),
+                sink,
+                cast(ThreadedRelay, relay),
+                stop,
+                poll_interval=0.01,
+            ),
+            daemon=True,
+        )
+        worker.start()
+        try:
+            _real_pause(0.05)
+            assert client.drained_for == set(), "polled a session that never opened"
+            client.up = True
+            now[0] = 30.0
+            sink.flush()
+            deadline = time.monotonic() + 3.0
+            while not relay.submitted and time.monotonic() < deadline:
+                time.sleep(0.01)
+        finally:
+            stop.set()
+            worker.join(timeout=5.0)
+
+        assert relay.submitted == ["now you hear me"]
+        assert client.drained_for == {client.session}
+
+
 class _BatchClient:
     """Returns one batch of messages, then nothing (the queue is drained)."""
 
@@ -2987,6 +3039,31 @@ class _UploadOutageClient(_BatchClient):
     ) -> list[tuple[str, str | None, str | None, WorkspaceMessageContext | None]]:
         self.drained_for.add(session_id)
         return super().drain_inbound(session_id, wait_sec=wait_sec)
+
+
+class _ServerComesBackClient(_UploadOutageClient):
+    """A server that refuses everything until ``up``, then accepts uploads too."""
+
+    def __init__(self, texts: list[str]) -> None:
+        super().__init__(texts)
+        self.up = False
+
+    @override
+    def session_start(self, body: SessionStart) -> SessionStartResponse:
+        if not self.up:
+            raise RuntimeError("server down")
+        return super().session_start(body)
+
+    @override
+    def append_records(
+        self,
+        session_id: uuid.UUID,
+        **fields: object,
+    ) -> AppendRecordsResponse:
+        if not self.up:
+            raise RuntimeError("server down")
+        del fields
+        return AppendRecordsResponse(part=0, written=1, skipped=0)
 
 
 class _SessionSink:

@@ -240,12 +240,13 @@ class TestTrackinizerSink:
         assert client.started == []
 
         sink.emit("codex", _event("hi"))
-        # The first record opens the session, naming its CLI.
-        assert len(client.started) == 1
-        assert client.started[0].cli == "codex"
+        # Taking a record never needs the server: the first SEND opens the session.
+        assert client.started == []
 
         sink.emit("codex", Event(record=AssistantMessage(content="ok"), path=_PART))
-        # batch_size=2 reached -> one flush of 2 records.
+        # batch_size=2 reached -> the session opens, naming its CLI, and one flush
+        # of 2 records.
+        assert [start.cli for start in client.started] == ["codex"]
         assert len(client.appended) == 1
         assert [b.idx for b in client.appended[0][2]] == [0, 1]
 
@@ -338,6 +339,7 @@ class TestTrackinizerSink:
         client.granted_actor = "scientist#2"  # `server` renegotiated.
         sink = TrackinizerSink(cast(Client, client), "claude", actor="scientist")
         sink.emit("claude", _event("hi"))
+        sink.sync()
         assert client.started[0].actor == "scientist"
         assert sink.granted_actor == "scientist#2"
 
@@ -639,6 +641,7 @@ class TestTrackinizerSinkSlashCommands:
         client = _FakeClient()
         sink = TrackinizerSink(cast(Client, client), "claude")
         sink.emit_slash_command(SlashCommand(command="exit"), _AT)
+        sink.sync()
         assert len(client.started) == 1
 
     def test_a_buffered_command_ages_into_a_timed_flush(self) -> None:
@@ -709,6 +712,184 @@ class _UnreachableClient(_FlakyFlushClient):
         raise RuntimeError("server gone")
 
 
+class _OutageClient(_FakeClient):
+    """A server that goes down and comes back: while it is down, every call fails."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.down = False
+        self.attempts = 0
+
+    @override
+    def session_start(self, body: SessionStart) -> SessionStartResponse:
+        self._answer()
+        return super().session_start(body)
+
+    @override
+    def append_records(
+        self,
+        session_id: UUID,
+        *,
+        name: str = "",
+        manifest: ManifestBody | None = None,
+        records: object = (),
+        restart: bool = False,
+        slash_commands: object = (),
+    ) -> AppendRecordsResponse:
+        self._answer()
+        return super().append_records(
+            session_id,
+            name=name,
+            manifest=manifest,
+            records=records,
+            restart=restart,
+            slash_commands=slash_commands,
+        )
+
+    def _answer(self) -> None:
+        self.attempts += 1
+        if self.down:
+            raise RuntimeError("server down")
+
+
+class TestCatchUp:
+    """A run that loses the server keeps capturing, and catches it up on return."""
+
+    def test_the_server_gets_everything_once_it_answers_again(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        client, now = _OutageClient(), [0.0]
+        fallback_path = tmp_path / "fallback.jsonl"
+        sink = _catching_up(client, now=now, fallback_path=fallback_path)
+        sink.emit("claude", _event("before"))
+        sink.flush()
+        client.down = True
+        sink.emit("claude", _event("during"))
+        sink.flush()
+        sink.emit("claude", _event("still down"))
+
+        client.down = False
+        now[0] = 30.0
+        sink.flush()
+        assert _sent_positions(client) == [[0], [1, 2]]
+        sink.emit("claude", _event("after"))
+        sink.flush()
+        sink.close()
+
+        assert _sent_positions(client) == [[0], [1, 2], [3]]
+        # The local file holds the outage, numbered as the server numbers it.
+        assert [
+            (_row(line)["text"], _row(line)["idx"])
+            for line in fallback_path.read_text(encoding="utf-8").splitlines()
+        ] == [("during", 1), ("still down", 2)]
+        err = capsys.readouterr().err
+        assert "[trax run] sync recovered; the server has caught up" in err
+        assert "missing" not in err
+
+    def test_a_retry_waits_out_its_interval(self, tmp_path: Path) -> None:
+        """An unreachable server is asked once per interval, not once per tick."""
+        client, now = _OutageClient(), [0.0]
+        client.down = True
+        sink = _catching_up(client, now=now, fallback_path=tmp_path / "fallback.jsonl")
+        sink.emit("claude", _event("one"))
+        sink.flush()
+        assert client.attempts == 1
+
+        for tick, attempts in ((29.9, 1), (30.0, 2), (59.9, 2), (60.0, 3)):
+            now[0] = tick
+            sink.flush()
+            assert client.attempts == attempts, tick
+
+    def test_a_run_started_during_an_outage_opens_its_session_on_return(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """It registers when the server is back, stamped with when the run began."""
+        client, now = _OutageClient(), [0.0]
+        client.down = True
+        began = datetime.now(UTC)
+        sink = _catching_up(client, now=now, fallback_path=tmp_path / "fallback.jsonl")
+        assert sink.open() is None
+        sink.emit("claude", _event("first"))
+        assert sink.session_id is None
+
+        client.down = False
+        now[0] = 30.0
+        returned = datetime.now(UTC)
+        sink.flush()
+
+        assert sink.session_id == client._id
+        started = client.started[-1].started
+        assert started is not None
+        assert began <= started <= returned
+        assert _sent_positions(client) == [[0]]
+
+    def test_a_retry_that_fails_loses_nothing(self, tmp_path: Path) -> None:
+        """A held record replayed into a primary still offline stays to be sent."""
+        client, now = _OutageClient(), [0.0]
+        client.down = True
+        sink = _catching_up(client, now=now, fallback_path=tmp_path / "fallback.jsonl")
+        assert sink.open() is None
+        sink.emit("claude", _event("one"))
+        sink.emit("claude", _event("two"))
+
+        now[0] = 30.0
+        sink.flush()
+        client.down = False
+        now[0] = 60.0
+        sink.flush()
+
+        assert _sent_positions(client) == [[0, 1]]
+
+    def test_a_backlog_goes_in_requests_the_server_accepts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A long outage buffers more than one request may carry."""
+        monkeypatch.setattr("trackinizer.trax.run.sink.MAX_RECORD_BATCH", 2)
+        client = _FakeClient()
+        sink = TrackinizerSink(cast(Client, client), cli="claude", batch_size=100)
+        sink.emit_slash_command(SlashCommand(command="exit"), _AT)
+        for n in range(5):
+            sink.emit("claude", _event(str(n)))
+        sink.sync()
+        sink.restart(_PART)
+        for n in range(3):
+            sink.emit("claude", _event(f"rewritten {n}"))
+        sink.sync()
+
+        assert _sent_positions(client) == [[0, 1], [2, 3], [4], [0, 1], [2]]
+        assert [restart for *_, restart in client.appended] == [
+            False,
+            False,
+            False,
+            True,
+            True,
+        ]
+        assert [command.command for command in client.slash] == ["exit"]
+
+
+def _catching_up(
+    client: _FakeClient,
+    *,
+    now: list[float],
+    fallback_path: Path,
+) -> ResilientSink:
+    """Return a sink that sends each record at once, retrying as the runner does."""
+    primary = TrackinizerSink(
+        cast(Client, client),
+        cli="claude",
+        flush_interval_sec=0.0,
+    )
+    return ResilientSink(
+        primary,
+        fallback_path=fallback_path,
+        clock=lambda: now[0],
+    )
+
+
 class TestTrackinizerSinkCloseFlushOrdering:
     """A flush failure during ``close`` must not silently drop the buffer."""
 
@@ -772,21 +953,21 @@ class TestTrackinizerSinkCloseFlushOrdering:
 
 
 class TestDrainPendingIsOnTheProtocol:
-    """``drain_pending`` must be part of the ``Sink`` contract, not a getattr.
+    """``pending`` must be part of the ``Sink`` contract, not a getattr.
 
     ``ResilientSink._degrade`` previously reached it dynamically
-    (``getattr(primary, "drain_pending", None)`` + an unchecked cast): a
+    (``getattr(primary, "pending", None)`` + an unchecked cast): a
     rename would type-check clean and silently re-open REV-02 (buffered
     records lost on degrade). On the Protocol, a rename is a type error.
     """
 
     def test_file_sink_has_empty_drain(self) -> None:
         sink = FileSink(io.StringIO())
-        assert sink.drain_pending() == []
+        assert sink.pending() == []
 
     def test_protocol_declares_drain_pending(self) -> None:
-        assert hasattr(Sink, "drain_pending"), (
-            "drain_pending is not on the Sink Protocol; _degrade must be "
+        assert hasattr(Sink, "pending"), (
+            "pending is not on the Sink Protocol; _degrade must be "
             "reaching it via getattr, which a rename silently breaks"
         )
 
@@ -832,7 +1013,7 @@ class _ExplodingSink(Sink):
         pass
 
     @override
-    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
+    def pending(self) -> list[tuple[Path, RecordBody]]:
         return []
 
     @override
@@ -911,15 +1092,16 @@ class TestResilientSink:
         sink.emit("claude", _event("two"))
         sink.close()
 
-        # The primary was tried exactly once, then abandoned (no re-attempt).
-        assert primary.emit_attempts == 1
+        # Tried once, then once more at exit -- never once per record.
+        assert primary.emit_attempts == 2
         # Both records landed in the local fallback file as JSONL.
         assert _fallback_texts(fallback_path) == ["one", "two"]
-        # The user is warned once, on stderr, not flooded per-record.
+        # The user is warned once, on stderr, not flooded per-record, and told at
+        # exit where the whole run is.
         err = capsys.readouterr().err
-        assert err.count("[trax run]") == 1
-        assert "falling back to local capture" in err
-        assert str(fallback_path) in err
+        assert err.count("sync failed") == 1
+        assert f"falling back to local capture at {fallback_path}" in err
+        assert f"all of it is at {fallback_path}" in err
 
     def test_degrade_drains_orphaned_primary_buffer(self, tmp_path: Path) -> None:
         """Records buffered in the primary must not be lost when it degrades.
@@ -967,15 +1149,16 @@ class TestResilientSink:
         ]
         assert idxs == [0, 1]
 
-    def test_a_degrade_keeps_the_server_session_and_still_ends_it(
+    def test_a_degraded_run_keeps_its_session_catches_up_and_ends_it(
         self,
         tmp_path: Path,
     ) -> None:
         """One failed upload moves capture to a file, never the session itself.
 
         Inbound needs only the session id: a poller that lost it stopped for the
-        rest of the run while the server kept reporting deliveries. And a run
-        that never ended its session left it ``active`` for good.
+        rest of the run while the server kept reporting deliveries. A run that
+        never ended its session left it ``active`` for good. And the server, once
+        it answers again, gets what it missed.
         """
         client = _FlakyFlushClient()
         primary = TrackinizerSink(
@@ -994,7 +1177,8 @@ class TestResilientSink:
         sink.close()
         assert _fallback_texts(fallback_path) == ["one", "two"]
         assert client.ended == [client._id]
-        assert client.append_attempts == 1
+        assert client.append_attempts == 2
+        assert _sent_positions(client) == [[0, 1]]
 
     def test_a_failed_end_after_a_degrade_is_reported_not_raised(
         self,
@@ -1051,15 +1235,16 @@ class TestResilientSink:
         # Eager open must not propagate; it returns None (no server handle).
         assert sink.open() is None
         assert primary.open_attempts == 1
-        # The session id is None -- there is no live server session anymore.
+        # The session id is None -- no server session has opened yet.
         assert sink.session_id is None
 
         # Capture still works: a later emit writes to the local fallback file.
         sink.emit("claude", _event("after open failed"))
+        assert primary.emit_attempts == 0
         sink.close()
         assert _fallback_texts(fallback_path) == ["after open failed"]
-        # The primary was abandoned after the open failure: no later calls.
-        assert primary.emit_attempts == 0
+        # The record reached the primary once it answered, at the exit attempt.
+        assert primary.emit_attempts == 1
 
     def test_the_record_that_triggered_the_degrade_lands_once(
         self,
@@ -1292,7 +1477,7 @@ class _BlockingSink(Sink):
         self._record("flush", "exit")
 
     @override
-    def drain_pending(self) -> list[tuple[Path, RecordBody]]:
+    def pending(self) -> list[tuple[Path, RecordBody]]:
         return []
 
     @override
@@ -1376,6 +1561,7 @@ class TestLockedSink:
         sink = LockedSink(inner)
         assert sink.session_id is None
         sink.emit("codex", _event("hi"))
+        sink.sync()
         assert sink.session_id == client._id
         sink.close()
         assert client.ended == [client._id]
@@ -1566,10 +1752,10 @@ def test_restart_flush_failure_preserves_old_positions_in_fallback(
             reader.close()
         sink.close()
     assert caplog.records == []
-    err = capsys.readouterr().err
-    assert len(err.splitlines()) == 1
-    assert "transient flush failure" in err
-    assert str(fallback) in err
+    failed, recovered = capsys.readouterr().err.splitlines()
+    assert "transient flush failure" in failed
+    assert str(fallback) in failed
+    assert recovered == "[trax run] sync recovered; the server has caught up"
 
 
 @pytest.mark.parametrize("server", [False, True])
@@ -1627,7 +1813,7 @@ def test_locked_sink_delegates_restart_and_lifecycle() -> None:
     sink.restart(_PART)
     sink.emit("sh", _event("new", restart=True))
     sink.emit_slash_command(SlashCommand(command="exit"), _AT)
-    assert sink.drain_pending() == []
+    assert sink.pending() == []
     sink.close()
     assert [body.idx for _, _, bodies, _ in client.appended for body in bodies] == [
         0,
