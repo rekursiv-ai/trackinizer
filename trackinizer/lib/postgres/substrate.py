@@ -32,12 +32,11 @@ import threading
 import time
 import uuid
 
-from asyncpg import Connection, Record
+from asyncpg import Connection, Record, pool
 from asyncpg.pool import PoolConnectionProxy
 from py_pglite import PGliteConfig, PGliteManager
 
 import asyncpg
-import asyncpg.pool
 
 from trackinizer.lib.userdirs import cache_dir
 
@@ -506,7 +505,7 @@ class PostgresEngine:
     def _on_notify(
         self,
         c: asyncpg.Connection[asyncpg.Record]
-        | asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+        | pool.PoolConnectionProxy[asyncpg.Record],
         p: int,
         ch: str,
         payload: object,
@@ -525,7 +524,7 @@ class PostgresEngine:
             raise ValueError("Expected self._pool is not None.")
         await self._pool.close()
 
-    def acquire(self) -> asyncpg.pool.PoolAcquireContext[asyncpg.Record]:
+    def acquire(self) -> pool.PoolAcquireContext[asyncpg.Record]:
         """Acquire a connection from the pool.
 
         Returns:

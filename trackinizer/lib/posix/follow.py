@@ -38,13 +38,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing, asynccontextmanager, closing, suppress
+from ctypes import util
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Final, Protocol, cast
 
 import asyncio
 import ctypes
-import ctypes.util
 import errno
 import logging
 import os
@@ -785,7 +785,7 @@ def _adopt(
 
 def _libc() -> ctypes.CDLL:
     """Return libc with inotify bound, raising when it is unavailable."""
-    name = ctypes.util.find_library("c")
+    name = util.find_library("c")
     libc = ctypes.CDLL(name, use_errno=True)
     if not hasattr(libc, "inotify_init1"):
         raise NotImplementedError("libc has no inotify")

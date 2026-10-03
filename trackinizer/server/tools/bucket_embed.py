@@ -231,11 +231,13 @@ def _last_token_pool(last_hidden_states: torch.Tensor) -> torch.Tensor:
 
 def _dynamo_config() -> _DynamoConfig:
     """Return torch._dynamo.config (indirected so a test can inject a fake)."""
-    import torch._dynamo  # noqa: PLC0415 -- deferred so importing this module pulls no torch.
+    from torch import (  # noqa: PLC0415 -- deferred so importing this module pulls no torch.
+        _dynamo,
+    )
 
     # ``torch._dynamo.config`` is torch's own recompile-limit config surface; it
     # has no public alias, so the private access is the only path.
-    return cast("_DynamoConfig", torch._dynamo.config)  # noqa: SLF001 -- torch's own config; no public alias exists.
+    return cast("_DynamoConfig", _dynamo.config)
 
 
 class _DynamoConfig(Protocol):

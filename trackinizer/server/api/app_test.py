@@ -24,6 +24,7 @@ from trackinizer.lib.custom_json import (
     StrCodec,
     loads,
 )
+from trackinizer.server.api import app
 from trackinizer.server.api.app import (
     RequestLoggingMiddleware,
     check_violation_handler,
@@ -42,8 +43,6 @@ from trackinizer.types.errors import (
     NotFoundError,
     ValidationError,
 )
-
-import trackinizer.server.api.app
 
 
 if TYPE_CHECKING:
@@ -142,10 +141,7 @@ class TestCLIHelpers:
         # only consults REGISTERED handlers, and a codec ``SchemaError``
         # reaches the app as a plain ``ValueError`` on a client-supplied
         # body. Assert the registration, which is the part that was missing.
-        assert (
-            trackinizer.server.api.app.app.exception_handlers.get(SchemaError)
-            is schema_handler
-        )
+        assert app.app.exception_handlers.get(SchemaError) is schema_handler
 
 
 class TestRequestLogging:
@@ -261,26 +257,26 @@ class TestAuthDisabledWarning:
         """Drive the real ``lifespan`` once with engine/store/embedder stubbed."""
         store, engine = make_store()
         monkeypatch.setattr(
-            trackinizer.server.api.app,
+            app,
             "build_engine",
             Mock(return_value=engine),
         )
         monkeypatch.setattr(
-            trackinizer.server.api.app,
+            app,
             "build_embedder",
             Mock(return_value=object()),
         )
         monkeypatch.setattr(
-            trackinizer.server.api.app,
+            app,
             "Store",
             Mock(return_value=store),
         )
         monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
-        app = FastAPI()
-        app.state.config = Config(auth_disabled=auth_disabled)
+        fastapi_app = FastAPI()
+        fastapi_app.state.config = Config(auth_disabled=auth_disabled)
 
         async def _drive() -> None:
-            async with lifespan(app):
+            async with lifespan(fastapi_app):
                 pass
 
         asyncio.run(_drive())
@@ -318,26 +314,26 @@ class TestAuthDisabledWarning:
         """Drive the lifespan and report whether the no-auth user was seeded."""
         store, engine = make_store()
         monkeypatch.setattr(
-            trackinizer.server.api.app,
+            app,
             "build_engine",
             Mock(return_value=engine),
         )
         monkeypatch.setattr(
-            trackinizer.server.api.app,
+            app,
             "build_embedder",
             Mock(return_value=object()),
         )
         monkeypatch.setattr(
-            trackinizer.server.api.app,
+            app,
             "Store",
             Mock(return_value=store),
         )
         monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
-        app = FastAPI()
-        app.state.config = Config(auth_disabled=auth_disabled)
+        fastapi_app = FastAPI()
+        fastapi_app.state.config = Config(auth_disabled=auth_disabled)
 
         async def _drive() -> None:
-            async with lifespan(app):
+            async with lifespan(fastapi_app):
                 pass
 
         asyncio.run(_drive())
@@ -365,23 +361,23 @@ class TestSessionEmbedderResolution:
     """``_resolve_session_embedder`` decides degrade-vs-warm without downloading."""
 
     def test_unset_knob_leaves_embedder_none(self) -> None:
-        app = FastAPI()
-        task = trackinizer.server.api.app._resolve_session_embedder(
-            app,
+        fastapi_app = FastAPI()
+        task = app._resolve_session_embedder(
+            fastapi_app,
             Config(session_embedder=""),
         )
         assert task is None
-        assert cast(object, app.state.session_embedder) is None
+        assert cast(object, fastapi_app.state.session_embedder) is None
 
     def test_stub_is_ready_without_a_warm_task(self) -> None:
         """A weightless stub is set immediately; no warm task, no download."""
-        app = FastAPI()
-        task = trackinizer.server.api.app._resolve_session_embedder(
-            app,
+        fastapi_app = FastAPI()
+        task = app._resolve_session_embedder(
+            fastapi_app,
             Config(session_embedder="stub-1024"),
         )
         assert task is None  # Nothing to warm.
-        embedder = cast("QueryEmbedder | None", app.state.session_embedder)
+        embedder = cast("QueryEmbedder | None", fastapi_app.state.session_embedder)
         assert embedder is not None
         assert embedder.name == "stub-1024"
 
@@ -392,14 +388,14 @@ class TestSessionEmbedderResolution:
     ) -> None:
         """Weights absent -> embedder None (degrade), prep command logged, NO download."""
         monkeypatch.setattr(qwen3_4b, "weights_present", lambda: False)
-        app = FastAPI()
+        fastapi_app = FastAPI()
         with caplog.at_level(logging.ERROR):
-            task = trackinizer.server.api.app._resolve_session_embedder(
-                app,
+            task = app._resolve_session_embedder(
+                fastapi_app,
                 Config(session_embedder="qwen3-embedding-4b@1024"),
             )
         assert task is None
-        assert cast(object, app.state.session_embedder) is None
+        assert cast(object, fastapi_app.state.session_embedder) is None
         assert "prep_models" in caplog.text
 
     def test_qwen_with_weights_sets_embedder_and_schedules_warm(
@@ -414,20 +410,20 @@ class TestSessionEmbedderResolution:
             await _record_warm(embedder, warmed)
 
         async def _drive() -> tuple[object, object]:
-            app = FastAPI()
+            fastapi_app = FastAPI()
             # Replace the real warm coroutine so the test never loads a model.
             monkeypatch.setattr(
-                trackinizer.server.api.app,
+                app,
                 "_warm_session_embedder",
                 _fake_warm,
             )
-            task = trackinizer.server.api.app._resolve_session_embedder(
-                app,
+            task = app._resolve_session_embedder(
+                fastapi_app,
                 Config(session_embedder="qwen3-embedding-4b@1024"),
             )
             assert task is not None
             await task
-            return cast(object, app.state.session_embedder), task
+            return cast(object, fastapi_app.state.session_embedder), task
 
         embedder, _task = asyncio.run(_drive())
         assert embedder is not None

@@ -25,10 +25,10 @@ the disables through.
 
 from __future__ import annotations
 
+from concurrent import futures
 from typing import TYPE_CHECKING, Protocol, cast
 
 import asyncio
-import concurrent.futures
 import contextlib
 import fcntl
 import logging
@@ -491,7 +491,7 @@ class ThreadedRelay:
             return
         try:
             _ = asyncio.run_coroutine_threadsafe(work, loop).result(timeout_sec)
-        except (RuntimeError, TimeoutError, concurrent.futures.CancelledError):
+        except (RuntimeError, TimeoutError, futures.CancelledError):
             # The ``is_closed`` check above is a race, not a guarantee: the
             # loop can stop between it and the scheduling, cancelling the
             # future.

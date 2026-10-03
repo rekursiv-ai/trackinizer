@@ -9,10 +9,10 @@ import inspect
 import logging
 
 from fastapi import FastAPI
+from uvicorn.server import Server
 
 import pytest
 import uvicorn
-import uvicorn.server
 
 from trackinizer.lib.postgres import PostgresEngine
 from trackinizer.server import server
@@ -478,7 +478,7 @@ class TestSuppressZeroTaskCancel:
         formatting of uvicorn's own ``Server.shutdown`` source must still equal
         the string the filter drops.
         """
-        source = inspect.getsource(uvicorn.server.Server.shutdown)
+        source = inspect.getsource(Server.shutdown)
         assert (
             "Cancel %s running task(s), timeout graceful shutdown exceeded" in source
         ), (

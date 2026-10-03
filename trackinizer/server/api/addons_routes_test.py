@@ -16,15 +16,13 @@ from trackinizer.addons.addon import AddonManifest
 from trackinizer.addons.deployment import Deployment
 from trackinizer.conftest import make_store
 from trackinizer.lib.custom_json import DictCodec, loads
-from trackinizer.server.api import addons_routes
+from trackinizer.server.api import addons_routes, app
 from trackinizer.server.api.addons_routes import attach_deployment, deployment_of
 from trackinizer.server.api.app import _build_app, lifespan
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Config
 from trackinizer.server.visuals.catalog import Workspace
-
-import trackinizer.server.api.app
 
 
 if TYPE_CHECKING:
@@ -74,7 +72,7 @@ def test_the_catalog_is_empty_without_a_deployment(
 
 
 def test_the_module_app_always_has_a_visual_catalog() -> None:
-    assert _visual_catalog(trackinizer.server.api.app.app).catalog().visuals
+    assert _visual_catalog(app.app).catalog().visuals
 
 
 def test_mounted_routes_are_prefixed_listed_and_need_a_viewer() -> None:
@@ -143,21 +141,13 @@ def test_the_lifespan_runs_server_services_with_the_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, engine = make_store()
-    monkeypatch.setattr(
-        trackinizer.server.api.app,
-        "build_engine",
-        Mock(return_value=engine),
-    )
-    monkeypatch.setattr(
-        trackinizer.server.api.app,
-        "Store",
-        Mock(return_value=store),
-    )
+    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
+    monkeypatch.setattr(app, "Store", Mock(return_value=store))
     monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
-    app = _app_with(_probe_deployment())
-    app.state.config = Config()
-    service = _running_service(app)
-    asyncio.run(_serve_until_probed(app, service=service))
+    fastapi_app = _app_with(_probe_deployment())
+    fastapi_app.state.config = Config()
+    service = _running_service(fastapi_app)
+    asyncio.run(_serve_until_probed(fastapi_app, service=service))
     assert service.stores == [store]
     assert service.cancelled
 
