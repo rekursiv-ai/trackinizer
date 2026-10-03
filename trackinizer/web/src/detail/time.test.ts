@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { dateTime, relativeTime } from "./time";
 
 test("a date and time reads as toLocaleString gives it, and a value that is not one as Invalid Date", () => {
@@ -20,4 +20,15 @@ test("relative times count up to a week, then give the date", () => {
     "3d ago",
   ]);
   expect(ago(10 * 86_400)).toBe("Sep 14, 2026");
+});
+
+test("the formatters are made once, when first asked for, not as the module loads", async () => {
+  vi.resetModules();
+  const made = vi.spyOn(Intl, "DateTimeFormat");
+  const { prepareTimes } = await import("./time");
+  expect(made).not.toHaveBeenCalled();
+  prepareTimes();
+  prepareTimes();
+  expect(made).toHaveBeenCalledTimes(1);
+  made.mockRestore();
 });

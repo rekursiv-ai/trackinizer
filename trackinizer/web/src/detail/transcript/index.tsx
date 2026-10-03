@@ -17,7 +17,7 @@ import { Composer } from "../../composer/Composer";
 import { ReadFailure } from "../../ui/failure";
 import { Refresh } from "../Refresh";
 import { dateTime } from "../time";
-import { useDrawnFrom } from "./drawing";
+import { placeholderHeight, useDrawnFrom } from "./drawing";
 import { Reasoning, RecordBody, Step, type StepMemory, StepMemoryContext, Terminal, ToolStep } from "./RecordBody";
 import { markBookkeeping, partLabel, type RecordView, recordView, type TranscriptRow, transcriptRows, unreadable } from "./records";
 import { groupRows, groupSummary, toolSummary } from "./steps";
@@ -341,8 +341,9 @@ const Line = memo(
         </li>
       );
     }
+    const placeholder = !stream && view.shape === "message" ? `auto ${placeholderHeight(view.text, view.long)}px` : undefined;
     return (
-      <li className={`turn turn-${stream ? "terminal" : view.shape}`} data-idx={record.idx}>
+      <li className={`turn turn-${stream ? "terminal" : view.shape}`} data-idx={record.idx} style={{ containIntrinsicSize: placeholder }}>
         <Block record={record} view={view} stream={stream} stamp={stamp} kinds={kinds} />
       </li>
     );

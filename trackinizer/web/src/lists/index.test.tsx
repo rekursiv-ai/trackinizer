@@ -94,10 +94,10 @@ function serve(rows: readonly InquiryRow[], fail: () => Response | null = () => 
   });
 }
 
-function show(ui: ReactNode) {
+function show(ui: ReactNode, client = createQueryClient(() => {})) {
   const registry = new CommandRegistry();
   render(
-    <QueryClientProvider client={createQueryClient(() => {})}>
+    <QueryClientProvider client={client}>
       <CommandRegistryContext value={registry}>
         <ToastProvider>
           <Shortcuts />
@@ -220,7 +220,8 @@ test("a refused request shows the server's message, and Retry asks again", async
 test("several kinds load 20 rows each, and Load more asks one kind for its next 20", async () => {
   const sent = serve([...Array.from({ length: 21 }, () => row()), row({ kind: "Paper", title: "A paper" })]);
   show(<InquiryList id="mixed" kinds={["Issue", "Paper"]} title="Mine" icon={<KindIcon kind="Issue" />} />);
-  expect(await titles()).toHaveLength(21);
+  // A screenful first, then the rest.
+  await waitFor(() => expect(rowTitles()).toHaveLength(21));
   // By text: a query by role works out the style of every row first, some 10 ms a call.
   const loadMore = () => screen.queryAllByText(/^Load more/, { selector: "button" });
   expect(loadMore().map((b) => b.textContent)).toEqual(["Load more issues"]);
@@ -276,6 +277,45 @@ function servePapers(): void {
 }
 
 const PAPERS = ["A paper by two", "A paper with no authors", "A paper with null authors"];
+
+test("rows that load after the list shows draw in a render after the one they land in; rows already loaded draw at once", async () => {
+  // What each commit showed: an observer runs after every commit, before any later task.
+  const commits: string[] = [];
+  const observer = new MutationObserver(() => {
+    const scroll = document.querySelector(".view .scroll");
+    const now = scroll && `busy ${scroll.getAttribute("aria-busy")}, ${document.querySelector(".list-loading") ? "Loading…" : `${rowTitles().length} rows`}`;
+    if (now && now !== commits.at(-1)) commits.push(now);
+  });
+  observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+  serve([row(), row()]);
+  const client = createQueryClient(() => {});
+  show(<ListView kind="Issue" />, client);
+  await titles();
+  cleanup();
+  commits.push("again");
+  show(<ListView kind="Issue" />, client);
+  await titles();
+  observer.disconnect();
+  // Shown again, the list draws the rows it holds at once, reading them afresh behind them.
+  expect(commits).toEqual(["busy true, Loading…", "busy false, Loading…", "busy false, 2 rows", "again", "busy true, 2 rows"]);
+});
+
+test("a first visit draws a screenful of rows, then the rest, each in a render of its own", async () => {
+  // A window 10 rows tall (40 px a row).
+  vi.stubGlobal("innerHeight", 400);
+  const counts: number[] = [];
+  const observer = new MutationObserver(() => {
+    const count = rowTitles().length;
+    if (count && count !== counts.at(-1)) counts.push(count);
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  serve(Array.from({ length: 30 }, () => row()));
+  show(<ListView kind="Issue" />);
+  await waitFor(() => expect(rowTitles()).toHaveLength(30));
+  observer.disconnect();
+  vi.unstubAllGlobals();
+  expect(counts).toEqual([10, 30]);
+});
 
 // A first open that waits for the detail's chunk took 0.8 s.
 test("once its rows show, a list loads the detail's code, so the first open is at once", async () => {

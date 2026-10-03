@@ -1,4 +1,4 @@
-import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type MouseEvent, type ReactNode, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type Meta, useMeta } from "../app/boot";
 import { isPageCounts, isStrings, useTabState } from "../app/tabState";
 import { BulkBar } from "../bulk/BulkBar";
@@ -105,6 +105,16 @@ export function InquiryList({
   const mixed = kinds.length > 1;
   const pageSize = mixed ? 20 : 50;
   const loaded = useListPages(request, pageSize, state.pages);
+  // Rows that load after the list shows, as a first visit's do, draw in
+  // background renders React can interrupt (https://react.dev/reference/react/startTransition),
+  // a screenful first (`screenRows`), then the rest. With the CPU slowed 4x on
+  // a Xeon, a first visit's 50 rows drew in one task of 26 ms as they landed,
+  // and laying all 50 out took one frame of 42 to 57 ms. Rows already loaded
+  // draw at once.
+  const [drawn, setDrawn] = useState(loaded.pending ? 0 : Infinity);
+  useEffect(() => {
+    if (!loaded.pending && drawn < Infinity) startTransition(() => setDrawn(drawn ? Infinity : screenRows()));
+  }, [loaded.pending, drawn]);
   const scroller = useRef<HTMLDivElement>(null);
   const { live, rows } = useLiveList(request, pageSize, scroller, loaded.rows);
   const offeredGroupings = groupings(kinds, meta.fieldOwners);
@@ -126,6 +136,11 @@ export function InquiryList({
   const outline = useOutline(view === "outline" ? laidOut : null, state.collapsed);
   const streams = useStreams(view === "streams" ? laidOut : null, state.collapsed);
   const collapsed = new Set(state.collapsed);
+  // How many of each group's rows to draw: `drawn` in all, the first groups' first.
+  const drawnPerGroup = fillInOrder(
+    groups.map((group) => (collapsed.has(groupKey(grouping, group)) ? 0 : group.rows.length)),
+    drawn,
+  );
   // Columns select by their path, and leave the list's focus and selection alone.
   const visible =
     view === "columns"
@@ -188,8 +203,11 @@ export function InquiryList({
   // Keyed on the id, not the row: a refetch hands over new row objects, and
   // scrolling then would pull the list away from where the user scrolled to.
   const focusedId = focused?.id ?? null;
+  // Whether the focused row is drawn yet: a List draws its first `drawn` rows first.
+  const focusDrawn =
+    drawn > 0 && (view !== "list" || drawn === Infinity || visible.slice(0, drawn).some((line) => line.id === focusedId));
   useEffect(() => {
-    if (!focusedId) return;
+    if (!focusedId || !focusDrawn) return;
     // In the next frame, which lays the rows out anyway: React runs this effect
     // in the task that rendered them, and scrolling there forced their layout
     // inside it, 13 of its 42 ms with the CPU slowed 4x.
@@ -197,7 +215,7 @@ export function InquiryList({
       scroller.current?.querySelector(`[data-row="${focusedId}"]`)?.scrollIntoView({ block: "nearest" }),
     );
     return () => cancelAnimationFrame(frame);
-  }, [focusedId]);
+  }, [focusedId, focusDrawn]);
   // Opening a row is what a list leads to, and the detail's code is a chunk of
   // its own: a first open that waited for it took 0.8 s, since React shows a
   // suspended view's fallback for at least 300 ms. So it loads once the rows
@@ -281,7 +299,7 @@ export function InquiryList({
           <EmptyState icon={<Icon name="filter" size={24} />} title="Nothing to ask for">
             <p>No kind in this list has every filtered field.</p>
           </EmptyState>
-        ) : loaded.pending ? (
+        ) : loaded.pending || !drawn ? (
           <p className="list-loading">Loading…</p>
         ) : rows.length === 0 ? (
           !loaded.error && (
@@ -312,11 +330,12 @@ export function InquiryList({
                 selection={selection}
               />
             ) : (
-              groups.map((group) => (
+              groups.map((group, k) => (
                 <GroupRows
                   key={groupKey(grouping, group)}
                   grouping={grouping}
                   group={group}
+                  drawn={drawnPerGroup[k]!}
                   collapsed={collapsed.has(groupKey(grouping, group))}
                   more={grouping === "kind" ? loaded.more.includes(group.value ?? "") : loaded.more.length > 0}
                   onToggle={() => toggle(groupKey(grouping, group))}
@@ -454,6 +473,7 @@ function TraxLine({ line }: { line: string }) {
 function GroupRows({
   grouping,
   group,
+  drawn,
   collapsed,
   more,
   onToggle,
@@ -465,6 +485,8 @@ function GroupRows({
 }: {
   grouping: Grouping;
   group: Group;
+  /** How many of its rows to draw, while the list draws its first screenful. */
+  drawn: number;
   collapsed: boolean;
   /** Load more may find more of its rows: the count is of those loaded so far. */
   more: boolean;
@@ -494,7 +516,7 @@ function GroupRows({
         </button>
       )}
       {!collapsed &&
-        group.rows.map((row) => (
+        group.rows.slice(0, drawn).map((row) => (
           <Row
             key={row.id}
             row={row}
@@ -633,3 +655,18 @@ const ORDERING_NAMES: { readonly [ordering in Ordering]: string } = {
   created: "Created",
   seq: "Number",
 };
+
+/** The rows that fill the window: a list's first screenful, at `.row`'s 40 px (lists.css). */
+function screenRows(): number {
+  return Math.ceil(window.innerHeight / 40);
+}
+
+/** Each of `counts` cut so that they add up to `total` at most, the first filled first. */
+function fillInOrder(counts: readonly number[], total: number): number[] {
+  let left = total;
+  return counts.map((count) => {
+    const taken = Math.min(count, left);
+    left -= taken;
+    return taken;
+  });
+}

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { lazy, Suspense, type ReactNode, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, type ReactNode, startTransition, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api/client";
 import type { Detail, DetailRow } from "../api/detail";
 import { useMeta, useWriteMode } from "../app/boot";
@@ -9,7 +9,7 @@ import { CopyDetails } from "../debug/CopyDetails";
 import { TextEditor, TitleEditor } from "../editors/TextEditor";
 import { Menu } from "../lists/Menu";
 import { useLiveDetail } from "../live";
-import { Markdown } from "../markdown/Markdown";
+import { Markdown, useMarkdownWarm } from "../markdown/Markdown";
 import { ProgressiveMarkdown } from "../markdown/ProgressiveMarkdown";
 import { cachedInquiries } from "../palette/sources";
 import { RelationFlows, useRelationActions } from "../relations/flows";
@@ -66,15 +66,29 @@ function DetailByRef({ kind, seq }: { kind: string; seq: number }) {
   );
 }
 
-/** The inquiry `id`; until it loads, the frame shows `kind` and `name`, what the link named. */
+/**
+ * The inquiry `id`; until it loads, the frame shows `kind` and `name`, what the
+ * link named.
+ *
+ * Its page draws once Markdown is warm (`useMarkdownWarm`), and when it or the
+ * inquiry came after the view did, in a background render React can interrupt
+ * (https://react.dev/reference/react/startTransition), where the parts it
+ * defers still come after. Drawn at once, a hub's page, its first Markdown with
+ * it, was one task of 61 to 64 ms with the CPU slowed 4x on a Xeon.
+ */
 function DetailById({ id, kind, name }: { id: string; kind: string | null; name: string }) {
   const query = useQuery(detailQueries.detail(id));
   const queryClient = useQueryClient();
   useEffect(() => markOpened(queryClient, id), [queryClient, id]);
   useLiveDetail(id);
+  const ready = useMarkdownWarm() && query.data !== undefined;
+  const [shown, setShown] = useState(ready);
+  useEffect(() => {
+    if (ready && !shown) startTransition(() => setShown(true));
+  }, [ready, shown]);
   // A row purged while open answers 404 on refetch: say so rather than show it stale.
   const gone = query.error instanceof ApiError && query.error.status === 404;
-  if (query.data && !gone) {
+  if (query.data && !gone && shown) {
     return (
       <Page
         detail={query.data}

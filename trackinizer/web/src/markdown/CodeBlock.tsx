@@ -1,6 +1,6 @@
-import { type ComponentProps, createContext, type ReactNode, use } from "react";
+import { type ComponentProps, createContext, type ReactNode, startTransition, use, useEffect, useState } from "react";
 import type { ExtraProps } from "react-markdown";
-import { chunk, useLoaded } from "../router/lazy";
+import { chunk } from "../router/lazy";
 import { Icon } from "../ui/icons";
 import { useCopy } from "../ui/toast";
 import { textOf } from "./code";
@@ -54,12 +54,31 @@ export function CodeFrame({ text, what, children }: { text: string; what: "code"
 
 /**
  * The highlighter (`./highlight`), a chunk of its own, while `wanted`: undefined
- * until it has loaded, at once after. Markdown takes its rehype plugin, a
- * transcript its `highlightLines`. A failed load leaves code uncoloured;
- * `reloadOnChunkError` reloads the page for a deploy's missing chunk.
+ * until it has loaded and prepared its languages, at once after. Markdown takes
+ * its rehype plugin, a transcript its `highlightLines`. A failed load leaves
+ * code uncoloured; `reloadOnChunkError` reloads the page for a deploy's missing
+ * chunk.
+ *
+ * What drew before it came draws again in its colours in a background render
+ * React can interrupt, one block at a time: each Markdown block parses its
+ * text again, and a transcript has drawn tens of them by then. In one render,
+ * that was a task of 133 ms with the CPU slowed 4x on an M-series Mac.
  */
 export function useHighlighter(wanted: boolean): Highlighter | undefined {
-  useLoaded(HIGHLIGHTER, wanted && !highlighter);
+  const [, setLoaded] = useState(false);
+  const needed = wanted && !highlighter;
+  useEffect(() => {
+    if (!needed) return;
+    let mounted = true;
+    void HIGHLIGHTER.preload()
+      .catch(() => {})
+      .then(() => {
+        if (mounted) startTransition(() => setLoaded(true));
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [needed]);
   return wanted ? highlighter : undefined;
 }
 
@@ -68,7 +87,8 @@ let highlighter: Highlighter | undefined;
 let loading: Promise<void> | undefined;
 const HIGHLIGHTER = {
   preload: () =>
-    (loading ??= chunk(import("./highlight")).then((module) => {
+    (loading ??= chunk(import("./highlight")).then(async (module) => {
+      await module.prepare();
       highlighter = module;
     })),
 };

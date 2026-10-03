@@ -1,6 +1,7 @@
 // Test helpers for the detail view; only tests import this file.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
+import { Profiler } from "react";
 import type { Change, Detail, DetailRow, Peer } from "../api/detail";
 import type { Profile } from "../api/me";
 import { type Sent, stubFetch } from "../api/testing";
@@ -173,8 +174,9 @@ export function serveDetails(details: readonly Detail[], confidence = 0.5): Sent
 /**
  * Render the detail for `target` with the app's providers, and its shortcuts
  * bound; `queryClient` is its cache, `profile` the signed-in user, `session`
- * the one a 401 would end, `commands` the registry the palette would list, and
- * `hub` the live stream's, if it is to keep the detail current.
+ * the one a 401 would end, `commands` the registry the palette would list,
+ * `hub` the live stream's, if it is to keep the detail current, and `onCommit`
+ * is told of each commit of the detail's tree.
  */
 export function renderDetail(
   target: DetailTarget,
@@ -184,7 +186,8 @@ export function renderDetail(
     session = new Session(() => {}),
     commands = new CommandRegistry(),
     hub = null,
-  }: { profile?: Profile; session?: Session; commands?: CommandRegistry; hub?: LiveHub | null } = {},
+    onCommit = () => {},
+  }: { profile?: Profile; session?: Session; commands?: CommandRegistry; hub?: LiveHub | null; onCommit?: () => void } = {},
 ) {
   return render(
     <QueryClientProvider client={queryClient}>
@@ -196,7 +199,9 @@ export function renderDetail(
                 <RouterProvider kinds={META.kinds}>
                   <LiveContext value={hub}>
                     <Shortcuts />
-                    <DetailView target={target} />
+                    <Profiler id="detail" onRender={onCommit}>
+                      <DetailView target={target} />
+                    </Profiler>
                   </LiveContext>
                 </RouterProvider>
               </ProfileContext>

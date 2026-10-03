@@ -95,6 +95,22 @@ test("a lookup link reads the inquiry by id in one request", async () => {
   expect(sent.map((request) => request.path)).not.toContain("/api/inquiries/Belief/5");
 });
 
+test("a detail draws its page in a render after the one its inquiry lands in, which shows the frame", async () => {
+  const belief = row("Belief", 5);
+  serveDetails([detail(belief)]);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // Each commit: whether the inquiry had landed, and whether the page showed.
+  const commits: string[] = [];
+  const onCommit = () => {
+    const landed = queryClient.getQueryData(["detail", belief.id]) !== undefined;
+    const commit = `landed ${landed}, page ${document.querySelector(".d-scroll") !== null}`;
+    if (commit !== commits.at(-1)) commits.push(commit);
+  };
+  renderDetail({ id: belief.id }, queryClient, { onCommit });
+  await screen.findByRole("heading", { level: 1, name: "Belief number 5" });
+  expect(commits).toEqual(["landed false, page false", "landed true, page false", "landed true, page true"]);
+});
+
 test("an Artifact lookup link shows its published content", async () => {
   const artifact = row("Artifact", 7);
   stubFetch((request) => {

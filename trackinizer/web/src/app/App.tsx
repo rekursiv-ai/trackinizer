@@ -1,8 +1,9 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { Component, type ReactNode, useEffect, useState } from "react";
+import { Component, type ReactNode, startTransition, useDeferredValue, useEffect, useState } from "react";
 import { ApiError } from "../api/client";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
 import { CopyDetails } from "../debug/CopyDetails";
+import { prepareTimes } from "../detail/time";
 import { log } from "../debug/log";
 import { LiveProvider } from "../live";
 import { RouterProvider } from "../router/router";
@@ -18,6 +19,13 @@ import "../writes/writes.css";
 /**
  * The whole app: boot, then the shell, under the crash screen.
  *
+ * Its first render draws only the frame boot shows, and the app under it draws
+ * in a background render React can interrupt
+ * (https://react.dev/reference/react/useDeferredValue), while the time
+ * formatters load the locale in a task of their own (`prepareTimes`). The
+ * app's first render is the page's first use of React: with the CPU slowed 4x
+ * on a Xeon it was one task of 37 to 39 ms, and the frame alone takes 14.
+ *
  * `assign` loads another page, as `location.assign` does, and `reload` reloads
  * this one; tests pass fakes to see where a signed-out user is sent, and what
  * Reload does after a crash.
@@ -32,6 +40,12 @@ export function App({
   const [session] = useState(() => new Session(assign));
   const [queryClient] = useState(() => createQueryClient(() => session.leaveForLogin()));
   const [registry] = useState(() => new CommandRegistry());
+  const started = useDeferredValue(true, false);
+  useEffect(() => {
+    const timer = setTimeout(prepareTimes);
+    return () => clearTimeout(timer);
+  }, []);
+  if (!started) return <Frame busy />;
   return (
     <CrashBoundary reload={reload}>
       <QueryClientProvider client={queryClient}>
@@ -51,6 +65,11 @@ export function App({
 /**
  * Read the server's vocabulary and the profile, then render the shell once.
  *
+ * The shell's first render is a background render React can interrupt
+ * (https://react.dev/reference/react/startTransition): it is the first use of
+ * most of the app's code, and in the task the reads landed in it was one of
+ * 44 ms with the CPU slowed 4x on a Xeon.
+ *
  * A 401 shows nothing here: the query cache has already sent the browser to the
  * login page.
  */
@@ -60,6 +79,11 @@ function Boot() {
   useEffect(() => {
     if (role) log("info", "boot", { commit: __COMMIT__, role });
   }, [role]);
+  const [shown, setShown] = useState(boot.state === "ready");
+  useEffect(() => {
+    if (role && !shown) startTransition(() => setShown(true));
+  }, [role, shown]);
+  if (boot.state === "ready" && !shown) return <Frame busy />;
   if (boot.state === "ready") {
     return (
       <MetaContext value={boot.meta}>

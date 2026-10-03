@@ -8,6 +8,7 @@ import { stubClipboard } from "../../debug/testing";
 import { detailQueries } from "../queries";
 import { detail, PROFILE, renderDetail, row } from "../testing";
 import { transcriptQueries } from ".";
+import { placeholderHeight } from "./drawing";
 
 const SESSION = row("AgentSession", 3);
 
@@ -190,7 +191,8 @@ test("a long part shows its newest 1,000 records, read in parallel pages, and Lo
   });
   expect(more.textContent).toBe("Showing 1,000 of 1,205 records.Load earlier");
   expect(pages(sent).toSorted()).toEqual(["0:1004:200", "0:204:200", "0:404:200", "0:604:200", "0:804:200"]);
-  expect(document.querySelector('[data-idx="1204"]')).not.toBeNull();
+  // The newest records draw in a render after the one their read lands in (`useDrawnFrom`).
+  await waitFor(() => expect(document.querySelector('[data-idx="1204"]')).not.toBeNull());
   fireEvent.click(within(more).getByRole("button", { name: "Load earlier" }));
   await waitFor(() => expect(document.querySelector('[data-part="0"] .tr-more')).toBeNull());
   expect(pages(sent).slice(5).toSorted()).toEqual(["0:-1:200", "0:199:5"]);
@@ -245,6 +247,27 @@ test("a part draws its newest records first, then 100 more per background render
   observer.disconnect();
   expect(draws[0]).toEqual([107, 108, 109]);
   expect(draws.map((idx) => idx.length)).toEqual([3, 103, 109]);
+});
+
+test("a part's records draw in a render after the one their read lands in, which draws none of them", async () => {
+  // What each commit showed of the part: an observer runs after every commit, before any later task.
+  const commits: number[] = [];
+  const observer = new MutationObserver(() => {
+    const lines = document.querySelector('[data-part="0"] ol.transcript')?.children.length;
+    if (lines !== undefined && lines !== commits.at(-1)) commits.push(lines);
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  const said = (idx: number) => captured(idx, "AssistantMessage", { content: `Turn ${idx}.` }, `Turn ${idx}.`);
+  await renderRecords([said(0), said(1)]);
+  observer.disconnect();
+  expect(commits).toEqual([0, 2]);
+  expect(shownIdx()).toEqual(["0", "1"]);
+});
+
+test("a message's line takes the height its text needs until it is first drawn, so lines drawn off screen stay undrawn", async () => {
+  const text = "A reply.\n".repeat(30);
+  const line = await renderRecords([captured(0, "AssistantMessage", { content: text }, text)]);
+  expect(line.style.containIntrinsicSize).toBe(`auto ${placeholderHeight(text, false)}px`);
 });
 
 /** The transcript section's header line. */

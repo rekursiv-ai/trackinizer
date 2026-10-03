@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Profiler } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { stubFetch } from "../api/testing";
 import { logRenderError } from "../debug/install";
@@ -8,6 +9,7 @@ import { stubClipboard } from "../debug/testing";
 import { FakeEventSource } from "../live/testing";
 import { ActivityView, GraphView, SearchView } from "../router/views";
 import { App } from "./App";
+import * as boot from "./boot";
 import { LOGIN_URL } from "./session";
 
 // The graph draws on a canvas, which jsdom lacks; its own tests replace its renderer.
@@ -83,6 +85,42 @@ test("boot reads all four calls in parallel, then shows the kinds and the profil
   // stand-in here, which reads nothing.
   const boot = sent.map((request) => request.path).filter((path) => path in BODIES);
   expect(boot.sort()).toEqual(Object.keys(BODIES).sort());
+});
+
+test("the app's first render draws its frame alone; boot and the rest draw in a render after it", async () => {
+  stubFetch(() => new Promise<Response>(() => {}));
+  const useBoot = vi.spyOn(boot, "useBoot");
+  // Each commit, with how often boot had rendered by then.
+  const commits: string[] = [];
+  render(
+    <Profiler id="app" onRender={(_id, phase) => commits.push(`${phase} ${useBoot.mock.calls.length}`)}>
+      <App assign={vi.fn()} />
+    </Profiler>,
+  );
+  await waitFor(() => expect(useBoot).toHaveBeenCalled());
+  expect(commits[0]).toBe("mount 0");
+});
+
+test("the shell draws in a render after the one the boot reads land in, which shows the frame", async () => {
+  serve();
+  const useBoot = vi.spyOn(boot, "useBoot");
+  // Each commit: whether boot was ready, and whether the shell showed.
+  const commits: string[] = [];
+  render(
+    <Profiler
+      id="app"
+      onRender={() => {
+        const ready = useBoot.mock.results.at(-1)?.value.state === "ready";
+        const shown = document.querySelector('[aria-label="Signed in"]') !== null;
+        const commit = `ready ${ready}, shell ${shown}`;
+        if (commit !== commits.at(-1)) commits.push(commit);
+      }}
+    >
+      <App assign={vi.fn()} />
+    </Profiler>,
+  );
+  await screen.findByLabelText("Signed in");
+  expect(commits).toEqual(["ready false, shell false", "ready true, shell false", "ready true, shell true"]);
 });
 
 test("an empty hash opens the graph, the home view", async () => {
@@ -266,6 +304,7 @@ test("a link straight to the create form opens it over the graph, the home view"
   serve();
   history.replaceState(null, "", "#/new/Issue");
   render(<App assign={vi.fn()} />);
-  expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Graph");
+  // Hidden from the accessibility tree once the form's dialog has opened over it.
+  expect((await screen.findByRole("heading", { level: 1, hidden: true })).textContent).toBe("Graph");
   expect(location.hash).toBe("#/new/Issue");
 });

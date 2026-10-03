@@ -8,6 +8,7 @@ const loads = vi.hoisted(() => ({ count: 0 }));
 vi.mock("./highlight", () => {
   loads.count += 1;
   return {
+    prepare: async () => {},
     rehypeHighlightCode: () => (tree: { children: unknown[] }) => {
       tree.children.push({ type: "element", tagName: "hr", properties: { className: ["highlighted"] }, children: [] });
     },

@@ -3,8 +3,41 @@ import { common, createLowlight } from "lowlight";
 import { codeBlocks } from "./code";
 import "./highlight.css";
 
-/** highlight.js with its `common` languages, aliases included (`sh`, `py`, `ts`, `yml`). */
-const lowlight = createLowlight(common);
+/** highlight.js, its `common` languages, aliases included (`sh`, `py`, `ts`, `yml`), registered by `prepare`. */
+const lowlight = createLowlight();
+let prepared: Promise<void> | undefined;
+
+/**
+ * Register highlight.js's `common` languages, then compile those `detect`
+ * tries, so that the first block coloured pays for neither, each step a task of
+ * its own; once, however often asked. Code is coloured only once it settles
+ * (`useHighlighter`).
+ *
+ * Registered as the chunk loaded and compiled by the first block coloured, with
+ * the CPU slowed 4x on a Xeon, they made the chunk's load a task of 31 ms and
+ * the render that coloured the transcript's first replies one of 52 to 55.
+ */
+export function prepare(): Promise<void> {
+  return (prepared ??= (async () => {
+    const languages = Object.entries(common);
+    for (let k = 0; k < languages.length; k += REGISTERED_PER_TASK) {
+      lowlight.register(Object.fromEntries(languages.slice(k, k + REGISTERED_PER_TASK)));
+      await nextTask();
+    }
+    for (const name of DETECTED) {
+      lowlight.highlight(name, "");
+      await nextTask();
+    }
+  })());
+}
+
+/** Languages `prepare` registers in one task. */
+const REGISTERED_PER_TASK = 6;
+
+/** A promise that settles in a task after this one, so the browser can paint and take input between. */
+function nextTask(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve));
+}
 
 /**
  * The languages an untagged block can be found to be, ties going to the first.

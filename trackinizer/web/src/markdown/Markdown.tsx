@@ -1,11 +1,12 @@
 import type { Root } from "mdast";
 import { findAndReplace } from "mdast-util-find-and-replace";
-import { type ComponentProps, memo, useMemo } from "react";
-import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
+import { type ComponentProps, memo, useEffect, useMemo, useState } from "react";
+import ReactMarkdown, { type Components, type ExtraProps, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useCopy } from "../ui/toast";
 import { hasFence, rehypeJsonBlocks } from "./code";
 import { CodeBlock, CodeFrame, KindsContext, useHighlighter } from "./CodeBlock";
+import type { rehypeHighlightCode } from "./highlight";
 import { parseJson } from "./json";
 import { JsonView } from "./JsonView";
 import { Link } from "./Link";
@@ -49,7 +50,7 @@ export const Markdown = memo(function Markdown({
     const parsed = parseJson(source);
     return [parsed, !parsed && hasFence(source)] as const;
   }, [source]);
-  const highlighter = useHighlighter(fenced)?.rehypeHighlightCode;
+  const highlight = useHighlighter(fenced)?.rehypeHighlightCode;
   return (
     <div className={className}>
       <KindsContext value={kinds}>
@@ -58,19 +59,84 @@ export const Markdown = memo(function Markdown({
             <JsonView root={json} kinds={kinds} />
           </CodeFrame>
         ) : (
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm, remarkPaths, [remarkRefs, { kinds }], ...(breaks ? [remarkBreaks] : [])]}
-            rehypePlugins={highlighter ? [rehypeJsonBlocks, highlighter] : [rehypeJsonBlocks]}
-            urlTransform={safeUrl}
-            components={images ? COMPONENTS : NO_IMAGE_COMPONENTS}
-          >
-            {source}
-          </ReactMarkdown>
+          <ReactMarkdown {...markdownOptions({ kinds, images, breaks, highlight })}>{source}</ReactMarkdown>
         )}
       </KindsContext>
     </div>
   );
 });
+
+/**
+ * Whether Markdown has rendered before on this page, warming it, the first time
+ * a view asks, with a few small texts, each in a task of its own.
+ *
+ * Markdown's first render runs code the page has not run yet, which costs more
+ * than any later render, and React cannot split one component's render: with
+ * the CPU slowed 4x on an M-series Mac, a transcript's first reply drew in a
+ * task of 38 ms cold against 20 warmed, and on a Xeon a transcript's first draw
+ * was one task of 78 to 90 ms. A view that would render Markdown at once waits
+ * for this.
+ */
+export function useMarkdownWarm(): boolean {
+  const [warm, setWarm] = useState(warmed);
+  useEffect(() => {
+    if (warm) return;
+    let mounted = true;
+    void warmMarkdown().then(() => {
+      if (mounted) setWarm(true);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [warm]);
+  return warm;
+}
+
+let warmed = false;
+let warming: Promise<void> | undefined;
+
+/** Render each of `WARM_UP` in a task of its own, once, however often asked. */
+function warmMarkdown(): Promise<void> {
+  return (warming ??= (async () => {
+    for (const [source, breaks] of WARM_UP) {
+      await new Promise((resolve) => setTimeout(resolve));
+      // The pipeline alone, as a render runs it: its result, React elements, goes nowhere.
+      ReactMarkdown({ ...markdownOptions({ kinds: ["Issue"], images: false, breaks }), children: source });
+    }
+    warmed = true;
+  })());
+}
+
+/**
+ * What `useMarkdownWarm` renders, a task each, and whether with `breaks`: between
+ * them, each kind of block and span a reply or a description holds.
+ */
+const WARM_UP: readonly (readonly [string, boolean])[] = [
+  ["Hello *there*.", false],
+  ["# Plan\n\n- one **two** `three`\n- [four](https://example.com) Issue#4 at /opt/x/y\n\n> said", false],
+  ["| a | b |\n|---|---|\n| c | d |", false],
+  ["```py\nx = 1\n```\n\n1. first\n2. second\n\n---\n\nhttps://example.com\n00000000-0000-4000-8000-000000000001", true],
+];
+
+/** react-markdown's options for a `Markdown` of these props; `highlight` colours code, once the highlighter has loaded. */
+function markdownOptions({
+  kinds,
+  images,
+  breaks,
+  highlight,
+}: {
+  kinds: readonly string[];
+  images: boolean;
+  breaks: boolean;
+  highlight?: typeof rehypeHighlightCode;
+}): Options {
+  return {
+    remarkPlugins: [remarkGfm, remarkPaths, [remarkRefs, { kinds }], ...(breaks ? [remarkBreaks] : [])],
+    rehypePlugins: highlight ? [rehypeJsonBlocks, highlight] : [rehypeJsonBlocks],
+    urlTransform: safeUrl,
+    components: images ? COMPONENTS : NO_IMAGE_COMPONENTS,
+  };
+}
 
 // Headings step down two levels: the page's title is the one h1, and its
 // sections are h2s, so a description's `#` must not outrank either.
