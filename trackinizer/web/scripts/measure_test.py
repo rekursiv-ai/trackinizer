@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import ANY, patch
 from urllib.parse import parse_qs
 
 import argparse
@@ -14,12 +16,15 @@ import pytest
 
 from trackinizer.lib import zstd_compat
 from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
+from trackinizer.web.scripts import measure as measurement
 from trackinizer.web.scripts.measure import (
     Row,
     Sample,
     Stream,
     _add_arguments,
     _get,
+    _serial,
+    _summary,
     _write,
     measure,
     moved,
@@ -29,11 +34,182 @@ from trackinizer.web.scripts.measure import (
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
 
 
 _HUB = "00000000-0000-4000-8000-00000000000h"
 _BUDGET = "query exceeded the time budget; narrow the filters"
+
+
+def test_serial_reads_preserve_queries_and_measure_total_wall_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticks = iter((10.0, 11.0, 12.0, 13.0, 14.0, 16.0))
+    monkeypatch.setattr(
+        measurement,
+        "time",
+        SimpleNamespace(perf_counter=ticks.__next__),
+    )
+    requests: list[str] = []
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        requests.append(str(request.url))
+        return httpx2.Response(200, content=iter([b'{"x":1}']))
+
+    with httpx2.Client(
+        base_url="http://server",
+        transport=httpx2.MockTransport(answer),
+    ) as http:
+        sample = _serial(http, (("/a", (("limit", 2),)), ("/b", (("kind", "Issue"),))))
+
+    assert requests == ["http://server/a?limit=2", "http://server/b?kind=Issue"]
+    assert sample == Sample(seconds=6.0, status=200, json_bytes=14, wire_bytes=14)
+
+
+def test_summary_preserves_samples_and_summarizes_only_successes() -> None:
+    row = Row(
+        name="read",
+        note="two successes",
+        samples=(
+            Sample(seconds=1.0, status=201, json_bytes=10, wire_bytes=2),
+            Sample(seconds=3.0, status=200, json_bytes=13, wire_bytes=5),
+            Sample(
+                seconds=0.01,
+                status=502,
+                json_bytes=90,
+                wire_bytes=90,
+                message="down",
+            ),
+        ),
+    )
+    assert _summary(row) == {
+        "name": "read",
+        "note": "two successes",
+        "median_seconds": 2.0,
+        "min_seconds": 1.0,
+        "max_seconds": 3.0,
+        "median_json_bytes": 12,
+        "median_wire_bytes": 4,
+        "statuses": [200, 201, 502],
+        "messages": ["down"],
+        "samples": [
+            {
+                "seconds": 1.0,
+                "status": 201,
+                "json_bytes": 10,
+                "wire_bytes": 2,
+                "message": "",
+            },
+            {
+                "seconds": 3.0,
+                "status": 200,
+                "json_bytes": 13,
+                "wire_bytes": 5,
+                "message": "",
+            },
+            {
+                "seconds": 0.01,
+                "status": 502,
+                "json_bytes": 90,
+                "wire_bytes": 90,
+                "message": "down",
+            },
+        ],
+    }
+    assert _summary(Row(name="empty", samples=())) == {
+        "name": "empty",
+        "note": "",
+        "median_seconds": None,
+        "min_seconds": None,
+        "max_seconds": None,
+        "median_json_bytes": None,
+        "median_wire_bytes": None,
+        "statuses": [],
+        "messages": [],
+        "samples": [],
+    }
+
+
+def test_stream_stops_at_the_window_and_counts_only_data_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticks = iter((10.0, 10.5, 11.0, 12.0, 13.0))
+    monkeypatch.setattr(
+        measurement,
+        "time",
+        SimpleNamespace(perf_counter=ticks.__next__),
+    )
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        assert (request.method, request.url.path) == ("GET", "/api/web/subscribe")
+        assert request.extensions["timeout"] == {
+            "connect": 30.0,
+            "read": 2.0,
+            "write": 30.0,
+            "pool": 30.0,
+        }
+        return httpx2.Response(
+            200,
+            content=iter(
+                [
+                    b': keepalive\ndata: {"id":"a"}\ndata: {"id":"a"}\ndata: {"id":"b"}\n',
+                ],
+            ),
+        )
+
+    with httpx2.Client(
+        base_url="http://server",
+        transport=httpx2.MockTransport(answer),
+    ) as http:
+        with patch.object(http, "stream", wraps=http.stream) as requests:
+            stream = sample_stream(http, seconds=2.0)
+        requests.assert_called_once_with("GET", "/api/web/subscribe", timeout=ANY)
+    assert stream == Stream(seconds=3.0, frames=2, distinct_ids=1, status=200)
+
+
+def test_a_quiet_stream_read_timeout_preserves_frames_already_received(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticks = iter((10.0, 11.0, 12.0))
+    monkeypatch.setattr(
+        measurement,
+        "time",
+        SimpleNamespace(perf_counter=ticks.__next__),
+    )
+
+    def body() -> Iterable[bytes]:
+        yield b'data: {"id":"a"}\n'
+        raise httpx2.ReadTimeout("quiet")
+
+    with httpx2.Client(
+        base_url="http://server",
+        transport=httpx2.MockTransport(lambda _: httpx2.Response(200, content=body())),
+    ) as http:
+        stream = sample_stream(http, seconds=2.0)
+    assert stream == Stream(seconds=2.0, frames=1, distinct_ids=1, status=200)
+
+
+def test_a_stream_timeout_before_headers_reports_no_http_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ticks = iter((10.0, 12.0))
+    monkeypatch.setattr(
+        measurement,
+        "time",
+        SimpleNamespace(perf_counter=ticks.__next__),
+    )
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        del request
+        raise httpx2.ReadTimeout("no headers")
+
+    with httpx2.Client(
+        base_url="http://server",
+        transport=httpx2.MockTransport(answer),
+    ) as http:
+        stream = sample_stream(http, seconds=2.0)
+    assert stream == Stream(seconds=2.0, frames=0, distinct_ids=0, status=0)
 
 
 def test_every_request_is_a_get_and_every_baseline_is_measured() -> None:
@@ -163,7 +339,7 @@ def test_a_refused_stream_is_its_answer_not_a_quiet_stream() -> None:
     ) as http:
         stream = sample_stream(http, seconds=1.0)
 
-    assert (stream.status, stream.frames) == (401, 0)
+    assert stream == Stream(seconds=0.0, frames=0, distinct_ids=0, status=401)
     document = report([], stream=stream, url="u", sha="s")
     assert DictCodec.coerce(document["stream"])["frames_per_sec"] is None
 
@@ -194,6 +370,7 @@ def test_a_content_coding_is_read_in_any_case_and_as_a_list() -> None:
     body = b'{"ok": true}'
     codings = {
         "GZip": gzip.compress(body),
+        "zstd": zstd_compat.compress(body),
         "gzip, zstd": zstd_compat.compress(gzip.compress(body)),
     }
     for coding, raw in codings.items():
