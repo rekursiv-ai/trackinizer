@@ -28,10 +28,12 @@ import asyncio
 import contextlib
 import fcntl
 import os
+import select
 import shutil
 import signal
 import struct
 import subprocess
+import sys
 import termios
 
 
@@ -563,25 +565,13 @@ class Terminal:
 
     def _exited(self) -> bool:
         """Whether the child has exited, WITHOUT reaping it."""
-        if self._pid <= 0:
-            return True
-        try:
-            exited = os.waitid(
-                os.P_PID,
-                self._pid,
-                os.WEXITED | os.WNOHANG | os.WNOWAIT,
-            )
-        except ChildProcessError:
-            return True
-        return exited is not None
+        return self._pid <= 0 or _exit_seen(self._pid, block=False)
 
     def _wait_until_exited(self) -> None:
         """Wait for child exit without consuming the status used by wait()."""
         pid = self._pid
-        if pid <= 0:
-            return
-        with contextlib.suppress(ChildProcessError):
-            _ = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+        if pid > 0:
+            _ = _exit_seen(pid, block=True)
 
     def _reap(self) -> int:
         """Block until the child exits; return its status."""
@@ -629,3 +619,32 @@ def _resolve(ready: asyncio.Future[None]) -> None:
     """Complete ``ready`` once, ignoring a repeated reader callback."""
     if not ready.done():
         ready.set_result(None)
+
+
+# macOS CPython has no ``os.waitid`` before 3.13, and ``waitpid`` cannot leave the
+# child unreaped. kqueue's NOTE_EXIT can, but only as that fallback: registering on
+# a child already exiting fails with ESRCH (returned as an event) before it is a
+# waitable zombie, so ``terminate`` may return a moment early. The zombie still
+# anchors the process group until ``wait`` reaps it.
+if sys.platform == "darwin" and sys.version_info < (3, 13):
+
+    def _exit_seen(pid: int, *, block: bool) -> bool:  # pyright: ignore[reportUnreachable] -- Linux-targeted checking omits macOS select types.
+        """Whether ``pid`` has exited, without reaping it; ``block`` waits."""
+        with contextlib.closing(select.kqueue()) as kernel:
+            note = select.kevent(
+                pid,
+                filter=select.KQ_FILTER_PROC,
+                flags=select.KQ_EV_ADD,
+                fflags=select.KQ_NOTE_EXIT,
+            )
+            return bool(kernel.control([note], 1, None if block else 0))
+
+else:
+
+    def _exit_seen(pid: int, *, block: bool) -> bool:
+        """Whether ``pid`` has exited, without reaping it; ``block`` waits."""
+        flags = os.WEXITED | os.WNOWAIT | (0 if block else os.WNOHANG)
+        try:
+            return os.waitid(os.P_PID, pid, flags) is not None
+        except ChildProcessError:
+            return True
