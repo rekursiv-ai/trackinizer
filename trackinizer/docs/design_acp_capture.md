@@ -139,10 +139,11 @@ inherited unchanged: a server outage never loses events.
 
 Out of scope here, tracked as separate issues: the process-local
 inbound queue on the server (`server/inbound.py`, drop-if-absent),
-session liveness/heartbeat + zombie reaping, and remote human attach.
-ACP mode narrows the last one: a headless agent's turns are fully
-captured, so a read-only live view needs only the event stream, not a
-terminal.
+and remote human attach. ACP mode narrows the last one: a headless
+agent's turns are fully captured, so a read-only live view needs only
+the event stream, not a terminal. Session liveness, once on this list,
+is now handled server-side: `server/session_reaper.py` closes sessions
+whose run went silent.
 
 ## Phases and estimate
 

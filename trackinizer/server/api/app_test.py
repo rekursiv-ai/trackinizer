@@ -8,6 +8,8 @@ from uuid import UUID, uuid4
 
 import asyncio
 import logging
+import re
+import time
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
@@ -27,6 +29,7 @@ from trackinizer.lib.custom_json import (
 from trackinizer.server.api import app
 from trackinizer.server.api.app import (
     RequestLoggingMiddleware,
+    _RequestLogSpan,
     check_violation_handler,
     conflict_handler,
     fk_violation_handler,
@@ -240,6 +243,41 @@ class TestRequestLogging:
         assert f"request_id={request_id}" in record.getMessage()
         # Encoded as uvicorn's access log does, so a path cannot forge a field.
         assert "path=/api/a%20b " in record.getMessage()
+
+    def test_a_request_logs_one_complete_line(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Every field, in the text and the structured record, exactly once."""
+        span = _RequestLogSpan(
+            downstream=AsyncMock(),
+            request_id="rid-1",
+            method="GET",
+            path="/api/version",
+            started=time.perf_counter(),
+            status_code=201,
+            response_start_sec=0.5,
+        )
+        with caplog.at_level(logging.INFO):
+            span.log(outcome="success")
+            span.log(outcome="failure", error_type="Late")
+
+        (record,) = (
+            record
+            for record in caplog.records
+            if getattr(record, "event", "") == "trackinizer_request_completed"
+        )
+        assert re.fullmatch(
+            r"event=trackinizer_request_completed stage=http_request "
+            r"outcome=success method=GET path=/api/version status_code=201 "
+            r"response_start_sec=0\.500000 duration_sec=\d+\.\d{6} "
+            r"request_id=rid-1 worker_pid=\d+ error_type=",
+            record.getMessage(),
+        )
+        fields = DictCodec.coerce(record.__dict__)
+        assert StrCodec.coerce(fields.get("stage")) == "http_request"
+        assert StrCodec.coerce(fields.get("error_type"), "?") == ""
+        assert 0.0 <= FloatCodec.coerce(fields.get("duration_sec"), -1) < 60.0
 
 
 class TestAuthDisabledWarning:

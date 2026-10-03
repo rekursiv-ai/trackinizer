@@ -54,6 +54,7 @@ from trackinizer.server.config import (
 )
 from trackinizer.server.embedders import registry
 from trackinizer.server.inbound import InboundQueue
+from trackinizer.server.session_reaper import session_reaper_loop
 from trackinizer.server.store.core import Store
 from trackinizer.server.subscriber import push_changes_to_live_subscribers
 from trackinizer.server.visuals.catalog import default_workspace
@@ -172,6 +173,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         # Authority sweep: recomputes the derived load-bearing (PageRank)
         # columns off the request path, coalescing edge-change bursts.
         authority_task = asyncio.create_task(authority_sweep_loop(app.state.store))
+        # Session reaper: closes sessions whose run went silent (killed, host
+        # crashed), so a dead agent stops showing as live.
+        reaper_task = asyncio.create_task(
+            session_reaper_loop(app.state.store, inbound=app.state.inbound),
+        )
         addon_tasks = _start_addon_services(
             deployment_of(app),
             context=ServerContext(store=app.state.store, inbound=app.state.inbound),
@@ -189,6 +195,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             authority_task.cancel()
             with suppress(asyncio.CancelledError):
                 await authority_task
+            reaper_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await reaper_task
             if warm_task is not None:
                 warm_task.cancel()
                 with suppress(asyncio.CancelledError):

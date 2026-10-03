@@ -31,6 +31,18 @@ class TestInboundQueue:
         queue.mark_poller(session)
         assert queue.has_poller(session)
 
+    def test_active_poller_ids_lists_only_unexpired_leases(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        early, late = uuid.uuid4(), uuid.uuid4()
+        queue.mark_poller(early)
+        now[0] = 120.0
+        queue.mark_poller(late)
+        now[0] = 145.0
+        assert queue.active_poller_ids() == [late]
+        now[0] = 165.0
+        assert queue.active_poller_ids() == []
+
     def test_enqueue_then_drain_is_fifo(self) -> None:
         q = InboundQueue()
         sid = uuid.uuid4()

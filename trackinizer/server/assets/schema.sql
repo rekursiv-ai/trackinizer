@@ -893,6 +893,17 @@ CREATE TABLE IF NOT EXISTS session_slash_commands (
     PRIMARY KEY (session_id, seq)
 );
 
+-- When each session that polls its inbound queue was last heard from, so the
+-- reaper can close one whose run died. A table, not process memory: a run that
+-- dies while the server restarts must still be closed, and one closed for
+-- silence (``reaped``) must still be reopened if it comes back. A session that
+-- never polls has no row: with no poller, its silence means nothing. Added in 032.
+CREATE TABLE IF NOT EXISTS session_liveness (
+    session_id  UUID PRIMARY KEY REFERENCES inquiries(id) ON DELETE CASCADE,
+    last_seen   TIMESTAMPTZ NOT NULL,
+    reaped      BOOLEAN NOT NULL DEFAULT FALSE
+);
+
 -- Per-user canvas state. The companion receipt table makes retried operations
 -- return the original result without applying them twice. Added in 026.
 CREATE TABLE IF NOT EXISTS visual_workspaces (

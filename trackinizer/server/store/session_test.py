@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
+from uuid import UUID, uuid4
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
 from trackinizer.conftest import (
     executed_sql,
@@ -15,12 +18,23 @@ from trackinizer.conftest import (
     new_uuid,
     set_field_row,
 )
+from trackinizer.lib.postgres.testing import reset_schema
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
     set_client_change_id,
 )
+from trackinizer.server.store.core import Store
+from trackinizer.server.store.session import _LOCK_SESSION_SQL
 from trackinizer.types.errors import ConflictError, NotFoundError
+from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.bodies import SubmitAgentSession
+
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from trackinizer.lib.postgres import PGliteEngine
 
 
 class TestStartSession:
@@ -148,6 +162,38 @@ class TestEndSession:
         )
 
     @pytest.mark.asyncio
+    async def test_a_close_writes_and_audits_what_it_was_given(self) -> None:
+        """Every input reaches the row or its audit, attributed to its caller."""
+        conn = make_conn()
+        set_field_row(conn, self._live_row())
+        store, _engine = make_store(conn)
+        session_id, key = new_uuid(), new_uuid()
+        ended = datetime(2026, 1, 1, tzinfo=UTC)
+
+        await store.end_session(
+            session_id,
+            ended=ended,
+            cli_session_id="cli-1",
+            api_key_id=key,
+            actor="closer",
+        )
+
+        assert conn.fetchrow.await_args_list[0].args == (_LOCK_SESSION_SQL, session_id)
+        writes = [call.args for call in conn.execute.await_args_list]
+        assert [
+            args[1:] for args in writes if "SET agentsession_ended" in str(args[0])
+        ] == [(ended, "complete", session_id)]
+        audits = [args for args in writes if "INSERT INTO change_log" in str(args[0])]
+        kinds = ("agentsession_cli_session_id", "agentsession_ended", "status")
+        assert [kind for args in audits for kind in kinds if kind in args] == list(
+            kinds,
+        )
+        assert all(
+            "closer" in args and key in args and session_id in args for args in audits
+        )
+        assert any("cli-1" in args for args in audits)
+
+    @pytest.mark.asyncio
     async def test_status_failure_rolls_back_ended(self) -> None:
         # If the status write fails mid-close, the surrounding tx must
         # ROLLBACK so ``ended`` is not persisted -- the atomicity invariant
@@ -202,11 +248,15 @@ class TestEndSession:
         row = self._live_row()
         row["agentsession_ended"] = datetime(2025, 1, 1, tzinfo=UTC)
         set_field_row(conn, row)
-        replay_key = new_uuid()
+        replay_key, session_id = new_uuid(), new_uuid()
 
-        async def _fetchval(sql: str, *_args: object) -> object:
-            # The replay probe finds K's change_log row for this session.
-            if "FROM change_log" in sql:
+        async def _fetchval(sql: str, *args: object) -> object:
+            # The replay probe finds K's change_log row for this session, and
+            # only when it asks for exactly that.
+            if sql.startswith("SELECT 1 FROM change_log") and args == (
+                replay_key,
+                session_id,
+            ):
                 return 1
             return None
 
@@ -215,7 +265,7 @@ class TestEndSession:
         set_client_change_id(replay_key)
         # No raise: the same-key retry replays the original success.
         await store.end_session(
-            new_uuid(),
+            session_id,
             ended=datetime(2026, 1, 1, tzinfo=UTC),
             cli_session_id=None,
             actor="user",
@@ -315,7 +365,7 @@ class TestEndSession:
         conn = make_conn()
         set_field_row(conn, {**self._live_row(), "kind": "Issue"})
         store, _engine = make_store(conn)
-        with pytest.raises(ConflictError):
+        with pytest.raises(ConflictError, match="only an AgentSession can be ended"):
             await store.end_session(
                 new_uuid(),
                 ended=datetime(2026, 1, 1, tzinfo=UTC),
@@ -328,13 +378,122 @@ class TestEndSession:
         conn = make_conn()
         set_field_row(conn, None)
         store, _engine = make_store(conn)
-        with pytest.raises(NotFoundError):
+        with pytest.raises(NotFoundError, match="not found"):
             await store.end_session(
                 new_uuid(),
                 ended=datetime(2026, 1, 1, tzinfo=UTC),
                 cli_session_id=None,
                 actor="user",
             )
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def db_store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
+    """Return a store on an empty, freshly bootstrapped database."""
+    await reset_schema(pglite_engine)
+    built = Store(pglite_engine, embed=StubEmbedder())
+    await built.bootstrap()
+    yield built
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+class TestEndSessionOnADatabase:
+    """What a close writes, read back from the tables rather than the SQL text."""
+
+    async def test_a_close_stamps_the_session_and_audits_who_closed_it(
+        self,
+        db_store: Store,
+    ) -> None:
+        key = await _api_key(db_store)
+        session_id = await _open(db_store)
+        ended = datetime(2026, 1, 1, tzinfo=UTC)
+
+        stamped = await db_store.end_session(
+            session_id,
+            ended=ended,
+            cli_session_id="cli-1",
+            api_key_id=key,
+            actor="closer",
+        )
+
+        assert stamped == ended
+        row = await db_store.get_inquiry(session_id)
+        assert isinstance(row, AgentSession)
+        assert (row.status, row.ended, row.cli_session_id) == (
+            "complete",
+            ended,
+            "cli-1",
+        )
+        assert await _close_audit(db_store, session_id) == {
+            ("agentsession_cli_session_id", "closer", key),
+            ("agentsession_ended", "closer", key),
+            ("status", "closer", key),
+        }
+
+    async def test_a_retry_under_the_same_key_replays_the_first_close(
+        self,
+        db_store: Store,
+    ) -> None:
+        session_id = await _open(db_store)
+        first = datetime(2026, 1, 1, tzinfo=UTC)
+        key = uuid4()
+        set_client_change_id(key)
+        _ = await db_store.end_session(session_id, ended=first, actor="closer")
+
+        set_client_change_id(key)
+        retried = await db_store.end_session(
+            session_id,
+            ended=first + timedelta(hours=1),
+            actor="closer",
+        )
+
+        assert retried == first
+        set_client_change_id(uuid4())
+        with pytest.raises(ConflictError, match="already ended"):
+            _ = await db_store.end_session(session_id, ended=first, actor="closer")
+
+
+async def _open(store: Store) -> UUID:
+    """Open a live session."""
+    session_id, _, _ = await store.start_session(
+        SubmitAgentSession(title="s", cli="claude", account="t@e"),
+        requested_actor="agent",
+    )
+    return session_id
+
+
+async def _api_key(store: Store) -> UUID:
+    """Return a stored API key that a close can be attributed to."""
+    user, key = uuid4(), uuid4()
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES ($1, 'closer@example.com', 'Closer', 'writer', 'active')",
+            user,
+        )
+        await conn.execute(
+            "INSERT INTO api_keys (id, user_id, name, secret_hash, prefix, role) "
+            "VALUES ($1, $2, 'key', 'hash', 'trax_', 'writer')",
+            key,
+            user,
+        )
+    return key
+
+
+async def _close_audit(
+    store: Store,
+    session_id: UUID,
+) -> set[tuple[object, object, object]]:
+    """Return ``(kind, actor, api_key_id)`` for each audit row a close writes."""
+    async with store.engine.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT kind, actor, api_key_id FROM change_log WHERE subject_id = $1 "
+            "AND kind IN ('agentsession_cli_session_id', 'agentsession_ended', "
+            "'status')",
+            session_id,
+        )
+    return {(row["kind"], row["actor"], row["api_key_id"]) for row in rows}
 
 
 if __name__ == "__main__":

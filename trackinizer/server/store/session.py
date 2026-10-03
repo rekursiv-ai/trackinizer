@@ -10,8 +10,8 @@ edit machinery is reused through the composed :class:`Store`.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime
-from typing import TYPE_CHECKING, cast
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
 
 
@@ -51,6 +51,28 @@ from trackinizer.wire.wire_sessions import FeedEvent
 __all__ = [
     "_SessionMixin",
 ]
+
+
+_LOCK_SESSION_SQL: Final = (
+    "SELECT kind, status, agentsession_ended, agentsession_cli_session_id "
+    "FROM inquiries WHERE id = $1 FOR UPDATE"
+)
+"""Lock a session's row for a lifecycle move, reading what each move checks."""
+
+_SEEN_WRITE_EVERY: Final = timedelta(minutes=1)
+"""How stale a session's ``last_seen`` must be before a sign of life rewrites it."""
+
+# ``$3`` is the newest ``last_seen`` still worth rewriting. A poll starts watching a
+# session; any other sign of life only refreshes a session already watched.
+_SEEN_SQL: Final = (
+    "INSERT INTO session_liveness (session_id, last_seen) VALUES ($1, $2) "
+    "ON CONFLICT (session_id) DO UPDATE SET last_seen = EXCLUDED.last_seen "
+    "WHERE session_liveness.last_seen < $3"
+)
+_SEEN_AGAIN_SQL: Final = (
+    "UPDATE session_liveness SET last_seen = $2 "
+    "WHERE session_id = $1 AND last_seen < $3"
+)
 
 
 def _strip_postgres_nuls(value: JSONValue) -> JSONValue:
@@ -315,35 +337,15 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             # live; resolve_live_sessions reads the column the same way.
             owner = StrCodec.coerce(row["owner"])
             if row["agentsession_ended"] is not None:
-                # Re-open: move ended -> live in one statement so the lifecycle
-                # CHECK never observes (ended set, status active). Attribute the
-                # audit to the resuming caller, not the original owner.
-                await conn.execute(
-                    "UPDATE inquiries SET agentsession_ended = NULL, "
-                    "status = 'active', modified = clock_timestamp() WHERE id = $1",
-                    session_id,
-                )
-                await self._emit_field_change(
+                # Attribute the audit to the resuming caller, not the original
+                # owner.
+                await self._reopen_on_conn(
                     conn,
-                    session_id,
-                    "AgentSession",
-                    "agentsession_ended",
-                    Snapshot(agentsession_ended=_datetime(row["agentsession_ended"])),
-                    new=Snapshot(agentsession_ended=None),
+                    session_id=session_id,
+                    row=row,
                     api_key_id=api_key_id,
                     actor=actor,
                 )
-                if row["status"] != "active":
-                    await self._emit_field_change(
-                        conn,
-                        session_id,
-                        "AgentSession",
-                        "status",
-                        Snapshot(status=cast(Inquiry.Status, row["status"])),
-                        new=Snapshot(status="active"),
-                        api_key_id=api_key_id,
-                        actor=actor,
-                    )
             # Apply any new rooms from the resuming request: ``--resume --room X``
             # must join X. ``_mutate_list_field_on_conn`` is idempotent (a re-add
             # of an existing room is a no-op) and runs on this open tx.
@@ -360,6 +362,202 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                     )
             next_seq = await self._next_event_seq(conn, session_id)
             return session_id, owner, next_seq
+
+    # A ``trax run`` polls continuously, so its row is rewritten at most once a minute:
+    # the reaper's window is many minutes, and a write per poll would be one per session
+    # per long-poll cycle.
+    async def record_session_seen(
+        self,
+        session_id: UUID,
+        *,
+        at: datetime,
+        polled: bool,
+    ) -> None:
+        """Note that ``session_id`` was heard from at ``at``.
+
+        Args:
+          session_id: AgentSession that just polled or uploaded.
+          at: When it was heard from.
+          polled: Whether it polled its inbound queue. A poll starts watching the
+            session; anything else only refreshes one already watched, so a
+            session that never polls is never closed for silence.
+
+        """
+        async with self.engine.acquire() as conn:
+            await conn.execute(
+                _SEEN_SQL if polled else _SEEN_AGAIN_SQL,
+                session_id,
+                at,
+                at - _SEEN_WRITE_EVERY,
+            )
+
+    async def silent_sessions(self, *, before: datetime) -> list[UUID]:
+        """Return each live session last heard from at or before ``before``.
+
+        Args:
+          before: The latest last-seen time that counts as silent.
+
+        Returns:
+          session_ids: Silent sessions, longest silent first.
+
+        """
+        async with self.engine.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT liveness.session_id FROM session_liveness AS liveness "
+                "JOIN inquiries ON inquiries.id = liveness.session_id "
+                "WHERE NOT liveness.reaped AND liveness.last_seen <= $1 "
+                "AND inquiries.agentsession_ended IS NULL "
+                "ORDER BY liveness.last_seen, liveness.session_id",
+                before,
+            )
+        return [_uuid(row["session_id"]) for row in rows]
+
+    async def reap_session(
+        self,
+        session_id: UUID,
+        *,
+        before: datetime,
+        actor: Inquiry.Actor,
+    ) -> datetime | None:
+        """End a session still silent since ``before``, at the time it was last seen.
+
+        Rechecked under lock, so a session heard from (or ended by its own run)
+        since :meth:`silent_sessions` listed it is left alone.
+
+        Args:
+          session_id: AgentSession to close.
+          before: The latest last-seen time that counts as silent.
+          actor: System-wide author label for the close audit.
+
+        Returns:
+          ended: The end time stamped, or ``None`` if the session was not closed.
+
+        """
+        async with (
+            notify_after_commit(),
+            self.engine.acquire() as conn,
+            tx(conn),
+        ):
+            # The session row first, then its liveness: the order ``end_session``
+            # takes them in, so a concurrent clean end cannot deadlock with this.
+            row = await conn.fetchrow(
+                _LOCK_SESSION_SQL,
+                session_id,
+            )
+            last_seen = await conn.fetchval(
+                "SELECT last_seen FROM session_liveness WHERE session_id = $1 "
+                "AND NOT reaped AND last_seen <= $2 FOR UPDATE",
+                session_id,
+                before,
+            )
+            if (
+                last_seen is None
+                or row is None
+                or row["agentsession_ended"] is not None
+            ):
+                return None
+            ended = _datetime(last_seen)
+            await self._end_on_conn(
+                conn,
+                session_id=session_id,
+                row=row,
+                ended=ended,
+                cli_session_id=None,
+                api_key_id=None,
+                actor=actor,
+            )
+            await conn.execute(
+                "UPDATE session_liveness SET reaped = TRUE WHERE session_id = $1",
+                session_id,
+            )
+            return ended
+
+    async def revive_reaped_session(
+        self,
+        session_id: UUID,
+        *,
+        actor: Inquiry.Actor,
+    ) -> bool:
+        """Reopen ``session_id`` if it was closed for silence; return whether it was.
+
+        Args:
+          session_id: AgentSession that just polled or uploaded.
+          actor: System-wide author label for the reopen audit.
+
+        Returns:
+          revived: Whether the session had been reaped and is live again; False
+            for one its own run ended, or a live one.
+
+        """
+        async with (
+            notify_after_commit(),
+            self.engine.acquire() as conn,
+            tx(conn),
+        ):
+            row = await conn.fetchrow(
+                _LOCK_SESSION_SQL,
+                session_id,
+            )
+            reaped = await conn.fetchval(
+                "SELECT reaped FROM session_liveness WHERE session_id = $1 FOR UPDATE",
+                session_id,
+            )
+            if not reaped or row is None or row["agentsession_ended"] is None:
+                return False
+            await self._reopen_on_conn(
+                conn,
+                session_id=session_id,
+                row=row,
+                api_key_id=None,
+                actor=actor,
+            )
+            return True
+
+    # One statement moves the row from ended to live, so the lifecycle CHECK (``ended``
+    # set iff ``status='complete'``) never observes ``ended`` set with ``status`` active
+    # -- the mirror of ``end_session``'s atomic live-to-ended move.
+    async def _reopen_on_conn(
+        self,
+        conn: Conn,
+        *,
+        session_id: UUID,
+        row: asyncpg.Record,
+        api_key_id: UUID | None,
+        actor: Inquiry.Actor,
+    ) -> None:
+        """Clear ``ended``, restore ``status='active'``, and audit both, on ``conn``."""
+        await conn.execute(
+            "UPDATE inquiries SET agentsession_ended = NULL, "
+            "status = 'active', modified = clock_timestamp() WHERE id = $1",
+            session_id,
+        )
+        # Live again, by a revival or a resume: reapable again, from now.
+        await conn.execute(
+            "UPDATE session_liveness SET reaped = FALSE, last_seen = clock_timestamp() "
+            "WHERE session_id = $1",
+            session_id,
+        )
+        await self._emit_field_change(
+            conn,
+            session_id,
+            "AgentSession",
+            "agentsession_ended",
+            Snapshot(agentsession_ended=_datetime(row["agentsession_ended"])),
+            new=Snapshot(agentsession_ended=None),
+            api_key_id=api_key_id,
+            actor=actor,
+        )
+        if row["status"] != "active":
+            await self._emit_field_change(
+                conn,
+                session_id,
+                "AgentSession",
+                "status",
+                Snapshot(status=cast(Inquiry.Status, row["status"])),
+                new=Snapshot(status="active"),
+                api_key_id=api_key_id,
+                actor=actor,
+            )
 
     async def resolve_live_sessions(
         self,
@@ -558,18 +756,13 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
           ConflictError: Row is not an AgentSession, or already ended by a different key.
 
         """
-        # The only legal terminal status for an ended AgentSession; the
-        # lifecycle CHECK forbids any other once ``ended`` is set.
-        status: Inquiry.Status = "complete"
         async with (
             notify_after_commit(),
             self.engine.acquire() as conn,
             tx(conn),
         ):
             row = await conn.fetchrow(
-                "SELECT kind, status, agentsession_ended, "
-                "agentsession_cli_session_id FROM inquiries "
-                "WHERE id = $1 FOR UPDATE",
+                _LOCK_SESSION_SQL,
                 session_id,
             )
             if row is None:
@@ -617,66 +810,92 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 raise ConflictError(
                     f"session {session_id} has already ended; cannot end again",
                 )
-            if (
-                cli_session_id is not None
-                and cli_session_id != row["agentsession_cli_session_id"]
-            ):
-                await self._update_field(
-                    conn,
-                    session_id,
-                    "agentsession_cli_session_id",
-                    cli_session_id,
-                )
-                await self._emit_field_change(
-                    conn,
-                    session_id,
-                    "AgentSession",
-                    "agentsession_cli_session_id",
-                    Snapshot(
-                        agentsession_cli_session_id=_optional_str(
-                            row["agentsession_cli_session_id"],
-                        ),
-                    ),
-                    new=Snapshot(agentsession_cli_session_id=cli_session_id),
-                    api_key_id=api_key_id,
-                    actor=actor,
-                )
-            # Stamp ``ended`` and ``status`` in ONE statement: the lifecycle
-            # CHECK (``ended`` set iff ``status='complete'``) is evaluated per
-            # statement, so two separate UPDATEs would expose the intermediate
-            # (ended set, status still 'active') desync and violate it. One
-            # UPDATE moves the row straight from live to (ended, complete).
-            await conn.execute(
-                "UPDATE inquiries SET agentsession_ended = $1, status = $2, "
-                "modified = clock_timestamp() WHERE id = $3",
-                ended,
-                status,
-                session_id,
+            await self._end_on_conn(
+                conn,
+                session_id=session_id,
+                row=row,
+                ended=ended,
+                cli_session_id=cli_session_id,
+                api_key_id=api_key_id,
+                actor=actor,
             )
-            # Audit rows are separate change_log inserts (one change_kind per
-            # row); they don't touch the inquiries CHECK.
+            return ended
+
+    # Shared by a run's own end and the reaper's, so a session closed for silence is
+    # closed exactly as its run would have closed it.
+    async def _end_on_conn(
+        self,
+        conn: Conn,
+        *,
+        session_id: UUID,
+        row: asyncpg.Record,
+        ended: datetime,
+        cli_session_id: str | None,
+        api_key_id: UUID | None,
+        actor: Inquiry.Actor,
+    ) -> None:
+        """Stamp ``ended`` and ``status='complete'`` and audit both, on ``conn``."""
+        # The only legal terminal status for an ended AgentSession.
+        status: Inquiry.Status = "complete"
+        if (
+            cli_session_id is not None
+            and cli_session_id != row["agentsession_cli_session_id"]
+        ):
+            await self._update_field(
+                conn,
+                session_id,
+                "agentsession_cli_session_id",
+                cli_session_id,
+            )
             await self._emit_field_change(
                 conn,
                 session_id,
                 "AgentSession",
-                "agentsession_ended",
-                Snapshot(agentsession_ended=None),
-                new=Snapshot(agentsession_ended=ended),
+                "agentsession_cli_session_id",
+                Snapshot(
+                    agentsession_cli_session_id=_optional_str(
+                        row["agentsession_cli_session_id"],
+                    ),
+                ),
+                new=Snapshot(agentsession_cli_session_id=cli_session_id),
                 api_key_id=api_key_id,
                 actor=actor,
             )
-            if row["status"] != status:
-                await self._emit_field_change(
-                    conn,
-                    session_id,
-                    "AgentSession",
-                    "status",
-                    Snapshot(status=cast(Inquiry.Status, row["status"])),
-                    new=Snapshot(status=status),
-                    api_key_id=api_key_id,
-                    actor=actor,
-                )
-            return ended
+        # Stamp ``ended`` and ``status`` in ONE statement: the lifecycle
+        # CHECK (``ended`` set iff ``status='complete'``) is evaluated per
+        # statement, so two separate UPDATEs would expose the intermediate
+        # (ended set, status still 'active') desync and violate it. One
+        # UPDATE moves the row straight from live to (ended, complete).
+        await conn.execute(
+            "UPDATE inquiries SET agentsession_ended = $1, status = $2, "
+            "modified = clock_timestamp() WHERE id = $3",
+            ended,
+            status,
+            session_id,
+        )
+        # Audit rows are separate change_log inserts (one change_kind per
+        # row); they don't touch the inquiries CHECK.
+        await self._emit_field_change(
+            conn,
+            session_id,
+            "AgentSession",
+            "agentsession_ended",
+            Snapshot(agentsession_ended=None),
+            new=Snapshot(agentsession_ended=ended),
+            api_key_id=api_key_id,
+            actor=actor,
+        )
+        if row["status"] != status:
+            await self._emit_field_change(
+                conn,
+                session_id,
+                "AgentSession",
+                "status",
+                Snapshot(status=cast(Inquiry.Status, row["status"])),
+                new=Snapshot(status=status),
+                api_key_id=api_key_id,
+                actor=actor,
+            )
 
 
 def _feed_event(row: asyncpg.Record) -> FeedEvent:

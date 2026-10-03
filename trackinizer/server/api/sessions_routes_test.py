@@ -8,7 +8,7 @@ not drain the session's inbound queue).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
 
@@ -16,20 +16,27 @@ import uuid
 
 import pytest
 
-from trackinizer.lib.custom_json import DictCodec
+from trackinizer.lib.custom_json import DictCodec, StrCodec, loads
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
+    TEST_USER_ID,
     install_identity,
     make_test_identity,
 )
 from trackinizer.server.inbound import Inbound, InboundQueue
+from trackinizer.server.session_reaper import (
+    STALE_AFTER,
+    reap_silent_sessions,
+)
 from trackinizer.types.inquiries import AgentSession
 
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
+
+    import httpx2
 
     from trackinizer.conftest import FakeEngine
     from trackinizer.server.store.core import Store
@@ -460,6 +467,184 @@ class TestViewerOwnedSessionLifecycle:
 
         assert response.status_code == (200 if owns_session else 403), response.text
         assert end.await_count == int(owns_session)
+
+
+_SLASH_ONLY = {
+    "slash_commands": [{"timestamp": "2026-10-03T12:30:00Z", "command": "exit"}],
+}
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_dead_run_is_closed_and_a_returning_one_reopened(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The reaper closes a silent session; a poll or an upload brings it back."""
+    client, store = pglite_route_client
+    inbound = InboundQueue()
+    app.state.inbound = inbound
+    await _active_user(store)
+    session_id = await _start(client)
+
+    polled = await client.get(f"/api/sessions/{session_id}/inbound")
+    assert polled.status_code == 200, polled.text
+    last_seen = await _last_seen(store, session_id=session_id)
+    assert await _reap(store, inbound=inbound, after=_WINDOW) == 1
+    closed = await _session(store, session_id=session_id)
+    assert (closed.status, closed.ended) == ("complete", last_seen)
+
+    # The run was only cut off: its next poll gets the session back.
+    polled = await client.get(f"/api/sessions/{session_id}/inbound")
+    assert polled.status_code == 200, polled.text
+    reopened = await _session(store, session_id=session_id)
+    assert (reopened.status, reopened.ended) == ("active", None)
+    assert inbound.has_poller(session_id)
+
+    # Closed again, it comes back through an upload too -- and the upload, which
+    # an ended session would refuse, lands.
+    assert await _reap(store, inbound=inbound, after=_WINDOW) == 1
+    uploaded = await client.post(
+        f"/api/sessions/{session_id}/records",
+        json=_SLASH_ONLY,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    assert DictCodec.coerce(loads(uploaded.content))["slash_commands"] == 1
+    assert (await _session(store, session_id=session_id)).status == "active"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_upload_keeps_a_polling_session_open(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A bridge polls only when its agent is ready; its uploads say it is alive."""
+    client, store = pglite_route_client
+    inbound = InboundQueue()
+    app.state.inbound = inbound
+    await _active_user(store)
+    session_id = await _start(client)
+
+    _ = await client.get(f"/api/sessions/{session_id}/inbound")
+    await _poll_was_ago(store, session_id=session_id, ago=timedelta(minutes=10))
+    uploaded = await client.post(
+        f"/api/sessions/{session_id}/records",
+        json=_SLASH_ONLY,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    # Silent for the whole window as of the poll, but not as of the upload.
+    after = STALE_AFTER - timedelta(minutes=5)
+    assert await _reap(store, inbound=inbound, after=after) == 0
+    assert (await _session(store, session_id=session_id)).status == "active"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_session_that_never_polls_is_never_closed(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A capture-only producer has no poller whose silence could mean anything."""
+    client, store = pglite_route_client
+    inbound = InboundQueue()
+    app.state.inbound = inbound
+    await _active_user(store)
+    session_id = await _start(client)
+
+    uploaded = await client.post(
+        f"/api/sessions/{session_id}/records",
+        json=_SLASH_ONLY,
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    assert await _reap(store, inbound=inbound, after=timedelta(days=1)) == 0
+    assert (await _session(store, session_id=session_id)).status == "active"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_cleanly_ended_session_stays_ended(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """Only the reaper's own closes are undone by a return."""
+    client, store = pglite_route_client
+    inbound = InboundQueue()
+    app.state.inbound = inbound
+    await _active_user(store)
+    session_id = await _start(client)
+
+    _ = await client.get(f"/api/sessions/{session_id}/inbound")
+    ended = await client.post(
+        f"/api/sessions/{session_id}/end",
+        json={"actor": "scientist"},
+    )
+    assert ended.status_code == 200, ended.text
+    assert await _reap(store, inbound=inbound, after=timedelta(days=1)) == 0
+    _ = await client.get(f"/api/sessions/{session_id}/inbound")
+    assert (await _session(store, session_id=session_id)).status == "complete"
+
+
+_WINDOW = STALE_AFTER + timedelta(minutes=1)
+"""Long enough from now that anything seen so far counts as silent."""
+
+
+async def _reap(store: Store, *, inbound: InboundQueue, after: timedelta) -> int:
+    """Run one reaper pass as of ``after`` from now."""
+    now = datetime.now(UTC) + after
+    return await reap_silent_sessions(store, inbound=inbound, now=now)
+
+
+async def _last_seen(store: Store, *, session_id: uuid.UUID) -> datetime:
+    """Return when ``session_id`` was last recorded as heard from."""
+    async with store.engine.acquire() as conn:
+        seen = await conn.fetchval(
+            "SELECT last_seen FROM session_liveness WHERE session_id = $1",
+            session_id,
+        )
+    assert isinstance(seen, datetime)
+    return seen
+
+
+async def _poll_was_ago(
+    store: Store,
+    *,
+    session_id: uuid.UUID,
+    ago: timedelta,
+) -> None:
+    """Move the session's last sighting ``ago`` into the past."""
+    seen = await _last_seen(store, session_id=session_id)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE session_liveness SET last_seen = $2 WHERE session_id = $1",
+            session_id,
+            seen - ago,
+        )
+
+
+async def _active_user(store: Store) -> None:
+    """Create the test principal as an active user, which a session start requires."""
+    install_identity(make_test_identity(api_key_id=None))
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES ($1, 'test-user@example.com', 'Test', 'writer', 'active') "
+            "ON CONFLICT DO NOTHING",
+            TEST_USER_ID,
+        )
+
+
+async def _start(client: httpx2.AsyncClient) -> uuid.UUID:
+    """Open a session through the route and return its id."""
+    started = await client.post(
+        "/api/sessions/start",
+        json={"cli": "claude", "actor": "scientist"},
+    )
+    assert started.status_code == 201, started.text
+    return uuid.UUID(StrCodec.coerce(DictCodec.coerce(loads(started.content))["id"]))
+
+
+async def _session(store: Store, *, session_id: uuid.UUID) -> AgentSession:
+    """Return the session's row."""
+    row = await store.get_inquiry(session_id)
+    assert isinstance(row, AgentSession)
+    return row
 
 
 if __name__ == "__main__":

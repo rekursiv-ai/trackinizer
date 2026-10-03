@@ -14,6 +14,7 @@ derived by joining to ``inquiries``, as every session route does.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
@@ -23,6 +24,7 @@ from trackinizer.lib.custom_json import DictCodec, json_freeze
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.session_access import require_session_write_access
 from trackinizer.server.auth import AuthIdentity, require_role
+from trackinizer.server.session_reaper import revive_if_reaped
 from trackinizer.server.store.session_ir import SlashCommandRow
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
@@ -78,6 +80,10 @@ async def append_session_records_route(
     store = get_store(request)
     session = await _require_session(store, session_id)
     require_session_write_access(identity, session)
+    # A run closed for silence that uploads again was alive all along; reopen
+    # its session first, or the append is refused as a write to an ended one.
+    if session.ended is not None:
+        _ = await revive_if_reaped(store, session_id=session_id)
     manifest = body.manifest
     part = (
         None
@@ -103,6 +109,11 @@ async def append_session_records_route(
             )
             for command in body.slash_commands
         ],
+    )
+    await store.record_session_seen(
+        session_id,
+        at=datetime.now(UTC),
+        polled=False,
     )
     return AppendRecordsResponse(
         part=part,

@@ -26,6 +26,7 @@ from trackinizer.server.auth import (
     require_role,
 )
 from trackinizer.server.inbound import Inbound, InboundReplayConflictError
+from trackinizer.server.session_reaper import revive_if_reaped
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.bodies import SubmitAgentSession
 from trackinizer.wire.wire_sessions import (
@@ -316,8 +317,20 @@ async def session_inbound_drain_route(
         if not owned:
             raise HTTPException(status_code=403, detail="Own session key required")
     inbound = get_inbound(request)
+    # A run closed for silence that polls again was alive all along -- cut off,
+    # not dead -- so it gets its session back before this poll is served.
+    if session.ended is not None and await revive_if_reaped(
+        store,
+        session_id=session_id,
+    ):
+        session = await _require_session(store, session_id)
     if session.status == "active" and session.ended is None:
         inbound.mark_poller(session_id)
+        await store.record_session_seen(
+            session_id,
+            at=datetime.now(UTC),
+            polled=True,
+        )
     # Ceiling on how long the inbound drain holds a request open. Long enough that
     # a waiting caller re-arms rarely, short enough to stay under the idle timeout
     # of an intermediary that would otherwise cut the connection mid-wait.

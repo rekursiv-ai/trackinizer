@@ -292,6 +292,14 @@ push envelopes -- JSON metadata for a committed change, generated
 server-side (no HTTP surface produces them). Shape and client-side
 handling: `design_subscriber.md`.
 
+A session whose run dies without calling `end` (killed, host crashed) is
+closed by the server: once a session that polls its inbound queue has gone
+15 minutes without a poll or a records upload, it is ended at the time it
+was last seen, audited as `trackinizer`. Its next poll or upload reopens it,
+so a run that was only cut off carries on as the same session. A session
+that never polls is never closed this way. Liveness is kept in the database,
+so a server restart neither hides a dead run nor strands a closed one.
+
 ### 1.22 Service meta
 
 ```

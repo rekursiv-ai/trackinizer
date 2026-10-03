@@ -79,5 +79,7 @@ Left out on purpose, and why:
   operation receipts, not account-agnostic graph records.
 * ``visual_reports``, ``visual_report_revisions`` -- shared report presentation
   and author identity; the linked Artifact and graph citations export above.
+* ``session_liveness`` -- when each live session was last heard from, which
+  the session reaper keeps; runtime state, meaningless once restored elsewhere.
 * ``applied_migrations`` -- carried in the header instead.
 """
