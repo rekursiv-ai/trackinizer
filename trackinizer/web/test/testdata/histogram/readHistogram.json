@@ -1,0 +1,53 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/web/feed/histogram",
+    "query": [
+      [
+        "kind",
+        "ToolCall"
+      ],
+      [
+        "since",
+        "2026-01-01T00:00:00.000000Z"
+      ],
+      [
+        "until",
+        "2026-01-01T00:00:00.000000Z"
+      ],
+      [
+        "buckets",
+        "4"
+      ]
+    ]
+  },
+  "response": {
+    "body": {
+      "bucket_seconds": 900,
+      "counts": [
+        {
+          "count": 0,
+          "start": "2026-01-01T00:00:00.000000Z"
+        },
+        {
+          "count": 0,
+          "start": "2026-01-01T00:00:00.000000Z"
+        },
+        {
+          "count": 0,
+          "start": "2026-01-01T00:00:00.000000Z"
+        },
+        {
+          "count": 0,
+          "start": "2026-01-01T00:00:00.000000Z"
+        }
+      ],
+      "end": "2026-01-01T00:00:00.000000Z",
+      "start": "2026-01-01T00:00:00.000000Z"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

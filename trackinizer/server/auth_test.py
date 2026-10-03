@@ -1523,13 +1523,13 @@ class TestAllowlistMatch:
     async def test_literal_match_returns_role(self) -> None:
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value="admin")
-        role = await allowlist_match(cast(Conn, conn), email="alice@rekursiv.ai")
+        role = await allowlist_match(cast(Conn, conn), email="alice@example.com")
         assert role == "admin"
         # The first SQL probe must be the literal lookup.
         sql, *args = conn.fetchval.call_args_list[0].args
         assert isinstance(sql, str)
         assert "lower(email_or_pattern) = lower($1)" in sql
-        assert args == ["alice@rekursiv.ai"]
+        assert args == ["alice@example.com"]
 
     @pytest.mark.asyncio
     async def test_literal_match_is_case_insensitive(self) -> None:
@@ -1550,7 +1550,7 @@ class TestAllowlistMatch:
         # Literal probe misses (returns None), pattern probe wins.
         conn = make_conn()
         conn.fetchval = AsyncMock(side_effect=[None, "writer"])
-        role = await allowlist_match(cast(Conn, conn), email="bob@rekursiv.ai")
+        role = await allowlist_match(cast(Conn, conn), email="bob@example.com")
         assert role == "writer"
         # Second probe queries the LIKE-anchored pattern table.
         second_sql = conn.fetchval.call_args_list[1].args[0]

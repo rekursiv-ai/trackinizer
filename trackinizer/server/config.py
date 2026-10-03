@@ -62,7 +62,7 @@ class ConfigFlags(Protocol):
     session_embedders: str
     web: bool
     session_max_age_seconds: int
-    no_auth: bool
+    auth: bool
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -82,13 +82,8 @@ class Config:
       embedder: Embedder backend name (inquiry_embeddings, 384-dim).
       session_embedder: Embedder backend name for session_embeddings
         semantic search (1024-dim); empty disables the semantic arm.
-      web: Mount the SPA when true.
-      oauth_google_client_id: Google OAuth client id. ``None`` makes the
-        OAuth routes 503; bearer auth is unaffected.
-      oauth_google_client_secret: Google OAuth client secret; same
-        503-on-missing behavior.
-      oauth_redirect_uri: Public callback URL registered with Google.
-        ``None`` disables OAuth.
+      web: Mount the web routes: ``/api/web``, the login page and, with
+        ``--app-dir``, the web app.
       session_secret: HMAC key for the session and OAuth-state cookies.
         ``None`` disables session login. Must be stable across processes
         sharing the cookie -- rotating it logs everyone out.
@@ -127,9 +122,6 @@ class Config:
     # candidates. Env: comma-separated ``TRACKINIZER_SESSION_EMBEDDERS``.
     session_embedders: tuple[str, ...] = ()
     web: bool = False
-    oauth_google_client_id: str | None = None
-    oauth_google_client_secret: str | None = None
-    oauth_redirect_uri: str | None = None
     session_secret: str | None = None
     session_max_age_seconds: int = _DEFAULT_SESSION_MAX_AGE_SECONDS
     auth_disabled: bool = False
@@ -159,16 +151,9 @@ class Config:
                 os.environ.get("TRACKINIZER_SESSION_EMBEDDERS", ""),
             ),
             web=os.environ.get("TRACKINIZER_WEB") == "1",
-            oauth_google_client_id=os.environ.get("TRACKINIZER_GOOGLE_CLIENT_ID")
-            or None,
-            oauth_google_client_secret=os.environ.get(
-                "TRACKINIZER_GOOGLE_CLIENT_SECRET",
-            )
-            or None,
-            oauth_redirect_uri=os.environ.get("TRACKINIZER_OAUTH_REDIRECT_URI") or None,
             session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET") or None,
             session_max_age_seconds=session_max_age_from_env(),
-            auth_disabled=os.environ.get("TRACKINIZER_NO_AUTH") == "1",
+            auth_disabled=auth_disabled_from_env(),
         )
 
     @classmethod
@@ -179,7 +164,8 @@ class Config:
           flags: Parsed arguments with engine, datadir, ephemeral, etc. fields.
 
         Returns:
-          result: Config with settings from flags; OAuth secrets from environment only.
+          result: Config with settings from flags; the session secret from the
+            environment only.
 
         """
         return cls(
@@ -193,17 +179,10 @@ class Config:
             session_embedder_dim=flags.session_embedder_dim,
             session_embedders=_parse_session_embedders(flags.session_embedders),
             web=flags.web,
-            # OAuth secrets come from the environment only, never CLI flags.
-            oauth_google_client_id=os.environ.get("TRACKINIZER_GOOGLE_CLIENT_ID")
-            or None,
-            oauth_google_client_secret=os.environ.get(
-                "TRACKINIZER_GOOGLE_CLIENT_SECRET",
-            )
-            or None,
-            oauth_redirect_uri=os.environ.get("TRACKINIZER_OAUTH_REDIRECT_URI") or None,
+            # Secrets come from the environment only, never CLI flags.
             session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET") or None,
             session_max_age_seconds=flags.session_max_age_seconds,
-            auth_disabled=flags.no_auth,
+            auth_disabled=not flags.auth,
         )
 
     def maintained_embedders(self) -> tuple[str, ...]:
@@ -252,6 +231,11 @@ def session_max_age_from_env() -> int:
             f"TRACKINIZER_SESSION_MAX_AGE_SECONDS must be >= 1, got {seconds}",
         )
     return seconds
+
+
+def auth_disabled_from_env() -> bool:
+    """Whether ``TRACKINIZER_NO_AUTH=1`` asks for single-user local mode."""
+    return os.environ.get("TRACKINIZER_NO_AUTH") == "1"
 
 
 def parse_engine(value: str) -> Literal["pglite", "pg"]:

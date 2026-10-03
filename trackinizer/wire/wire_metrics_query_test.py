@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import uuid
+
 from pydantic import ValidationError
 
 import pytest
 
+from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.wire_metrics_query import (
     MetricMaskClause,
     MetricQueryRequest,
+    MetricRankRequest,
 )
 
 
@@ -88,6 +92,31 @@ class TestMetricQueryRequest:
         with pytest.raises(ValidationError):
             MetricQueryRequest(masks=[], limit=0)
 
+    def test_rejects_limit_over_max(self) -> None:
+        """An over-cap limit is refused, never silently clamped to the cap."""
+        assert MetricQueryRequest(limit=MAX_LIST_LIMIT).limit == MAX_LIST_LIMIT
+        with pytest.raises(ValidationError):
+            MetricQueryRequest(limit=MAX_LIST_LIMIT + 1)
+
+    @pytest.mark.parametrize(
+        "read_control",
+        [{"sort": "desc"}, {"limit": 1}],
+    )
+    def test_rejects_read_controls_on_write(
+        self,
+        read_control: dict[str, object],
+    ) -> None:
+        """``sort`` / ``limit`` window a read; on a write they would be ignored."""
+        with pytest.raises(ValidationError, match="reads only"):
+            MetricQueryRequest.model_validate({"write": 0.5} | read_control)
+
+    def test_write_tolerates_null_read_controls(self) -> None:
+        """A client dumping the model sends ``null`` for unset fields."""
+        req = MetricQueryRequest.model_validate(
+            {"masks": [], "write": 0.5, "sort": None, "limit": None},
+        )
+        assert req.write == 0.5
+
     def test_rejects_non_finite_write(self) -> None:
         # A non-finite write value would 500 the read on serialization, the
         # same failure class the log path's allow_inf_nan=False closes.
@@ -97,6 +126,15 @@ class TestMetricQueryRequest:
     def test_rejects_extra_field(self) -> None:
         with pytest.raises(ValidationError):
             MetricQueryRequest.model_validate({"masks": [], "bogus": 1})
+
+
+class TestMetricRankRequest:
+    def test_caps_experiment_ids(self) -> None:
+        """The id cap is a wire bound (422), not a store-side 409."""
+        ids = [uuid.uuid4() for _ in range(MAX_LIST_LIMIT + 1)]
+        assert MetricRankRequest(experiment_ids=ids[:-1], query=MetricQueryRequest())
+        with pytest.raises(ValidationError):
+            MetricRankRequest(experiment_ids=ids, query=MetricQueryRequest())
 
 
 if __name__ == "__main__":

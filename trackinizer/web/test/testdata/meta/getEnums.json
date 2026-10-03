@@ -1,0 +1,60 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/meta/enums"
+  },
+  "response": {
+    "body": {
+      "edge_kind": [
+        "narrows",
+        "requires",
+        "produced_by",
+        "proves",
+        "favors",
+        "supersedes",
+        "cites_paper"
+      ],
+      "inquiry_kind_all": [
+        "Issue",
+        "Artifact",
+        "Experiment",
+        "Paper",
+        "Belief",
+        "CodeChange",
+        "WebResult",
+        "WebSearch",
+        "AgentSession"
+      ],
+      "issue_kind": [
+        "feature",
+        "bug",
+        "task",
+        "question"
+      ],
+      "judgement": [
+        "proven",
+        "disproven",
+        "unproven",
+        "undecidable"
+      ],
+      "publication_type": [
+        "article",
+        "inproceedings",
+        "book",
+        "thesis",
+        "techreport",
+        "misc"
+      ],
+      "status": [
+        "active",
+        "complete",
+        "abandoned",
+        "invalid"
+      ]
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

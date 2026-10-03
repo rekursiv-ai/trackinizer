@@ -1,0 +1,23 @@
+/* The graph's roots panel (RootsPanel.tsx): a list's rows, narrower. Its box
+   and sort switch are the lists' `.menu-search` and `.view-seg`. */
+.roots { display: flex; flex-direction: column; min-height: 0; background: var(--bg); border-right: 1px solid var(--line); }
+.roots-head { display: flex; align-items: center; gap: 8px; padding: 7px 12px 7px 14px; font-size: 12px; color: var(--muted); }
+.roots-count { font-weight: 500; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.roots-list { flex: 1; min-height: 0; margin: 0; padding: 0; list-style: none; overflow-y: auto; scrollbar-width: thin; outline: none; }
+.roots-row {
+  display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px 0 14px;
+  border-bottom: 1px solid var(--row-divider); font-size: 12.5px; color: var(--text); cursor: pointer;
+}
+.roots-row:hover { background: var(--surface-raised); }
+.roots-row.is-focused { background: var(--surface-hover); }
+.roots-list:focus-visible .roots-row.is-focused { box-shadow: inset 2px 0 0 var(--accent); }
+.roots-row .ic { color: var(--muted); }
+.roots-ref { font: 11.5px var(--mono); color: var(--muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.roots-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.roots-size, .roots-age { flex-shrink: 0; text-align: right; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.roots-size { min-width: 28px; }
+.roots-age { width: 46px; }
+.roots-none { padding: 8px 14px; font-size: 12.5px; color: var(--muted); }
+/* Compact, beside an open Peek: a strip of glyphs, the marked one edged in the accent. */
+.roots.is-compact .roots-row { justify-content: center; padding: 0; }
+.roots.is-compact .roots-row.is-focused { box-shadow: inset 2px 0 0 var(--accent); }

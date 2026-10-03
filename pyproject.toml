@@ -147,10 +147,31 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["trackinizer"]
-exclude = ["**/*_test.py", "**/conftest.py"]
+# The web app ships built, not as source: `npm run build` in trackinizer/web runs
+# before `uv build` (package validation and the publish workflow), and the server
+# serves this copy at /app/ by default; the sdist carries both. An artifact,
+# not a force-include: hatch applies a force-include to the editable install too,
+# so `uv sync` would fail in every checkout that has not built the app yet.
+# Package validation checks that the wheel carries it.
+exclude = ["**/*_test.py", "**/conftest.py", "trackinizer/web/**"]
+artifacts = ["trackinizer/web/dist/**"]
 
 [tool.hatch.build.targets.sdist]
-exclude = [".github/**", ".codespell-ignore"]
+# `uv build` builds the wheel from the sdist, so the sdist must carry the built
+# app too, as an artifact, since the root .gitignore ignores every dist/. Hatch
+# reads that root file only, never web/.gitignore, so the web app's other local
+# output is excluded here: left in, the staged Node's absolute `node` symlink
+# fails the wheel build from the sdist.
+exclude = [
+    ".github/**",
+    ".codespell-ignore",
+    "trackinizer/web/node_modules",
+    "trackinizer/web/.node-bin*",
+    "trackinizer/web/dist-*",
+    "trackinizer/web/test-results",
+    "trackinizer/web/playwright-report",
+]
+artifacts = ["trackinizer/web/dist/**"]
 
 [tool.pytest.ini_options]
 python_files = ["*_test.py", "test_*.py"]

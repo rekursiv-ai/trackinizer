@@ -40,8 +40,13 @@ from trackinizer.server.store.change_id_slot import (
     set_client_change_id,
 )
 from trackinizer.server.store.edit import _EditMixin
+from trackinizer.server.store.session_feed import (
+    CONVERSATION,
+    WHOLE_FEED,
+    FeedScope,
+)
 from trackinizer.server.store.submit import _SubmitMixin
-from trackinizer.server.values import manifest_bound, vetted_sql
+from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.inquiries import Inquiry
@@ -617,8 +622,8 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         after: tuple[datetime, UUID, int, int] | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
-        room: str | None = None,
-        actor: str | None = None,
+        scope: FeedScope = WHOLE_FEED,
+        conversation: bool = False,
         limit: int = 200,
         tail: bool = False,
     ) -> list[FeedEvent]:
@@ -639,8 +644,10 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             start (distinct from ``after``, which is the exclusive resume
             cursor); combine with ``until`` to bound a fixed window.
           until: Inclusive upper bound on ``created``; bounds a window's end.
-          room: When set, only turns from sessions joined to this room.
-          actor: When set, only turns from sessions owned by this routing name.
+          scope: Which sessions and record kinds to keep.
+          conversation: Keep only conversation, the records the facets count as
+            what a person or agent said (``session_feed.CONVERSATION``), so a page
+            of ``limit`` holds that many of them.
           limit: Max turns returned; callers page by advancing ``after``.
           tail: When true, return the *newest* ``limit`` turns (the live tail's
             first page) instead of the oldest, so a large backlog does not force
@@ -667,17 +674,27 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         if until is not None:
             params.append(until)
             clauses.append(f"e.created <= ${len(params)}")
-        if room is not None:
-            params.append(room)
-            clauses.append(f"${len(params)} = ANY(i.agentsession_rooms)")
-        if actor is not None:
-            params.append(actor)
-            clauses.append(f"i.owner = ${len(params)}")
+        clauses.extend(scope.clauses(params, kind="e.kind"))
+        if conversation:
+            # In a CASE, so the planner neither estimates the test nor scans an
+            # index for its kinds. Bare, beside the Messages level's kind filter, it
+            # took the two for independent, judged a page's worth rare, and read
+            # every message record: 21 s on a benchmark of 9 million, against 6 ms.
+            clauses.append(
+                vetted_sql("(CASE WHEN ", CONVERSATION, " THEN true ELSE false END)"),
+            )
         params.append(limit)
         # Exclude stale tail rows a compaction-restart left beyond the live
-        # manifest prefix (``idx < m.records``); see ``values.manifest_bound``.
-        manifest_join, manifest_predicate = manifest_bound("e")
-        clauses.append(manifest_predicate)
+        # manifest prefix (``idx < m.records``); see ``values.manifest_bound``. A
+        # part with no manifest reads as empty, as the join would make it. Looked
+        # up per record, not joined: joined, a page filtered by kind or to
+        # conversation was planned from every manifest, reading each part's
+        # records by primary key -- 13.6 s on a benchmark of 9 million records,
+        # against 8 ms walking ``created`` back from the newest.
+        clauses.append(
+            "e.idx < (SELECT m.records FROM session_manifests m "
+            "WHERE m.session_id = e.session_id AND m.part = e.part)",
+        )
         where = " AND ".join(clauses)
         # ``tail`` takes the newest page (DESC) then restores ascending order in
         # Python, so the wire shape is always oldest-first regardless of which
@@ -687,9 +704,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             "SELECT e.session_id, e.part, e.idx, e.kind, e.created, e.timestamp, "
             "e.model, e.payload, e.text, "
             "i.owner, i.agentsession_rooms, i.agentsession_cli "
-            "FROM session_records e JOIN inquiries i ON i.id = e.session_id ",
-            manifest_join,
-            "WHERE ",
+            "FROM session_records e JOIN inquiries i ON i.id = e.session_id WHERE ",
             where,
             " ORDER BY e.created ",
             order,

@@ -1,0 +1,62 @@
+/* Editing relations, from the design mock (".rel-actions", ".edge-edit",
+   ".confirm-row", and the link palette's ".pal-ctx" and ".pal-check"). */
+
+/* A relation row: the link to the other end, then its actions. The row's own
+   rules (.rel-row) are the detail's. */
+.rel-link { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; align-self: stretch; color: inherit; }
+.rel-link > .ic { color: var(--muted); }
+.rel-actions { display: flex; gap: 2px; opacity: 0; transition: opacity .1s; }
+.rel-row:hover .rel-actions, .rel-row:focus-within .rel-actions, .rel-actions:has([aria-expanded="true"]) { opacity: 1; }
+.rel-actions .icon-btn { width: 24px; height: 24px; }
+.rel-actions .icon-btn:disabled { opacity: .45; cursor: default; }
+/* Without hover, a row's actions mount on a tap here; this draws where to tap. */
+@media (hover: none) {
+  .rel-actions { opacity: 1; }
+  .rel-actions:empty { width: 28px; height: 28px; display: grid; place-items: center; color: var(--muted); }
+  .rel-actions:empty::after { content: "⋯"; }
+}
+
+/* The row is the list item itself, with any open panel in the next one. */
+.rel-list li.rel-row:last-child, .rel-list .rel-panel:last-child > * { border-bottom: 0; }
+
+.edge-edit {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; align-items: start;
+  padding: 12px; background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.edge-edit .actions { display: flex; justify-content: flex-end; grid-column: 1 / -1; }
+.ea-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ea-field > label, .ea-k { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); font-weight: 500; }
+.ea-row { display: flex; align-items: center; gap: 6px; min-height: 30px; }
+.ea-labels { flex-wrap: wrap; }
+.ea-chip { display: inline-flex; align-items: center; gap: 2px; }
+.ea-x { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; color: var(--muted); }
+.ea-x:hover:not(:disabled, [aria-disabled="true"]) { background: var(--surface-hover); color: var(--text); }
+.edge-edit input[type="range"] { accent-color: var(--accent); width: 100%; min-width: 0; }
+.edge-edit .w-status { flex-basis: 100%; }
+
+.confirm-row {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; font-size: 12.5px;
+  background: #d1454514; border-bottom: 1px solid var(--line);
+}
+.rc-q { color: var(--error-text); }
+.rc-q b { font-weight: 500; }
+.rc-kept { color: var(--ink-muted); line-height: 1.5; }
+.rc-row { display: flex; align-items: center; gap: 8px; }
+.rc-row .field { flex: 1; height: 28px; font-size: 12.5px; }
+
+/* The link picker, a palette with the inquiry it links from on top. */
+.pal-ctx { display: flex; align-items: center; gap: 8px; padding: 12px 16px 0; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+.lk-self { display: inline-flex; align-items: center; gap: 5px; font: 12px var(--mono); color: var(--ink-muted); }
+.pal-check {
+  width: 16px; height: 16px; border: 1px solid var(--line-strong); border-radius: 4px;
+  display: grid; place-items: center; color: #fff; flex-shrink: 0;
+}
+.pal-check.on { background: var(--accent); border-color: var(--accent); }
+.lk-err { font-size: 11.5px; color: var(--l-against); white-space: nowrap; }
+.lk-status { padding: 0 16px 6px; }
+.lk-status:empty { display: none; }
+.pal-foot .btn { margin-left: auto; }
+
+.sd-field { display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; color: var(--muted); font-weight: 500; }
+/* Rows take no ticks while the picker adds. */
+.palette .pal-item[aria-disabled="true"] { opacity: .45; cursor: default; }

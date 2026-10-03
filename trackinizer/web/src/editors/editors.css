@@ -1,0 +1,74 @@
+/* The detail's editors, from the design mock ("properties", ".md-edit",
+   ".popover", ".field", the title's hover and focus). */
+.field {
+  height: 30px; padding: 0 10px; border-radius: var(--radius); border: 1px solid var(--line-strong);
+  background: var(--surface-raised); font-size: 13px; color: var(--text); width: 100%; min-width: 0;
+}
+.field:focus { border-color: var(--accent); outline: 2px solid #3987e530; }
+textarea.field { height: auto; min-height: 84px; padding: 8px 10px; resize: vertical; line-height: 1.5; }
+.field.mono, .md-edit textarea.mono { font: 12.5px/1.6 var(--mono); }
+
+/* A property's value as the button that edits it: it fills the value cell. */
+.prop-btn {
+  display: flex; align-items: center; gap: 7px; flex: 1; flex-wrap: wrap; min-width: 0; min-height: 30px;
+  margin: -3px -8px; padding: 3px 8px; border-radius: var(--radius); text-align: left; color: inherit;
+}
+.prop-btn:hover:not(:disabled, [aria-disabled="true"]) { background: var(--surface-hover); color: var(--text); }
+.prop-btn:disabled { cursor: default; }
+.prop-v:has(.prop-btn) .w-status { flex-basis: 100%; margin-top: 4px; }
+/* Boxed, not `display: contents`: the exact priority's popover measures it. */
+.ed-anchor { display: flex; flex: 1; min-width: 0; }
+
+.popover { padding: 12px; width: 280px; max-height: none; }
+.ed-form { display: flex; flex-direction: column; gap: 10px; }
+.ed-form h5 { margin: 0; font-size: 11.5px; font-weight: 500; color: var(--muted); }
+.ed-form .ed-json { min-height: 140px; }
+.pop-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--muted); }
+
+/* Text that opens as an editor on a click; its Edit button shows on hover and focus. */
+.ed-text { position: relative; }
+.ed-text:not(.off) { cursor: text; }
+.ed-text:not(.off) > [data-field="description"] { margin: 0 -10px; padding: 6px 10px; border-radius: 8px; transition: background .12s; }
+.ed-text:not(.off):hover > [data-field="description"], .ed-text:not(.off):hover > .callout { background: var(--surface-raised); }
+.ed-open { position: absolute; top: 2px; right: 2px; opacity: 0; }
+.ed-text:hover > .ed-open, .ed-open:focus-visible { opacity: 1; }
+.ed-open:disabled { display: none; }
+
+.md-edit { display: flex; flex-direction: column; gap: 8px; }
+.md-edit > .k { font-size: 11.5px; color: var(--muted); font-weight: 500; }
+.md-edit textarea {
+  width: 100%; min-height: 180px; max-height: 70vh; resize: vertical; padding: 12px 14px; border-radius: 8px;
+  background: var(--surface-raised); border: 1px solid var(--accent); outline: 2px solid #3987e530;
+  font-size: 14px; line-height: 1.65; color: var(--text); field-sizing: content;
+}
+.md-edit:not([data-field="description"]) textarea { min-height: 90px; }
+.md-edit-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; }
+.md-edit-foot .muted { margin-right: auto; }
+.md-edit-foot .ed-why { width: 220px; height: 28px; font-size: 12.5px; }
+
+/* The stored value moved under an open draft. */
+.ed-changed {
+  display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; font-size: 12.5px; color: var(--ink-muted);
+  border: 1px solid #f2c94c55; border-radius: 8px; background: #f2c94c12;
+}
+.ed-changed b { color: var(--text); font-weight: 500; }
+.ed-changed summary { cursor: pointer; color: var(--muted); }
+.ed-changed pre {
+  margin: 6px 0 0; max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 12px/1.55 var(--mono); color: var(--ink-muted);
+}
+
+/* The title, from the mock: text that edits in place. */
+.d-title-btn {
+  display: block; width: calc(100% + 12px); margin: 0 -6px; padding: 2px 6px; border-radius: 6px;
+  font: inherit; letter-spacing: inherit; text-align: left; color: inherit; cursor: text; text-wrap: balance;
+}
+.d-title-btn:hover:not(:disabled) { background: var(--surface-raised); }
+.d-title-btn:disabled { cursor: default; }
+.d-title-edit { display: flex; flex-direction: column; gap: 8px; }
+.detail .d-title-in {
+  display: block; width: calc(100% + 12px); margin: 0 -6px; padding: 2px 6px; border: 0; border-radius: 6px;
+  resize: none; field-sizing: content; background: var(--surface-raised); box-shadow: 0 0 0 1px var(--line-strong);
+  outline: none; color: var(--text);
+}
+.ed-reason { min-height: 84px; }

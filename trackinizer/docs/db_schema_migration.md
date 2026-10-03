@@ -119,9 +119,9 @@ Steps:
    nothing needs. A backfill touches tables only; the running server does not
    have to be down for it.
 
-   Measured on `schema.020.sql`: 3,081,202 rows / 7907 MB, each computing a
-   `STORED to_tsvector` on insert, plus ~1877 MB of ciphertext. It ran for
-   **11 minutes** with port 8446 closed and every client answering
+   Measured on `schema.020.sql`: about 3 million rows (8 GB), each computing a
+   `STORED to_tsvector` on insert, plus about 2 GB of ciphertext. It ran for
+   **11 minutes** with the server's port closed and every client answering
    `ECONNREFUSED`. The whole 11 minutes was avoidable.
 
    So, for any migration whose body is a backfill rather than a DDL flip:

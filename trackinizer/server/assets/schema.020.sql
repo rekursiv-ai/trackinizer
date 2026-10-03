@@ -9,9 +9,9 @@
 --
 -- COST. This runs inside ``_bootstrap_once``, which precedes the listener, so
 -- its duration is downtime; ``Type=simple`` means ``TimeoutStartUSec`` never
--- fires and systemd will not cut it short. The deployed table is 3,081,202
--- rows / 7907 MB, each row computing a STORED to_tsvector on insert, and this
--- also writes ~1877 MB of ciphertext while ``agent_session_events`` still
+-- fires and systemd will not cut it short. On a table of about 3 million rows
+-- (8 GB), each row computes a STORED to_tsvector on insert, and this also
+-- writes about 2 GB of ciphertext while ``agent_session_events`` still
 -- stands -- so the database peaks near double before 021 reclaims it. Time it
 -- against a restored dump before it runs anywhere real.
 --

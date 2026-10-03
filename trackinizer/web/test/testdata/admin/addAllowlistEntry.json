@@ -1,0 +1,21 @@
+{
+  "request": {
+    "body": {
+      "email_or_pattern": " Ada@Example.com ",
+      "role": "viewer"
+    },
+    "method": "POST",
+    "path": "/api/admin/allowlist"
+  },
+  "response": {
+    "body": {
+      "email_or_pattern": "ada@example.com",
+      "ok": true,
+      "role": "viewer"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

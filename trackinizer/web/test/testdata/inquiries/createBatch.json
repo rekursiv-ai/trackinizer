@@ -1,0 +1,36 @@
+{
+  "request": {
+    "body": {
+      "edges": [
+        {
+          "edge_kind": "produced_by",
+          "from_index": 0,
+          "to_id": "00000000-0000-4000-8000-000000000004"
+        }
+      ],
+      "items": [
+        {
+          "idempotency_key": "00000000-0000-4000-9000-000000000001",
+          "kind": "Artifact",
+          "subscribers": [
+            "Agent"
+          ],
+          "title": "Answer: newest first"
+        }
+      ]
+    },
+    "method": "POST",
+    "path": "/api/inquiries/batch"
+  },
+  "response": {
+    "body": {
+      "ids": [
+        "00000000-0000-4000-8000-000000000010"
+      ]
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

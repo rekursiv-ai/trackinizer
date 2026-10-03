@@ -232,7 +232,7 @@ def _server_args(**overrides: object) -> ConfigFlags:
         "session_embedder_dim": None,
         "session_embedders": "",
         "web": False,
-        "no_auth": False,
+        "auth": True,
         "session_max_age_seconds": 30 * 24 * 60 * 60,
     }
     base.update(overrides)

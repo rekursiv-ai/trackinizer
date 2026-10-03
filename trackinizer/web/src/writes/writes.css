@@ -1,0 +1,33 @@
+/* A write's state beside its control, and the conflict dialog. The modal styles
+   are the design mock's, which its other dialogs share. */
+.w-status {
+  display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px 10px;
+  font-size: 12px; color: var(--muted);
+}
+.w-actions { display: inline-flex; gap: 6px; }
+.form-err { display: flex; flex-direction: column; color: var(--error-text); font-size: 12px; }
+
+.modal-backdrop { position: fixed; inset: 0; z-index: 60; background: #0000008a; }
+.modal {
+  position: fixed; z-index: 65; left: 50%; top: 10vh; transform: translateX(-50%);
+  width: min(700px, calc(100vw - 32px)); max-height: 80vh; overflow: auto;
+  background: var(--surface-overlay); border: 1px solid var(--line-strong); border-radius: 12px;
+  box-shadow: 0 24px 80px #000c, inset 0 1px 0 #ffffff08; display: flex; flex-direction: column;
+}
+.modal.small { width: min(460px, calc(100vw - 32px)); }
+.modal-b { padding: 16px 16px 12px; display: flex; flex-direction: column; gap: 10px; }
+.modal-b h3 { font-size: 15px; font-weight: 600; }
+.modal-b p { font-size: 13px; color: var(--muted); line-height: 1.55; }
+.modal-f { display: flex; align-items: center; gap: 8px; padding: 10px 12px 12px 16px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+
+.w-versions { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; margin: 0; font-size: 13px; }
+.w-versions dt { color: var(--muted); }
+.w-versions dd {
+  margin: 0; color: var(--ink-muted); white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 160px; overflow: auto; scrollbar-width: thin;
+}
+
+/* A control whose write is pending reads as off, as a disabled one does
+   (`.btn:disabled`), while it keeps focus (WriteButton). */
+.btn[aria-disabled="true"], .ea-x[aria-disabled="true"] { opacity: .45; cursor: default; }
+.prop-btn[aria-disabled="true"] { cursor: default; }

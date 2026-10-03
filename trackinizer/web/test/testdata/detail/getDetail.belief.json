@@ -1,0 +1,427 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/web/get/00000000-0000-4000-8000-000000000007"
+  },
+  "response": {
+    "body": {
+      "backlinks": {
+        "favors": [
+          {
+            "id": "00000000-0000-4000-8000-000000000006",
+            "kind": "Artifact",
+            "peer_created": "2026-01-01T00:00:00.000000+00:00",
+            "seq": 1,
+            "status": "active",
+            "title": "Probe notes",
+            "valence": -0.4
+          }
+        ],
+        "proves": [
+          {
+            "id": "00000000-0000-4000-8000-000000000005",
+            "kind": "Paper",
+            "peer_created": "2026-01-01T00:00:00.000000+00:00",
+            "seq": 1,
+            "status": "active",
+            "title": "Incremental layout",
+            "valence": 0.8
+          },
+          {
+            "id": "00000000-0000-4000-8000-000000000009",
+            "kind": "Experiment",
+            "note": "Measured on PGlite.",
+            "peer_created": "2026-01-01T00:00:00.000000+00:00",
+            "seq": 1,
+            "status": "active",
+            "title": "Membership check latency",
+            "valence": 0.6
+          }
+        ]
+      },
+      "changes": [
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000001",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000002",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "Measured on PGlite.",
+            "edge_valence": 0.6,
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "proves",
+            "peer_id": "00000000-0000-4000-8000-000000000009",
+            "peer_kind": "Experiment"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000007",
+          "subject_kind": "Belief"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000003",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000004",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "Measured on PGlite.",
+            "edge_valence": 0.6,
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "proves",
+            "peer_id": "00000000-0000-4000-8000-000000000009",
+            "peer_kind": "Experiment"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000007",
+          "subject_kind": "Belief"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000005",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000006",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "Measured on PGlite.",
+            "edge_valence": 0.6,
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "proves",
+            "peer_id": "00000000-0000-4000-8000-000000000009",
+            "peer_kind": "Experiment"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000007",
+          "subject_kind": "Belief"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000007",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000008",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "Measured on PGlite.",
+            "edge_valence": 0.6,
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "proves",
+            "peer_id": "00000000-0000-4000-8000-000000000009",
+            "peer_kind": "Experiment"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000007",
+          "subject_kind": "Belief"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000009",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000010",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "Measured on PGlite.",
+            "edge_valence": 0.6,
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "proves",
+            "peer_id": "00000000-0000-4000-8000-000000000009",
+            "peer_kind": "Experiment"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000007",
+          "subject_kind": "Belief"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000011",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000012",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "Measured on PGlite.",
+            "edge_valence": 0.6,
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "proves",
+            "peer_id": "00000000-0000-4000-8000-000000000009",
+            "peer_kind": "Experiment"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000007",
+          "subject_kind": "Belief"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000013",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000014",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "Measured on PGlite.",
+            "edge_valence": 0.6,
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "proves",
+            "peer_id": "00000000-0000-4000-8000-000000000009",
+            "peer_kind": "Experiment"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000007",
+          "subject_kind": "Belief"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000015",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000016",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "Measured on PGlite.",
+            "edge_valence": 0.6,
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "proves",
+            "peer_id": "00000000-0000-4000-8000-000000000009",
+            "peer_kind": "Experiment"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000007",
+          "subject_kind": "Belief"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000017",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000018",
+          "kind": "edge_added",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "edge_valence": -0.4,
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "favors",
+            "peer_id": "00000000-0000-4000-8000-000000000006",
+            "peer_kind": "Artifact"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "no-auth@localhost",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000007",
+          "subject_kind": "Belief"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000017",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000019",
+          "kind": "edge_added",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "edge_valence": 0.8,
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "proves",
+            "peer_id": "00000000-0000-4000-8000-000000000005",
+            "peer_kind": "Paper"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "no-auth@localhost",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000007",
+          "subject_kind": "Belief"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000015",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000020",
+          "kind": "edge_added",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "Measured on PGlite.",
+            "edge_valence": 0.6,
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "proves",
+            "peer_id": "00000000-0000-4000-8000-000000000009",
+            "peer_kind": "Experiment"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "no-auth@localhost",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000007",
+          "subject_kind": "Belief"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": null,
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000017",
+          "kind": "created",
+          "new": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "no-auth@localhost",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000007",
+          "subject_kind": "Belief"
+        }
+      ],
+      "edges": {},
+      "self": {
+        "account": "no-auth@localhost",
+        "confidence": 0.7,
+        "created": "2026-01-01T00:00:00.000000+00:00",
+        "description": null,
+        "id": "00000000-0000-4000-8000-000000000007",
+        "judgement": "unproven",
+        "kind": "Belief",
+        "labels": [
+          "fixture"
+        ],
+        "marginal_cost": {
+          "agent_usd": 0.0,
+          "resource_usd": 0.0
+        },
+        "modified": "2026-01-01T00:00:00.000000+00:00",
+        "owner": null,
+        "seq": 1,
+        "status": "active",
+        "subscribers": null,
+        "title": "A membership check holds at most 13 ids"
+      }
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/admin/allowlist"
+  },
+  "response": {
+    "body": {
+      "entries": [
+        {
+          "added_at": "2026-01-01T00:00:00.000000+00:00",
+          "added_by": "00000000-0000-4000-9000-000000000001",
+          "email_or_pattern": "ada@example.com",
+          "role": "viewer"
+        },
+        {
+          "added_at": "2026-01-01T00:00:00.000000+00:00",
+          "added_by": null,
+          "email_or_pattern": "fixtures-admin@example.com",
+          "role": "admin"
+        }
+      ]
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

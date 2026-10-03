@@ -101,7 +101,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#TRAX_ARGS[@]} -eq 0 ]]; then
-  TRAX_ARGS=(--profile "$PROFILE" issue account is "$(whoami)@rekursiv.ai" status is active)
+  TRAX_ARGS=(--profile "$PROFILE" issue status is active)
 fi
 
 command -v trax >/dev/null || { echo "trax not on PATH" >&2; exit 1; }

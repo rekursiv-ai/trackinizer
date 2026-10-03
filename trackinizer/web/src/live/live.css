@@ -1,0 +1,12 @@
+/* The "N new" pill over a live list, in the look of the mock's `.nowpill`. Its
+   slot is sticky and has no height, so showing it never moves a row. */
+.live-pill-slot { position: sticky; top: 0; z-index: 3; height: 0; display: flex; justify-content: center; }
+/* A peek covers the list's right side, the middle with it, and the pill there
+   could be neither seen nor clicked: it moves to the list's left meanwhile. */
+.view:has(> .peek) .live-pill-slot { justify-content: flex-start; padding-left: 16px; }
+.live-pill {
+  display: inline-flex; align-items: center; gap: 4px; height: 24px; margin-top: 8px; padding: 0 10px 0 8px;
+  border-radius: 999px; background: var(--accent); color: #fff; font: 600 12px/24px var(--sans);
+  box-shadow: 0 2px 10px #0000005c;
+}
+.live-pill:hover { background: color-mix(in srgb, var(--accent) 88%, #000); }

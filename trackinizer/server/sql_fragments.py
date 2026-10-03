@@ -19,6 +19,7 @@ from trackinizer.types.edges import EDGE_POLICIES
 __all__ = [
     "CLAIM_NEXT_ISSUE_SQL",
     "COST_SUBTREE_SQL",
+    "NARROWS_ANCESTORS_SQL",
     "NEXT_ISSUE_SQL",
     "PROVES_BELIEF_SQL",
     "PROVING_EDGES_SQL",
@@ -205,3 +206,30 @@ COST_SUBTREE_SQL: Final[str] = (
 """Decomposition-rollup of ``marginal_cost_*_usd`` from the subtree
 rooted at ``$1``. Walks ``narrows`` edges downward (broader -> narrower via the
 stored narrower -> broader edge's from-side)."""
+
+
+NARROWS_ANCESTORS_SQL: Final[str] = (
+    # The walk carries its depth because ``UNION`` alone cannot end it here: a
+    # cycle keeps yielding new (child, parent, depth) rows, and the depth cap is
+    # what stops them.
+    "WITH RECURSIVE up(child, parent, depth) AS ("
+    "    SELECT e.from_id, e.to_id, 1 FROM edges e "
+    "    WHERE e.edge_kind = 'narrows' AND e.from_id = ANY($1::uuid[]) "
+    "    UNION "
+    "    SELECT e.from_id, e.to_id, up.depth + 1 FROM edges e "
+    "    JOIN up ON e.from_id = up.parent "
+    "    WHERE e.edge_kind = 'narrows' AND up.depth < $2"
+    "), kept AS ("
+    "    SELECT parent FROM up GROUP BY parent "
+    "    ORDER BY min(depth), parent LIMIT $3"
+    ") "
+    "SELECT DISTINCT up.child, t.id, t.kind, t.seq, t.title, t.status "
+    "FROM up JOIN kept ON kept.parent = up.parent "
+    "JOIN inquiries t ON t.id = up.parent"
+)
+"""The ``narrows`` edges above the rows ``$1``, at most ``$2`` levels up.
+
+Walks ``narrows`` upward (narrower -> broader, the stored from -> to), the
+reverse of :data:`COST_SUBTREE_SQL`. Keeps at most ``$3`` ancestors, nearest
+first, and returns every edge reaching one: its ``child`` and the ancestor's
+light row. ``Store.narrows_ancestors`` assigns them to each row."""

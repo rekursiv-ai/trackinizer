@@ -1,0 +1,13 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/auth/logout"
+  },
+  "response": {
+    "body": "",
+    "headers": {
+      "location": "/"
+    },
+    "status": 302
+  }
+}

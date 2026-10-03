@@ -1,0 +1,49 @@
+/* Rendered Markdown, from the design mock (`.md`, `.ref`). */
+.md { color: var(--ink-muted); font-size: 14.5px; line-height: 1.65; overflow-wrap: anywhere; }
+.md > :first-child, .md > .md-part:first-child > :first-child { margin-top: 0; }
+.md p, .md ul, .md ol, .md pre, .md table, .md blockquote { margin: 10px 0 0; }
+.md ul, .md ol { padding-left: 22px; }
+.md li + li { margin-top: 3px; }
+.md h3, .md h4, .md h5, .md h6 { font-size: 14px; color: var(--text); margin: 14px 0 0; }
+.md h3 { font-size: 15.5px; }
+.md strong { color: var(--text); font-weight: 600; }
+.md code { font: 12.5px var(--mono); background: var(--surface-hover); padding: 1px 5px; border-radius: 4px; }
+.md pre {
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); overflow-x: auto;
+}
+.md pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.6; }
+/* A path (`remarkPaths`): code in the link colour that copies it on a click. */
+.md-path { display: inline; text-align: left; cursor: copy; }
+.md-path code { color: var(--accent-hover); }
+.md-path:hover code { text-decoration: underline; text-underline-offset: 3px; }
+/* A code block or JSON view in its box (CodeBlock.tsx), with Copy at its top right:
+   shown on hover or focus, and always where nothing hovers. */
+.md-code { position: relative; margin: 10px 0 0; }
+.md .md-code > pre { margin: 0; }
+.md-copy {
+  position: absolute; top: 5px; right: 5px; width: 26px; height: 26px;
+  background: var(--surface); border: 1px solid var(--line); opacity: 0;
+}
+.md-code:hover > .md-copy, .md-copy:focus-visible { opacity: 1; }
+@media (hover: none) { .md-copy { opacity: 1; } }
+/* An editable field's Edit button (.ed-open) holds its top right corner, over a
+   first block's Copy: that Copy sits beside it. */
+.ed-text .md-code:first-child > .md-copy { right: 34px; }
+.md blockquote { padding-left: 12px; border-left: 2px solid var(--line-strong); color: var(--muted); }
+.md table { border-collapse: collapse; font-size: 13px; display: block; overflow-x: auto; }
+.md th, .md td { border: 1px solid var(--line); padding: 4px 10px; text-align: left; }
+.md th { color: var(--text); font-weight: 500; background: var(--surface); }
+.md img { max-width: 100%; }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0 0; }
+.md a:not(.ref) {
+  color: var(--accent-hover); text-decoration: underline;
+  text-decoration-color: #6ea8ee66; text-underline-offset: 3px;
+}
+.ref {
+  display: inline-flex; align-items: center; gap: 4px; vertical-align: -2px;
+  padding: 0 5px; border-radius: 4px; background: var(--surface-hover); border: 1px solid var(--line-strong);
+  font: 500 12px/18px var(--mono); color: var(--ink-muted); white-space: nowrap;
+}
+.ref:hover { border-color: var(--accent); color: var(--text); }
+.ref .ic { color: var(--muted); }

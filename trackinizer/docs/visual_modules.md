@@ -31,6 +31,20 @@ only when Chat is visible.
    backend catalog so the snapshot tests and the client type check agree with
    it.
 
+The renderer lives in `trackinizer/web/src/visuals/registry.tsx`, and
+its type and version go in `renderer-versions.json` beside it. The preview
+snapshot is `catalog.preview.json` in the same directory.
+
+The snapshot command from the repository root is:
+
+```sh
+uv --quiet run --frozen python -c 'from trackinizer.server.visuals.catalog import default_catalog; print(default_catalog().model_dump_json(indent=2))' > trackinizer/web/src/visuals/catalog.preview.json
+uv --quiet run --frozen trackinizer/web/scripts/openapi_dump.py
+```
+
+The preview snapshot is used only when local Vite points at an older backend
+that answers 404 for `/api/visuals`. A deployed server reads the route.
+
 ## Change a canvas
 
 First enable the canvas in Settings, then `POST /api/workspaces` with the

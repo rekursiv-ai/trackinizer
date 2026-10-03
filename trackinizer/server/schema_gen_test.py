@@ -207,6 +207,7 @@ class TestSchema:
             "schema.028.sql",
             "schema.029.sql",
             "schema.030.sql",
+            "schema.031.sql",
             "schema.032.sql",
         ]
 

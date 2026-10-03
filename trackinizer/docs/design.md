@@ -398,7 +398,7 @@ GET /api/inquiries/next_issue                # oldest unblocked active Issue
 GET /api/inquiries/<id>/cost?deep=           # cost; deep rolls up subtree
 GET /api/inquiries/<id>/proves_belief
 GET /api/change_log[?...]  /api/change_log/<id>  /api/change_log/stream
-GET /api/web/{search,recent_changes,lookup/<id>,get/<id>}   # SPA read API
+GET /api/web/{search,recent_changes,lookup/<id>,get/<id>}   # web app read API
 ```
 
 ## Cascade
@@ -425,7 +425,7 @@ up via the `change_log` filtered by `subscribers_snapshot`.
 
 ## Auth
 
-Trackinizer is its own identity system: Google OAuth for browsers, per-user
+Trackinizer is its own identity system: session cookies for browsers, per-user
 API keys for CLI/agents, role-based authz. Three tables:
 
 - `users` -- `email`, `name`, `role ∈ {viewer,writer,admin}`,
@@ -441,17 +441,18 @@ route: reads need `viewer`, mutations `writer`, user/allowlist management
 `admin`. A key's effective role is `min(user_role, key_role)`; a key may not
 exceed its user's role.
 
-Google OAuth: `/auth/login` -> consent with a signed state cookie;
-`/auth/callback` verifies state, checks the allowlist (403 off-list),
-upserts the user, and sets a 30-day `HttpOnly`/`Secure` cookie. Re-login
-keeps the existing role -- no silent elevation.
+The package verifies session cookies but issues none: a deployment that wants
+browser sign-in mounts a provider whose callback checks the allowlist (403
+off-list), upserts the user, and sets a 30-day `HttpOnly`/`Secure` cookie.
+Re-login keeps the existing role -- no silent elevation.
 
 Bootstrap: when `users` is empty and `TRACKINIZER_BOOTSTRAP_ADMIN` is set,
 the first boot seeds an allowlist row, an admin user, and an api_key, and
 writes the secret once to a mode-0600 `bootstrap_token` file. Idempotent.
 
-`--no-auth` (`TRACKINIZER_NO_AUTH=1`) short-circuits to a synthetic admin
-for local demos only -- never in production.
+`--no-auth` (`TRACKINIZER_NO_AUTH=1`) short-circuits to a synthetic admin:
+single-user local mode, bound to `127.0.0.1` by default -- never on a shared
+network.
 
 ## Storage
 

@@ -165,9 +165,9 @@ def test_session_api_paths_are_registered_routes() -> None:
     on the live app, the analogue of the field-route drift test for the
     unmanaged route family.
     """
-    # The feed route lives on the ``--web`` SPA surface, the others on the API
-    # app; attach the SPA so the registered set spans both, as the live server
-    # does (mirrors ``assets_drift_test``).
+    # The feed route lives on the ``--web`` surface, the others on the API app;
+    # attach the web routes so the registered set spans both, as the live server
+    # does.
     full_app = FastAPI()
     for route in app.routes:
         full_app.router.routes.append(route)

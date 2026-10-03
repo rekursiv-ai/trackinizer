@@ -1,0 +1,123 @@
+.artifact-content {
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 22px 28px;
+  color: var(--ink);
+}
+
+.artifact-header {
+  max-width: 76ch;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.artifact-eyebrow,
+.artifact-scope,
+.artifact-byline,
+.artifact-source {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.artifact-eyebrow {
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.artifact-scope { margin-top: 5px; }
+
+.artifact-header h2 {
+  margin: 5px 0 0;
+  font-size: 22px;
+}
+
+.artifact-summary {
+  max-width: 72ch;
+  margin: 9px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.artifact-source a,
+.artifact-citation a {
+  color: var(--accent-hover);
+}
+
+.artifact-sections {
+  max-width: 82ch;
+}
+
+.artifact-section {
+  padding: 15px 0;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.artifact-section h3,
+.artifact-finding h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.artifact-section-summary,
+.artifact-details-copy,
+.artifact-outcome,
+.artifact-uncertainty {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.artifact-details {
+  margin-top: 9px;
+  font-size: 12px;
+}
+
+.artifact-details summary {
+  width: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.artifact-finding {
+  margin: 13px 0 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--line-strong);
+}
+
+.artifact-outcome {
+  color: var(--ink);
+}
+
+.artifact-uncertainty,
+.artifact-truncated,
+.artifact-citation-note {
+  color: var(--muted);
+}
+
+.artifact-citations {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.artifact-evidence-positive { color: var(--success, var(--accent)); }
+.artifact-evidence-negative { color: var(--danger, #ed7474); }
+.artifact-evidence-neutral { color: var(--muted); }
+.artifact-truncated { margin: 8px 0 0; font-size: 11px; }
+
+.artifact-html-frame {
+  display: block;
+  width: 100%;
+  min-height: min(75vh, 760px);
+  margin-top: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #fff;
+}
+
+@media (max-width: 620px) {
+  .artifact-content { padding: 12px; }
+  .artifact-html-frame { min-height: 70vh; }
+}

@@ -1,0 +1,13 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/web/subscribe"
+  },
+  "response": {
+    "body": "data: {\"id\": \"00000000-0000-4000-8000-000000000001\"}",
+    "headers": {
+      "content-type": "text/event-stream; charset=utf-8"
+    },
+    "status": 200
+  }
+}

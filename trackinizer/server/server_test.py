@@ -7,16 +7,19 @@ from typing import TYPE_CHECKING
 import argparse
 import inspect
 import logging
+import uuid
 
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from uvicorn.server import Server
 
 import pytest
 import uvicorn
 
 from trackinizer.lib.postgres import PostgresEngine
-from trackinizer.server import server
+from trackinizer.server import server, web
 from trackinizer.server.api.app import app
+from trackinizer.server.auth import AuthIdentity
 from trackinizer.server.config import (
     Config,
     ConfigError,
@@ -149,6 +152,31 @@ class TestPureFunctions:
 
         assert flags.session_max_age_seconds == 600
 
+    @pytest.mark.parametrize(
+        ("env", "argv", "auth_disabled"),
+        [
+            ("", [], False),
+            ("", ["--no-auth"], True),
+            ("1", [], True),
+            ("1", ["--auth"], False),
+        ],
+    )
+    def test_trackinizer_no_auth_is_the_default_a_flag_overrides(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        env: str,
+        argv: list[str],
+        auth_disabled: bool,
+    ) -> None:
+        # The docs offer TRACKINIZER_NO_AUTH=1 as the alternative to --no-auth,
+        # read as Config.from_env reads it.
+        monkeypatch.setenv("TRACKINIZER_NO_AUTH", env)
+
+        flags, remaining = _parse_args(argparse.ArgumentParser(), argv)
+
+        assert remaining == []
+        assert Config.from_args(flags).auth_disabled is auth_disabled
+
     def test_parse_args_overrides(self) -> None:
         parser = argparse.ArgumentParser()
         flags, _ = _parse_args(
@@ -176,6 +204,46 @@ class TestPureFunctions:
         monkeypatch.setattr(server, "app", fresh)
         server._configure_app(flags)
         assert "/app/{path:path}" in registered_paths(fresh)
+
+    def test_the_packaged_build_is_served_unless_app_dir_names_another(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The wheel carries the built app, so `trackinizer` serves it with no
+        # flag; production's --app-dir symlink to its own builds still wins.
+        _ = _write_build(tmp_path / "web" / "dist", marker="packaged")
+        monkeypatch.setattr(server, "_CWD", tmp_path / "server")
+        flag = _write_build(tmp_path / "flag", marker="flag")
+
+        assert _served_index(monkeypatch, []) == "packaged"
+        assert _served_index(monkeypatch, ["--app-dir", str(flag)]) == "flag"
+
+    def test_without_a_packaged_build_nothing_is_served_at_app(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(server, "_CWD", tmp_path / "server")
+        flags, _ = _parse_args(argparse.ArgumentParser(), [])
+        fresh = FastAPI()
+        monkeypatch.setattr(server, "app", fresh)
+
+        server._configure_app(flags)
+
+        assert not any(path.startswith("/app") for path in registered_paths(fresh))
+
+    def test_the_packaged_build_is_the_built_app_beside_the_package(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # A checkout has one only after `npm run build` in web/; an empty dist/
+        # is no build.
+        assert server._packaged_app(tmp_path) is None
+        (tmp_path / "web" / "dist").mkdir(parents=True)
+        assert server._packaged_app(tmp_path) is None
+        built = _write_build(tmp_path / "web" / "dist", marker="built")
+        assert server._packaged_app(tmp_path) == built
 
     def test_addon_override_reaches_the_deployments_visuals(
         self,
@@ -427,6 +495,32 @@ class TestMainAppliesEveryStartupInvariant:
 def _ignore_run(target: object, **kwargs: object) -> None:
     """Stand in for ``uvicorn.run`` when a test asserts only side effects."""
     del target, kwargs
+
+
+def _write_build(root: Path, *, marker: str) -> Path:
+    """Write a minimal built web app at ``root``: an entry page naming ``marker``."""
+    root.mkdir(parents=True, exist_ok=True)
+    _ = (root / "index.html").write_text(marker)
+    return root
+
+
+def _served_index(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> str:
+    """Configure a fresh app from ``argv``; return its ``/app/`` to a signed-in user."""
+    flags, _ = _parse_args(argparse.ArgumentParser(), argv)
+    fresh = FastAPI()
+    monkeypatch.setattr(server, "app", fresh)
+    server._configure_app(flags)
+    fresh.dependency_overrides[web.optional_identity] = _signed_in
+    return TestClient(fresh).get("/app/").text
+
+
+async def _signed_in() -> AuthIdentity:
+    return AuthIdentity(
+        user_id=uuid.UUID("66666666-6666-6666-6666-666666666666"),
+        api_key_id=None,
+        email="viewer@example.com",
+        role="viewer",
+    )
 
 
 def _is_noise_filter(candidate: object) -> bool:

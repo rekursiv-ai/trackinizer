@@ -1,0 +1,23 @@
+{
+  "request": {
+    "body": {
+      "op": "add",
+      "value": "fixture"
+    },
+    "headers": {
+      "Idempotency-Key": "00000000-0000-4000-9000-000000000001"
+    },
+    "method": "PATCH",
+    "path": "/api/edges/00000000-0000-4000-8000-000000000003/requires/00000000-0000-4000-8000-000000000004/labels"
+  },
+  "response": {
+    "body": {
+      "change_id": "00000000-0000-4000-9000-000000000001",
+      "created": false
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

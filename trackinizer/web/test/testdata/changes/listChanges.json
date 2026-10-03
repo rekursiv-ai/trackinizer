@@ -1,0 +1,128 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/change_log",
+    "query": [
+      [
+        "kind",
+        "status"
+      ],
+      [
+        "limit",
+        "50"
+      ]
+    ]
+  },
+  "response": {
+    "body": [
+      {
+        "actor": "no-auth@localhost",
+        "api_key_id": null,
+        "caused_by": null,
+        "created": "2026-01-01T00:00:00.000000Z",
+        "id": "00000000-0000-4000-9000-000000000001",
+        "kind": "status",
+        "new": {
+          "account": null,
+          "agentsession_cli": null,
+          "agentsession_cli_session_id": null,
+          "agentsession_ended": null,
+          "agentsession_rooms": null,
+          "agentsession_started": null,
+          "belief_confidence": null,
+          "belief_judgement": null,
+          "codechange_sha": null,
+          "description": null,
+          "edge_labels": null,
+          "edge_note": null,
+          "edge_priority": null,
+          "edge_valence": null,
+          "experiment_codechanges": null,
+          "experiment_config": null,
+          "experiment_outcome": null,
+          "issue_kind": null,
+          "issue_priority": null,
+          "issue_validation": null,
+          "labels": null,
+          "marginal_cost": {
+            "agent_usd": 0.0,
+            "resource_usd": 0.0
+          },
+          "owner": null,
+          "paper_abstract": null,
+          "paper_authors": null,
+          "paper_google_scholar_cites_id": null,
+          "paper_google_scholar_cluster_id": null,
+          "paper_publication_type": null,
+          "paper_publish_date": null,
+          "paper_source": null,
+          "paper_subvenue": null,
+          "paper_venue": null,
+          "peer_edge_kind": null,
+          "peer_id": null,
+          "peer_kind": null,
+          "status": "complete",
+          "subscribers": null,
+          "title": null,
+          "webresult_url": null,
+          "websearch_provider": null,
+          "websearch_query": null
+        },
+        "old": {
+          "account": null,
+          "agentsession_cli": null,
+          "agentsession_cli_session_id": null,
+          "agentsession_ended": null,
+          "agentsession_rooms": null,
+          "agentsession_started": null,
+          "belief_confidence": null,
+          "belief_judgement": null,
+          "codechange_sha": null,
+          "description": null,
+          "edge_labels": null,
+          "edge_note": null,
+          "edge_priority": null,
+          "edge_valence": null,
+          "experiment_codechanges": null,
+          "experiment_config": null,
+          "experiment_outcome": null,
+          "issue_kind": null,
+          "issue_priority": null,
+          "issue_validation": null,
+          "labels": null,
+          "marginal_cost": {
+            "agent_usd": 0.0,
+            "resource_usd": 0.0
+          },
+          "owner": null,
+          "paper_abstract": null,
+          "paper_authors": null,
+          "paper_google_scholar_cites_id": null,
+          "paper_google_scholar_cluster_id": null,
+          "paper_publication_type": null,
+          "paper_publish_date": null,
+          "paper_source": null,
+          "paper_subvenue": null,
+          "paper_venue": null,
+          "peer_edge_kind": null,
+          "peer_id": null,
+          "peer_kind": null,
+          "status": "active",
+          "subscribers": null,
+          "title": null,
+          "webresult_url": null,
+          "websearch_provider": null,
+          "websearch_query": null
+        },
+        "reason": "Done.",
+        "subject_id": "00000000-0000-4000-8000-000000000002",
+        "subject_kind": "Issue",
+        "subscribers_snapshot": []
+      }
+    ],
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

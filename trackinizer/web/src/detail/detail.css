@@ -1,0 +1,207 @@
+/* The detail view, Details lens, from the design mock ("detail",
+   "properties", "activity timeline"). Scoped to `.detail` so list and other
+   views keep their own chips and tags. */
+.detail-top {
+  display: flex; align-items: center; gap: 6px; height: 46px; flex-shrink: 0;
+  padding: 0 12px 0 16px; border-bottom: 1px solid var(--line);
+}
+.detail .crumbs { display: flex; align-items: center; gap: 4px; min-width: 0; font-size: 13px; }
+.detail .crumb-btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 3px 6px;
+  border-radius: var(--radius); color: var(--muted); white-space: nowrap;
+}
+.detail .crumb-btn:hover { background: var(--surface-hover); color: var(--text); }
+.detail .crumb-cur {
+  display: inline-flex; align-items: center; gap: 6px; font-weight: 500; color: var(--ink-muted);
+  padding: 3px 4px; white-space: nowrap; overflow: hidden;
+}
+.detail .crumb-cur .mono { font-size: 12.5px; color: var(--ink-muted); overflow: hidden; text-overflow: ellipsis; }
+.detail .crumb-sep { color: var(--muted); }
+.detail .d-loading { padding: 26px 22px; color: var(--muted); font-size: 13px; }
+
+/* A size container: the wide rail is as tall as this box (100cqb). */
+.d-scroll {
+  container-type: size; flex: 1; min-height: 0; overflow: auto;
+  scrollbar-width: thin; display: flex; flex-direction: column;
+}
+/* Narrow, one column in reading order: header and text, rail, the rest. */
+.d-grid { display: grid; grid-template-columns: minmax(0, 1fr); flex: 1 0 auto; }
+.d-top { padding: 26px 22px 22px; min-width: 0; }
+.d-main { padding: 22px 22px 60px; min-width: 0; }
+.d-main-inner { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+.detail .eyebrow { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
+.detail .eyebrow .ic { color: var(--muted); }
+.detail .d-dates { margin-left: auto; font-size: 12px; white-space: nowrap; }
+.detail .d-dates b, .detail .d-cost b { font-weight: 500; color: var(--ink-muted); }
+.detail .d-cost { white-space: nowrap; }
+.detail .d-cost::before { content: "·"; margin-right: 6px; }
+.detail .d-head { display: flex; flex-direction: column; gap: 10px; }
+.detail .d-title {
+  font-size: 24px; line-height: 1.3; font-weight: 600; letter-spacing: -0.4px;
+  text-wrap: balance; overflow-wrap: anywhere;
+}
+/* --muted, not --ink-tertiary: the tertiary ink is 3.2:1 on the page and its
+   callouts, under WCAG AA's 4.5:1 for text (Lighthouse's color-contrast audit). */
+.detail .md-empty, .detail .unset { color: var(--muted); font-size: 13px; }
+
+.detail .callout {
+  border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 12px 14px;
+  font-size: 13.5px; color: var(--ink-muted); line-height: 1.6;
+}
+.detail .callout > .k { display: block; font-size: 11.5px; color: var(--muted); margin-bottom: 2px; font-weight: 500; }
+.detail .callout .md { font-size: 13.5px; }
+details.cfg { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+details.cfg summary {
+  cursor: pointer; padding: 8px 12px; font-size: 12.5px; color: var(--ink-muted);
+  list-style: none; display: flex; align-items: center; gap: 6px;
+}
+details.cfg summary::-webkit-details-marker { display: none; }
+details.cfg[open] summary .ic { transform: rotate(90deg); }
+details.cfg pre { margin: 0; padding: 0 14px 12px; font: 12.5px/1.6 var(--mono); color: var(--ink-muted); overflow-x: auto; }
+
+.detail .sec { display: flex; flex-direction: column; gap: 10px; }
+.detail .sec-h { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+/* A section's failed refresh, in its header line so the content it keeps never moves. */
+.detail .sec-error {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 12.5px; color: var(--error-text);
+}
+.detail .sec-h h2 { font-size: 13px; font-weight: 600; color: var(--ink-muted); display: flex; align-items: center; gap: 8px; }
+.detail .count { font-weight: 400; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.rel-list { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.rel-list ul { list-style: none; margin: 0; padding: 0; }
+.rel-group-h {
+  display: flex; align-items: center; gap: 6px; padding: 6px 12px; font-size: 11.5px; font-weight: 500;
+  color: var(--muted); background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.rel-list > [role="group"] + [role="group"] > .rel-group-h { border-top: 1px solid var(--line); }
+.rel-row {
+  display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 4px 8px 4px 12px;
+  border-bottom: 1px solid var(--line); font-size: 13px; color: var(--text);
+}
+.rel-list li:last-child .rel-row { border-bottom: 0; }
+.rel-row:hover { background: var(--surface-raised); }
+.rel-row > .ic { color: var(--muted); }
+.rel-ref { font: 12px var(--mono); color: var(--muted); white-space: nowrap; }
+.rel-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rel-annot { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; min-width: 0; flex-shrink: 1; }
+.rel-note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.rel-more {
+  display: block; width: 100%; padding: 8px 12px; border-top: 1px solid var(--line);
+  font-size: 12.5px; color: var(--accent-hover); text-align: left;
+}
+.rel-more:hover { background: var(--surface-raised); }
+.valence-wrap { display: inline-flex; align-items: center; gap: 6px; }
+.valence { width: 44px; height: 4px; border-radius: 2px; background: var(--surface-hover); position: relative; overflow: hidden; flex-shrink: 0; }
+.valence i { position: absolute; top: 0; bottom: 0; }
+.valence.pos i { left: 50%; background: var(--green); }
+.valence.neg i { right: 50%; background: var(--l-against); }
+.valence::after { content: ""; position: absolute; left: 50%; top: -1px; bottom: -1px; width: 1px; background: var(--line-strong); }
+.v-num { font-variant-numeric: tabular-nums; font-size: 12px; min-width: 30px; }
+.v-num.pos { color: var(--green); }
+.v-num.neg { color: var(--l-against); }
+
+.detail .kind-tag {
+  font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px;
+  padding: 0 5px; line-height: 17px; white-space: nowrap;
+}
+.detail .label-chip {
+  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px 0 6px;
+  border: 1px solid var(--line-strong); border-radius: 999px; font-size: 11.5px; color: var(--ink-muted); white-space: nowrap;
+}
+.detail .label-chip i { width: 7px; height: 7px; border-radius: 50%; display: block; }
+.detail .conf { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.detail .conf-bar { width: 38px; height: 4px; background: var(--surface-hover); border-radius: 2px; overflow: hidden; }
+.detail .conf-bar i { display: block; height: 100%; background: var(--ink-muted); }
+.detail .evidence { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 2px 8px; }
+.detail .evidence .conf-bar i { background: var(--l-evidence); }
+.detail .evidence .unset { font-size: 11.5px; white-space: nowrap; }
+.detail .prop-retry { min-height: 20px; padding: 0 6px; color: var(--error-text); }
+
+.timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.timeline li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; padding: 6px 0; position: relative; font-size: 13px; }
+.timeline li::before { content: ""; position: absolute; left: 10px; top: 28px; bottom: -6px; width: 1px; background: var(--line); }
+.timeline li:last-child::before { display: none; }
+
+/* The rail, after mock B of the relationships design: Parents,
+   Children, then the properties. */
+.d-rail {
+  display: flex; flex-direction: column; gap: 18px; min-width: 0; padding: 20px 22px 24px;
+  border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+}
+/* Collapsed by its button in the top bar; wide, its column then takes no width. */
+.d-rail[hidden] { display: none; }
+.rail-sec { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.rail-h { display: flex; align-items: center; gap: 8px; min-height: 24px; }
+.rail-h h2 { font-size: 11.5px; font-weight: 600; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.6px; }
+.rail-add { margin-left: auto; padding: 2px 6px; border-radius: var(--radius); font-size: 12px; color: var(--muted); }
+.rail-add:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
+.rail-add:disabled { opacity: .45; cursor: default; }
+.rail-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rail-peer { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 8px 6px 4px 10px; min-width: 0; }
+.rail-link { display: flex; align-items: flex-start; gap: 8px; color: var(--text); font-size: 13px; line-height: 1.35; }
+.rail-link > .ic { flex-shrink: 0; margin-top: 2px; }
+.rail-link:hover .rail-title { color: var(--accent-hover); }
+.rail-title { min-width: 0; overflow-wrap: anywhere; }
+.rail-title .rel-ref { font-size: 11.5px; }
+.rail-edges { list-style: none; margin: 2px 0 0 22px; padding: 0; }
+.rail-edges .rel-row { min-height: 24px; padding: 0 0 0 4px; border-bottom: 0; border-radius: var(--radius); font-size: 12px; }
+/* A remove step is narrow in the rail: its reason takes a line of its own. */
+.rail-edges .rc-row { flex-wrap: wrap; }
+.rail-edges .rc-row .field { flex: 1 0 100%; }
+.edge-name {
+  font: 11px var(--mono); color: var(--ink-muted); border: 1px solid var(--line-strong);
+  border-radius: 4px; padding: 0 5px; line-height: 17px; white-space: nowrap;
+}
+.rail-none { font-size: 12.5px; color: var(--muted); }
+.rail-sec > .rel-more { border: 1px solid var(--line); border-radius: 8px; }
+/* The graph preview, the rail's first block. Its box keeps the drawing's shape
+   before the drawing comes, so the rail never moves; the drawing scales to the
+   rail up to its own size, centred in a wider rail (narrow, stacked). */
+.rail-graph { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.rail-graph-link {
+  display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); overflow: hidden;
+}
+.rail-graph-link:hover { border-color: var(--line-strong); }
+.rail-graph-link svg { display: block; width: 100%; height: auto; max-height: 190px; }
+.rail-graph-caption { padding: 5px 10px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--muted); }
+.rail-graph-link:hover .rail-graph-caption { color: var(--accent-hover); }
+.rail-graph-error { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--error-text); }
+.props { border-top: 1px solid var(--line); padding-top: 16px; display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.props-group > h2 { font-size: 11.5px; font-weight: 500; color: var(--muted); margin: 0 0 6px 8px; }
+.props-group dl { margin: 0; display: flex; flex-direction: column; gap: 2px; }
+.prop { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; min-height: 32px; gap: 6px; }
+.prop-k { font-size: 12.5px; color: var(--muted); padding-left: 8px; }
+.prop-v {
+  display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 3px 8px; margin: 0;
+  border-radius: var(--radius); font-size: 13px; color: var(--ink-muted); min-width: 0; flex-wrap: wrap;
+}
+.prop-v .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prop-v .named { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.prop-v .prop-num { margin-left: auto; font-size: 11.5px; }
+.prop-v:has(.prop-open) { flex-wrap: nowrap; }
+.prop-v .prop-open { width: 22px; height: 22px; margin-left: auto; }
+.prop-v .select-all { user-select: all; }
+.detail .avatar { border-radius: 50%; }
+
+/* Wide, the header and text scroll as one page, and the rail stands beside
+   them, held in view and scrolling on its own, so relations stay in reach while
+   the text scrolls. */
+@container (min-width: 900px) {
+  .d-grid {
+    grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto 1fr;
+    grid-template-areas: "top rail" "main rail";
+  }
+  .d-top { grid-area: top; padding: 34px 44px 0; }
+  .d-main { grid-area: main; padding: 22px 44px 80px; }
+  .d-rail {
+    grid-area: rail; position: sticky; top: 0; width: 340px; height: 100cqb; overflow-y: auto; scrollbar-width: thin;
+    padding: 18px 18px 40px; border-top: 0; border-bottom: 0; border-left: 1px solid var(--line);
+  }
+}
+@media (max-width: 760px) {
+  .detail-top { padding-left: 10px; padding-right: 10px; }
+  .detail .hide-sm { display: none; }
+  .detail .d-dates { margin-left: 0; }
+}

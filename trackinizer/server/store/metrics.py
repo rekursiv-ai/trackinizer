@@ -1,12 +1,12 @@
-""":class:`_MetricsMixin` -- experiment-metric log and read-back.
+""":class:`_MetricsMixin` -- experiment-metric log, read-back, mask query, and write.
 
-Owns the append/read seam for step-grained metric points logged against an
-:class:`Experiment` run: :meth:`log_metrics` and :meth:`read_metrics`. A
-pure leaf like :class:`_ReadMixin` -- it reads and writes through
-``self.engine`` and calls no other mixin. Metrics are telemetry, not a
-knowledge mutation, so this path emits no ``change_log`` audit, no cost, and
-no ``LISTEN/NOTIFY`` fanout (unlike ``session_records``, whose append DOES
-wake the console fanout).
+Owns the storage seam for step-grained metric points logged against an
+:class:`Experiment` run: :meth:`log_metrics`, :meth:`read_metrics`,
+:meth:`query_metrics`, and :meth:`write_metrics_masked`. A pure leaf like
+:class:`_ReadMixin` -- it reads and writes through ``self.engine`` and calls no
+other mixin. Metrics are telemetry, not a knowledge mutation, so this path emits
+no ``change_log`` audit, no cost, and no ``LISTEN/NOTIFY`` fanout (unlike
+``session_records``, whose append DOES wake the console fanout).
 """
 
 from __future__ import annotations
@@ -20,13 +20,7 @@ from uuid import UUID
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    import asyncpg
-
     from trackinizer.lib.postgres import Conn
-else:
-    from wrapt import lazy_import
-
-    asyncpg = lazy_import("asyncpg")  # ~60 ms; only log_metrics catches its FK error.
 
 from trackinizer.server.notify import tx
 from trackinizer.server.store.shared import _StoreShared
@@ -124,52 +118,31 @@ class _MetricsMixin(_StoreShared):
         rows = [
             (experiment_id, p.key, p.step, p.value, p.kind, p.timestamp) for p in points
         ]
-        # One transaction so the kind check and the insert are atomic: a
-        # concurrent metric write cannot slip points under a non-experiment
-        # guard between the check and the insert. No ``notify_after_commit``:
-        # metrics are telemetry, not an audited mutation, so nothing subscribes.
+        # No ``notify_after_commit``: metrics are telemetry, not an audited
+        # mutation, so nothing subscribes.
         async with self.engine.acquire() as conn, tx(conn):
-            # Read kind under the row lock so a concurrent purge can't slip
-            # between the check and the insert: points attach only to an
-            # Experiment.
-            experiment = await conn.fetchrow(
-                "SELECT kind FROM inquiries WHERE id = $1 FOR UPDATE",
-                experiment_id,
-            )
-            if experiment is None:
-                raise NotFoundError(f"experiment {experiment_id} not found")
-            if experiment["kind"] != "Experiment":
-                raise ConflictError(
-                    f"inquiry {experiment_id} is not an Experiment "
-                    f"(kind={experiment['kind']!r}); "
-                    "metrics may only attach to an experiment",
-                )
+            # The row lock holds a concurrent purge off until commit, so the
+            # ``experiment_id`` foreign key cannot fail under the INSERT below.
+            await _require_experiment(conn, experiment_id, for_update=True)
             # A single ``unnest`` INSERT (not ``executemany``, which cannot
             # RETURNING) makes the accounting exact and race-free: a concurrent
             # same-experiment commit cannot inflate the count because we count
             # returned rows, not a whole-experiment ``count(*)`` delta.
-            try:
-                inserted = await conn.fetch(
-                    "INSERT INTO experiment_metrics "
-                    "(experiment_id, key, step, value, kind, timestamp) "
-                    "SELECT * FROM unnest("
-                    "$1::uuid[], $2::text[], $3::bigint[], $4::float8[], "
-                    "$5::text[], $6::timestamptz[]) "
-                    "ON CONFLICT (experiment_id, key, step) DO NOTHING "
-                    "RETURNING step",
-                    [r[0] for r in rows],
-                    [r[1] for r in rows],
-                    [r[2] for r in rows],
-                    [r[3] for r in rows],
-                    [r[4] for r in rows],
-                    [r[5] for r in rows],
-                )
-            except asyncpg.ForeignKeyViolationError as exc:
-                # The ``experiment_id`` FK failed: the row was purged in the
-                # race window between the kind check and the insert. It is
-                # gone, so this is a clean 404 -- not a raw 409 leaking the
-                # constraint name.
-                raise NotFoundError(f"experiment {experiment_id} not found") from exc
+            inserted = await conn.fetch(
+                "INSERT INTO experiment_metrics "
+                "(experiment_id, key, step, value, kind, timestamp) "
+                "SELECT * FROM unnest("
+                "$1::uuid[], $2::text[], $3::bigint[], $4::float8[], "
+                "$5::text[], $6::timestamptz[]) "
+                "ON CONFLICT (experiment_id, key, step) DO NOTHING "
+                "RETURNING step",
+                [r[0] for r in rows],
+                [r[1] for r in rows],
+                [r[2] for r in rows],
+                [r[3] for r in rows],
+                [r[4] for r in rows],
+                [r[5] for r in rows],
+            )
             logged = len(inserted)
         return (logged, len(points) - logged)
 
@@ -201,6 +174,10 @@ class _MetricsMixin(_StoreShared):
         Returns:
           result: List of MetricPoint records in (key, step) index order.
 
+        Raises:
+          NotFoundError: ``experiment_id`` is not an existing inquiry.
+          ConflictError: ``experiment_id`` is not an ``Experiment`` row.
+
         """
         clauses = ["experiment_id = $1"]
         params: list[object] = [experiment_id]
@@ -225,6 +202,7 @@ class _MetricsMixin(_StoreShared):
             str(offset_pos),
         )
         async with self.engine.acquire() as conn:
+            await _require_experiment(conn, experiment_id, for_update=False)
             fetched = await conn.fetch(sql, *params)
         result: list[MetricPoint] = []
         for row in fetched:
@@ -264,7 +242,6 @@ class _MetricsMixin(_StoreShared):
         masks: Sequence[MetricMaskClause],
         sort: Literal["asc", "desc"] | None = None,
         limit: int | None = None,
-        max_query_experiments: int = 1000,
     ) -> list[tuple[UUID, MetricPoint]]:
         """Read the masked cells of one or more experiments' metric grids.
 
@@ -275,51 +252,44 @@ class _MetricsMixin(_StoreShared):
         ``(experiment_id, key)`` among the rows the other masks match (via
         ``DISTINCT ON``); with no reduction, every matching cell is returned in
         ``(experiment_id, key, step)`` order. ``sort`` then orders the selection
-        by ``value`` and ``limit`` windows it. Returning
+        by ``value``, ties by cell, and ``limit`` windows it. Returning
         ``(experiment_id, MetricPoint)`` lets a cross-experiment (leaderboard)
-        caller attribute each cell to its run.
+        caller attribute each cell to its run. ``experiment_ids`` filters: an id
+        with no metrics, or no row at all, contributes no cells.
 
         The query always leads with ``experiment_id = ANY($1)`` so it stays an
-        index scan on the ``(experiment_id, key, step)`` primary key.
+        index scan on the ``(experiment_id, key, step)`` primary key. The store
+        trusts the caller's id count and ``limit``; the wire bounds both by
+        ``MAX_LIST_LIMIT``.
 
         Args:
           experiment_ids: The runs to read across (one = single-experiment,
-            many = cross-experiment / rank). Capped at
-            ``max_query_experiments``.
+            many = cross-experiment / rank).
           masks: ``at <axis> <op> <value>`` clauses, ANDed into one predicate.
           sort: Order the selected cells by value ascending / descending; when
             ``None`` the ``(experiment_id, key, step)`` order is kept.
-          limit: Row ceiling applied after selection; ``None`` defaults to
-            ``DEFAULT_LIST_LIMIT``, and any value is capped at
+          limit: Row ceiling applied after selection; ``None`` reads up to
             ``MAX_LIST_LIMIT``.
-          max_query_experiments: Upper bound on experiment ids in one
-            cross-experiment query. Bounds the ``experiment_id = ANY($1)`` array
-            (and thus the index-scan fan-out) so one leaderboard call cannot
-            sweep an unbounded id set; mirrors the row ceiling ``MAX_LIST_LIMIT``
-            the list endpoint enforces.
 
         Returns:
           cells: ``(experiment_id, MetricPoint)`` per selected cell.
 
         Raises:
-          ConflictError: An unsupported op on a metric axis, a ``max`` / ``min``
-            reduction off the ``step`` axis, a non-numeric ``step`` / ``value``
-            operand, or more than ``max_query_experiments`` experiments.
+          ConflictError: An unsupported op on a metric axis, more than one
+            ``max`` / ``min`` reduction, a reduction off the ``step`` axis or
+            with an operand, or an operand no stored cell could hold.
 
         """
-        if len(experiment_ids) > max_query_experiments:
-            raise ConflictError(
-                f"too many experiments ({len(experiment_ids)}); "
-                f"cap is {max_query_experiments}",
-            )
         params: list[object] = [list(experiment_ids)]
         predicates: list[str] = []
         reduce_order: str | None = None
         for mask in masks:
-            if mask.op in ("max", "min"):
+            if mask.op not in ("max", "min"):
+                predicates.append(self._mask_predicate(mask, params))
+            elif reduce_order is None:
                 reduce_order = self._reduction_order(mask)
-                continue
-            predicates.append(self._mask_predicate(mask, params))
+            else:
+                raise ConflictError("a metric query takes at most one reduction")
         where = " AND ".join(["experiment_id = ANY($1::uuid[])", *predicates])
         select = (
             "SELECT DISTINCT ON (experiment_id, key) "
@@ -339,14 +309,14 @@ class _MetricsMixin(_StoreShared):
             where,
             inner_order,
         )
-        params.append(
-            min(limit if limit is not None else DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT),
-        )
+        params.append(limit if limit is not None else MAX_LIST_LIMIT)
         limit_pos = len(params)
         # A reduction already carries a DISTINCT ON ordering; a value ``sort``
         # would fight it, so it must run over the reduced set. Wrapping the
         # reduction as a subquery lets the value ordering / limit apply to its
-        # output without disturbing the per-key pick.
+        # output without disturbing the per-key pick. Postgres orders equal
+        # values arbitrarily, so the cell tiebreak keeps a ``limit`` cut through
+        # a tie from returning different rows on each call.
         if sort is not None:
             direction = "DESC" if sort == "desc" else "ASC"
             sql = vetted_sql(
@@ -354,7 +324,7 @@ class _MetricsMixin(_StoreShared):
                 inner,
                 ") reduced ORDER BY value ",
                 direction,
-                " LIMIT $",
+                ", experiment_id, key, step LIMIT $",
                 str(limit_pos),
             )
         else:
@@ -432,8 +402,8 @@ class _MetricsMixin(_StoreShared):
         Raises:
           NotFoundError: ``experiment_id`` is not an existing inquiry.
           ConflictError: ``experiment_id`` is not an Experiment, ``value`` is
-            non-finite, the masks omit ``step``, or a mask uses an unsupported
-            op.
+            non-finite, the masks omit ``step``, a mask uses an unsupported
+            op, or a mask operand is one no stored cell could hold.
 
         """
         if not isfinite(value):
@@ -458,18 +428,7 @@ class _MetricsMixin(_StoreShared):
             and pins["step"][0].op == "is"
         )
         async with self.engine.acquire() as conn, tx(conn):
-            experiment = await conn.fetchrow(
-                "SELECT kind FROM inquiries WHERE id = $1 FOR UPDATE",
-                experiment_id,
-            )
-            if experiment is None:
-                raise NotFoundError(f"experiment {experiment_id} not found")
-            if experiment["kind"] != "Experiment":
-                raise ConflictError(
-                    f"inquiry {experiment_id} is not an Experiment "
-                    f"(kind={experiment['kind']!r}); "
-                    "metrics may only attach to an experiment",
-                )
+            await _require_experiment(conn, experiment_id, for_update=True)
             if single_cell:
                 status = await self._upsert_single_cell(
                     conn,
@@ -493,6 +452,10 @@ class _MetricsMixin(_StoreShared):
         if mask.axis != "step":
             raise ConflictError(
                 f"reduction {mask.op} applies only to the step axis, not {mask.axis!r}",
+            )
+        if mask.value:
+            raise ConflictError(
+                f"reduction {mask.op} takes no operand, got {mask.value!r}",
             )
         return "DESC" if mask.op == "max" else "ASC"
 
@@ -530,7 +493,7 @@ class _MetricsMixin(_StoreShared):
             "ON CONFLICT (experiment_id, key, step) "
             "DO UPDATE SET value=EXCLUDED.value",
             experiment_id,
-            key_mask.value,
+            _coerce_operand(key_mask),
             _coerce_operand(step_mask),
             value,
         )
@@ -567,19 +530,53 @@ class _MetricsMixin(_StoreShared):
         return await conn.execute(sql, *params)
 
 
+async def _require_experiment(
+    conn: Conn,
+    experiment_id: UUID,
+    *,
+    for_update: bool,
+) -> None:
+    """Raise unless ``experiment_id`` is an existing ``Experiment`` row."""
+    experiment = await conn.fetchrow(
+        # ``FOR UPDATE`` is a fixed literal chosen by the bool, not input.
+        vetted_sql(
+            "SELECT kind FROM inquiries WHERE id = $1",
+            " FOR UPDATE" if for_update else "",
+        ),
+        experiment_id,
+    )
+    if experiment is None:
+        raise NotFoundError(f"experiment {experiment_id} not found")
+    if experiment["kind"] != "Experiment":
+        raise ConflictError(
+            f"inquiry {experiment_id} is not an Experiment "
+            f"(kind={experiment['kind']!r}); metrics belong only to an experiment",
+        )
+
+
 # ``key`` stays text; ``step`` becomes ``int`` and ``value`` ``float`` so the bound
-# parameter matches the ``bigint`` / ``float8`` cast. A non-numeric ``step`` / ``value``
-# operand is a caller error (409), not a DB ``DataError`` (500).
-def _coerce_operand(mask: MetricMaskClause) -> object:
-    """Coerce a mask's string operand to its axis's Python type."""
-    if mask.axis == "key":
-        return mask.value
+# parameter matches the ``bigint`` / ``float8`` cast. The operand is then held to the
+# ``MetricPoint`` contract of the cell it compares against, so each failure is a caller
+# error (409): a step past ``bigint`` fails the cast as an unmapped ``DataError`` (500);
+# Postgres sorts ``NaN`` above every float, so ``value lt NaN`` matches every cell; and
+# a key the wire refuses would, once written by the single-cell upsert, 500 every read.
+def _coerce_operand(mask: MetricMaskClause) -> str | int | float:
+    """Coerce a mask's string operand to its axis's type, within the cell contract."""
     try:
-        return int(mask.value) if mask.axis == "step" else float(mask.value)
+        if mask.axis == "key":
+            operand: str | int | float = mask.value
+        elif mask.axis == "step":
+            operand = int(mask.value)
+        else:
+            operand = float(mask.value)
+        MetricPoint.model_validate(
+            {"key": "k", "step": 0, "value": 0.0} | {mask.axis: operand},
+        )
     except ValueError as exc:
         raise ConflictError(
-            f"{mask.axis} operand {mask.value!r} is not numeric",
+            f"{mask.axis} operand {mask.value!r} is not a valid metric {mask.axis}",
         ) from exc
+    return operand
 
 
 # ``execute`` returns the command tag (``"UPDATE 3"``, ``"INSERT 0 1"``); the row count

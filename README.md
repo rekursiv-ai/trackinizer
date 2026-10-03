@@ -8,6 +8,12 @@
 
 Epistemological database for agent and human efforts, beliefs, and findings.
 
+<a href="https://media.rekursiv.ai/trackinizer-demo/83c919efb291ecd6deaa2ec0/demo.mp4"><img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/demo.webp" width="640" alt="A 5,000-node graph grows in the order it was made, grouped by root"></a>
+
+[Watch the 27-second tour](https://media.rekursiv.ai/trackinizer-demo/83c919efb291ecd6deaa2ec0/demo.mp4):
+the graph, a root's island and a Belief in it, Issues and Artifacts, and a
+message to an agent in the console, answered live.
+
 ## Quick Start
 
 ```bash
@@ -27,7 +33,7 @@ Epistemological database for agent and human efforts, beliefs, and findings.
 
 uv tool install trackinizer
 
-# Local server; web UI at http://127.0.0.1:8765.
+# Local server at http://127.0.0.1:8765.
 trackinizer
 
 # CLI to trackinizer server.
@@ -43,27 +49,50 @@ that contract over Postgres + HTTP.
 
 ## The UI
 
-The optional SPA (`server/web.py`) browses the same records the API serves.
+The web app browses the same records the API serves. Its source is `web/`
+([`web/README.md`](trackinizer/web/README.md)), and the package ships it
+built: `trackinizer` serves it at `/app/`, and `/` leads there. To use it on
+your own machine, run the server in single-user local mode, then open
+http://127.0.0.1:8765/app/:
 
-**Graph** -- the whole inquiry web (Issues, Beliefs, Papers, Experiments, …) as typed nodes and edges.
+```bash
+trackinizer --no-auth
+```
 
-<img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/graph.png" width="640" alt="Force-directed graph of the inquiry web">
+`--no-auth` makes every request an admin, so keep the server on localhost, its
+default `--host`. Without it, the API accepts only API tokens, which is how
+`trax` and agents connect, and `/app/` follows the same rule: a browser gets
+the sign-in page, and the package ships no browser sign-in.
 
-**Console** -- live multi-agent chat, filterable by room and date.
+`--app-dir DIR` serves the app built in `DIR` in place of the packaged one. In
+a source checkout the server serves `web/dist` without it, once `./npm run
+build` has run in `web/`; the flag is for a build kept elsewhere, such as a
+deploy's symlink to its current build. The server reads `DIR` on every
+request, so switching the link puts a new build live without a restart.
 
-<img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/chat.png" width="640" alt="Live multi-agent console">
+**Graph** -- the inquiry web (Issues, Beliefs, Papers, Experiments, …) as typed
+nodes and edges, each root's subgraph gathered into an island and the roots listed.
 
-**Belief** -- a record with its `before`/`after` relationship panels.
+<img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/graph.webp" width="640" alt="The inquiry graph grouped by root, with the roots list and the key">
 
-<img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/belief.png" width="640" alt="Belief record with parent/child edges">
+**Console** -- the agents' live sessions: saved views, filters by agent and room,
+messages alone or every tool call, and a line to message agents, with `@`
+suggestions.
 
-**Paper** -- abstract, authors, and `cites` edges to other papers.
+<img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/chat.webp" width="640" alt="The console: agents talking in two rooms, and the message line">
 
-<img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/paper.png" width="640" alt="Paper record with abstract and citations">
+**Belief** -- a claim with its evidence for and against, its parents and
+children, a graph of what lies within two hops, and its activity.
 
-**Experiment** -- outcome, labels, and links to the beliefs it proves or disproves.
+<img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/belief.webp" width="640" alt="A Belief with the evidence for and against it, its parents and its two-hop graph">
 
-<img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/experiment.png" width="640" alt="Experiment record with outcome and relationships">
+**Paper** -- abstract, authors, and the papers it cites and is cited by.
+
+<img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/paper.webp" width="640" alt="A Paper with its abstract, authors and citations">
+
+**Experiment** -- its outcome, config and metric charts, and the Belief it proves.
+
+<img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/experiment.webp" width="640" alt="An Experiment with its outcome, metric charts and the Belief it proves">
 
 ## The model
 
@@ -321,8 +350,8 @@ Pick one of these orders depending on what you came in for.
   `ColumnSpec` metadata in `types/inquiries.py`. The server registers
   handlers by iterating it (`server/api/edit.py`, `edge.py`), the client
   builds requests from it (`client/client.py`), so neither hand-writes a
-  path. `server/api/routes_drift_test.py` and `assets_drift_test.py`
-  fail if a handler or the SPA diverges from the table.
+  path. `server/api/routes_drift_test.py` fails if a handler diverges
+  from the table.
 
 - **"How does a submit reach the database?"**
   `server/api/submit.py` → `wire/bodies.py` (body validation) →
@@ -351,9 +380,11 @@ Pick one of these orders depending on what you came in for.
 ## Running
 
 ```bash
-trackinizer                        # pglite (default), with web UI
+trackinizer                        # pglite (default)
 trackinizer --engine pg --dsn ...  # against real Postgres
-trackinizer --no-web               # API only
+trackinizer --no-auth              # single-user local mode: everyone is admin
+trackinizer --app-dir DIR          # the web app built in DIR at /app/
+trackinizer --no-web               # without /api/web, /app/ or the login page
 ```
 
 `trax` is the client half and talks to any reachable server, so it is

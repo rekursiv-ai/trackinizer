@@ -1,15 +1,19 @@
-"""Experiment-metric ingest routes: ``log`` / ``read``.
+"""Experiment-metric routes: ``log`` / ``read`` / mask ``query`` / ``write`` / ``rank``.
 
 The server side of experiment-metric capture (the wandb ``log()`` analogue).
 A run streams batches of step-grained points into ``experiment_metrics``;
-``GET .../metrics`` reads them back, paginated. The mutating route requires
-the ``writer`` role; the read requires ``viewer``. Tenant scope is derived by
-joining to ``inquiries``.
+``GET .../metrics`` reads them back, paginated. The mask query, masked write,
+and cross-experiment rank are the ``trax metric`` grammar's surface. The two
+mutating routes require the ``writer`` role; the reads require ``viewer``.
+There is no per-tenant scoping: any principal holding the role reaches any
+experiment.
 
-Thin by construction: ``Store.log_metrics`` / ``read_metrics`` own the
-Experiment-existence check (raising ``NotFoundError`` / ``ConflictError``,
-which the app maps to 404 / 409) and the idempotent insert, so these handlers
-only validate pagination and serialize.
+Thin by construction: ``Store.log_metrics`` / ``read_metrics`` /
+``write_metrics_masked`` own the Experiment check (raising ``NotFoundError`` /
+``ConflictError``, which the app maps to 404 / 409), and ``query_metrics``
+owns mask validation (409). The mask query and rank select by id, so an id
+that is not an Experiment matches no cells. These handlers only reject the
+other operation's controls, validate pagination, and serialize.
 """
 
 from __future__ import annotations
@@ -89,7 +93,8 @@ async def read_metrics_route(
     """Read one page of an experiment's metric points in ``(key, step)`` order.
 
     Paginated so a caller never pulls a whole large run at once; ``key``
-    narrows to one metric.
+    narrows to one metric. ``Store.read_metrics`` rejects a non-Experiment id
+    (409) or a missing one (404), so an empty page means a run with no points.
 
     Args:
       experiment_id: Target Experiment inquiry id.
@@ -135,13 +140,17 @@ async def query_metrics_route(
 
     Args:
       experiment_id: Experiment id.
-      body: Body.
-      request: Request.
+      body: Request body with masks, sort, and limit.
+      request: FastAPI Request context (used to get the store).
 
     Returns:
       result: The MetricQueryResponse.
 
+    Raises:
+      HTTPException: 400 if the body carries a write value.
+
     """
+    _reject_write(body)
     store = get_store(request)
     rows = await store.query_metrics(
         [experiment_id],
@@ -203,7 +212,11 @@ async def rank_metrics_route(
     Returns:
       result: MetricRankResponse with rows array (experiment_id, point pairs).
 
+    Raises:
+      HTTPException: 400 if the query carries a write value.
+
     """
+    _reject_write(body.query)
     store = get_store(request)
     rows = await store.query_metrics(
         body.experiment_ids,
@@ -214,3 +227,14 @@ async def rank_metrics_route(
     return MetricRankResponse(
         rows=[MetricRankRow(experiment_id=eid, point=point) for eid, point in rows],
     )
+
+
+# The read routes share the write route's body model, so without this a ``write``
+# sent to a read path would be dropped and the caller would believe it had written.
+def _reject_write(query: MetricQueryRequest) -> None:
+    """Reject a write value sent to a read route."""
+    if query.write is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="a metric read takes no 'to' value; POST it to the write route",
+        )

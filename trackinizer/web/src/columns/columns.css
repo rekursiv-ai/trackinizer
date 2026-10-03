@@ -1,0 +1,27 @@
+/* An Issue list as columns (LV2), after the List page of the relationships
+   design canvas and Finder's column view. */
+.c-columns { display: flex; align-items: stretch; min-height: 100%; overflow-x: auto; }
+.c-column { flex: 0 0 300px; min-width: 0; padding: 8px 6px 24px; border-right: 1px solid var(--line); }
+.c-heading, .c-subheading {
+  margin: 0; padding: 2px 8px 8px; font-size: 11.5px; font-weight: 500; letter-spacing: .5px;
+  text-transform: uppercase; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.c-subheading { padding-top: 14px; }
+.c-item, .c-output {
+  display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 8px; border-radius: 7px;
+  font-size: 13px; color: var(--text);
+}
+.c-item:hover, .c-output:hover { background: var(--surface-raised); }
+.c-item[aria-current="true"] { background: var(--accent-soft); }
+.c-ref { font: 11.5px var(--mono); color: var(--muted); flex-shrink: 0; }
+.c-title {
+  flex: 1; min-width: 0; line-height: 1.3; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.c-chev { color: var(--muted); flex-shrink: 0; }
+.c-output { color: var(--ink-muted); }
+.c-note { padding: 6px 8px; font-size: 12.5px; color: var(--muted); }
+
+@media (max-width: 760px) {
+  .c-column { flex-basis: 78vw; }
+}

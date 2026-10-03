@@ -1,18 +1,22 @@
-"""Optional SPA + read endpoints for the trackinizer FastAPI app.
+"""The web app's routes and read endpoints for the trackinizer FastAPI app.
 
 Mounted by ``trackinizer --web`` (or programmatically via :func:`attach`).
 Adds:
 
-- ``GET /`` -- the single-page SPA (``assets/index.html``).
-- ``GET /static/*`` -- the SPA's static assets (when present).
-- ``GET /app/*`` -- a separately built web app, for signed-in users only
-  (``--app-dir``).
+- ``GET /app/*`` -- a separately built web app, for the callers the API answers
+  (``--app-dir``). With it, ``/`` answers 302 to ``/app/``, and ``/me``,
+  ``/admin``, ``/graph`` and ``/console`` lead into the app likewise.
+- ``GET /auth/login_page`` -- the sign-in page (``assets/login.html``).
+- ``GET /static/*`` -- files from ``--static-dir``, to anyone.
 - ``GET /api/web/search`` -- cross-kind ILIKE search over title/description.
 - ``GET /api/web/recent_changes`` -- the most-recent ``change_log`` rows
   with their snapshots flattened to JSON.
 - ``GET /api/web/lookup/{target_id}`` -- resolve a UUID to its kind.
 - ``GET /api/web/get/{target_id}`` -- one inquiry with edges + backlinks +
-  recent changes attached, for the SPA detail view.
+  recent changes attached, for the web app's detail view.
+- ``GET /api/web/feed`` -- every agent session's records interleaved, for the
+  console, with its counts by session, room and kind (``/feed/facets``) and per
+  time bucket (``/feed/histogram``).
 
 All write verbs live on :mod:`trackinizer`'s :class:`Store` and its
 ``/api/*`` routes (every mutation takes an explicit ``actor`` argument
@@ -24,8 +28,7 @@ design.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
-from datetime import datetime
-from functools import cache
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -34,9 +37,6 @@ from typing import (
     Literal,
     Protocol,
     cast,
-    get_args,
-    get_origin,
-    get_type_hints,
 )
 from urllib.parse import quote
 from uuid import UUID
@@ -48,7 +48,7 @@ import shlex
 import time
 import uuid
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import (
     FileResponse,
     RedirectResponse,
@@ -62,6 +62,7 @@ from trackinizer.lib.absent import ABSENT
 from trackinizer.lib.custom_json import FloatCodec, IntCodec, ListCodec
 from trackinizer.server.api._deps import tag_row
 from trackinizer.server.api._regex_guard import regex_failures_as_400
+from trackinizer.server.api._routes_shared import parse_fields
 from trackinizer.server.auth import (
     AuthIdentity,
     current_user,
@@ -72,15 +73,22 @@ from trackinizer.server.embedders import registry
 from trackinizer.server.notify import iter_sse_events, tx
 from trackinizer.server.regex_timeout import apply_regex_statement_timeout
 from trackinizer.server.semantic_mapper_footprint import FootprintMapper
+from trackinizer.server.store.graph_focus import read_neighbourhood
+from trackinizer.server.store.session_feed import WHOLE_FEED, FeedScope
 from trackinizer.server.store.session_search import (
     SessionSearchHit,
     search_session_records,
 )
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Snapshot
-from trackinizer.types.edges import Edge
-from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry, InquiryEdge
-from trackinizer.wire.wire_sessions import FeedCursor, FeedResponse
+from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
+from trackinizer.wire.routes import MAX_LIST_LIMIT, inquiry_relation_fields
+from trackinizer.wire.wire_sessions import (
+    FeedCursor,
+    FeedFacetsResponse,
+    FeedHistogramResponse,
+    FeedResponse,
+)
 
 
 if TYPE_CHECKING:
@@ -124,6 +132,9 @@ class _QueryEmbedder(Protocol):
 # See ``_AppRoute``: shared caches must never store an /app/ response.
 _APP_CACHE_CONTROL: Final = "private, no-cache"
 
+# See ``_AppRoute``: a built file under ``assets/`` never changes under one URL.
+_ASSET_CACHE_CONTROL: Final = "private, max-age=31536000, immutable"
+
 
 # -- Read routes -------------------------------------------------------------
 
@@ -135,6 +146,8 @@ async def web_search(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     kind: Inquiry.InquiryKind | None = None,
     limit: int = 50,
+    *,
+    fields: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
 ) -> list[WebView]:
     """Cross-kind search.
 
@@ -143,12 +156,15 @@ async def web_search(
     ``title:RE`` / ``description:RE`` match a case-insensitive regex. Only ``"``
     groups a phrase: ``'`` and backslashes are ordinary characters.
 
+    ``fields`` names the keys each match keeps, as on ``GET /api/inquiries``.
+
     Args:
       request: FastAPI request object for middleware access.
       q: Bare-token and field-scoped regex search string.
       identity: Authenticated user, validated to have viewer role.
       kind: Filter to one inquiry kind; None means search all kinds.
       limit: Maximum results, 1-1000.
+      fields: Row keys to send, one per repeated param; unset sends every key.
 
     Returns:
       matches: Matching inquiries, each as ``self`` in ``/get`` renders it.
@@ -157,6 +173,7 @@ async def web_search(
     del identity
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be in [1, 1000]")
+    names = parse_fields(fields)
     try:
         terms = _parse_query(q)
         clause, params = _build_term_clause(terms)
@@ -200,7 +217,10 @@ async def web_search(
         # nothing while reading as though it worked.
         with regex_failures_as_400():
             rows = await conn.fetch(sql, *params)
-    return [_row_to_dict(r) for r in rows]
+    matches = [_row_to_dict(r) for r in rows]
+    if names is None:
+        return matches
+    return [{k: v for k, v in m.items() if k in names} for m in matches]
 
 
 @router.get("/search_sessions")
@@ -378,21 +398,50 @@ _GRAPH_NODE_COLS: Final = (
     "id, kind, seq, title, status, created, belief_judgement, belief_confidence"
 )
 
+# The ids ``/graph`` returns: the newest ``$1`` nodes, each followed by the older nodes
+# it shares an edge with, cut at ``$1``. A node ranks by the newest ``created`` among
+# itself and the recent nodes it shares an edge with, a tie going to the newer node,
+# so a cited paper sorts right behind the newest belief citing it.
+#
+# Neighbours count inside ``limit`` because it is the one bound the caller sets:
+# closing the newest ``limit`` over every neighbour answered ``limit=1`` with 5,002
+# nodes (R3-02). Neo4j Browser bounds its view the same way: ``initialNodeDisplay``
+# caps every node drawn, and it draws only relationships between drawn nodes.
+_GRAPH_KEPT_IDS: Final = (
+    "WITH recent AS ("
+    " SELECT id, created FROM inquiries ORDER BY created DESC, id DESC LIMIT $1"
+    "), reached AS ("
+    " SELECT id, created AS seen FROM recent"
+    " UNION ALL SELECT e.to_id, r.created FROM edges e"
+    " JOIN recent r ON e.from_id = r.id"
+    " UNION ALL SELECT e.from_id, r.created FROM edges e"
+    " JOIN recent r ON e.to_id = r.id"
+    ") SELECT r.id FROM reached r JOIN inquiries i ON i.id = r.id"
+    " GROUP BY r.id, i.created"
+    " ORDER BY max(r.seen) DESC, i.created DESC, r.id DESC LIMIT $1"
+)
+
 
 @router.get("/graph")
 async def web_graph(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
-    limit: int = 1000,
+    limit: int | None = None,
+    focus: UUID | None = None,
+    hops: int = 2,
 ) -> WebView:
     """Return the inquiry graph as typed nodes + directed edges, for the SPA.
 
-    ``limit`` caps the graph to the most-recently-created ``limit`` nodes, then
-    EDGE-CLOSES that set: any older node referenced by an edge to a recent node
-    is pulled back in, so an old-but-still-cited node (e.g. a foundational paper
-    a new belief proves) stays visible and no edge is left dangling. The
-    returned node count is therefore the recent N plus their older neighbours.
-    ``limit`` is 1 to 5000: the whole graph is never one response.
+    At most ``limit`` nodes, at least 1, and the edges between them. The newest
+    inquiries come first, each followed by the older ones it links to in either
+    direction, so an old-but-still-cited node (e.g. a foundational paper a new
+    belief proves) stays in view; selection stops at ``limit``. Every edge joins
+    two returned nodes.
+
+    With ``focus``, the nodes are instead the focus and the inquiries nearest it
+    (:func:`read_neighbourhood`): all within one edge, in either direction, before
+    any two away, and so on to ``hops``, newest first within a hop, until
+    ``limit``. Each node then carries ``hops``, its distance from the focus.
 
     Nodes are the light projection (id, kind, seq, title, status, created,
     belief judgement/confidence), ordered by ``created`` ascending so the replay
@@ -403,48 +452,62 @@ async def web_graph(
     Args:
       request: FastAPI request object for middleware access.
       identity: Authenticated user, validated to have viewer role.
-      limit: Cap to N most-recent nodes, 1 to 5000.
+      limit: Most nodes to return, neighbours included, at least 1; 1000, or 60
+        with a ``focus``, when unset.
+      focus: The inquiry whose neighbourhood to return; unset returns the newest.
+      hops: With ``focus``, the most edges to walk from it, 1 to 3.
 
     Returns:
       graph: Nodes and edges for replay visualization, ordered by created time.
 
+    Raises:
+      HTTPException: 400 for a ``limit`` below 1 or ``hops`` outside 1 to 3; 404
+        when ``focus`` names no inquiry.
+
     """
     del identity
-    # Any viewer may call this, and the whole graph measured 92k nodes, 29 MB and
-    # 8.8 s on production. 5000 is the largest cap ``graph.html`` offers.
-    if limit < 1 or limit > 5_000:
-        raise HTTPException(status_code=400, detail="limit must be in [1, 5000]")
+    # No top: the graph view lets a person type any count, All included, and asks
+    # before drawing a large one. On a benchmark of about 100,000 nodes, All answered
+    # 42 MB (10 MB gzipped) in 0.7 s, and 20,000 nodes 8.6 MB in 0.16 s. The answer
+    # is still bounded by what was asked, which ``limit=0`` once was not.
+    if limit is not None and limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be at least 1")
+    if hops < 1 or hops > 3:
+        raise HTTPException(status_code=400, detail="hops must be in [1, 3]")
     async with get_store(request).engine.acquire() as conn:
-        # 1. The most-recent ``limit`` node ids.
-        recent = await conn.fetch(
-            "SELECT id FROM inquiries ORDER BY created DESC, id DESC LIMIT $1",
-            limit,
-        )
-        recent_ids = [r["id"] for r in recent]
-        # 2. Every edge touching a recent node (in either direction).
-        edge_rows = await conn.fetch(
-            "SELECT from_id, to_id, edge_kind, valence FROM edges "
-            "WHERE from_id = ANY($1) OR to_id = ANY($1)",
-            recent_ids,
-        )
-        # 3. Edge-close: the recent set plus any neighbour the edges reach.
-        keep = set(recent_ids)
-        for e in edge_rows:
-            keep.add(e["from_id"])
-            keep.add(e["to_id"])
-        # 4. Full light rows for the kept set, in replay (created ASC) order.
+        distances: dict[UUID, int] = {}
+        if focus is None:
+            kept, bound = vetted_sql("IN (", _GRAPH_KEPT_IDS, ")"), limit or 1000
+        else:
+            distances = await read_neighbourhood(
+                conn,
+                focus,
+                hops=hops,
+                limit=limit or 60,
+            )
+            if not distances:
+                raise HTTPException(status_code=404, detail="focus not found")
+            kept, bound = "= ANY($1)", list(distances)
         node_rows = await conn.fetch(
             vetted_sql(
                 "SELECT ",
                 _GRAPH_NODE_COLS,
-                " FROM inquiries WHERE id = ANY($1) ORDER BY created ASC, id ASC",
+                " FROM inquiries WHERE id ",
+                kept,
+                " ORDER BY created ASC, id ASC",
             ),
-            list(keep),
+            bound,
         )
-    return {
-        "nodes": [_graph_node(r) for r in node_rows],
-        "edges": [_graph_edge(r) for r in edge_rows],
-    }
+        edge_rows = await conn.fetch(
+            "SELECT from_id, to_id, edge_kind, valence FROM edges "
+            "WHERE from_id = ANY($1) AND to_id = ANY($1)",
+            [r["id"] for r in node_rows],
+        )
+    nodes = [_graph_node(r) for r in node_rows]
+    if distances:
+        for node, row in zip(nodes, node_rows, strict=True):
+            node["hops"] = distances[_record_uuid(row, "id")]
+    return {"nodes": nodes, "edges": [_graph_edge(r) for r in edge_rows]}
 
 
 @router.get("/subscribe")
@@ -543,19 +606,45 @@ async def web_subscribe_probe(
     )
 
 
+def feed_scope(
+    actor: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
+    room: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
+    cli: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
+    kind: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
+) -> FeedScope:
+    """Read the feed's filters: each repeatable, any of its values, all of them.
+
+    Args:
+      actor: Sessions by routing name.
+      room: Sessions by a room they joined.
+      cli: Sessions by the CLI they wrap.
+      kind: Records by kind.
+
+    Returns:
+      scope: The records the filters keep.
+
+    """
+    return FeedScope(
+        actors=tuple(actor or ()),
+        rooms=tuple(room or ()),
+        clis=tuple(cli or ()),
+        kinds=tuple(kind or ()),
+    )
+
+
 @router.get("/feed")
 async def web_feed(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
+    scope: Annotated[FeedScope, Depends(feed_scope)] = WHOLE_FEED,
     after_created: datetime | None = None,
     after_session: UUID | None = None,
     after_part: int | None = None,
     after_seq: int | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
-    room: str | None = None,
-    actor: str | None = None,
+    conversation: bool = False,
     limit: int = 200,
     tail: bool = False,
 ) -> FeedResponse:
@@ -568,8 +657,10 @@ async def web_feed(
     together form the composite keyset cursor a poll resumes past (all are
     required; the order key is composite so a bare ``created`` resume would
     skip same-instant ties, and ``part`` joined it when the feed moved to IR
-    records -- position restarts within each source file). ``since`` / ``until`` bound a fixed historical window;
-    ``room`` / ``actor`` filter by routing identity. ``tail=true`` returns the
+    records -- position restarts within each source file). ``since`` / ``until``
+    bound a fixed historical window; ``actor`` / ``room`` / ``cli`` / ``kind``
+    filter (:func:`feed_scope`), and ``conversation=true`` keeps only what the
+    facets count as conversation. ``tail=true`` returns the
     newest page (the live console's first load) so a backlog does not force a
     replay from the beginning. The response carries ``next_after`` (a composite
     cursor) for the next poll; an empty page echoes the supplied cursor so the
@@ -578,14 +669,14 @@ async def web_feed(
     Args:
       request: FastAPI request object for middleware access.
       identity: Authenticated user, validated to have viewer role.
+      scope: Which sessions and record kinds to read.
       after_created: Resume cursor: creation timestamp of last-seen turn.
       after_session: Resume cursor: session id of last-seen turn.
       after_part: Resume cursor: part index within the session.
       after_seq: Resume cursor: sequence number within the part.
       since: Absolute window start (inclusive).
-      until: Absolute window end (exclusive).
-      room: Filter turns by job/room routing label.
-      actor: Filter turns by actor/agent name.
+      until: Absolute window end (inclusive).
+      conversation: Keep only conversation, what a person or agent said.
       limit: Maximum turns to return.
       tail: Return newest page first (true) or oldest available (false).
 
@@ -601,8 +692,8 @@ async def web_feed(
         after=after,
         since=since,
         until=until,
-        room=room,
-        actor=actor,
+        scope=scope,
+        conversation=conversation,
         limit=limit,
         tail=tail,
     )
@@ -626,21 +717,95 @@ async def web_feed(
     return FeedResponse(events=events, next_after=next_after)
 
 
-def graph_legend() -> dict[str, list[str]]:
-    """Return the node-kind and edge-kind sets the graph view colors by.
+@router.get("/feed/facets")
+async def web_feed_facets(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
+    scope: Annotated[FeedScope, Depends(feed_scope)] = WHOLE_FEED,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> FeedFacetsResponse:
+    """Count the feed between ``since`` and ``until`` by session, room and kind.
 
-    The single source the SPA reads to build its color legend, derived from the
-    domain enums so it cannot drift: a new ``Inquiry`` subclass or ``Edge.Kind``
-    appears here automatically (pinned by ``web_test.py``).
+    The counts are of the records ``/feed`` returns for the same window and
+    filters, so the console can list agents, rooms and verbosity levels with
+    their sizes before it loads any of them.
+
+    Args:
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user, validated to have viewer role.
+      scope: Which sessions and record kinds to count.
+      since: Window start (inclusive); unset counts from the first record.
+      until: Window end (inclusive); unset counts to the last.
 
     Returns:
-      legend: Enum values for node_kinds and edge_kinds; keyed by name.
+      facets: Per session, room and record kind, what the window holds.
 
     """
-    return {
-        "node_kinds": list(get_args(Inquiry.InquiryKind)),
-        "edge_kinds": list(get_args(Edge.Kind)),
-    }
+    del identity
+    _check_window(since, until)
+    return await get_store(request).read_feed_facets(
+        since=since,
+        until=until,
+        scope=scope,
+    )
+
+
+@router.get("/feed/histogram")
+async def web_feed_histogram(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
+    scope: Annotated[FeedScope, Depends(feed_scope)] = WHOLE_FEED,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    buckets: int = 120,
+) -> FeedHistogramResponse:
+    """Count the feed's records per time bucket, over at most the last 7 days.
+
+    Buckets have a round width (seconds up to hours, then whole days), the
+    finest that fits the span in at most ``buckets``, and start on a multiple of
+    it from the Unix epoch; every bucket from the one holding ``since`` through
+    the one holding ``until`` is listed, empty ones as 0. A ``since`` more than
+    7 days ago starts the span 7 days ago.
+
+    Args:
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user, validated to have viewer role.
+      scope: Which sessions and record kinds to count.
+      since: Span start; unset starts at the first record of the last 7 days.
+      until: Span end; unset ends now.
+      buckets: Most buckets to return, 2 to 1000.
+
+    Returns:
+      histogram: The grid and each bucket's record count, oldest first.
+
+    Raises:
+      HTTPException: 400 for ``buckets`` outside 2 to 1000, an ``until`` before
+        ``since``, or an ``until`` more than 7 days ago.
+
+    """
+    del identity
+    if buckets < 2 or buckets > 1_000:
+        raise HTTPException(status_code=400, detail="buckets must be in [2, 1000]")
+    _check_window(since, until)
+    # The histogram counts the span's records one by one, so it reaches back a week
+    # at most. On a benchmark of 9 million records, spans of 1.9 million took up to
+    # 0.16 s at the median and 0.21 s at worst.
+    earliest = datetime.now(UTC) - timedelta(days=7)
+    if until is not None and until.astimezone(UTC) < earliest:
+        raise HTTPException(
+            status_code=400,
+            detail="until must be within the last 7 days",
+        )
+    return await get_store(request).read_feed_histogram(
+        since=since,
+        until=until,
+        earliest=earliest,
+        buckets=buckets,
+        scope=scope,
+    )
 
 
 # -- Search query parsing ----------------------------------------------------
@@ -707,17 +872,22 @@ def attach(
     static_dir: Path | None = None,
     app_dir: Path | None = None,
 ) -> None:
-    """Mount the read-API router, the SPA at ``/``, ``/static/*`` and ``/app/*``.
+    """Mount the read-API router, the sign-in page, ``/static/*`` and ``/app/*``.
 
-    ``/static`` is served from ``static_dir`` when given, else from the SPA's
-    own ``assets/static`` -- the runtime override lets an operator serve files
+    ``/static`` serves ``static_dir`` when given, so an operator can serve files
     written after deploy (e.g. a generated report) without copying them into
-    the source tree, while the default keeps the SPA's bundled assets working.
+    the source tree; unset mounts none.
 
-    ``/app/`` serves a separately built web app from ``app_dir``, only to
-    signed-in callers, with ``index.html`` at ``/app/``. The directory is
+    ``/app/`` serves a separately built web app from ``app_dir`` to the callers
+    the API answers (every caller under ``--no-auth``), with ``index.html`` at
+    ``/app/``; any other caller's entry page redirects to the sign-in page, and
+    its other files answer 401. The directory is
     resolved on every request, so it may be missing at startup (``/app/``
     answers 404) or be a symlink swapped to a new build without a restart.
+    With it, the old UI's paths answer 302 into the app: ``/`` to ``/app/``,
+    and ``/me``, ``/admin``, ``/graph`` and ``/console`` to the app's
+    ``#/settings``, ``#/admin``, ``#/graph`` and ``#/console``. Without it,
+    nothing is served at those paths.
 
     Idempotent: a second call is a no-op, so the first call's directories win.
     ``server._configure_app`` attaches the module-global app, and a test that
@@ -725,8 +895,8 @@ def attach(
 
     Args:
       app: FastAPI instance to mount routes on.
-      assets_dir: Directory holding the SPA's HTML pages (overrides bundled SPA).
-      static_dir: Directory to serve at /static (overrides bundled default).
+      assets_dir: Directory holding ``login.html`` (overrides the bundled one).
+      static_dir: Directory to serve at /static; unset mounts none.
       app_dir: Directory of a built web app to serve at /app/; unset mounts none.
 
     """
@@ -736,9 +906,8 @@ def attach(
     assets = assets_dir or (_CWD / "assets")
     app.include_router(router, prefix="/api/web")
 
-    static = static_dir or (assets / "static")
-    if static.is_dir():
-        app.mount("/static", StaticFiles(directory=str(static)), name="static")
+    if static_dir is not None and static_dir.is_dir():
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     if app_dir is not None:
         # ``check_dir=False`` lets the server start before a build exists.
@@ -748,32 +917,24 @@ def attach(
             methods=["GET"],
             include_in_schema=False,
         )
-
-    _add_page_route(app, "/", assets / "index.html")
-    _add_page_route(app, "/graph", assets / "graph.html")
-    _add_page_route(app, "/console", assets / "console.html")
-    _add_page_route(app, "/me", assets / "me.html")
-    _add_page_route(app, "/admin", assets / "admin.html", admin_only=True)
-    _add_login_route(app, assets / "login.html")
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class _PageRoute:
-    page_path: Path
-    admin_only: bool = False
-
-    async def __call__(
-        self,
-        request: Request,
-        identity: Annotated[AuthIdentity | None, Depends(optional_identity)],
-    ) -> Response:
-        if self.admin_only:
-            return _serve_admin_page(
-                request,
-                identity=identity,
-                page_path=self.page_path,
+        # Stored links name ``/`` with a hash, which the browser keeps across a
+        # redirect whose ``Location`` has none, and the app's router reads the old
+        # hashes. 302, not 301: a browser keeps a 301 for good, which would pin
+        # these paths to ``/app/`` past any later move.
+        for path, location in (
+            ("/", "/app/"),
+            ("/me", "/app/#/settings"),
+            ("/admin", "/app/#/admin"),
+            ("/graph", "/app/#/graph"),
+            ("/console", "/app/#/console"),
+        ):
+            app.add_api_route(
+                path,
+                _RedirectRoute(location=location),
+                methods=["GET"],
+                include_in_schema=False,
             )
-        return _serve_if_authed(request, identity=identity, page_path=self.page_path)
+    _add_login_route(app, assets / "login.html")
 
 
 # Files are served through ``get_response`` from a route, not by mounting the
@@ -782,12 +943,18 @@ class _PageRoute:
 # raises), where this answers 404. ``lookup_path`` re-resolves the directory's
 # ``realpath`` per request and refuses any path that leaves it, symlinks included.
 #
-# Every response, errors included, carries ``_APP_CACHE_CONTROL``. A shared cache in
-# front of the server may store responses by file extension (Cloudflare does for
-# ``.js``, 404s included; measured on production), which would hand one user's copy
-# of the app to anyone and pin a 401 or 404 for everyone. ``private`` keeps shared
-# caches out, and ``no-cache`` makes browsers revalidate, so a new build's entry page
-# is seen as soon as it lands.
+# Every response, errors included, is ``private``. A shared cache in front of the
+# server may store responses by file extension (Cloudflare does for ``.js``, 404s
+# included; measured on production), which would hand one user's copy of the app to
+# anyone and pin a 401 or 404 for everyone. ``private`` keeps shared caches out.
+#
+# A file found under ``assets/`` is named by its content's hash, so the browser keeps
+# it for good (``_ASSET_CACHE_CONTROL``) and a repeat visit asks for none of them.
+# That includes a 304, whose headers replace the stored ones: answered ``no-cache``,
+# an asset cached before this rule would be revalidated for as long as its hash
+# lasts. Everything else, errors included, gets ``_APP_CACHE_CONTROL``, whose
+# ``no-cache`` makes browsers revalidate, so a new build's entry page is seen as soon
+# as it lands.
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _AppRoute:
     files: StaticFiles
@@ -806,7 +973,10 @@ class _AppRoute:
                 detail=err.detail,
                 headers={**(err.headers or {}), "Cache-Control": _APP_CACHE_CONTROL},
             ) from err
-        response.headers["Cache-Control"] = _APP_CACHE_CONTROL
+        hashed = path.startswith("assets/") and response.status_code in {200, 304}
+        response.headers["Cache-Control"] = (
+            _ASSET_CACHE_CONTROL if hashed else _APP_CACHE_CONTROL
+        )
         return response
 
     async def _respond(
@@ -828,13 +998,27 @@ class _AppRoute:
                     status_code=500,
                     detail="the app build is not readable by the server",
                 ) from err
-        # Only the entry page redirects: a script or stylesheet cannot use a login page.
-        # ``_redirect_when_unauthed`` also returns ``None`` when session login is not
-        # configured, where the old pages are served to anyone; the app is not.
-        redirect = _redirect_when_unauthed(request, identity=identity)
-        if redirect is None or path != "index.html":
+        # Refused where the API refuses the caller. Only the entry page redirects: a
+        # script or stylesheet cannot use a login page. It does so on a server that
+        # signs no browser in too, since the login page says so; a 401 there left a
+        # bare JSON error at the address a new user opens first.
+        if path != "index.html":
             raise HTTPException(status_code=401, detail="not authenticated")
-        return redirect
+        return _login_redirect(request)
+
+
+# Signed in or not: ``/app/`` decides sign-in. ``no-cache`` as on ``/app/``, so a change
+# of where a path leads is seen at once.
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _RedirectRoute:
+    location: str
+
+    async def __call__(self) -> RedirectResponse:
+        return RedirectResponse(
+            self.location,
+            status_code=302,
+            headers={"Cache-Control": _APP_CACHE_CONTROL},
+        )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -843,23 +1027,6 @@ class _LoginPageRoute:
 
     async def __call__(self) -> FileResponse:
         return FileResponse(self.page_path)
-
-
-def _add_page_route(
-    app: FastAPI,
-    path: str,
-    page_path: Path,
-    *,
-    admin_only: bool = False,
-) -> None:
-    """Mount one HTML page when its asset exists."""
-    if page_path.is_file():
-        app.add_api_route(
-            path,
-            _PageRoute(page_path=page_path, admin_only=admin_only),
-            methods=["GET"],
-            include_in_schema=False,
-        )
 
 
 def _add_login_route(app: FastAPI, page_path: Path) -> None:
@@ -873,49 +1040,8 @@ def _add_login_route(app: FastAPI, page_path: Path) -> None:
         )
 
 
-def _serve_admin_page(
-    request: Request,
-    identity: AuthIdentity | None,
-    page_path: Path,
-) -> Response:
-    """Return the admin page for admins; redirect/403 otherwise."""
-    redirect = _redirect_when_unauthed(request, identity=identity)
-    if redirect is not None:
-        return redirect
-    if identity is None or identity.role != "admin":
-        raise HTTPException(status_code=403, detail="admin role required")
-    return FileResponse(page_path)
-
-
-# When session auth is unconfigured (no ``session_secret`` on ``app.state.config``) the
-# redirect is suppressed -- the deployment isn't running OAuth and gating the SPA behind
-# a login that doesn't exist would lock everyone out.
-def _serve_if_authed(
-    request: Request,
-    identity: AuthIdentity | None,
-    page_path: Path,
-) -> Response:
-    """Return ``page_path`` when signed in, else a 302 to the login page."""
-    redirect = _redirect_when_unauthed(request, identity=identity)
-    if redirect is not None:
-        return redirect
-    return FileResponse(page_path)
-
-
-# Returns ``None`` when the caller is authed *or* when session auth is not configured on
-# this deployment (in which case there is no login page to redirect to and
-# ``current_user`` couldn't have resolved a session cookie anyway).
-def _redirect_when_unauthed(
-    request: Request,
-    identity: AuthIdentity | None,
-) -> RedirectResponse | None:
-    """Return a 302 to ``/auth/login_page`` when the request is unauthed."""
-    if identity is not None:
-        return None
-    config: object = getattr(_state(request), "config", None)
-    session_secret: object = getattr(config, "session_secret", None)
-    if not session_secret:
-        return None
+def _login_redirect(request: Request) -> RedirectResponse:
+    """Return a 302 to ``/auth/login_page``, whose ``next`` leads back here."""
     next_url = request.url.path
     if request.url.query:
         next_url = f"{next_url}?{request.url.query}"
@@ -949,11 +1075,21 @@ def _feed_cursor(
     return (created, session_id, IntCodec.coerce(part, 0), seq)
 
 
+def _check_window(since: datetime | None, until: datetime | None) -> None:
+    """Refuse a window that ends before it starts; a naive time is local."""
+    if (
+        since is not None
+        and until is not None
+        and until.astimezone(UTC) < since.astimezone(UTC)
+    ):
+        raise HTTPException(status_code=400, detail="until must not be before since")
+
+
 # Fields: ``title``, ``description``. Bare tokens search both. ``shlex.split`` reads
 # the query as a shell line, which is wrong twice: ``\`` escapes the next character,
 # so ``title:\d+`` reached Postgres as ``d+``, and ``'`` opens a quote, so ``don't``
-# failed as unterminated. Only ``"`` groups, the grammar the search box's
-# placeholder in ``assets/index.html`` states. ``#`` is not a comment either.
+# failed as unterminated. Only ``"`` groups, the grammar ``docs/api.md`` states.
+# ``#`` is not a comment either.
 def _parse_query(q: str) -> list[tuple[str | None, str]]:
     """Tokenize a search query into ``(field, pattern)`` terms."""
     lexer = shlex.shlex(q, posix=True)
@@ -1073,23 +1209,10 @@ def _row_to_dict(row: asyncpg.Record) -> WebView:
     """Serialize an ``inquiries`` row as its kind's dataclass, less its relations."""
     kind = cast(Inquiry.InquiryKind, _record_str(row, "kind"))
     inquiry = KIND_TO_CLASS[kind].from_row(row)
-    relations = _relation_fields(type(inquiry))
+    relations = inquiry_relation_fields()
     return {
         key: value for key, value in tag_row(inquiry).items() if key not in relations
     }
-
-
-@cache
-def _relation_fields(cls: type[Inquiry]) -> frozenset[str]:
-    """Fields typed as edge endpoints, which only the ``edges`` table fills."""
-    hints = get_type_hints(cls)
-    relations: set[str] = set()
-    for f in fields(cls):
-        hint = cast(object, hints[f.name])
-        peer: object = get_args(hint)[0] if get_origin(hint) is tuple else None
-        if isinstance(peer, type) and issubclass(peer, InquiryEdge):
-            relations.add(f.name)
-    return frozenset(relations)
 
 
 # Identity columns surface at top level; the flat ``old_*`` / ``new_*`` snapshot columns

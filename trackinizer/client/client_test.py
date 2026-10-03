@@ -1216,7 +1216,11 @@ def _public_methods(cls: type) -> set[str]:
     return {
         name
         for name, member in inspect.getmembers(cls, callable)
-        if not name.startswith("_") and not inspect.isclass(member)
+        if not name.startswith("_")
+        and not inspect.isclass(member)
+        # Mutmut adds ``xǁ<Class>ǁ<method>__mutmut_<N>`` copies; not API surface.
+        and "ǁ" not in name
+        and "__mutmut_" not in name
     } - _FAKE_EXEMPT
 
 
@@ -1260,6 +1264,17 @@ def test_fake_client_method_signatures_match_client() -> None:
         "FakeClient method signatures diverge from Client:\n"
         + "\n".join(f"  {m}" for m in mismatches)
     )
+
+
+def test_public_methods_ignores_mutmut_copies() -> None:
+    """The mutation hook's baseline run must not see mutmut's copies as API."""
+    copies = {
+        f"xǁClientǁadd_author__mutmut_{suffix}": Client.add_author
+        for suffix in ("orig", "1")
+    }
+    mutated = type("Client", (Client,), copies)
+    assert "add_author" in _public_methods(mutated)
+    assert _public_methods(mutated) == _public_methods(Client)
 
 
 # Coverage for the URL validator's reject paths.

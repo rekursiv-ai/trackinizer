@@ -1,0 +1,556 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/inquiries",
+    "query": [
+      [
+        "kind",
+        "Issue"
+      ],
+      [
+        "kind",
+        "Artifact"
+      ],
+      [
+        "kind",
+        "Experiment"
+      ],
+      [
+        "kind",
+        "Paper"
+      ],
+      [
+        "kind",
+        "Belief"
+      ],
+      [
+        "kind",
+        "CodeChange"
+      ],
+      [
+        "kind",
+        "WebResult"
+      ],
+      [
+        "kind",
+        "WebSearch"
+      ],
+      [
+        "kind",
+        "AgentSession"
+      ],
+      [
+        "limit",
+        "20"
+      ],
+      [
+        "offset",
+        "0"
+      ]
+    ]
+  },
+  "response": {
+    "body": [
+      {
+        "abstract": null,
+        "account": "no-auth@localhost",
+        "authors": [
+          "Ada Lovelace",
+          "Alan Turing"
+        ],
+        "cited_by": [],
+        "cites": [],
+        "created": "2026-01-01T00:00:00.000000+00:00",
+        "description": null,
+        "favors": [],
+        "google_scholar_cites_id": null,
+        "google_scholar_cluster_id": null,
+        "id": "00000000-0000-4000-8000-000000000005",
+        "kind": "Paper",
+        "labels": [
+          "fixture"
+        ],
+        "marginal_cost": {
+          "agent_usd": 0.0,
+          "resource_usd": 0.0
+        },
+        "modified": "2026-01-01T00:00:00.000000+00:00",
+        "owner": null,
+        "produced_by": [],
+        "produces": [],
+        "proves": [
+          {
+            "id": "00000000-0000-4000-8000-000000000007",
+            "kind": "Belief",
+            "labels": null,
+            "note": null,
+            "valence": 0.8
+          }
+        ],
+        "publication_type": null,
+        "publish_date": "2026-01-01T00:00:00.000000+00:00",
+        "seq": 1,
+        "source": "https://example.com/paper",
+        "status": "active",
+        "subscribers": null,
+        "subvenue": null,
+        "superseded_by": [],
+        "supersedes": [],
+        "title": "Incremental layout",
+        "venue": "UIST"
+      },
+      {
+        "account": "no-auth@localhost",
+        "cli": "claude",
+        "cli_session_id": null,
+        "created": "2026-01-01T00:00:00.000000+00:00",
+        "description": null,
+        "ended": null,
+        "favors": [],
+        "id": "00000000-0000-4000-8000-000000000011",
+        "kind": "AgentSession",
+        "labels": null,
+        "marginal_cost": {
+          "agent_usd": 0.0,
+          "resource_usd": 0.0
+        },
+        "modified": "2026-01-01T00:00:00.000000+00:00",
+        "opened_by_api_key_id": null,
+        "owner": "Agent",
+        "produced_by": [],
+        "produces": [],
+        "proves": [],
+        "rooms": null,
+        "seq": 1,
+        "started": null,
+        "status": "active",
+        "subscribers": null,
+        "superseded_by": [],
+        "supersedes": [],
+        "title": "Fixture session"
+      },
+      {
+        "account": "no-auth@localhost",
+        "codechanges": null,
+        "config": {
+          "ids": 13
+        },
+        "created": "2026-01-01T00:00:00.000000+00:00",
+        "description": null,
+        "favored_by": [],
+        "favors": [],
+        "id": "00000000-0000-4000-8000-000000000009",
+        "kind": "Experiment",
+        "labels": [
+          "fixture"
+        ],
+        "marginal_cost": {
+          "agent_usd": 0.0,
+          "resource_usd": 0.0
+        },
+        "modified": "2026-01-01T00:00:00.000000+00:00",
+        "outcome": "0.19 to 0.23 s",
+        "owner": null,
+        "produced_by": [
+          {
+            "id": "00000000-0000-4000-8000-000000000003",
+            "kind": "Issue",
+            "labels": null,
+            "note": null
+          }
+        ],
+        "produces": [],
+        "proved_by": [],
+        "proves": [
+          {
+            "id": "00000000-0000-4000-8000-000000000007",
+            "kind": "Belief",
+            "labels": null,
+            "note": "Measured on PGlite.",
+            "valence": 0.6
+          }
+        ],
+        "seq": 1,
+        "status": "active",
+        "subscribers": null,
+        "superseded_by": [],
+        "supersedes": [],
+        "title": "Membership check latency"
+      },
+      {
+        "account": "no-auth@localhost",
+        "confidence": 0.7,
+        "created": "2026-01-01T00:00:00.000000+00:00",
+        "description": null,
+        "favored_by": [
+          {
+            "id": "00000000-0000-4000-8000-000000000006",
+            "kind": "Artifact",
+            "labels": null,
+            "note": null,
+            "valence": -0.4
+          }
+        ],
+        "favors": [],
+        "id": "00000000-0000-4000-8000-000000000007",
+        "judgement": "unproven",
+        "kind": "Belief",
+        "labels": [
+          "fixture"
+        ],
+        "marginal_cost": {
+          "agent_usd": 0.0,
+          "resource_usd": 0.0
+        },
+        "modified": "2026-01-01T00:00:00.000000+00:00",
+        "owner": null,
+        "produced_by": [],
+        "produces": [],
+        "proved_by": [
+          {
+            "id": "00000000-0000-4000-8000-000000000005",
+            "kind": "Paper",
+            "labels": null,
+            "note": null,
+            "valence": 0.8
+          },
+          {
+            "id": "00000000-0000-4000-8000-000000000009",
+            "kind": "Experiment",
+            "labels": null,
+            "note": "Measured on PGlite.",
+            "valence": 0.6
+          }
+        ],
+        "proves": [],
+        "seq": 1,
+        "status": "active",
+        "subscribers": null,
+        "superseded_by": [],
+        "supersedes": [],
+        "title": "A membership check holds at most 13 ids"
+      },
+      {
+        "account": "no-auth@localhost",
+        "created": "2026-01-01T00:00:00.000000+00:00",
+        "description": null,
+        "favors": [
+          {
+            "id": "00000000-0000-4000-8000-000000000007",
+            "kind": "Belief",
+            "labels": null,
+            "note": null,
+            "valence": -0.4
+          }
+        ],
+        "id": "00000000-0000-4000-8000-000000000006",
+        "kind": "Artifact",
+        "labels": [
+          "fixture"
+        ],
+        "marginal_cost": {
+          "agent_usd": 0.0,
+          "resource_usd": 0.0
+        },
+        "modified": "2026-01-01T00:00:00.000000+00:00",
+        "owner": null,
+        "produced_by": [],
+        "produces": [],
+        "proves": [],
+        "seq": 1,
+        "status": "active",
+        "subscribers": null,
+        "superseded_by": [],
+        "supersedes": [],
+        "title": "Probe notes"
+      },
+      {
+        "account": "no-auth@localhost",
+        "created": "2026-01-01T00:00:00.000000+00:00",
+        "description": null,
+        "favors": [],
+        "id": "00000000-0000-4000-8000-000000000010",
+        "kind": "Artifact",
+        "labels": null,
+        "marginal_cost": {
+          "agent_usd": 0.0,
+          "resource_usd": 0.0
+        },
+        "modified": "2026-01-01T00:00:00.000000+00:00",
+        "owner": null,
+        "produced_by": [
+          {
+            "id": "00000000-0000-4000-8000-000000000004",
+            "kind": "Issue",
+            "labels": null,
+            "note": null
+          }
+        ],
+        "produces": [],
+        "proves": [],
+        "seq": 2,
+        "status": "active",
+        "subscribers": [
+          "Agent"
+        ],
+        "superseded_by": [],
+        "supersedes": [],
+        "title": "Answer: newest first"
+      },
+      {
+        "account": "no-auth@localhost",
+        "created": "2026-01-01T00:00:00.000000+00:00",
+        "description": null,
+        "id": "00000000-0000-4000-8000-000000000001",
+        "issue_kind": null,
+        "kind": "Issue",
+        "labels": [
+          "fixture"
+        ],
+        "marginal_cost": {
+          "agent_usd": 0.0,
+          "resource_usd": 0.0
+        },
+        "modified": "2026-01-01T00:00:00.000000+00:00",
+        "narrowed_by": [
+          {
+            "id": "00000000-0000-4000-8000-000000000003",
+            "kind": "Issue",
+            "labels": null,
+            "note": null,
+            "priority": 0
+          }
+        ],
+        "narrows": [],
+        "owner": "dan",
+        "priority": 10,
+        "produced_by": [],
+        "produces": [
+          {
+            "id": "00000000-0000-4000-8000-000000000003",
+            "kind": "Issue",
+            "labels": null,
+            "note": null
+          },
+          {
+            "id": "00000000-0000-4000-8000-000000000004",
+            "kind": "Issue",
+            "labels": null,
+            "note": null
+          }
+        ],
+        "required_by": [],
+        "requires": [],
+        "seq": 1,
+        "status": "active",
+        "subscribers": null,
+        "superseded_by": [],
+        "supersedes": [],
+        "title": "Web app fixtures",
+        "validation": null
+      },
+      {
+        "account": "no-auth@localhost",
+        "created": "2026-01-01T00:00:00.000000+00:00",
+        "description": null,
+        "id": "00000000-0000-4000-8000-000000000002",
+        "issue_kind": null,
+        "kind": "Issue",
+        "labels": [
+          "fixture"
+        ],
+        "marginal_cost": {
+          "agent_usd": 0.0,
+          "resource_usd": 0.0
+        },
+        "modified": "2026-01-01T00:00:00.000000+00:00",
+        "narrowed_by": [],
+        "narrows": [],
+        "owner": null,
+        "priority": 20,
+        "produced_by": [],
+        "produces": [
+          {
+            "id": "00000000-0000-4000-8000-000000000003",
+            "kind": "Issue",
+            "labels": null,
+            "note": null
+          }
+        ],
+        "required_by": [
+          {
+            "id": "00000000-0000-4000-8000-000000000003",
+            "kind": "Issue",
+            "labels": null,
+            "note": null,
+            "priority": null
+          }
+        ],
+        "requires": [],
+        "seq": 2,
+        "status": "complete",
+        "subscribers": null,
+        "superseded_by": [],
+        "supersedes": [],
+        "title": "Prerequisite",
+        "validation": null
+      },
+      {
+        "account": "no-auth@localhost",
+        "created": "2026-01-01T00:00:00.000000+00:00",
+        "description": null,
+        "id": "00000000-0000-4000-8000-000000000003",
+        "issue_kind": [
+          "bug"
+        ],
+        "kind": "Issue",
+        "labels": [
+          "fixture",
+          "ui"
+        ],
+        "marginal_cost": {
+          "agent_usd": 0.0,
+          "resource_usd": 0.0
+        },
+        "modified": "2026-01-01T00:00:00.000000+00:00",
+        "narrowed_by": [],
+        "narrows": [
+          {
+            "id": "00000000-0000-4000-8000-000000000001",
+            "kind": "Issue",
+            "labels": null,
+            "note": null,
+            "priority": 0
+          }
+        ],
+        "owner": null,
+        "priority": 0,
+        "produced_by": [
+          {
+            "id": "00000000-0000-4000-8000-000000000001",
+            "kind": "Issue",
+            "labels": null,
+            "note": null
+          },
+          {
+            "id": "00000000-0000-4000-8000-000000000002",
+            "kind": "Issue",
+            "labels": null,
+            "note": null
+          }
+        ],
+        "produces": [
+          {
+            "id": "00000000-0000-4000-8000-000000000004",
+            "kind": "Issue",
+            "labels": null,
+            "note": null
+          },
+          {
+            "id": "00000000-0000-4000-8000-000000000009",
+            "kind": "Experiment",
+            "labels": null,
+            "note": null
+          }
+        ],
+        "required_by": [],
+        "requires": [
+          {
+            "id": "00000000-0000-4000-8000-000000000002",
+            "kind": "Issue",
+            "labels": null,
+            "note": null,
+            "priority": null
+          },
+          {
+            "id": "00000000-0000-4000-8000-000000000004",
+            "kind": "Issue",
+            "labels": [
+              "fixture"
+            ],
+            "note": null,
+            "priority": null
+          }
+        ],
+        "seq": 3,
+        "status": "active",
+        "subscribers": [
+          "Agent"
+        ],
+        "superseded_by": [],
+        "supersedes": [],
+        "title": "Child, renamed",
+        "validation": null
+      },
+      {
+        "account": "no-auth@localhost",
+        "created": "2026-01-01T00:00:00.000000+00:00",
+        "description": null,
+        "id": "00000000-0000-4000-8000-000000000004",
+        "issue_kind": [
+          "question"
+        ],
+        "kind": "Issue",
+        "labels": [
+          "fixture"
+        ],
+        "marginal_cost": {
+          "agent_usd": 0.0,
+          "resource_usd": 0.0
+        },
+        "modified": "2026-01-01T00:00:00.000000+00:00",
+        "narrowed_by": [],
+        "narrows": [],
+        "owner": "dan",
+        "priority": null,
+        "produced_by": [
+          {
+            "id": "00000000-0000-4000-8000-000000000001",
+            "kind": "Issue",
+            "labels": null,
+            "note": null
+          },
+          {
+            "id": "00000000-0000-4000-8000-000000000003",
+            "kind": "Issue",
+            "labels": null,
+            "note": null
+          }
+        ],
+        "produces": [
+          {
+            "id": "00000000-0000-4000-8000-000000000010",
+            "kind": "Artifact",
+            "labels": null,
+            "note": null
+          }
+        ],
+        "required_by": [
+          {
+            "id": "00000000-0000-4000-8000-000000000003",
+            "kind": "Issue",
+            "labels": [
+              "fixture"
+            ],
+            "note": null,
+            "priority": null
+          }
+        ],
+        "requires": [],
+        "seq": 4,
+        "status": "active",
+        "subscribers": [
+          "Agent"
+        ],
+        "superseded_by": [],
+        "supersedes": [],
+        "title": "Which sort?",
+        "validation": null
+      }
+    ],
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

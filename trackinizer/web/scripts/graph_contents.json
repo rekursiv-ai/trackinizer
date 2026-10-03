@@ -1,0 +1,286 @@
+{
+  "roots": [
+    "Make long-context evals reproducible",
+    "Why does the 1.3B run diverge at 18k?",
+    "Test whether warmup matters past 1B",
+    "Build a cheaper nightly eval suite",
+    "Fix checkpoint resume after preemption",
+    "2026-09-14 pickup: data-mix sweep",
+    "Distill the 7B reward model into 1B",
+    "Can sparse attention match dense at 64k?",
+    "Cut tokenizer time in half",
+    "Speculative decoding for the chat model",
+    "Audit the eval set for train overlap",
+    "Test whether smoothing helps recall",
+    "Scale the sweep launcher to 256 GPUs",
+    "Port the trainer to bf16 everywhere",
+    "Find the source of the loss spikes",
+    "Build a retrieval eval for code search",
+    "Is the reward model overconfident?",
+    "2026-09-21 pickup: reseed Table 2",
+    "Shrink the data loader's memory use",
+    "Quantize the draft model to 4 bits",
+    "Curriculum ordering for math data",
+    "Why do evals drift on A100 vs H100?",
+    "Replace the metrics store",
+    "Write the long-context results section",
+    "Fix flaky multi-node startup",
+    "Test whether dedup helps small models",
+    "Deduplicate the web crawl shards",
+    "Faster cold start for the eval workers",
+    "Benchmark KV-cache eviction policies",
+    "Calibrate confidence on held-out tasks",
+    "Mixture-of-experts routing study",
+    "Track GPU cost per experiment",
+    "Rebuild the tokenizer vocabulary",
+    "Does weight tying hurt at 7B?",
+    "Ablate positional encodings past 32k",
+    "Move nightly jobs to the new cluster",
+    "Learning-rate schedule bake-off",
+    "Clean up the experiment registry",
+    "Prototype a gridworld world model",
+    "An agent that triages failing evals",
+    "Do bigger batches need longer warmup?",
+    "Instruction-tuning data quality pass",
+    "Reproduce the scaling-law fit",
+    "Make sweeps resumable",
+    "Fix NaNs in the fp8 matmul path",
+    "Draft the methods appendix",
+    "Compare optimizers on the 350M model",
+    "Lower eval variance below 0.3 points",
+    "2026-08-30 pickup: ablation table",
+    "Self-play baseline for the puzzle env",
+    "How much data does the 125M model need?",
+    "Throughput regression in attention",
+    "Synthetic data for unit-test generation",
+    "Ship the checkpoint browser",
+    "Error analysis on the math benchmark",
+    "Do reruns explain the 1-point gap?",
+    "Long-horizon planning eval",
+    "Shard the eval set by difficulty",
+    "Profile host-to-device copies",
+    "Find a cheaper proxy metric for quality",
+    "Retrieval-augmented answers for docs QA",
+    "Tokenizer drift across versions",
+    "Upgrade the cluster's CUDA stack",
+    "Measure code-benchmark contamination",
+    "Prune the vision encoder by 30%",
+    "Stabilize RL fine-tuning",
+    "Do longer contexts help summarization?",
+    "Write up the eval-drift postmortem",
+    "Gridworld agents for unseen maps",
+    "Benchmark the new storage backend",
+    "Pin every dependency in the eval image",
+    "Test whether the gain survives reseeding",
+    "Build the experiment dashboard",
+    "Repair broken links in the paper index",
+    "Speech front end for the demo",
+    "Compress checkpoints with zstd",
+    "Track down the 3% throughput loss",
+    "An early-stopping rule for sweeps",
+    "Robustness to prompt paraphrases",
+    "Reading group: sparse attention papers",
+    "2026-10-01 pickup: release notes",
+    "Fix data loader stalls at epoch ends",
+    "Explore cheaper reward signals",
+    "Is the eval harness deterministic?",
+    "Multi-turn tool-use benchmark",
+    "Batch inference for offline scoring",
+    "Rewrite the sampler in Triton",
+    "Lower the p99 latency of the chat server",
+    "Revisit the 125M baseline",
+    "Transfer hyperparameters 125M to 1.3B",
+    "Find mislabeled examples in the eval set",
+    "Distributed checkpointing without stalls",
+    "Validate the new data mix on 350M",
+    "Measure memorization of rare strings",
+    "Make the trainer restartable mid-epoch",
+    "Decide on a default optimizer",
+    "Plot loss against compute for every run",
+    "Reduce eval cost by 4x",
+    "Why is recall worse on long tables?",
+    "Port the puzzle env to JAX",
+    "Train a small verifier for proofs",
+    "Does temperature 0 hide variance?",
+    "Merge the duplicate experiments",
+    "Fix the off-by-one in sequence packing",
+    "Map the planner's failure modes",
+    "Cache embeddings for retrieval evals",
+    "Count tokens per source in the mix",
+    "Rework the eval leaderboard",
+    "Does data order matter at 350M?",
+    "Fine-tune on synthetic dialogues",
+    "2026-09-07 pickup: needle tests",
+    "Spot-check annotator agreement",
+    "Bring up the H100 nodes",
+    "Small-model distillation recipes",
+    "Detect loss spikes before they diverge",
+    "Patch the logger's clock skew",
+    "Ablate the auxiliary loss",
+    "Better defaults for gradient clipping",
+    "Test whether pruning hurts calibration",
+    "Document the release checklist",
+    "Speed up image preprocessing",
+    "An eval for multi-hop questions",
+    "Reconcile two baselines that disagree",
+    "Fix the memory leak in the eval worker",
+    "Measure the gain from longer training",
+    "A prompt set for safety refusals",
+    "Can a 1B model learn the puzzle rules?",
+    "Prefetch shards from object storage",
+    "Migrate dashboards to the new store",
+    "Investigate the bimodal eval scores",
+    "Second look at the warmup result",
+    "Agent memory for long tasks",
+    "Retire the old metrics pipeline",
+    "Test whether code data helps math",
+    "Stress-test the job scheduler",
+    "Replace hand-tuned schedules with search",
+    "Write tests for the packing logic",
+    "Debug divergence on 64 GPUs",
+    "A smaller eval image for faster starts",
+    "Track the energy cost of each run",
+    "2026-09-28 pickup: routing study",
+    "Understand why dropout helps here",
+    "Check the scaling fit on new data",
+    "Unify config formats across trainers",
+    "Generate harder math problems",
+    "Mobile demo of the speech model",
+    "Log per-example losses for analysis",
+    "Is the improvement just more tokens?",
+    "Make the paper's figures reproducible",
+    "Rank fusion for hybrid retrieval",
+    "Fix the leaderboard's tie-breaking",
+    "Benchmark attention kernels on H100",
+    "Collect hard negatives for retrieval",
+    "Test whether the verifier generalizes",
+    "Rerun the baseline with fixed seeds",
+    "Lighter-weight experiment tracking",
+    "Audit the licenses of the data sources",
+    "Reduce cold-start time of notebooks",
+    "Plan the Q4 compute budget",
+    "Find the bottleneck in shard decoding",
+    "Teach the agent to read stack traces",
+    "Investigate saturating eval scores",
+    "Port the evals to the new harness",
+    "Quantify annotation noise",
+    "Reproduce last month's best run"
+  ],
+  "showcase": {
+    "root": {
+      "title": "Does longer warmup keep big runs stable?",
+      "description": "About one run in five past 1B parameters diverges in its first few thousand steps. Each Belief under this Issue is one explanation, and each Experiment is evidence for or against one of them.\n\n**Done when** one explanation holds on three seeds at 1.3B and the others are ruled out.",
+      "labels": ["training", "stability"],
+      "priority": 10,
+      "issue_kind": ["task"]
+    },
+    "belief": {
+      "title": "A 2k-step warmup prevents early divergence at 1.3B",
+      "description": "In the warmup sweep, no run with 2,000 or more warmup steps diverged, while runs with 500 diverged on 3 of 10 seeds. Two reruns at a larger batch disagree, which is why the confidence is not higher.\n\n- Holds at 350M and 1.3B.\n- Not yet tried at 7B.",
+      "labels": ["training", "warmup"]
+    }
+  },
+  "kinds": {
+    "Issue": {
+      "templates": ["{0} {1}", "{0} {1}", "Why does {2} {3}?", "Test whether {4}"],
+      "words": [
+        ["Fix", "Add", "Port", "Profile", "Rerun", "Document", "Trace", "Speed up", "Check", "Clean up"],
+        [
+          "the eval harness's retry path", "checkpoint resume on preemption", "the data loader's shuffle buffer",
+          "overflow in the fp16 loss", "the tokenizer cache", "learning-rate warmup", "the nightly sweep launcher",
+          "metric logging at step 0", "the long-context eval set", "gradient clipping", "shard prefetching",
+          "seed handling in the sampler"
+        ],
+        ["the 1B run", "eval loss", "throughput", "the reward model", "recall at 32k", "the sweep"],
+        ["plateau after 20k steps", "drift between reruns", "spike on resume", "drop on 8 GPUs", "differ across seeds"],
+        [
+          "cosine decay beats linear past 20k steps", "seeding every sampler removes the drift",
+          "the rank cache keeps token ids identical", "dedup helps the 125M model most", "the gain survives three reruns"
+        ]
+      ]
+    },
+    "Experiment": {
+      "templates": ["{0} {1} sweep", "{1} ablation on {0}", "{0} rerun: {2}", "{0} baseline, {2}"],
+      "words": [
+        ["125M", "350M", "1.3B", "ViT-S/16", "ResNet-50", "the draft model", "the reward model", "GRU baseline", "MoE-8x"],
+        ["warmup", "learning-rate", "batch-size", "dropout", "weight-decay", "context-length", "data-mix", "temperature"],
+        [
+          "lr 3e-4, batch 512", "seed 7, 3 reruns", "8k context", "bf16, no clipping", "cosine decay to 10%",
+          "one epoch", "frozen embeddings", "top-p 0.9"
+        ]
+      ]
+    },
+    "Belief": {
+      "templates": ["{0} {1}{2}"],
+      "words": [
+        [
+          "cosine decay", "a longer warmup", "a larger batch", "label smoothing", "dropout", "deduplicating the data",
+          "sliding-window attention", "gradient clipping", "weight tying", "curriculum ordering", "seeding every sampler"
+        ],
+        [
+          "beats linear decay", "barely moves final loss", "hurts recall", "helps small models most",
+          "stops the loss spikes", "costs 2% throughput", "matters only past 1B", "is within seed noise"
+        ],
+        ["", " past 20k steps", " at 32k context", " on the held-out set", " below 350M", " in bf16"]
+      ]
+    },
+    "CodeChange": {
+      "templates": ["{0} {1}"],
+      "words": [
+        ["Fix", "Add", "Remove", "Cache", "Retry", "Log", "Guard", "Batch", "Pin", "Vectorize"],
+        [
+          "the checkpoint writer's fsync", "eval results per seed", "NaN checks in the loss", "the shard index",
+          "metric uploads", "the stale-rank cache", "the sampler seed", "dataloader worker restarts",
+          "the warmup schedule", "GPU memory stats"
+        ]
+      ]
+    },
+    "Artifact": {
+      "templates": ["{0}: {1}"],
+      "words": [
+        ["Report", "Loss curves", "Notes", "Summary", "Comparison", "Postmortem", "Plots", "Table"],
+        [
+          "the warmup sweep", "eval drift", "the 1.3B run", "throughput by GPU type", "recall at long context",
+          "data-mix ablations", "seed variance", "the reward model"
+        ]
+      ]
+    },
+    "WebSearch": {
+      "templates": ["{0}{1}"],
+      "words": [
+        [
+          "cosine vs linear lr decay", "long context recall benchmark", "bf16 loss spikes", "byte pair encoding speed",
+          "eval variance across seeds", "sparse attention 64k", "data deduplication effects", "reward model calibration"
+        ],
+        ["", " 2026", " paper", " ablation", " survey"]
+      ]
+    },
+    "WebResult": {
+      "templates": ["{0}: notes and results", "A survey of {0}", "Benchmarking {0}", "{0} in practice"],
+      "words": [
+        [
+          "learning-rate schedules", "long-context evaluation", "mixed-precision training", "tokenizer speedups",
+          "sparse attention", "data deduplication", "reward modeling"
+        ]
+      ]
+    },
+    "Paper": {
+      "templates": ["{0} {1} for {2}"],
+      "words": [
+        ["efficient", "scalable", "robust", "sparse", "adaptive", "simple"],
+        ["attention", "warmup schedules", "data selection", "tokenization", "evaluation", "reward models"],
+        ["long-context language models", "small-batch training", "reproducible evals", "code generation", "retrieval"]
+      ]
+    },
+    "AgentSession": {
+      "templates": ["{0} {1}"],
+      "words": [
+        ["Rerun", "Triage", "Summarize", "Profile", "Reproduce", "Check", "Review"],
+        [
+          "the warmup sweep", "the nightly evals", "this week's papers", "the data loader", "the 1-point gap",
+          "the mix for duplicates", "the seed reruns", "the failing shard"
+        ]
+      ]
+    }
+  }
+}

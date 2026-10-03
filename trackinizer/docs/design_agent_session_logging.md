@@ -630,7 +630,7 @@ non-interactive `-p` run), so hook coverage of compaction is unverified.
 running agent, and the loop skips the call until the sink has a session
 id. This is the pull half of session messaging and is already scoped for
 replacement in `design_session_messaging.md` ("Transport: HTTP polling
-now; NOTIFY/SSE is the upgrade"): the server has the push fanout the SPA
+now; NOTIFY/SSE is the upgrade"): the server has the push fanout the web app
 uses, and `httpx` streams responses, so the client needs no new
 dependency. The missing piece is a server route that holds the request
 open.

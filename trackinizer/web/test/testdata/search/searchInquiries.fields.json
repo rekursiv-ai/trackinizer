@@ -1,0 +1,50 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/web/search",
+    "query": [
+      [
+        "q",
+        "Child"
+      ],
+      [
+        "kind",
+        "Issue"
+      ],
+      [
+        "limit",
+        "5"
+      ],
+      [
+        "fields",
+        "id"
+      ],
+      [
+        "fields",
+        "kind"
+      ],
+      [
+        "fields",
+        "seq"
+      ],
+      [
+        "fields",
+        "title"
+      ]
+    ]
+  },
+  "response": {
+    "body": [
+      {
+        "id": "00000000-0000-4000-8000-000000000003",
+        "kind": "Issue",
+        "seq": 3,
+        "title": "Child, renamed"
+      }
+    ],
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

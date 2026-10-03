@@ -1,0 +1,99 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/inquiries/00000000-0000-4000-8000-000000000003"
+  },
+  "response": {
+    "body": {
+      "account": "no-auth@localhost",
+      "created": "2026-01-01T00:00:00.000000+00:00",
+      "description": null,
+      "id": "00000000-0000-4000-8000-000000000003",
+      "issue_kind": [
+        "bug"
+      ],
+      "kind": "Issue",
+      "labels": [
+        "fixture",
+        "ui"
+      ],
+      "marginal_cost": {
+        "agent_usd": 0.0,
+        "resource_usd": 0.0
+      },
+      "modified": "2026-01-01T00:00:00.000000+00:00",
+      "narrowed_by": [],
+      "narrows": [
+        {
+          "id": "00000000-0000-4000-8000-000000000001",
+          "kind": "Issue",
+          "labels": null,
+          "note": null,
+          "priority": 0
+        }
+      ],
+      "owner": null,
+      "priority": 0,
+      "produced_by": [
+        {
+          "id": "00000000-0000-4000-8000-000000000001",
+          "kind": "Issue",
+          "labels": null,
+          "note": null
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000002",
+          "kind": "Issue",
+          "labels": null,
+          "note": null
+        }
+      ],
+      "produces": [
+        {
+          "id": "00000000-0000-4000-8000-000000000004",
+          "kind": "Issue",
+          "labels": null,
+          "note": null
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000009",
+          "kind": "Experiment",
+          "labels": null,
+          "note": null
+        }
+      ],
+      "required_by": [],
+      "requires": [
+        {
+          "id": "00000000-0000-4000-8000-000000000002",
+          "kind": "Issue",
+          "labels": null,
+          "note": null,
+          "priority": null
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000004",
+          "kind": "Issue",
+          "labels": [
+            "fixture"
+          ],
+          "note": null,
+          "priority": null
+        }
+      ],
+      "seq": 3,
+      "status": "active",
+      "subscribers": [
+        "Agent"
+      ],
+      "superseded_by": [],
+      "supersedes": [],
+      "title": "Child, renamed",
+      "validation": null
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

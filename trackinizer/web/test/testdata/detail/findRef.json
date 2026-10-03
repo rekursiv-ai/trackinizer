@@ -1,0 +1,64 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/inquiries/Issue/1"
+  },
+  "response": {
+    "body": {
+      "account": "no-auth@localhost",
+      "created": "2026-01-01T00:00:00.000000+00:00",
+      "description": null,
+      "id": "00000000-0000-4000-8000-000000000001",
+      "issue_kind": null,
+      "kind": "Issue",
+      "labels": [
+        "fixture"
+      ],
+      "marginal_cost": {
+        "agent_usd": 0.0,
+        "resource_usd": 0.0
+      },
+      "modified": "2026-01-01T00:00:00.000000+00:00",
+      "narrowed_by": [
+        {
+          "id": "00000000-0000-4000-8000-000000000003",
+          "kind": "Issue",
+          "labels": null,
+          "note": null,
+          "priority": 0
+        }
+      ],
+      "narrows": [],
+      "owner": "dan",
+      "priority": 10,
+      "produced_by": [],
+      "produces": [
+        {
+          "id": "00000000-0000-4000-8000-000000000003",
+          "kind": "Issue",
+          "labels": null,
+          "note": null
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000004",
+          "kind": "Issue",
+          "labels": null,
+          "note": null
+        }
+      ],
+      "required_by": [],
+      "requires": [],
+      "seq": 1,
+      "status": "active",
+      "subscribers": null,
+      "superseded_by": [],
+      "supersedes": [],
+      "title": "Web app fixtures",
+      "validation": null
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

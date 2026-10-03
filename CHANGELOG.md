@@ -27,6 +27,62 @@ All notable trackinizer changes are documented here. This project follows
   so the file works as a backup that outlives a datadir and as input to a
   mirror. Embeddings, session ciphertext, and auth tables are left out.
 
+- A new web app replaces the old pages. It ships built inside the wheel and
+  the server serves it at `/app/` by default (`--app-dir` still overrides
+  it); `/` redirects there, and old `#/...` links keep working.
+  - The graph is the home view: a force layout of the newest inquiries (any
+    node limit), grouped by root by default with a list of roots, search,
+    focus on a node with its subgraph one to three hops out, a key whose kinds
+    click to show only that kind, and Replay in creation order.
+  - Each kind has a list with List, Streams, Outline and Columns views. A
+    detail has a Parents and Children rail, a two-hop graph preview and Show
+    in graph; Activity shows every change kind; search has a page of its own.
+  - A console for agent sessions: saved, pinnable views; agent and room
+    facets; verbosity levels (messages, calls, output, everything); `@`
+    suggestions ranked by the view; messages to live sessions; and an
+    activity minimap over the last 7 days.
+  - Agent-session transcripts read as prose. Each tool call and its result
+    is one line that opens in place, runs of them fold into a counted group,
+    and contents are highlighted: commands, files by language, diffs per
+    side, JSON and terminal colours. Encrypted reasoning is not shown.
+  - Side panels and the sidebar collapse (`[`, `]`, Cmd/Ctrl+B), a switch
+    beside the user picks light or dark, `Kind#seq` references render as
+    links to their inquiry, and absolute paths copy on click.
+- `GET /api/web/graph?focus=<uuid>&hops=N` returns one inquiry's
+  neighbourhood, nearest first.
+- `GET /api/web/feed` filters by repeated `actor`, `room`, `cli` and `kind`,
+  and `conversation=true` keeps only what people and agents said;
+  `GET /api/web/feed/facets` counts agents and rooms, and
+  `GET /api/web/feed/histogram` counts records per time bucket over at most 7
+  days.
+- `GET /api/inquiries` and `GET /api/web/search` take `fields=` to return only
+  the named keys; `GET /api/inquiries?ancestors=narrows` adds each row's
+  `narrows` ancestors; `GET /api/change_log` takes a repeated `kind` and
+  `brief=true`.
+
+### Changed
+
+- The sign-in page takes the new app's look, over a slowly growing graph.
+- Hashed web-app assets are cached for a year as immutable; `index.html`
+  stays `no-cache`.
+- `TRACKINIZER_NO_AUTH=1` now sets the CLI's default, as documented;
+  `--auth` overrides it.
+- Feed reads are bounded: a tail read of the newest records no longer scans
+  the whole record table (seconds to milliseconds on millions of records).
+
+### Removed
+
+- The old UI pages (`index.html`, `me.html`, `admin.html`, `graph.html`,
+  `console.html`) and the helpers only they used.
+- Google OAuth sign-in is no longer part of the public package. Run
+  `--no-auth` for single-user local use, with API tokens for the CLI and
+  agents.
+
+### Fixed
+
+- `POST /auth/logout` with an unparsable `Origin` or `Referer` answers 403 and
+  keeps the session cookie, instead of 500.
+
 ## 0.1.4 - 2026-08-20
 
 ### Added

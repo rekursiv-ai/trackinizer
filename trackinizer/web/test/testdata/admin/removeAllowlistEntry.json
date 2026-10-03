@@ -1,0 +1,15 @@
+{
+  "request": {
+    "method": "DELETE",
+    "path": "/api/admin/allowlist/ada%40example.com"
+  },
+  "response": {
+    "body": {
+      "ok": true
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

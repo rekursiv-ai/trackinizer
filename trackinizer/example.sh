@@ -343,7 +343,6 @@ trax search overfit || true
 cat <<EOF
 
 ============================================================
-  Web UI:      ${URL}/
   Server PID:  ${SERVER_PID}   log: ${LOG}
   TRACKINIZER_URL=${URL} (exported for this shell)
 

@@ -1,0 +1,20 @@
+{
+  "request": {
+    "body": {},
+    "headers": {
+      "Idempotency-Key": "00000000-0000-4000-9000-000000000001"
+    },
+    "method": "DELETE",
+    "path": "/api/edges/00000000-0000-4000-8000-000000000004/narrows/00000000-0000-4000-8000-000000000001"
+  },
+  "response": {
+    "body": {
+      "change_id": "00000000-0000-4000-9000-000000000001",
+      "created": false
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

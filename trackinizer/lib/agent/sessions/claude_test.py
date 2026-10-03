@@ -254,6 +254,31 @@ def test_a_record_outside_the_transcript_maps_to_its_own_type(
     assert isinstance(_last_act(records), expected)
 
 
+def test_a_queued_message_is_its_contexts_prose() -> None:
+    # A message sent while the agent worked arrives as a ``queued_command``
+    # attachment with its text under ``prompt``. Read from ``text`` or
+    # ``content`` only, the message reached the IR as a residual alone: no
+    # search found it and no viewer showed it.
+    native = _line(
+        type='"attachment"',
+        attachment=(
+            '{"type":"queued_command","prompt":"[room-a] someone: Go ahead.",'
+            '"commandMode":"prompt","origin":{"kind":"human"}}'
+        ),
+        uuid='"q1"',
+        timestamp='"2026-10-01T13:00:24.494Z"',
+    )
+
+    state = _last_act(list(claude.normalize(StringIO(native))))
+
+    assert isinstance(state, ContextState)
+    assert (state.kind, state.content) == (
+        "queued_command",
+        "[room-a] someone: Go ahead.",
+    )
+    assert _round_trip(native) == native
+
+
 @pytest.mark.parametrize(
     ("tool", "result", "expected"),
     [

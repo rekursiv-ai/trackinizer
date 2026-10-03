@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 # A slug as long as the campaign names whose launch failed when tmux could not
 # bind its socket ("File name too long"), and then some.
-_LONG_NAME = "censoring-raw-input-fair-tuning-20261002-0057-" + "x" * 80
+_LONG_NAME = "nightly-regression-sweep-shards-20260101-0900-" + "x" * 80
 
 
 # A process of its own rather than the test's: a liveness probe that wrongly sent a

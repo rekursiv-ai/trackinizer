@@ -1,0 +1,41 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/web/feed/facets"
+  },
+  "response": {
+    "body": {
+      "actors": [
+        {
+          "actor": "Agent",
+          "cli": "claude",
+          "conversation": 2,
+          "count": 3,
+          "ended": null,
+          "last": "2026-01-01T00:00:00.000000Z",
+          "rooms": [],
+          "session_id": "00000000-0000-4000-8000-000000000011"
+        }
+      ],
+      "kinds": [
+        {
+          "count": 1,
+          "kind": "AssistantMessage"
+        },
+        {
+          "count": 1,
+          "kind": "ToolCall"
+        },
+        {
+          "count": 1,
+          "kind": "UserMessage"
+        }
+      ],
+      "rooms": []
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/sessions/00000000-0000-4000-8000-000000000011/parts"
+  },
+  "response": {
+    "body": {
+      "parts": [
+        {
+          "format": "claude",
+          "ir_id": "00000000-0000-4000-9000-000000000001",
+          "metadata": {},
+          "name": "main.jsonl",
+          "part": 0,
+          "records": 3
+        }
+      ]
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

@@ -28,6 +28,8 @@ POST /api/inquiries/lookup
 ```
 GET /api/inquiries?kind=<kind>
 GET /api/inquiries?kind=<kind>&kind=<kind>
+GET /api/inquiries?kind=<kind>&fields=<key>&fields=<key>
+GET /api/inquiries?kind=Issue&ancestors=narrows
 GET /api/inquiries?kind=<kind>&filter=<json>
 GET /api/inquiries?kind=<kind>&filter=<json>&filter=<json>
 GET /api/inquiries?kind=<kind>&limit=N
@@ -36,6 +38,11 @@ GET /api/inquiries?kind=<kind>&seq_range=A..B
 GET /api/inquiries?kind=<kind>&seq_range=A..B&seq_range=C..
 GET /api/inquiries?kind=<kind>&status=<status>
 ```
+
+`ancestors=narrows` adds each Issue row's `narrows` ancestors as
+`ancestors: [{id, kind, seq, title, status, child_ids}]`, nearest first, each
+once; `child_ids` names which of the row and its listed ancestors narrow that
+one. One recursive read per response, capped at depth 8 and 200 ancestors.
 
 ### 1.3 Inquiry create
 
@@ -185,17 +192,46 @@ GET /api/change_log?actor=<actor>
 GET /api/change_log?subject_id=<uuid>
 GET /api/change_log?subject_kind=<kind>
 GET /api/change_log?kind=<change_kind>
+GET /api/change_log?kind=<change_kind>&kind=<change_kind>
+GET /api/change_log?kind=<change_kind>&brief=true
 GET /api/change_log?limit=N
 ```
+
+`kind` repeats: a change of any named kind is kept, before `limit`.
+`brief=true` drops each snapshot's null keys and cuts its free text (title,
+description, ...) to 32 characters; ids, statuses and other values stay whole.
 
 ### 1.16 Auth
 
 ```
-GET  /auth/login
-GET  /auth/login?next=<path>
-GET  /auth/callback
 POST /auth/logout
+GET  /auth/login_page
+GET  /auth/login_page?next=<path>
 ```
+
+A request is authenticated one of three ways:
+
+- `--no-auth` (or `TRACKINIZER_NO_AUTH=1`, which `--auth` overrides) is
+  single-user local mode. Every request is one local admin and no credential
+  is read, so the web app at `/app/` needs no sign-in. The server binds
+  `127.0.0.1` unless `--host` says otherwise; anyone who can reach the port
+  can edit everything.
+- Otherwise an `Authorization: Bearer <token>` header carries an API token,
+  minted with `POST /api/me/tokens` (or the bootstrap admin's). The CLI and
+  agents sign in this way (`trax profile`).
+- A browser carries the `trackinizer_session` cookie, signed with
+  `TRACKINIZER_SESSION_SECRET`. The package mounts no route that issues one: a
+  deployment that adds a sign-in provider mounts its routes itself, outside
+  the OpenAPI schema, so the schema is the same with or without them.
+
+`POST /auth/logout` clears the session cookie and answers 302 to `/`. A
+request whose `Origin`, or else `Referer`, names another host gets 403.
+
+`/auth/login_page` (with the web routes) is where a signed-out browser is sent.
+It offers a sign-in button only when `GET /auth/login/ready` answers 2xx;
+without a provider that route does not exist, and the page says sign-in is not
+configured. The browser keeps a link's hash across the redirect to the page,
+and the page puts it back on `next`, so signing in returns to the same view.
 
 ### 1.17 Me
 
@@ -227,23 +263,31 @@ PUT    /api/admin/allowlist/<email_or_pattern>/role
 DELETE /api/admin/allowlist/<email_or_pattern>
 ```
 
-### 1.20 Web UI
+### 1.20 Web app
 
 ```
 GET /api/web/search
 GET /api/web/search?q=<query>
 GET /api/web/search?q=<query>&kind=<kind>
 GET /api/web/search?q=<query>&kind=<kind>&limit=N
+GET /api/web/search?q=<query>&kind=<kind>&fields=<key>
 GET /api/web/recent_changes
 GET /api/web/recent_changes?limit=N
 GET /api/web/lookup/<uuid>
 GET /api/web/get/<uuid>
 GET /api/web/graph
 GET /api/web/graph?limit=N
+GET /api/web/graph?focus=<uuid>&hops=N&limit=N
 GET /api/web/subscribe
 GET /api/web/feed
 GET /api/web/feed?after_created=<iso>&after_session=<uuid>&after_seq=N
 GET /api/web/feed?since=<iso>&until=<iso>&room=<room>&actor=<actor>&limit=N&tail=<bool>
+GET /api/web/feed?actor=<actor>&actor=<actor>&room=<room>&cli=<cli>&kind=<kind>
+GET /api/web/feed?conversation=true&tail=true&limit=N
+GET /api/web/feed/facets?since=<iso>&until=<iso>
+GET /api/web/feed/facets?since=<iso>&until=<iso>&actor=<actor>&kind=<kind>
+GET /api/web/feed/histogram?since=<iso>&until=<iso>&buckets=N
+GET /api/web/feed/histogram?buckets=N&room=<room>&kind=<kind>
 GET /app/
 GET /app/<file>
 ```
@@ -254,21 +298,139 @@ term. A bare term is a case-insensitive substring of `title` or
 Only `"` groups words into one term. `'` and `\` are ordinary characters, so
 `don't` and `title:\d+` mean what they say.
 
-`/api/web/graph` returns the `limit` most recently created inquiries (default
-1000, at most 5000) plus every older inquiry an edge links to them, and those
-edges. A `limit` outside 1 to 5000 answers 400: the whole graph is never one
-response.
+`/api/web/graph` returns at most `limit` inquiries (default 1000) and the
+edges between them. The newest come first, each followed by the older
+inquiries it links to, until `limit` is reached. A `limit` below 1 answers
+400. There is no upper bound, so a `limit` at or above the number of
+inquiries answers the whole graph: for a benchmark of about 100,000 inquiries
+and 180,000 edges that was 42 MB (10 MB gzipped) in 0.7 s, against 8.6 MB in
+0.16 s for 20,000 and 2.1 MB in 0.06 s for 5,000.
 
-`/app/` exists only when the server runs with `--app-dir DIR`. It serves
-the web app built in `DIR`, with `DIR/index.html` at `/app/`, to any
-signed-in role. Signed out, `/app/` and `/app/index.html` answer 302 to
-`/auth/login_page?next=<path>`, and every other file answers 401; without
-session login configured, the page answers 401 too. `DIR` is resolved on
+With `focus`, it returns that inquiry's neighbourhood instead, in the same
+shape: the focus, then every inquiry one edge away in either direction, then
+two away, up to `hops` (1 to 3, default 2). Within a hop the newest come
+first, and selection stops at `limit` (default 60), the focus included. The
+edges are those between returned nodes, and each node adds `hops`, its
+distance from the focus (0 for the focus). An unknown `focus` answers 404, and
+`hops` outside 1 to 3 answers 400. A hop reads every edge of the hop before it
+and looks up each neighbour, so its cost grows with those nodes' edges, not
+with the graph: on the same copy, 300 random foci took 1.3 ms at the median
+and 10 ms at worst, and its most-linked Issue 3 ms. A focus whose 30
+neighbours had 1,000 edges each took 35 ms.
+
+`/api/web/feed` interleaves every agent session's captured records into one
+stream, oldest first, ordered by `(created, session_id, part, seq)`. A poll
+resumes past `next_after`, a cursor of all four; `tail=true` reads the newest
+page; `since` and `until` bound `created`, both inclusive. `limit` is 1 to
+1000 (default 200).
+
+The feed and its two counts below take the same filters, each repeatable:
+`actor` (a session's routing name), `room` (a room it joined), `cli` (the CLI
+it wraps) and `kind` (the record's kind, such as `AssistantMessage` or
+`ToolCall`). A record passes a filter when it matches any of the filter's
+values, and must pass every filter given, so
+`actor=a&actor=b&kind=ToolCall` is the tool calls of `a` and `b`.
+
+The feed alone also takes `conversation=true`, which keeps only the records
+the facets count as `conversation` (below), so a page of `limit` records holds
+that many messages however much else the sessions wrote. On a benchmark of 9
+million records the newest 300 took 23 ms, alone or beside `actor` or the four
+conversation kinds; beside one message kind alone, which the page must then
+dig further for, 0.8 s.
+
+`/api/web/feed/facets` counts the records the feed returns for a window and
+the same filters, by session, room and kind. Either end of the window may be
+open, and `until` before `since` answers 400. It reads every record in the
+window, so a bounded one answers fastest: on a benchmark of 9 million
+records, an hour took 4 ms, a day 31 ms, a week 0.5 s, and the whole history
+8 s and 6.6 MB.
+
+```json
+{
+  "actors": [
+    {"actor": "worker", "session_id": "…", "cli": "codex",
+     "rooms": ["lab", "ops"], "count": 2, "conversation": 1,
+     "last": "2026-09-01T00:11:00Z", "ended": "2026-09-01T03:00:00Z"}
+  ],
+  "rooms": [{"room": "lab", "count": 2, "actors": ["worker"]}],
+  "kinds": [{"kind": "AssistantMessage", "count": 1},
+            {"kind": "ToolCall", "count": 1}]
+}
+```
+
+`actors` holds one entry per session, newest `last` (its newest record's
+`created`) first; `ended` is `null` while the session is live. `conversation`
+counts what a person or agent said: every `AssistantMessage` and
+`AgentToAgentMessage`, a `UserMessage` unless Claude marked it `isMeta` (its
+harness wrote it), and a `ContextState` of kind `queued_command` whose origin is
+human (a message sent while the agent worked). An `AgentToAgentMessage` that is
+only the envelope codex writes before a message to another of its agents
+(`Message Type: …` to `Payload:`), its payload sealed, says nothing, nor does a
+`UserMessage` that is wholly codex's context (`<codex_internal_context>`) or a
+background task's notice (`<task-notification>`). The facets count no record
+with nothing to read: neither that sealed message, with no attachment, nor a
+`Thinking` with no `content` and no `summary`. `rooms` and `kinds` are largest
+`count` first.
+
+`/api/web/feed/histogram` counts the feed's records per time bucket over a
+span of at most the last 7 days. An unset `since` starts at the first record
+of those 7 days, and an earlier one starts 7 days ago; an unset `until` ends
+now. `buckets` is 2 to 1000 (default 120); `until` before `since`, or more
+than 7 days ago, answers 400. Bucket widths are round -- 1, 2, 5, 10, 15 and
+30 seconds, the same in minutes, 1, 2, 3, 6 and 12 hours, then whole days --
+and the answer uses the finest that holds the span in at most `buckets`.
+Buckets start on multiples of their width from the Unix epoch, and run from
+the one holding `since` through the one holding `until`, so a span already
+aligned to a width, `buckets` long, gets that width. Every bucket is listed,
+empty ones as 0. A first bucket that starts more than 7 days ago counts only
+its records from then on.
+
+```json
+{
+  "start": "2026-09-01T00:00:00Z",
+  "end": "2026-09-04T00:00:00Z",
+  "bucket_seconds": 86400,
+  "counts": [{"start": "2026-09-01T00:00:00Z", "count": 3},
+             {"start": "2026-09-02T00:00:00Z", "count": 1},
+             {"start": "2026-09-03T00:00:00Z", "count": 1}]
+}
+```
+
+Each read counts the span's records, which is why it reaches back only 7
+days. On a benchmark of 9 million records, a span of 480,000 records answered
+in 55 ms or less at the median and 70 ms at worst, with any filter, at 120 or
+300 buckets; spans of 1.9 million records took 160 ms or less at the median
+and 210 ms at worst.
+Unlike the feed and its facets, the
+histogram counts every stored record: when a compaction rewrites a session
+file shorter, the feed reads only the part's new length, and the histogram
+still counts the records written before it, at the times they were written.
+
+`/app/` exists when the server has a built web app: the one in
+`--app-dir DIR`, else the build packaged with trackinizer. It serves the app,
+with `DIR/index.html` at `/app/`, to every caller the API answers: any
+signed-in role, and anyone under `--no-auth`. It refuses every other caller,
+as the API does, whether or not the server has session login: `/app/` and
+`/app/index.html` answer 302 to `/auth/login_page?next=<path>`, and every
+other file answers 401. `DIR` is resolved on
 every request: it may be missing (404) or be a symlink swapped to a new
 build without a restart. A path that leaves `DIR`, through `..` or a
-symlink, answers 404. Every `/app/` response, errors included, carries
-`Cache-Control: private, no-cache`, so shared caches never store it and
-browsers revalidate the entry page after a new build lands.
+symlink, answers 404. Every `/app/` response, errors included, is
+`private`, so shared caches never store it. A file found under
+`/app/assets/` (200, or 304 on revalidation) carries `Cache-Control:
+private, max-age=31536000, immutable`: its name holds its content's hash, so
+browsers keep it without asking again. Every other response carries
+`Cache-Control: private, no-cache`, so browsers revalidate the entry page
+after a new build lands.
+
+With an app, the old UI's paths lead into it: `/` answers 302 to
+`/app/`, and `/me`, `/admin`, `/graph` and `/console` to `/app/#/settings`,
+`/app/#/admin`, `/app/#/graph` and `/app/#/console`, each with
+`Cache-Control: private, no-cache`. A browser keeps a link's hash across a
+redirect whose `Location` has none, and the app reads the old UI's hashes.
+Without one, nothing is served at those paths.
+
+`/auth/login_page` is the sign-in page, served to anyone.
 
 ### 1.21 Agent-session ingest
 
@@ -907,6 +1069,8 @@ admin   writer + /api/admin/**
 ### 4.3 Filters and pagination
 
 ```
+filter.field narrows   Issue only; is <id> | ne <id> | isnull (roots) | notnull; answered from edges
+fields                 repeated row-key param; rows keep only those keys; unknown key 400; another kind's key absent; edges read only when a relation is named
 filter                 repeated JSON query param
 filter.field           SQL column name
 filter.op              is|ne|re|nre|lt|le|gt|ge

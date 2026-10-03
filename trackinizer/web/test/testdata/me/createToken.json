@@ -1,0 +1,23 @@
+{
+  "request": {
+    "body": {
+      "name": "fixtures",
+      "role": "viewer"
+    },
+    "method": "POST",
+    "path": "/api/me/tokens"
+  },
+  "response": {
+    "body": {
+      "id": "00000000-0000-4000-9000-000000000001",
+      "name": "fixtures",
+      "prefix": "<prefix>",
+      "role": "viewer",
+      "secret": "<secret>"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

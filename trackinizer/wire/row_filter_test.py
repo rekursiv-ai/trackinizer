@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from trackinizer.types.errors import ValidationError
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.row_filter import match_filter
 
@@ -69,6 +72,19 @@ def test_nre_over_list_value_negates_any_match() -> None:
         match_filter(has_match, Filter(field="labels", op="nre", value="hot")) is False
     )
     assert match_filter(no_match, Filter(field="labels", op="nre", value="hot")) is True
+
+
+def test_a_parent_filter_is_refused_rather_than_read_off_the_row() -> None:
+    """``narrows`` lives in ``edges``, so no row holds what SQL would test.
+
+    A row's own ``narrows`` key, where it has one, is a list of edge refs: read
+    as the clause's column, a root (``[]``) would be ``notnull`` here and
+    ``isnull`` in SQL. The two evaluators would disagree, so this one refuses.
+    """
+    rows: tuple[dict[str, object], ...] = ({"narrows": []}, {})
+    for row in rows:
+        with pytest.raises(ValidationError, match="edges"):
+            match_filter(row, Filter(field="narrows", op="isnull", value=""))
 
 
 if __name__ == "__main__":

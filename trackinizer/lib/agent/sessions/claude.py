@@ -2231,10 +2231,16 @@ def _read_system(record: Mapping[str, object]) -> SystemMessage:
 def _read_attachment_record(record: Mapping[str, object]) -> ContextState:
     """Read context the harness injected for the model to read."""
     state = DictCodec.coerce(record.get("attachment"))
-    # Which of the two keys holds the prose. ``content`` is not always prose
-    # -- a task reminder writes a LIST there -- so only a string is taken.
+    # Which key holds the prose. ``content`` is not always prose -- a task
+    # reminder writes a LIST there -- so only a string is taken. A message
+    # queued while the agent worked (``queued_command``) holds it under
+    # ``prompt``; read nowhere else, that message was searchable nowhere.
     prose = next(
-        (key for key in ("text", "content") if isinstance(state.get(key), str)),
+        (
+            key
+            for key in ("text", "content", "prompt")
+            if isinstance(state.get(key), str)
+        ),
         None,
     )
     # Empty string, not absent: a hook that produced no prose still writes

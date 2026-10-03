@@ -8,8 +8,10 @@ web-facing SSE (``/api/web/subscribe``) and the search routes live in
 
 from __future__ import annotations
 
+from dataclasses import fields
 from datetime import datetime
-from typing import Annotated, cast
+from functools import cache
+from typing import TYPE_CHECKING, Annotated, Literal, cast, get_args, get_type_hints
 
 import asyncio
 import json
@@ -18,20 +20,22 @@ import time
 import uuid
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import TypeAdapter
 
-from trackinizer.lib.custom_json import DictCodec, MutableJSON, loads
+from trackinizer.lib.custom_json import DictCodec, MutableJSON, MutableJSONValue, loads
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.server.api._deps import get_store, tag_kind, tag_row
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api._routes_shared import (
     idempotency_key,
+    parse_fields,
     parse_seq_ranges,
 )
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import iter_sse_events
 from trackinizer.server.primitives import lookup_kinds
-from trackinizer.types.change_log import Change
+from trackinizer.types.change_log import Change, Snapshot
 from trackinizer.types.columns import (
     flat_column_specs,
     storage_name,
@@ -42,6 +46,7 @@ from trackinizer.types.inquiries import (
     Inquiry,
 )
 from trackinizer.wire.bodies import ClaimNextIssue, FieldMutation
+from trackinizer.wire.column_shapes import COLUMN_SHAPES, ColumnShape
 from trackinizer.wire.filters import (
     IDENTITY_COLUMNS,
     VALUELESS_FILTER_OPS,
@@ -52,8 +57,13 @@ from trackinizer.wire.filters import (
 from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
+    inquiry_relation_fields,
 )
 from trackinizer.wire.session_record_fields import SESSION_RECORD_FIELDS
+
+
+if TYPE_CHECKING:
+    from trackinizer.server.store.read import Ancestor
 
 
 # Identity/housekeeping columns the schema declares directly: not editable,
@@ -197,6 +207,8 @@ async def list_inquiries_route(
         list[str] | None,
         Query(alias="filter", max_length=MAX_LIST_LIMIT),
     ] = None,
+    fields: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
+    ancestors: Literal["narrows"] | None = None,
 ) -> list[MutableJSON]:
     """List inquiries across one or more ``kind`` query params.
 
@@ -208,6 +220,18 @@ async def list_inquiries_route(
     inclusive ``a..b`` interval; their union selects rows across disjoint
     seq windows in a single query.
 
+    Each ``fields`` param names one key every row keeps; the others are left
+    out. A key only another kind's rows carry is absent from this kind's. The
+    edges are read only when a relation (``narrows``, ``proved_by``, ...) is
+    named. Without ``fields`` each row is whole.
+
+    ``ancestors=narrows`` adds ``ancestors`` to each row, after ``fields``: the
+    Issues it narrows, theirs, and so on up to the roots, nearest first, each
+    as ``{id, kind, seq, title, status, child_ids}``. ``child_ids`` names which
+    of the row and its listed ancestors narrow that one, so a row with several
+    parents keeps them all. The walk stops 8 levels up and at 200 ancestors
+    for the whole response, nearest first.
+
     Args:
       request: FastAPI request object for middleware access.
       identity: Authenticated user identity, viewer-role-gated.
@@ -217,6 +241,8 @@ async def list_inquiries_route(
       offset: Skip this many rows in each kind's result.
       seq_range: Inclusive seq intervals; union selects rows.
       filter_: JSON filter expressions; one per repeated param.
+      fields: Row keys to send, one per repeated param; unset sends every key.
+      ancestors: ``narrows`` adds each row's ``narrows`` ancestry; unset adds none.
 
     Returns:
       out: One JSON object per distinct kind, with inquiries for that kind.
@@ -232,7 +258,9 @@ async def list_inquiries_route(
         raise HTTPException(status_code=400, detail="offset must be >= 0")
     # Inquiry ``seq`` starts at 1.
     seq_ranges = parse_seq_ranges(seq_range, min_seq=1)
-    out: list[MutableJSON] = []
+    names = parse_fields(fields)
+    edges = names is None or not names.isdisjoint(inquiry_relation_fields())
+    listed: list[Inquiry] = []
     store = get_store(request)
     # Dedup before iterating: only nine kinds exist, so a repeated param can
     # only re-run a query whose answer is already in hand. Without this, 200
@@ -265,6 +293,7 @@ async def list_inquiries_route(
                     offset=offset,
                     seq_ranges=seq_ranges,
                     filters=filters,
+                    edges=edges,
                 )
         except asyncio.CancelledError:
             outcome = "cancelled"
@@ -300,7 +329,20 @@ async def list_inquiries_route(
                     "error_type": error_type,
                 },
             )
-        out.extend(tag_row(r) for r in rows)
+        listed.extend(rows)
+    out = [
+        tag_row(r)
+        if names is None
+        else {k: v for k, v in tag_row(r).items() if k in names}
+        for r in listed
+    ]
+    if ancestors is not None:
+        ancestry = await store.narrows_ancestors([r.id for r in listed])
+        for row, payload in zip(listed, out, strict=True):
+            entries: list[MutableJSONValue] = [
+                _ancestor_json(a) for a in ancestry[row.id]
+            ]
+            payload["ancestors"] = entries
     return out
 
 
@@ -482,7 +524,7 @@ async def get_change_route(
     return change
 
 
-@router.get("/api/change_log")
+@router.get("/api/change_log", response_model=list[Change])
 async def list_change_log_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
@@ -492,12 +534,21 @@ async def list_change_log_route(
     actor: Inquiry.Actor | None = None,
     subject_id: uuid.UUID | None = None,
     subject_kind: Inquiry.InquiryKind | None = None,
-    kind: Change.Kind | None = None,
+    kind: Annotated[list[Change.Kind] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
     # The change-log slice keeps its own, larger default; the inquiry-list
     # default and cap come from the shared wire contract.
     limit: int = 200,
-) -> list[Change]:
+    brief: bool = False,
+) -> list[Change] | Response:
     """Return a filtered, newest-first slice of the change log.
+
+    ``kind`` repeats, matching any of its values. Every filter runs before
+    ``limit``, so a page of other kinds never hides a matching one behind it.
+
+    ``brief`` sends each snapshot (``old``, ``new``) with its set keys alone,
+    and its free text (``title``, ``description``, ...) cut to the first 32
+    characters: enough to tell a set value from an unset one. Ids, statuses and
+    every other value stay whole.
 
     Args:
       request: FastAPI request object for middleware access.
@@ -507,8 +558,9 @@ async def list_change_log_route(
       actor: Exact match on the change's actor email.
       subject_id: UUID of the changed inquiry.
       subject_kind: Inquiry kind of the changed subject.
-      kind: Type of change (field edit, edge mutation, etc.).
+      kind: Types of change (field edit, edge mutation, etc.) to keep.
       limit: Maximum rows returned (validated in [1, MAX_LIST_LIMIT]).
+      brief: Drop unset snapshot keys and cut snapshot text short.
 
     Returns:
       result: Newest-first ordered list of changes matching the filters.
@@ -520,15 +572,20 @@ async def list_change_log_route(
             status_code=400,
             detail=f"limit must be in [1, {MAX_LIST_LIMIT}]",
         )
-    return await get_store(request).list_changes(
+    changes = await get_store(request).list_changes(
         since=since,
         after_id=after_id,
         actor=actor,
         subject_id=subject_id,
         subject_kind=subject_kind,
-        kind=kind,
+        kinds=kind or (),
         limit=limit,
     )
+    if not brief:
+        return changes
+    # Returned as a response, not rows: ``response_model`` would validate each
+    # row back into a ``Change`` and put every dropped key back as null.
+    return JSONResponse([_brief_change(change) for change in changes])
 
 
 # Derived from ``flat_column_specs`` so the whitelist tracks the Inquiry hierarchy
@@ -548,7 +605,15 @@ def _filter_columns_for(kind: Inquiry.InquiryKind) -> frozenset[str]:
     # carry no ColumnSpec (their values live in ``session_records``), so the
     # spec walk cannot see them.
     records = SESSION_RECORD_FIELDS if kind == "AgentSession" else ()
-    return IDENTITY_COLUMNS | frozenset(declared) | frozenset(records)
+    # Parents answered from ``edges`` (``narrows``), on the kinds whose rows have
+    # that relation. No ColumnSpec either.
+    own = {f.name for f in fields(cls)}
+    parents = {
+        column
+        for column, shape in COLUMN_SHAPES.items()
+        if shape is ColumnShape.PARENT and column in own
+    }
+    return IDENTITY_COLUMNS | frozenset(declared) | frozenset(records) | parents
 
 
 # ``field`` may arrive as a CLI-friendly alias (``kind``, ``agent-cost``, ``result``,
@@ -607,6 +672,48 @@ def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
         return Filter(field=canonical, op=cast(FilterOp, op), value=value)
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
+
+
+def _ancestor_json(ancestor: Ancestor) -> MutableJSON:
+    """Serialize one ``narrows`` ancestor for the list response."""
+    return {
+        "id": str(ancestor.id),
+        "kind": ancestor.kind,
+        "seq": ancestor.seq,
+        "title": ancestor.title,
+        "status": ancestor.status,
+        "child_ids": [str(child) for child in ancestor.child_ids],
+    }
+
+
+def _brief_change(change: Change) -> dict[str, object]:
+    """Serialize ``change`` with unset snapshot keys dropped and snapshot text cut."""
+    row = DictCodec.coerce(
+        cast(object, _change_adapter().dump_python(change, mode="json")),
+    )
+    text = _snapshot_text_fields()
+    for side in ("old", "new"):
+        row[side] = {
+            key: value[:32] if key in text and isinstance(value, str) else value
+            for key, value in DictCodec.coerce(row[side]).items()
+            if value is not None
+        }
+    return row
+
+
+# Serializes as ``response_model`` does, so a brief row differs from a whole one only
+# in its snapshots: the same keys, and times in the same format.
+@cache
+def _change_adapter() -> TypeAdapter[Change]:
+    return TypeAdapter(Change)
+
+
+# Typed ``str | None``: the free text, as opposed to ids, enums, actors, numbers and
+# lists, which a brief row keeps whole so a client can still match and name them.
+@cache
+def _snapshot_text_fields() -> frozenset[str]:
+    hints = get_type_hints(Snapshot)
+    return frozenset(f.name for f in fields(Snapshot) if str in get_args(hints[f.name]))
 
 
 # A read addressing a specific id (inquiry, short-ref, cost) that finds no row is 404,

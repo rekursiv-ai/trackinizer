@@ -3,58 +3,332 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#090a0b">
+<!-- The web app's theme choice, applied before the first paint as the app applies it. -->
+<script>try{const t=localStorage.getItem("trackinizer.theme");if(t==="light"||(t==="system"&&!matchMedia("(prefers-color-scheme: dark)").matches)){document.documentElement.dataset.theme="light";document.querySelector('meta[name="theme-color"]').content="#edf1f5"}}catch{}</script>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><style>.f{stroke:%23f7f8f8;fill:%23f7f8f8}@media (prefers-color-scheme:light){.f{stroke:%23101112;fill:%23101112}}</style><path stroke='%233987e5' d='M9 18.6C9 16.8 4.2 14.04 4.2 9A7.8 7.8 0 0 1 19.8 9C19.8 14.04 15 16.8 15 18.6M9 22.8H15'/><g class='f'><path fill='none' d='M9 7.5L12 13.5M15.3 9.3L12 13.5V18.6'/><circle stroke='none' cx='9' cy='7.5' r='2.6'/><circle stroke='none' cx='15.3' cy='9.3' r='2.6'/></g></svg>">
 <title>Sign in - Trackinizer</title>
 <style>
+  /* Copied from the web app's src/styles.css (the command menu's surface) and
+     src/graph/tokens.css (the graph's colours). A signed-out visitor cannot load
+     the app's own files (/app/assets/* answers 401), so this page carries them. */
   :root {
-    --bg: #1a1b26;
-    --bg-row: #24283b;
-    --fg: #c0caf5;
-    --muted: #565f89;
-    --line: #3b4261;
-    --accent: #7aa2f7;
+    --sidebar: #090a0b;
+    --surface-overlay: #1d1e20;
+    --text: #f7f8f8;
+    --muted: #8a8f98;
+    --line-strong: #343538;
+    --accent: #3174c5;
+    --accent-hover: #6ea8ee;
+    --shadow: 0 24px 80px #000c, inset 0 1px 0 #ffffff08;
+    --g-kind-Issue: #5e8cf0;
+    --g-kind-Belief: #a98cf0;
+    --g-kind-Experiment: #6fcf8e;
+    --g-kind-Paper: #4fc7d4;
+    --g-kind-CodeChange: #e8995a;
+    --g-kind-WebResult: #d4b94f;
+    --g-kind-AgentSession: #7d7df0;
+    --g-kind-Artifact: #d46f6f;
+    --g-edge-narrows: #7b86a8;
+    --g-status-active: #eceff5;
+    --sans: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    color-scheme: dark;
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    letter-spacing: -0.05px;
+    color: var(--text);
+    background: var(--sidebar);
+    -webkit-font-smoothing: antialiased;
+  }
+  :root[data-theme="light"] {
+    --sidebar: #edf1f5;
+    --surface-overlay: #ffffff;
+    --text: #17212d;
+    --muted: #5d6978;
+    --line-strong: #bec9d4;
+    --accent: #286fc5;
+    --accent-hover: #185dab;
+    --shadow: 0 24px 80px #17212d29;
+    --g-kind-Issue: #2f6fd6;
+    --g-kind-Belief: #7b5fd8;
+    --g-kind-Experiment: #2f9d5a;
+    --g-kind-Paper: #1f97a6;
+    --g-kind-CodeChange: #c56f2a;
+    --g-kind-WebResult: #a88a1c;
+    --g-kind-AgentSession: #5656d6;
+    --g-kind-Artifact: #b84646;
+    --g-edge-narrows: #7f8aa6;
+    --g-status-active: #17212d;
+    color-scheme: light;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; height: 100%; }
-  body {
-    font: 13px/1.4 ui-monospace, "SF Mono", "Cascadia Code",
-          "Fira Code", "JetBrains Mono", Menlo, monospace;
-    background: var(--bg); color: var(--fg);
-    display: flex; align-items: center; justify-content: center;
-  }
+  [hidden] { display: none !important; }
+  html { height: 100%; }
+  body { min-height: 100%; margin: 0; padding: 16px; display: grid; place-items: center; }
+  :focus-visible { outline: 2px solid var(--accent-hover); outline-offset: 2px; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; }
   .card {
-    background: var(--bg-row); border: 1px solid var(--line);
-    border-radius: 4px; padding: 32px; min-width: 320px; text-align: center;
+    position: relative; width: min(380px, 100%); padding: 24px 28px 28px;
+    background: var(--surface-overlay); border: 1px solid var(--line-strong); border-radius: 12px;
+    box-shadow: var(--shadow);
   }
-  h1 { color: var(--accent); margin: 0 0 8px; font-size: 18px; }
-  p { color: var(--muted); margin: 0 0 24px; font-size: 12px; }
-  a.button {
-    display: inline-block;
-    background: var(--accent); color: var(--bg);
-    border: 1px solid var(--accent); border-radius: 3px;
-    padding: 8px 18px; font: inherit; font-weight: bold;
-    text-decoration: none;
+  .brand { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; }
+  .mark { width: 22px; height: 22px; color: var(--accent); }
+  .mark .filament { color: var(--text); }
+  h1 { margin: 32px 0 6px; font-size: 22px; font-weight: 600; letter-spacing: -0.3px; line-height: 1.25; }
+  p { margin: 0; }
+  .lede { color: var(--muted); font-size: 13.5px; }
+  .k { white-space: nowrap; }
+  .k::before {
+    content: ""; display: inline-block; width: 7px; height: 7px; margin: 0 5px 1px 1px;
+    border-radius: 50%; background: var(--k);
   }
-  a.button:hover { filter: brightness(1.1); }
-  .nextnote { color: var(--muted); font-size: 11px; margin-top: 12px; }
+  /* Holds the button's height while the server is asked, so nothing jumps. */
+  .actions { min-height: 40px; margin-top: 24px; display: grid; align-items: center; }
+  .btn {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    min-height: 40px; padding: 4px 14px; border-radius: 8px;
+    background: var(--accent); color: #fff; font-size: 13.5px; font-weight: 500;
+    text-decoration: none; box-shadow: inset 0 1px 0 #ffffff26; transition: background .12s;
+  }
+  /* Darker, not --accent-hover: white on that is 2.5:1. */
+  .btn:hover { background: color-mix(in srgb, var(--accent) 88%, #000); }
+  .g { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: #fff; }
+  .status { color: var(--muted); font-size: 12.5px; }
+  @media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
 </style>
 </head>
 <body>
-<div class="card">
-  <h1>Trackinizer</h1>
-  <p>Sign in to continue.</p>
-  <a id="signin" class="button" href="/auth/login">Sign in with Google</a>
-  <div class="nextnote" id="nextnote"></div>
-</div>
+<canvas aria-hidden="true"></canvas>
+<main class="card">
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M9 18.6C9 16.8 4.2 14.04 4.2 9A7.8 7.8 0 0 1 19.8 9C19.8 14.04 15 16.8 15 18.6M9 22.8H15"/>
+      <g class="filament">
+        <path d="M9 7.5L12 13.5M15.3 9.3L12 13.5V18.6"/>
+        <g fill="currentColor" stroke="none"><circle cx="9" cy="7.5" r="2.6"/><circle cx="15.3" cy="9.3" r="2.6"/></g>
+      </g>
+    </svg>
+    Trackinizer
+  </div>
+  <h1>Sign in</h1>
+  <p class="lede"><span class="k" style="--k: var(--g-kind-Issue)">Issues</span>, <span class="k" style="--k: var(--g-kind-Belief)">beliefs</span>, <span class="k" style="--k: var(--g-kind-Paper)">papers</span>, <span class="k" style="--k: var(--g-kind-Experiment)">experiments</span> and <span class="k" style="--k: var(--g-kind-AgentSession)">agent sessions</span> as one live graph.</p>
+  <div class="actions">
+    <a id="google" class="btn" href="/auth/login" hidden>
+      <span class="g"><svg width="14" height="14" viewBox="0 0 48 48" aria-hidden="true"><path fill="#ea4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285f4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#fbbc05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34a853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg></span>
+      Sign in with Google
+    </a>
+    <p id="status" class="status" role="status"></p>
+  </div>
+</main>
 <script>
-  // Forward ``?next=`` from the address bar onto the OAuth start URL so
-  // the user lands on the page they originally asked for, not on ``/``.
-  const params = new URLSearchParams(location.search);
-  const next = params.get("next");
-  const btn = document.getElementById("signin");
-  if (next && next.startsWith("/")) {
-    btn.href = `/auth/login?next=${encodeURIComponent(next)}`;
-    document.getElementById("nextnote").textContent = `After sign-in: ${next}`;
+  // The browser carries a link's hash across the server's redirect to this
+  // page, but the server never sees it, so it goes back onto ``next`` here and
+  // a signed-out deep link lands where it pointed.
+  const next = new URLSearchParams(location.search).get("next");
+  const target = next && next.startsWith("/")
+    ? (location.hash ? next.split("#")[0] + location.hash : next)
+    : "";
+  const google = document.getElementById("google");
+  const notice = document.getElementById("status");
+  // A server offers Google sign-in only where it can start one: the check
+  // answers 503 when it is not configured and 404 where it is not installed.
+  fetch("/auth/login/ready", { cache: "no-store" }).then(
+    (response) => {
+      if (!response.ok) {
+        notice.textContent = "Sign-in is not configured on this server.";
+        return;
+      }
+      if (target) google.href = `/auth/login?next=${encodeURIComponent(target)}`;
+      google.hidden = false;
+    },
+    () => {
+      notice.textContent = "Could not reach the server. Reload to try again.";
+    },
+  );
+</script>
+<script>
+  // The backdrop: a small inquiry graph drawn as the graph view draws one. It
+  // grows in a node at a time, as the graph's Replay does, then drifts and now
+  // and then gains a node, as a live update does. It never moves under reduced
+  // motion, and stops while the tab is hidden.
+  const canvas = document.querySelector("canvas");
+  const ctx = canvas.getContext("2d");
+  const css = getComputedStyle(document.documentElement);
+  const [EDGE, RING] = ["--g-edge-narrows", "--g-status-active"].map((name) => css.getPropertyValue(name));
+  // Each kind's children, as the graph links them: an Issue narrows into Issues
+  // and produces Experiments, sessions and commits; Papers prove a Belief.
+  const CHILDREN = {
+    Issue: ["Issue", "Issue", "Issue", "Experiment", "AgentSession", "CodeChange", "Belief"],
+    Belief: ["Paper", "Paper", "Experiment", "WebResult"],
+    Experiment: ["Artifact", "CodeChange"],
+    AgentSession: ["CodeChange", "Artifact"],
+  };
+  // Seeded, so every visit draws the same graph.
+  let seed = 20261003;
+  const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const pick = (list) => list[Math.floor(random() * list.length)];
+  const still = matchMedia("(prefers-reduced-motion: reduce)");
+  const nodes = [];
+  const edges = [];
+  let width = innerWidth, height = innerHeight, frame = 0, last = 0, spare = 0, due = 0, drawn = 0;
+
+  function fit() {
+    for (const node of nodes) {
+      node.x *= innerWidth / width;
+      node.y *= innerHeight / height;
+    }
+    [width, height] = [innerWidth, innerHeight];
+    const ratio = Math.min(devicePixelRatio, 2);
+    [canvas.width, canvas.height] = [width * ratio, height * ratio];
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   }
+  fit();
+  const total = Math.max(40, Math.min(150, Math.round((width * height) / 8000)));
+  // Each root's home, in fractions of the window, spread apart and clear of the
+  // card: the best of 24 random spots by its distance to the card and to the
+  // homes placed before it.
+  const card = document.querySelector(".card").getBoundingClientRect();
+  const homes = [];
+  for (let n = Math.max(4, Math.round(total / 16)); n > 0; n--) {
+    let best = { score: -Infinity };
+    for (let tries = 0; tries < 24; tries++) {
+      const [x, y] = [0.06 + random() * 0.88, 0.06 + random() * 0.88];
+      const [px, py] = [x * width, y * height];
+      const clear = Math.max(card.left - px, px - card.right, card.top - py, py - card.bottom);
+      const apart = homes.map((home) => Math.hypot(px - home.x * width, py - home.y * height));
+      const score = Math.min(clear, ...apart);
+      if (score > best.score) best = { x, y, score, phase: random() * 7 };
+    }
+    homes.push(best);
+  }
+
+  /** Where tree `tree`'s home is at time `now`: it wanders about 26 px, slowly. */
+  function home(tree, now) {
+    const { x, y, phase } = homes[tree];
+    return [x * width + 26 * Math.sin(now / 9000 + phase), y * height + 26 * Math.cos(now / 11000 + phase)];
+  }
+
+  function add(now) {
+    const tree = nodes.length % homes.length;
+    let node;
+    if (nodes.length < homes.length) {
+      node = { kind: "Issue", tree, root: true, r: 6 };
+      [node.x, node.y] = home(tree, now);
+    } else {
+      // The trees take turns, so each grows alike.
+      const parent = pick(nodes.filter((other) => other.tree === tree && CHILDREN[other.kind]));
+      const angle = random() * 7;
+      const [x, y] = [parent.x + 14 * Math.cos(angle), parent.y + 14 * Math.sin(angle)];
+      node = { kind: pick(CHILDREN[parent.kind]), tree, x, y, r: 3.6 };
+      parent.r = Math.min(9, parent.r + 0.35);
+      edges.push([node, parent]);
+    }
+    nodes.push(Object.assign(node, { vx: 0, vy: 0, born: now, colour: css.getPropertyValue(`--g-kind-${node.kind}`) }));
+  }
+
+  // One step of a small force layout: roots pulled to their homes, near nodes
+  // pushed apart, linked nodes held about 40 px apart.
+  function step(now) {
+    for (const node of nodes) {
+      if (!node.root) continue;
+      const [x, y] = home(node.tree, now);
+      node.vx += (x - node.x) * 0.002;
+      node.vy += (y - node.y) * 0.002;
+    }
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        const dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy + 1;
+        if (d2 > 8100) continue;
+        const push = 8 / d2;
+        a.vx -= dx * push; a.vy -= dy * push;
+        b.vx += dx * push; b.vy += dy * push;
+      }
+    }
+    for (const [a, b] of edges) {
+      const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) + 1;
+      const pull = ((d - 30) * 0.008) / d;
+      a.vx += dx * pull; a.vy += dy * pull;
+      b.vx -= dx * pull; b.vy -= dy * pull;
+    }
+    for (const node of nodes) {
+      node.vx *= 0.86; node.vy *= 0.86;
+      node.x += node.vx; node.y += node.vy;
+    }
+  }
+
+  function draw(now) {
+    ctx.clearRect(0, 0, width, height);
+    ctx.globalAlpha = 0.5;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = EDGE;
+    ctx.beginPath();
+    for (const [a, b] of edges) {
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+    }
+    ctx.stroke();
+    ctx.lineWidth = 1.5;
+    for (const node of nodes) {
+      const age = (now - node.born) / 400;
+      ctx.globalAlpha = 0.9 * Math.min(1, age);
+      ctx.fillStyle = node.colour;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, node.r * Math.min(1, 0.4 + age), 0, 7);
+      ctx.fill();
+      // A root wears an active row's status ring; a node that arrived live, a
+      // halo that fades.
+      const halo = node.live && age < 3;
+      if (!node.root && !halo) continue;
+      ctx.globalAlpha = halo ? 0.6 * (1 - age / 3) : 0.7;
+      ctx.strokeStyle = halo ? node.colour : RING;
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, node.r + (halo ? 3 + 5 * age : 2.5), 0, 7);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function tick(now) {
+    frame = requestAnimationFrame(tick);
+    // Fixed 60 Hz steps, so the layout moves at one speed on any display; a
+    // long gap (a dropped frame, a tab coming back) counts as three.
+    spare = Math.min(spare + now - (last || now), 50);
+    last = now;
+    for (; spare >= 1000 / 60; spare -= 1000 / 60) step(now);
+    if (nodes.length < total && now >= due) {
+      const replaying = nodes.length < total * 0.75;
+      add(now);
+      nodes.at(-1).live = !replaying;
+      due = now + (replaying ? 50 : 2400);
+    }
+    // 30 frames a second: the drift is slow enough that 60 look the same, and
+    // each frame redraws the whole window.
+    if (now - drawn < 30) return;
+    drawn = now;
+    draw(now);
+  }
+
+  function sync() {
+    cancelAnimationFrame(frame);
+    [frame, last] = [0, 0];
+    if (still.matches) {
+      while (nodes.length < total) add(0);
+      for (let n = 0; n < 300; n++) step(0);
+      draw(Infinity);
+    } else if (!document.hidden) {
+      frame = requestAnimationFrame(tick);
+    }
+  }
+  sync();
+  still.addEventListener("change", sync);
+  document.addEventListener("visibilitychange", sync);
+  addEventListener("resize", () => {
+    fit();
+    if (!frame) draw(Infinity);
+  });
 </script>
 </body>
 </html>

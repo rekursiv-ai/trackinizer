@@ -1,0 +1,64 @@
+.evidence-timeline {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 20px 28px;
+  color: var(--ink);
+}
+
+.evidence-timeline-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.evidence-timeline-heading h2,
+.timeline-root-results h3,
+.timeline-direction h3,
+.timeline-result h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.timeline-direction,
+.timeline-result {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 14px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.timeline-date,
+.timeline-status,
+.timeline-truncated {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.timeline-date { padding-top: 2px; font-variant-numeric: tabular-nums; }
+.timeline-status { margin: 4px 0 0; }
+.timeline-direction-body, .timeline-result-body { min-width: 0; }
+.timeline-direction h3 a, .timeline-result h4 a, .evidence-timeline a { color: var(--accent-hover); }
+.timeline-results { margin: 6px 0 0; padding: 0; list-style: none; }
+.timeline-root-results { padding-top: 12px; }
+.timeline-root-results h3 { margin-bottom: 4px; color: var(--muted); }
+.timeline-outcome { margin: 5px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.timeline-detail { margin-top: 8px; font-size: 12px; }
+.timeline-detail summary { color: var(--muted); cursor: pointer; }
+.timeline-detail p { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.timeline-evidence { display: grid; gap: 8px; margin: 9px 0; padding-left: 18px; }
+.evidence-positive { color: var(--success, var(--accent)); }
+.evidence-negative { color: var(--danger, #ed7474); }
+.evidence-neutral { color: var(--muted); }
+.timeline-truncated { margin: 8px 0; }
+.timeline-empty { padding: 22px 0; color: var(--muted); }
+
+@media (max-width: 620px) {
+  .evidence-timeline { padding: 12px; }
+  .timeline-direction, .timeline-result { grid-template-columns: 1fr; gap: 5px; }
+}

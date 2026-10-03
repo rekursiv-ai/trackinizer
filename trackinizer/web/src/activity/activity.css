@@ -1,0 +1,25 @@
+/* The Activity feed, from the design mock ("inbox & activity"). Its
+   lines reuse the detail timeline's .tl-body and .tl-time, and its tabs the
+   lists' .tabs. */
+.feed { max-width: 820px; margin: 0 auto; padding: 18px 22px 90px; }
+.feed-day { font-size: 12px; font-weight: 500; color: var(--muted); margin: 18px 0 6px; }
+.feed > section:first-child .feed-day { margin-top: 0; }
+.feed-list { list-style: none; margin: 0; padding: 0; }
+.feed-row {
+  display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px;
+  padding: 8px 0; border-bottom: 1px solid var(--row-divider); font-size: 13px;
+}
+.feed-row .tl-body blockquote {
+  margin: 6px 0 2px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); color: var(--ink-muted); font-size: 13px;
+}
+.feed-title { color: var(--ink-muted); }
+.feed-note { color: var(--muted); font-size: 13px; }
+.feed-foot { display: flex; align-items: center; gap: 16px; padding-top: 18px; font-size: 12px; color: var(--muted); }
+
+/* On a phone the tabs take a row of their own under the title, and scroll. */
+@media (max-width: 760px) {
+  .activity .view-h { flex-wrap: wrap; height: auto; min-height: 46px; padding-top: 6px; padding-bottom: 6px; row-gap: 4px; }
+  .activity .view-h .tabs { order: 1; width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .feed { padding: 12px 16px 90px; }
+}

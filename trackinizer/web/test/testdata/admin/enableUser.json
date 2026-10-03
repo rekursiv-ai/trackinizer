@@ -1,0 +1,16 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/api/admin/users/00000000-0000-4000-9000-000000000001/enable"
+  },
+  "response": {
+    "body": {
+      "ok": true,
+      "status": "active"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

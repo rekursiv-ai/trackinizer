@@ -1,0 +1,43 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/experiments/00000000-0000-4000-8000-000000000009/metrics",
+    "query": [
+      [
+        "limit",
+        "1000"
+      ]
+    ]
+  },
+  "response": {
+    "body": {
+      "points": [
+        {
+          "key": "latency_s",
+          "kind": "scalar",
+          "step": 0,
+          "timestamp": null,
+          "value": 0.23
+        },
+        {
+          "key": "latency_s",
+          "kind": "scalar",
+          "step": 1,
+          "timestamp": null,
+          "value": 0.21
+        },
+        {
+          "key": "latency_s",
+          "kind": "scalar",
+          "step": 2,
+          "timestamp": null,
+          "value": 0.19
+        }
+      ]
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

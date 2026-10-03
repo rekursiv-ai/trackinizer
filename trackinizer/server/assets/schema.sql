@@ -706,8 +706,7 @@ END$$;
 -- row. The owning experiment is the ``Experiment`` artifact in ``inquiries``;
 -- these rows hang off it by ``experiment_id`` and carry no edges, cost,
 -- supersession, or ``change_log`` audit (the same exemption
--- ``session_records`` takes). Tenant scope is derived by joining to
--- inquiries.
+-- ``session_records`` takes).
 --
 -- ``PRIMARY KEY (experiment_id, key, step)`` is the per-point dedup mechanism
 -- (a retried batch ``ON CONFLICT DO NOTHING``s) and the index serving both the
@@ -725,10 +724,14 @@ CREATE TABLE IF NOT EXISTS experiment_metrics (
     -- ``read_metrics`` reconstructs it, so a stored empty, whitespace-only, or
     -- over-long key would 500 the read. This CHECK backstops the wire like the
     -- step/value/kind CHECKs below -- the 512 bound matches
-    -- ``wire_metrics._MAX_KEY_CHARS`` and ``btrim(key) <> ''`` matches the
-    -- wire's blank rejection.
+    -- ``wire_metrics._MAX_KEY_CHARS``, and the trimmed set is every code point
+    -- Python's ``str.isspace`` admits, so it matches the wire's ``strip``. A
+    -- bare ``btrim(key)`` trims only spaces and stored a tab key (schema.031).
     key           TEXT NOT NULL CHECK (
-        char_length(key) BETWEEN 1 AND 512 AND btrim(key) <> ''),
+        char_length(key) BETWEEN 1 AND 512
+        AND btrim(key, E'\t\n\x0b\f\r\x1c\x1d\x1e\x1f \u0085  '
+            '          '
+            '     　') <> ''),
     step          BIGINT NOT NULL CHECK (step >= 0),
     -- Finite only: the wire ``MetricPoint.value`` is ``Field(allow_inf_nan=
     -- False)`` and ``read_metrics`` reconstructs it, so a stored NaN/±Inf would
@@ -823,7 +826,7 @@ CREATE INDEX IF NOT EXISTS idx_session_records_recent_turns
 -- The cross-session console feed is a keyset scan over exactly this tuple
 -- (``store/session.py::read_feed``), polled every 1.5s by every open console.
 -- Without the index that ORDER BY is a sequential scan plus a sort over the
--- whole capture corpus -- 3,081,202 rows on the deployed instance -- and it
+-- whole capture corpus -- millions of rows on a busy server -- and it
 -- still returns the right answer, so nothing fails: the cost shows up only as
 -- latency. The retired ``agent_session_events`` carried the same index for the
 -- same query; it must not be lost in the move.

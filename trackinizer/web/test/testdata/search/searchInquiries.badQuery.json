@@ -1,0 +1,29 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/web/search",
+    "query": [
+      [
+        "q",
+        "title:\"unclosed"
+      ],
+      [
+        "kind",
+        "Issue"
+      ],
+      [
+        "limit",
+        "5"
+      ]
+    ]
+  },
+  "response": {
+    "body": {
+      "detail": "No closing quotation"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 400
+  }
+}

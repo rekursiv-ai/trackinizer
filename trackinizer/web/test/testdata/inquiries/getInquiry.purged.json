@@ -1,0 +1,15 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/inquiries/00000000-0000-4000-8000-000000000008"
+  },
+  "response": {
+    "body": {
+      "detail": "not found"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 404
+  }
+}

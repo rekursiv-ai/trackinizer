@@ -18,7 +18,7 @@ and deduplicated. Only the fields the graph view needs are copied.
 With ``--traverse`` the replay walks the graph breadth-first from its roots and
 inserts ONE node (plus its edges to already-inserted nodes) at a time, pausing
 ``--delay`` seconds between inserts. The target's SSE stream then pushes each
-node to an open ``/graph`` page, so the real graph visibly grows by traversal
+node to an open graph view, so the real graph visibly grows by traversal
 order instead of appearing all at once -- the live-growth demo on real data.
 
 Examples:
@@ -263,12 +263,11 @@ def _pull_edges(
 
 # The crawl INTERLEAVES discovery and insertion: as the BFS from the seeds reaches each
 # node it is inserted right away (in small ``chunk`` batches), so the target -- and an
-# open ``/graph`` page via SSE -- starts filling almost immediately instead of waiting
+# open graph view via SSE -- starts filling almost immediately instead of waiting
 # for the whole component to be read first. Each chunk is sorted by source ``created``
-# before insert, so the write order is locally deterministic; the web page re-sorts by
-# ``created`` for its own replay animation, so exact authoring order is preserved THERE.
-# A node that arrives before its peer is not stranded: the viz buffers an edge whose
-# other endpoint has not landed yet and attaches it when it does.
+# before insert, so the write order is locally deterministic. A node that arrives
+# before its peer is not stranded: the graph view reads the whole graph again on each
+# change, so an edge shows once its other endpoint lands.
 #
 # Small batches (not one row at a time) keep the embedded pglite target healthy -- per-
 # row writes burst it into 500s and orphaned sockets. ``delay`` rate-limits between
@@ -539,7 +538,7 @@ def _write_edge(
 # makes every edge land cleanly -- edges are stored younger(child) -> older(parent), so
 # inserting oldest-first guarantees a node's parents already exist when it arrives, and
 # its edges to them fire immediately. The SSE stream pushes each insert to an open
-# ``/graph`` page, so the real graph visibly forms over time.
+# graph view, so the real graph visibly forms over time.
 def _replay_traversal(
     target: Client,
     nodes: list[dict[str, object]],

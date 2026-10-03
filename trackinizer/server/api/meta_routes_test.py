@@ -1,15 +1,12 @@
 """Tests for the unauthenticated meta routes.
 
-``/api/version``, ``/api/meta/enums``, ``/api/meta/edges``, and the SPA-vs-server drift
-guards.
+``/api/version``, ``/api/meta/enums``, ``/api/meta/fields`` and ``/api/meta/edges``.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast, get_args
+from typing import TYPE_CHECKING, cast, get_args
 
-import re
 import subprocess
 
 from fastapi import FastAPI
@@ -37,9 +34,6 @@ if TYPE_CHECKING:
     import httpx2
 
     from trackinizer.server.store.core import Store
-
-
-_CWD: Final = Path(__file__).resolve().parent
 
 
 @pytest.fixture
@@ -245,88 +239,6 @@ async def _one_edge_per_kind(store: Store) -> dict[str, tuple[uuid.UUID, uuid.UU
             actor="alice",
         )
     return edges
-
-
-def test_spa_does_not_hardcode_enum_lists() -> None:
-    """index.html must source its enum VALUES arrays from the route, not a copy.
-
-    Guards the maintenance burden the route removes: if a future edit pastes a
-    publication-type / judgement list back into the page, this fails. The five
-    ``*_VALUES`` / ``EDGE_KINDS`` arrays must stay declared EMPTY (filled from
-    ``/api/meta/enums`` at boot); a non-empty literal is a re-pasted copy.
-
-    Scoped to the array declarations only -- lone semantic uses of a member
-    (a ``switch`` case, an equality guard, a button action) are fine and do not
-    desync a dropdown, so they are not flagged.
-    """
-    html = (_CWD.parents[0] / "assets" / "index.html").read_text()
-    arrays = (
-        "STATUS_VALUES",
-        "JUDGEMENT_VALUES",
-        "ISSUE_KIND_VALUES",
-        "PUBLICATION_TYPE_VALUES",
-        "EDGE_KINDS",
-        "ALL_KINDS",
-    )
-    for name in arrays:
-        match = re.search(rf"\b{name}\s*=\s*\[(.*?)\]", html, re.DOTALL)
-        assert match is not None, f"{name} declaration not found in index.html"
-        body = match.group(1).strip()
-        assert body == "", (
-            f"{name} is hardcoded in index.html; declare it empty and fill it "
-            f"from /api/meta/enums (got: [{body[:60]}...])"
-        )
-        # A boot-filled array with no read site is dead weight: it pays a
-        # blocking-XHR cost at boot for nothing. Each array must appear beyond
-        # its declaration and its single `.push(...)` fill (>2 mentions).
-        mentions = len(re.findall(rf"\b{name}\b", html))
-        assert mentions > 2, (
-            f"{name} is filled at boot but never read ({mentions} mentions); "
-            "drop the array and its server enum key if it has no consumer"
-        )
-    # FIELD_OWNER_KIND is an object literal, derived from /api/meta/fields. It
-    # had drifted (missing AgentSession fields); pin it empty so it stays
-    # server-sourced.
-    fok = re.search(r"\bFIELD_OWNER_KIND\s*=\s*(\{.*?\})", html, re.DOTALL)
-    assert fok is not None, "FIELD_OWNER_KIND declaration not found"
-    assert fok.group(1).strip() == "{}", (
-        "FIELD_OWNER_KIND is hardcoded in index.html; declare it empty and fill "
-        "it from /api/meta/fields so it cannot lag the server route table"
-    )
-    assert "/api/meta/fields" in html, "SPA must fetch /api/meta/fields at boot"
-
-
-def test_spa_derives_edge_topology_from_route() -> None:
-    """index.html must source the edge topology from ``/api/meta/edges``.
-
-    A citation-direction change can break the SPA when edge directions are a
-    hand-typed copy of the schema. The SPA now declares ``EDGE_TOPOLOGY`` empty
-    and fills it from the route; a non-empty literal is a re-pasted copy that
-    could drift again.
-    """
-    html = (_CWD.parents[0] / "assets" / "index.html").read_text()
-    match = re.search(r"\bEDGE_TOPOLOGY\s*=\s*(\{.*?\})", html, re.DOTALL)
-    assert match is not None, "EDGE_TOPOLOGY declaration not found in index.html"
-    assert match.group(1).strip() == "{}", (
-        "EDGE_TOPOLOGY is hardcoded in index.html; declare it empty and fill it "
-        "from /api/meta/edges so a direction flip cannot desync the picker"
-    )
-    assert "/api/meta/edges" in html, "SPA must fetch /api/meta/edges at boot"
-
-
-def test_spa_drops_removed_websearch_results_wiring() -> None:
-    """index.html must not reference the removed ``WebSearch.results`` field.
-
-    The Python removal left the SPA wiring stale (submit schema, owner map,
-    detail view, edit/submit branches), so the WebSearch form 422'd. This pins
-    that none of those references return.
-    """
-    html = (_CWD.parents[0] / "assets" / "index.html").read_text()
-    for leaked in ('"typed-results"', 'results: "websearch"', 'field === "results"'):
-        assert leaked not in html, (
-            f"{leaked} is stale WebSearch.results wiring in index.html; "
-            "findings are produces edges now, not a column"
-        )
 
 
 def test_build_sha_falls_back_to_unknown(monkeypatch: pytest.MonkeyPatch) -> None:

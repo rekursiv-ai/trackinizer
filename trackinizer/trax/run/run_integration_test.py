@@ -25,7 +25,7 @@ What it proves, per CLI:
 from __future__ import annotations
 
 from collections import deque
-from contextlib import ExitStack, asynccontextmanager, closing, nullcontext, suppress
+from contextlib import ExitStack, asynccontextmanager, closing, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -1073,10 +1073,12 @@ def test_injection_closes_resources_on_every_exit(
         SimpleNamespace(sleep=no_sleep, monotonic=ticks.__next__),
     )
     pipes: list[tuple[int, int]] = []
+    identities: dict[int, tuple[int, int]] = {}
     real_pipe = os.pipe
 
     def record_pipe() -> tuple[int, int]:
         pipes.append(real_pipe())
+        identities.update((fd, _identity(fd)) for fd in pipes[-1])
         return pipes[-1]
 
     workers: list[threading.Thread] = []
@@ -1093,7 +1095,6 @@ def test_injection_closes_resources_on_every_exit(
     monkeypatch.setattr(os, "pipe", record_pipe)
     monkeypatch.setattr(threading, "Thread", record_thread)
     original_stdout, original_stdin = sys.stdout, sys.stdin
-    descriptors = len(list(Path("/dev/fd").iterdir()))
     try:
         with pytest.raises(RuntimeError, match=failure) if failure else nullcontext():
             assert (
@@ -1110,11 +1111,7 @@ def test_injection_closes_resources_on_every_exit(
         assert sys.stdout is original_stdout
         assert sys.stdin is original_stdin
         assert len(pipes) == 2
-        assert len(list(Path("/dev/fd").iterdir())) == descriptors
-        for pair in pipes:
-            for fd in pair:
-                with pytest.raises(OSError, match="Bad file descriptor"):
-                    os.fstat(fd)
+        assert not [fd for fd, pipe in identities.items() if _is_open_as(fd, pipe)]
         assert all(not worker.is_alive() for worker in workers)
         client.close.assert_called_once_with()
     finally:
@@ -1124,12 +1121,28 @@ def test_injection_closes_resources_on_every_exit(
             output.close()
         if input_stream is not original_stdin:
             input_stream.close()
-        for pair in pipes:
-            for fd in pair:
-                with suppress(OSError):
-                    os.close(fd)
+        for fd, pipe in identities.items():
+            if _is_open_as(fd, pipe):
+                os.close(fd)
         for worker in workers:
             worker.join(timeout=2.0)
+
+
+# The pytest worker's other threads open and close descriptors throughout this
+# test, reusing any number it frees, so neither a count of the process's open
+# descriptors nor a bare ``fstat`` of a closed number can tell this test's pipes
+# from theirs. A file's (device, inode) can.
+def _identity(fd: int) -> tuple[int, int]:
+    stat = os.fstat(fd)
+    return stat.st_dev, stat.st_ino
+
+
+def _is_open_as(fd: int, identity: tuple[int, int]) -> bool:
+    """Whether ``fd`` still names the file ``identity`` was taken from."""
+    try:
+        return _identity(fd) == identity
+    except OSError:
+        return False
 
 
 # ``TOKEN_SEEN`` passes -- it positively proves the injected message reached a live

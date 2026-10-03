@@ -1,0 +1,13 @@
+/* highlight.js's classes in the code colours (styles.css), grouped as its GitHub
+   theme groups them; loads with the highlighter's chunk. Comments take --muted;
+   punctuation, operators and parameters keep the block's ink. */
+.hljs-keyword, .hljs-doctag, .hljs-template-tag, .hljs-type, .hljs-selector-tag,
+.hljs-variable.language_, .hljs-meta .hljs-keyword, .hljs-deletion { color: var(--code-keyword); }
+.hljs-title, .hljs-section, .hljs-name, .hljs-literal { color: var(--code-literal); }
+.hljs-attr, .hljs-attribute, .hljs-property, .hljs-variable, .hljs-template-variable, .hljs-meta,
+.hljs-selector-id, .hljs-selector-class, .hljs-selector-attr, .hljs-link { color: var(--code-key); }
+.hljs-string, .hljs-regexp, .hljs-meta .hljs-string, .hljs-addition, .hljs-quote { color: var(--code-string); }
+.hljs-number, .hljs-built_in, .hljs-symbol, .hljs-bullet { color: var(--code-number); }
+.hljs-comment, .hljs-code, .hljs-formula { color: var(--muted); }
+.hljs-section, .hljs-strong { font-weight: 600; }
+.hljs-emphasis { font-style: italic; }

@@ -528,8 +528,8 @@ async def revoke_api_key(conn: Conn, *, key_id: uuid.UUID, user_id: uuid.UUID) -
 async def allowlist_match(conn: Conn, *, email: str) -> Role | None:
     """Return the role the allowlist grants ``email``, or ``None`` to deny.
 
-    The allowlist holds literal emails (``user@rekursiv.ai``) and domain
-    wildcards (``*@rekursiv.ai``). A literal row wins when both would match,
+    The allowlist holds literal emails (``user@example.com``) and domain
+    wildcards (``*@example.com``). A literal row wins when both would match,
     so an individual override beats the domain default. The wildcard lookup
     runs only on a literal miss, keeping the common case one indexed probe.
     Matching is case-insensitive.

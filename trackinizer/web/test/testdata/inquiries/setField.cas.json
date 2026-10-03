@@ -1,0 +1,25 @@
+{
+  "request": {
+    "body": {
+      "expected": "active",
+      "mode": "cas",
+      "reason": "Done.",
+      "value": "complete"
+    },
+    "headers": {
+      "Idempotency-Key": "00000000-0000-4000-9000-000000000001"
+    },
+    "method": "PUT",
+    "path": "/api/inquiries/00000000-0000-4000-8000-000000000002/status"
+  },
+  "response": {
+    "body": {
+      "change_id": "00000000-0000-4000-9000-000000000001",
+      "id": "00000000-0000-4000-8000-000000000002"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

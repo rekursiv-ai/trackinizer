@@ -1,0 +1,119 @@
+/* An AgentSession's transcript, from the design mock ("transcript"). */
+.tr-part { display: flex; flex-direction: column; gap: 10px; }
+.tr-part + .tr-part { margin-top: 8px; }
+.tr-part-h { font-size: 12px; font-weight: 500; color: var(--muted); padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.tr-noise { align-self: flex-start; font-size: 12px; }
+.transcript { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+/* Records off screen skip layout and paint. Without it, each render that added
+   records laid out and painted the whole transcript again: 91 to 149 ms a frame
+   with the CPU slowed 4x, growing with the part. */
+.turn, .tr-group { display: flex; flex-direction: column; gap: 4px; min-width: 0; content-visibility: auto; contain-intrinsic-size: auto 60px; }
+/* A step is one line; a run of them sits closer than the turns around it. */
+.turn-tool, .turn-thinking, .tr-group { contain-intrinsic-size: auto 24px; }
+.transcript .transcript { gap: 6px; }
+.turn-h { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted); min-width: 0; }
+.turn-h b { color: var(--ink-muted); font-weight: 500; white-space: nowrap; }
+.turn-h .turn-src { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.turn-idx { color: var(--muted); font-variant-numeric: tabular-nums; }
+.turn-h .turn-meta { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.turn-raw { font-size: 11px; color: var(--muted); padding: 0 4px; border-radius: 4px; }
+.turn-raw:hover, .turn-raw[aria-expanded="true"] { color: var(--ink-muted); background: var(--surface-hover); }
+.turn-body { font-size: 13.5px; line-height: 1.6; color: var(--ink-muted); overflow-wrap: anywhere; }
+.turn-note .turn-h b { color: var(--muted); font-weight: 400; }
+.turn-json, .tool-out, .tr-diff, .tr-code {
+  margin: 0; font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; scrollbar-width: thin;
+}
+/* Tool output is already cut to its first and last lines (clipLines), and a scroll
+   box of its own would hide the last ones, where a failure is. */
+.turn-json, .tr-fold .tool-out, .tool-args dd > :not(.md-code) { max-height: 320px; overflow: auto; }
+.turn-json { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink-muted); }
+.tool-out { color: var(--muted); padding: 2px 10px 0; }
+.tool-out.failed { color: var(--l-against); }
+.tr-show { font: inherit; color: var(--accent-hover); padding: 0; }
+.tr-show:hover { text-decoration: underline; }
+
+/* A step (a tool call with its result, reasoning, or a run of them): one line
+   that opens in place (RecordBody.tsx `Step`). */
+.tr-step { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tr-step > details > summary { list-style: none; cursor: pointer; }
+.tr-step > details > summary::-webkit-details-marker { display: none; }
+.tool-row {
+  display: flex; align-items: baseline; gap: 6px; min-width: 0; overflow: hidden; padding: 1px 4px; margin-left: -4px; border-radius: 6px;
+  font-size: 12.5px; color: var(--muted); white-space: nowrap;
+}
+.tool-row:hover { background: var(--surface-hover); }
+.tool-row > .ic { flex: none; align-self: center; color: var(--muted); }
+.tool-row .name { flex: none; font-weight: 500; color: var(--ink-muted); }
+.tr-group > .tr-step > details > summary .name { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.tool-arg { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 12px/1.5 var(--mono); color: var(--ink-muted); }
+.tool-file { flex: none; max-width: 70%; }
+.tool-dir { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 11.5px/1.5 var(--mono); color: var(--muted); }
+.tr-think-line { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-style: italic; }
+.tr-outcome { flex: none; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.tr-step.failed > details > summary .tr-outcome { color: var(--l-against); }
+.tool-row .turn-model, .tool-row time { flex: none; font-size: 11px; }
+.tool-row .turn-model { margin-left: auto; }
+.tool-row .turn-model + time { margin-left: 0; }
+.tool-row time { margin-left: auto; }
+.tr-step-body, .tr-preview {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 2px 0 0 5px; padding-left: 13px; border-left: 1px solid var(--line);
+}
+.tr-preview { gap: 0; margin-top: 0; }
+.tr-preview .tool-out { padding: 0; }
+/* A preview is a row a line, each cut at the edge, as Codex keeps one to its rows. */
+.tr-preview .ln { display: block; white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+.tr-preview > .tr-show { align-self: flex-start; font-size: 12px; }
+.tr-step-body > .md-code { margin: 0; }
+.tr-foot { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.tr-think { font-size: 13px; color: var(--muted); }
+.tool-args {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0;
+}
+.tool-args dt { font: 12px/1.5 var(--mono); color: var(--muted); }
+.tool-args dd { margin: 0; font: 12px/1.5 var(--mono); color: var(--ink-muted); white-space: pre-wrap; overflow-wrap: anywhere; min-width: 0; }
+.tool-args dd > .md-code { margin: 0; }
+
+/* Code and diffs, a line a row; a line's number sits in the gutter, out of its
+   text, so Copy and a selection take the code alone. */
+.tr-code, .tr-diff { padding: 6px 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink-muted); }
+.tr-code .ln, .tr-diff .ln { display: block; min-height: 1lh; padding: 0 10px; }
+.ln[data-n] { padding-left: calc(10px + 6ch); text-indent: -6ch; }
+.ln[data-n]::before {
+  content: attr(data-n); display: inline-block; width: 5ch; margin-right: 1ch; text-indent: 0; text-align: right; color: var(--muted);
+  user-select: none;
+}
+.tr-diff .d-add { background: var(--diff-add); }
+.tr-diff .d-del { background: var(--diff-del); }
+.tr-diff .d-add .d-mark { color: var(--code-string); }
+.tr-diff .d-del .d-mark { color: var(--code-keyword); }
+.tr-diff .d-hunk { color: var(--accent-hover); }
+.tr-preview .tr-diff { border: 0; padding: 0; background: none; }
+
+/* ANSI colours (`ansiRuns`), in the code colours, each over 4.5:1 on every surface. */
+.a-bold { font-weight: 600; }
+.a-dim { color: var(--muted); }
+.a-italic { font-style: italic; }
+.a-underline { text-decoration: underline; }
+.a-red { color: var(--code-keyword); }
+.a-green { color: var(--code-string); }
+.a-yellow { color: var(--code-number); }
+.a-blue { color: var(--code-key); }
+.a-magenta { color: var(--code-literal); }
+.a-cyan { color: var(--accent-hover); }
+
+/* A person's long message, held to its first lines until Show all. */
+.tr-clamp[data-open="false"] { max-height: 16em; overflow: hidden; mask-image: linear-gradient(to bottom, #000 75%, transparent); }
+.tr-clamp-toggle { align-self: flex-start; font-size: 12px; }
+
+.tr-meta { font-size: 12px; color: var(--muted); }
+details.tr-fold summary { font-size: 12px; color: var(--muted); cursor: pointer; list-style: none; }
+details.tr-fold summary::-webkit-details-marker { display: none; }
+.tr-fold .tool-out { margin-top: 6px; }
+.tr-chip { align-self: flex-start; font-size: 11.5px; color: var(--muted); padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; }
+.tr-search { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.tr-search a { color: var(--accent-hover); }
+.tr-search p { margin: 2px 0 0; color: var(--muted); }
+.tr-term .t-in { color: var(--ink-muted); }
+.tr-term .t-err { color: var(--l-against); }
+.tr-more { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--muted); }
+.tr-composer { margin-top: 14px; }

@@ -191,7 +191,7 @@ async def test_the_console_feed_reads_an_index_not_the_whole_table(
     ``agent_session_events`` carried a dedicated index for exactly this; the
     IR tables that replaced it must too, or the hot path degrades to a
     sequential scan plus a sort that grows with the whole capture corpus --
-    3,081,202 rows on the deployed instance.
+    millions of rows on a busy server.
 
     Asserted against the PLANNER rather than by checking an index exists: an
     index the planner declines to use is not a fix.
@@ -446,6 +446,35 @@ async def test_migration_024_backfills_markers_from_existing_vectors(
     assert markers[0]["text_md5"] == "sharedmd5"
     assert markers[0]["mapper"] == "footprint-v1"
     assert markers[0]["model"] == "qwen3-embedding-4b@1024"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_031_matches_the_baseline_metric_checks(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """A database migrated by 031 enforces the fresh install's metric-key CHECK.
+
+    Bootstrap builds the baseline shape. This restores the pre-031 ``btrim``
+    CHECK, replays ``schema.031`` alone, and compares every
+    ``experiment_metrics`` constraint against what the baseline produced.
+    """
+    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
+    constraints = (
+        "SELECT conname, pg_get_constraintdef(oid) AS def FROM pg_constraint "
+        "WHERE conrelid = 'experiment_metrics'::regclass"
+    )
+    async with scratch_engine.acquire() as conn:
+        baseline = {(r["conname"], r["def"]) for r in await conn.fetch(constraints)}
+        await conn.execute(
+            "ALTER TABLE experiment_metrics "
+            "DROP CONSTRAINT experiment_metrics_key_check, "
+            "ADD CONSTRAINT experiment_metrics_key_check "
+            "CHECK (char_length(key) BETWEEN 1 AND 512 AND btrim(key) <> '')",
+        )
+        await conn.execute(load_sql("schema.031"))
+        migrated = {(r["conname"], r["def"]) for r in await conn.fetch(constraints)}
+    assert migrated == baseline
 
 
 if __name__ == "__main__":

@@ -1,0 +1,23 @@
+/* The console's minimap: record counts over time, to click, drag and scroll through. */
+.minimap { padding: 6px 18px 8px; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--muted); user-select: none; }
+.minimap-head { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
+.minimap-zooms { display: flex; gap: 4px; }
+.minimap-head button {
+  font-size: 11px; padding: 0 8px; border: 1px solid var(--line); border-radius: 999px; background: none; color: var(--ink-muted);
+}
+.minimap-head button[aria-pressed="true"] { border-color: currentColor; background: var(--surface-hover); color: var(--text); }
+.minimap-now { margin-left: auto; }
+.minimap-band { position: relative; height: 44px; cursor: crosshair; touch-action: none; }
+/* Positioned, so the bars paint over the marks before them. */
+.minimap-bars { position: relative; display: block; width: 100%; height: 100%; }
+.minimap-bar { fill: var(--ink-tertiary); opacity: .45; }
+.minimap-bar.on { fill: var(--accent); opacity: 1; }
+.minimap-mark, .minimap-pick { position: absolute; top: 0; bottom: 0; min-width: 2px; pointer-events: none; }
+.minimap-mark { background: var(--accent-soft); border-inline: 1px solid var(--accent); }
+.minimap-pick { background: var(--surface-hover); border-inline: 1px dashed var(--ink-muted); }
+.minimap-band .read-error { margin: 0; font-size: 12px; }
+.minimap-axis { position: relative; height: 14px; margin-top: 2px; }
+.minimap-axis span { position: absolute; transform: translateX(-50%); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.minimap-track { position: relative; height: 6px; margin-top: 4px; border-radius: 3px; background: var(--line); cursor: pointer; touch-action: none; }
+.minimap-track:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.minimap-thumb { position: absolute; top: 0; bottom: 0; min-width: 8px; border-radius: 3px; background: var(--ink-tertiary); }

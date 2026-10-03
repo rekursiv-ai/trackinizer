@@ -1,0 +1,886 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/web/get/00000000-0000-4000-8000-000000000003"
+  },
+  "response": {
+    "body": {
+      "backlinks": {
+        "produced_by": [
+          {
+            "id": "00000000-0000-4000-8000-000000000004",
+            "kind": "Issue",
+            "peer_created": "2026-01-01T00:00:00.000000+00:00",
+            "seq": 4,
+            "status": "active",
+            "title": "Which sort?"
+          },
+          {
+            "id": "00000000-0000-4000-8000-000000000009",
+            "kind": "Experiment",
+            "peer_created": "2026-01-01T00:00:00.000000+00:00",
+            "seq": 1,
+            "status": "active",
+            "title": "Membership check latency"
+          }
+        ]
+      },
+      "changes": [
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000001",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000002",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [
+              "fixture"
+            ],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "requires",
+            "peer_id": "00000000-0000-4000-8000-000000000004",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000003",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000004",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [
+              "fixture"
+            ],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "requires",
+            "peer_id": "00000000-0000-4000-8000-000000000004",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000005",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000006",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "produced_by",
+            "peer_id": "00000000-0000-4000-8000-000000000001",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000007",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000008",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "produced_by",
+            "peer_id": "00000000-0000-4000-8000-000000000001",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000009",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000010",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "produced_by",
+            "peer_id": "00000000-0000-4000-8000-000000000001",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000011",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000012",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "produced_by",
+            "peer_id": "00000000-0000-4000-8000-000000000001",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000013",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000014",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "produced_by",
+            "peer_id": "00000000-0000-4000-8000-000000000001",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000015",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000016",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "produced_by",
+            "peer_id": "00000000-0000-4000-8000-000000000001",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000017",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000018",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "produced_by",
+            "peer_id": "00000000-0000-4000-8000-000000000001",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000019",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000020",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "produced_by",
+            "peer_id": "00000000-0000-4000-8000-000000000001",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000021",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000022",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "produced_by",
+            "peer_id": "00000000-0000-4000-8000-000000000002",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "librarian",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000021",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000023",
+          "kind": "dependency_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "requires",
+            "peer_id": "00000000-0000-4000-8000-000000000002",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000024",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000025",
+          "kind": "edge_added",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "edge_priority": 0,
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "narrows",
+            "peer_id": "00000000-0000-4000-8000-000000000001",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "no-auth@localhost",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000025",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000026",
+          "kind": "edge_added",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "produced_by",
+            "peer_id": "00000000-0000-4000-8000-000000000001",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "no-auth@localhost",
+          "reason": "inferred provenance: first edge (narrows) between the pair",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000027",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000028",
+          "kind": "edge_added",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "produced_by",
+            "peer_id": "00000000-0000-4000-8000-000000000002",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "no-auth@localhost",
+          "reason": "inferred provenance: first edge (requires) between the pair",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000029",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000030",
+          "kind": "edge_added",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "produced_by",
+            "peer_id": "00000000-0000-4000-8000-000000000004",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "no-auth@localhost",
+          "reason": "inferred provenance: first edge (requires) between the pair",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000031",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000032",
+          "kind": "edge_added",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "produced_by",
+            "peer_id": "00000000-0000-4000-8000-000000000009",
+            "peer_kind": "Experiment"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "no-auth@localhost",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": "00000000-0000-4000-9000-000000000024",
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000027",
+          "kind": "edge_added",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "requires",
+            "peer_id": "00000000-0000-4000-8000-000000000002",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "no-auth@localhost",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": null,
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000024",
+          "kind": "created",
+          "new": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "no-auth@localhost",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": null,
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000033",
+          "kind": "description",
+          "new": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "old": {
+            "description": "Narrows **Issue#1** and requires Issue#2.",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "no-auth@localhost",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": null,
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000034",
+          "kind": "edge_added",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "requires",
+            "peer_id": "00000000-0000-4000-8000-000000000004",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "no-auth@localhost",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": null,
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000035",
+          "kind": "edge_annotation_changed",
+          "new": {
+            "edge_labels": [
+              "fixture"
+            ],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "requires",
+            "peer_id": "00000000-0000-4000-8000-000000000004",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "requires",
+            "peer_id": "00000000-0000-4000-8000-000000000004",
+            "peer_kind": "Issue"
+          },
+          "principal": "no-auth@localhost",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": null,
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000036",
+          "kind": "edge_annotation_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "requires",
+            "peer_id": "00000000-0000-4000-8000-000000000004",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "edge_labels": [],
+            "edge_note": "Blocks the sort.",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "requires",
+            "peer_id": "00000000-0000-4000-8000-000000000004",
+            "peer_kind": "Issue"
+          },
+          "principal": "no-auth@localhost",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": null,
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000037",
+          "kind": "edge_annotation_changed",
+          "new": {
+            "edge_labels": [],
+            "edge_note": "Blocks the sort.",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "requires",
+            "peer_id": "00000000-0000-4000-8000-000000000004",
+            "peer_kind": "Issue"
+          },
+          "old": {
+            "edge_labels": [],
+            "edge_note": "",
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "peer_edge_kind": "requires",
+            "peer_id": "00000000-0000-4000-8000-000000000004",
+            "peer_kind": "Issue"
+          },
+          "principal": "no-auth@localhost",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": null,
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000038",
+          "kind": "labels",
+          "new": {
+            "labels": [
+              "fixture",
+              "ui"
+            ],
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "old": {
+            "labels": [
+              "fixture"
+            ],
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            }
+          },
+          "principal": "no-auth@localhost",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        },
+        {
+          "actor": "no-auth@localhost",
+          "api_key_id": null,
+          "caused_by": null,
+          "created": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000039",
+          "kind": "title",
+          "new": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "title": "Child, renamed"
+          },
+          "old": {
+            "marginal_cost": {
+              "agent_usd": 0.0,
+              "resource_usd": 0.0
+            },
+            "title": "Child"
+          },
+          "principal": "no-auth@localhost",
+          "reason": "",
+          "subject_id": "00000000-0000-4000-8000-000000000003",
+          "subject_kind": "Issue"
+        }
+      ],
+      "edges": {
+        "narrows": [
+          {
+            "id": "00000000-0000-4000-8000-000000000001",
+            "kind": "Issue",
+            "peer_created": "2026-01-01T00:00:00.000000+00:00",
+            "peer_priority": 10,
+            "priority": 0,
+            "seq": 1,
+            "status": "active",
+            "title": "Web app fixtures"
+          }
+        ],
+        "produced_by": [
+          {
+            "id": "00000000-0000-4000-8000-000000000001",
+            "kind": "Issue",
+            "peer_created": "2026-01-01T00:00:00.000000+00:00",
+            "peer_priority": 10,
+            "seq": 1,
+            "status": "active",
+            "title": "Web app fixtures"
+          },
+          {
+            "id": "00000000-0000-4000-8000-000000000002",
+            "kind": "Issue",
+            "peer_created": "2026-01-01T00:00:00.000000+00:00",
+            "peer_priority": 20,
+            "seq": 2,
+            "status": "complete",
+            "title": "Prerequisite"
+          }
+        ],
+        "requires": [
+          {
+            "id": "00000000-0000-4000-8000-000000000002",
+            "kind": "Issue",
+            "peer_created": "2026-01-01T00:00:00.000000+00:00",
+            "peer_priority": 20,
+            "seq": 2,
+            "status": "complete",
+            "title": "Prerequisite"
+          },
+          {
+            "id": "00000000-0000-4000-8000-000000000004",
+            "kind": "Issue",
+            "labels": [
+              "fixture"
+            ],
+            "peer_created": "2026-01-01T00:00:00.000000+00:00",
+            "seq": 4,
+            "status": "active",
+            "title": "Which sort?"
+          }
+        ]
+      },
+      "self": {
+        "account": "no-auth@localhost",
+        "created": "2026-01-01T00:00:00.000000+00:00",
+        "description": null,
+        "id": "00000000-0000-4000-8000-000000000003",
+        "issue_kind": [
+          "bug"
+        ],
+        "kind": "Issue",
+        "labels": [
+          "fixture",
+          "ui"
+        ],
+        "marginal_cost": {
+          "agent_usd": 0.0,
+          "resource_usd": 0.0
+        },
+        "modified": "2026-01-01T00:00:00.000000+00:00",
+        "owner": null,
+        "priority": 0,
+        "seq": 3,
+        "status": "active",
+        "subscribers": [
+          "Agent"
+        ],
+        "title": "Child, renamed",
+        "validation": null
+      }
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 from uuid import UUID
 
+from trackinizer.wire.routes import inquiry_row_fields
 from trackinizer.wire.seq_ranges import SeqRange, parse_seq_range
 
 
@@ -67,6 +68,27 @@ def parse_seq_ranges(
         return tuple(parse_seq_range(text, min_seq=min_seq) for text in (raw or ()))
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
+
+
+def parse_fields(raw: Sequence[str] | None) -> frozenset[str] | None:
+    """Decode repeated ``fields=<name>`` params into the keys to send, raising 400.
+
+    ``None`` (no ``fields`` param) sends every key. A name some kind's rows
+    carry is valid on any request; a row without that key just omits it.
+
+    Args:
+      raw: Query param values or None if absent.
+
+    Returns:
+      names: The keys each row keeps, or None for the whole row.
+
+    """
+    if raw is None:
+        return None
+    for name in raw:
+        if name not in inquiry_row_fields():
+            raise HTTPException(status_code=400, detail=f"unknown field {name!r}")
+    return frozenset(raw)
 
 
 def iso_format(value: object) -> str | None:

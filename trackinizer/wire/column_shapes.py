@@ -83,6 +83,14 @@ class ColumnShape(StrEnum):
     record at all.
     """
 
+    PARENT = "parent"
+    """A row's parents through one edge kind, named by the field (``narrows``).
+
+    The parents are the far ends of the row's outbound edges of that kind, so
+    they live in ``edges``, not on the row: ``is`` asks for one parent's id,
+    ``isnull`` for a root. No row carries them, so only SQL answers it.
+    """
+
 
 # Reproduces ``str(datetime)``: UTC, space separator, ``+00:00``, microseconds
 # only when non-zero.
@@ -127,6 +135,13 @@ _RECORDS_WHERE: Final = (
     "ON m.session_id = r.session_id AND m.part = r.part "
     "WHERE r.session_id = inquiries.id AND r.kind = '{col}' "
     "AND r.idx < m.records"
+)
+
+# The row's outbound edges of one kind; ``{col}`` is the field, which names the edge
+# kind (``narrows``). Correlated on ``inquiries.id``, which the edges primary key
+# ``(from_id, to_id, edge_kind)`` serves.
+_PARENT_EDGES: Final = (
+    "SELECT 1 FROM edges e WHERE e.from_id = inquiries.id AND e.edge_kind = '{col}'"
 )
 
 # An op is absent where the two evaluators would order differently:
@@ -229,6 +244,15 @@ _SQL_BY_SHAPE: Final[dict[ColumnShape, dict[str, str]]] = {
         # Presence of the RECORD KIND, not of a text: "did a compact happen".
         "isnull": f"NOT EXISTS ({_RECORDS_WHERE})",
         "notnull": f"EXISTS ({_RECORDS_WHERE})",
+    },
+    # A set of parent ids, so membership and presence only: nothing orders or
+    # pattern-matches a set. ``::text`` compares the operand as the id's text, so
+    # one that is no uuid matches nothing instead of failing the cast.
+    ColumnShape.PARENT: {
+        "is": f"EXISTS ({_PARENT_EDGES} AND e.to_id::text = {{p}})",
+        "ne": f"NOT EXISTS ({_PARENT_EDGES} AND e.to_id::text = {{p}})",
+        "isnull": f"NOT EXISTS ({_PARENT_EDGES})",
+        "notnull": f"EXISTS ({_PARENT_EDGES})",
     },
     ColumnShape.TIMESTAMP: {
         "is": f"{_TS_TEXT} = {{p}}",
@@ -360,6 +384,10 @@ def _column_shapes() -> dict[str, ColumnShape]:
     # ``session_records``. The SET is still derived (from which record classes
     # project any ``text``), so a new record class needs no edit here.
     out.update(dict.fromkeys(SESSION_RECORD_FIELDS, ColumnShape.SESSION_RECORD))
+    # Issue's parents, seeded like the identity columns: a relation has no column,
+    # so the spec walk below cannot see it. Only ``narrows`` for now, the edge
+    # that joins an Issue to the broader Issue it is part of.
+    out["narrows"] = ColumnShape.PARENT
     for source in INQUIRY_CLASSES:
         for name, flat in flat_column_specs(source).items():
             column = storage_name(name, flat.spec)

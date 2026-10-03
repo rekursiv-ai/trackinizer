@@ -55,6 +55,23 @@ class TestMetricPointKind:
         assert MetricPoint(key="loss", step=0, value=1.0).kind == "scalar"
 
 
+class TestMetricPointKey:
+    @pytest.mark.parametrize("blank", ["", " ", "\t", "\n", "　"])
+    def test_rejects_blank_key(self, blank: str) -> None:
+        with pytest.raises(ValidationError):
+            MetricPoint(key=blank, step=0, value=1.0)
+
+    def test_rejects_nul_key(self) -> None:
+        """Postgres ``text`` cannot hold NUL, so the INSERT would 500."""
+        with pytest.raises(ValidationError, match="NUL"):
+            MetricPoint.model_validate_json(
+                '{"key": "lo\\u0000ss", "step": 0, "value": 1.0}',
+            )
+
+    def test_accepts_padded_key(self) -> None:
+        assert MetricPoint(key=" val/acc ", step=0, value=1.0).key == " val/acc "
+
+
 class TestMetricPointStep:
     def test_rejects_negative_step(self) -> None:
         with pytest.raises(ValidationError):

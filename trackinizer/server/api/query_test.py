@@ -51,16 +51,32 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.auth import AuthIdentity, current_user
-
-
-if TYPE_CHECKING:
-    from fastapi.testclient import TestClient
-
-    from trackinizer.server.store.core import Store
-    from trackinizer.types.inquiries import Inquiry
+from trackinizer.types.change_log import Change, Snapshot
+from trackinizer.types.inquiries import KIND_TO_CLASS
+from trackinizer.wire.bodies import (
+    SubmitAgentSession,
+    SubmitArtifact,
+    SubmitBelief,
+    SubmitCodeChange,
+    SubmitExperiment,
+    SubmitIssue,
+    SubmitPaper,
+    SubmitWebResult,
+    SubmitWebSearch,
+)
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+
+    from fastapi.testclient import TestClient
+
+    from trackinizer.server.store.core import Store
+    from trackinizer.types.edges import Edge
+    from trackinizer.types.inquiries import Inquiry
 
 
 class TestRoutes:
@@ -461,7 +477,32 @@ class TestRoutes:
         assert r.status_code == 400, r.text
         assert "takes no value" in r.text
 
-    @pytest.mark.parametrize("param", ["filter", "seq_range"])
+    def test_list_kind_route_rejects_a_field_no_row_carries(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        """A name no kind's rows carry is a typo; another kind's field is not.
+
+        Dropping an unknown name without a word would hand the caller rows
+        missing a key it believes it asked for.
+        """
+        client, store, _engine = route_client
+        with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
+            mock.return_value = []
+            bad = client.get(
+                "/api/inquiries",
+                params=[("kind", "Issue"), ("fields", "id"), ("fields", "bogus")],
+            )
+            # ``narrows`` is an Issue field: absent from a Belief row, not unknown.
+            ok = client.get(
+                "/api/inquiries",
+                params=[("kind", "Belief"), ("fields", "narrows")],
+            )
+        assert bad.status_code == 400, bad.text
+        assert "'bogus'" in bad.text
+        assert ok.status_code == 200, ok.text
+
+    @pytest.mark.parametrize("param", ["filter", "seq_range", "fields"])
     def test_repeated_query_params_are_length_capped(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
@@ -494,6 +535,34 @@ class TestRoutes:
             },
         )
         assert r.status_code == 400
+
+    def test_change_log_route_sends_brief_rows_only_when_asked(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        # A brief snapshot keeps its set keys alone, its text cut to 32
+        # characters; the rest of the row is as a whole one sends it.
+        client, store, _engine = route_client
+        change = Change(
+            kind="description",
+            subject_id=new_uuid(),
+            subject_kind="Issue",
+            old=Snapshot(description="d" * 100),
+            new=Snapshot(description="e" * 100),
+        )
+        with patch.object(store, "list_changes", new_callable=AsyncMock) as mock:
+            mock.return_value = [change]
+            (whole,) = ListCodec.mappings(client.get("/api/change_log").json())
+            (brief,) = ListCodec.mappings(
+                client.get("/api/change_log", params={"brief": "true"}).json(),
+            )
+        assert DictCodec.coerce(whole["new"])["description"] == "e" * 100
+        assert DictCodec.coerce(whole["new"])["title"] is None
+        assert brief["old"] == {"description": "d" * 32}
+        assert brief["new"] == {"description": "e" * 32}
+        assert {k: v for k, v in brief.items() if k not in {"old", "new"}} == {
+            k: v for k, v in whole.items() if k not in {"old", "new"}
+        }
 
     def test_repeated_kind_runs_one_query_per_distinct_kind(
         self,
@@ -714,6 +783,39 @@ class TestCoverageRoutesAndCli:
             == "Issue"
         )
 
+    @pytest.mark.parametrize(
+        ("fields", "reads"),
+        [
+            # No relation named: the row read alone.
+            (("id", "title", "judgement"), 1),
+            # A relation named: the row read, then the edges each way.
+            (("id", "narrows"), 3),
+        ],
+    )
+    def test_list_returns_only_the_named_fields(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        fields: tuple[str, ...],
+        reads: int,
+    ) -> None:
+        """``fields`` names the keys each row carries; another kind's are absent.
+
+        A 50-row page measured 315 KB on production rows, 94% of it keys a list
+        never reads: descriptions, validation and every edge list. The edges
+        cost two reads per page, so they are read only for a named relation.
+        """
+        client, _store, engine = route_client
+        engine.conn.fetch.side_effect = _rows_then_no_edges(self._row(new_uuid()))
+        r = client.get(
+            "/api/inquiries",
+            params=[("kind", "Issue"), *(("fields", name) for name in fields)],
+        )
+        assert r.status_code == 200, r.text
+        (row,) = ListCodec.mappings(r.json())
+        # ``judgement`` is a Belief field, so an Issue row has no such key.
+        assert set(row) == set(fields) - {"judgement"}
+        assert engine.conn.fetch.await_count == reads
+
     def test_misc_routes(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
@@ -916,6 +1018,370 @@ def test_list_endpoint_never_500s_on_bad_params(
             app.state.__dict__.pop("store", None)
         else:
             app.state.store = prev_store
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_fields_keep_the_named_values_on_a_real_engine(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """Each named key keeps the full row's value, and no other key comes back.
+
+    Every key a row of any kind carries is a name ``fields`` takes, relations
+    included, so naming all of a row's keys returns the whole row.
+    """
+    http, store = pglite_route_client
+    account = "alice@example.com"
+    parent, child, artifact, belief, *_ = await store.submit_batch(
+        [
+            SubmitIssue(account=account, title="parent", priority=10),
+            SubmitIssue(account=account, title="child", description="long"),
+            SubmitArtifact(account=account, title="evidence"),
+            SubmitBelief(account=account, title="claim", judgement="unproven"),
+            SubmitExperiment(account=account, title="run"),
+            SubmitPaper(account=account, title="paper", authors=["a"]),
+            SubmitCodeChange(account=account, title="commit"),
+            SubmitWebResult(account=account, title="page"),
+            SubmitWebSearch(account=account, title="query"),
+            SubmitAgentSession(account=account, title="session"),
+        ],
+    )
+    edges: tuple[tuple[uuid.UUID, Edge.Kind, uuid.UUID], ...] = (
+        (child, "narrows", parent),
+        (artifact, "proves", belief),
+    )
+    for from_id, edge_kind, to_id in edges:
+        await store.add_edge(
+            from_id=from_id,
+            to_id=to_id,
+            edge_kind=edge_kind,
+            actor="alice",
+        )
+    kinds = [("kind", kind) for kind in sorted(KIND_TO_CLASS)]
+    full = ListCodec.mappings((await http.get("/api/inquiries", params=kinds)).json())
+    assert len(full) == 10
+    for row in full:
+        seq = f"{row['seq']}..{row['seq']}"
+        named = await http.get(
+            "/api/inquiries",
+            params=[
+                ("kind", StrCodec.coerce(row["kind"])),
+                ("seq_range", seq),
+                *(("fields", key) for key in row),
+            ],
+        )
+        assert ListCodec.mappings(named.json()) == [row], row["kind"]
+    subset = ("id", "title", "priority", "judgement", "proved_by", "narrows")
+    named = await http.get(
+        "/api/inquiries",
+        params=[*kinds, *(("fields", name) for name in subset)],
+    )
+    assert named.status_code == 200, named.text
+    rows = ListCodec.mappings(named.json())
+    assert rows == [{k: v for k, v in row.items() if k in subset} for row in full]
+    # The relations are real when named: the edges were read.
+    assert any(row.get("narrows") for row in rows)
+    assert any(row.get("proved_by") for row in rows)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_brief_changes_drop_unset_keys_and_cut_text_on_a_real_engine(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """``brief`` drops each snapshot's unset keys and cuts its free text short.
+
+    Activity's Edits tab only asks whether a description is set, yet a page sent
+    both sides of every edit whole: 5.2 MB for 50 description edits on
+    production. Ids, statuses and the other values stay whole, so an edge pair
+    still matches on its peers.
+    """
+    http, store = pglite_route_client
+    account = "alice@example.com"
+    first, second = "First draft. " * 20, "Second draft. " * 20
+    parent = await store.submit_issue(
+        SubmitIssue(
+            account=account,
+            title="A parent whose title runs on past the cut",
+            description=first,
+        ),
+    )
+    child = await store.submit_issue(SubmitIssue(account=account, title="child"))
+    await store.set_description(parent, second, actor="alice")
+    await store.set_status(parent, "complete", actor="alice")
+    await store.add_edge(
+        from_id=child,
+        to_id=parent,
+        edge_kind="narrows",
+        actor="alice",
+    )
+    full = ListCodec.mappings((await http.get("/api/change_log")).json())
+    brief = await http.get("/api/change_log", params={"brief": "true"})
+    assert brief.status_code == 200, brief.text
+    rows = ListCodec.mappings(brief.json())
+    assert rows == [_briefed(row) for row in full]
+    (edit,) = (row for row in rows if row["kind"] == "description")
+    assert DictCodec.coerce(edit["old"])["description"] == first[:32]
+    assert DictCodec.coerce(edit["new"])["description"] == second[:32]
+    peers = {
+        DictCodec.coerce(row["new"]).get("peer_id")
+        for row in rows
+        if row["kind"] == "edge_added"
+    }
+    assert {str(child), str(parent)} <= peers
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_change_log_takes_several_kinds_before_its_limit_on_a_real_engine(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A repeated ``kind`` keeps changes of any of them, filtered before ``limit``.
+
+    An Activity tab shows several change kinds, and one request per kind would
+    break its live budget of a few requests a second. Newer changes of other
+    kinds must not crowd the page out.
+    """
+    http, store = pglite_route_client
+    issue = await store.submit_issue(
+        SubmitIssue(account="alice@example.com", title="t0"),
+    )
+    await store.set_status(issue, "complete", actor="alice")
+    await store.set_title(issue, "t1", actor="alice")
+    for step in range(3):
+        await store.set_description(issue, f"d{step}", actor="alice")
+
+    async def kinds(*query: tuple[str, str]) -> list[object]:
+        r = await http.get("/api/change_log", params=query)
+        assert r.status_code == 200, r.text
+        return [row["kind"] for row in ListCodec.mappings(r.json())]
+
+    many = await kinds(("kind", "status"), ("kind", "title"), ("limit", "2"))
+    assert many == ["title", "status"]
+    assert await kinds(("kind", "status")) == ["status"]
+    r = await http.get("/api/change_log", params=[("kind", "status"), ("kind", "x")])
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_narrows_filters_roots_and_children_on_a_real_engine(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """``narrows`` filters on an Issue's parents, which live in ``edges``.
+
+    A list of root goals is ``narrows isnull``; one parent's children is
+    ``narrows is <id>``. Both answered "unknown filter field" before.
+    """
+    http, store = pglite_route_client
+    account = "alice@example.com"
+    root, mid, leaf, _ = await store.submit_batch(
+        [SubmitIssue(account=account, title=t) for t in ("root", "mid", "leaf", "x")],
+    )
+    for child, parent in ((mid, root), (leaf, mid)):
+        await store.add_edge(
+            from_id=child,
+            to_id=parent,
+            edge_kind="narrows",
+            actor="alice",
+        )
+    assert await _titles_where(http, "isnull") == ["root", "x"]
+    assert await _titles_where(http, "notnull") == ["leaf", "mid"]
+    assert await _titles_where(http, "is", str(root)) == ["mid"]
+    assert await _titles_where(http, "ne", str(root)) == ["leaf", "root", "x"]
+    # Text no id equals matches nothing, rather than failing a uuid cast.
+    assert await _titles_where(http, "is", "not-an-id") == []
+    for kind, clause, status in (
+        # No SQL orders or matches a set of parents; the store refuses the op,
+        # as it does on any column without one.
+        ("Issue", {"field": "narrows", "op": "re", "value": "x"}, 422),
+        ("Issue", {"field": "narrows", "op": "gt", "value": "x"}, 422),
+        # Only an Issue narrows.
+        ("Belief", {"field": "narrows", "op": "isnull"}, 400),
+    ):
+        r = await http.get(
+            "/api/inquiries",
+            params=[("kind", kind), ("filter", json.dumps(clause))],
+        )
+        assert r.status_code == status, (kind, clause, r.text)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_ancestors_walk_up_to_the_roots_on_a_real_engine(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """``ancestors=narrows`` adds each row's ancestry, capped, cycles included."""
+    http, store = pglite_route_client
+    await _check_ancestry(http, store)
+
+
+@pytest.mark.db_postgres
+@pytest.mark.asyncio(loop_scope="session")
+async def test_ancestors_walk_up_to_the_roots_on_postgres(integ_store: Store) -> None:
+    """The same walk on Postgres, whose recursive CTE PGlite only mirrors."""
+    served = FastAPI()
+    served.include_router(query.router)
+    served.state.store = integ_store
+    served.dependency_overrides[current_user] = _viewer
+    transport = httpx2.ASGITransport(app=served, raise_app_exceptions=False)
+    async with httpx2.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+    ) as http:
+        await _check_ancestry(http, integ_store)
+
+
+async def _check_ancestry(http: httpx2.AsyncClient, store: Store) -> None:
+    """Assert the ancestry of rows shaped to hit each rule of the walk."""
+    account = "alice@example.com"
+    names = (
+        *("g", "p1", "p2", "r"),
+        *(f"c{i}" for i in range(11)),
+        *("a", "b", "r2", "x", "y"),
+        *("w", "gp"),
+        *(f"q{i}" for i in range(201)),
+    )
+    made = await store.submit_batch(
+        [SubmitIssue(account=account, title=name) for name in names],
+    )
+    n = dict(zip(names, made, strict=True))
+    # Through the store, so the inferred ``produced_by`` edges exist too and the
+    # walk is seen to follow ``narrows`` alone.
+    for child, parent in (("p1", "g"), ("p2", "g"), ("r", "p1"), ("r", "p2")):
+        await store.add_edge(
+            from_id=n[child],
+            to_id=n[parent],
+            edge_kind="narrows",
+            actor="alice",
+        )
+    # Written directly, as legacy rows hold them: the store refuses a cycle, and
+    # 202 edges through it would run its dependency cascade 202 times.
+    await _insert_narrows(
+        store,
+        [
+            *((f"c{i}", f"c{i + 1}") for i in range(10)),
+            ("a", "b"),
+            ("b", "a"),
+            ("r2", "x"),
+            ("x", "y"),
+            ("y", "x"),
+            *(("w", f"q{i}") for i in range(201)),
+            ("q0", "gp"),
+        ],
+        n,
+    )
+    # Nearest first; a level in id order; every parent of a multi-parent row.
+    p1, p2 = sorted(("p1", "p2"), key=lambda name: str(n[name]))
+    assert await _ancestry(http, n, "r") == [
+        (p1, ["r"]),
+        (p2, ["r"]),
+        ("g", [p1, p2]),
+    ]
+    assert await _ancestry(http, n, "g") == []
+    # At most 8 levels up.
+    assert await _ancestry(http, n, "c0") == [
+        (f"c{i}", [f"c{i - 1}"]) for i in range(1, 9)
+    ]
+    # A cycle ends: a row is never its own ancestor, and each ancestor shows once.
+    assert await _ancestry(http, n, "a") == [("b", ["a"])]
+    assert await _ancestry(http, n, "r2") == [("x", ["r2", "y"]), ("y", ["x"])]
+    # At most 200 ancestors, the nearest kept.
+    capped = await _ancestry(http, n, "w")
+    assert len(capped) == 200
+    assert "gp" not in {title for title, _ in capped}
+    # Without the param, a row is as it was.
+    plain = await http.get("/api/inquiries", params={"kind": "Issue", "limit": 5})
+    assert all("ancestors" not in row for row in ListCodec.mappings(plain.json()))
+
+
+def _briefed(row: Mapping[str, object]) -> dict[str, object]:
+    """Return ``row`` as ``brief`` sends it: snapshots without nulls, text cut."""
+    out = dict(row)
+    for side in ("old", "new"):
+        out[side] = {
+            key: value[:32]
+            if key in {"title", "description"} and isinstance(value, str)
+            else value
+            for key, value in DictCodec.coerce(row[side]).items()
+            if value is not None
+        }
+    return out
+
+
+def _rows_then_no_edges(row: dict[str, object]) -> Callable[..., list[object]]:
+    """Return a ``fetch`` answering the row read with ``row``, an edge read with none."""
+
+    def fetch(sql: str, *args: object) -> list[object]:
+        del args
+        return [row] if "FROM inquiries" in sql else []
+
+    return fetch
+
+
+async def _titles_where(
+    http: httpx2.AsyncClient,
+    op: str,
+    value: str = "",
+) -> list[str]:
+    """Return the sorted titles of the Issues the ``narrows <op> <value>`` filter keeps."""
+    clause = {"field": "narrows", "op": op} | ({"value": value} if value else {})
+    r = await http.get(
+        "/api/inquiries",
+        params=[("kind", "Issue"), ("filter", json.dumps(clause))],
+    )
+    assert r.status_code == 200, r.text
+    return sorted(StrCodec.coerce(row["title"]) for row in ListCodec.mappings(r.json()))
+
+
+async def _ancestry(
+    http: httpx2.AsyncClient,
+    ids: Mapping[str, uuid.UUID],
+    name: str,
+) -> list[tuple[str, list[str]]]:
+    """Return row ``name``'s ancestors as ``(title, child titles)``, as sent."""
+    by_id = json.dumps({"field": "id", "op": "is", "value": str(ids[name])})
+    r = await http.get(
+        "/api/inquiries",
+        params=[
+            ("kind", "Issue"),
+            ("filter", by_id),
+            ("fields", "id"),
+            ("ancestors", "narrows"),
+        ],
+    )
+    assert r.status_code == 200, r.text
+    (row,) = ListCodec.mappings(r.json())
+    names = {made: title for title, made in ids.items()}
+    out: list[tuple[str, list[str]]] = []
+    for entry in ListCodec.mappings(row.get("ancestors")):
+        assert set(entry) == {"id", "kind", "seq", "title", "status", "child_ids"}
+        assert entry["kind"] == "Issue"
+        title = names[uuid.UUID(StrCodec.coerce(entry["id"]))]
+        assert entry["title"] == title
+        children = ListCodec.coerce(entry["child_ids"], str)
+        out.append((title, [names[uuid.UUID(child)] for child in children]))
+    return out
+
+
+async def _insert_narrows(
+    store: Store,
+    pairs: Sequence[tuple[str, str]],
+    ids: Mapping[str, uuid.UUID],
+) -> None:
+    """Insert ``narrows`` edges child -> parent straight into ``edges``."""
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO edges (from_id, from_kind, to_id, to_kind, edge_kind) "
+            "SELECT c, 'Issue', p, 'Issue', 'narrows' "
+            "FROM unnest($1::uuid[], $2::uuid[]) AS t(c, p)",
+            [ids[child] for child, _ in pairs],
+            [ids[parent] for _, parent in pairs],
+        )
+
+
+async def _viewer() -> AuthIdentity:
+    return make_test_identity(role="viewer")
 
 
 if __name__ == "__main__":

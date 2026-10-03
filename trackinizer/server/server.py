@@ -14,7 +14,7 @@ Usage::
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast, override
+from typing import TYPE_CHECKING, Final, Protocol, cast, override
 
 import argparse
 import logging
@@ -37,10 +37,13 @@ from trackinizer.server.config import (
     Config,
     ConfigError,
     ConfigFlags,
+    auth_disabled_from_env,
     session_max_age_from_env,
 )
 from trackinizer.server.embedders.registry import EMBEDDERS
 
+
+_CWD: Final = Path(__file__).resolve().parent
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +133,20 @@ def _configure_app(flags: _Flags) -> None:
         # the one place that turns a bad config into a clean process exit.
         raise SystemExit(str(err)) from err
     if flags.web:
-        web.attach(app, static_dir=flags.static_dir, app_dir=flags.app_dir)
+        web.attach(
+            app,
+            static_dir=flags.static_dir,
+            app_dir=flags.app_dir or _packaged_app(_CWD.parent),
+        )
+
+
+# The wheel carries the web app's build here (an `artifacts` entry in
+# ``.export/pyproject.toml``); a checkout has one once `npm run build` has run in
+# web/.
+def _packaged_app(package: Path) -> Path | None:
+    """Return the web app build beside ``package``, or ``None`` without one."""
+    built = package / "web" / "dist"
+    return built if (built / "index.html").is_file() else None
 
 
 def _parse_args(
@@ -243,10 +259,10 @@ def _parse_args(
         type=Path,
         default=None,
         help=(
-            "Serve /static from this runtime directory instead of the SPA's "
-            "bundled assets/static. Lets an operator publish files written "
-            "after deploy (e.g. a generated report) without writing into the "
-            "source tree. Unset keeps the bundled assets."
+            "Serve /static from this runtime directory, to anyone. Lets an "
+            "operator publish files written after deploy (e.g. a generated "
+            "report) without writing into the source tree. Unset serves "
+            "nothing at /static."
         ),
     )
     parser.add_argument(
@@ -255,11 +271,14 @@ def _parse_args(
         default=None,
         metavar="DIR",
         help=(
-            "Serve a separately built web app from DIR at /app/, only to "
-            "signed-in users; /app/ serves DIR/index.html. DIR is resolved on "
-            "every request, so it may be missing at startup (404 until a build "
-            "lands) or a symlink swapped to a new build without a restart. "
-            "Unset serves nothing at /app/."
+            "Serve a separately built web app from DIR at /app/ to the callers "
+            "the API answers: signed-in users, or everyone under --no-auth; "
+            "/app/ serves DIR/index.html. DIR is resolved on every request, so "
+            "it may be missing at startup (404 until a build lands) or a "
+            "symlink swapped to a new build without a restart. "
+            "Unset, it is the build packaged with trackinizer, if any. With an "
+            "app, /, /me, /admin, /graph and /console redirect into it; with "
+            "none, nothing is served at them or at /app/."
         ),
     )
     parser.add_argument(
@@ -276,13 +295,15 @@ def _parse_args(
         ),
     )
     parser.add_argument(
-        "--no-auth",
-        action="store_true",
+        "--auth",
+        action=argparse.BooleanOptionalAction,
+        default=not auth_disabled_from_env(),
         help=(
-            "Disable bearer/session auth; every request resolves to a "
-            "synthetic admin identity. For ephemeral / local-only demos "
-            "(example.sh). NEVER enable in production: anyone who can "
-            "reach the port can edit everything."
+            "Require bearer/session auth (default, unless $TRACKINIZER_NO_AUTH=1). "
+            "--no-auth disables it: every request resolves to a synthetic admin "
+            "identity. For ephemeral / local-only demos (example.sh). NEVER "
+            "disable in production: anyone who can reach the port can edit "
+            "everything."
         ),
     )
     parser.add_argument(

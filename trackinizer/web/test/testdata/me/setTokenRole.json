@@ -1,0 +1,19 @@
+{
+  "request": {
+    "body": {
+      "role": "writer"
+    },
+    "method": "PUT",
+    "path": "/api/me/tokens/00000000-0000-4000-9000-000000000001/role"
+  },
+  "response": {
+    "body": {
+      "ok": true,
+      "role": "writer"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

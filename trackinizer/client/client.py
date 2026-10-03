@@ -1485,7 +1485,7 @@ class Client:
           experiment_id: Experiment ID to query.
           masks: Field predicates selecting cells.
           sort: Asc/desc ordering by value.
-          limit: Max rows (None = all matching).
+          limit: Max rows, at most ``MAX_LIST_LIMIT`` (None = up to that cap).
 
         Returns:
           result: (key, step, value) points matching the masks.
@@ -1542,10 +1542,10 @@ class Client:
         """Cross-experiment masked read/rank over the given experiments.
 
         Args:
-          experiment_ids: Experiment IDs to rank across.
+          experiment_ids: Experiment IDs to rank across, at most ``MAX_LIST_LIMIT``.
           masks: Field predicates selecting cells.
           sort: Asc/desc ordering by value.
-          limit: Max rows (None = all matching).
+          limit: Max rows, at most ``MAX_LIST_LIMIT`` (None = up to that cap).
 
         Returns:
           result: Ranked rows with experiment ID and metric values.

@@ -1,0 +1,25 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/me/tokens"
+  },
+  "response": {
+    "body": {
+      "tokens": [
+        {
+          "created_at": "2026-01-01T00:00:00.000000+00:00",
+          "id": "00000000-0000-4000-9000-000000000001",
+          "last_used_at": null,
+          "name": "fixtures",
+          "prefix": "<prefix>",
+          "revoked_at": null,
+          "role": "viewer"
+        }
+      ]
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

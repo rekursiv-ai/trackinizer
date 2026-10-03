@@ -1,0 +1,85 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/change_log",
+    "query": [
+      [
+        "kind",
+        "status"
+      ],
+      [
+        "kind",
+        "description"
+      ],
+      [
+        "limit",
+        "50"
+      ],
+      [
+        "brief",
+        "true"
+      ]
+    ]
+  },
+  "response": {
+    "body": [
+      {
+        "actor": "no-auth@localhost",
+        "api_key_id": null,
+        "caused_by": null,
+        "created": "2026-01-01T00:00:00.000000Z",
+        "id": "00000000-0000-4000-9000-000000000001",
+        "kind": "description",
+        "new": {
+          "marginal_cost": {
+            "agent_usd": 0.0,
+            "resource_usd": 0.0
+          }
+        },
+        "old": {
+          "description": "Narrows **Issue#1** and requires",
+          "marginal_cost": {
+            "agent_usd": 0.0,
+            "resource_usd": 0.0
+          }
+        },
+        "reason": "",
+        "subject_id": "00000000-0000-4000-8000-000000000003",
+        "subject_kind": "Issue",
+        "subscribers_snapshot": [
+          "Agent"
+        ]
+      },
+      {
+        "actor": "no-auth@localhost",
+        "api_key_id": null,
+        "caused_by": null,
+        "created": "2026-01-01T00:00:00.000000Z",
+        "id": "00000000-0000-4000-9000-000000000002",
+        "kind": "status",
+        "new": {
+          "marginal_cost": {
+            "agent_usd": 0.0,
+            "resource_usd": 0.0
+          },
+          "status": "complete"
+        },
+        "old": {
+          "marginal_cost": {
+            "agent_usd": 0.0,
+            "resource_usd": 0.0
+          },
+          "status": "active"
+        },
+        "reason": "Done.",
+        "subject_id": "00000000-0000-4000-8000-000000000002",
+        "subject_kind": "Issue",
+        "subscribers_snapshot": []
+      }
+    ],
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

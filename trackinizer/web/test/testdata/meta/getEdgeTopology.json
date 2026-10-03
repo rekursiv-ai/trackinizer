@@ -1,0 +1,164 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/meta/edges"
+  },
+  "response": {
+    "body": {
+      "cites_paper": {
+        "annotations": [
+          "note",
+          "labels"
+        ],
+        "forward": "cites",
+        "from_kinds": [
+          "Paper"
+        ],
+        "inverse": "cited_by",
+        "to_kinds": [
+          "Paper"
+        ]
+      },
+      "favors": {
+        "annotations": [
+          "note",
+          "valence",
+          "labels"
+        ],
+        "forward": "favors",
+        "from_kinds": [
+          "Artifact",
+          "Experiment",
+          "Paper",
+          "Belief",
+          "CodeChange",
+          "WebResult",
+          "WebSearch",
+          "AgentSession"
+        ],
+        "inverse": "favored_by",
+        "to_kinds": [
+          "Belief",
+          "Experiment"
+        ]
+      },
+      "narrows": {
+        "annotations": [
+          "priority",
+          "note",
+          "labels"
+        ],
+        "forward": "narrows",
+        "from_kinds": [
+          "Issue"
+        ],
+        "inverse": "narrowed_by",
+        "to_kinds": [
+          "Issue"
+        ]
+      },
+      "produced_by": {
+        "annotations": [
+          "note",
+          "labels"
+        ],
+        "forward": "produced_by",
+        "from_kinds": [
+          "Issue",
+          "Artifact",
+          "Experiment",
+          "Paper",
+          "Belief",
+          "CodeChange",
+          "WebResult",
+          "WebSearch",
+          "AgentSession"
+        ],
+        "inverse": "produces",
+        "to_kinds": [
+          "Issue",
+          "Artifact",
+          "Experiment",
+          "Paper",
+          "Belief",
+          "CodeChange",
+          "WebResult",
+          "WebSearch",
+          "AgentSession"
+        ]
+      },
+      "proves": {
+        "annotations": [
+          "note",
+          "valence",
+          "labels"
+        ],
+        "forward": "proves",
+        "from_kinds": [
+          "Artifact",
+          "Experiment",
+          "Paper",
+          "Belief",
+          "CodeChange",
+          "WebResult",
+          "WebSearch",
+          "AgentSession"
+        ],
+        "inverse": "proved_by",
+        "to_kinds": [
+          "Belief",
+          "Experiment"
+        ]
+      },
+      "requires": {
+        "annotations": [
+          "priority",
+          "note",
+          "labels"
+        ],
+        "forward": "requires",
+        "from_kinds": [
+          "Issue"
+        ],
+        "inverse": "required_by",
+        "to_kinds": [
+          "Issue"
+        ]
+      },
+      "supersedes": {
+        "annotations": [
+          "note",
+          "labels"
+        ],
+        "forward": "supersedes",
+        "from_kinds": [
+          "Issue",
+          "Artifact",
+          "Experiment",
+          "Paper",
+          "Belief",
+          "CodeChange",
+          "WebResult",
+          "WebSearch",
+          "AgentSession"
+        ],
+        "inverse": "superseded_by",
+        "to_kinds": [
+          "Issue",
+          "Artifact",
+          "Experiment",
+          "Paper",
+          "Belief",
+          "CodeChange",
+          "WebResult",
+          "WebSearch",
+          "AgentSession"
+        ]
+      }
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

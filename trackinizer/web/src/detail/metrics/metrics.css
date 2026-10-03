@@ -1,0 +1,12 @@
+/* An Experiment's metrics, from the design mock (".metrics", ".spark"). */
+.metrics { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
+.metric {
+  margin: 0; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px 8px;
+  background: var(--surface); display: flex; flex-direction: column; gap: 4px; min-width: 0;
+}
+.metric .k { font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.metric .v { font-size: 20px; font-weight: 500; letter-spacing: -0.4px; font-variant-numeric: tabular-nums; }
+.metric .spark { display: block; overflow: visible; width: 100%; height: auto; }
+.metric .r { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.metrics-note { font-size: 12.5px; color: var(--amber); line-height: 1.5; }
+.metrics-note code { font: 12px var(--mono); }

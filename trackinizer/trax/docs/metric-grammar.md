@@ -36,8 +36,7 @@ Shorthand: `at <bareword>` with no op is `at key is <bareword>` -- a bare token
 after `at` that is not one of the reserved field words `key`/`step`/`value` is a
 key with equality implied. So `at loss` is `at key is loss`; `at step is 4` and
 `at value gt 0.9` stay explicit (a value follows the field). This keeps the
-everyday write terse (`at step is 4 at loss to 0.5 at acc to 0.9`) without a
-second syntax.
+everyday write terse (`at step is 4 at loss to 0.5`) without a second syntax.
 
 ## Write
 
@@ -52,20 +51,18 @@ write (a metric point has no default step).
 # one cell
 trax experiment 42 metric at key is loss at step is 3 to 0.5
 
-# many keys at one step (repeat the key clause; step stays constrained)
-trax experiment 42 metric at step is 3 at key is loss to 0.5 at key is acc to 0.9
-
-# many steps for one key (repeat the step clause; key stays constrained)
-trax experiment 42 metric at key is loss at step is 3 to 0.5 at step is 5 to 0.6
-
 # bulk write: set every loss cell with step > 3 to 0.5 (the mask matches many;
 # requires --makeitso, below)
 trax experiment 42 metric at key is loss at step gt 3 to 0.5
 ```
 
-A cell write is an upsert on `(experiment_id, key, step)`; a duplicate cell in
-one command (or a re-run) dedups, the count reported via `skipped`, mirroring
-the existing log idempotency.
+A command takes one `to`: cells with different values are separate commands. A
+second `to` is an error, not a second write -- the masks AND into one selection,
+so `at key is loss to 0.5 at key is acc to 0.9` would select no cell at all.
+
+A single-cell write is an upsert on `(experiment_id, key, step)`, so a re-run
+overwrites the same cell; a bulk write updates only cells that exist. Either
+reports `written`, the number of cells it set.
 
 `value` must be finite (the DB CHECK forbids NaN/Inf; the CLI rejects a
 non-finite value before sending).
@@ -121,7 +118,7 @@ home.
 by a `metric` tail creates the Experiment and logs in one command:
 
 ```
-trax experiment title to "trm exp031" metric at step is 3 at loss to 0.5 at acc to 0.9
+trax experiment title to "trm exp031" metric at step is 3 at loss to 0.5
 ```
 
 ## Grammar summary
@@ -137,9 +134,11 @@ write         ::= "to" value                  -- assign to the masked selection
 read_opts     ::= ("sort" ("asc" | "desc"))? ("limit" INT)?
 ```
 
-A `write` (`to`) is optional; its absence is a read. `sort`/`limit` apply only
-to a read (a write has no ordering). `at step max` / `at step min` are step-axis
-reductions (highest/lowest step per key), used for "final"/"first".
+A `write` (`to`) is optional; its absence is a read. `to`, `sort`, and `limit`
+each appear at most once. `sort`/`limit` apply only to a read (a write has no
+ordering); `limit` is at most 1000, the server's cap, which is also what an
+omitted `limit` reads. `at step max` / `at step min` are step-axis reductions
+(highest/lowest step per key), used for "final"/"first"; a query takes one.
 
 Bulk `to` (a mask that resolves to more than one cell) requires `--makeitso`,
 mirroring the inquiry bulk-edit guard, so a fat-fingered `at step gt 0 to 0`
@@ -149,6 +148,7 @@ cannot silently overwrite a run.
 
 - `at <bareword>` (not `key`/`step`/`value`) means `at key is <bareword>`.
 - `step` must be masked on a write (no default step).
+- One `to` per command; a repeated `to`, `sort`, or `limit` is an error.
 - `value` on a write must be finite.
 - A bulk `to` (multi-cell mask) requires `--makeitso`.
 - No `to` = read.

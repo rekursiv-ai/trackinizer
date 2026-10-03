@@ -242,6 +242,26 @@ class TestCoverageStoreReads:
         # The seq bounds bind $2..$4; LIMIT/OFFSET trail as the last two.
         assert params[:4] == ["Issue", 222, 260, 279]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("lowering", [True, False])
+    async def test_list_kind_without_edges_reads_no_edges(self, lowering: bool) -> None:
+        """``edges=False`` reads the rows alone, on the SQL window and the Python one.
+
+        A list that sends no relation pays two edge reads per page for nothing.
+        ``lowering=False`` takes the post-filter path, which windows in Python.
+        """
+        conn = make_conn()
+        conn.fetch.return_value = [self._row(account="josh")]
+        store, _engine = make_store(conn)
+        (row,) = await store.list_kind(
+            "Issue",
+            filters=(Filter(field="account", op="is", value="josh"),),
+            lowering=lowering,
+            edges=False,
+        )
+        assert conn.fetch.await_count == 1
+        assert row.produced_by == ()
+
 
 class TestListKindFilterLowering:
     """Filters belong in the WHERE clause wherever SQL can express them.
@@ -373,6 +393,17 @@ class TestListKindFilterLowering:
         """
         with pytest.raises(ValidationError, match="unknown filter field"):
             await self.sql_for(Filter(field="nonesuch", op="is", value="x"))
+
+    @pytest.mark.asyncio
+    async def test_lowers_a_parent_filter_to_an_edge_subquery(self) -> None:
+        """``narrows`` reads ``edges``, so a list of roots keeps its SQL ``LIMIT``."""
+        sql = await self.sql_for(Filter(field="narrows", op="isnull", value=""))
+
+        assert (
+            "NOT EXISTS (SELECT 1 FROM edges e WHERE e.from_id = inquiries.id"
+            " AND e.edge_kind = 'narrows')"
+        ) in sql
+        assert "LIMIT" in sql
 
     @pytest.mark.asyncio
     async def test_a_mixed_filter_set_keeps_the_python_path(self) -> None:

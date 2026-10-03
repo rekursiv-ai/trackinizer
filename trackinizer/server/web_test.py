@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from html.parser import HTMLParser
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast, get_args
+from typing import TYPE_CHECKING, Final, cast, override
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
@@ -43,16 +44,18 @@ from trackinizer.lib.custom_json import (
 from trackinizer.lib.postgres import Conn
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server import web
+from trackinizer.server.api import auth_routes
 from trackinizer.server.api.query import get_inquiry_route
 from trackinizer.server.auth import AuthIdentity, current_user
+from trackinizer.server.config import Config
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.route_iter import (
     iter_routes,
     registered_paths,
 )
 from trackinizer.server.store.core import Store
+from trackinizer.server.store.session_feed import WHOLE_FEED, FeedScope
 from trackinizer.types.columns import column_specs, storage_name
-from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import INQUIRY_CLASSES, KIND_TO_CLASS, Inquiry
 from trackinizer.wire.bodies import (
     SubmitAgentSession,
@@ -65,7 +68,12 @@ from trackinizer.wire.bodies import (
     SubmitWebResult,
     SubmitWebSearch,
 )
-from trackinizer.wire.wire_sessions import FeedEvent
+from trackinizer.wire.wire_sessions import (
+    FeedBucket,
+    FeedEvent,
+    FeedFacetsResponse,
+    FeedHistogramResponse,
+)
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -457,17 +465,6 @@ class TestSerialization:
         assert web._isoformat("x") == "x"
 
 
-class TestTimestampAssets:
-    def test_browser_timestamp_formatters_use_local_time(self) -> None:
-        root = _CWD / "assets"
-        for name in ("index.html", "admin.html", "me.html"):
-            text = (root / name).read_text()
-            assert "new Date(iso)" in text
-            assert "getFullYear()" in text
-            assert ".toISOString()" not in text
-            assert 'replace("T", " ").substring(0, 19)' not in text
-
-
 class TestEdgeHelpers:
     @pytest.mark.asyncio
     async def test_edges_and_backlinks_group_refs(self) -> None:
@@ -525,18 +522,6 @@ class TestEdgeHelpers:
         assert edge["valence"] == 0.5
         assert edge["labels"] == ["edge-label"]
         assert cast(list[dict[str, object]], backlinks["requires"])[0]["seq"] == 3
-
-
-class TestGraphLegend:
-    def test_legend_kinds_match_domain_enums(self) -> None:
-        # The graph view colors nodes by inquiry kind and edges by edge kind.
-        # ``graph_legend`` is the single source the SPA reads, pinned here
-        # against the domain enums so a new Inquiry subclass or Edge.Kind
-        # cannot silently leave the legend stale (the SPA would render an
-        # uncolored node/edge with no key entry).
-        legend = web.graph_legend()
-        assert set(legend["node_kinds"]) == set(get_args(Inquiry.InquiryKind))
-        assert set(legend["edge_kinds"]) == set(get_args(Edge.Kind))
 
 
 class TestRoutes:
@@ -745,8 +730,6 @@ class TestRoutes:
         ]
         engine.conn.fetch = AsyncMock(
             side_effect=[
-                [{"id": child_id}, {"id": root_id}],
-                edge_rows,
                 [
                     {
                         "id": root_id,
@@ -769,6 +752,7 @@ class TestRoutes:
                         "belief_confidence": None,
                     },
                 ],
+                edge_rows,
             ],
         )
         graph = await web.web_graph(
@@ -802,9 +786,11 @@ class TestRoutes:
         ]
         # Nodes must be ordered by ``created`` ascending so the replay
         # animation lands them in the order they were authored.
-        node_sql = engine.conn.fetch.call_args_list[2].args[0]
+        node_sql = engine.conn.fetch.call_args_list[0].args[0]
         assert isinstance(node_sql, str)
-        assert "ORDER BY created ASC" in node_sql
+        assert node_sql.endswith("ORDER BY created ASC, id ASC")
+        # Edges are read for exactly the returned nodes.
+        assert engine.conn.fetch.call_args_list[1].args[1] == [root_id, child_id]
 
     @pytest.mark.asyncio
     async def test_web_graph_omits_null_valence(self) -> None:
@@ -817,7 +803,7 @@ class TestRoutes:
         request = _request(store, engine)
         engine.conn.fetch = AsyncMock(
             side_effect=[
-                [{"id": a}],
+                [],
                 [
                     {
                         "from_id": a,
@@ -826,7 +812,6 @@ class TestRoutes:
                         "valence": None,
                     },
                 ],
-                [],
             ],
         )
         graph = await web.web_graph(
@@ -839,82 +824,15 @@ class TestRoutes:
         ]
 
     @pytest.mark.asyncio
-    async def test_web_graph_limit_edge_closes(self) -> None:
-        # The limited path keeps the recent N nodes AND edge-closes them: an
-        # OLDER node referenced by an edge to a recent node is pulled back in,
-        # so no edge dangles and a still-cited old node stays visible.
-        recent_id, old_id = new_uuid(), new_uuid()
-        early = datetime(2026, 5, 18, 8, tzinfo=UTC)
-        late = datetime(2026, 5, 18, 9, tzinfo=UTC)
-        engine = FakeEngine()
-        store = _Store(engine=engine)
-        request = _request(store, engine)
-        engine.conn.fetch = AsyncMock(
-            side_effect=[
-                # 1. recent ids (only the new node fits the limit)
-                [{"id": recent_id}],
-                # 2. edges touching the recent node -> reaches the old node.
-                [
-                    {
-                        "from_id": recent_id,
-                        "to_id": old_id,
-                        "edge_kind": "proves",
-                        "valence": 0.5,
-                    },
-                ],
-                # 3. full rows for the closed set (old + recent), created ASC.
-                [
-                    {
-                        "id": old_id,
-                        "kind": "Paper",
-                        "seq": 1,
-                        "title": "foundational",
-                        "status": "complete",
-                        "created": early,
-                        "belief_judgement": None,
-                        "belief_confidence": None,
-                    },
-                    {
-                        "id": recent_id,
-                        "kind": "Belief",
-                        "seq": 2,
-                        "title": "new claim",
-                        "status": "active",
-                        "created": late,
-                        "belief_judgement": "proven",
-                        "belief_confidence": 0.9,
-                    },
-                ],
-            ],
-        )
-        graph = await web.web_graph(
-            cast(Request, request),
-            identity=_TEST_IDENTITY,
-            limit=1,
-        )
-        nodes = cast(list[dict[str, object]], graph["nodes"])
-        # The older referenced Paper is pulled in alongside the recent Belief.
-        assert {n["id"] for n in nodes} == {str(old_id), str(recent_id)}
-        # The recent-id query carried the limit; the edge query closed the set.
-        recent_sql = engine.conn.fetch.call_args_list[0].args[0]
-        assert isinstance(recent_sql, str)
-        assert "ORDER BY created DESC" in recent_sql
-        assert "LIMIT" in recent_sql
-        edge_sql = engine.conn.fetch.call_args_list[1].args[0]
-        assert isinstance(edge_sql, str)
-        assert "from_id = ANY" in edge_sql
-        assert "to_id = ANY" in edge_sql
-
-    @pytest.mark.asyncio
-    async def test_web_graph_caps_limit_at_5000(self) -> None:
-        # ``limit=0`` served the whole graph to any viewer: 92k nodes and 29 MB
-        # in 8.8 s on production (S11). 5000 is the largest cap ``graph.html``
-        # offers.
+    async def test_web_graph_takes_any_limit_from_1(self) -> None:
+        # ``limit=0`` served the whole graph to any viewer (S11), so a limit
+        # below 1 is refused. Above it there is no top: the graph view lets a
+        # person type any count, and the answer is still at most ``limit`` nodes.
         engine = FakeEngine()
         store = _Store(engine=engine)
         request = _request(store, engine)
         engine.conn.fetch = AsyncMock(return_value=[])
-        for bad in (-1, 0, 5_001):
+        for bad in (-1, 0):
             with pytest.raises(HTTPException) as caught:
                 await web.web_graph(
                     cast(Request, request),
@@ -922,12 +840,14 @@ class TestRoutes:
                     limit=bad,
                 )
             assert caught.value.status_code == 400
-        graph = await web.web_graph(
-            cast(Request, request),
-            identity=_TEST_IDENTITY,
-            limit=5_000,
-        )
-        assert graph == {"nodes": [], "edges": []}
+        for limit in (1, 5_001, 1_000_000):
+            graph = await web.web_graph(
+                cast(Request, request),
+                identity=_TEST_IDENTITY,
+                limit=limit,
+            )
+            assert graph == {"nodes": [], "edges": []}
+            assert engine.conn.fetch.call_args_list[-2].args[1] == limit
 
     @pytest.mark.asyncio
     async def test_subscribe_streams_sse(self) -> None:
@@ -949,23 +869,24 @@ class TestRoutes:
             f': open\n\ndata: {{"id": "{subject_id}"}}\n\n'.encode()
         )
 
-    def test_attach_mounts_routes_static_and_index(self, tmp_path: Path) -> None:
-        assets = tmp_path
-        (assets / "static").mkdir()
-        (assets / "index.html").write_text("hello")
-        app = FastAPI()
-        web.attach(app, assets_dir=assets)
-        client = TestClient(app)
-        assert client.get("/").text == "hello"
-        assert "/api/web/search" in registered_paths(app)
-        assert "/api/web/graph" in registered_paths(app)
-
-    def test_attach_without_files_mounts_router_only(self, tmp_path: Path) -> None:
+    def test_without_the_app_the_old_paths_serve_nothing(self, tmp_path: Path) -> None:
+        # The old pages are gone. Without ``--app-dir`` there is no ``/app/`` to
+        # send their paths to, so each answers 404, even where an old build's
+        # files still lie in the assets directory; the read API stays.
+        for name in ("index", "graph", "console", "me", "admin"):
+            (tmp_path / f"{name}.html").write_text(name)
+        (tmp_path / "static").mkdir()
+        (tmp_path / "static" / "app.js").write_text("// old")
         app = FastAPI()
         web.attach(app, assets_dir=tmp_path)
-        assert "/api/web/search" in registered_paths(app)
+        client = TestClient(app, follow_redirects=False)
+        for path in ("/", "/me", "/admin", "/graph", "/console", "/static/app.js"):
+            assert client.get(path).status_code == 404, path
+        paths = registered_paths(app)
+        for path in ("/api/web/search", "/api/web/graph", "/api/web/feed"):
+            assert path in paths, path
 
-    def test_static_dir_overrides_the_bundled_static_mount(
+    def test_static_dir_serves_files_written_after_deploy(
         self,
         tmp_path: Path,
     ) -> None:
@@ -980,18 +901,6 @@ class TestRoutes:
         response = client.get("/static/report.html")
         assert response.status_code == 200
         assert response.text == "<html>report</html>"
-
-    def test_static_dir_unset_keeps_bundled_assets_static(self, tmp_path: Path) -> None:
-        # Backward compatible: with no override, /static serves assets/static.
-        assets = tmp_path
-        (assets / "static").mkdir()
-        (assets / "static" / "app.js").write_text("// bundled")
-        app = FastAPI()
-        web.attach(app, assets_dir=assets)
-        client = TestClient(app)
-        response = client.get("/static/app.js")
-        assert response.status_code == 200
-        assert response.text == "// bundled"
 
     def test_attach_is_idempotent(self, tmp_path: Path) -> None:
         # ``server.py`` calls ``attach`` on the module-global app; a second
@@ -1115,6 +1024,149 @@ class TestFeedRoute:
                 )
 
 
+class TestFeedReads:
+    """The feed, its facets and its histogram take one set of repeatable filters."""
+
+    @classmethod
+    def _client(cls, store: AsyncMock) -> TestClient:
+        app = FastAPI()
+        app.state.engine = FakeEngine()
+        app.state.store = store
+        web.attach(app)
+        app.dependency_overrides[current_user] = _viewer
+        return TestClient(app)
+
+    def test_each_filter_repeats_and_one_room_or_actor_still_filters(self) -> None:
+        store = AsyncMock()
+        store.read_feed = AsyncMock(return_value=[])
+        client = self._client(store)
+
+        def scope_of(*params: tuple[str, str]) -> object:
+            response = client.get("/api/web/feed", params=params)
+            assert response.status_code == 200, response.text
+            return store.read_feed.call_args.kwargs["scope"]
+
+        assert scope_of(
+            ("actor", "a"),
+            ("actor", "b"),
+            ("room", "lab"),
+            ("cli", "codex"),
+            ("kind", "ToolCall"),
+            ("kind", "UserMessage"),
+        ) == FeedScope(
+            actors=("a", "b"),
+            rooms=("lab",),
+            clis=("codex",),
+            kinds=("ToolCall", "UserMessage"),
+        )
+        assert scope_of(("room", "lab"), ("actor", "eng")) == FeedScope(
+            actors=("eng",),
+            rooms=("lab",),
+        )
+        assert scope_of() == WHOLE_FEED
+
+    def test_the_feed_keeps_only_conversation_when_asked(self) -> None:
+        store = AsyncMock()
+        store.read_feed = AsyncMock(return_value=[])
+        client = self._client(store)
+
+        for params, conversation in (({}, False), ({"conversation": "true"}, True)):
+            response = client.get("/api/web/feed", params=params)
+            assert response.status_code == 200, response.text
+            assert store.read_feed.call_args.kwargs["conversation"] is conversation
+
+    def test_facets_count_a_window_under_the_filters(self) -> None:
+        store = AsyncMock()
+        store.read_feed_facets = AsyncMock(
+            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        )
+        client = self._client(store)
+        window = (("since", "2026-10-01T00:00:00Z"), ("until", "2026-10-02T00:00:00Z"))
+
+        response = client.get(
+            "/api/web/feed/facets",
+            params=(*window, ("cli", "codex")),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"actors": [], "rooms": [], "kinds": []}
+        assert store.read_feed_facets.call_args.kwargs == {
+            "since": datetime(2026, 10, 1, tzinfo=UTC),
+            "until": datetime(2026, 10, 2, tzinfo=UTC),
+            "scope": FeedScope(clis=("codex",)),
+        }
+        backwards = (("since", window[1][1]), ("until", window[0][1]))
+        assert client.get("/api/web/feed/facets", params=backwards).status_code == 400
+
+    def test_a_histogram_has_2_to_1000_buckets_and_120_unless_asked(self) -> None:
+        store = self._histogram_store()
+        client = self._client(store)
+
+        response = client.get("/api/web/feed/histogram", params={"kind": "ToolCall"})
+
+        assert response.status_code == 200, response.text
+        assert DictCodec.coerce(response.json())["counts"] == [
+            {"start": "2026-10-01T00:00:00Z", "count": 3},
+        ]
+        kwargs = store.read_feed_histogram.call_args.kwargs
+        assert {name: kwargs[name] for name in kwargs if name != "earliest"} == {
+            "since": None,
+            "until": None,
+            "buckets": 120,
+            "scope": FeedScope(kinds=("ToolCall",)),
+        }
+        for buckets, status in ((1, 400), (2, 200), (1_000, 200), (1_001, 400)):
+            response = client.get(
+                "/api/web/feed/histogram",
+                params={"buckets": buckets},
+            )
+            assert response.status_code == status, buckets
+        day = timedelta(days=1)
+        backwards = {
+            "since": (datetime.now(UTC) - day).isoformat(),
+            "until": (datetime.now(UTC) - 2 * day).isoformat(),
+        }
+        response = client.get("/api/web/feed/histogram", params=backwards)
+        assert response.status_code == 400
+
+    def test_a_histogram_counts_at_most_the_last_week(self) -> None:
+        """An earlier ``since`` starts a week back; an ``until`` before that is 400."""
+        store = self._histogram_store()
+        client = self._client(store)
+        week = timedelta(days=7)
+        month_ago = (datetime.now(UTC) - 4 * week).isoformat()
+
+        before = datetime.now(UTC)
+        response = client.get("/api/web/feed/histogram", params={"since": month_ago})
+        after = datetime.now(UTC)
+
+        assert response.status_code == 200, response.text
+        earliest = store.read_feed_histogram.call_args.kwargs["earliest"]
+        assert isinstance(earliest, datetime)
+        assert before - week <= earliest <= after - week
+        for days, status in ((8, 400), (6, 200)):
+            until = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+            response = client.get(
+                "/api/web/feed/histogram",
+                params={"since": month_ago, "until": until},
+            )
+            assert response.status_code == status, days
+
+    @classmethod
+    def _histogram_store(cls) -> AsyncMock:
+        """Return a store whose histogram read answers one bucket."""
+        store = AsyncMock()
+        store.read_feed_histogram = AsyncMock(
+            return_value=FeedHistogramResponse(
+                start=datetime(2026, 10, 1, tzinfo=UTC),
+                end=datetime(2026, 10, 2, tzinfo=UTC),
+                bucket_seconds=86_400,
+                counts=[FeedBucket(start=datetime(2026, 10, 1, tzinfo=UTC), count=3)],
+            ),
+        )
+        return store
+
+
 class TestRouteBounds:
     @classmethod
     def _client(cls, app: FastAPI) -> TestClient:
@@ -1198,16 +1250,40 @@ class TestRouteBounds:
         assert isinstance(detail, str)
         assert "empty" in detail
 
+    def test_search_returns_only_the_named_fields(self) -> None:
+        # Each hit is a whole row, description included; the palette shows a
+        # handful of its keys. A name no row carries is a 400, and another
+        # kind's field is absent, as on ``GET /api/inquiries``.
+        engine = FakeEngine()
+        engine.conn.fetch = AsyncMock(return_value=[_inquiry_row()])
+        app = FastAPI()
+        app.state.engine = engine
+        app.state.store = _Store(engine=engine)
+        web.attach(app)
+        c = self._client(app)
+        query = [("q", "title"), ("kind", "Issue")]
+        r = c.get(
+            "/api/web/search",
+            params=[
+                *query,
+                ("fields", "id"),
+                ("fields", "title"),
+                ("fields", "judgement"),
+            ],
+        )
+        assert r.status_code == 200, r.text
+        assert [set(hit) for hit in ListCodec.mappings(r.json())] == [{"id", "title"}]
+        r = c.get("/api/web/search", params=[*query, ("fields", "bogus")])
+        assert r.status_code == 400, r.text
+        assert "'bogus'" in r.text
+        r = c.get(
+            "/api/web/search",
+            params=[*query, *(("fields", "id") for _ in range(1_001))],
+        )
+        assert r.status_code == 422, r.text
 
-# ---- Phase 4 HTML pages --------------------------------------------------
 
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class _SessionStub:
-    """Minimal stand-in for ``Config`` -- exposes the two attrs web.py reads."""
-
-    session_secret: str | None = "test-secret"  # noqa: S105 -- test fixture.
-    session_max_age_seconds: int = 600
+# ---- The sign-in page -----------------------------------------------------
 
 
 def _admin_identity() -> AuthIdentity:
@@ -1228,20 +1304,6 @@ def _viewer_identity() -> AuthIdentity:
     )
 
 
-def _build_pages_app(tmp_path: Path, *, with_session: bool = True) -> FastAPI:
-    """Build a fresh FastAPI with the Phase 4 HTML pages attached."""
-    (tmp_path / "index.html").write_text("INDEX")
-    (tmp_path / "console.html").write_text("CONSOLE-PAGE")
-    (tmp_path / "me.html").write_text("ME-PAGE")
-    (tmp_path / "admin.html").write_text("ADMIN-PAGE")
-    (tmp_path / "login.html").write_text("LOGIN-PAGE")
-    app = FastAPI()
-    if with_session:
-        app.state.config = _SessionStub()
-    web.attach(app, assets_dir=tmp_path)
-    return app
-
-
 def _install_identity(app: FastAPI, identity: AuthIdentity | None) -> None:
     """Override ``optional_identity`` so the page routes see ``identity``."""
 
@@ -1251,128 +1313,41 @@ def _install_identity(app: FastAPI, identity: AuthIdentity | None) -> None:
     app.dependency_overrides[web.optional_identity] = _override
 
 
-class TestPhase4Pages:
-    def test_me_redirects_to_login_when_unauthed(self, tmp_path: Path) -> None:
-        app = _build_pages_app(tmp_path)
-        _install_identity(app, None)
-        client = TestClient(app, follow_redirects=False)
-        r = client.get("/me")
-        assert r.status_code == 302
-        query = parse_qs(urlparse(r.headers["location"]).query)
-        assert query["next"] == ["/me"]
-
-    def test_me_renders_for_authed_user(self, tmp_path: Path) -> None:
-        app = _build_pages_app(tmp_path)
-        _install_identity(app, _viewer_identity())
-        client = TestClient(app)
-        r = client.get("/me")
-        assert r.status_code == 200, r.text
-        # The HTML is served verbatim; the JS in the real page fetches
-        # ``/api/me/profile`` to populate the user info, which is
-        # separately covered in ``admin_routes_test.py``.
-        assert r.text == "ME-PAGE"
-
-    def test_admin_redirects_when_unauthed(self, tmp_path: Path) -> None:
-        app = _build_pages_app(tmp_path)
-        _install_identity(app, None)
-        client = TestClient(app, follow_redirects=False)
-        r = client.get("/admin")
-        assert r.status_code == 302
-        assert "/auth/login_page" in r.headers["location"]
-
-    def test_admin_redirect_preserves_query_in_next(self, tmp_path: Path) -> None:
-        app = _build_pages_app(tmp_path)
-        _install_identity(app, None)
-        client = TestClient(app, follow_redirects=False)
-        r = client.get("/admin?foo=bar&x=y")
-        assert r.status_code == 302
-        query = parse_qs(urlparse(r.headers["location"]).query)
-        assert query["next"] == ["/admin?foo=bar&x=y"]
-
-    def test_admin_forbids_unauthed_without_session_config(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        app = _build_pages_app(tmp_path, with_session=False)
-        _install_identity(app, None)
-        client = TestClient(app)
-        r = client.get("/admin")
-        assert r.status_code == 403
-        body = DictCodec.coerce(r.json())
-        assert body["detail"] == "admin role required"
-
-    def test_admin_403_for_non_admin(self, tmp_path: Path) -> None:
-        app = _build_pages_app(tmp_path)
-        _install_identity(app, _viewer_identity())
-        client = TestClient(app)
-        r = client.get("/admin")
-        assert r.status_code == 403
-        body = DictCodec.coerce(r.json())
-        detail = body["detail"]
-        assert isinstance(detail, str)
-        assert "admin" in detail
-
-    def test_admin_renders_for_admin(self, tmp_path: Path) -> None:
-        app = _build_pages_app(tmp_path)
-        _install_identity(app, _admin_identity())
-        client = TestClient(app)
-        r = client.get("/admin")
-        assert r.status_code == 200, r.text
-        assert r.text == "ADMIN-PAGE"
+class TestLoginPage:
+    """The sign-in page as it ships, served to a signed-out visitor."""
 
     def test_login_page_always_serves(self, tmp_path: Path) -> None:
-        app = _build_pages_app(tmp_path)
+        (tmp_path / "login.html").write_text("LOGIN-PAGE")
+        app = FastAPI()
+        web.attach(app, assets_dir=tmp_path)
         # No identity install; login page is the one route that must
         # never gate on auth -- otherwise users couldn't sign in.
-        client = TestClient(app)
-        r = client.get("/auth/login_page")
+        r = TestClient(app).get("/auth/login_page")
         assert r.status_code == 200
         assert r.text == "LOGIN-PAGE"
 
-    def test_index_redirects_when_session_configured(self, tmp_path: Path) -> None:
-        app = _build_pages_app(tmp_path, with_session=True)
-        _install_identity(app, None)
-        client = TestClient(app, follow_redirects=False)
-        r = client.get("/")
-        assert r.status_code == 302
-        assert "/auth/login_page" in r.headers["location"]
+    def test_google_sign_in_waits_for_the_server_to_offer_it(self) -> None:
+        # Without OAuth the button leads to a 503, or a 404 where OAuth is not
+        # mounted. So it starts hidden, and the page shows it only when
+        # ``/auth/login/ready`` answers 2xx: a script that never runs offers none.
+        (google,) = (
+            attrs
+            for tag, attrs in _login_page_tags()
+            if tag == "a" and (attrs.get("href") or "").startswith("/auth/login")
+        )
+        assert "hidden" in google
 
-    def test_index_serves_when_session_not_configured(self, tmp_path: Path) -> None:
-        # No ``app.state.config`` -- the deployment doesn't run OAuth,
-        # so the page is served as-is. Otherwise the SPA would be
-        # locked behind a login that doesn't exist.
-        app = _build_pages_app(tmp_path, with_session=False)
-        _install_identity(app, None)
-        client = TestClient(app)
-        r = client.get("/")
-        assert r.status_code == 200
-        assert r.text == "INDEX"
-
-    def test_console_redirects_when_session_configured(self, tmp_path: Path) -> None:
-        # The multi-agent console is auth-gated like the main SPA: an unauthed
-        # request under a session-configured deploy is redirected to login.
-        app = _build_pages_app(tmp_path, with_session=True)
-        _install_identity(app, None)
-        client = TestClient(app, follow_redirects=False)
-        r = client.get("/console")
-        assert r.status_code == 302
-        assert "/auth/login_page" in r.headers["location"]
-
-    def test_console_renders_for_authed_user(self, tmp_path: Path) -> None:
-        app = _build_pages_app(tmp_path)
-        _install_identity(app, _viewer_identity())
-        client = TestClient(app)
-        r = client.get("/console")
-        assert r.status_code == 200, r.text
-        assert r.text == "CONSOLE-PAGE"
-
-    def test_console_serves_when_session_not_configured(self, tmp_path: Path) -> None:
-        app = _build_pages_app(tmp_path, with_session=False)
-        _install_identity(app, None)
-        client = TestClient(app)
-        r = client.get("/console")
-        assert r.status_code == 200
-        assert r.text == "CONSOLE-PAGE"
+    def test_loads_nothing_a_signed_out_visitor_cannot(self) -> None:
+        # The app's own files answer 401 to the visitor this page is for, and a
+        # server without ``--app-dir`` has none, so the page carries its own look.
+        urls = [
+            value
+            for _, attrs in _login_page_tags()
+            for name, value in attrs.items()
+            if name in {"href", "src"} and value
+        ]
+        assert urls
+        assert all(url.startswith(("data:", "/auth/")) for url in urls), urls
 
 
 # ---- A separately built web app at /app/ ----------------------------------
@@ -1386,18 +1361,22 @@ def _write_build(root: Path, *, marker: str) -> Path:
     return root
 
 
-def _build_app_dir_app(
-    tmp_path: Path,
-    app_dir: Path,
-    *,
-    with_session: bool = True,
-) -> FastAPI:
-    """Build a fresh FastAPI serving ``app_dir`` at ``/app/`` and no old pages."""
+def _build_pages_and_app(tmp_path: Path) -> FastAPI:
+    """Build a FastAPI with the sign-in page and an app build."""
+    assets = tmp_path / "pages"
+    assets.mkdir()
+    (assets / "login.html").write_text("LOGIN")
+    app = FastAPI()
+    build = _write_build(tmp_path / "b", marker="a")
+    web.attach(app, assets_dir=assets, app_dir=build)
+    return app
+
+
+def _build_app_dir_app(tmp_path: Path, app_dir: Path) -> FastAPI:
+    """Build a fresh FastAPI serving ``app_dir`` at ``/app/``, no sign-in page."""
     assets = tmp_path / "no-pages"
     assets.mkdir()
     app = FastAPI()
-    if with_session:
-        app.state.config = _SessionStub()
     web.attach(app, assets_dir=assets, app_dir=app_dir)
     return app
 
@@ -1407,8 +1386,8 @@ class TestAppDir:
         self,
         tmp_path: Path,
     ) -> None:
-        # The entry page redirects exactly as ``/`` does, so a signed-out
-        # visitor lands back on the app after signing in.
+        # The login page's ``next`` is the request, query included, so a
+        # signed-out visitor lands back on the app after signing in.
         app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
         _install_identity(app, None)
         client = TestClient(app, follow_redirects=False)
@@ -1431,22 +1410,50 @@ class TestAppDir:
             assert r.status_code == 401, path
             assert "// a" not in r.text
 
-    def test_signed_out_page_is_401_without_session_login(
+    @pytest.mark.parametrize(
+        ("config", "answers"),
+        [
+            pytest.param(
+                Config(),
+                (401, 302, "/auth/login_page?next=%2Fapp%2F", 401),
+                id="default",
+            ),
+            pytest.param(
+                Config(auth_disabled=True),
+                (200, 200, None, 200),
+                id="no-auth",
+            ),
+            # Google sign-in adds routes, not a rule: neither the API nor the app
+            # reads its settings, so this stands for a server with it too.
+            pytest.param(
+                Config(session_secret=uuid.uuid4().hex),
+                (401, 302, "/auth/login_page?next=%2Fapp%2F", 401),
+                id="session-login",
+            ),
+        ],
+    )
+    def test_app_lets_in_whoever_the_api_does(
         self,
         tmp_path: Path,
+        config: Config,
+        answers: tuple[int, int, str | None, int],
     ) -> None:
-        # The old pages are served to anyone when session login is not
-        # configured. The app is private, so it is not.
-        app = _build_app_dir_app(
-            tmp_path,
-            _write_build(tmp_path / "b", marker="a"),
-            with_session=False,
-        )
-        _install_identity(app, None)
+        # The app's source is public, so ``/app/`` keeps nothing back on its own
+        # account: an anonymous caller gets it where the API answers them and is
+        # refused where the API refuses them, whatever the mode. A browser opens
+        # the entry page, so its refusal is the sign-in page.
+        app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
+        app.state.config = config
+        app.state.store, app.state.engine = make_store()
+        app.include_router(auth_routes.router)
         client = TestClient(app, follow_redirects=False)
-        r = client.get("/app/")
-        assert r.status_code == 401
-        assert "INDEX-a" not in r.text
+        page = client.get("/app/")
+        assert (
+            client.get("/api/me/profile").status_code,
+            page.status_code,
+            page.headers.get("location"),
+            client.get("/app/assets/app.js").status_code,
+        ) == answers
 
     def test_signed_in_viewer_loads_assets(self, tmp_path: Path) -> None:
         app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
@@ -1545,7 +1552,6 @@ class TestAppDir:
         static.mkdir()
         (static / "report.html").write_text("REPORT")
         app = FastAPI()
-        app.state.config = _SessionStub()
         web.attach(
             app,
             assets_dir=tmp_path,
@@ -1564,26 +1570,115 @@ class TestAppDir:
         # extension there, 404s included) must never store an /app/ response:
         # a signed-in user's copy would be served to anyone, and a cached 401 or
         # 404 would break the app for everyone. ``private`` keeps shared caches
-        # out; ``no-cache`` makes browsers revalidate, so a deploy's new entry
+        # out. A file under ``assets/`` is named by its content's hash, so the
+        # browser keeps it for good and a repeat visit asks for none of them;
+        # anything else is revalidated (``no-cache``), so a deploy's new entry
         # page is seen at once.
-        app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
-        cases: tuple[tuple[AuthIdentity | None, str, int], ...] = (
-            (_viewer_identity(), "/app/", 200),
-            (_viewer_identity(), "/app/assets/app.js", 200),
-            (_viewer_identity(), "/app/assets/missing.js", 404),
-            (None, "/app/", 302),
-            (None, "/app/assets/app.js", 401),
+        build = _write_build(tmp_path / "b", marker="a")
+        (build / "favicon.svg").write_text("<svg/>")
+        app = _build_app_dir_app(tmp_path, build)
+        immutable = "private, max-age=31536000, immutable"
+        revalidated = "private, no-cache"
+        cases: tuple[tuple[AuthIdentity | None, str, int, str], ...] = (
+            (_viewer_identity(), "/app/", 200, revalidated),
+            (_viewer_identity(), "/app/favicon.svg", 200, revalidated),
+            (_viewer_identity(), "/app/assets/app.js", 200, immutable),
+            (_viewer_identity(), "/app/assets/missing.js", 404, revalidated),
+            (None, "/app/", 302, revalidated),
+            (None, "/app/assets/app.js", 401, revalidated),
         )
-        for identity, path, status in cases:
+        for identity, path, status, cache_control in cases:
             _install_identity(app, identity)
             r = TestClient(app, follow_redirects=False).get(path)
             assert r.status_code == status, path
-            assert r.headers.get("cache-control") == "private, no-cache", path
+            assert r.headers.get("cache-control") == cache_control, path
+        # A 304's headers replace the stored ones, so a revalidated asset must
+        # say ``immutable`` too, or one cached before this rule stays
+        # ``no-cache`` for as long as its hash does not change.
+        _install_identity(app, _viewer_identity())
+        client = TestClient(app)
+        etag = client.get("/app/assets/app.js").headers["etag"]
+        r = client.get("/app/assets/app.js", headers={"if-none-match": etag})
+        assert r.status_code == 304
+        assert r.headers.get("cache-control") == immutable
 
     def test_app_is_off_unless_a_directory_is_given(self, tmp_path: Path) -> None:
         app = FastAPI()
         web.attach(app, assets_dir=tmp_path)
         assert not any(path.startswith("/app") for path in registered_paths(app))
+
+
+# ---- The old UI's paths, once the app is served ---------------------------
+
+
+# Each old page's path and where the app shows the same thing. Stored links point at
+# ``/`` with a hash naming the view, which the browser keeps across a redirect whose
+# ``Location`` has none, and the app's router reads v1's hashes; a ``Location`` that
+# has a hash replaces the request's.
+_OLD_PATHS: Final = (
+    ("/", "/app/"),
+    ("/me", "/app/#/settings"),
+    ("/admin", "/app/#/admin"),
+    ("/graph", "/app/#/graph"),
+    ("/console", "/app/#/console"),
+)
+
+
+class TestOldPathsWithTheApp:
+    @pytest.mark.parametrize(
+        "identity",
+        [None, _viewer_identity(), _admin_identity()],
+        ids=["signed-out", "viewer", "admin"],
+    )
+    def test_each_old_path_redirects_into_the_app(
+        self,
+        tmp_path: Path,
+        identity: AuthIdentity | None,
+    ) -> None:
+        # With the app served, each of the old UI's paths answers 302, signed in
+        # or not, and ``/app/`` decides sign-in. 302 rather than 301, which a
+        # browser keeps for good; ``no-cache`` as on ``/app/``.
+        app = _build_pages_and_app(tmp_path)
+        _install_identity(app, identity)
+        client = TestClient(app, follow_redirects=False)
+        for path, location in _OLD_PATHS:
+            r = client.get(path)
+            assert (r.status_code, r.headers.get("location")) == (302, location), path
+            assert r.headers.get("cache-control") == "private, no-cache", path
+
+    def test_legacy_links_reach_the_app_or_the_login_page(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # The server never sees a link's hash: ``#/ref/Issue/7`` stays in the
+        # browser for the app's router. So each link walks to the app signed
+        # in, and to the login page signed out, whose ``next`` is the app.
+        app = _build_pages_and_app(tmp_path)
+        links = (
+            "/#/ref/Issue/7",
+            f"/#/inquiry/{new_uuid()}",
+            "/#/recent",
+            "/#/search?q=x",
+            "/me",
+            "/admin",
+            "/graph",
+            "/console",
+        )
+        walks: tuple[
+            tuple[AuthIdentity | None, tuple[str, dict[str, list[str]]], str],
+            ...,
+        ] = (
+            (_viewer_identity(), ("/app/", {}), "INDEX-a"),
+            (None, ("/auth/login_page", {"next": ["/app/"]}), "LOGIN"),
+        )
+        for identity, landing, page in walks:
+            _install_identity(app, identity)
+            client = TestClient(app)
+            for link in links:
+                r = client.get(link)
+                assert r.status_code == 200, link
+                assert (r.url.path, parse_qs(r.url.query.decode())) == landing, link
+                assert r.text == page, link
 
 
 # ---- Read routes on a real engine ----------------------------------------
@@ -1751,6 +1846,170 @@ async def test_search_keeps_backslashes_and_apostrophes_on_a_real_engine(
         assert [row["title"] for row in rows] == titles, q
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_web_graph_returns_at_most_limit_nodes_on_a_real_engine(
+    pglite_store: Store,
+) -> None:
+    """``limit`` bounds the nodes, neighbours included, and edges join them (R3-02).
+
+    The newest ``limit`` nodes were closed over every neighbour, so a node linking
+    to many returned them all: ``limit=1`` measured 5,002 nodes. Now the newest
+    node comes first, followed by the older nodes it links to, until ``limit``.
+    """
+    account = "alice@example.com"
+    titles = ("cited 0", "cited 1", "cited 2", "unlinked", "newest")
+    ids = [
+        await pglite_store.submit_issue(SubmitIssue(account=account, title=title))
+        for title in titles
+    ]
+    c0, c1, c2, _, newest = ids
+    # Links in both directions: ``c0`` points at ``newest``.
+    for from_id, to_id in ((c0, newest), (newest, c1), (newest, c2)):
+        await pglite_store.add_edge(
+            from_id=from_id,
+            to_id=to_id,
+            edge_kind="requires",
+            actor="alice",
+        )
+    # One ``created`` per node, in ``titles`` order, so no order below is a tie.
+    async with pglite_store.engine.acquire() as conn:
+        for minute, node in enumerate(ids):
+            await conn.execute(
+                "UPDATE inquiries SET created = $1 WHERE id = $2",
+                datetime(2026, 5, 18, 0, minute, tzinfo=UTC),
+                node,
+            )
+    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    # Each first link also stamps an inferred ``produced_by`` edge, so the
+    # expected edges come from the whole graph.
+    whole = _edge_ids(
+        await web.web_graph(request, identity=_TEST_IDENTITY, limit=5_000),
+    )
+    assert (str(c0), str(newest)) in whole
+    for limit, kept in (
+        (1, [newest]),
+        (2, [c2, newest]),
+        # The three nodes ``newest`` links to outrank ``unlinked``, a newer node.
+        (4, [c0, c1, c2, newest]),
+        (5_000, ids),
+    ):
+        graph = await web.web_graph(request, identity=_TEST_IDENTITY, limit=limit)
+        nodes = [DictCodec.coerce(n)["id"] for n in ListCodec.coerce(graph["nodes"])]
+        assert nodes == [str(n) for n in kept], limit
+        assert _edge_ids(graph) == {
+            (a, b) for a, b in whole if a in nodes and b in nodes
+        }, limit
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_web_graph_draws_a_focus_neighbourhood_on_a_real_engine(
+    pglite_store: Store,
+) -> None:
+    """``focus`` keeps its nearest nodes, each with its ``hops``, and their edges.
+
+    ``far -> near -> focus <- near_2 <- far_2``, and ``far -> far_2`` joins the two
+    hop-2 nodes. ``limit=4`` keeps ``far_2``, the newer of them, and so drops both
+    of ``far``'s edges.
+    """
+    account = "alice@example.com"
+    titles = ("far", "near", "focus", "near 2", "far 2")
+    ids = [
+        await pglite_store.submit_issue(SubmitIssue(account=account, title=title))
+        for title in titles
+    ]
+    far, near, focus, near_2, far_2 = ids
+    for from_id, to_id in (
+        (near, focus),
+        (near_2, focus),
+        (far, near),
+        (far_2, near_2),
+        (far, far_2),
+    ):
+        await pglite_store.add_edge(
+            from_id=from_id,
+            to_id=to_id,
+            edge_kind="requires",
+            actor="alice",
+        )
+    async with pglite_store.engine.acquire() as conn:
+        for minute, node in enumerate(ids):
+            await conn.execute(
+                "UPDATE inquiries SET created = $1 WHERE id = $2",
+                datetime(2026, 5, 18, 0, minute, tzinfo=UTC),
+                node,
+            )
+    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    whole = _edge_ids(await web.web_graph(request, identity=_TEST_IDENTITY))
+    assert (str(far), str(far_2)) in whole
+    for limit, hops, kept in (
+        (None, 2, {far: 2, near: 1, focus: 0, near_2: 1, far_2: 2}),
+        (4, 2, {near: 1, focus: 0, near_2: 1, far_2: 2}),
+        (None, 1, {near: 1, focus: 0, near_2: 1}),
+    ):
+        graph = await web.web_graph(
+            request,
+            identity=_TEST_IDENTITY,
+            limit=limit,
+            focus=focus,
+            hops=hops,
+        )
+        nodes = [DictCodec.coerce(n) for n in ListCodec.coerce(graph["nodes"])]
+        # Oldest first, as without a focus.
+        assert [(n["id"], n["hops"]) for n in nodes] == [
+            (str(node), distance) for node, distance in kept.items()
+        ], (limit, hops)
+        kept_ids = {str(node) for node in kept}
+        assert _edge_ids(graph) == {
+            (a, b) for a, b in whole if a in kept_ids and b in kept_ids
+        }, (limit, hops)
+    for target, hops, status in (
+        (uuid.uuid4(), 2, 404),
+        (focus, 0, 400),
+        (focus, 4, 400),
+    ):
+        with pytest.raises(HTTPException) as caught:
+            await web.web_graph(
+                request,
+                identity=_TEST_IDENTITY,
+                focus=target,
+                hops=hops,
+            )
+        assert caught.value.status_code == status, (target, hops)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_web_graph_draws_60_nodes_round_a_focus_and_1000_without(
+    pglite_store: Store,
+) -> None:
+    hub = await pglite_store.submit_issue(
+        SubmitIssue(account="alice@example.com", title="hub"),
+    )
+    async with pglite_store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, account, title)"
+            " SELECT gen_random_uuid(), 'Issue', 1000 + n, 'alice@example.com', 'leaf'"
+            " FROM generate_series(1, 70) AS n",
+        )
+        await conn.execute(
+            "INSERT INTO edges (from_id, from_kind, to_id, to_kind, edge_kind)"
+            " SELECT id, 'Issue', $1, 'Issue', 'narrows' FROM inquiries"
+            " WHERE title = 'leaf'",
+            hub,
+        )
+    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    around = await web.web_graph(request, identity=_TEST_IDENTITY, focus=hub)
+    assert len(ListCodec.coerce(around["nodes"])) == 60
+    whole = ListCodec.mappings(
+        (await web.web_graph(request, identity=_TEST_IDENTITY))["nodes"],
+    )
+    assert len(whole) == 71
+    # Without a focus there is no distance to give.
+    assert not any("hops" in node for node in whole)
+
+
 class TestSubscribeProbe:
     """The stream probe sends frames on the caller's schedule, then ends cleanly."""
 
@@ -1831,6 +2090,37 @@ class TestSubscribeProbe:
 
 async def _viewer() -> AuthIdentity:
     return _TEST_IDENTITY
+
+
+def _edge_ids(graph: web.WebView) -> set[tuple[object, object]]:
+    """Return the ``(from_id, to_id)`` of every edge in a ``/graph`` response."""
+    return {
+        (edge["from_id"], edge["to_id"])
+        for edge in (DictCodec.coerce(e) for e in ListCodec.coerce(graph["edges"]))
+    }
+
+
+def _login_page_tags() -> list[tuple[str, dict[str, str | None]]]:
+    """Fetch the shipped login page; return its start tags and their attributes."""
+    app = FastAPI()
+    web.attach(app)
+    response = TestClient(app).get("/auth/login_page")
+    assert response.status_code == 200
+    parser = _StartTags()
+    parser.feed(response.text)
+    return parser.tags
+
+
+class _StartTags(HTMLParser):
+    """Collect every start tag with its attributes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tags: list[tuple[str, dict[str, str | None]]] = []
+
+    @override
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.tags.append((tag, dict(attrs)))
 
 
 if __name__ == "__main__":

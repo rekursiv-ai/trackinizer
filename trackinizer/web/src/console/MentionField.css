@@ -1,0 +1,3 @@
+/* The console's @ suggestions (MentionField.tsx): a menu (lists.css) over the message box, at its left edge. */
+.mention-field { position: relative; }
+.mention-list { position: absolute; left: 0; bottom: calc(100% + 4px); width: min(320px, 100%); margin: 0; }

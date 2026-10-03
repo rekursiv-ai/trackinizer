@@ -1,0 +1,24 @@
+{
+  "request": {
+    "body": {
+      "expected": "active",
+      "mode": "cas",
+      "value": "abandoned"
+    },
+    "headers": {
+      "Idempotency-Key": "00000000-0000-4000-9000-000000000001"
+    },
+    "method": "PUT",
+    "path": "/api/inquiries/00000000-0000-4000-8000-000000000002/status"
+  },
+  "response": {
+    "body": {
+      "code": "conflict",
+      "detail": "status transition rejected: expected 'active', found 'complete'"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 409
+  }
+}

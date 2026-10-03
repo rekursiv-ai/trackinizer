@@ -1,0 +1,61 @@
+/* Your settings and Admin, from the design mock ("settings: yours and
+   admin", ".st"). The names list, the suggestions and the notes are ours. */
+.st { max-width: 880px; padding: 8px 24px 80px; display: flex; flex-direction: column; gap: 18px; }
+.st-sec { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--surface); overflow-x: auto; }
+.st-h { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
+.st-h > div { flex: 1; min-width: 0; }
+.st-h h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); }
+.st-kv { display: flex; gap: 12px; padding: 7px 0; font-size: 13px; border-top: 1px solid var(--line); }
+.st-kv > span:first-child { width: 140px; flex-shrink: 0; color: var(--muted); }
+.st-t { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.st-t th { text-align: left; font-weight: 500; color: var(--muted); padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.st-t td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.st-t tr:last-child td { border-bottom: 0; }
+.st-t tr.dim td { color: var(--muted); }
+.st-t .mono { font-family: var(--mono); font-size: 12px; }
+.st-t .acts { text-align: right; white-space: nowrap; }
+.st-t .acts .icon-btn { display: inline-flex; vertical-align: middle; }
+.st-role { height: 26px; font-size: 12px; padding: 0 6px; width: auto; }
+.st-form, .st-row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+.st-form .field { height: 30px; flex: 1; min-width: 180px; }
+.st-form .st-role { height: 30px; flex: 0 0 auto; min-width: 0; }
+.st-actions { margin: 10px 0 0; }
+.st-secret { border: 1px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; font-size: 12.5px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.st-secret code { font-family: var(--mono); color: var(--text); word-break: break-all; }
+
+/* A user's avatar and name. */
+.st-who { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+
+/* A role picker with its write's state under it. */
+.st-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.st-note { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; line-height: 1.5; }
+.st-note .btn { margin-left: 6px; }
+.st-sub { font-size: 12.5px; font-weight: 500; color: var(--ink-muted); margin: 14px 0 6px; }
+
+/* Your names: the email, then each alias with its remove button. */
+.st-chips { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.st-chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 4px 0 10px;
+  border: 1px solid var(--line-strong); border-radius: 13px; background: var(--surface-raised); font-size: 12.5px;
+}
+.st-chip:first-child { padding-right: 10px; }
+.st-chip-x { display: inline-flex; padding: 3px; border-radius: 50%; color: var(--muted); }
+.st-chip-x:hover { background: var(--surface-hover); color: var(--text); }
+
+/* Owner names to tick: one column, as the console's agents, with each count
+   at the right on one line. A grid of hundreds of names read as clutter. */
+.st-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; max-width: 440px; }
+.st-checks label { display: flex; align-items: center; gap: 8px; margin: 0 -6px; padding: 3px 6px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.st-checks label:hover { background: var(--surface-hover); }
+.st-checks label > span:nth-of-type(1) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-checks label > span:nth-of-type(2) { white-space: nowrap; }
+.st-checks input { margin: 0; accent-color: var(--accent); }
+.st-more { margin-top: 6px; }
+
+@media (max-width: 760px) {
+  .st { padding: 8px 16px 80px; }
+  .st-kv > span:first-child { width: 110px; }
+}
+.st-theme { min-width: 130px; margin-left: auto; padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface-raised); }
+.st-workspace-choice { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.st-workspace-choice input { accent-color: var(--accent); }

@@ -1,0 +1,16 @@
+/* The peek panel (Peek.tsx): an inquiry's detail over the right of a list or the graph. */
+.peek {
+  position: absolute; top: 0; right: 0; bottom: 0; width: min(540px, 100%); z-index: 15;
+  background: var(--bg); border-left: 1px solid var(--line-strong);
+  box-shadow: -24px 0 60px #0008; display: flex; flex-direction: column;
+}
+.peek-bar { display: flex; align-items: center; gap: 6px; height: 40px; flex-shrink: 0; padding: 0 10px 0 16px; border-bottom: 1px solid var(--line); color: var(--muted); }
+.peek-bar .icon-btn { display: grid; place-items: center; }
+/* Collapsed, a strip (panel.css) at the same right edge; a list beside it
+   keeps clear of it (the graph moves its key and zoom buttons, graph.css). */
+.peek-strip { position: absolute; top: 0; right: 0; bottom: 0; z-index: 15; }
+.view:has(> .peek-strip) { padding-right: 40px; }
+/* Peek's detail shows its rail whatever the detail page chose, with no button
+   for it: Peek's own collapse button is in the corner above, alike. */
+.peek .detail-top .panel-toggle { display: none; }
+.peek .d-rail[hidden] { display: flex; }

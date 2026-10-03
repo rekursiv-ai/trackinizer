@@ -1,0 +1,40 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/meta/fields"
+  },
+  "response": {
+    "body": {
+      "abstract": "paper",
+      "authors": "paper",
+      "cli": "agentsession",
+      "cli_session_id": "agentsession",
+      "codechanges": "experiment",
+      "confidence": "belief",
+      "config": "experiment",
+      "google_scholar_cites_id": "paper",
+      "google_scholar_cluster_id": "paper",
+      "issue_kind": "issue",
+      "judgement": "belief",
+      "opened_by_api_key_id": "agentsession",
+      "outcome": "experiment",
+      "priority": "issue",
+      "provider": "websearch",
+      "publication_type": "paper",
+      "publish_date": "paper",
+      "query": "websearch",
+      "rooms": "agentsession",
+      "sha": "codechange",
+      "source": "paper",
+      "started": "agentsession",
+      "subvenue": "paper",
+      "url": "webresult",
+      "validation": "issue",
+      "venue": "paper"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Run npm on the Node that `uv sync` installs (nodejs-wheel-binaries), with that
+# Node first on PATH: `./npm ci`, `./npm run build`.
+#
+# The wheel adds no `node` to .venv/bin. npm starts package scripts, and the
+# `#!/usr/bin/env node` bins they call (vite, vitest, playwright), through PATH,
+# so calling the wheel's npm alone still runs them on whichever `node` PATH finds
+# first: Homebrew's Node 25 on the dev Mac, or nothing on a host without Node.
+#
+# The wheel's own bin/npm and bin/npx fail ("Cannot find module
+# '../lib/cli.js'"), so its bin/ cannot go on PATH: a child that runs `npm`, such
+# as the PGlite engine provisioning its node_modules when an end-to-end test
+# starts the server, would get the broken one. PATH gets a shim instead: `node`
+# and launchers that start npm-cli.js and npx-cli.js the way the wheel's Python
+# `npm()` does.
+set -euo pipefail
+
+web="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# uv walks up from web/ to the project around it. A root counted in levels is
+# right in only one layout: the monorepo nests web/ a level deeper than the
+# published package does.
+node_bin="$(uv --quiet run --frozen --project "$web" python -m nodejs_wheel \
+  -p 'require("node:path").dirname(process.execPath)')"
+npm_lib="$node_bin/../lib/node_modules/npm/bin"
+
+# One shim per wheel, named for its path, and never replaced or removed once
+# made: a run already going (an end-to-end suite, a watch build) has it on its
+# PATH, and another start, for a new wheel or at the same moment, once removed
+# it from under that run. A shim is built whole in a staging directory and
+# published by one `ln -s`, which fails if another start published it first;
+# that start's shim is as good, so the loser drops its own.
+shims="$web/.node-bin"
+shim="$shims/$(printf '%s' "$node_bin" | cksum | cut -d ' ' -f 1)"
+if [[ ! -e "$shim" ]]; then
+  mkdir -p "$shims"
+  staged="$(mktemp -d "$shims/staging.XXXXXX")"
+  # mktemp -d makes 0700 whatever the umask, so in a checkout shared by a
+  # group only the shim's creator could run npm -- a colleague's redeploy on
+  # the deploy host failed with "npm: Permission denied". Give it the mode mkdir
+  # would.
+  chmod "$(printf '%o' $((0777 & ~$(umask))))" "$staged"
+  ln -s "$node_bin/node" "$staged/node"
+  for tool in npm npx; do
+    printf '#!/bin/sh\nexec "%s" "%s" "$@"\n' "$node_bin/node" "$npm_lib/$tool-cli.js" \
+      > "$staged/$tool"
+    chmod +x "$staged/$tool"
+  done
+  ln -sn "$(basename "$staged")" "$shim" 2>/dev/null || rm -rf "$staged"
+fi
+
+PATH="$shim:$PATH" exec "$shim/npm" "$@"

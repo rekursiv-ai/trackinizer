@@ -172,6 +172,23 @@ class TestSseEvents:
         await stream.aclose()
 
     @pytest.mark.asyncio
+    async def test_a_change_right_after_open_reaches_the_stream(self) -> None:
+        # A client starts its reads once the stream says ``open`` and counts on
+        # the stream for every change after. The stream subscribed only after it
+        # said ``open``, so a change in between reached neither: the client had
+        # to read everything again on every open.
+        engine = _QueueEngine()
+        stream = iter_sse_events(cast(DatabaseEngine, engine), keepalive_sec=0.01)
+        async with asyncio.timeout(1):
+            assert await anext(stream) == b": open\n\n"
+            engine.publish('{"id": "abc-123"}')
+            frame = await anext(stream)
+            while frame == b": keepalive\n\n":
+                frame = await anext(stream)
+        assert frame == b'data: {"id": "abc-123"}\n\n'
+        await stream.aclose()
+
+    @pytest.mark.asyncio
     async def test_closing_the_stream_ends_the_subscription(self) -> None:
         # A client that disconnects must not leave its queue on the bus.
         engine = _QueueEngine()
@@ -197,6 +214,11 @@ class _QueueEngine(FakeEngine):
     def listen(self, channel: str) -> AsyncGenerator[str]:
         self.channels.append(channel)
         return self._listen()
+
+    def publish(self, payload: str) -> None:
+        """Deliver ``payload`` as the engines' bus does: to a subscribed listener only."""
+        if self.listening:
+            self.queue.put_nowait(payload)
 
     async def _listen(self) -> AsyncGenerator[str]:
         self.listening += 1

@@ -1,0 +1,72 @@
+/* Multi-select, the bulk bar and the purge dialog, from the design mock
+   (".row-check", ".row.is-selected", ".bulk"). The report under the bar is ours:
+   the mock applies every edit and never fails. */
+
+/* A selectable row: its check sits over the row link's left padding. */
+.row-line { position: relative; }
+.row-line > .row { padding-left: 38px; }
+.row-line:hover > .row { background: var(--surface-raised); }
+.row-line > .row.is-focused { background: var(--surface-hover); }
+.row-line.is-selected > .row { background: var(--accent-soft); }
+.row-line.is-selected > .row.is-focused { background: #3987e538; }
+/* The button is 24px, WCAG 2.2's minimum target (Lighthouse's target-size
+   audit); its ::before draws the mock's 18px box at the same centre. */
+.row-check {
+  position: absolute; left: 7px; top: 8px; z-index: 1;
+  width: 24px; height: 24px;
+  display: grid; place-items: center; color: #fff; opacity: 0;
+}
+.row-check::before {
+  content: ""; position: absolute; inset: 3px; z-index: -1;
+  border-radius: 4px; border: 1px solid var(--line-strong);
+}
+/* Faded out rather than hidden, so Tab still reaches it; it shows once reached. */
+.row-line:hover .row-check, .row-line:has(.is-focused) .row-check, .row-check:focus-visible,
+.view:has(.row-line.is-selected) .row-check { opacity: 1; }
+.row-line.is-selected .row-check::before { background: var(--accent); border-color: var(--accent); }
+@media (hover: none) { .row-check { opacity: 1; } }
+
+/* The bar, and the report above it. */
+.bulk-dock {
+  position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 20;
+  display: flex; flex-direction: column; align-items: center; gap: 8px; width: max-content; max-width: calc(100% - 24px);
+}
+.bulk {
+  display: flex; align-items: center; gap: 4px; padding: 5px; max-width: 100%; overflow-x: auto;
+  background: var(--surface-overlay); border: 1px solid var(--line-strong); border-radius: 10px;
+  box-shadow: 0 12px 40px #000a; white-space: nowrap;
+}
+.bulk .sel-count {
+  display: inline-flex; align-items: center; gap: 6px; padding: 0 6px 0 10px; font-size: 12.5px;
+  border-right: 1px solid var(--line-strong); margin-right: 2px; color: var(--ink-muted);
+}
+.bulk .sel-count .icon-btn { width: 22px; height: 22px; }
+.bulk-progress { padding: 0 8px; }
+.bulk-ic { display: inline-grid; place-items: center; }
+
+.bulk-report {
+  width: min(560px, calc(100vw - 48px)); display: flex; flex-direction: column;
+  background: var(--surface-overlay); border: 1px solid var(--line-strong); border-radius: 10px;
+  box-shadow: 0 12px 40px #000a; font-size: 12.5px;
+}
+.br-head { padding: 10px 12px 8px; color: var(--ink-muted); border-bottom: 1px solid var(--line); }
+.br-head b { color: var(--text); font-weight: 500; }
+.br-rows { list-style: none; margin: 0; padding: 4px 0; max-height: min(260px, 40vh); overflow-y: auto; scrollbar-width: thin; }
+.br-row { display: flex; align-items: baseline; gap: 8px; padding: 4px 12px; }
+.br-row > .ic { align-self: center; color: var(--green); }
+.br-row:is(.is-failed, .is-rejected, .is-conflict) > .ic { color: var(--red); }
+.br-row .mono { color: var(--muted); flex-shrink: 0; }
+.br-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink-muted); }
+.br-msg { flex: 0 1 55%; min-width: 0; color: var(--muted); text-align: right; overflow-wrap: anywhere; }
+.br-row:is(.is-failed, .is-rejected, .is-conflict) .br-msg { color: var(--error-text); }
+.br-foot { display: flex; align-items: center; gap: 8px; padding: 8px 12px 10px; border-top: 1px solid var(--line); }
+
+/* The purge dialog. */
+.modal-b .pg-owner { color: var(--ink-muted); }
+.modal-b .pg-owner b { color: var(--text); font-weight: 500; }
+.pg-reason { min-height: 84px; }
+
+@media (max-width: 760px) {
+  .row-line > .row { padding-left: 34px; }
+  .row-check { left: 5px; }
+}

@@ -1,9 +1,10 @@
-"""Unit tests for the ``Store`` metrics seam -- log_metrics / read_metrics.
+"""Unit tests for the ``Store`` metrics seam -- log, read, mask query, and write.
 
-Fast (no Postgres): the mocked ``conn`` drives the kind-guard, FK-race, and
-``ON CONFLICT DO NOTHING RETURNING`` accounting branches. The full DB-backed
-round-trip (real dedup, real FK) lives in ``integration_test.py``; this pins
-the error-mapping and count logic the integration tier cannot exercise cheaply.
+Fast (no Postgres): the mocked ``conn`` drives the kind-guard, operand-contract,
+and ``ON CONFLICT DO NOTHING RETURNING`` accounting branches. The full DB-backed
+round-trip (real dedup, real FK, real purge race) lives in ``integration_test.py``;
+this pins the error-mapping and count logic the integration tier cannot exercise
+cheaply.
 """
 
 from __future__ import annotations
@@ -12,7 +13,6 @@ from unittest.mock import AsyncMock
 
 import uuid
 
-import asyncpg
 import pytest
 
 from trackinizer.conftest import (
@@ -22,6 +22,7 @@ from trackinizer.conftest import (
     set_field_row,
 )
 from trackinizer.types.errors import ConflictError, NotFoundError
+from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.wire_metrics import MetricPoint
 from trackinizer.wire.wire_metrics_query import (
     MetricAxis,
@@ -80,35 +81,32 @@ class TestLogMetrics:
             )
 
     @pytest.mark.asyncio
-    async def test_log_metrics_fk_violation_raises_not_found(self) -> None:
-        """The row passed the kind check but was purged before the INSERT.
+    async def test_log_metrics_locks_the_experiment_row(self) -> None:
+        """The kind check holds the row, so a purge cannot race the INSERT.
 
-        The ``experiment_id`` FK then fails; the store maps that to
-        NotFoundError (404), never a raw constraint-name 409 -- mirroring
-        ``append_session_records``.
+        The store has no foreign-key handler because this lock makes the FK
+        unfailable; ``integration_test``'s purge test exercises the real race.
         """
         conn = make_conn()
         store, _engine = make_store(conn)
         set_field_row(conn, {"kind": "Experiment"})
-
-        async def fetch(sql: str, *args: object) -> list[object]:
-            del args
-            if "INSERT INTO experiment_metrics" in sql:
-                raise asyncpg.ForeignKeyViolationError("experiment_id fkey")
-            return []
-
-        conn.fetch = AsyncMock(side_effect=fetch)
-        with pytest.raises(NotFoundError, match="not found"):
-            await store.log_metrics(
-                uuid.uuid4(),
-                [MetricPoint(key="loss", step=0, value=1.0)],
-            )
+        conn.fetch = AsyncMock(return_value=[{"step": 0}])
+        await store.log_metrics(
+            uuid.uuid4(),
+            [MetricPoint(key="loss", step=0, value=1.0)],
+        )
+        call_args = conn.fetchrow.call_args
+        assert call_args is not None
+        sql = call_args.args[0]
+        assert isinstance(sql, str)
+        assert sql.endswith("FOR UPDATE")
 
 
 class TestReadMetrics:
     @pytest.mark.asyncio
     async def test_read_metrics_shapes_rows_into_points(self) -> None:
         conn = make_conn()
+        set_field_row(conn, {"kind": "Experiment"})
         store, _engine = make_store(conn)
         conn.fetch = AsyncMock(
             return_value=[
@@ -129,6 +127,7 @@ class TestReadMetrics:
     @pytest.mark.asyncio
     async def test_read_metrics_key_filter_binds_param(self) -> None:
         conn = make_conn()
+        set_field_row(conn, {"kind": "Experiment"})
         store, _engine = make_store(conn)
         conn.fetch = AsyncMock(return_value=[])
         await store.read_metrics(uuid.uuid4(), key="loss")
@@ -139,6 +138,35 @@ class TestReadMetrics:
         assert isinstance(sql, str)
         assert "key = $2" in sql
         assert "loss" in args
+
+    @pytest.mark.asyncio
+    async def test_read_metrics_missing_experiment_raises_not_found(self) -> None:
+        """An unknown id is a 404, not an empty page indistinguishable from no data."""
+        conn = make_conn()
+        set_field_row(conn, None)
+        store, _engine = make_store(conn)
+        with pytest.raises(NotFoundError, match="not found"):
+            await store.read_metrics(uuid.uuid4())
+
+    @pytest.mark.asyncio
+    async def test_read_metrics_rejects_non_experiment(self) -> None:
+        conn = make_conn()
+        set_field_row(conn, {"kind": "Issue"})
+        store, _engine = make_store(conn)
+        with pytest.raises(ConflictError, match="not an Experiment"):
+            await store.read_metrics(uuid.uuid4())
+
+
+# Operands no stored cell could hold: past the ``bigint`` column, a negative step, a
+# non-finite value, and keys the wire contract refuses (blank, NUL).
+_BAD_OPERANDS: tuple[tuple[MetricAxis, str], ...] = (
+    ("step", str(2**63)),
+    ("step", "-1"),
+    ("value", "NaN"),
+    ("value", "inf"),
+    ("key", "\t"),
+    ("key", "lo\x00ss"),
+)
 
 
 def _row(**over: object) -> dict[str, object]:
@@ -304,7 +332,7 @@ class TestQueryMetrics:
     async def test_non_numeric_step_mask_rejected(self) -> None:
         conn = make_conn()
         store, _engine = make_store(conn)
-        with pytest.raises(ConflictError, match="numeric"):
+        with pytest.raises(ConflictError, match="not a valid metric step"):
             await store.query_metrics(
                 [uuid.uuid4()],
                 masks=[MetricMaskClause(axis="step", op="gt", value="abc")],
@@ -314,10 +342,55 @@ class TestQueryMetrics:
     async def test_non_numeric_value_mask_rejected(self) -> None:
         conn = make_conn()
         store, _engine = make_store(conn)
-        with pytest.raises(ConflictError, match="numeric"):
+        with pytest.raises(ConflictError, match="not a valid metric value"):
             await store.query_metrics(
                 [uuid.uuid4()],
                 masks=[MetricMaskClause(axis="value", op="gt", value="hi")],
+            )
+
+    @pytest.mark.parametrize(("axis", "operand"), _BAD_OPERANDS)
+    @pytest.mark.asyncio
+    async def test_operand_outside_the_cell_contract_rejected(
+        self,
+        axis: MetricAxis,
+        operand: str,
+    ) -> None:
+        """An operand is held to the field contract of the cell it compares."""
+        conn = make_conn()
+        store, _engine = make_store(conn)
+        conn.fetch = AsyncMock(return_value=[])
+        with pytest.raises(ConflictError, match=f"not a valid metric {axis}"):
+            await store.query_metrics(
+                [uuid.uuid4()],
+                masks=[MetricMaskClause(axis=axis, op="lt", value=operand)],
+            )
+        conn.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_second_reduction_rejected(self) -> None:
+        """Two reductions conflict; taking the last made clause order matter."""
+        conn = make_conn()
+        store, _engine = make_store(conn)
+        conn.fetch = AsyncMock(return_value=[])
+        with pytest.raises(ConflictError, match="one reduction"):
+            await store.query_metrics(
+                [uuid.uuid4()],
+                masks=[
+                    MetricMaskClause(axis="step", op="max"),
+                    MetricMaskClause(axis="step", op="min"),
+                ],
+            )
+
+    @pytest.mark.asyncio
+    async def test_reduction_operand_rejected(self) -> None:
+        """``step max`` takes no operand; one supplied was silently dropped."""
+        conn = make_conn()
+        store, _engine = make_store(conn)
+        conn.fetch = AsyncMock(return_value=[])
+        with pytest.raises(ConflictError, match="takes no operand"):
+            await store.query_metrics(
+                [uuid.uuid4()],
+                masks=[MetricMaskClause(axis="step", op="max", value="1")],
             )
 
     @pytest.mark.asyncio
@@ -356,11 +429,28 @@ class TestQueryMetrics:
         assert 5 in conn.fetch.call_args[0]
 
     @pytest.mark.asyncio
-    async def test_too_many_experiment_ids_rejected(self) -> None:
+    async def test_sort_breaks_value_ties_by_cell(self) -> None:
+        """Equal values order by cell, so a ``limit`` cut is deterministic."""
         conn = make_conn()
         store, _engine = make_store(conn)
-        with pytest.raises(ConflictError, match="too many experiments"):
-            await store.query_metrics([uuid.uuid4() for _ in range(1001)], masks=[])
+        conn.fetch = AsyncMock(return_value=[])
+        await store.query_metrics([uuid.uuid4()], masks=[], sort="asc", limit=5)
+        call_args = conn.fetch.call_args
+        assert call_args is not None
+        sql = call_args.args[0]
+        assert isinstance(sql, str)
+        assert "ORDER BY value ASC, experiment_id, key, step LIMIT" in sql
+
+    @pytest.mark.asyncio
+    async def test_omitted_limit_is_the_list_cap(self) -> None:
+        """An omitted ``limit`` reads up to ``MAX_LIST_LIMIT``, not a 50-row page."""
+        conn = make_conn()
+        store, _engine = make_store(conn)
+        conn.fetch = AsyncMock(return_value=[])
+        await store.query_metrics([uuid.uuid4()], masks=[])
+        call_args = conn.fetch.call_args
+        assert call_args is not None
+        assert call_args.args[-1] == MAX_LIST_LIMIT
 
 
 class TestWriteMetricsMasked:
@@ -411,6 +501,30 @@ class TestWriteMetricsMasked:
         )
         assert "step > $" in update
         assert "INSERT INTO experiment_metrics" not in "".join(executed_sql(conn))
+
+    @pytest.mark.parametrize(("axis", "operand"), _BAD_OPERANDS)
+    @pytest.mark.asyncio
+    async def test_operand_outside_the_cell_contract_rejected(
+        self,
+        axis: MetricAxis,
+        operand: str,
+    ) -> None:
+        """No write path stores, or compares against, a cell the read would refuse."""
+        conn = make_conn()
+        store, _engine = make_store(conn)
+        set_field_row(conn, {"kind": "Experiment"})
+        if axis == "key":
+            masks = self._pinned(key=operand)
+        elif axis == "step":
+            masks = self._pinned(step=operand)
+        else:
+            masks = [
+                MetricMaskClause(axis="step", op="ge", value="0"),
+                MetricMaskClause(axis="value", op="lt", value=operand),
+            ]
+        with pytest.raises(ConflictError, match=f"not a valid metric {axis}"):
+            await store.write_metrics_masked(uuid.uuid4(), masks=masks, value=0.5)
+        assert not [s for s in executed_sql(conn) if "experiment_metrics" in s]
 
     @pytest.mark.asyncio
     async def test_write_without_step_mask_rejected(self) -> None:

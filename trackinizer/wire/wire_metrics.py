@@ -49,11 +49,16 @@ points at once; a run logging more per flush pages into several requests."""
 # The key is a primary-key component matched verbatim, so a whitespace-only key can
 # never be read back meaningfully and is almost certainly a client bug; reject it at the
 # boundary. ``Field(min_length=1)`` alone admits ``" "``, so this validator backs it --
-# mirroring ``wire_sessions``' ``_reject_blank`` rule for scalar identity fields.
-def _reject_blank_key(value: str) -> str:
-    """Reject an empty-or-whitespace metric key."""
+# mirroring ``wire_sessions``' ``_reject_blank`` rule for scalar identity fields. The
+# ``experiment_metrics.key`` CHECK spells out the same ``str.isspace`` set, so a key
+# stored by any path is one this model reads back. NUL is refused because Postgres
+# ``text`` cannot hold it: the INSERT would fail as an unmapped 500.
+def _validate_key(value: str) -> str:
+    """Reject a blank metric key, or one Postgres ``text`` cannot store."""
     if not value.strip():
         raise ValueError("metric key must be non-empty")
+    if "\x00" in value:
+        raise ValueError("metric key must not contain NUL")
     return value
 
 
@@ -111,9 +116,7 @@ class MetricPoint(BaseModel):
     timestamp: datetime | None = None
     """When the producer logged the point, on its own clock."""
 
-    _reject_blank_key = field_validator("key", mode="after")(
-        staticmethod(_reject_blank_key),
-    )
+    _validate_key = field_validator("key", mode="after")(staticmethod(_validate_key))
 
 
 class LogMetricsRequest(BaseModel):

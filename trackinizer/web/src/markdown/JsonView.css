@@ -1,0 +1,31 @@
+/* The JSON view (JsonView.tsx): a code block's box, one entry a line. */
+.jv {
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+  font: 12.5px/1.6 var(--mono); color: var(--ink-muted);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.jv-kids { padding-left: 2ch; }
+/* The fold button sits in the indent before its key, so keys line up with or without one. */
+.jv-toggle {
+  display: inline-flex; align-items: center; gap: 2px;
+  margin-left: calc(-12px - 2px); border-radius: 3px; color: inherit; font: inherit; white-space: inherit; text-align: left;
+}
+.jv-toggle > .ic { color: var(--muted); }
+.jv-toggle:hover > .ic { color: var(--text); }
+.jv-key { color: var(--code-key); }
+.jv-string { color: var(--code-string); }
+.jv-number { color: var(--code-number); }
+.jv-literal { color: var(--code-literal); }
+.jv-count { color: var(--muted); }
+/* A table of numbers. `.md table` would make it a scroll box with ruled cells. */
+.jv .jv-table {
+  display: table; margin: 0; border-collapse: collapse; font: inherit; white-space: nowrap;
+}
+.jv .jv-table th, .jv .jv-table td {
+  padding: 0; border: 0; border-top: 1px solid var(--row-divider); background: none;
+  font-weight: 400; text-align: left; color: var(--ink-muted);
+}
+.jv .jv-table th[scope="rowgroup"] { color: var(--muted); padding-top: 4px; border-top: 0; }
+.jv .jv-table th[scope="row"] { padding-right: 3ch; }
+.jv .jv-group th[scope="row"] { padding-left: 2ch; }
+.jv .jv-table td { text-align: right; color: var(--text); }

@@ -152,6 +152,10 @@ async def iter_sse_events(
     body byte, and the Cloudflare edge answers 524 after 125 s without one and
     cuts a stream idle for 125 s, so a quiet stream never opened in the browser.
 
+    The opening comment follows the subscription, so every change notified after
+    it reaches the stream: a client may treat a read it starts after ``open`` as
+    covered from then on.
+
     Args:
       engine: Database connection to listen on.
       keepalive_sec: Longest silence before a keep-alive comment; must stay
@@ -161,13 +165,18 @@ async def iter_sse_events(
       item: SSE-formatted frames (bytes with id and newline) and comments.
 
     """
-    yield b": open\n\n"
     payloads = engine.listen(NOTIFY_CHANNEL)
     # One ``anext`` stays pending across keep-alives: ``asyncio.wait_for``
     # would cancel it, which throws into the listen generator and ends the
     # subscription.
     pending = asyncio.ensure_future(anext(payloads))
     try:
+        # The bus registers a listener when its generator first runs, which is this
+        # ``anext``'s first step; one pass of the loop takes it there. Saying
+        # ``open`` before it lost the changes in between, so every client read
+        # everything again on every open.
+        await asyncio.sleep(0)
+        yield b": open\n\n"
         while True:
             done, _ = await asyncio.wait({pending}, timeout=keepalive_sec)
             if not done:

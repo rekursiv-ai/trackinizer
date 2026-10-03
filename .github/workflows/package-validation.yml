@@ -57,6 +57,8 @@ jobs:
           uv run pre-commit run --all-files --hook-stage pre-commit
           uv run pre-commit run --all-files --hook-stage pre-push
           uv run python -c "import trackinizer"
+          (cd trackinizer/web && ./npm ci --no-audit --no-fund && ./npm run typecheck && ./npm test && ./npm run build)
           rm -rf dist
           uv build --out-dir dist
+          uv run python -m zipfile -l dist/trackinizer-*.whl | grep -q trackinizer/web/dist/index.html
           wheels=(dist/trackinizer-*.whl); wheel="${wheels[0]}"; uv run --isolated --index https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match --with "$wheel" python -P -c "import trackinizer; print(trackinizer.__file__)"

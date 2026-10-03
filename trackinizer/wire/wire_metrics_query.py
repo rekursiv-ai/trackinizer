@@ -16,12 +16,13 @@ Kept import-pure (no ``server`` / ``trax`` / fastapi), like every wire module.
 
 from __future__ import annotations
 
-from typing import Final, Literal, cast, get_args
+from typing import Final, Literal, Self, cast, get_args
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.wire_metrics import MetricPoint
 
 
@@ -89,7 +90,9 @@ class MetricMaskClause(BaseModel):
     ``op`` is either a :data:`MetricCompareOp` comparison (``is`` / ``ne`` /
     ``lt`` / ``le`` / ``gt`` / ``ge``), carrying a ``value``, or a step-axis
     reduction (``max`` / ``min``) with ``value`` empty. The server combines
-    every clause with AND into one SQL predicate over ``experiment_metrics``.
+    every clause with AND into one SQL predicate over ``experiment_metrics``,
+    and refuses a comparison ``value`` that no stored cell could hold on its
+    axis (see :class:`~wire.wire_metrics.MetricPoint`).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -104,8 +107,10 @@ class MetricQueryRequest(BaseModel):
 
     ``masks`` AND together. ``write`` set means assign that value to every
     masked cell (a bulk upsert); ``write`` unset makes it a read, ordered by
-    ``sort`` (over the value) and windowed by ``limit``. ``sort`` / ``limit``
-    apply to reads only; the server rejects them alongside a ``write``.
+    ``sort`` (over the value, ties by cell) and windowed by ``limit`` (unset
+    reads up to ``MAX_LIST_LIMIT`` cells). ``sort`` / ``limit`` apply to reads
+    only and are rejected alongside a ``write``; the read and rank routes
+    likewise reject a ``write``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -113,7 +118,16 @@ class MetricQueryRequest(BaseModel):
     masks: list[MetricMaskClause] = Field(default_factory=list)
     write: float | None = Field(default=None, allow_inf_nan=False)
     sort: Literal["asc", "desc"] | None = None
-    limit: int | None = Field(default=None, ge=1)
+    limit: int | None = Field(default=None, ge=1, le=MAX_LIST_LIMIT)
+
+    # Unset fields arrive as explicit ``null`` (clients send ``model_dump``), so the
+    # check is on values, not on which keys are present.
+    @model_validator(mode="after")
+    def _write_takes_no_read_controls(self) -> Self:
+        """Reject ``sort`` / ``limit`` on a write, which would ignore them."""
+        if self.write is not None and (self.sort is not None or self.limit is not None):
+            raise ValueError("sort / limit apply to reads only, not a write")
+        return self
 
 
 class MetricQueryResponse(BaseModel):
@@ -144,7 +158,7 @@ class MetricRankRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    experiment_ids: list[uuid.UUID] = Field(min_length=1)
+    experiment_ids: list[uuid.UUID] = Field(min_length=1, max_length=MAX_LIST_LIMIT)
     query: MetricQueryRequest
 
 

@@ -55,6 +55,7 @@ from trackinizer.server.store.change_id_slot import (
     set_client_change_id,
 )
 from trackinizer.server.store.edge import INFERRED_PROVENANCE_REASON
+from trackinizer.server.store.session_feed import FeedScope
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import (
     ConflictError,
@@ -273,6 +274,37 @@ class TestIntegrationEndToEnd:
         assert la + lb == 150  # Total newly-written == distinct rows.
         assert (la + sa, lb + sb) == (100, 100)  # Each call accounts for its batch.
 
+    async def test_log_metrics_waits_out_a_purge_and_reports_not_found(
+        self,
+        integ_store: Store,
+    ) -> None:
+        """A purge in flight holds ``log_metrics`` at its kind check, then 404s.
+
+        ``log_metrics`` reads the experiment ``FOR UPDATE``, so it queues behind
+        an uncommitted purge and then finds the row gone. Without that lock it
+        would pass the kind check against its snapshot and die on the
+        ``experiment_id`` foreign key instead.
+        """
+        eid = await integ_store.submit_experiment(
+            SubmitExperiment(account="tester@example.com", title="run"),
+        )
+        point = [MetricPoint(key="loss", step=0, value=1.0)]
+        async with integ_store.engine.acquire() as purger:
+            await purger.execute("BEGIN")
+            await purger.execute("SET LOCAL statement_timeout = '10s'")
+            await purger.execute("DELETE FROM inquiries WHERE id = $1", eid)
+            logging = asyncio.create_task(integ_store.log_metrics(eid, point))
+            # Commit only once ``log_metrics`` is queued on the row lock, so the
+            # purge lands between its kind check and its INSERT.
+            await purger.execute(
+                "DO $$ BEGIN "
+                "WHILE NOT EXISTS (SELECT 1 FROM pg_locks WHERE NOT granted) LOOP "
+                "PERFORM pg_sleep(0.01); END LOOP; END $$",
+            )
+            await purger.execute("COMMIT")
+        with pytest.raises(NotFoundError, match="not found"):
+            await logging
+
     async def test_log_metrics_large_batch_at_cap(self, integ_store: Store) -> None:
         """A max-size batch inserts and reads back in order at scale."""
         eid = await integ_store.submit_experiment(
@@ -386,16 +418,18 @@ class TestIntegrationEndToEnd:
         eid = await integ_store.submit_experiment(
             SubmitExperiment(account="tester@example.com", title="run"),
         )
+        # Blank means what the wire's ``str.strip`` means -- every code point
+        # ``str.isspace`` admits -- or a tab key stores here and 500s the read.
+        blanks = [c for c in map(chr, range(0x110000)) if c.isspace()]
+        insert = (
+            "INSERT INTO experiment_metrics "
+            "(experiment_id, key, step, value) VALUES ($1, $2, $3, 0.5)"
+        )
         async with integ_store.engine.acquire() as conn:
-            for bad_key, step in (("", 0), ("   ", 1), ("x" * 513, 2)):
+            for step, bad_key in enumerate(["", "x" * 513, "".join(blanks), *blanks]):
                 with pytest.raises(asyncpg.CheckViolationError):
-                    await conn.execute(
-                        "INSERT INTO experiment_metrics "
-                        "(experiment_id, key, step, value) VALUES ($1, $2, $3, 0.5)",
-                        eid,
-                        bad_key,
-                        step,
-                    )
+                    await conn.execute(insert, eid, bad_key, step)
+            await conn.execute(insert, eid, "　val/acc\t", 0)
 
     async def test_metrics_db_rejects_non_finite_value(
         self,
@@ -1655,11 +1689,11 @@ class TestIntegrationEndToEnd:
         assert [f.created for f in feed] == sorted(f.created for f in feed)
 
         # Room filter narrows to one session.
-        sear_only = await integ_store.read_feed(room="sear")
+        sear_only = await integ_store.read_feed(scope=FeedScope(rooms=("sear",)))
         assert {f.actor for f in sear_only} == {"scientist"}
 
         # Actor filter likewise.
-        eng_only = await integ_store.read_feed(actor="eng")
+        eng_only = await integ_store.read_feed(scope=FeedScope(actors=("eng",)))
         assert {f.actor for f in eng_only} == {"eng"}
 
         # The composite keyset cursor resumes strictly past the given event.

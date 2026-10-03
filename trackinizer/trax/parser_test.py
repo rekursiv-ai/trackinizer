@@ -48,6 +48,7 @@ from trackinizer.trax.parser import (
 )
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import SeqRef, UuidRef
+from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
 
 
@@ -1753,6 +1754,43 @@ class TestParseMetricAction:
     def test_limit_non_int_errors(self) -> None:
         with pytest.raises(ClientError, match="limit"):
             parse_metric_action(["at", "loss", "limit", "x"])
+
+    @pytest.mark.parametrize(
+        "tokens",
+        [
+            [
+                "at",
+                "step",
+                "is",
+                "3",
+                "at",
+                "loss",
+                "to",
+                "0.5",
+                "at",
+                "acc",
+                "to",
+                "0.9",
+            ],
+            ["at", "loss", "sort", "desc", "sort", "asc"],
+            ["at", "loss", "limit", "5", "limit", "1"],
+        ],
+    )
+    def test_repeated_operation_word_errors(self, tokens: list[str]) -> None:
+        """A second ``to`` / ``sort`` / ``limit`` would silently replace the first.
+
+        The two-``to`` form wrote ``0.9`` to the mask ``key is loss AND key is
+        acc``, which matches no cell, and reported ``written: 0``.
+        """
+        with pytest.raises(ClientError, match="only once"):
+            parse_metric_action(tokens)
+
+    def test_limit_over_server_cap_errors(self) -> None:
+        """The server refuses a limit past its cap; say so before sending."""
+        cap = parse_metric_action(["at", "loss", "limit", str(MAX_LIST_LIMIT)])
+        assert cap.limit == MAX_LIST_LIMIT
+        with pytest.raises(ClientError, match=f"at most {MAX_LIST_LIMIT}"):
+            parse_metric_action(["at", "loss", "limit", str(MAX_LIST_LIMIT + 1)])
 
     def test_limit_without_value_errors(self) -> None:
         with pytest.raises(ClientError, match="limit"):

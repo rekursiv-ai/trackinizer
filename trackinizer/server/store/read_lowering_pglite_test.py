@@ -67,11 +67,11 @@ async def seed(store: Store) -> None:
     empty label set catches array membership against ``{}``.
     """
     rows = [
-        ("josh@rekursiv.ai", "Josh", "10", ("bug", "ml")),
-        ("josh@rekursiv.ai", "Agent", "9", ("bug",)),
-        ("other@rekursiv.ai", "Josh", "alpha", ()),
-        ("josh@rekursiv.ai", None, "Alpha", ("ml",)),
-        ("other@rekursiv.ai", None, "", ()),
+        ("josh@example.com", "Josh", "10", ("bug", "ml")),
+        ("josh@example.com", "Agent", "9", ("bug",)),
+        ("other@example.com", "Josh", "alpha", ()),
+        ("josh@example.com", None, "Alpha", ("ml",)),
+        ("other@example.com", None, "", ()),
     ]
     for account, owner, title, labels in rows:
         await store.submit_issue(
@@ -103,13 +103,13 @@ async def rows_via_python(
 
 # One filter per op, aimed at the value that most often diverges.
 CASES: tuple[tuple[FilterOp, str, str], ...] = (
-    ("is", "account", "josh@rekursiv.ai"),
+    ("is", "account", "josh@example.com"),
     ("is", "owner", "Josh"),
     ("is", "owner", "None"),
     ("is", "labels", "bug"),
     ("is", "labels", "absent"),
     ("is", "title", "10"),
-    ("ne", "account", "josh@rekursiv.ai"),
+    ("ne", "account", "josh@example.com"),
     ("ne", "owner", "Josh"),
     ("ne", "labels", "bug"),
     ("isnull", "owner", ""),
@@ -135,7 +135,7 @@ CASES: tuple[tuple[FilterOp, str, str], ...] = (
     # fact, and was untested.
     ("nre", "labels", "absent"),
     ("nre", "labels", "bug"),
-    ("re", "account", "rekursiv"),
+    ("re", "account", "example"),
     # The escape classes, not a sample of them. Postgres runs POSIX ARE and
     # ``match_filter`` runs Python ``re``; the two disagree on exactly the
     # escapes below, and every one of them reaches here as caller input:
@@ -240,12 +240,12 @@ async def test_a_uuid_array_column_filters_against_a_real_engine(
     text[] to uuid[]`` for the negated one. A mock store cannot see either.
     """
     change_id = await store.submit_codechange(
-        SubmitCodeChange(title="commit", account="josh@rekursiv.ai", sha="a" * 40),
+        SubmitCodeChange(title="commit", account="josh@example.com", sha="a" * 40),
     )
     await store.submit_experiment(
         SubmitExperiment(
             title="exp",
-            account="josh@rekursiv.ai",
+            account="josh@example.com",
             codechanges=[change_id],
         ),
     )
@@ -436,7 +436,7 @@ async def test_a_fully_lowered_query_keeps_limit_in_sql(store: Store) -> None:
 
     windowed = await store.list_kind(
         "Issue",
-        filters=(Filter(field="account", op="is", value="josh@rekursiv.ai"),),
+        filters=(Filter(field="account", op="is", value="josh@example.com"),),
         limit=2,
     )
 
@@ -511,7 +511,7 @@ async def test_uuid_array_membership_preserves_parameter_typing(store: Store) ->
 async def test_paging_agrees_between_the_two_paths(store: Store, offset: int) -> None:
     """Python slices the kept rows; SQL uses OFFSET. They must land alike."""
     await seed(store)
-    filters = (Filter(field="account", op="is", value="josh@rekursiv.ai"),)
+    filters = (Filter(field="account", op="is", value="josh@example.com"),)
 
     lowered = await store.list_kind("Issue", filters=filters, limit=2, offset=offset)
     in_python = await store.list_kind(

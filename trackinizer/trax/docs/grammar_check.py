@@ -277,20 +277,6 @@ CORPUS: tuple[Case, ...] = (
         tokens="experiment 42 metric at key is loss at step is 3 to 0.5",
     ),
     Case(
-        label="metric many-keys-one-step write",
-        tokens=(
-            "experiment 42 metric at step is 3 at key is loss to 0.5 "
-            "at key is acc to 0.9"
-        ),
-    ),
-    Case(
-        label="metric many-steps-one-key write",
-        tokens=(
-            "experiment 42 metric at key is loss at step is 3 to 0.5 "
-            "at step is 5 to 0.6"
-        ),
-    ),
-    Case(
         label="metric bulk write (step gt)",
         tokens="experiment 42 metric at key is loss at step gt 3 to 0.5",
     ),
@@ -332,12 +318,7 @@ CORPUS: tuple[Case, ...] = (
     # greedily to the create-then-log reading (metric-grammar.md "Create + log").
     Case(
         label="metric create + log (class a)",
-        tokens="experiment title to trm-exp031 metric at step is 3 at loss to 0.5 at acc to 0.9",
-        ambiguous=True,
-    ),
-    Case(
-        label="metric create + one-cell log (class a)",
-        tokens="experiment title to x metric at step is 3 at loss to 0.5",
+        tokens="experiment title to trm-exp031 metric at step is 3 at loss to 0.5",
         ambiguous=True,
     ),
     # == syntactic rejections (the concrete grammar refuses these) ============

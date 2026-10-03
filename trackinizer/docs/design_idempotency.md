@@ -326,7 +326,7 @@ Why this is acceptable in practice:
   different `cost_delta`).
 - Stripe's contract serves third-party callers writing against an
   unfamiliar API. Trackinizer's first-party clients are the trax CLI
-  and the SPA, both of which obey "fresh UUID per attempt" by
+  and the web app, both of which obey "fresh UUID per attempt" by
   construction.
 
 ### Consequence 3: no documented `409 concurrent_request`

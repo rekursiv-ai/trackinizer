@@ -257,8 +257,10 @@ jobs:
             --validation-command 'uv run pre-commit run --all-files --hook-stage pre-commit' \
             --validation-command 'uv run pre-commit run --all-files --hook-stage pre-push' \
             --validation-command 'uv run python -c "import trackinizer"' \
+            --validation-command '(cd trackinizer/web && ./npm ci --no-audit --no-fund && ./npm run typecheck && ./npm test && ./npm run build)' \
             --validation-command 'rm -rf dist' \
             --validation-command 'uv build --out-dir dist' \
+            --validation-command 'uv run python -m zipfile -l dist/trackinizer-*.whl | grep -q trackinizer/web/dist/index.html' \
             --validation-command 'wheels=(dist/trackinizer-*.whl); wheel="${wheels[0]}"; uv run --isolated --index https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match --with "$wheel" python -P -c "import trackinizer; print(trackinizer.__file__)"' \
             --open-pr false
 

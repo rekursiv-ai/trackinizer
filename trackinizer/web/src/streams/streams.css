@@ -1,0 +1,28 @@
+/* An Issue list as streams (LV3), after the List page of the relationships
+   design canvas: the page's rows under a header per root goal. */
+.s-head {
+  position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; min-height: 40px;
+  padding: 0 14px 0 18px; background: var(--surface-raised); border-bottom: 1px solid var(--line);
+  font-size: 13px; color: var(--ink-muted);
+}
+.s-title { min-width: 0; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.s-title a { color: inherit; }
+.s-title a:hover { color: var(--accent-hover); }
+.s-ref { font: 12px var(--mono); color: var(--muted); flex-shrink: 0; }
+.s-counts { margin-left: auto; font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.s-bar { display: flex; width: 90px; height: 5px; flex-shrink: 0; border-radius: 3px; overflow: hidden; background: var(--surface-hover); }
+.s-bar i { display: block; height: 100%; }
+.s-bar .s-active { background: var(--green); }
+.s-bar .s-done { background: var(--accent-hover); }
+.s-also { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.s-more {
+  display: block; width: 100%; padding: 6px 18px 8px 64px; text-align: left;
+  border-bottom: 1px solid var(--row-divider); font-size: 12.5px; color: var(--accent-hover);
+}
+.s-more:hover { background: var(--surface-raised); }
+
+@media (max-width: 760px) {
+  .s-head { padding: 0 10px; flex-wrap: wrap; row-gap: 0; }
+  .s-counts { margin-left: 0; }
+  .s-more { padding-left: 10px; }
+}

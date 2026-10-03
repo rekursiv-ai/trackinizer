@@ -1,0 +1,79 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/inquiries",
+    "query": [
+      [
+        "kind",
+        "Issue"
+      ],
+      [
+        "fields",
+        "id"
+      ],
+      [
+        "fields",
+        "seq"
+      ],
+      [
+        "fields",
+        "title"
+      ],
+      [
+        "ancestors",
+        "narrows"
+      ],
+      [
+        "limit",
+        "50"
+      ],
+      [
+        "offset",
+        "0"
+      ]
+    ]
+  },
+  "response": {
+    "body": [
+      {
+        "ancestors": [
+          {
+            "child_ids": [
+              "00000000-0000-4000-8000-000000000003"
+            ],
+            "id": "00000000-0000-4000-8000-000000000001",
+            "kind": "Issue",
+            "seq": 1,
+            "status": "active",
+            "title": "Web app fixtures"
+          }
+        ],
+        "id": "00000000-0000-4000-8000-000000000003",
+        "seq": 3,
+        "title": "Child, renamed"
+      },
+      {
+        "ancestors": [],
+        "id": "00000000-0000-4000-8000-000000000001",
+        "seq": 1,
+        "title": "Web app fixtures"
+      },
+      {
+        "ancestors": [],
+        "id": "00000000-0000-4000-8000-000000000002",
+        "seq": 2,
+        "title": "Prerequisite"
+      },
+      {
+        "ancestors": [],
+        "id": "00000000-0000-4000-8000-000000000004",
+        "seq": 4,
+        "title": "Which sort?"
+      }
+    ],
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

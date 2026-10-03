@@ -30,9 +30,9 @@ from trackinizer.server.api import (
     edge,
     edit,
     export_routes,
+    logout_routes,
     meta_routes,
     metrics_routes,
-    oauth_routes,
     preset_routes,
     query,
     reports_routes,
@@ -148,9 +148,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         # Process-local routing buffer for inbound (world -> session) messages;
         # separate from event capture. The sessions routes read it off state.
         app.state.inbound = InboundQueue()
-        # Keep the resolved config on app.state so OAuth routes and the
-        # session-cookie path in current_user can read the signing secret
-        # and Google client credentials. main() mounts the SPA separately.
+        # Keep the resolved config on app.state so the session-cookie path in
+        # current_user, and any sign-in routes, can read the signing secret.
+        # main() mounts the SPA separately.
         app.state.config = config
         await app.state.store.bootstrap()
         if config.auth_disabled:
@@ -280,9 +280,9 @@ ROUTERS: Final = (
     edge.router,
     edit.router,
     export_routes.router,
+    logout_routes.router,
     meta_routes.router,
     metrics_routes.router,
-    oauth_routes.router,
     preset_routes.router,
     query.router,
     reports_routes.router,

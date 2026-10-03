@@ -1,0 +1,13 @@
+/* An activity line's text and time, from the design mock ("activity
+   timeline"): the detail's Activity section and the Activity view both draw
+   them, and each loads as a chunk of its own, so each imports this file. */
+.tl-body { color: var(--muted); line-height: 1.55; padding-top: 1px; min-width: 0; overflow-wrap: anywhere; }
+.tl-body b { color: var(--ink-muted); font-weight: 500; }
+.tl-body .ref { vertical-align: -3px; }
+.tl-body summary { cursor: pointer; }
+.tl-mentions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.tl-time { color: var(--muted); white-space: nowrap; }
+.tl-body blockquote {
+  margin: 8px 0 2px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+}
+.tl-body blockquote .md { font-size: 13px; }

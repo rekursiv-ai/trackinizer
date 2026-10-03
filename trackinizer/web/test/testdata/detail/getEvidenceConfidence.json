@@ -1,0 +1,15 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/inquiries/00000000-0000-4000-8000-000000000007/confidence"
+  },
+  "response": {
+    "body": {
+      "confidence": 0.6899744811276125
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

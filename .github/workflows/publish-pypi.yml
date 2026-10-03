@@ -25,12 +25,19 @@ jobs:
 
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
 
+      # The wheel ships the web app's build (`artifacts` in pyproject.toml), which
+      # a wheel built first would silently leave out. web/npm runs npm on the
+      # Node that the test group installs.
+      - name: Build the web app
+        run: cd trackinizer/web && ./npm ci --no-audit --no-fund && ./npm run build
+
       - name: Build package
         run: uv build --out-dir dist
 
       - name: Validate built package
         run: |
           uv run python -c "import trackinizer; print(trackinizer.__file__)"
+          uv run python -m zipfile -l dist/trackinizer-*.whl | grep -q trackinizer/web/dist/index.html
 
       - name: Publish package
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

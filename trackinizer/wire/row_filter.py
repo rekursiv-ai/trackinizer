@@ -39,7 +39,9 @@ import warnings
 
 from trackinizer.types.errors import ValidationError
 from trackinizer.wire.column_shapes import (
+    COLUMN_SHAPES,
     FILTERABLE_COLUMNS,
+    ColumnShape,
     compares_as_float,
     lowers_into_sql,
     requires_numeric_operand,
@@ -236,6 +238,13 @@ def match_filter(row: _Row, filt: RowFilter) -> bool:
 
     """
     reject_inadmissible(filt)
+    # A row's own ``narrows`` key, where it has one, lists edge refs, and a root's
+    # is ``[]``: read as this clause's column it would make every root ``notnull``.
+    if COLUMN_SHAPES.get(canonical_filter_field(filt.field)) is ColumnShape.PARENT:
+        raise ValidationError(
+            f"filter field {filt.field!r} reads the edges table, which no row "
+            "carries, so only the store's SQL can answer it",
+        )
     if filt.op in ("isnull", "notnull"):
         absent = row.get(canonical_filter_field(filt.field)) is None
         return absent if filt.op == "isnull" else not absent

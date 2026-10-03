@@ -46,6 +46,7 @@ from trackinizer.server.store.export import _ExportMixin
 from trackinizer.server.store.metrics import _MetricsMixin
 from trackinizer.server.store.read import _ReadMixin
 from trackinizer.server.store.session import _SessionMixin
+from trackinizer.server.store.session_feed import _SessionFeedMixin
 from trackinizer.server.store.session_ir import _SessionIRMixin
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.store.submit import (
@@ -434,6 +435,7 @@ class Store(
     _ExportMixin,
     _MetricsMixin,
     _SessionMixin,
+    _SessionFeedMixin,
     _SessionIRMixin,
     _SubmitMixin,
     _EditMixin,

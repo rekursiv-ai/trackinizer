@@ -1,0 +1,19 @@
+{
+  "request": {
+    "body": {
+      "email_or_pattern": " Ada@Example.com ",
+      "role": "viewer"
+    },
+    "method": "POST",
+    "path": "/api/admin/allowlist"
+  },
+  "response": {
+    "body": {
+      "detail": "unique constraint violated"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 409
+  }
+}

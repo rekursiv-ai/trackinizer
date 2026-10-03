@@ -1,0 +1,93 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/sessions/00000000-0000-4000-8000-000000000011/records",
+    "query": [
+      [
+        "part",
+        "0"
+      ],
+      [
+        "after_idx",
+        "-1"
+      ],
+      [
+        "limit",
+        "200"
+      ],
+      [
+        "plaintext_only",
+        "true"
+      ]
+    ]
+  },
+  "response": {
+    "body": {
+      "part": 0,
+      "records": [
+        {
+          "ciphertext": null,
+          "context_id": null,
+          "idx": 0,
+          "kind": "UserMessage",
+          "model": null,
+          "payload": {
+            "attachments": {
+              "py/tuple": []
+            },
+            "content": "What does **Issue#1** ask for?",
+            "context_id": null,
+            "extra": {},
+            "py/object": "trackinizer.lib.agent.types.sessions.UserMessage",
+            "timestamp": null
+          },
+          "text": "What does **Issue#1** ask for?",
+          "timestamp": null
+        },
+        {
+          "ciphertext": null,
+          "context_id": null,
+          "idx": 1,
+          "kind": "ToolCall",
+          "model": null,
+          "payload": {
+            "arguments": {
+              "command": "trax issue 1"
+            },
+            "call_id": "c1",
+            "context_id": null,
+            "extra": {},
+            "name": "Bash",
+            "py/object": "trackinizer.lib.agent.types.sessions.ToolCall",
+            "timestamp": null
+          },
+          "text": "Bash\ntrax issue 1",
+          "timestamp": null
+        },
+        {
+          "ciphertext": null,
+          "context_id": null,
+          "idx": 2,
+          "kind": "AssistantMessage",
+          "model": null,
+          "payload": {
+            "attachments": {
+              "py/tuple": []
+            },
+            "content": "Fixtures for the web app.",
+            "context_id": null,
+            "extra": {},
+            "py/object": "trackinizer.lib.agent.types.sessions.AssistantMessage",
+            "timestamp": null
+          },
+          "text": "Fixtures for the web app.",
+          "timestamp": null
+        }
+      ]
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

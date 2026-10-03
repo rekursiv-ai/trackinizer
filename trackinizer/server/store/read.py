@@ -1,13 +1,14 @@
 """:class:`_ReadMixin` -- read-only inquiry, cost, and change queries.
 
-A pure leaf: :meth:`get_inquiry`, :meth:`list_kind`, :meth:`next_issue`,
-:meth:`cost_for`, :meth:`proves_belief`, :meth:`what_changed_for_me`,
-:meth:`get_change`, and :meth:`list_changes` all read through
-``self.engine`` and call no other mixin.
+A pure leaf: :meth:`get_inquiry`, :meth:`list_kind`,
+:meth:`narrows_ancestors`, :meth:`next_issue`, :meth:`cost_for`,
+:meth:`proves_belief`, :meth:`what_changed_for_me`, :meth:`get_change`, and
+:meth:`list_changes` all read through ``self.engine`` and call no other mixin.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
@@ -21,6 +22,7 @@ from trackinizer.server.projection import (
 from trackinizer.server.regex_timeout import apply_regex_statement_timeout
 from trackinizer.server.sql_fragments import (
     COST_SUBTREE_SQL,
+    NARROWS_ANCESTORS_SQL,
     NEXT_ISSUE_SQL,
     PROVES_BELIEF_SQL,
     PROVING_EDGES_SQL,
@@ -44,7 +46,7 @@ from trackinizer.wire.session_record_fields import record_kind_for
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from datetime import datetime
 
     from trackinizer.lib.postgres import Conn
@@ -52,9 +54,23 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "Ancestor",
     "_ReadMixin",
     "seq_range_clause",
 ]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Ancestor:
+    """One Issue above a row in its ``narrows`` ancestry, as a list row shows it."""
+
+    id: UUID
+    kind: Inquiry.InquiryKind
+    seq: int
+    title: str
+    status: Inquiry.Status
+    child_ids: tuple[UUID, ...] = ()
+    """The row, or its other ancestors, that narrow this one."""
 
 
 # The only kinds a ``proves`` edge can target, so the only kinds
@@ -138,6 +154,7 @@ class _ReadMixin(_StoreShared):
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[RowFilter] = (),
         lowering: bool = True,
+        edges: bool = True,
     ) -> list[Inquiry]:
         """Paginated list of one kind, optionally filtered.
 
@@ -173,6 +190,8 @@ class _ReadMixin(_StoreShared):
             in-process after SQL prefilter).
           lowering: If False, force all filters through Python evaluator
             (for testing equivalence).
+          edges: Fill the relation fields. False leaves them empty and skips
+            the two edge reads, for a caller that sends none of them.
 
         Returns:
           rows: Materialized Inquiry rows in created-desc order (newest first),
@@ -241,7 +260,7 @@ class _ReadMixin(_StoreShared):
                 window = kept[offset : offset + limit]
                 outbound, inbound = await fetch_edges_bulk(
                     conn,
-                    [cast(UUID, r["id"]) for r in window],
+                    [cast(UUID, r["id"]) for r in window] if edges else [],
                 )
             return [materialize(row, outbound, inbound) for row in window]
         params.extend([limit, offset])
@@ -263,9 +282,49 @@ class _ReadMixin(_StoreShared):
             rows = await conn.fetch(sql, *params)
             outbound, inbound = await fetch_edges_bulk(
                 conn,
-                [cast(UUID, r["id"]) for r in rows],
+                [cast(UUID, r["id"]) for r in rows] if edges else [],
             )
         return [materialize(row, outbound, inbound) for row in rows]
+
+    async def narrows_ancestors(
+        self,
+        ids: Sequence[UUID],
+    ) -> dict[UUID, tuple[Ancestor, ...]]:
+        """Return each row's ``narrows`` ancestors, nearest first, up to its roots.
+
+        One capped read for all of ``ids`` (:data:`NARROWS_ANCESTORS_SQL`): at
+        most 8 levels up, and at most 200 ancestors in all, nearest first, so a
+        deep or wide ancestry stays one bounded query. A row with several parents
+        keeps every one. A cycle ends at the depth cap, and no row is listed as
+        its own ancestor.
+
+        Args:
+          ids: Rows to walk up from.
+
+        Returns:
+          ancestry: For each of ``ids``, its ancestors breadth first, each once,
+            a level in id order.
+
+        """
+        if not ids:
+            return {}
+        async with self.engine.acquire() as conn:
+            found = await conn.fetch(NARROWS_ANCESTORS_SQL, list(ids), 8, 200)
+        nodes: dict[UUID, Ancestor] = {}
+        parents: dict[UUID, list[UUID]] = {}
+        for r in found:
+            parent = cast(UUID, r["id"])
+            nodes[parent] = Ancestor(
+                id=parent,
+                kind=cast(Inquiry.InquiryKind, r["kind"]),
+                seq=cast(int, r["seq"]),
+                title=cast(str, r["title"]),
+                status=cast(Inquiry.Status, r["status"]),
+            )
+            parents.setdefault(cast(UUID, r["child"]), []).append(parent)
+        for listed in parents.values():
+            listed.sort(key=str)
+        return {row: _ancestry(row, parents, nodes) for row in ids}
 
     async def next_issue(self) -> Issue | None:
         """Return the next active Issue whose prerequisites are all terminal.
@@ -588,15 +647,16 @@ class _ReadMixin(_StoreShared):
         actor: Inquiry.Actor | None = None,
         subject_id: UUID | None = None,
         subject_kind: Inquiry.InquiryKind | None = None,
-        kind: Change.Kind | None = None,
+        kinds: Sequence[Change.Kind] = (),
         limit: int = 200,
     ) -> list[Change]:
         """Return a filtered, newest-first ``change_log`` slice.
 
         Backs ``GET /api/change_log`` (``docs/api.md`` 1.14-1.15). Every
-        filter is optional and ANDed; ``since`` is an inclusive lower
-        bound on ``created`` and ``after_id`` an exclusive id cursor for
-        stable pagination within one timestamp.
+        filter is optional and ANDed, and an empty sequence filters nothing.
+        All of them run in the query, before ``LIMIT``. ``since`` is an
+        inclusive lower bound on ``created`` and ``after_id`` an exclusive id
+        cursor for stable pagination within one timestamp.
 
         Args:
           since: Inclusive lower bound on ``created``.
@@ -605,7 +665,7 @@ class _ReadMixin(_StoreShared):
           actor: Filter on the change author.
           subject_id: Filter on the mutated row id.
           subject_kind: Filter on the mutated row kind.
-          kind: Filter on the change discriminator.
+          kinds: Keep changes of any of these discriminators.
           limit: Maximum rows, capped at ``MAX_LIST_LIMIT``. Default 200.
 
         Returns:
@@ -618,16 +678,16 @@ class _ReadMixin(_StoreShared):
         async with self.engine.acquire() as conn:
             clauses: list[str] = []
             args: list[object] = []
-            for column, value in (
-                ("created >=", since),
-                ("actor =", actor),
-                ("subject_id =", subject_id),
-                ("subject_kind =", subject_kind),
-                ("kind =", kind),
+            for clause, value in (
+                ("created >= {}", since),
+                ("actor = {}", actor),
+                ("subject_id = {}", subject_id),
+                ("subject_kind = {}", subject_kind),
+                ("kind = ANY({}::text[])", list(kinds) or None),
             ):
                 if value is not None:
                     args.append(value)
-                    clauses.append(f"{column} ${len(args)}")
+                    clauses.append(clause.format(f"${len(args)}"))
             if after_id is not None:
                 # The page order is ``(created, id)`` descending, so the cursor
                 # must compare the same tuple: a bare ``id < after_id`` skips
@@ -659,6 +719,31 @@ class _ReadMixin(_StoreShared):
                 *args,
             )
         return [Change.from_row(r) for r in rows]
+
+
+# Breadth first, so the order is nearness. The parent lists arrive sorted, so a level
+# is in id order. A cycle back to ``row`` is dropped: a row is not its own ancestor.
+def _ancestry(
+    row: UUID,
+    parents: Mapping[UUID, Sequence[UUID]],
+    nodes: Mapping[UUID, Ancestor],
+) -> tuple[Ancestor, ...]:
+    """Walk up from ``row``: each ancestor once, with the line's ids it parents."""
+    children: dict[UUID, list[UUID]] = {}
+    order: list[UUID] = []
+    level = [row]
+    while level:
+        found: list[UUID] = []
+        for child in level:
+            for parent in parents.get(child, ()):
+                if parent == row:
+                    continue
+                if parent not in children:
+                    found.append(parent)
+                children.setdefault(parent, []).append(child)
+        order.extend(found)
+        level = found
+    return tuple(replace(nodes[up], child_ids=tuple(children[up])) for up in order)
 
 
 # Appends the operand to ``params`` (keeping positional placeholders in lockstep with

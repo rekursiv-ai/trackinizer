@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "DELETE",
+    "path": "/api/admin/users/00000000-0000-4000-9000-000000000001"
+  },
+  "response": {
+    "body": "",
+    "headers": {},
+    "status": 204
+  }
+}

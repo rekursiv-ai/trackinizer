@@ -74,7 +74,7 @@ CREATE INDEX IF NOT EXISTS idx_session_records_kind
 -- The cross-session console feed is a keyset scan over exactly this tuple
 -- (``store/session.py::read_feed``), polled every 1.5s by every open console.
 -- Without the index that ORDER BY is a sequential scan plus a sort over the
--- whole capture corpus -- 3,081,202 rows on the deployed instance -- and it
+-- whole capture corpus -- millions of rows on a busy server -- and it
 -- still returns the right answer, so nothing fails: the cost shows up only as
 -- latency. The retired ``agent_session_events`` carried the same index for the
 -- same query; it must not be lost in the move.

@@ -1,0 +1,31 @@
+{
+  "request": {
+    "body": {
+      "value": "high"
+    },
+    "headers": {
+      "Idempotency-Key": "00000000-0000-4000-9000-000000000001"
+    },
+    "method": "PUT",
+    "path": "/api/issue/00000000-0000-4000-8000-000000000003/priority"
+  },
+  "response": {
+    "body": {
+      "detail": [
+        {
+          "input": "high",
+          "loc": [
+            "body",
+            "value"
+          ],
+          "msg": "Input should be a valid integer, unable to parse string as an integer",
+          "type": "int_parsing"
+        }
+      ]
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 422
+  }
+}

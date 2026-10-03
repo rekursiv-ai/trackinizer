@@ -1,0 +1,57 @@
+{
+  "default_visual": "trax.browse",
+  "visuals": [
+    {
+      "type": "trax.browse",
+      "version": 1,
+      "title": "Browse",
+      "description": "Browse trax records by kind and query.",
+      "requires": [],
+      "default_size": "wide",
+      "parameter_schema": {}
+    },
+    {
+      "type": "trax.chat",
+      "version": 1,
+      "title": "Chat",
+      "description": "Talk with a connected trax run session.",
+      "requires": [
+        "session"
+      ],
+      "default_size": "compact",
+      "parameter_schema": {}
+    },
+    {
+      "type": "trax.subgraph",
+      "version": 1,
+      "title": "Context graph",
+      "description": "Explore a selected record and its issue lineage.",
+      "requires": [
+        "record"
+      ],
+      "default_size": "wide",
+      "parameter_schema": {}
+    },
+    {
+      "type": "trax.timeline",
+      "version": 1,
+      "title": "Evidence timeline",
+      "description": "Follow dated directions, results, and signed evidence.",
+      "requires": ["record"],
+      "default_size": "wide",
+      "parameter_schema": {
+        "direction_limit": {"type": "integer", "default": 8, "minimum": 1, "maximum": 12, "max_length": null},
+        "results_per_direction": {"type": "integer", "default": 3, "minimum": 1, "maximum": 5, "max_length": null}
+      }
+    },
+    {
+      "type": "trax.artifact",
+      "version": 1,
+      "title": "Artifact",
+      "description": "Read immutable shared Artifact content.",
+      "requires": ["record"],
+      "default_size": "wide",
+      "parameter_schema": {}
+    }
+  ]
+}

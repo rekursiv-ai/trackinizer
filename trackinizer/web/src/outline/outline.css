@@ -1,0 +1,30 @@
+/* An Issue list as an outline (LV1), after the List page of the relationships
+   design canvas: rows indented under their parents, older parents dimmed. */
+.o-line {
+  display: flex; align-items: center; padding-left: calc(var(--depth) * 20px + 6px);
+  border-bottom: 1px solid var(--row-divider);
+}
+.o-line:hover { background: var(--surface-raised); }
+.o-line > .row, .o-line > .row-line { flex: 1; min-width: 0; }
+.o-line .row { padding-left: 4px; border-bottom: 0; background: none; }
+.o-line .row-line > .row { padding-left: 34px; }
+.o-line:has(.is-focused) { background: var(--surface-hover); }
+.o-twisty { display: grid; place-items: center; width: 22px; height: 22px; flex-shrink: 0; border-radius: 4px; color: var(--muted); }
+button.o-twisty:hover { background: var(--surface-hover); color: var(--text); }
+.o-twisty .chev { transition: transform .12s; }
+.o-twisty.is-collapsed .chev { transform: rotate(-90deg); }
+.o-older {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; height: 40px;
+  padding: 0 14px 0 4px; font-size: 13px; color: var(--muted);
+}
+.o-older .ic { opacity: .6; }
+.o-older .row-title { flex: 0 1 auto; color: var(--muted); font-weight: 400; }
+.o-older .row-meta { margin-left: auto; }
+.o-tag, .o-below, .o-also { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.o-below { border: 1px solid var(--line-strong); border-radius: 10px; padding: 0 7px; color: var(--muted); }
+.o-group { border-top: 1px solid var(--line); }
+
+@media (max-width: 760px) {
+  .o-line { padding-left: calc(var(--depth) * 10px); }
+  .o-also { display: none; }
+}

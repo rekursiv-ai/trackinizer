@@ -1,0 +1,19 @@
+{
+  "request": {
+    "body": {
+      "role": "writer"
+    },
+    "method": "PUT",
+    "path": "/api/admin/allowlist/ada%40example.com/role"
+  },
+  "response": {
+    "body": {
+      "ok": true,
+      "role": "writer"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

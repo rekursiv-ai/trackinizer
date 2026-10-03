@@ -17,9 +17,9 @@ Which verbs a column exposes is computed from its own metadata:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from functools import cache
-from typing import Final, Literal, get_args, get_origin
+from typing import Final, Literal, cast, get_args, get_origin, get_type_hints
 
 from trackinizer.types.columns import (
     FlatColumn,
@@ -28,6 +28,7 @@ from trackinizer.types.columns import (
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import (
     INQUIRY_CLASSES,
+    InquiryEdge,
 )
 
 
@@ -220,6 +221,48 @@ type HttpVerb = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 # ``limit``.
 DEFAULT_LIST_LIMIT = 50  # house-ignore[globals] -- Shared default; threading would duplicate across N call sites.
 MAX_LIST_LIMIT: Final = 1000
+
+
+@cache
+def inquiry_row_fields() -> frozenset[str]:
+    """Return every key an inquiry row can carry, across every kind.
+
+    A row is its kind's dataclass, field by field, plus ``kind``. These are
+    the names ``fields`` takes on ``GET /api/inquiries`` and
+    ``/api/web/search``: a key only another kind carries is valid there and
+    absent from this kind's rows.
+
+    Returns:
+      names: Every row key of every kind.
+
+    """
+    return frozenset({"kind"}).union(
+        field.name for cls in INQUIRY_CLASSES for field in fields(cls)
+    )
+
+
+@cache
+def inquiry_relation_fields() -> frozenset[str]:
+    """Return the row keys that list edges, which only the ``edges`` table fills.
+
+    Each is typed as a tuple of :class:`InquiryEdge` refs (``narrows``,
+    ``proved_by``, ...). A list read skips the edge reads unless ``fields``
+    names one, and ``/api/web/get`` sends them as ``edges`` and ``backlinks``
+    instead of on its ``self``.
+
+    Returns:
+      names: Every relation key of every kind.
+
+    """
+    relations: set[str] = set()
+    for cls in INQUIRY_CLASSES:
+        hints = get_type_hints(cls)
+        for field in fields(cls):
+            hint = cast(object, hints[field.name])
+            peer: object = get_args(hint)[0] if get_origin(hint) is tuple else None
+            if isinstance(peer, type) and issubclass(peer, InquiryEdge):
+                relations.add(field.name)
+    return frozenset(relations)
 
 
 # A list column is stored as ``tuple[X, ...]`` (optionally ``| None``), and its PATCH

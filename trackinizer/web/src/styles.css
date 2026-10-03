@@ -1,0 +1,335 @@
+/* Tokens and shared styles from the design mock, the visual reference. */
+:root {
+  --bg: #101112;
+  --surface: #141516;
+  --surface-raised: #191a1b;
+  --surface-hover: #222325;
+  --surface-overlay: #1d1e20;
+  --sidebar: #090a0b;
+  --text: #f7f8f8;
+  --ink-muted: #d0d6e0;
+  --muted: #8a8f98;
+  --ink-tertiary: #62666d;
+  --line: #232426;
+  --line-strong: #343538;
+  /* White text on it is 4.7:1, over WCAG AA's 4.5; the mock's
+     #3987e5 was 3.6. */
+  --accent: #3174c5;
+  --accent-hover: #6ea8ee;
+  --accent-soft: #3987e524;
+  --green: #27a644;
+  --amber: #c99d55;
+  --red: #d14545;
+  --urgent: #f2994a;
+  --violet: #9d8cf0;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --l-provenance: #7b808a;
+  --l-work: #7b808a;
+  --l-evidence: #4cb782;
+  --l-against: #e77a7a;
+  --l-lineage: #7b808a;
+  --l-citations: #7b808a;
+  --l-mentions: #8a8f98;
+  --row-divider: #ffffff08;
+  --btn-kbd-line: #ffffff30;
+  --error-text: #ff8a8a;
+  /* Code and JSON: GitHub's syntax colours, each over 4.5:1 on every surface
+     (styles.test.ts). Comments take --muted. */
+  --code-key: #79c0ff;
+  --code-string: #7ee787;
+  --code-number: #ffa657;
+  --code-literal: #d2a8ff;
+  --code-keyword: #ff7b72;
+  /* A diff's added and removed rows: GitHub's tints, under which every code
+     colour and --muted keep 4.5:1. */
+  --diff-add: #2ea04326;
+  --diff-del: #f8514926;
+  --control-height: 32px;
+  --radius: 6px;
+  --panel-radius: 10px;
+  color-scheme: dark;
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  letter-spacing: -0.05px;
+  color: var(--text);
+  background: var(--sidebar);
+  -webkit-font-smoothing: antialiased;
+}
+:root[data-theme="light"] {
+  --bg: #f7f9fb;
+  --surface: #ffffff;
+  --surface-raised: #edf1f5;
+  --surface-hover: #e5ebf1;
+  --surface-overlay: #ffffff;
+  --sidebar: #edf1f5;
+  --text: #17212d;
+  --ink-muted: #344255;
+  /* Over 4.5:1 on a selected row's tint, --accent-soft, too (styles.test.ts). */
+  --muted: #5d6978;
+  --ink-tertiary: #6c7886;
+  --line: #dce3ea;
+  --line-strong: #bec9d4;
+  --accent: #286fc5;
+  --accent-hover: #185dab;
+  --accent-soft: #286fc51c;
+  --green: #187c39;
+  --amber: #9c651d;
+  --red: #b62f36;
+  --urgent: #ae5717;
+  --violet: #694fb0;
+  --l-provenance: #657487;
+  --l-work: #657487;
+  /* Text too: an agent's name in the console, a diff's added lines. */
+  --l-evidence: #228050;
+  --l-against: #ba3d4a;
+  --l-lineage: #657487;
+  --l-citations: #657487;
+  --l-mentions: #657487;
+  --row-divider: #dce3ea;
+  /* A white edge vanishes on the light theme's pale buttons: draw a kbd's own. */
+  --btn-kbd-line: var(--line-strong);
+  --error-text: #b32632;
+  --code-key: #0550ae;
+  --code-string: #116329;
+  --code-number: #953800;
+  --code-literal: #6e40c9;
+  --code-keyword: #b31d28;
+  --diff-add: #dafbe1;
+  --diff-del: #ffebe9;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body { margin: 0; background: var(--sidebar); color: var(--text); overflow: hidden; }
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; border: 0; background: none; padding: 0; }
+a { color: inherit; text-decoration: none; }
+h1, h2, h3, h4, p { margin: 0; }
+:focus-visible { outline: 2px solid var(--accent-hover); outline-offset: 2px; }
+.muted { color: var(--muted); }
+.num { font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--mono); font-size: 12px; }
+.ic { flex-shrink: 0; display: block; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+kbd {
+  font: 500 11px/1 var(--mono); color: var(--muted);
+  border: 1px solid var(--line-strong); border-radius: 4px;
+  padding: 2px 5px; background: var(--surface-raised); min-width: 18px; text-align: center; display: inline-block;
+}
+
+/* shell */
+.app { display: grid; grid-template-columns: 244px minmax(0, 1fr); height: 100%; }
+.sidebar {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 10px 12px; overflow-y: auto; min-height: 0;
+  scrollbar-width: thin;
+}
+.main {
+  margin: 8px 8px 8px 0; min-width: 0; min-height: 0;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--panel-radius);
+  overflow: hidden; display: flex; flex-direction: column; position: relative;
+}
+
+/* sidebar */
+.ws-row { display: flex; align-items: center; gap: 4px; margin-bottom: 10px; }
+.ws-switch {
+  display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;
+  padding: 5px 6px; border-radius: var(--radius); font-weight: 600; font-size: 13.5px;
+}
+a.ws-switch:hover { background: var(--surface-raised); }
+.ws-mark { width: 22px; height: 22px; flex-shrink: 0; color: var(--accent); }
+.ws-mark .ws-filament { color: var(--text); }
+/* The sidebar's compose button: here, not in create.css, which loads with the
+   create form's chunk. Its color is .icon-btn's. */
+.compose-btn { border: 1px solid var(--line-strong); background: var(--surface-raised); }
+.compose-btn:disabled { opacity: .45; cursor: default; }
+.icon-btn {
+  width: 28px; height: 28px; border-radius: var(--radius); display: inline-grid; place-items: center;
+  color: var(--muted); flex-shrink: 0;
+}
+.icon-btn:hover { background: var(--surface-hover); color: var(--text); }
+.nav-item {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  min-height: 28px; padding: 4px 8px; border-radius: var(--radius);
+  font-size: 13px; font-weight: 500; color: var(--ink-muted); text-align: left;
+}
+.nav-item .ic { color: var(--muted); }
+.nav-item:hover { background: var(--surface-raised); }
+.nav-item.is-current { background: var(--surface-hover); color: var(--text); }
+.nav-item.is-current .ic { color: var(--ink-muted); }
+.nav-item > .label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav-badge {
+  font-size: 11px; font-weight: 500; color: var(--ink-muted); background: var(--surface-hover);
+  border-radius: 999px; padding: 0 6px; line-height: 18px; font-variant-numeric: tabular-nums;
+}
+.nav-section { margin-top: 14px; }
+.nav-section-h {
+  display: flex; align-items: center; gap: 4px; width: 100%;
+  padding: 3px 8px; font-size: 12px; font-weight: 500; color: var(--muted); border-radius: var(--radius);
+}
+.nav-section-h:hover { color: var(--ink-muted); }
+.nav-section-h .ic { transition: transform .12s; }
+.nav-section.is-collapsed .nav-section-h .ic { transform: rotate(-90deg); }
+.nav-section.is-collapsed .nav-section-body { display: none; }
+.nav-section-body { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; }
+.sidebar-foot { margin-top: auto; padding-top: 14px; display: flex; flex-direction: column; gap: 8px; }
+/* The user, then the theme button (Sidebar.tsx's ThemeButton). */
+.foot-row { display: flex; align-items: center; gap: 4px; }
+.foot-row .me-row { flex: 1; min-width: 0; }
+.me-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  font-size: 12.5px; color: var(--ink-muted);
+}
+.me-email { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.avatar {
+  display: inline-grid; place-items: center; flex-shrink: 0; border-radius: 50%;
+  width: 20px; height: 20px; font-size: 10px;
+  font-weight: 600; color: #fff; letter-spacing: 0; line-height: 1; background: var(--accent);
+}
+.role-chip {
+  font-size: 11px; font-weight: 500; color: var(--ink-muted); background: var(--surface-hover);
+  border-radius: 999px; padding: 0 6px; line-height: 18px;
+}
+
+/* Collapsed (Sidebar.tsx), the sidebar is a rail of its icons, VS Code's
+   activity bar's 48 px wide: the labels, the logo and the section headings
+   hide, and a rule parts each group. A link keeps its label as its name and
+   tooltip, the user's row the email. Narrow, it is the drawer, whole, either
+   way (below). Not `min-width: 761px`: a zoomed window can be 760.5 px wide,
+   and then neither the rail nor the drawer would apply. */
+@media (width > 760px) {
+  .app.sidebar-collapsed { grid-template-columns: 48px minmax(0, 1fr); }
+  .app.sidebar-collapsed .sidebar { padding: 10px 6px 12px; }
+  .app.sidebar-collapsed .ws-row { flex-direction: column; margin-bottom: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  .app.sidebar-collapsed :is(.ws-switch, .nav-section-h, .nav-item > .label, .me-email, .role-chip) { display: none; }
+  .app.sidebar-collapsed .nav-item { justify-content: center; padding: 8px 0; }
+  .app.sidebar-collapsed .nav-section { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--line); }
+  /* A section its heading folded shows its entries all the same: the heading
+     is hidden here, and nothing else could unfold them. */
+  .app.sidebar-collapsed .nav-section .nav-section-body { display: flex; margin-top: 0; }
+  .app.sidebar-collapsed .foot-row { flex-direction: column; }
+  .app.sidebar-collapsed .me-row { justify-content: center; padding: 4px 0; }
+}
+
+/* view chrome */
+.view { display: flex; flex-direction: column; min-height: 0; flex: 1; position: relative; }
+.view-h {
+  display: flex; align-items: center; gap: 8px; height: 46px; flex-shrink: 0;
+  padding: 0 14px 0 18px; border-bottom: 1px solid var(--line);
+}
+.view-h .ttl { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 500; min-width: 0; }
+.view-h .ttl .ic { color: var(--muted); }
+.view-h .ttl span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spacer { flex: 1; }
+.only-mobile { display: none; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 28px; padding: 3px 10px; border-radius: var(--radius);
+  border: 1px solid var(--line-strong); background: var(--surface-raised);
+  color: var(--ink-muted); font-size: 12.5px; font-weight: 500; white-space: nowrap;
+  transition: background .12s, color .12s;
+}
+.btn:hover { background: var(--surface-hover); color: var(--text); }
+.btn.ghost { background: transparent; border-color: transparent; }
+.btn.ghost:hover { background: var(--surface-hover); }
+.btn.primary { background: var(--accent); border-color: transparent; color: #fff; }
+/* Darker, not --accent-hover: that is a link's colour, and white on it is 2.5:1. */
+.btn.primary:hover { background: color-mix(in srgb, var(--accent) 88%, #000); }
+.btn.danger { background: #d1454522; border-color: #d1454555; color: #ff8a8a; }
+.btn.danger:hover { background: #d1454540; }
+:root[data-theme="light"] .btn.danger { background: #b62f3615; border-color: #b62f3666; color: var(--red); }
+:root[data-theme="light"] .btn.danger:hover { background: #b62f3624; }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn kbd { margin-left: 2px; background: transparent; border-color: var(--btn-kbd-line); color: inherit; opacity: .8; }
+.scroll { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; }
+.empty-state {
+  padding: 72px 20px; text-align: center; color: var(--muted);
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.empty-state h3 { color: var(--ink-muted); font-size: 14px; font-weight: 500; }
+.empty-state p { font-size: 12.5px; max-width: 320px; }
+
+/* bars: offline, live updates paused, a failed refresh. They float over the top
+   of the view, never in its flow, so one coming or going moves nothing the user
+   holds; the stack itself lets clicks through to the view under it. */
+.bars {
+  position: absolute; z-index: 30; top: 8px; left: 12px; right: 12px; height: 0;
+  display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none;
+}
+.bar {
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0; max-width: 100%; pointer-events: auto;
+  padding: 5px 8px 5px 12px; border: 1px solid var(--line-strong); border-radius: 999px;
+  background: var(--surface-overlay); box-shadow: 0 8px 24px #0009; font-size: 12.5px; color: var(--ink-muted);
+}
+.bar .btn { min-height: 22px; padding: 1px 8px; }
+.bar-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--amber); }
+.bar.offline .bar-dot, .bar.stale .bar-dot { background: var(--red); }
+
+/* a read that failed with nothing to show; a view's pads it like its rows */
+.read-error { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12.5px; color: var(--error-text); }
+.scroll > .read-error { padding: 8px 14px 8px 18px; }
+
+/* overlays */
+.pal-backdrop { position: fixed; inset: 0; z-index: 60; background: #0000008a; }
+.palette {
+  position: fixed; z-index: 70; left: 50%; top: 12vh; transform: translateX(-50%);
+  width: min(640px, calc(100vw - 32px)); max-height: 70vh; display: flex; flex-direction: column;
+  background: var(--surface-overlay); border: 1px solid var(--line-strong); border-radius: 12px;
+  box-shadow: 0 24px 80px #000c, inset 0 1px 0 #ffffff08; overflow: hidden;
+}
+.pal-input { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.pal-input .ic { color: var(--muted); }
+.pal-input input { flex: 1; min-width: 0; border: 0; outline: none; background: none; font-size: 16px; }
+.pal-input input::placeholder { color: var(--muted); }
+
+/* toasts */
+.toast-viewport {
+  position: fixed; z-index: 90; right: 18px; bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+  margin: 0; padding: 0; list-style: none; max-width: min(420px, calc(100vw - 32px)); outline: none;
+}
+/* The bulk bar sits near the same bottom edge, centred, so a toast goes above
+   it: the bar is 18 px inside the main panel, itself 9 px from the window's
+   edge, and 40 px tall. */
+body:has(.bulk) .toast-viewport { bottom: calc(18px + 9px + 40px + 8px + env(safe-area-inset-bottom, 0px)); }
+.toast {
+  display: flex; align-items: center; gap: 12px; padding: 9px 10px 9px 14px;
+  background: var(--surface-overlay); border: 1px solid var(--line-strong); border-radius: 10px;
+  box-shadow: 0 12px 40px #000b; font-size: 13px; color: var(--ink-muted);
+}
+.toast .ic { color: var(--green); }
+.toast .ic.failed { color: var(--red); }
+.toast-text { flex: 1; min-width: 0; }
+.toast button { color: var(--accent-hover); font-weight: 500; font-size: 12.5px; padding: 3px 6px; border-radius: 5px; }
+.toast button:hover { background: var(--surface-hover); }
+
+.drawer-scrim { display: none; }
+
+@media (max-width: 760px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  /* The drawer opens whole, collapsed or not, and has no collapse button. */
+  .sidebar .panel-toggle { display: none; }
+  /* Closed, the drawer is hidden as well as moved off screen: moved alone, its
+     links stay in the Tab order and the accessibility tree. Visibility waits for
+     the slide out before it hides, and shows at once on the way in. */
+  .sidebar {
+    position: fixed; z-index: 55; top: 0; bottom: 0; left: 0; width: 272px;
+    padding-top: calc(10px + env(safe-area-inset-top, 0px));
+    background: var(--sidebar); border-right: 1px solid var(--line);
+    transform: translateX(-100%); visibility: hidden; transition: transform .18s ease, visibility 0s linear .18s;
+  }
+  .app.drawer-open .sidebar { transform: none; visibility: visible; transition: transform .18s ease; }
+  .app.drawer-open .drawer-scrim { display: block; position: fixed; inset: 0; z-index: 54; background: #0009; }
+  .main { margin: 0; border: 0; border-radius: 0; }
+  .only-mobile { display: inline-grid; }
+  .view-h { padding-left: 10px; padding-right: 10px; }
+  .toast-viewport { left: 16px; right: 16px; max-width: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}

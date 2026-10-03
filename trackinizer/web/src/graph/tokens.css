@@ -1,0 +1,55 @@
+/* The graph's colours, as tokens that encode.ts's readPalette reads: a kind with
+   no --g-kind-<Kind> draws in --g-fallback. Node hues are v1's categorical wheel,
+   at even brightness; edges are quiet slates, so structure recedes behind the
+   nodes; status rings are neutrals and one alert, none of them a node hue, so the
+   key shows each ring beside the app's status glyph. A file of their own, loaded
+   by palette.ts, so the detail's graph preview has them without the graph's chunk. */
+:root {
+  --g-kind-Issue: #5e8cf0;
+  --g-kind-Belief: #a98cf0;
+  --g-kind-Experiment: #6fcf8e;
+  --g-kind-Paper: #4fc7d4;
+  --g-kind-CodeChange: #e8995a;
+  --g-kind-WebResult: #d4b94f;
+  --g-kind-WebSearch: #e86f8e;
+  --g-kind-AgentSession: #7d7df0;
+  --g-kind-Artifact: #d46f6f;
+  --g-edge-narrows: #7b86a8;
+  --g-edge-requires: #a89b7b;
+  --g-edge-produced_by: #6b7390;
+  --g-edge-proves: #7ba88f;
+  --g-edge-favors: #7ba1a8;
+  --g-edge-supersedes: #a87b86;
+  --g-edge-cites_paper: #8f7ba8;
+  --g-status-active: #eceff5;
+  --g-status-complete: #9aa5ce;
+  --g-status-abandoned: #444b6e;
+  --g-status-invalid: #ffb454;
+  --g-fallback: var(--ink-tertiary);
+  /* --ink-tertiary at 15%. */
+  --g-faint: rgba(98, 102, 109, 0.15);
+}
+:root[data-theme="light"] {
+  --g-kind-Issue: #2f6fd6;
+  --g-kind-Belief: #7b5fd8;
+  --g-kind-Experiment: #2f9d5a;
+  --g-kind-Paper: #1f97a6;
+  --g-kind-CodeChange: #c56f2a;
+  --g-kind-WebResult: #a88a1c;
+  --g-kind-WebSearch: #c94068;
+  --g-kind-AgentSession: #5656d6;
+  --g-kind-Artifact: #b84646;
+  --g-edge-narrows: #7f8aa6;
+  --g-edge-requires: #a39470;
+  --g-edge-produced_by: #9aa3b5;
+  --g-edge-proves: #6f9c83;
+  --g-edge-favors: #6f979c;
+  --g-edge-supersedes: #a3707c;
+  --g-edge-cites_paper: #8a7fa8;
+  --g-status-active: #17212d;
+  --g-status-complete: #8a97a8;
+  --g-status-abandoned: #c3ccd6;
+  --g-status-invalid: #c27a12;
+  --g-fallback: var(--ink-tertiary);
+  --g-faint: rgba(108, 120, 134, 0.15);
+}

@@ -1,0 +1,10 @@
+/* What a collapsed pop-in panel leaves (panel.tsx): a strip at its side of the
+   view, its expand button on top, then what it holds, written down the strip.
+   Its view places it and, stacked on a narrow screen, lays it across. */
+.panel-strip {
+  display: flex; flex-direction: column; align-items: center; gap: 8px; width: 40px; flex-shrink: 0;
+  min-height: 0; padding: 6px 0; overflow: hidden; background: var(--bg); color: var(--muted); font-size: 12px;
+}
+.panel-strip.is-left { border-right: 1px solid var(--line); }
+.panel-strip.is-right { border-left: 1px solid var(--line-strong); }
+.panel-strip-text { min-height: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; writing-mode: vertical-rl; }

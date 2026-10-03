@@ -1,0 +1,120 @@
+/* The console (#/console): the rail of views and facets, the feed with its level
+   and range, and a line for messaging agents. */
+.console-mark { font-size: 12px; color: var(--muted); }
+.console-mark[data-live="true"] { color: var(--green); }
+.console-body { flex: 1; min-height: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); }
+
+/* The rail: views, then the agent, room and CLI facets. Collapsed by its
+   button in the header, it takes no width, and the feed's column all of it. */
+.console-rail {
+  width: 252px; min-height: 0; overflow-y: auto; scrollbar-width: thin; display: flex; flex-direction: column; gap: 14px;
+  padding: 10px; border-right: 1px solid var(--line); background: var(--surface);
+}
+.console-rail[hidden] { display: none; }
+.console-sec { display: flex; flex-direction: column; gap: 4px; }
+.console-h { font-size: 11.5px; font-weight: 500; color: var(--muted); padding: 0 4px 2px; }
+.console-views { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.console-view { display: flex; align-items: center; gap: 2px; border-radius: 5px; }
+.console-view:hover, .console-view:has([aria-current="page"]) { background: var(--surface-hover); }
+.console-view-open, .console-view-name {
+  flex: 1; min-width: 0; text-align: left; padding: 3px 6px; font-size: 12.5px; color: var(--ink-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.console-view-open[aria-current="page"] { color: var(--text); }
+.console-view-name { border: 1px solid var(--accent); border-radius: 4px; background: var(--surface); color: var(--text); }
+.console-view .icon-btn { width: 22px; height: 22px; opacity: 0; }
+.console-view:hover .icon-btn, .console-view .icon-btn:focus-visible, .console-view .console-pin[aria-pressed="true"] { opacity: 1; }
+.console-pin[aria-pressed="true"] { color: var(--amber); }
+.console-new { display: flex; align-items: center; gap: 6px; padding: 3px 6px; font-size: 12.5px; color: var(--muted); border-radius: 5px; }
+.console-new:hover { background: var(--surface-hover); color: var(--text); }
+.console-find { display: flex; flex-direction: column; gap: 4px; }
+.console-find input, .console-facet-tools select {
+  width: 100%; font-size: 12px; padding: 4px 8px; border: 1px solid var(--line-strong); border-radius: var(--radius);
+  background: var(--surface-raised); color: var(--text);
+}
+.console-find .btn { align-self: flex-start; }
+.console-facet-tools { display: flex; flex-direction: column; gap: 4px; }
+.console-rows { display: flex; flex-direction: column; }
+.console-group + .console-group { margin-top: 4px; }
+.console-row {
+  display: flex; align-items: center; gap: 7px; min-height: 24px; padding: 1px 4px; border-radius: 5px;
+  font-size: 12.5px; color: var(--ink-muted); cursor: pointer;
+}
+.console-row:hover { background: var(--surface-hover); }
+.console-row:has(:checked) { color: var(--text); }
+.console-row input { margin: 0; accent-color: var(--accent); flex-shrink: 0; }
+.console-row-head { font-weight: 500; color: var(--muted); }
+.console-group .console-row:not(.console-row-head) { padding-left: 14px; }
+.console-group:only-child .console-row:not(.console-row-head) { padding-left: 4px; }
+.console-row-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.console-n { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.console-picked { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+.console-chip {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%; height: 22px; padding: 0 2px 0 8px;
+  border: 1px solid var(--line-strong); border-radius: var(--radius); font-size: 12px; color: var(--ink-muted); background: var(--surface);
+}
+.console-chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.console-chip button { width: 18px; height: 18px; border-radius: 4px; display: grid; place-items: center; color: var(--muted); flex-shrink: 0; }
+.console-chip button:hover { background: var(--surface-hover); color: var(--text); }
+
+/* Segmented controls: the level, and how far back the agent facet looks. */
+.console-seg { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; border: 1px solid var(--line-strong); border-radius: 8px; }
+.console-seg button {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px; border-radius: 6px;
+  font-size: 12.5px; color: var(--muted);
+}
+.console-seg button:hover { color: var(--ink-muted); }
+.console-seg button[aria-pressed="true"] { color: var(--text); background: var(--surface-hover); }
+
+/* The feed's column: the level and range, the minimap, the feed, the line to send. */
+.console-stream { grid-column: 2; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.console-tools {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 7px 18px; font-size: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.console-feed { padding: 10px 18px; }
+.console-lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.console-line time { font-variant-numeric: tabular-nums; color: var(--muted); }
+.console-rooms { min-width: 0; color: var(--muted); }
+/* An agent's or room's name, in a line's header or a To chip: a long one
+   (lead_nightly-regression-sweep-across-all-shards) is cut to an ellipsis,
+   whole in its title and its text, so on hover and to a screen reader. Inline,
+   so a copied header keeps `[room]` on one line, as a flex box's items would
+   not. */
+.console-name {
+  display: inline-block; vertical-align: bottom; min-width: 0; max-width: 24ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* A line's agent, a button that addresses the message box to it. */
+.console-line button.console-actor { font-weight: 500; }
+.console-line button.console-actor:hover { text-decoration: underline; }
+.console-more { align-self: center; margin-top: 10px; }
+.console-range { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: auto; }
+.console-label { color: var(--muted); }
+.console .pill {
+  font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--ink-muted);
+}
+.console .pill[aria-pressed="true"] { border-color: currentColor; background: var(--surface-hover); }
+.console-range input { font-size: 12px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+.console-send { display: flex; flex-direction: column; gap: 6px; padding: 8px 18px 12px; border-top: 1px solid var(--line); }
+.console-to { display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+.console-to .console-picked { flex: 1; min-width: 0; }
+
+/* One colour per agent, from its name (`hue`). */
+.console-actor.a0 { color: var(--accent-hover); }
+.console-actor.a1 { color: var(--green); }
+.console-actor.a2 { color: var(--amber); }
+.console-actor.a3 { color: var(--violet); }
+.console-actor.a4 { color: var(--error-text); }
+.console-actor.a5 { color: var(--urgent); }
+.console-actor.a6 { color: var(--l-evidence); }
+.console-actor.a7 { color: var(--l-against); }
+
+/* Narrow screens: one column that scrolls as a page, the rail first with a
+   scroll of its own, so the feed keeps most of a screen below it. */
+@media (max-width: 760px) {
+  .console-body { display: block; overflow-y: auto; }
+  .console-rail { width: auto; max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--line); }
+  .console-feed { flex: none; height: 75vh; }
+  .console-tools, .console-feed, .console-send { padding-left: 12px; padding-right: 12px; }
+}

@@ -1,0 +1,111 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/inquiries",
+    "query": [
+      [
+        "kind",
+        "Issue"
+      ],
+      [
+        "kind",
+        "Belief"
+      ],
+      [
+        "fields",
+        "id"
+      ],
+      [
+        "fields",
+        "kind"
+      ],
+      [
+        "fields",
+        "seq"
+      ],
+      [
+        "fields",
+        "title"
+      ],
+      [
+        "fields",
+        "priority"
+      ],
+      [
+        "fields",
+        "judgement"
+      ],
+      [
+        "fields",
+        "proved_by"
+      ],
+      [
+        "limit",
+        "50"
+      ],
+      [
+        "offset",
+        "0"
+      ]
+    ]
+  },
+  "response": {
+    "body": [
+      {
+        "id": "00000000-0000-4000-8000-000000000001",
+        "kind": "Issue",
+        "priority": 10,
+        "seq": 1,
+        "title": "Web app fixtures"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000002",
+        "kind": "Issue",
+        "priority": 20,
+        "seq": 2,
+        "title": "Prerequisite"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000003",
+        "kind": "Issue",
+        "priority": 0,
+        "seq": 3,
+        "title": "Child, renamed"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000004",
+        "kind": "Issue",
+        "priority": null,
+        "seq": 4,
+        "title": "Which sort?"
+      },
+      {
+        "id": "00000000-0000-4000-8000-000000000007",
+        "judgement": "unproven",
+        "kind": "Belief",
+        "proved_by": [
+          {
+            "id": "00000000-0000-4000-8000-000000000005",
+            "kind": "Paper",
+            "labels": null,
+            "note": null,
+            "valence": 0.8
+          },
+          {
+            "id": "00000000-0000-4000-8000-000000000009",
+            "kind": "Experiment",
+            "labels": null,
+            "note": "Measured on PGlite.",
+            "valence": 0.6
+          }
+        ],
+        "seq": 1,
+        "title": "A membership check holds at most 13 ids"
+      }
+    ],
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

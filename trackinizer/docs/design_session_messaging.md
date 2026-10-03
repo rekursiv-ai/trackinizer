@@ -276,6 +276,10 @@ in `design_subscriber.md`.
 
 ## Roadmap
 
+The roadmap is history. Its UI steps were built in the old web UI's pages
+(`server/assets/index.html` and `console.html`), which the web app at
+`/app/` has replaced, so their file and line references no longer resolve.
+
 Three phases, each delivering a usable artifact and a verification gate.
 The order is deliberate: the viewer is built **first as the instrument
 that proves `trax run` scrapes correctly**, before any injection work.

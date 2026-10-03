@@ -8,8 +8,9 @@ path templates; the server registers handlers against them and the client
 builds requests from them, so neither can drift.
 
 It also carries the cross-session console feed (:class:`FeedEvent`,
-:class:`FeedCursor`) and the inbound/routed messaging bodies -- everything
-about a session that is not one of its records.
+:class:`FeedCursor`), its counts (:class:`FeedFacetsResponse`,
+:class:`FeedHistogramResponse`) and the inbound/routed messaging bodies --
+everything about a session that is not one of its records.
 
 This package is part of the publishable client distribution, so it must
 not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
@@ -47,6 +48,8 @@ def _reject_blank(value: str | None) -> str | None:
 
 
 __all__ = [
+    "FEED_FACETS_PATH",
+    "FEED_HISTOGRAM_PATH",
     "FEED_PATH",
     "SEND_MESSAGE_PATH",
     "SESSION_API_PATHS",
@@ -57,9 +60,15 @@ __all__ = [
     "SESSION_START_PATH",
     "VERSION_PATH",
     "DrainInboundResponse",
+    "FeedActorFacet",
+    "FeedBucket",
     "FeedCursor",
     "FeedEvent",
+    "FeedFacetsResponse",
+    "FeedHistogramResponse",
+    "FeedKindFacet",
     "FeedResponse",
+    "FeedRoomFacet",
     "InboundDrainItem",
     "InboundEnqueueRequest",
     "InboundEnqueueResponse",
@@ -232,6 +241,80 @@ class FeedResponse(BaseModel):
 
     events: list[FeedEvent]
     next_after: FeedCursor | None = None
+
+
+class FeedActorFacet(BaseModel):
+    """One session's share of a feed window, as the console's agent list shows it."""
+
+    actor: str
+    """The session's routing name (``owner``), as :class:`FeedEvent` carries it."""
+
+    session_id: uuid.UUID
+    cli: str | None
+    rooms: list[str]
+    count: int = Field(ge=0)
+    """Records in the window."""
+
+    conversation: int = Field(ge=0)
+    """Of ``count``, the records that are conversation: what a person or agent
+    said, not tool calls, thinking or bookkeeping."""
+
+    last: datetime
+    """``created`` of the session's newest record in the window."""
+
+    ended: datetime | None
+    """When the session ended; ``None`` while it is live."""
+
+
+class FeedRoomFacet(BaseModel):
+    """One room's share of a feed window."""
+
+    room: str
+    count: int = Field(ge=0)
+    """Records in the window from sessions in the room."""
+
+    actors: list[str]
+    """The routing names of those sessions."""
+
+
+class FeedKindFacet(BaseModel):
+    """One record kind's share of a feed window."""
+
+    kind: str
+    count: int = Field(ge=0)
+
+
+class FeedFacetsResponse(BaseModel):
+    """What a feed window holds, by session, room and record kind.
+
+    ``actors`` is newest ``last`` first; ``rooms`` and ``kinds`` are largest
+    ``count`` first.
+    """
+
+    actors: list[FeedActorFacet]
+    rooms: list[FeedRoomFacet]
+    kinds: list[FeedKindFacet]
+
+
+class FeedBucket(BaseModel):
+    """Records written in ``[start, start + bucket_seconds)``."""
+
+    start: datetime
+    count: int = Field(ge=0)
+
+
+class FeedHistogramResponse(BaseModel):
+    """Feed records per time bucket, every bucket from ``start`` to ``end``.
+
+    Buckets are ``bucket_seconds`` wide and aligned to the Unix epoch, so the
+    first starts at or before the window's start and the last ends after its
+    end; buckets with no records are listed with a ``count`` of 0.
+    """
+
+    start: datetime
+    end: datetime
+    bucket_seconds: int = Field(ge=1)
+    counts: list[FeedBucket]
 
 
 class InboundEnqueueRequest(BaseModel):
@@ -447,6 +530,8 @@ SESSION_INBOUND_PATH: Final = "/api/sessions/{session_id}/inbound"
 SEND_MESSAGE_PATH: Final = "/api/messages"
 VERSION_PATH: Final = "/api/version"
 FEED_PATH: Final = "/api/web/feed"
+FEED_FACETS_PATH: Final = "/api/web/feed/facets"
+FEED_HISTOGRAM_PATH: Final = "/api/web/feed/histogram"
 
 
 # Every non-field API path the client, SPA, or deploy probe depends on, as a
@@ -464,6 +549,8 @@ SESSION_API_PATHS: tuple[str, ...] = (
     SEND_MESSAGE_PATH,
     VERSION_PATH,
     FEED_PATH,
+    FEED_FACETS_PATH,
+    FEED_HISTOGRAM_PATH,
 )
 
 
