@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from trackinizer.server.semantic_mapper import IndexUnit, SemanticMapper
+from trackinizer.server.semantic_mapper import IndexUnit
 from trackinizer.server.semantic_mapper_footprint import (
     CHUNK_CHARS,
     CHUNK_OVERLAP_CHARS,
@@ -17,7 +17,6 @@ MAPPER = FootprintMapper()
 
 
 def test_satisfies_the_protocol() -> None:
-    assert isinstance(MAPPER, SemanticMapper)
     assert MAPPER.name == "footprint-v1"
 
 

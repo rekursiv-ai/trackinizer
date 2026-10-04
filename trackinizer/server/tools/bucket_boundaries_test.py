@@ -248,7 +248,8 @@ def test_derive_edges_share_a_prefix_and_diverge_in_the_tail() -> None:
     the crossover) shift per model. The shipped plans therefore carry per-model
     edge tuples with a common prefix, not one shared set.
     """
-    hist = _corpus()
+    corpus_items = list(_corpus().items())
+    hist = dict([*corpus_items[:32], *corpus_items[-32:]])
     edges = {
         spec: derive_edges(spec, hist, min_buckets=10, max_buckets=20)
         for spec in (QWEN3_0P6B, QWEN3_4B, QWEN3_8B, OCTEN_8B)

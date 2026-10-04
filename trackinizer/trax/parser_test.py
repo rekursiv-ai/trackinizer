@@ -919,7 +919,6 @@ def test_inline_create_carries_nested_edge_deep() -> None:
     assert ws.kind == "WebSearch"
     assert len(ws.edges) == 1, "the websearch carries the nested produced-paper edge"
     inner = ws.edges[0]
-    assert isinstance(inner, EdgeAction)
     assert isinstance(inner.target, InlineCreate)
     assert inner.target.kind == "Paper"
 

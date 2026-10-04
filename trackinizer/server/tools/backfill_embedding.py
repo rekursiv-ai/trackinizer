@@ -84,7 +84,7 @@ def main() -> int:
 
     """
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 2)[2],
+        description="".join((__doc__ or "").split("\n", 2)[2:]),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
@@ -263,7 +263,6 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--gpu-vram-gb",
-        dest="gpu_vram_gb",
         type=float,
         default=None,
         help="Override the per-card VRAM (GB) the bucket rows are derived for; "
@@ -271,7 +270,6 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--compile-cache",
-        dest="compile_cache",
         type=Path,
         default=Path(
             "/opt/scratch/caches/torch/compile-artifacts/backfill-embedding.bin",
@@ -364,23 +362,14 @@ async def _scan(
         while True:
             # Keys only: workers refetch their page's texts themselves, so
             # queue items stay tiny and the scanner never blocks on text IO.
-            if cursor is None:
-                rows = await conn.fetch(
-                    _pending_page_sql(join, predicate, first=True),
-                    mapper_name,
-                    model,
-                    kinds,
-                    page,
-                )
-            else:
-                rows = await conn.fetch(
-                    _pending_page_sql(join, predicate, first=False),
-                    mapper_name,
-                    model,
-                    kinds,
-                    *cursor,
-                    page,
-                )
+            rows = await conn.fetch(
+                _pending_page_sql(join, predicate, first=cursor is None),
+                mapper_name,
+                model,
+                kinds,
+                *(cursor or ()),
+                page,
+            )
             if not rows:
                 break
             last = _key(rows[-1])
@@ -433,8 +422,10 @@ def _worker_entry(config: _WorkerConfig, queue: Queue[PageTask | None]) -> None:
     if not config.gpu:
         # Cap intra-op threads so N CPU workers share the box instead of each
         # claiming every core and thrashing.
-        cpus = os.cpu_count() or 1
-        os.environ["OMP_NUM_THREADS"] = str(max(1, cpus // 8))
+        cpus = os.cpu_count()
+        os.environ["OMP_NUM_THREADS"] = str(
+            max(1, cpus // 8) if cpus is not None else 1,
+        )
     asyncio.run(_worker(config, "cuda:0" if config.gpu else "cpu", queue))
 
 
@@ -617,7 +608,7 @@ async def _read_stage(
         # Two static texts, not an f-string comparator: the only inline piece
         # is the >= / > choice for the first (inclusive) page. The manifest bound
         # (``r.idx < m.records``) excludes stale tail rows and carries no ``>=``,
-        # so the first-``>=`` replace still targets the keyset comparator.
+        # so the ``>=`` replace targets only the keyset comparator.
         join, predicate = manifest_bound("r")
         inclusive_sql = vetted_sql(
             "SELECT r.created, r.session_id, r.part, r.idx, r.kind, r.text "
@@ -629,7 +620,7 @@ async def _read_stage(
             predicate,
             " ORDER BY r.created, r.session_id, r.part, r.idx",
         )
-        exclusive_sql = inclusive_sql.replace(">=", ">", 1)
+        exclusive_sql = inclusive_sql.replace(">=", ">")
         rows = await conn.fetch(
             inclusive_sql if inclusive else exclusive_sql,
             *lo,
@@ -794,10 +785,7 @@ async def _write_stage(
     done = 0
     rate = 0.0  # EMA of records/sec.
     last = start
-    while True:
-        item = await writes.get()
-        if item is None:
-            break
+    while (item := await writes.get()) is not None:
         pool, vectors = item
         await _write_pool(conn, pool, vectors, embedder, mapper_name)
         done += len(pool)

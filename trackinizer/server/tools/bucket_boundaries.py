@@ -27,6 +27,7 @@ the runner (see ``server/tools/bucket_embed.py``'s edge-set choice), not here.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -364,42 +365,24 @@ def derive_edges(
     min_buckets: int,
     max_buckets: int,
 ) -> tuple[int, ...]:
-    """Return the per-model default bucket edges over ``histogram``.
-
-    Runs the segmentation DP under ``spec``'s exact forward-cost curve, sweeping
-    bucket counts ``1..max_buckets``; the chosen count is the knee (where added
-    buckets stop paying) clamped into ``[min_buckets, max_buckets]``. Appends the
-    :data:`_TAIL_EDGE` safety bucket when the DP does not already end there. The
-    low edges are shared across the Qwen family (short-mass buckets); the long
-    edges diverge by arch (the attention/dense crossover differs per model).
+    """Return cached bucket edges for an immutable histogram snapshot.
 
     Args:
-      spec: The model's shape parameters, e.g. :data:`QWEN3_4B`.
-      histogram: Token-length -> count (see :func:`load_corpus_histogram`).
-      min_buckets: Lower clamp on the bucket count (finer than the knee).
-      max_buckets: Upper clamp / sweep ceiling.
+      spec: Transformer shape whose per-length cost the edges minimize.
+      histogram: Padded sequence length to observed count.
+      min_buckets: Fewest bucket edges to consider.
+      max_buckets: Most bucket edges to consider.
 
     Returns:
-      edges: Ascending bucket edges, ending at :data:`_TAIL_EDGE`.
+      edges: Ascending bucket upper bounds.
 
     """
-    cost = transformer_cost(spec)
-    points = sweep(
-        histogram,
-        max_k=max_buckets,
-        cost=cost,
-        pad_multiple=_EDGE_PAD_MULTIPLE,
+    return _cached_derive_edges(
+        spec,
+        tuple(histogram.items()),
+        min_buckets,
+        max_buckets,
     )
-    chosen_k = min(max_buckets, max(min_buckets, knee(points)))
-    edges = optimal_boundaries(
-        histogram,
-        chosen_k,
-        cost=cost,
-        pad_multiple=_EDGE_PAD_MULTIPLE,
-    )
-    if edges[-1] < _TAIL_EDGE:
-        edges.append(_TAIL_EDGE)
-    return tuple(edges)
 
 
 def optimal_boundaries(
@@ -671,3 +654,51 @@ def _reconstruct_edges(
         j = cut[b][j]
     edges.append(edges_by_index[j])
     return sorted(set(edges))
+
+
+# Runs the segmentation DP under ``spec``'s exact forward-cost curve, sweeping bucket
+# counts ``1..max_buckets``; the chosen count is the knee (where added buckets stop
+# paying) clamped into ``[min_buckets, max_buckets]``. Appends the :data:`_TAIL_EDGE`
+# safety bucket when the DP does not already end there. The low edges are shared across
+# the Qwen family (short-mass buckets); the long edges diverge by arch (the
+# attention/dense crossover differs per model).
+def _derive_edges(
+    spec: TransformerSpec,
+    histogram: Mapping[int, int],
+    *,
+    min_buckets: int,
+    max_buckets: int,
+) -> tuple[int, ...]:
+    """Return the per-model default bucket edges over ``histogram``."""
+    cost = transformer_cost(spec)
+    points = sweep(
+        histogram,
+        max_k=max_buckets,
+        cost=cost,
+        pad_multiple=_EDGE_PAD_MULTIPLE,
+    )
+    chosen_k = min(max_buckets, max(min_buckets, knee(points)))
+    edges = optimal_boundaries(
+        histogram,
+        chosen_k,
+        cost=cost,
+        pad_multiple=_EDGE_PAD_MULTIPLE,
+    )
+    if edges[-1] < _TAIL_EDGE:
+        edges.append(_TAIL_EDGE)
+    return tuple(edges)
+
+
+@cache
+def _cached_derive_edges(
+    spec: TransformerSpec,
+    histogram_items: tuple[tuple[int, int], ...],
+    min_buckets: int,
+    max_buckets: int,
+) -> tuple[int, ...]:
+    return _derive_edges(
+        spec,
+        dict(histogram_items),
+        min_buckets=min_buckets,
+        max_buckets=max_buckets,
+    )

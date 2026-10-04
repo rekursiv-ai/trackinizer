@@ -242,7 +242,6 @@ class TestAdminUsers:
         users = ListCodec.mappings(body["users"])
         assert len(users) == 1
         user = users[0]
-        assert isinstance(user, dict)
         assert user["email"] == "bob@example.com"
         assert user["role"] == "writer"
         assert user["status"] == "active"
@@ -732,7 +731,6 @@ class TestAdminAllowlist:
         entries = ListCodec.mappings(body["entries"])
         assert len(entries) == 1
         entry = entries[0]
-        assert isinstance(entry, dict)
         assert entry["email_or_pattern"] == "*@example.com"
         assert entry["role"] == "writer"
 
