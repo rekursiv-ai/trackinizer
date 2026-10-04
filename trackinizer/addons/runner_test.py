@@ -96,7 +96,7 @@ class TwoAddons(OneAddon):
     """Has no standalone service."""
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def loop_logger() -> Iterator[logging.Logger]:
     """Yield the ``loop`` logger, restoring its level: ``run`` sets it globally."""
     package = logging.getLogger("loop")
