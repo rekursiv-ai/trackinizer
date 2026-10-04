@@ -346,6 +346,10 @@ class TestDelegate:
             shadow.mkdir()
             (shadow / "__init__.py").touch()
         monkeypatch.chdir(tmp_path)
+        # The sagent conftest exports PYTHONSAFEPATH=1 to every worker that collects
+        # it; the probe would then skip cwd and import whatever checkout the venv
+        # installed, so the test would neither see the shadow nor pass in a worktree.
+        monkeypatch.delenv("PYTHONSAFEPATH", raising=False)
         spawned: list[dict[str, object]] = []
         with monkeypatch.context() as patch:
             patch.setattr(
