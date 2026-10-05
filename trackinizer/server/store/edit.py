@@ -15,7 +15,7 @@ from uuid import UUID
 
 import asyncpg
 
-from trackinizer.lib.custom_json import FloatCodec, StrCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
     upsert_embedding,
@@ -127,7 +127,7 @@ class _EditMixin(_CascadeAuditMixin):
                 target_id,
                 cast(Inquiry.InquiryKind, row["kind"]),
                 "title",
-                Snapshot(title=StrCodec.coerce(row["title"], None)),
+                Snapshot(title=convert(row["title"], str)),
                 new=Snapshot(title=value),
                 api_key_id=api_key_id,
                 actor=actor,
@@ -2098,7 +2098,7 @@ class _EditMixin(_CascadeAuditMixin):
                 return replay
             if value < 0:
                 raise ConflictError(f"{axis} cannot be negative")
-            delta = Cost(**{axis: value - FloatCodec.coerce(row["current"], None)})
+            delta = Cost(**{axis: value - convert(row["current"], float)})
             if not delta:
                 return None
             change_id, _ = await self.emit_change(

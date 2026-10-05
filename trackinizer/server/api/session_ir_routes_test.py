@@ -26,13 +26,7 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedRecord,
     UserMessage,
 )
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    IntCodec,
-    ListCodec,
-    StrCodec,
-    json_freeze,
-)
+from trackinizer.lib.custom_json import convert, json_freeze
 from trackinizer.server.api import session_ir_routes
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
@@ -106,9 +100,9 @@ class TestReadParts:
         response = client.get(f"/api/sessions/{session_id}/parts")
 
         assert response.status_code == 200, response.text
-        body = DictCodec.coerce(response.json())
-        parts = ListCodec.coerce(body["parts"], object)
-        assert [StrCodec.coerce(DictCodec.coerce(p)["name"]) for p in parts] == [
+        body = convert(response.json(), dict[str, object])
+        parts = convert(body["parts"], list[object])
+        assert [convert(convert(p, dict[str, object])["name"], str) for p in parts] == [
             "a.jsonl",
             "b.jsonl",
         ]
@@ -148,9 +142,9 @@ class TestReadParts:
 
         response = client.get(f"/api/sessions/{uuid.uuid4()}/parts")
 
-        body = DictCodec.coerce(response.json())
-        parts = ListCodec.coerce(body["parts"], object)
-        assert DictCodec.coerce(parts[0])["format"] == ""
+        body = convert(response.json(), dict[str, object])
+        parts = convert(body["parts"], list[object])
+        assert convert(parts[0], dict[str, object])["format"] == ""
 
     def test_a_non_session_id_is_a_404(
         self,
@@ -187,10 +181,12 @@ class TestReadRecords:
         response = client.get(f"/api/sessions/{uuid.uuid4()}/records?part=0")
 
         assert response.status_code == 200, response.text
-        body = DictCodec.coerce(response.json())
-        assert IntCodec.coerce(body["part"]) == 0
-        records = ListCodec.coerce(body["records"], object)
-        assert [IntCodec.coerce(DictCodec.coerce(r)["idx"]) for r in records] == [0, 1]
+        body = convert(response.json(), dict[str, object])
+        assert convert(body["part"], int) == 0
+        records = convert(body["records"], list[object])
+        assert [
+            convert(convert(r, dict[str, object])["idx"], int) for r in records
+        ] == [0, 1]
 
     def test_ciphertext_rides_beside_the_payload(
         self,
@@ -219,12 +215,13 @@ class TestReadRecords:
             ),
         )
 
-        body = DictCodec.coerce(
+        body = convert(
             client.get(f"/api/sessions/{uuid.uuid4()}/records").json(),
+            dict[str, object],
         )
-        record = DictCodec.coerce(ListCodec.coerce(body["records"], object)[0])
+        record = convert(convert(body["records"], list[object])[0], dict[str, object])
 
-        assert StrCodec.coerce(record["ciphertext"]) == _CIPHERTEXT
+        assert convert(record["ciphertext"], str) == _CIPHERTEXT
         assert _CIPHERTEXT not in str(record["payload"])
 
     def test_plaintext_only_reaches_the_store(
@@ -509,20 +506,20 @@ async def test_a_legacy_transcript_reads_every_listed_part(integ_store: Store) -
     ]
     assert [
         (
-            IntCodec.coerce(body["part"]),
-            IntCodec.coerce(DictCodec.coerce(record)["idx"]),
+            convert(body["part"], int),
+            convert(convert(record, dict[str, object])["idx"], int),
         )
-        for body in (DictCodec.coerce(page.json()) for page in pages)
-        for record in ListCodec.coerce(body["records"], object)
+        for body in (convert(page.json(), dict[str, object]) for page in pages)
+        for record in convert(body["records"], list[object])
     ] == [(-1, 0), (-1, 1), (0, 0)]
 
 
 def _listed_parts(response: httpx2.Response) -> list[int]:
     """Return the ``part`` of every entry a ``GET .../parts`` response lists."""
-    body = DictCodec.coerce(response.json())
+    body = convert(response.json(), dict[str, object])
     return [
-        IntCodec.coerce(DictCodec.coerce(entry)["part"])
-        for entry in ListCodec.coerce(body["parts"], object)
+        convert(convert(entry, dict[str, object])["part"], int)
+        for entry in convert(body["parts"], list[object])
     ]
 
 

@@ -47,7 +47,7 @@ from trackinizer.lib.agent.types.sessions import (
     ToolCall,
     UserMessage,
 )
-from trackinizer.lib.custom_json import DictCodec, StrCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.web.scripts.graph_structure import GRAPH_STRUCTURE, load
 from trackinizer.web.scripts.seed_graph import seed_graph
@@ -316,7 +316,7 @@ def _converse(
 
 def _publish(client: SeedClient, *, issue: uuid.UUID, cites: uuid.UUID) -> uuid.UUID:
     """Publish the cache benchmark's HTML report, produced by ``issue``; its Artifact's id."""
-    published = DictCodec.coerce(
+    published = convert(
         client.post(
             "/api/artifacts/content",
             body={
@@ -372,9 +372,9 @@ aria-label="Throughput in million tokens a second, main against the cache">
                 "citations": [{"record_id": str(cites)}],
             },
         ),
-        default=None,
+        dict[str, object],
     )
-    return uuid.UUID(StrCodec.coerce(published.get("artifact_id"), default=None))
+    return uuid.UUID(convert(published.get("artifact_id"), str))
 
 
 def _ending_at(sessions: Sequence[_Session], end: datetime) -> list[_Session]:

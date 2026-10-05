@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec, loads
+from trackinizer.lib.custom_json import convert, parse
 from trackinizer.server.api.app import app
 from trackinizer.server.visuals.catalog import (
     StaticVisual,
@@ -119,44 +119,46 @@ async def test_timeline_caps_rows_and_preserves_signed_claim_edges(
         params={"direction_limit": 2, "results_per_direction": 1},
     )
     assert response.status_code == 200, response.text
-    body = DictCodec.coerce(loads(response.content))
-    target = DictCodec.coerce(body["target"])
-    assert len(StrCodec.coerce(target["title"])) == 2_000
-    assert len(StrCodec.coerce(target["description"])) == 2_000
-    directions = [
-        DictCodec.coerce(item) for item in ListCodec.coerce(body["directions"])
-    ]
-    assert [DictCodec.coerce(item["issue"])["title"] for item in directions] == [
+    body = parse(response.content, dict[str, object])
+    target = convert(body["target"], dict[str, object])
+    assert len(convert(target["title"], str)) == 2_000
+    assert len(convert(target["description"], str)) == 2_000
+    directions = convert(body["directions"], list[dict[str, object]])
+    assert [
+        convert(item["issue"], dict[str, object])["title"] for item in directions
+    ] == [
         "Direction 0",
         "Direction 1",
     ]
     assert body["directions_truncated"] is True
     assert all(direction["results_truncated"] is True for direction in directions)
-    first_result = DictCodec.coerce(ListCodec.coerce(directions[0]["results"])[0])
-    outcome = StrCodec.coerce(DictCodec.coerce(first_result["record"])["outcome"])
+    first_result = convert(
+        convert(directions[0]["results"], list[dict[str, object]])[0],
+        dict[str, object],
+    )
+    outcome = convert(
+        convert(first_result["record"], dict[str, object])["outcome"],
+        str,
+    )
     assert len(outcome) == 2_000
     assert outcome.startswith("Measured outcome ")
-    evidence = [
-        DictCodec.coerce(item) for item in ListCodec.coerce(first_result["evidence"])
-    ]
+    evidence = convert(first_result["evidence"], list[dict[str, object]])
     assert len(evidence) == 6
     assert first_result["evidence_truncated"] is True
     assert {(item["edge_kind"], item["valence"]) for item in evidence} == {
         ("proves", 0.8),
         ("favors", -0.7),
     }
-    assert {DictCodec.coerce(item["claim"])["title"] for item in evidence} == {
-        f"Claim 0-{index}" for index in range(6)
-    }
-    note = StrCodec.coerce(evidence[0]["note"])
+    assert {
+        convert(item["claim"], dict[str, object])["title"] for item in evidence
+    } == {f"Claim 0-{index}" for index in range(6)}
+    note = convert(evidence[0]["note"], str)
     assert len(note) == 2_000
     assert note.startswith("bounded evidence note ")
     assert [
-        DictCodec.coerce(item)["title"]
-        for item in ListCodec.coerce(body["unresolved_questions"])
-    ] == [
-        "Direction 0",
-    ]
+        convert(item, dict[str, object])["title"]
+        for item in convert(body["unresolved_questions"], list[dict[str, object]])
+    ] == ["Direction 0"]
 
 
 @pytest.mark.db_pglite
@@ -220,15 +222,13 @@ async def test_experiment_anchor_keeps_the_selected_result_in_its_issue_timeline
         params={"results_per_direction": 1},
     )
     assert response.status_code == 200, response.text
-    body = DictCodec.coerce(loads(response.content))
-    assert DictCodec.coerce(body["issue"])["id"] == str(issue_id)
-    results = [
-        DictCodec.coerce(item) for item in ListCodec.coerce(body["root_results"])
-    ]
+    body = parse(response.content, dict[str, object])
+    assert convert(body["issue"], dict[str, object])["id"] == str(issue_id)
+    results = convert(body["root_results"], list[dict[str, object]])
     assert len(results) == 1
-    assert DictCodec.coerce(results[0]["record"])["id"] == str(other_ids[-1])
-    selected = DictCodec.coerce(body["selected_result"])
-    assert DictCodec.coerce(selected["record"])["id"] == str(selected_id)
+    assert convert(results[0]["record"], dict[str, object])["id"] == str(other_ids[-1])
+    selected = convert(body["selected_result"], dict[str, object])
+    assert convert(selected["record"], dict[str, object])["id"] == str(selected_id)
 
 
 @pytest.mark.db_pglite
@@ -253,10 +253,10 @@ async def test_orphan_experiment_has_no_issue_but_keeps_its_selected_result(
     response = await client.get(f"/api/visuals/timeline/{experiment_id}")
 
     assert response.status_code == 200, response.text
-    body = DictCodec.coerce(loads(response.content))
+    body = parse(response.content, dict[str, object])
     assert body["issue"] is None
-    selected = DictCodec.coerce(body["selected_result"])
-    assert DictCodec.coerce(selected["record"])["id"] == str(experiment_id)
+    selected = convert(body["selected_result"], dict[str, object])
+    assert convert(selected["record"], dict[str, object])["id"] == str(experiment_id)
 
 
 @pytest.mark.db_pglite
@@ -417,11 +417,9 @@ async def _insert_edge(
 
 def _direction_titles(content: bytes) -> list[object]:
     """Return the Issue titles of a timeline response's directions, in order."""
-    directions = ListCodec.coerce(DictCodec.coerce(loads(content))["directions"])
-    return [
-        DictCodec.coerce(DictCodec.coerce(item)["issue"])["title"]
-        for item in directions
-    ]
+    body = parse(content, dict[str, object])
+    directions = convert(body["directions"], list[dict[str, object]])
+    return [convert(item["issue"], dict[str, object])["title"] for item in directions]
 
 
 if __name__ == "__main__":

@@ -19,15 +19,7 @@ from trackinizer.client.client import (
     server_url,
 )
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    FloatCodec,
-    IntCodec,
-    JSONValue,
-    ListCodec,
-    StrCodec,
-    loads,
-)
+from trackinizer.lib.custom_json import JSONValue, convert, loads
 from trackinizer.trax import cli, profile
 from trackinizer.trax.conftest import FakeClient
 from trackinizer.trax.grammar import parse_kind, parse_ref
@@ -446,17 +438,22 @@ class TestRequests:
             for record in caplog.records
             if getattr(record, "event", "") == "trackinizer_transport_failure"
         )
-        fields = DictCodec.coerce(record.__dict__)
-        assert StrCodec.coerce(fields.get("method")) == "GET"
-        assert StrCodec.coerce(fields.get("path")) == "/api/version"
-        assert StrCodec.coerce(fields.get("server")) == "https://server"
-        assert IntCodec.coerce(fields.get("client_request_index"), 0) == 1
-        assert IntCodec.coerce(fields.get("attempt"), 0) == 1
-        assert StrCodec.coerce(fields.get("failure_class")) == "connect_timeout"
-        assert StrCodec.coerce(fields.get("failure_detail")) == "tls_handshake_timeout"
-        assert StrCodec.coerce(fields.get("error_type")) == "ConnectTimeout"
-        assert FloatCodec.coerce(fields.get("client_age_sec"), -1) >= 0
-        assert len(StrCodec.coerce(fields.get("client_id"))) == 12
+        fields = convert(record.__dict__, dict[str, object])
+        assert convert(fields.get("method"), str, default="") == "GET"
+        assert convert(fields.get("path"), str, default="") == "/api/version"
+        assert convert(fields.get("server"), str, default="") == "https://server"
+        assert convert(fields.get("client_request_index"), int, default=0) == 1
+        assert convert(fields.get("attempt"), int, default=0) == 1
+        assert (
+            convert(fields.get("failure_class"), str, default="") == "connect_timeout"
+        )
+        assert (
+            convert(fields.get("failure_detail"), str, default="")
+            == "tls_handshake_timeout"
+        )
+        assert convert(fields.get("error_type"), str, default="") == "ConnectTimeout"
+        assert convert(fields.get("client_age_sec"), float, default=-1.0) >= 0
+        assert len(convert(fields.get("client_id"), str, default="")) == 12
 
     def test_retries_5xx_with_same_change_id(
         self,
@@ -1179,7 +1176,7 @@ class TestClientMethods:
             valence=0.9,
             labels=["important"],
         )
-        body = DictCodec.coerce(client.post_calls[0][1])
+        body = convert(client.post_calls[0][1], dict[str, object])
         assert body["note"] == "load-bearing"
         assert body["valence"] == 0.9
         assert body["labels"] == ["important"]
@@ -1467,8 +1464,8 @@ def test_submit_batch_accepts_matching_or_absent_body_kind() -> None:
             ("Belief", {"title": "b", "kind": "Belief"}),  # Matching body kind.
         ],
     )
-    body = DictCodec.coerce(client.request_calls[0][2])
-    items = ListCodec.mappings(body["items"])
+    body = convert(client.request_calls[0][2], dict[str, object])
+    items = convert(body["items"], list[dict[str, object]])
     assert items[0]["kind"] == "Issue"
     assert items[1]["kind"] == "Belief"
 
@@ -1526,7 +1523,7 @@ class TestSessionMethods:
         _install_mock_transport(client, handler)
         resp = client.session_start(SessionStart(cli="codex"))
         assert seen["path"] == "/api/sessions/start"
-        body = DictCodec.coerce(seen["body"])
+        body = convert(seen["body"], dict[str, object])
         assert body["cli"] == "codex"
         # A missing idempotency key is minted client-side.
         assert body["idempotency_key"] is not None

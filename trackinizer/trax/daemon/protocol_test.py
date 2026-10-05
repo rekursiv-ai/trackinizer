@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
-from typing import cast
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Final, cast
 
+import inspect
 import json
 import os
 import socket
 import subprocess
 import sys
 import tempfile
+import time
 
 import pytest
 
@@ -20,6 +24,7 @@ from trackinizer.trax.daemon.protocol import (
     ProtocolVersionError,
     Request,
     Response,
+    daemon_source_version,
     package_root,
     read_frame,
     socket_address,
@@ -27,6 +32,13 @@ from trackinizer.trax.daemon.protocol import (
     source_version,
     write_frame,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+_CWD: Final = Path(__file__).resolve().parent
 
 
 class _FragmentedSocket:
@@ -269,16 +281,142 @@ class TestSourceVersionCoverage:
         behavior after an edit to the HTTP client or a wire contract -- output
         that looks correct and is not.
         """
-        for package in ("trax", "client", "wire", "types"):
-            (tmp_path / package).mkdir()
-            (tmp_path / package / "mod.py").write_text("x = 1\n")
+        modules = [
+            tmp_path / package / "mod.py"
+            for package in ("trax", "client", "wire", "types")
+        ]
+        for module in modules:
+            module.parent.mkdir()
+            module.write_text("x = 1\n")
+        # Model filesystems with coarse timestamp resolution: modules written
+        # together share one tick, and a rewrite within it keeps that mtime.
+        tick_ns = modules[0].stat().st_mtime_ns
+        for module in modules:
+            os.utime(module, ns=(tick_ns, tick_ns))
+        client_source = tmp_path / "client" / "mod.py"
         before = source_version(tmp_path)
 
-        (tmp_path / "client" / "mod.py").write_text("x = 2\n")
+        client_source.write_text("x = 2\n")
+        os.utime(client_source, ns=(tick_ns, tick_ns))
 
         assert source_version(tmp_path) != before, (
             "an edit under client/ left the fingerprint unchanged; a running "
             "daemon would keep serving the old code"
+        )
+
+    def test_leaves_out_tests_the_daemon_never_imports(self, tmp_path: Path) -> None:
+        """Editing a test must not restart a daemon that never imported it.
+
+        Test modules were nearly half the files and more than half the bytes
+        the fingerprint covered, and the daemon loads none of them.
+        """
+        (tmp_path / "mod.py").write_text("x = 1\n")
+        before = source_version(tmp_path)
+
+        (tmp_path / "mod_test.py").write_text("def test_x() -> None: ...\n")
+        (tmp_path / "conftest.py").write_text("import pytest\n")
+
+        assert source_version(tmp_path) == before
+
+    def test_the_daemon_fingerprint_counts_what_it_lists(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Each module it reads beside the root, and ``userdirs``, must move it.
+
+        The fast half of the drift guard below: a listed path naming no file
+        is skipped without a word, and ``userdirs`` -- which this module
+        imports -- must count in either layout. Names are matched exactly,
+        since a case-insensitive filesystem would stat a miscased one.
+        """
+        stated: list[str] = []
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "stat", partial(_recorded_stat, os.stat, stated=stated))
+            before = daemon_source_version()
+        listings = {
+            directory: {entry.name for entry in directory.glob("*")}
+            for directory in {Path(path).parent for path in stated}
+        }
+        unnamed = [
+            path
+            for path in stated
+            if Path(path).name not in listings[Path(path).parent]
+        ]
+        inside = f"{package_root()}{os.sep}"
+        beside = {
+            os.path.normpath(path)
+            for path in stated
+            if not os.path.normpath(path).startswith(inside)
+        }
+        unmoved: list[str] = []
+        for path in sorted(beside | {os.path.realpath(inspect.getfile(state_dir))}):
+            with monkeypatch.context() as patch:
+                patch.setattr(os, "stat", partial(_grown_stat, os.stat, grown=path))
+                if daemon_source_version() == before:
+                    unmoved.append(path)
+
+        assert not unnamed, (
+            f"the fingerprint lists modules that do not exist: {unnamed}"
+        )
+        assert not unmoved, f"growing these left the fingerprint unchanged: {unmoved}"
+
+    def test_covers_modules_outside_the_root(self, tmp_path: Path) -> None:
+        """A module imported from beside the package root is source too.
+
+        The newest tick is taken across both, so a same-size rewrite of the
+        outside module within its tick still shows.
+        """
+        root = tmp_path / "pkg"
+        _write_module(root / "mod.py", "x = 1\n", mtime_ns=2_000_000_000)
+        shared = tmp_path / "shared.py"
+        _write_module(shared, "y = 1\n", mtime_ns=4_000_000_000)
+        before = source_version(root, outside=("../shared.py",))
+
+        _write_module(shared, "y = 2\n", mtime_ns=4_000_000_000)
+
+        assert source_version(root, outside=("../shared.py",)) != before
+
+    @pytest.mark.cli_python_subprocess
+    def test_covers_every_module_the_daemon_imports(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Every first-party module the daemon imports must move its fingerprint.
+
+        One the fingerprint misses can change under a running daemon, which
+        then serves the old code under a matching version. Modules outside the
+        package root are listed by hand, so this catches the next import that
+        lands outside the list: growing each imported file by a byte must
+        change the version.
+        """
+        server = "trackinizer.trax.daemon.server"
+        probe = (
+            "import os, sys;"
+            f"import {server};"
+            "print('\\n'.join(sorted(os.path.realpath(module.__file__)"
+            " for name, module in list(sys.modules.items())"
+            f" if name.split('.')[0] == {server.split('.', maxsplit=1)[0]!r}"
+            " and getattr(module, '__file__', None))))"
+        )
+        result = subprocess.run(  # noqa: S603 -- fixed interpreter, literal probe.
+            [sys.executable, "-c", probe],
+            cwd=_import_probe_cwd(_CWD, module=__name__),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        imported = result.stdout.split()
+        before = daemon_source_version()
+        missed: list[str] = []
+        for path in imported:
+            with monkeypatch.context() as patch:
+                patch.setattr(os, "stat", partial(_grown_stat, os.stat, grown=path))
+                if daemon_source_version() == before:
+                    missed.append(path)
+
+        assert imported, "the probe found no first-party module"
+        assert not missed, (
+            f"the fingerprint misses modules the daemon imports: {missed}"
         )
 
     def test_the_fingerprint_root_spans_the_whole_distribution(self) -> None:
@@ -298,14 +436,104 @@ class TestSourceVersion:
         that the running daemon predates the source it was launched from --
         without importing anything to find out.
         """
-        (tmp_path / "a.py").write_text("x = 1\n")
+        source = tmp_path / "a.py"
+        source.write_text("x = 1\n")
+        mtime_ns = source.stat().st_mtime_ns
         before = source_version(tmp_path)
-        (tmp_path / "a.py").write_text("x = 2\n")
+        source.write_text("x = 2\n")
+        # Preserve mtime to model filesystems with coarse timestamp resolution.
+        os.utime(source, ns=(mtime_ns, mtime_ns))
         assert source_version(tmp_path) != before
 
-    def test_is_stable_when_nothing_changes(self, tmp_path: Path) -> None:
-        (tmp_path / "a.py").write_text("x = 1\n")
-        assert source_version(tmp_path) == source_version(tmp_path)
+    def test_is_stable_when_nothing_changes(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An untouched tree keeps its version, however recently it was written.
+
+        A window measured back from the clock would read a fresh module on one
+        call and only stat it an hour later, and the changed value would
+        restart a daemon that is serving current code.
+        """
+        _write_module(tmp_path / "old.py", "x = 1\n", mtime_ns=2_000_000_000)
+        (tmp_path / "new.py").write_text("y = 1\n")
+        before = source_version(tmp_path)
+        later_ns = time.time_ns() + 3_600_000_000_000
+        monkeypatch.setattr(time, "time_ns", lambda: later_ns)
+        monkeypatch.setattr(time, "time", lambda: later_ns / 1e9)
+
+        assert source_version(tmp_path) == before
+
+    def test_reads_only_modules_in_the_newest_tick(self, tmp_path: Path) -> None:
+        """A module older than the newest tick is fingerprinted by its stat alone.
+
+        Every write after a fingerprint lands in the newest tick or a later
+        one, so an older module cannot change without its mtime moving; only
+        restoring an old mtime by hand gets past this. Reading just the newest
+        tick keeps the cost near one ``stat`` per module.
+        """
+        old = tmp_path / "old.py"
+        _write_module(old, "x = 1\n", mtime_ns=2_000_000_000)
+        (tmp_path / "new.py").write_text("y = 1\n")
+        before = source_version(tmp_path)
+
+        _write_module(old, "x = 2\n", mtime_ns=2_000_000_000)
+
+        assert source_version(tmp_path) == before
+
+    def test_pins_the_fingerprint_of_a_fixed_tree(self, tmp_path: Path) -> None:
+        """Pin which bytes the fingerprint covers, so any change to them shows.
+
+        Both ends compute the value with one copy of this module, so it is no
+        wire contract. Pinning it catches what still yields a plausible
+        digest: a dropped field, a read of an older module, a test let back in.
+        """
+        root = tmp_path / "pkg"
+        _write_module(root / "a.py", "x = 1\n", mtime_ns=2_000_000_000)
+        _write_module(root / "sub" / "b.py", "y = 2\n", mtime_ns=4_000_000_000)
+        _write_module(root / "sub" / "b_test.py", "", mtime_ns=6_000_000_000)
+        _write_module(root / "conftest.py", "", mtime_ns=6_000_000_000)
+        _write_module(tmp_path / "lib" / "c.py", "z = 3\n", mtime_ns=5_000_000_000)
+
+        assert (
+            source_version(root, outside=("../lib/c.py",))
+            == "66aaaa21a3f8174fcd4ee66fc314b957"
+        )
+
+    def test_an_empty_tree_has_a_version(self, tmp_path: Path) -> None:
+        """A root holding no modules has no newest mtime, and still fingerprints."""
+        assert source_version(tmp_path) == "cae66941d9efbd404e4d88758ea67670"
+
+    def test_skips_a_module_deleted_after_the_listing(self, tmp_path: Path) -> None:
+        """A module deleted between the walk and its ``stat`` must not fail the call.
+
+        A dangling symlink is listed and then fails its ``stat``, as a module
+        removed mid-walk by a branch switch would.
+        """
+        (tmp_path / "a.py").symlink_to(tmp_path / "missing.py")
+        (tmp_path / "b.py").write_text("x = 1\n")
+        with_vanished = source_version(tmp_path)
+
+        (tmp_path / "a.py").unlink()
+
+        assert source_version(tmp_path) == with_vanished
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode-000 file")
+    def test_an_unreadable_module_counts_by_its_stat(self, tmp_path: Path) -> None:
+        """A module locked or deleted between its ``stat`` and its read is not read.
+
+        Its stat alone stands in -- which, for an empty module, is all its
+        readable form contributes too.
+        """
+        source = tmp_path / "a.py"
+        source.write_bytes(b"")
+        readable = source_version(tmp_path)
+        source.chmod(0o000)
+        try:
+            assert source_version(tmp_path) == readable
+        finally:
+            source.chmod(0o644)
 
 
 class TestImportPurity:
@@ -318,6 +546,30 @@ class TestImportPurity:
     the cost comes from the transitive graph, not the import statements this
     file happens to spell.
     """
+
+    @pytest.mark.parametrize(
+        "module",
+        [
+            # The exported layout, which has no top-level ``loop`` package.
+            "trackinizer.trax.daemon.protocol_test",
+        ],
+    )
+    @pytest.mark.parametrize("instrumented", [False, True])
+    def test_probe_runs_from_the_import_root(
+        self,
+        tmp_path: Path,
+        module: str,
+        instrumented: bool,
+    ) -> None:
+        """The probe imports from the checkout root, in either layout.
+
+        Mutmut copies the tree under ``mutants/``; probing from there would
+        import the instrumented package instead of the one under test.
+        """
+        tree = tmp_path / "mutants" if instrumented else tmp_path
+        test_directory = tree.joinpath(*module.split(".")[:-1])
+
+        assert _import_probe_cwd(test_directory, module=module) == tmp_path
 
     @pytest.mark.parametrize(
         "module",
@@ -340,6 +592,7 @@ class TestImportPurity:
         )
         result = subprocess.run(  # noqa: S603 -- fixed interpreter, literal probe.
             [sys.executable, "-c", probe],
+            cwd=_import_probe_cwd(_CWD, module=__name__),
             check=True,
             capture_output=True,
             text=True,
@@ -370,6 +623,7 @@ class TestImportPurity:
         )
         result = subprocess.run(  # noqa: S603 -- fixed interpreter, literal probe.
             [sys.executable, "-c", probe],
+            cwd=_import_probe_cwd(_CWD, module=__name__),
             check=True,
             capture_output=True,
             text=True,
@@ -379,6 +633,45 @@ class TestImportPurity:
             f"thin client pulled in {result.stdout.strip()}; delegating only "
             "pays while the client path avoids the CLI's import graph"
         )
+
+
+# The depth comes from the dotted name, not a fixed count: the export drops the top-
+# level ``loop`` package, so its import root is one directory nearer.
+def _import_probe_cwd(test_directory: Path, *, module: str) -> Path:
+    """Return the directory ``module`` imports from, outside mutmut's ``mutants/``."""
+    import_root = test_directory.resolve().parents[module.count(".") - 1]
+    return import_root.parent if import_root.name == "mutants" else import_root
+
+
+def _recorded_stat(
+    real_stat: Callable[[str], os.stat_result],
+    path: str,
+    *,
+    stated: list[str],
+) -> os.stat_result:
+    """Stat ``path``, recording that it was asked for."""
+    stated.append(path)
+    return real_stat(path)
+
+
+def _grown_stat(
+    real_stat: Callable[[str], os.stat_result],
+    path: str,
+    *,
+    grown: str,
+) -> os.stat_result | SimpleNamespace:
+    """Stat ``path``, reporting ``grown`` one byte larger than it is."""
+    status = real_stat(path)
+    if os.path.normpath(path) != grown:
+        return status
+    return SimpleNamespace(st_size=status.st_size + 1, st_mtime_ns=status.st_mtime_ns)
+
+
+def _write_module(path: Path, text: str, *, mtime_ns: int) -> None:
+    """Write a module stamped with a fixed modification time."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    os.utime(path, ns=(mtime_ns, mtime_ns))
 
 
 if __name__ == "__main__":

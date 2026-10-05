@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
-from trackinizer.lib.custom_json import FloatCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.notify import tx
 from trackinizer.server.projection import (
     fetch_edges,
@@ -381,8 +381,8 @@ class _ReadMixin(_StoreShared):
         if row is None:
             return Cost()
         return Cost(
-            agent_usd=FloatCodec.coerce(row["agent_usd"], None),
-            resource_usd=FloatCodec.coerce(row["resource_usd"], None),
+            agent_usd=convert(row["agent_usd"], float),
+            resource_usd=convert(row["resource_usd"], float),
         )
 
     async def proves_belief(self, belief_id: UUID) -> list[Inquiry]:

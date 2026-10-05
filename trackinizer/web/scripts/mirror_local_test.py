@@ -14,14 +14,7 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import (
-    DatetimeCodec,
-    DictCodec,
-    IntCodec,
-    ListCodec,
-    StrCodec,
-    loads,
-)
+from trackinizer.lib.custom_json import convert, loads
 from trackinizer.trax.profile import Profile
 from trackinizer.web.scripts.mirror_local import (
     Activity,
@@ -226,7 +219,7 @@ def test_mirror_reads_with_get_only_interleaves_and_reruns_add_nothing() -> None
         beta,
         alpha,
     ]
-    ended = DatetimeCodec.coerce(target.rows[alpha]["ended"])
+    ended = convert(target.rows[alpha]["ended"], datetime)
     assert ended == _T0 + timedelta(hours=1)
     assert target.rows[target.keys[mirror_key(_BELIEF)]]["judgement"] == "proven"
     # The rerun finds every row, skips the ended session, re-sends the live one.
@@ -319,7 +312,7 @@ class _Source:
             }
             return _json(200, {"parts": [part]})
         after = int(params["after_idx"])
-        page = [r for r in records if IntCodec.coerce(r["idx"]) > after]
+        page = [r for r in records if convert(r["idx"], int) > after]
         page = page[: int(params["limit"])]
         return _json(200, {"part": 0, "records": page})
 
@@ -401,24 +394,24 @@ class _Target:
 
     def handle(self, request: httpx2.Request) -> httpx2.Response:
         path = request.url.path
-        body = DictCodec.coerce(loads(request.content or b"null"))
+        raw = loads(request.content or b"null")
+        body = {} if raw is None else convert(raw, dict[str, object])
         if request.method == "GET":
             return self._get(path)
         if path == "/api/sessions/start":
             local = self._create(body, kind="AgentSession", owner=body["actor"])
             return _json(201, {"id": str(local), "seq": 0, "actor": body["actor"]})
         if path == "/api/inquiries/batch":
-            items = ListCodec.mappings(body["items"])
+            items = convert(body["items"], list[dict[str, object]])
             ids = [
-                self._create(item, kind=StrCodec.coerce(item["kind"])) for item in items
+                self._create(item, kind=convert(item["kind"], str)) for item in items
             ]
             return _json(200, {"ids": [str(i) for i in ids]})
         if path == "/api/edges/batch":
-            items = ListCodec.mappings(body["items"])
+            items = convert(body["items"], list[dict[str, object]])
             for item in items:
                 from_id, to_id, kind = (
-                    StrCodec.coerce(item[key])
-                    for key in ("from_id", "to_id", "edge_kind")
+                    convert(item[key], str) for key in ("from_id", "to_id", "edge_kind")
                 )
                 self.edges.add((from_id, to_id, kind))
             return _json(200, {"ok": True, "items": [{"ok": True}] * len(items)})
@@ -454,18 +447,18 @@ class _Target:
         return _json(200, self.rows[uuid.UUID(raw)])
 
     def _create(self, body: Mapping[str, object], **row: object) -> uuid.UUID:
-        key = uuid.UUID(StrCodec.coerce(body["idempotency_key"]))
+        key = uuid.UUID(convert(body["idempotency_key"], str))
         if key not in self.keys:
             self.keys[key] = uuid.uuid4()
             self.rows[self.keys[key]] = {**body, "ended": None, **row}
         return self.keys[key]
 
     def _append(self, session: uuid.UUID, body: Mapping[str, object]) -> object:
-        name = StrCodec.coerce(body["name"])
+        name = convert(body["name"], str)
         written = 0
-        records = ListCodec.mappings(body["records"])
+        records = convert(body["records"], list[dict[str, object]])
         for record in records:
-            idx = IntCodec.coerce(record["idx"])
+            idx = convert(record["idx"], int)
             if (session, name, idx) not in self.records:
                 self.records.add((session, name, idx))
                 self.order.append((session, idx))

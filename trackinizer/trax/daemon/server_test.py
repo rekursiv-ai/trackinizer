@@ -6,6 +6,7 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 import os
+import socket
 import tempfile
 import threading
 import time
@@ -13,12 +14,22 @@ import time
 from trackinizer.client.errors import ClientError
 from trackinizer.trax.cli import parse_and_run
 from trackinizer.trax.context import cwd, env
-from trackinizer.trax.daemon.protocol import PROTOCOL_VERSION, Request
-from trackinizer.trax.daemon.server import handle
+from trackinizer.trax.daemon.client import STALE_EXIT_CODE
+from trackinizer.trax.daemon.protocol import (
+    PROTOCOL_VERSION,
+    Request,
+    Response,
+    read_frame,
+    socket_address,
+    write_frame,
+)
+from trackinizer.trax.daemon.server import _Handler, _Server, handle
 from trackinizer.trax.render import echo, table_width
 
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
 
 
@@ -333,6 +344,57 @@ class TestConcurrentRequests:
             assert captured == name * 20, (
                 f"{name}'s response carried another request's output: {captured[:60]!r}"
             )
+
+
+class TestConnection:
+    """One connection end to end: a frame in, the verb run, a frame back."""
+
+    def test_answers_a_caller_on_the_same_source(self, tmp_path: Path) -> None:
+        reply = _exchange(tmp_path, make_request(["help"]), hang_up=False)
+
+        assert reply is not None
+        assert reply.exit_code == 0
+        assert reply.stdout
+
+    def test_answers_stale_to_a_caller_on_other_source(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A daemon behind its caller's source must refuse, then shut down."""
+        stopping: list[_Server] = []
+
+        def begin_shutdown(server: _Server) -> None:
+            stopping.append(server)
+
+        monkeypatch.setattr(_Server, "begin_shutdown", begin_shutdown)
+        request = make_request(["help"])
+        request.source_version = "v2"
+
+        reply = _exchange(tmp_path, request, hang_up=False)
+
+        assert reply == Response(stdout="", stderr="", exit_code=STALE_EXIT_CODE)
+        assert len(stopping) == 1
+
+    def test_survives_a_caller_that_hung_up(self, tmp_path: Path) -> None:
+        """A caller gone before the answer must not take the handler with it."""
+        assert _exchange(tmp_path, make_request(["help"]), hang_up=True) is None
+
+
+def _exchange(tmp_path: Path, request: Request, *, hang_up: bool) -> Response | None:
+    """Hand one framed request to a handler, and return its reply unless hung up."""
+    server = _Server(str(socket_address(tmp_path / "s.sock")), "v1")
+    caller, daemon_end = socket.socketpair()
+    try:
+        write_frame(caller, request.to_json())
+        if hang_up:
+            caller.close()
+        _Handler(daemon_end, None, server)
+        return None if hang_up else Response.from_json(read_frame(caller))
+    finally:
+        caller.close()
+        daemon_end.close()
+        server.server_close()
 
 
 def _run_concurrently(worker: Callable[[str], None], items: Sequence[str]) -> None:

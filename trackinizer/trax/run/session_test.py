@@ -41,7 +41,7 @@ from trackinizer.lib.agent.types.sessions import (
     SessionRecord,
     UserMessage,
 )
-from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
+from trackinizer.lib.custom_json import convert, parse
 from trackinizer.lib.posix import follow
 from trackinizer.lib.posix.follow import follow_tree
 from trackinizer.lib.posix.host import HostSpec
@@ -209,8 +209,8 @@ def _poison_records(stream: TextIO) -> Iterator[SessionRecord]:
 # position it already held rather than the reader having to remember what it emitted.
 def _document_records(stream: TextIO) -> Iterator[SessionRecord]:
     """Every message a whole document holds, re-read from its start."""
-    obj = DictCodec.coerce(loads(stream.read()))
-    for text in ListCodec.coerce(obj.get("messages"), str):
+    obj = parse(stream.read(), dict[str, object])
+    for text in convert(obj.get("messages"), list[str], default=[]):
         yield UserMessage(content=text)
 
 
@@ -1773,8 +1773,8 @@ def _uuid_line(marker: str) -> bytes:
 def _uuid_records(stream: TextIO) -> Iterator[SessionRecord]:
     """Read the claude-shaped fixture lines ``_uuid_line`` writes."""
     for line in stream:
-        obj = DictCodec.coerce(loads(line))
-        message = DictCodec.coerce(obj["message"])
+        obj = parse(line, dict[str, object])
+        message = convert(obj["message"], dict[str, object])
         yield UserMessage(content=str(message["content"]))
 
 

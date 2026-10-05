@@ -59,7 +59,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from trackinizer.lib.absent import ABSENT
-from trackinizer.lib.custom_json import FloatCodec, IntCodec, ListCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.api._deps import tag_row
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api._routes_shared import parse_fields
@@ -1072,7 +1072,7 @@ def _feed_cursor(
             status_code=400,
             detail="after_created, after_session, after_seq must be given together",
         )
-    return (created, session_id, IntCodec.coerce(part, 0), seq)
+    return (created, session_id, 0 if part is None else convert(part, int), seq)
 
 
 def _check_window(since: datetime | None, until: datetime | None) -> None:
@@ -1244,11 +1244,10 @@ def _snapshot_to_dict(row: asyncpg.Record, *, prefix: str) -> WebView:
     for column in _SNAPSHOT_COLUMNS:
         if column == "marginal_cost":
             out["marginal_cost"] = {
-                "agent_usd": FloatCodec.coerce(
-                    row[prefix + "marginal_cost_agent_usd"],
-                ),
-                "resource_usd": FloatCodec.coerce(
+                "agent_usd": convert(row[prefix + "marginal_cost_agent_usd"], float),
+                "resource_usd": convert(
                     row[prefix + "marginal_cost_resource_usd"],
+                    float,
                 ),
             }
             continue
@@ -1259,9 +1258,9 @@ def _snapshot_to_dict(row: asyncpg.Record, *, prefix: str) -> WebView:
         if value is None:
             continue
         if column in ("labels", "subscribers", "issue_kind"):
-            out[column] = ListCodec.coerce(value, str)
+            out[column] = convert(value, list[str])
         elif column == "experiment_codechanges":
-            out[column] = [str(uid) for uid in ListCodec.coerce(value, UUID)]
+            out[column] = [str(uid) for uid in convert(value, list[UUID])]
         elif isinstance(value, UUID):
             out[column] = str(value)
         else:
@@ -1330,7 +1329,7 @@ def _add_edge_annotation(ref: WebView, row: asyncpg.Record) -> None:
     if row["valence"] is not None:
         ref["valence"] = row["valence"]
     if row["labels"]:
-        ref["labels"] = ListCodec.coerce(row["labels"], str)
+        ref["labels"] = convert(row["labels"], list[str])
 
 
 class _AppState(Protocol):

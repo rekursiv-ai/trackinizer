@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from trackinizer.lib.custom_json import DictCodec, IntCodec, ListCodec, StrCodec, loads
+from trackinizer.lib.custom_json import convert, loads, parse
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
@@ -50,11 +50,12 @@ async def test_workspace_operations_are_shared_revisioned_and_idempotent(
     install_identity(make_test_identity(api_key_id=None))
     created = await client.post("/api/workspaces")
     assert created.status_code == 200
-    initial = DictCodec.coerce(loads(created.content))
-    workspace_id = StrCodec.coerce(initial["id"])
+    initial = parse(created.content, dict[str, object])
+    workspace_id = convert(initial["id"], str)
     assert initial["revision"] == 0
     assert [
-        DictCodec.coerce(item)["type"] for item in ListCodec.coerce(initial["visuals"])
+        convert(item, dict[str, object])["type"]
+        for item in convert(initial["visuals"], list[object])
     ] == ["trax.browse"]
 
     key = str(uuid.uuid4())
@@ -68,10 +69,11 @@ async def test_workspace_operations_are_shared_revisioned_and_idempotent(
         headers={"Idempotency-Key": key},
     )
     assert shown.status_code == 200
-    updated = DictCodec.coerce(loads(shown.content))
+    updated = parse(shown.content, dict[str, object])
     assert updated["revision"] == 1
     assert {
-        DictCodec.coerce(item)["type"] for item in ListCodec.coerce(updated["visuals"])
+        convert(item, dict[str, object])["type"]
+        for item in convert(updated["visuals"], list[object])
     } == {"trax.browse", "trax.chat"}
 
     replay = await client.post(
@@ -94,8 +96,8 @@ async def test_workspace_operations_are_shared_revisioned_and_idempotent(
         headers={"Idempotency-Key": key},
     )
     assert mismatched_replay.status_code == 409
-    mismatch = DictCodec.coerce(loads(mismatched_replay.content))
-    assert DictCodec.coerce(mismatch["current"])["revision"] == 1
+    mismatch = parse(mismatched_replay.content, dict[str, object])
+    assert convert(mismatch["current"], dict[str, object])["revision"] == 1
     same_dump_different_intent = await client.post(
         f"/api/workspaces/{workspace_id}/operations",
         json={
@@ -117,12 +119,12 @@ async def test_workspace_operations_are_shared_revisioned_and_idempotent(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert stale.status_code == 409
-    conflict = DictCodec.coerce(loads(stale.content))
-    assert DictCodec.coerce(conflict["current"])["revision"] == 1
+    conflict = parse(stale.content, dict[str, object])
+    assert convert(conflict["current"], dict[str, object])["revision"] == 1
 
-    read = await client.get(f"/api/workspaces/{workspace_id}")
-    assert read.status_code == 200
-    assert loads(read.content) == loads(shown.content)
+    response = await client.get(f"/api/workspaces/{workspace_id}")
+    assert response.status_code == 200
+    assert loads(response.content) == loads(shown.content)
 
 
 @pytest.mark.db_pglite
@@ -140,7 +142,10 @@ async def test_workspace_can_show_record_resolved_by_a_separate_read_profile(
         )
     install_identity(make_test_identity(api_key_id=None))
     created = await client.post("/api/workspaces")
-    workspace_id = StrCodec.coerce(DictCodec.coerce(loads(created.content))["id"])
+    workspace_id = convert(
+        parse(created.content, dict[str, object])["id"],
+        str,
+    )
     record_id = str(uuid.uuid4())
     shown = await client.post(
         f"/api/workspaces/{workspace_id}/operations",
@@ -156,8 +161,11 @@ async def test_workspace_can_show_record_resolved_by_a_separate_read_profile(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert shown.status_code == 200
-    visuals = ListCodec.coerce(DictCodec.coerce(loads(shown.content))["visuals"])
-    assert DictCodec.coerce(visuals[-1])["record_id"] == record_id
+    visuals = convert(
+        parse(shown.content, dict[str, object])["visuals"],
+        list[object],
+    )
+    assert convert(visuals[-1], dict[str, object])["record_id"] == record_id
 
 
 @pytest.mark.db_pglite
@@ -183,10 +191,13 @@ async def test_browser_chat_can_target_record_in_separate_read_profile(
         )
     install_identity(make_test_identity(api_key_id=None))
     created = await client.post("/api/workspaces")
-    workspace_id = StrCodec.coerce(DictCodec.coerce(loads(created.content))["id"])
+    workspace_id = convert(
+        parse(created.content, dict[str, object])["id"],
+        str,
+    )
     install_identity(make_test_identity())
     started = await client.post("/api/sessions/start", json={"cli": "codex"})
-    session_id = StrCodec.coerce(DictCodec.coerce(loads(started.content))["id"])
+    session_id = convert(parse(started.content, dict[str, object])["id"], str)
     assert (await client.get(f"/api/sessions/{session_id}/inbound")).status_code == 200
     install_identity(make_test_identity(api_key_id=None))
     paired = await client.put(
@@ -208,8 +219,11 @@ async def test_browser_chat_can_target_record_in_separate_read_profile(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert shown.status_code == 200
-    visuals = ListCodec.coerce(DictCodec.coerce(loads(shown.content))["visuals"])
-    chat_id = StrCodec.coerce(DictCodec.coerce(visuals[-1])["id"])
+    visuals = convert(
+        parse(shown.content, dict[str, object])["visuals"],
+        list[object],
+    )
+    chat_id = convert(convert(visuals[-1], dict[str, object])["id"], str)
     sent = await client.post(
         f"/api/workspaces/{workspace_id}/messages",
         json={
@@ -222,8 +236,14 @@ async def test_browser_chat_can_target_record_in_separate_read_profile(
     assert sent.status_code == 200
     install_identity(make_test_identity())
     drained = await client.get(f"/api/sessions/{session_id}/inbound")
-    messages = ListCodec.coerce(DictCodec.coerce(loads(drained.content))["messages"])
-    context = DictCodec.coerce(DictCodec.coerce(messages[0])["context"])
+    messages = convert(
+        parse(drained.content, dict[str, object])["messages"],
+        list[object],
+    )
+    context = convert(
+        convert(messages[0], dict[str, object])["context"],
+        dict[str, object],
+    )
     assert context["record_id"] == remote_record_id
     assert context["record"] is None
 
@@ -244,10 +264,13 @@ async def test_workspace_preference_does_not_gate_owned_canvas(
     install_identity(make_test_identity(api_key_id=None))
     created = await client.post("/api/workspaces")
     assert created.status_code == 200
-    workspace_id = StrCodec.coerce(DictCodec.coerce(loads(created.content))["id"])
+    workspace_id = convert(
+        parse(created.content, dict[str, object])["id"],
+        str,
+    )
     enabled = await client.put("/api/me/visual-workspace", json={"enabled": True})
     assert enabled.status_code == 200
-    assert DictCodec.coerce(loads(enabled.content))["enabled"] is True
+    assert parse(enabled.content, dict[str, object])["enabled"] is True
     disabled = await client.put("/api/me/visual-workspace", json={"enabled": False})
     assert disabled.status_code == 200
     still_owned = await client.get(f"/api/workspaces/{workspace_id}")
@@ -272,7 +295,10 @@ async def test_api_key_cannot_create_or_read_unpaired_workspace(
     install_identity(make_test_identity(api_key_id=None))
     created = await client.post("/api/workspaces")
     assert created.status_code == 200
-    workspace_id = StrCodec.coerce(DictCodec.coerce(loads(created.content))["id"])
+    workspace_id = convert(
+        parse(created.content, dict[str, object])["id"],
+        str,
+    )
     install_identity(make_test_identity())
     assert (await client.get(f"/api/workspaces/{workspace_id}")).status_code == 403
 
@@ -299,12 +325,15 @@ async def test_agent_operations_require_explicit_live_session_pairing(
     install_identity(make_test_identity(api_key_id=None))
     workspace = await client.post("/api/workspaces")
     assert workspace.status_code == 200
-    workspace_id = StrCodec.coerce(DictCodec.coerce(loads(workspace.content))["id"])
+    workspace_id = convert(
+        parse(workspace.content, dict[str, object])["id"],
+        str,
+    )
 
     install_identity(make_test_identity())
     started = await client.post("/api/sessions/start", json={"cli": "codex"})
     assert started.status_code == 201
-    session_id = StrCodec.coerce(DictCodec.coerce(loads(started.content))["id"])
+    session_id = convert(parse(started.content, dict[str, object])["id"], str)
     assert (await client.get(f"/api/sessions/{session_id}/inbound")).status_code == 200
     operation = {
         "revision": 0,
@@ -329,7 +358,7 @@ async def test_agent_operations_require_explicit_live_session_pairing(
         json={"revision": 0, "session_id": session_id},
     )
     assert paired.status_code == 200
-    paired_state = DictCodec.coerce(loads(paired.content))
+    paired_state = parse(paired.content, dict[str, object])
     assert paired_state["revision"] == 1
     assert paired_state["connected_session_id"] == session_id
 
@@ -340,7 +369,7 @@ async def test_agent_operations_require_explicit_live_session_pairing(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert shown.status_code == 200
-    assert DictCodec.coerce(loads(shown.content))["revision"] == 2
+    assert parse(shown.content, dict[str, object])["revision"] == 2
 
     await store.end_session(
         uuid.UUID(session_id),
@@ -381,7 +410,7 @@ async def test_browser_lists_only_its_connectable_live_sessions(
     install_identity(make_test_identity())
     started = await client.post("/api/sessions/start", json={"cli": "codex"})
     assert started.status_code == 201
-    session_id = StrCodec.coerce(DictCodec.coerce(loads(started.content))["id"])
+    session_id = convert(parse(started.content, dict[str, object])["id"], str)
     assert (await client.get(f"/api/sessions/{session_id}/inbound")).status_code == 200
     path = "/api/workspaces/sessions/connectable"
     assert (await client.get(path)).status_code == 403
@@ -389,9 +418,9 @@ async def test_browser_lists_only_its_connectable_live_sessions(
     install_identity(make_test_identity(api_key_id=None))
     listed = await client.get(path)
     assert listed.status_code == 200
-    sessions = ListCodec.coerce(loads(listed.content))
+    sessions = parse(listed.content, list[object])
     assert len(sessions) == 1
-    session = DictCodec.coerce(sessions[0])
+    session = convert(sessions[0], dict[str, object])
     assert session["id"] == session_id
     assert session["cli"] == "codex"
 
@@ -432,10 +461,13 @@ async def test_stale_poller_is_not_connectable_or_messageable(
         )
     install_identity(make_test_identity(api_key_id=None))
     created = await client.post("/api/workspaces")
-    workspace_id = StrCodec.coerce(DictCodec.coerce(loads(created.content))["id"])
+    workspace_id = convert(
+        parse(created.content, dict[str, object])["id"],
+        str,
+    )
     install_identity(make_test_identity())
     started = await client.post("/api/sessions/start", json={"cli": "codex"})
-    session_id = StrCodec.coerce(DictCodec.coerce(loads(started.content))["id"])
+    session_id = convert(parse(started.content, dict[str, object])["id"], str)
     install_identity(make_test_identity(api_key_id=None))
     picker = "/api/workspaces/sessions/connectable"
     assert loads((await client.get(picker)).content) == []
@@ -449,7 +481,7 @@ async def test_stale_poller_is_not_connectable_or_messageable(
     install_identity(make_test_identity())
     assert (await client.get(f"/api/sessions/{session_id}/inbound")).status_code == 200
     install_identity(make_test_identity(api_key_id=None))
-    assert len(ListCodec.coerce(loads((await client.get(picker)).content))) == 1
+    assert len(parse((await client.get(picker)).content, list[object])) == 1
     paired = await client.put(
         f"/api/workspaces/{workspace_id}/connection",
         json={"revision": 0, "session_id": session_id},
@@ -457,14 +489,14 @@ async def test_stale_poller_is_not_connectable_or_messageable(
     assert paired.status_code == 200
     status_path = f"/api/workspaces/{workspace_id}/connection"
     assert (
-        DictCodec.coerce(loads((await client.get(status_path)).content))["status"]
+        parse((await client.get(status_path)).content, dict[str, object])["status"]
         == "live"
     )
 
     now[0] = 145.0
     assert loads((await client.get(picker)).content) == []
     assert (
-        DictCodec.coerce(loads((await client.get(status_path)).content))["status"]
+        parse((await client.get(status_path)).content, dict[str, object])["status"]
         == "unavailable"
     )
     assert (
@@ -522,7 +554,8 @@ async def test_connectable_picker_finds_live_session_after_stale_page(
     response = await client.get("/api/workspaces/sessions/connectable")
     assert response.status_code == 200
     assert [
-        DictCodec.coerce(row)["id"] for row in ListCodec.coerce(loads(response.content))
+        convert(row, dict[str, object])["id"]
+        for row in parse(response.content, list[object])
     ] == [
         str(live_id),
     ]
@@ -558,8 +591,8 @@ async def test_browser_chat_uses_paired_session_and_persisted_canvas_context(
         )
     install_identity(make_test_identity(api_key_id=None))
     created = await client.post("/api/workspaces")
-    workspace = DictCodec.coerce(loads(created.content))
-    workspace_id = StrCodec.coerce(workspace["id"])
+    workspace = parse(created.content, dict[str, object])
+    workspace_id = convert(workspace["id"], str)
     message_path = f"/api/workspaces/{workspace_id}/messages"
     assert (
         await client.post(
@@ -570,7 +603,7 @@ async def test_browser_chat_uses_paired_session_and_persisted_canvas_context(
     ).status_code == 409
     install_identity(make_test_identity())
     started = await client.post("/api/sessions/start", json={"cli": "codex"})
-    session_id = StrCodec.coerce(DictCodec.coerce(loads(started.content))["id"])
+    session_id = convert(parse(started.content, dict[str, object])["id"], str)
     assert (await client.get(f"/api/sessions/{session_id}/inbound")).status_code == 200
     install_identity(make_test_identity(api_key_id=None))
     paired = await client.put(
@@ -598,8 +631,11 @@ async def test_browser_chat_uses_paired_session_and_persisted_canvas_context(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert shown.status_code == 200
-    visuals = ListCodec.coerce(DictCodec.coerce(loads(shown.content))["visuals"])
-    chat_id = StrCodec.coerce(DictCodec.coerce(visuals[-1])["id"])
+    visuals = convert(
+        parse(shown.content, dict[str, object])["visuals"],
+        list[object],
+    )
+    chat_id = convert(convert(visuals[-1], dict[str, object])["id"], str)
     path = message_path
     body = {
         "text": "What do the tails show?",
@@ -609,14 +645,14 @@ async def test_browser_chat_uses_paired_session_and_persisted_canvas_context(
     headers = {"Idempotency-Key": str(uuid.uuid4())}
     sent = await client.post(path, json=body, headers=headers)
     assert sent.status_code == 200
-    receipt = DictCodec.coerce(loads(sent.content))
+    receipt = parse(sent.content, dict[str, object])
     assert receipt["session_id"] == session_id
     assert receipt["queued"] == 1
     replay = await client.post(path, json=body, headers=headers)
     assert loads(replay.content) == loads(sent.content)
     connection = await client.get(f"/api/workspaces/{workspace_id}/connection")
     assert connection.status_code == 200
-    live = DictCodec.coerce(loads(connection.content))
+    live = parse(connection.content, dict[str, object])
     assert live["status"] == "live"
     assert live["session_id"] == session_id
     assert live["cli"] == "codex"
@@ -627,7 +663,7 @@ async def test_browser_chat_uses_paired_session_and_persisted_canvas_context(
             uuid.UUID(session_id),
         )
     ownerless = await client.get(f"/api/workspaces/{workspace_id}/connection")
-    assert DictCodec.coerce(loads(ownerless.content))["status"] == "unavailable"
+    assert parse(ownerless.content, dict[str, object])["status"] == "unavailable"
     assert (
         await client.post(
             path,
@@ -644,27 +680,33 @@ async def test_browser_chat_uses_paired_session_and_persisted_canvas_context(
     install_identity(make_test_identity())
     drained = await client.get(f"/api/sessions/{session_id}/inbound")
     assert drained.status_code == 200
-    messages = ListCodec.coerce(DictCodec.coerce(loads(drained.content))["messages"])
+    messages = convert(
+        parse(drained.content, dict[str, object])["messages"],
+        list[object],
+    )
     assert len(messages) == 1
-    message = DictCodec.coerce(messages[0])
+    message = convert(messages[0], dict[str, object])
     assert message["source"] == "test-user@example.com"
-    context = DictCodec.coerce(message["context"])
+    context = convert(message["context"], dict[str, object])
     assert context["workspace_id"] == workspace_id
     assert context["record_id"] == str(record_id)
-    assert DictCodec.coerce(context["record"]) == {
+    assert convert(context["record"], dict[str, object]) == {
         "id": str(record_id),
         "kind": "Experiment",
         "seq": 987_654,
         "title": "Measured tails",
     }
-    visible = ListCodec.coerce(context["visible_visuals"])
+    visible = convert(context["visible_visuals"], list[object])
     assert {
-        (DictCodec.coerce(item)["id"], DictCodec.coerce(item)["type"])
+        (
+            convert(item, dict[str, object])["id"],
+            convert(item, dict[str, object])["type"],
+        )
         for item in visible
     } == {
         (
-            StrCodec.coerce(DictCodec.coerce(item)["id"]),
-            StrCodec.coerce(DictCodec.coerce(item)["type"]),
+            convert(convert(item, dict[str, object])["id"], str),
+            convert(convert(item, dict[str, object])["type"], str),
         )
         for item in visuals
     }
@@ -696,11 +738,15 @@ async def test_browser_chat_uses_paired_session_and_persisted_canvas_context(
     assert bounded.status_code == 200
     install_identity(make_test_identity())
     bounded_drain = await client.get(f"/api/sessions/{session_id}/inbound")
-    bounded_message = DictCodec.coerce(
-        ListCodec.coerce(DictCodec.coerce(loads(bounded_drain.content))["messages"])[0],
+    bounded_message = convert(
+        convert(
+            parse(bounded_drain.content, dict[str, object])["messages"],
+            list[object],
+        )[0],
+        dict[str, object],
     )
-    bounded_context = DictCodec.coerce(bounded_message["context"])
-    bounded_record = DictCodec.coerce(bounded_context["record"])
+    bounded_context = convert(bounded_message["context"], dict[str, object])
+    bounded_record = convert(bounded_context["record"], dict[str, object])
     assert bounded_record["title"] == "x" * 512
     install_identity(make_test_identity(api_key_id=None))
     assert (
@@ -708,7 +754,7 @@ async def test_browser_chat_uses_paired_session_and_persisted_canvas_context(
             path,
             json={
                 "text": "Wrong visual",
-                "chat_instance_id": DictCodec.coerce(visuals[0])["id"],
+                "chat_instance_id": convert(visuals[0], dict[str, object])["id"],
                 "expected_record_id": str(record_id),
             },
             headers={"Idempotency-Key": str(uuid.uuid4())},
@@ -730,8 +776,9 @@ async def test_browser_chat_uses_paired_session_and_persisted_canvas_context(
     ).status_code == 422
     install_identity(make_test_identity())
     second_started = await client.post("/api/sessions/start", json={"cli": "codex"})
-    second_session_id = StrCodec.coerce(
-        DictCodec.coerce(loads(second_started.content))["id"],
+    second_session_id = convert(
+        parse(second_started.content, dict[str, object])["id"],
+        str,
     )
     assert (
         await client.get(f"/api/sessions/{second_session_id}/inbound")
@@ -749,12 +796,17 @@ async def test_browser_chat_uses_paired_session_and_persisted_canvas_context(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert (
-        DictCodec.coerce(loads(second_send.content))["session_id"] == second_session_id
+        parse(second_send.content, dict[str, object])["session_id"] == second_session_id
     )
     install_identity(make_test_identity())
     second_drain = await client.get(f"/api/sessions/{second_session_id}/inbound")
     assert (
-        len(ListCodec.coerce(DictCodec.coerce(loads(second_drain.content))["messages"]))
+        len(
+            convert(
+                parse(second_drain.content, dict[str, object])["messages"],
+                list[object],
+            ),
+        )
         == 1
     )
     install_identity(make_test_identity(api_key_id=None))
@@ -779,16 +831,16 @@ async def test_browser_chat_uses_paired_session_and_persisted_canvas_context(
     assert stale_context.status_code == 409
     install_identity(make_test_identity())
     assert (
-        ListCodec.coerce(
-            DictCodec.coerce(
-                loads(
-                    (
-                        await client.get(
-                            f"/api/sessions/{session_id}/inbound",
-                        )
-                    ).content,
-                ),
+        convert(
+            parse(
+                (
+                    await client.get(
+                        f"/api/sessions/{session_id}/inbound",
+                    )
+                ).content,
+                dict[str, object],
             )["messages"],
+            list[object],
         )
         == []
     )
@@ -801,7 +853,7 @@ async def test_browser_chat_uses_paired_session_and_persisted_canvas_context(
         actor="test-user@example.com",
     )
     ended = await client.get(f"/api/workspaces/{workspace_id}/connection")
-    assert DictCodec.coerce(loads(ended.content))["status"] == "ended"
+    assert parse(ended.content, dict[str, object])["status"] == "ended"
     assert (
         await client.post(
             path,
@@ -815,7 +867,7 @@ async def test_browser_chat_uses_paired_session_and_persisted_canvas_context(
     )
     assert disconnected.status_code == 200
     unavailable = await client.get(f"/api/workspaces/{workspace_id}/connection")
-    assert DictCodec.coerce(loads(unavailable.content))["status"] == "unavailable"
+    assert parse(unavailable.content, dict[str, object])["status"] == "unavailable"
 
 
 @pytest.mark.db_pglite
@@ -835,7 +887,7 @@ async def test_workspace_receipts_remain_bounded_without_losing_recent_replay(
     created = await client.post("/api/workspaces")
     assert created.status_code == 200
     workspace_id = uuid.UUID(
-        StrCodec.coerce(DictCodec.coerce(loads(created.content))["id"]),
+        convert(parse(created.content, dict[str, object])["id"], str),
     )
     async with store.engine.acquire() as conn:
         await conn.execute(
@@ -864,7 +916,7 @@ async def test_workspace_receipts_remain_bounded_without_losing_recent_replay(
             "SELECT count(*) FROM visual_workspace_operations WHERE workspace_id = $1",
             workspace_id,
         )
-    assert IntCodec.coerce(count) <= 64
+    assert convert(count, int) <= 64
     replay = await client.post(path, json=operation, headers={"Idempotency-Key": key})
     assert replay.status_code == 200
     assert loads(replay.content) == loads(shown.content)
@@ -956,8 +1008,9 @@ async def test_viewer_chats_about_frozen_report_revision_from_own_workspace(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert published.status_code == 201, published.text
-    artifact_id = StrCodec.coerce(
-        DictCodec.coerce(loads(published.content))["artifact_id"],
+    artifact_id = convert(
+        parse(published.content, dict[str, object])["artifact_id"],
+        str,
     )
     session_id, _, _ = await store.start_session(
         SubmitAgentSession(title="Viewer's agent", cli="codex", account=viewer_email),
@@ -983,7 +1036,10 @@ async def test_viewer_chats_about_frozen_report_revision_from_own_workspace(
     )
     created = await client.post("/api/workspaces")
     assert created.status_code == 200, created.text
-    workspace_id = StrCodec.coerce(DictCodec.coerce(loads(created.content))["id"])
+    workspace_id = convert(
+        parse(created.content, dict[str, object])["id"],
+        str,
+    )
     paired = await client.put(
         f"/api/workspaces/{workspace_id}/connection",
         json={"revision": 0, "session_id": str(session_id)},
@@ -1029,12 +1085,15 @@ async def test_viewer_chats_about_frozen_report_revision_from_own_workspace(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert shown_chat.status_code == 200, shown_chat.text
-    chat_id = StrCodec.coerce(
-        DictCodec.coerce(
-            ListCodec.coerce(DictCodec.coerce(loads(shown_chat.content))["visuals"])[
-                -1
-            ],
+    chat_id = convert(
+        convert(
+            convert(
+                parse(shown_chat.content, dict[str, object])["visuals"],
+                list[object],
+            )[-1],
+            dict[str, object],
         )["id"],
+        str,
     )
     message_path = f"/api/workspaces/{workspace_id}/messages"
     body = {
@@ -1064,23 +1123,36 @@ async def test_viewer_chats_about_frozen_report_revision_from_own_workspace(
     )
     drained = await client.get(f"/api/sessions/{session_id}/inbound")
     assert drained.status_code == 200, drained.text
-    messages = ListCodec.coerce(DictCodec.coerce(loads(drained.content))["messages"])
-    context = DictCodec.coerce(DictCodec.coerce(messages[0])["context"])
+    messages = convert(
+        parse(drained.content, dict[str, object])["messages"],
+        list[object],
+    )
+    context = convert(
+        convert(messages[0], dict[str, object])["context"],
+        dict[str, object],
+    )
     assert context["record_id"] == artifact_id
-    report = DictCodec.coerce(context["artifact_content"])
+    report = convert(context["artifact_content"], dict[str, object])
     assert report["revision"] == 1
     assert report["title"] == "Evidence atlas"
-    assert DictCodec.coerce(ListCodec.coerce(report["citations"])[0])[
+    assert convert(convert(report["citations"], list[object])[0], dict[str, object])[
         "record_id"
     ] == str(
         issue_id,
     )
-    finding = DictCodec.coerce(
-        ListCodec.coerce(
-            DictCodec.coerce(ListCodec.coerce(report["sections"])[0])["findings"],
+    finding = convert(
+        convert(
+            convert(convert(report["sections"], list[object])[0], dict[str, object])[
+                "findings"
+            ],
+            list[object],
         )[0],
+        dict[str, object],
     )
-    citation = DictCodec.coerce(ListCodec.coerce(finding["citations"])[0])
+    citation = convert(
+        convert(finding["citations"], list[object])[0],
+        dict[str, object],
+    )
     assert citation["valence"] == -0.75
     assert citation["note"] == "Contrary held-out evidence"
     other_key = uuid.uuid4()
@@ -1111,8 +1183,9 @@ async def test_viewer_chats_about_frozen_report_revision_from_own_workspace(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert newer.status_code == 201, newer.text
-    newer_artifact_id = StrCodec.coerce(
-        DictCodec.coerce(loads(newer.content))["artifact_id"],
+    newer_artifact_id = convert(
+        parse(newer.content, dict[str, object])["artifact_id"],
+        str,
     )
     await store.add_edge(
         from_id=paper_id,
@@ -1145,22 +1218,33 @@ async def test_viewer_chats_about_frozen_report_revision_from_own_workspace(
         ),
     )
     again = await client.get(f"/api/sessions/{session_id}/inbound")
-    repeated = DictCodec.coerce(
-        DictCodec.coerce(
-            ListCodec.coerce(DictCodec.coerce(loads(again.content))["messages"])[0],
+    repeated = convert(
+        convert(
+            convert(
+                parse(again.content, dict[str, object])["messages"],
+                list[object],
+            )[0],
+            dict[str, object],
         )["context"],
+        dict[str, object],
     )
-    repeated_report = DictCodec.coerce(repeated["artifact_content"])
+    repeated_report = convert(repeated["artifact_content"], dict[str, object])
     assert repeated_report["summary"] == "Frozen result"
-    repeated_finding = DictCodec.coerce(
-        ListCodec.coerce(
-            DictCodec.coerce(ListCodec.coerce(repeated_report["sections"])[0])[
-                "findings"
-            ],
+    repeated_finding = convert(
+        convert(
+            convert(
+                convert(repeated_report["sections"], list[object])[0],
+                dict[str, object],
+            )["findings"],
+            list[object],
         )[0],
+        dict[str, object],
     )
     assert (
-        DictCodec.coerce(ListCodec.coerce(repeated_finding["citations"])[0])["valence"]
+        convert(
+            convert(repeated_finding["citations"], list[object])[0],
+            dict[str, object],
+        )["valence"]
         == -0.75
     )
     install_identity(
@@ -1217,12 +1301,13 @@ async def test_workspace_uses_the_deployments_configured_catalog(
     install_identity(make_test_identity(api_key_id=None))
     created = await client.post("/api/workspaces")
     assert created.status_code == 200
-    initial = DictCodec.coerce(loads(created.content))
+    initial = parse(created.content, dict[str, object])
     assert [
-        DictCodec.coerce(item)["type"] for item in ListCodec.coerce(initial["visuals"])
+        convert(item, dict[str, object])["type"]
+        for item in convert(initial["visuals"], list[object])
     ] == ["x.log"]
     shown = await client.post(
-        f"/api/workspaces/{StrCodec.coerce(initial['id'])}/operations",
+        f"/api/workspaces/{convert(initial['id'], str)}/operations",
         json={
             "revision": 0,
             "operation": {"kind": "show", "visual_type": "trax.chat"},

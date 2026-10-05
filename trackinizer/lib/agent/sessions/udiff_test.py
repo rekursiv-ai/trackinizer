@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pytest
 
+from trackinizer.lib.agent.sessions import udiff
 from trackinizer.lib.agent.sessions.udiff import parse_udiff, render_udiff
 from trackinizer.lib.agent.types.sessions import Splice
 
@@ -203,6 +204,19 @@ def test_a_hand_built_splice_renders_without_a_header() -> None:
     rendered = render_udiff((Splice(before="old\n", after="new\n"),))
 
     assert rendered == "-old\n+new\n"
+
+
+def test_an_unterminated_context_only_diff_keeps_its_last_byte() -> None:
+    edits = parse_udiff(" context")
+
+    assert edits == (Splice(lead=" context"),)
+    assert render_udiff(edits) == " context"
+
+
+def test_an_empty_splice_is_unchanged_when_unterminated() -> None:
+    splice = Splice()
+
+    assert udiff._unterminate(splice) is splice
 
 
 if __name__ == "__main__":

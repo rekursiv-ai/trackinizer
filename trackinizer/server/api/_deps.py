@@ -8,7 +8,7 @@ import dataclasses
 import datetime
 import uuid
 
-from trackinizer.lib.custom_json import MutableJSON
+from trackinizer.wire.json_types import MutableJSON
 
 
 if TYPE_CHECKING:

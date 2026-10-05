@@ -33,11 +33,9 @@ from trackinizer.trax.daemon.protocol import (
     ProtocolVersionError,
     Request,
     Response,
-    package_root,
     read_frame,
     socket_address,
     socket_path,
-    source_version,
     write_frame,
 )
 from trackinizer.trax.render import TERMINAL_WIDTH
@@ -108,7 +106,7 @@ def handle(
     return Response(stdout=out.getvalue(), stderr=err.getvalue(), exit_code=exit_code)
 
 
-def serve(path: Path | None = None) -> None:
+def serve(path: Path | None = None, *, version: str) -> None:
     """Run the daemon until it is idle for :data:`_IDLE_TIMEOUT_SEC`.
 
     Binding is the arbiter for the spawn race: several clients missing a
@@ -117,11 +115,13 @@ def serve(path: Path | None = None) -> None:
 
     Args:
       path: Socket path for the daemon; uses socket_path() if None.
+      version: Source fingerprint the spawning caller took before this
+        process imported anything; a request carrying another is answered
+        stale.
 
     """
     sock = socket_address(path) if path is not None else socket_path()
     sock.parent.mkdir(parents=True, exist_ok=True, mode=_SOCKET_DIR_MODE)
-    version = source_version(package_root())
     server = _bind(sock, version)
     if server is None:
         return

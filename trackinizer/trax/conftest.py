@@ -17,7 +17,7 @@ import pytest
 
 from trackinizer.client.client import Client, EdgeWrite
 from trackinizer.lib.absent import Absent
-from trackinizer.lib.custom_json import IntCodec, JSONValue
+from trackinizer.lib.custom_json import JSONValue, convert
 from trackinizer.trax import cli
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import (
@@ -435,7 +435,7 @@ class FakeClient:
                 row
                 for row in rows
                 if any(
-                    _seq_in_interval(IntCodec.coerce(row.get("seq")), interval)
+                    _seq_in_interval(convert(row.get("seq"), int, default=0), interval)
                     for interval in seq_ranges
                 )
             ]

@@ -11,7 +11,7 @@ import itertools
 import re
 import uuid
 
-from trackinizer.lib.custom_json import DictCodec, StrCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.types.edges import EDGE_POLICIES, kind_group_members
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.web.scripts.graph_structure import Link, Node, Structure
@@ -46,8 +46,8 @@ def test_the_artifact_is_an_html_report_produced_by_the_cache_issue() -> None:
     client, shots = _seeded()
     published = client.artifacts[shots.artifact]
     assert published["format"] == "html"
-    assert "<svg" in StrCodec.coerce(published["html"])
-    issue = uuid.UUID(StrCodec.coerce(published["issue_id"]))
+    assert "<svg" in convert(published["html"], str)
+    issue = uuid.UUID(convert(published["issue_id"], str))
     assert client.bodies[issue]["title"] == "Cache merge ranks between calls"
 
 
@@ -120,7 +120,7 @@ def test_each_experiments_chart_bears_out_its_outcome() -> None:
     # The Experiment screenshot shows a chart beside the outcome it supports.
     client, _ = _seeded()
     charts = {
-        StrCodec.coerce(client.bodies[experiment]["title"]): {
+        convert(client.bodies[experiment]["title"], str): {
             key: [(point.step, point.value) for point in points if point.key == key]
             for key in dict.fromkeys(point.key for point in points)
         }
@@ -351,7 +351,7 @@ class _FakeClient:
         assert path == "/api/artifacts/content"
         self.calls.append(("post", path, body))
         artifact = self._id()
-        self.artifacts[artifact] = DictCodec.coerce(body)
+        self.artifacts[artifact] = convert(body, dict[str, object])
         return {"artifact_id": str(artifact)}
 
     def _id(self) -> uuid.UUID:
@@ -363,7 +363,7 @@ def _end(edge: Mapping[str, object], end: str, ids: Sequence[uuid.UUID]) -> uuid
     index = edge.get(f"{end}_index")
     if isinstance(index, int):
         return ids[index]
-    return uuid.UUID(StrCodec.coerce(edge[f"{end}_id"], default=None))
+    return uuid.UUID(convert(edge[f"{end}_id"], str))
 
 
 if __name__ == "__main__":

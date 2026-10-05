@@ -26,7 +26,7 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedRecord,
     UserMessage,
 )
-from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
+from trackinizer.lib.custom_json import convert, parse
 
 
 def _content(record: SessionRecord) -> str:
@@ -140,12 +140,18 @@ def test_a_call_after_a_user_turn_gets_its_own_assistant_turn() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    messages = ListCodec.coerce(DictCodec.coerce(loads(out.getvalue())).get("messages"))
-    assert [DictCodec.coerce(message)["type"] for message in messages] == [
+    messages = convert(
+        parse(out.getvalue(), dict[str, object]).get("messages"),
+        list[object],
+    )
+    assert [
+        convert(convert(message, dict[str, object]).get("type"), str)
+        for message in messages
+    ] == [
         "user",
         "gemini",
     ]
-    assert "toolCalls" not in DictCodec.coerce(messages[0])
+    assert "toolCalls" not in convert(messages[0], dict[str, object])
 
 
 def test_a_leading_tool_call_writes_a_turn_rather_than_crashing() -> None:
@@ -160,7 +166,10 @@ def test_a_leading_tool_call_writes_a_turn_rather_than_crashing() -> None:
 
     gemini.denormalize([ToolCall(call_id="t1", name="read_file")], out)
 
-    assert DictCodec.coerce(loads(out.getvalue()))["messages"] == [
+    assert convert(
+        parse(out.getvalue(), dict[str, object]).get("messages"),
+        list[object],
+    ) == [
         {
             "type": "gemini",
             "content": "",
@@ -186,8 +195,13 @@ def test_one_incomplete_record_does_not_discard_the_session() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    messages = ListCodec.coerce(DictCodec.coerce(loads(out.getvalue())).get("messages"))
-    assert [DictCodec.coerce(m)["content"] for m in messages] == [
+    messages = convert(
+        parse(out.getvalue(), dict[str, object]).get("messages"),
+        list[object],
+    )
+    assert [
+        convert(convert(m, dict[str, object]).get("content"), str) for m in messages
+    ] == [
         "real turn",
         "answer",
     ]
@@ -205,7 +219,10 @@ def test_a_crossed_session_declares_an_id_it_can_be_recognized_by() -> None:
     gemini.denormalize([UserMessage(content="hi")], out)
 
     assert detect_format(out.getvalue()) == "gemini"
-    assert DictCodec.coerce(loads(out.getvalue()))["sessionId"]
+    assert convert(
+        parse(out.getvalue(), dict[str, object]).get("sessionId"),
+        str,
+    )
 
 
 def test_a_foreign_encoding_key_is_not_written_as_a_document_field() -> None:
@@ -223,7 +240,10 @@ def test_a_foreign_encoding_key_is_not_written_as_a_document_field() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    assert set(DictCodec.coerce(loads(out.getvalue()))) == {"sessionId", "messages"}
+    assert set(parse(out.getvalue(), dict[str, object])) == {
+        "sessionId",
+        "messages",
+    }
 
 
 def test_a_timestamp_survives_the_gemini_round_trip() -> None:
@@ -280,8 +300,65 @@ def test_a_record_gemini_cannot_express_is_dropped_not_written() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    messages = ListCodec.coerce(DictCodec.coerce(loads(out.getvalue())).get("messages"))
+    messages = convert(
+        parse(out.getvalue(), dict[str, object]).get("messages"),
+        list[object],
+    )
     assert len(messages) == 1
+
+
+def test_only_incomplete_records_are_written_verbatim() -> None:
+    out = StringIO()
+
+    gemini.denormalize([IncompleteRecord(text="raw")], out)
+
+    assert out.getvalue() == "raw"
+
+
+def test_a_tool_call_after_a_user_turn_gets_a_timestamped_gemini_turn() -> None:
+    out = StringIO()
+
+    gemini.denormalize(
+        [UserMessage(content="go"), ToolCall(call_id="t", name="run", timestamp="t")],
+        out,
+    )
+
+    messages = convert(
+        parse(out.getvalue(), dict[str, object]).get("messages"),
+        list[object],
+    )
+    assert convert(messages[1], dict[str, object]) == {
+        "type": "gemini",
+        "content": "",
+        "$timestamp": "t",
+        "toolCalls": [{"id": "t", "name": "run", "args": {}}],
+    }
+
+
+def test_an_uncategorized_record_is_written_as_its_payload() -> None:
+    out = StringIO()
+
+    gemini.denormalize(
+        [UncategorizedRecord(kind="future", payload={"type": "future", "x": 1})],
+        out,
+    )
+
+    assert convert(
+        parse(out.getvalue(), dict[str, object]).get("messages"),
+        list[object],
+    ) == [
+        {"type": "future", "x": 1},
+    ]
+
+
+def test_empty_text_and_empty_object_are_incomplete_documents() -> None:
+    assert [type(record) for record in _read("   ")] == [TurnContext, ContextClear]
+    records = _read("{}")
+    assert [type(record) for record in records] == [
+        TurnContext,
+        ContextClear,
+        IncompleteRecord,
+    ]
 
 
 if __name__ == "__main__":

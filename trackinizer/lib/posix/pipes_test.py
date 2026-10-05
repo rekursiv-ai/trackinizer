@@ -7,7 +7,10 @@ along with the deadlock a naive one-stream-at-a-time reader would hit.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import asyncio
+import signal
 import sys
 
 import pytest
@@ -87,6 +90,105 @@ def test_a_child_holding_its_buffer_yields_nothing_until_it_flushes() -> None:
     assert asyncio.run(_read_buffered_child(script)) == b"held\n"
 
 
+def test_unstarted_process_operations_are_safe() -> None:
+    """Operations before start report absence without touching a child."""
+
+    async def run() -> tuple[bool, list[tuple[Stream, bytes]], int]:
+        child = Piped(["unused"])
+        return (
+            await child.write(b"data"),
+            [item async for item in child.output()],
+            await child.wait(),
+        )
+
+    assert asyncio.run(run()) == (False, [], 0)
+
+
+def test_write_reports_a_closed_stdin() -> None:
+    """A process whose stdin is gone rejects the write."""
+
+    async def run() -> bool:
+        child = Piped(["unused"])
+        with patch.object(child, "_process", _FakeProcess(stdin=None)):
+            return await child.write(b"data")
+
+    assert asyncio.run(run()) is False
+
+
+def test_write_reports_pipe_failures() -> None:
+    """Broken and reset streams are reported as failed writes."""
+
+    async def run(error: BaseException) -> bool:
+        child = Piped(["unused"])
+        with patch.object(
+            child,
+            "_process",
+            _FakeProcess(stdin=_FailingStdin(error)),
+        ):
+            return await child.write(b"data")
+
+    for error in (BrokenPipeError(), ConnectionResetError(), RuntimeError()):
+        assert asyncio.run(run(error)) is False
+
+
+def test_output_with_no_readers_and_close_stdin_without_stdin() -> None:
+    """Missing output and input streams are handled without raising."""
+
+    async def run() -> list[tuple[Stream, bytes]]:
+        child = Piped(["unused"])
+        with patch.object(
+            child,
+            "_process",
+            _FakeProcess(stdin=None, stdout=None, stderr=None),
+        ):
+            child.close_stdin()
+            return [item async for item in child.output()]
+
+    assert asyncio.run(run()) == []
+
+
+def test_terminate_kills_a_process_after_grace_timeout() -> None:
+    """A child ignoring TERM receives KILL after its grace period."""
+
+    async def run() -> None:
+        child = Piped(["unused"], terminate_grace_sec=0)
+        process = _FakeProcess(stdin=None, returncode=None, waits=[TimeoutError()])
+        with (
+            patch.object(child, "_process", process),
+            patch("trackinizer.lib.posix.pipes.os.getpgid", return_value=42) as getpgid,
+            patch("trackinizer.lib.posix.pipes.os.killpg") as killpg,
+        ):
+            await child.terminate()
+        getpgid.assert_called_with(123)
+        assert killpg.call_args_list == [
+            ((42, signal.SIGTERM),),
+            ((42, signal.SIGKILL),),
+        ]
+
+    asyncio.run(run())
+
+
+def test_terminate_suppresses_missing_process_group() -> None:
+    """A process group disappearing during termination is harmless."""
+
+    async def run() -> None:
+        child = Piped(["unused"])
+        with (
+            patch.object(
+                child,
+                "_process",
+                _FakeProcess(stdin=None, returncode=None),
+            ),
+            patch(
+                "trackinizer.lib.posix.pipes.os.getpgid",
+                side_effect=ProcessLookupError,
+            ),
+        ):
+            await child.terminate()
+
+    asyncio.run(run())
+
+
 async def _collect(argv: list[str], *, stdin: bytes = b"") -> list[tuple[Stream, str]]:
     """Run a child to completion, returning its chunks as decoded text."""
     async with Piped(argv) as child:
@@ -106,6 +208,42 @@ async def _read_buffered_child(script: str) -> bytes:
         assert await child.write(b"x")
         child.close_stdin()
         return b"".join([data async for name, data in output if name == "stdout"])
+
+
+class _FailingStdin:
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    def write(self, data: bytes) -> None:
+        del data
+
+    async def drain(self) -> None:
+        raise self._error
+
+
+class _FakeProcess:
+    def __init__(
+        self,
+        *,
+        stdin: object,
+        stdout: object = None,
+        stderr: object = None,
+        returncode: int | None = 0,
+        waits: list[BaseException] | None = None,
+    ) -> None:
+        self.stdin = stdin
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+        self.pid = 123
+        self._waits = list(waits or [])
+        self.wait_calls: list[int] = []
+
+    async def wait(self) -> int:
+        self.wait_calls.append(len(self.wait_calls))
+        if self._waits:
+            raise self._waits.pop(0)
+        return self.returncode or 0
 
 
 if __name__ == "__main__":

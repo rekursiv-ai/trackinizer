@@ -15,13 +15,7 @@ import sys
 import uuid
 
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    FloatCodec,
-    IntCodec,
-    ListCodec,
-    StrCodec,
-)
+from trackinizer.lib.custom_json import convert
 from trackinizer.trax import render
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import cwd, env
@@ -614,7 +608,11 @@ class Kind(Command):
     ) -> list[dict[str, object]]:
         edge_kind, inbound = relation
         bucket = "backlinks" if inbound else "edges"
-        rows = ListCodec.mappings(DictCodec.coerce(payload.get(bucket)).get(edge_kind))
+        rows = convert(
+            convert(payload.get(bucket), dict[str, object], default={}).get(edge_kind),
+            list[dict[str, object]],
+            default=[],
+        )
         if against:
             # A ``dis*`` spelling selects the negative-valence (against) subset of
             # the shared citation kind: for-vs-against is the valence sign.
@@ -659,8 +657,8 @@ class Kind(Command):
         relation: tuple[str, bool],
     ) -> dict[str, object]:
         edge_kind, inbound = relation
-        subject = DictCodec.coerce(subject_payload["self"])
-        peer = DictCodec.coerce(peer_payload["self"])
+        subject = convert(subject_payload["self"], dict[str, object])
+        peer = convert(peer_payload["self"], dict[str, object])
         source, target = (peer, subject) if inbound else (subject, peer)
         # For-vs-against is the sign of valence: a negative-valence citation reads
         # with the dis* spelling, not the plain kind name.
@@ -680,11 +678,18 @@ class Kind(Command):
         target_id = str(target.get("id") or "")
         changes = [
             change
-            for change in ListCodec.mappings(source_payload.get("changes"))
+            for change in convert(
+                source_payload.get("changes"),
+                list[dict[str, object]],
+                default=[],
+            )
             if any(
-                DictCodec.coerce(snapshot).get("peer_edge_kind") == edge_kind
-                and DictCodec.coerce(snapshot).get("peer_id") == target_id
-                for snapshot in (change.get("old"), change.get("new"))
+                convert(snapshot.get("peer_edge_kind"), str, default="") == edge_kind
+                and convert(snapshot.get("peer_id"), str, default="") == target_id
+                for snapshot in (
+                    convert(change.get("old"), dict[str, object], default={}),
+                    convert(change.get("new"), dict[str, object], default={}),
+                )
             )
         ]
         return {
@@ -704,7 +709,7 @@ class Kind(Command):
         sort: str,
     ) -> list[dict[str, object]]:
         if sort == "seq":
-            return sorted(rows, key=lambda row: IntCodec.coerce(row.get("seq")))
+            return sorted(rows, key=lambda row: convert(row.get("seq"), int, default=0))
         if sort == "recent":
             return sorted(
                 rows,
@@ -716,7 +721,7 @@ class Kind(Command):
         if sort == "valence":
             return sorted(
                 rows,
-                key=lambda row: FloatCodec.coerce(row.get("valence")),
+                key=lambda row: convert(row.get("valence"), float, default=0.0),
                 reverse=True,
             )
         return sorted(
@@ -728,8 +733,8 @@ class Kind(Command):
                 # defaults to 20; an explicit 0 is preserved.
                 20
                 if row.get("priority") is None
-                else IntCodec.coerce(row.get("priority"), 0),
-                IntCodec.coerce(row.get("seq")),
+                else convert(row.get("priority"), int, default=20),
+                convert(row.get("seq"), int, default=0),
             ),
         )
 
@@ -765,7 +770,7 @@ class Kind(Command):
             _kind, _target_id, payload = client.get_inquiry(
                 UuidRef(uuid=uuid.UUID(str(row["id"]))),
             )
-            self_row = DictCodec.coerce(payload["self"])
+            self_row = convert(payload["self"], dict[str, object])
             hydrated.append(dict(self_row, **cls._relation_edge_metadata(row)))
         return hydrated
 
@@ -1620,7 +1625,7 @@ def run_bulk_apply(
     actions = _resolve_stdin_actions(bulk.actions)
     for row in rows:
         row_kind = cast(Inquiry.InquiryKind, row["kind"])
-        ref = SeqRef(kind=row_kind, seq=IntCodec.coerce(row["seq"], 0))
+        ref = SeqRef(kind=row_kind, seq=convert(row["seq"], int))
         run_actions(ref, actions, args, client_factory, kind=row_kind)
 
 
@@ -1670,7 +1675,7 @@ def run_field(
     del args
     client = client_factory()
     _kind, _target_id, payload = client.get_inquiry(ref)
-    row = DictCodec.coerce(payload["self"])
+    row = convert(payload["self"], dict[str, object])
     if field not in row:
         raise ClientError(f"field {field!r} not present on {ref}")
     echo(format_field_value(row[field]))
@@ -2164,7 +2169,11 @@ Examples:
             # off-window (status unknown) prerequisite still blocks the row.
             prerequisites = [
                 pid
-                for ref in ListCodec.mappings(row.get("requires"))
+                for ref in convert(
+                    row.get("requires"),
+                    list[dict[str, object]],
+                    default=[],
+                )
                 if (pid := str(ref.get("id")))
                 and status_by_id.get(pid, "active") == "active"
             ]
@@ -2248,7 +2257,7 @@ Options:
             for pid in _ref_ids(row.get("requires"))
             if pid in rows_by_id
         }
-        ordered = sorted(rows, key=lambda row: IntCodec.coerce(row.get("seq")))
+        ordered = sorted(rows, key=lambda row: convert(row.get("seq"), int, default=0))
         roots = [row for row in ordered if str(row.get("id")) not in depended_on]
         # ``rendered`` spans the whole forest so a node reachable from many
         # roots is expanded once. Without it a layered graph re-renders every
@@ -2748,7 +2757,11 @@ class Workspace(Command):
             _print_workspace(current)
             return
         operation = _workspace_operation(flags)
-        revision = IntCodec.coerce(DictCodec.coerce(current).get("revision"))
+        revision = convert(
+            convert(current, dict[str, object]).get("revision"),
+            int,
+            default=0,
+        )
         updated = client.post(
             f"{path}/operations",
             body={"revision": revision, "operation": operation},
@@ -2793,20 +2806,20 @@ def _workspace_operation(args: _WorkspaceArgs) -> dict[str, object]:
 
 def _print_workspace(payload: object) -> None:
     """Print workspace and visual identifiers in a compact readable form."""
-    state = DictCodec.coerce(payload)
-    workspace_id = StrCodec.coerce(state.get("id"), "unknown")
-    revision = IntCodec.coerce(state.get("revision"))
-    focused = StrCodec.coerce(state.get("focused_instance"), "none")
+    state = convert(payload, dict[str, object])
+    workspace_id = convert(state.get("id"), str, default="unknown")
+    revision = convert(state.get("revision"), int, default=0)
+    focused = convert(state.get("focused_instance"), str, default="none")
     echo(f"workspace {workspace_id} revision {revision} focused {focused}")
-    visuals = ListCodec.mappings(state.get("visuals"))
+    visuals = convert(state.get("visuals"), list[dict[str, object]], default=[])
     if not visuals:
         echo("  (no visuals)")
         return
     for visual in visuals:
-        instance_id = StrCodec.coerce(visual.get("id"), "unknown")
-        visual_type = StrCodec.coerce(visual.get("type"), "unknown")
-        placement = StrCodec.coerce(visual.get("placement"), "main")
-        record_id = StrCodec.coerce(visual.get("record_id"))
+        instance_id = convert(visual.get("id"), str, default="unknown")
+        visual_type = convert(visual.get("type"), str, default="unknown")
+        placement = convert(visual.get("placement"), str, default="main")
+        record_id = convert(visual.get("record_id"), str, default="")
         target = f" record={record_id}" if record_id else ""
         echo(f"  {visual_type} {instance_id} {placement}{target}")
 
@@ -3024,8 +3037,8 @@ def _apply_create_defaults(kind: Inquiry.InquiryKind, body: dict[str, object]) -
 def _submitted_ref(target_id: uuid.UUID, client: Client) -> Ref:
     """Look up a just-created UUID's user-facing ``Kind#seq`` ref."""
     kind, _target_id, view = client.get_inquiry(UuidRef(uuid=target_id))
-    self_view = DictCodec.coerce(view["self"])
-    return SeqRef(kind=kind, seq=IntCodec.coerce(self_view["seq"], 0))
+    self_view = convert(view["self"], dict[str, object])
+    return SeqRef(kind=kind, seq=convert(self_view["seq"], int))
 
 
 def _created_line(ref: Ref, new_id: uuid.UUID) -> str:
@@ -3200,7 +3213,7 @@ def _resolve_set_value(action: SetField, client: Client) -> object:
 
 
 def _arg_str(args: argparse.Namespace, name: str) -> str:
-    return StrCodec.coerce(_arg_values(args).get(name), "")
+    return convert(_arg_values(args).get(name), str, default="")
 
 
 class _ListMutation(Protocol):
@@ -3218,12 +3231,12 @@ def _arg_values(args: argparse.Namespace) -> Mapping[str, object]:
 
 
 def _arg_int(args: argparse.Namespace, name: str) -> int:
-    return IntCodec.coerce(_arg_values(args).get(name), 0)
+    return convert(_arg_values(args).get(name), int, default=0)
 
 
 def _arg_text(args: argparse.Namespace) -> list[str]:
-    value = _arg_values(args).get("text")
-    return [str(item) for item in ListCodec.coerce(value)]
+    value = convert(_arg_values(args).get("text"), list[object], default=[])
+    return [str(item) for item in value]
 
 
 def _arg_bool(args: argparse.Namespace, name: str) -> bool:
@@ -3231,10 +3244,15 @@ def _arg_bool(args: argparse.Namespace, name: str) -> bool:
 
 
 def _arg_width(args: argparse.Namespace) -> int | None:
-    value = _arg_values(args).get("width")
-    return None if value is None else IntCodec.coerce(value, 0)
+    return convert(_arg_values(args).get("width"), int, default=None)
 
 
 def _ref_ids(refs: object) -> list[str]:
     """Peer ids from a relationship projection (a list of IssueEdge ref dicts)."""
-    return [pid for ref in ListCodec.mappings(refs) if (pid := str(ref.get("id")))]
+    if refs is None:
+        return []
+    return [
+        pid
+        for ref in convert(refs, list[dict[str, object]])
+        if (pid := str(ref.get("id")))
+    ]

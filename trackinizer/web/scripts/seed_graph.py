@@ -32,7 +32,7 @@ import math
 import string
 import uuid
 
-from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
+from trackinizer.lib.custom_json import convert, parse
 from trackinizer.wire.bodies import BATCH_MAX_ITEMS
 
 
@@ -331,16 +331,16 @@ def _bodies(
     picked: Showcase,
 ) -> list[dict[str, object]]:
     """Each node's submit body: title, status and owner, a Belief's verdict, the showcase's text."""
-    contents = DictCodec.coerce(loads(GRAPH_CONTENTS.read_text()), default=None)
-    written = ListCodec.coerce(contents.get("roots"), str)
+    contents = parse(GRAPH_CONTENTS.read_text(), dict[str, object])
+    written = convert(contents.get("roots"), list[str], default=[])
     named = {root: written[k % len(written)] for k, root in enumerate(found.roots)}
-    kinds = DictCodec.coerce(contents.get("kinds"), default=None)
+    kinds = convert(contents.get("kinds"), dict[str, object])
     built = {
-        kind: _titles(DictCodec.coerce(kinds.get(kind), default=None))
+        kind: _titles(convert(kinds.get(kind), dict[str, object]))
         for kind in {node.kind for node in structure.nodes}
     }
     made = Counter[str]()
-    shown = DictCodec.coerce(contents.get("showcase"), default=None)
+    shown = convert(contents.get("showcase"), dict[str, object])
     verdicts = _verdicts(structure)
     bodies: list[dict[str, object]] = []
     for n, node in enumerate(structure.nodes):
@@ -368,9 +368,9 @@ def _bodies(
                 0.5,
             )
         if n in {picked.root, picked.belief}:
-            body |= DictCodec.coerce(
+            body |= convert(
                 shown.get("root" if n == picked.root else "belief"),
-                default=None,
+                dict[str, object],
             )
         bodies.append(body)
     return bodies
@@ -427,10 +427,11 @@ def _edge(
 def _titles(vocabulary: Mapping[str, object]) -> list[str]:
     """Every title a kind's templates and word lists make, in the order of their hashes."""
     words = [
-        ListCodec.coerce(row, str) for row in ListCodec.coerce(vocabulary.get("words"))
+        convert(row, list[str])
+        for row in convert(vocabulary.get("words"), list[object], default=[])
     ]
     titles: set[str] = set()
-    for template in ListCodec.coerce(vocabulary.get("templates"), str):
+    for template in convert(vocabulary.get("templates"), list[str], default=[]):
         slots = sorted(
             {int(f) for _, f, _, _ in string.Formatter().parse(template) if f},
         )

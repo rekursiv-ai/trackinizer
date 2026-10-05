@@ -90,15 +90,13 @@ from trackinizer.lib.agent.types.sessions import (
     ShellCommandResult,
     Splice,
 )
-from trackinizer.lib.custom_json import (
-    MutableJSONValue,
-    json_freeze,
-    json_unfreeze,
-)
+from trackinizer.lib.custom_json import convert, json_freeze, json_unfreeze
 
 
 if TYPE_CHECKING:
     import bashlex
+
+    from trackinizer.lib.custom_json import MutableJSONValue
 else:
     from wrapt import lazy_import
 
@@ -191,11 +189,10 @@ def lift_shell_result(
     if operation is None:
         return None
     kind, path, _, content, ranges, _ = operation
-    extra_value = json_unfreeze(result.extra)
-    extra = extra_value
+    extra = dict(json_unfreeze(result.extra))
     replay: dict[str, MutableJSONValue] = {}
     if result.command is not None:
-        replay["command"] = json_unfreeze(result.command)
+        replay["command"] = list(result.command)
     if kind != "read" and result.stdout:
         replay["stdout"] = result.stdout
     if result.stderr:
@@ -290,11 +287,9 @@ def shell_result_for_replay(result: FileResult) -> ShellCommandResult | None:
         return None
     replay = cast(Mapping[str, object], replay_value)
     command_value = replay.get("command")
-    command = None
-    if isinstance(command_value, list):
-        command_values = cast(list[object], command_value)
-        parts = tuple(part for part in command_values if isinstance(part, str))
-        command = parts if len(parts) == len(command_values) else None
+    command = (
+        tuple(convert(command_value, list[str])) if command_value is not None else None
+    )
     command = _stencil_command(command, result)
     stdout = (
         result.content or ""

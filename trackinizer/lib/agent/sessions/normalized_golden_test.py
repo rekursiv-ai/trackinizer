@@ -109,6 +109,38 @@ def test_the_frozen_bytes_still_rebuild_the_provider_file(fixture: Path) -> None
     assert rebuilt.getvalue() == fixture.read_text(encoding="utf-8")
 
 
+def legacy_goldens() -> list[Path]:
+    """Return goldens frozen in the old format, which tagged tuples ``py/tuple``."""
+    return sorted((_CWD / "testdata").glob("*.legacy.json"))
+
+
+@pytest.mark.compute_large_fixture
+@pytest.mark.parametrize("legacy", legacy_goldens(), ids=fixture_id)
+def test_a_legacy_golden_still_rebuilds_the_provider_file(legacy: Path) -> None:
+    # Sessions archived before tuples became plain arrays are still in the
+    # store. Inside an untyped payload nothing fails on a ``py/tuple`` tag, so
+    # without the unwrap it rides into the rebuilt provider file.
+    fixture = legacy.with_name(legacy.name.removesuffix(".legacy.json") + ".jsonl")
+    adapter: _Adapter = claude if fixture.name.startswith("claude") else codex
+
+    rebuilt = StringIO()
+    adapter.denormalize(
+        normalized.normalize(StringIO(legacy.read_text(encoding="utf-8"))),
+        rebuilt,
+    )
+
+    assert rebuilt.getvalue() == fixture.read_text(encoding="utf-8")
+
+
+def test_the_legacy_goldens_still_hold_the_old_tags() -> None:
+    # Regenerating a legacy golden in the new format would leave the test
+    # above passing while it defends nothing.
+    assert legacy_goldens()
+    assert all(
+        '"py/tuple"' in path.read_text(encoding="utf-8") for path in legacy_goldens()
+    )
+
+
 @pytest.mark.parametrize(
     "fixture",
     [

@@ -37,7 +37,8 @@ import time
 
 from trackinizer.lib.agent.sessions import claude, codex, gemini, normalized, sagent
 from trackinizer.lib.agent.sessions.fuse import chain, fuse, names_of, unfuse
-from trackinizer.lib.custom_json import DictCodec, loads
+from trackinizer.lib.agent.types.sessions import IncompleteRecord
+from trackinizer.lib.custom_json import convert, loads, parse
 
 
 if TYPE_CHECKING:
@@ -222,7 +223,13 @@ def convert_file(
         except (TypeError, ValueError) as exc:
             return FileResult(path=path, error=f"{type(exc).__name__}: {exc}")
     into = target or detected
-    ordered = chain(streams) if detected == "codex" else streams
+    # By the provider's clock first: its records carry stamps to the
+    # millisecond, while an mtime is the filesystem's, often coarse enough that
+    # parts written back to back share one -- and that tie fell to the file
+    # names, which claude mints as fresh ids. ``sorted`` is stable, so parts
+    # stamped alike keep the oldest-first order ``_parts_of`` found them in.
+    dated = sorted(streams, key=_opened)
+    ordered = chain(dated) if detected == "codex" else dated
     # Names follow the RECORD STREAMS, not the file list: ``chain`` reorders
     # codex rollouts by the thread each forked from, so pairing name ``i`` with
     # the i-th read file labelled every part with another part's file.
@@ -270,7 +277,7 @@ def detect_format(native: str) -> Format:
     # through to "". Recognized by the pair of keys it always carries.
     if stripped.startswith("{"):
         try:
-            document = DictCodec.coerce(loads(native))
+            document = parse(native, dict[str, object])
         except json.JSONDecodeError:
             document = {}
         if "sessionId" in document and "messages" in document:
@@ -287,7 +294,7 @@ def detect_format(native: str) -> Format:
             record = loads(line)
         except json.JSONDecodeError:
             continue
-        keys = set(DictCodec.coerce(record))
+        keys = set(convert(record, dict[str, object]))
         if "payload" in keys:
             return "codex"
         if {"sessionId", "uuid", "parentUuid", "agentId"} & keys:
@@ -1041,10 +1048,26 @@ def _beneath(directory: Path) -> list[Path]:
 
 
 # By write time, not by name: a session that resumed another is the one written later,
-# and its name is a fresh id that sorts arbitrarily against the file it continues.
+# and its name is a fresh id that sorts arbitrarily against the file it continues. Only
+# the fallback for ``convert_file``, which orders by the stamps inside the files first.
 def _ordered(paths: Iterable[Path]) -> list[Path]:
     """Sort transcripts oldest first."""
     return sorted(paths, key=lambda path: (path.stat().st_mtime_ns, path.name))
+
+
+# The FIRST stamp, not the last: a claude session outlives the subagents it spawns, so
+# by latest write every subagent came before its parent (147 of 147 captured; mtime
+# agrees), while by first stamp the parent opened before each of them.
+def _opened(records: Sequence[SessionRecord]) -> str:
+    """Return the provider's stamp on a part's first dated record, or ``""``."""
+    return next(
+        (
+            record.timestamp
+            for record in records
+            if not isinstance(record, IncompleteRecord) and record.timestamp
+        ),
+        "",
+    )
 
 
 # Measured, not predicted: the converted text is normalized again and its semantic

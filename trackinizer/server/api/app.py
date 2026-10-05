@@ -19,10 +19,11 @@ from fastapi.responses import JSONResponse
 from starlette.types import Send
 
 import asyncpg
+import fastjsonschema
 
 from trackinizer.addons.addon import ServerContext
 from trackinizer.addons.deployment import Deployment, supervise
-from trackinizer.lib.custom_json import IntCodec, SchemaError
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.api import (
     addons_routes,
     admin_routes,
@@ -351,7 +352,7 @@ class _RequestLogSpan:
 
     async def send(self, message: Message) -> None:
         if message["type"] == "http.response.start":
-            self.status_code = IntCodec.coerce(cast(object, message["status"]))
+            self.status_code = convert(cast(object, message["status"]), int)
             self.response_start_sec = time.perf_counter() - self.started
             headers = list(cast(list[tuple[bytes, bytes]], message.get("headers", [])))
             headers = [
@@ -451,18 +452,19 @@ async def validation_handler(request: Request, exc: ValidationError) -> JSONResp
     )
 
 
-@app.exception_handler(SchemaError)
-async def schema_handler(request: Request, exc: SchemaError) -> JSONResponse:
-    """Translate a codec ``SchemaError`` into HTTP 422.
+@app.exception_handler(fastjsonschema.JsonSchemaValueException)
+async def schema_handler(
+    request: Request,
+    exc: fastjsonschema.JsonSchemaValueException,
+) -> JSONResponse:
+    """Translate a ``fastjsonschema`` validation error into HTTP 422.
 
-    A stray key in a client-supplied record ``payload`` reaches the codec
-    through ``RecordBody``'s decode on the append-records path. It is a
-    malformed request, not a server fault, but the codec raises a
-    ``ValueError`` -- which matched no handler and so surfaced as a 500.
+    A schema mismatch in a client-supplied record ``payload`` is a malformed
+    request, not a server fault, so it must surface as 422 rather than 500.
 
     Args:
       request: FastAPI Request object (unused).
-      exc: SchemaError from codec validation.
+      exc: A fastjsonschema validation error.
 
     Returns:
       response: JSON response with 422 status, detail, and code='schema'.

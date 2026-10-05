@@ -11,7 +11,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from trackinizer.lib.custom_json import IntCodec, StrCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.notify import tx
 from trackinizer.server.visuals.workspace_store import (
     ReplayConflictError,
@@ -187,16 +187,17 @@ async def create_preset(
             key,
         )
         if receipt is not None:
-            if StrCodec.coerce(receipt["request_hash"]) != request_hash:
+            if receipt["request_hash"] != request_hash:
                 raise ReplayConflictError(source)
             return WorkspacePreset.model_validate(receipt["response"])
         if source.revision != body.revision:
             raise RevisionConflictError(source)
-        count = IntCodec.coerce(
+        count = convert(
             await conn.fetchval(
                 "SELECT count(*) FROM visual_workspace_presets WHERE user_id = $1",
                 user_id,
             ),
+            int,
         )
         if count >= 100:
             raise ValueError("An account can save at most 100 presets.")
@@ -289,7 +290,7 @@ async def open_preset(
             key,
         )
         if receipt is not None:
-            if StrCodec.coerce(receipt["request_hash"]) != request_hash:
+            if receipt["request_hash"] != request_hash:
                 raise ReplayConflictError(current)
             return WorkspaceState.model_validate(receipt["response"])
         preset = await conn.fetchrow(
@@ -410,7 +411,7 @@ async def delete_preset(
             preset_id,
             user_id,
         )
-    return IntCodec.coerce(result.rsplit(" ", 1)[-1]) == 1
+    return int(result.rsplit(" ", 1)[-1]) == 1
 
 
 def _preset_from_row(row: Mapping[str, object]) -> WorkspacePreset:

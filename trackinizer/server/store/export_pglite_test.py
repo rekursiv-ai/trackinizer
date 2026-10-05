@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
+from trackinizer.lib.custom_json import convert, loads, parse
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.api.export_routes import export_lines
 from trackinizer.server.embedders.stub import StubEmbedder
@@ -186,11 +186,11 @@ async def test_the_header_names_the_applied_migrations(store: Store) -> None:
     async with store.engine.acquire() as conn:
         applied = await conn.fetch("SELECT name FROM applied_migrations")
 
-    header = DictCodec.coerce(loads(next(iter(export_lines(graph)))))
+    header = parse(next(iter(export_lines(graph))), dict[str, object])
 
     assert header["format"] == EXPORT_FORMAT
     assert header["version"] == EXPORT_VERSION
-    migrations = ListCodec.coerce(header["migrations"])
+    migrations = convert(header["migrations"], list[object])
     assert migrations[0] == "schema.sql"
     assert sorted(map(str, migrations)) == sorted(
         cast(str, row["name"]) for row in applied

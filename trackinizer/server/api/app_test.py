@@ -15,17 +15,11 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 import asyncpg
+import fastjsonschema
 import pytest
 
 from trackinizer.conftest import FakeEngine, make_store
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    FloatCodec,
-    IntCodec,
-    SchemaError,
-    StrCodec,
-    loads,
-)
+from trackinizer.lib.custom_json import convert, parse
 from trackinizer.server.api import app
 from trackinizer.server.api.app import (
     RequestLoggingMiddleware,
@@ -81,8 +75,8 @@ class TestCLIHelpers:
             assert response.status_code == 409
             # ``response.body`` is ``bytes | memoryview``; coerce to
             # ``bytes`` for json.loads's narrower type signature.
-            body = DictCodec.coerce(loads(bytes(response.body)))
-            assert prefix in StrCodec.coerce(body["detail"])
+            body = parse(bytes(response.body), dict[str, object])
+            assert prefix in convert(body["detail"], str)
 
     def test_handlers_do_not_leak_constraint_detail(self) -> None:
         # ``asyncpg`` ``detail`` carries internal column / constraint names
@@ -104,9 +98,9 @@ class TestCLIHelpers:
             asyncio.run(unique_violation_handler(req, unique_exc)),
         ]
         for response in responses:
-            body = DictCodec.coerce(loads(bytes(response.body)))
+            body = parse(bytes(response.body), dict[str, object])
             assert response.status_code == 409
-            detail = StrCodec.coerce(body["detail"])
+            detail = convert(body["detail"], str)
             assert leak not in detail
             assert "from_id" not in detail
             assert constraint not in detail
@@ -114,37 +108,43 @@ class TestCLIHelpers:
     def test_conflict_handler_emits_error_code(self) -> None:
         req = cast(Request, Mock())
         response = asyncio.run(conflict_handler(req, ConflictError("clash")))
-        body = DictCodec.coerce(loads(bytes(response.body)))
+        body = parse(bytes(response.body), dict[str, object])
         assert response.status_code == 409
         assert body == {"detail": "clash", "code": "conflict"}
 
     def test_not_found_handler_emits_404_and_code(self) -> None:
         req = cast(Request, Mock())
         response = asyncio.run(not_found_handler(req, NotFoundError("gone")))
-        body = DictCodec.coerce(loads(bytes(response.body)))
+        body = parse(bytes(response.body), dict[str, object])
         assert response.status_code == 404
         assert body == {"detail": "gone", "code": "not_found"}
 
     def test_validation_handler_emits_422_and_code(self) -> None:
         req = cast(Request, Mock())
         response = asyncio.run(validation_handler(req, ValidationError("bad input")))
-        body = DictCodec.coerce(loads(bytes(response.body)))
+        body = parse(bytes(response.body), dict[str, object])
         assert response.status_code == 422
         assert body == {"detail": "bad input", "code": "validation"}
 
     def test_schema_handler_emits_422_and_code(self) -> None:
         req = cast(Request, Mock())
-        response = asyncio.run(schema_handler(req, SchemaError("stray key")))
-        body = DictCodec.coerce(loads(bytes(response.body)))
+        response = asyncio.run(
+            schema_handler(
+                req,
+                fastjsonschema.JsonSchemaValueException("stray key"),
+            ),
+        )
+        body = parse(bytes(response.body), dict[str, object])
         assert response.status_code == 422
         assert body == {"detail": "stray key", "code": "schema"}
 
     def test_schema_error_is_registered_not_merely_defined(self) -> None:
         # The handler function existing is not what stops the 500 -- FastAPI
-        # only consults REGISTERED handlers, and a codec ``SchemaError``
-        # reaches the app as a plain ``ValueError`` on a client-supplied
-        # body. Assert the registration, which is the part that was missing.
-        assert app.app.exception_handlers.get(SchemaError) is schema_handler
+        # only consults REGISTERED handlers for client-side schema failures.
+        assert (
+            app.app.exception_handlers.get(fastjsonschema.JsonSchemaValueException)
+            is schema_handler
+        )
 
 
 class TestRequestLogging:
@@ -169,17 +169,18 @@ class TestRequestLogging:
             for record in caplog.records
             if getattr(record, "event", "") == "trackinizer_request_completed"
         )
-        fields = DictCodec.coerce(record.__dict__)
-        assert StrCodec.coerce(fields.get("request_id")) == str(request_id)
-        assert StrCodec.coerce(fields.get("method")) == "GET"
-        assert StrCodec.coerce(fields.get("path")) == "/api/version"
-        assert StrCodec.coerce(fields.get("outcome")) == "success"
-        assert IntCodec.coerce(fields.get("status_code"), 0) == 200
-        assert IntCodec.coerce(fields.get("worker_pid"), 0) > 0
-        assert FloatCodec.coerce(fields.get("response_start_sec"), -1) >= 0
-        assert FloatCodec.coerce(fields.get("duration_sec"), -1) >= FloatCodec.coerce(
+        fields = convert(record.__dict__, dict[str, object])
+        assert convert(fields.get("request_id"), str) == str(request_id)
+        assert convert(fields.get("method"), str) == "GET"
+        assert convert(fields.get("path"), str) == "/api/version"
+        assert convert(fields.get("outcome"), str) == "success"
+        assert convert(fields.get("status_code"), int, default=0) == 200
+        assert convert(fields.get("worker_pid"), int, default=0) > 0
+        assert convert(fields.get("response_start_sec"), float, default=-1) >= 0
+        assert convert(fields.get("duration_sec"), float, default=-1) >= convert(
             fields.get("response_start_sec"),
-            0,
+            float,
+            default=0,
         )
 
     def test_invalid_request_id_is_replaced_and_rejection_is_classified(
@@ -202,10 +203,10 @@ class TestRequestLogging:
             for record in caplog.records
             if getattr(record, "event", "") == "trackinizer_request_completed"
         )
-        fields = DictCodec.coerce(record.__dict__)
-        assert StrCodec.coerce(fields.get("request_id")) == request_id
-        assert StrCodec.coerce(fields.get("outcome")) == "rejected"
-        assert IntCodec.coerce(fields.get("status_code"), 0) == 404
+        fields = convert(record.__dict__, dict[str, object])
+        assert convert(fields.get("request_id"), str) == request_id
+        assert convert(fields.get("outcome"), str) == "rejected"
+        assert convert(fields.get("status_code"), int, default=0) == 404
 
     # Production runs at WARNING, so only a failure's line is kept there: raised to
     # WARNING, it carries the request id the web app shows beside the error.
@@ -274,10 +275,10 @@ class TestRequestLogging:
             r"request_id=rid-1 worker_pid=\d+ error_type=",
             record.getMessage(),
         )
-        fields = DictCodec.coerce(record.__dict__)
-        assert StrCodec.coerce(fields.get("stage")) == "http_request"
-        assert StrCodec.coerce(fields.get("error_type"), "?") == ""
-        assert 0.0 <= FloatCodec.coerce(fields.get("duration_sec"), -1) < 60.0
+        fields = convert(record.__dict__, dict[str, object])
+        assert convert(fields.get("stage"), str) == "http_request"
+        assert convert(fields.get("error_type"), str, default="?") == ""
+        assert 0.0 <= convert(fields.get("duration_sec"), float, default=-1) < 60.0
 
 
 class TestAuthDisabledWarning:

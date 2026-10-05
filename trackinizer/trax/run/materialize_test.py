@@ -20,7 +20,7 @@ from trackinizer.lib.agent.types.sessions import (
     TurnContext,
     UserMessage,
 )
-from trackinizer.lib.custom_json import JSON, DictCodec, json_freeze, loads
+from trackinizer.lib.custom_json import JSON, convert, json_freeze, loads, parse
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.errors import (
     CiphertextDroppedError,
@@ -112,7 +112,7 @@ class TestTheFileIsThisMachinesOwn:
         written = materialize_claude(records=_records(), encoding=_encoding())
 
         declared = {
-            DictCodec.coerce(loads(line))["sessionId"]
+            parse(line, dict[str, object])["sessionId"]
             for line in written.path.read_text(encoding="utf-8").splitlines()
         }
         assert declared == {str(written.cli_session_id)}
@@ -139,7 +139,7 @@ class TestTheFileIsThisMachinesOwn:
         )
 
         declared = {
-            DictCodec.coerce(loads(line)).get("sessionId")
+            parse(line, dict[str, object]).get("sessionId")
             for line in written.path.read_text(encoding="utf-8").splitlines()
         }
         assert declared == {str(written.cli_session_id)}
@@ -180,7 +180,9 @@ class TestTheRewriteIsReadableBack:
 
         with written.path.open(encoding="utf-8") as handle:
             declared = {
-                DictCodec.coerce(getattr(record, "extra", None)).get("sessionId")
+                convert(getattr(record, "extra", None) or {}, dict[str, object]).get(
+                    "sessionId",
+                )
                 for record in claude.normalize(handle)
             }
 
@@ -312,10 +314,11 @@ class TestMaterializingCodex:
             encoding=json_freeze({}),
         )
 
-        declared = DictCodec.coerce(
-            loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
+        declared = parse(
+            written.path.read_text(encoding="utf-8").splitlines()[0],
+            dict[str, object],
         )
-        payload = DictCodec.coerce(declared["payload"])
+        payload = convert(declared["payload"], dict[str, object])
         assert payload["id"] == str(written.cli_session_id)
 
     def test_the_launch_payload_is_one_codex_will_load(self) -> None:
@@ -334,10 +337,11 @@ class TestMaterializingCodex:
             encoding=json_freeze({}),
         )
 
-        declared = DictCodec.coerce(
-            loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
+        declared = parse(
+            written.path.read_text(encoding="utf-8").splitlines()[0],
+            dict[str, object],
         )
-        payload = DictCodec.coerce(declared["payload"])
+        payload = convert(declared["payload"], dict[str, object])
         assert declared["ordinal"] == 0
         assert set(payload) >= {
             "cli_version",
@@ -461,8 +465,9 @@ class TestMaterializingCodex:
             encoding=json_freeze({}),
         )
 
-        declared = DictCodec.coerce(
-            loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
+        declared = parse(
+            written.path.read_text(encoding="utf-8").splitlines()[0],
+            dict[str, object],
         )
         timestamp = declared["timestamp"]
         assert isinstance(timestamp, str)
@@ -488,7 +493,7 @@ class TestMaterializingCodex:
         )
 
         lines = [
-            DictCodec.coerce(loads(line))
+            parse(line, dict[str, object])
             for line in written.path.read_text(encoding="utf-8").splitlines()
         ]
         assert all(isinstance(line.get("timestamp"), str) for line in lines)
@@ -524,10 +529,12 @@ class TestMaterializingCodex:
             encoding=json_freeze({}),
         )
 
-        payload = DictCodec.coerce(
-            DictCodec.coerce(
-                loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
+        payload = convert(
+            parse(
+                written.path.read_text(encoding="utf-8").splitlines()[0],
+                dict[str, object],
             )["payload"],
+            dict[str, object],
         )
         assert payload["cwd"] == "/elsewhere"
         assert payload["id"] == str(written.cli_session_id)
@@ -548,7 +555,7 @@ class TestMaterializingCodex:
 
         index = next(iter(CodexAdapter().session_dirs())).parent / "session_index.jsonl"
         entries = [
-            DictCodec.coerce(loads(line))
+            parse(line, dict[str, object])
             for line in index.read_text(encoding="utf-8").splitlines()
         ]
         assert [entry["id"] for entry in entries] == [str(written.cli_session_id)]
@@ -569,7 +576,7 @@ class TestMaterializingCodex:
         )
 
         ids = [
-            DictCodec.coerce(loads(line))["id"]
+            parse(line, dict[str, object])["id"]
             for line in index.read_text(encoding="utf-8").splitlines()
         ]
         assert ids == ["kept", str(written.cli_session_id)]

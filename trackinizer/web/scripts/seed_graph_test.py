@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 
-from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec, loads
+from trackinizer.lib.custom_json import convert, parse
 from trackinizer.types.edges import EDGE_POLICIES
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.web.scripts.graph_structure import (
@@ -114,13 +114,19 @@ def test_every_person_is_an_example_address() -> None:
 
 def test_roots_take_written_titles_and_the_showcase_its_own_text() -> None:
     client, _ = _seeded()
-    contents = DictCodec.coerce(loads(GRAPH_CONTENTS.read_text()))
-    written = ListCodec.coerce(contents.get("roots"), str)
-    shown = DictCodec.coerce(contents.get("showcase"))
+    contents = parse(GRAPH_CONTENTS.read_text(), dict[str, object])
+    written = convert(contents.get("roots"), list[str], default=[])
+    shown = convert(contents.get("showcase"), dict[str, object], default={})
     titles = [body["title"] for _, body in client.items]
     assert titles[6] == written[0]
-    assert DictCodec.coerce(shown.get("root")).items() <= client.items[0][1].items()
-    assert DictCodec.coerce(shown.get("belief")).items() <= client.items[3][1].items()
+    assert (
+        convert(shown.get("root"), dict[str, object], default={}).items()
+        <= client.items[0][1].items()
+    )
+    assert (
+        convert(shown.get("belief"), dict[str, object], default={}).items()
+        <= client.items[3][1].items()
+    )
     assert all(titles)
 
 
@@ -135,11 +141,18 @@ def test_no_kind_repeats_a_built_title_before_it_has_used_every_one() -> None:
     # reads as a placeholder.
     client = _FakeClient()
     seed_graph(client, load(GRAPH_STRUCTURE.read_text()), actor="ada@example.com")
-    contents = DictCodec.coerce(loads(GRAPH_CONTENTS.read_text()))
-    shown = DictCodec.coerce(contents.get("showcase"))
+    contents = parse(GRAPH_CONTENTS.read_text(), dict[str, object])
+    shown = convert(contents.get("showcase"), dict[str, object], default={})
     written = {
-        *ListCodec.coerce(contents.get("roots"), str),
-        *(DictCodec.coerce(shown.get(part)).get("title") for part in shown),
+        *convert(contents.get("roots"), list[str], default=[]),
+        *(
+            convert(
+                convert(shown.get(part), dict[str, object], default={}).get("title"),
+                str,
+                default="",
+            )
+            for part in shown
+        ),
     }
     built: dict[str, list[str]] = {}
     for kind, body in client.items:
@@ -177,8 +190,10 @@ def test_the_committed_structure_has_a_showcase_and_a_title_for_every_root() -> 
     found = islands(structure)
     picked = showcase(structure, found)
     assert found.home[picked.belief] == picked.root
-    contents = DictCodec.coerce(loads(GRAPH_CONTENTS.read_text()))
-    assert len(ListCodec.coerce(contents.get("roots"), str)) >= len(found.roots)
+    contents = parse(GRAPH_CONTENTS.read_text(), dict[str, object])
+    assert len(convert(contents.get("roots"), list[str], default=[])) >= len(
+        found.roots,
+    )
 
 
 _EXPERIMENTS = (
@@ -309,7 +324,7 @@ class _FakeClient:
         self.edges.extend(
             (
                 self._end(edge, "from", ids),
-                StrCodec.coerce(edge["edge_kind"]),
+                convert(edge["edge_kind"], str),
                 self._end(edge, "to", ids),
                 edge.get("valence"),
             )
@@ -337,7 +352,7 @@ class _FakeClient:
         index = edge.get(f"{end}_index")
         if isinstance(index, int):
             return ids[index]
-        made = uuid.UUID(StrCodec.coerce(edge[f"{end}_id"]))
+        made = uuid.UUID(convert(edge[f"{end}_id"], str))
         assert made in self._made
         return made
 

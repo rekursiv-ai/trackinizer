@@ -16,7 +16,6 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from trackinizer.lib.custom_json import MutableJSON
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api._routes_shared import (
     RoleLiteral,
@@ -33,6 +32,7 @@ from trackinizer.server.auth import (
     revoke_api_key,
     set_api_key_role,
 )
+from trackinizer.wire.json_types import MutableJSON
 
 
 __all__ = [

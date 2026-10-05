@@ -33,14 +33,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine, make_conn, make_store, new_uuid
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    FloatCodec,
-    IntCodec,
-    ListCodec,
-    StrCodec,
-    loads,
-)
+from trackinizer.lib.custom_json import convert, parse
 from trackinizer.lib.postgres import Conn
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server import web
@@ -1105,7 +1098,7 @@ class TestFeedReads:
         response = client.get("/api/web/feed/histogram", params={"kind": "ToolCall"})
 
         assert response.status_code == 200, response.text
-        assert DictCodec.coerce(response.json())["counts"] == [
+        assert convert(response.json(), dict[str, object])["counts"] == [
             {"start": "2026-10-01T00:00:00Z", "count": 3},
         ]
         kwargs = store.read_feed_histogram.call_args.kwargs
@@ -1228,7 +1221,7 @@ class TestRouteBounds:
         # return wrong matches.
         r = c.get("/api/web/search", params={"q": 'title:"unclosed'})
         assert r.status_code == 400
-        body = DictCodec.coerce(r.json())
+        body = convert(r.json(), dict[str, object])
         detail = body["detail"]
         assert isinstance(detail, str)
         assert "quot" in detail
@@ -1245,7 +1238,7 @@ class TestRouteBounds:
         # token search for ``%title:%``; now it is a 400.
         r = c.get("/api/web/search", params={"q": "title:"})
         assert r.status_code == 400
-        body = DictCodec.coerce(r.json())
+        body = convert(r.json(), dict[str, object])
         detail = body["detail"]
         assert isinstance(detail, str)
         assert "empty" in detail
@@ -1272,7 +1265,9 @@ class TestRouteBounds:
             ],
         )
         assert r.status_code == 200, r.text
-        assert [set(hit) for hit in ListCodec.mappings(r.json())] == [{"id", "title"}]
+        assert [set(hit) for hit in convert(r.json(), list[dict[str, object]])] == [
+            {"id", "title"},
+        ]
         r = c.get("/api/web/search", params=[*query, ("fields", "bogus")])
         assert r.status_code == 400, r.text
         assert "'bogus'" in r.text
@@ -1783,16 +1778,27 @@ async def test_peers_carry_their_own_created_and_priority_on_a_real_engine(
     request = cast(Request, _request(pglite_store, pglite_store.engine))
     parent_view = await web.web_get(parent, request, identity=_TEST_IDENTITY)
     child_view = await web.web_get(child, request, identity=_TEST_IDENTITY)
-    (child_ref,) = ListCodec.coerce(
-        DictCodec.coerce(parent_view["backlinks"])["narrows"],
+    (child_ref,) = convert(
+        convert(parent_view["backlinks"], dict[str, object])["narrows"],
+        list[object],
     )
-    (parent_ref,) = ListCodec.coerce(DictCodec.coerce(child_view["edges"])["narrows"])
-    child_ref, parent_ref = DictCodec.coerce(child_ref), DictCodec.coerce(parent_ref)
+    (parent_ref,) = convert(
+        convert(child_view["edges"], dict[str, object])["narrows"],
+        list[object],
+    )
+    child_ref, parent_ref = (
+        convert(child_ref, dict[str, object]),
+        convert(parent_ref, dict[str, object]),
+    )
     assert (
-        parent_ref["peer_created"] == DictCodec.coerce(parent_view["self"])["created"]
+        parent_ref["peer_created"]
+        == convert(parent_view["self"], dict[str, object])["created"]
     )
     assert parent_ref["peer_priority"] == 10
-    assert child_ref["peer_created"] == DictCodec.coerce(child_view["self"])["created"]
+    assert (
+        child_ref["peer_created"]
+        == convert(child_view["self"], dict[str, object])["created"]
+    )
     # Neither the child nor the edge has a priority, so the ref carries neither.
     assert "peer_priority" not in child_ref
     assert "priority" not in child_ref
@@ -1818,8 +1824,8 @@ async def test_web_get_breaks_change_time_ties_by_id_on_a_real_engine(
     request = cast(Request, _request(pglite_store, pglite_store.engine))
     detail = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
     change_ids = [
-        StrCodec.coerce(DictCodec.coerce(change)["id"])
-        for change in ListCodec.coerce(detail["changes"])
+        convert(convert(change, dict[str, object])["id"], str)
+        for change in convert(detail["changes"], list[object])
     ]
     assert len(change_ids) == 5
     assert change_ids == sorted(change_ids, reverse=True)
@@ -1895,7 +1901,10 @@ async def test_web_graph_returns_at_most_limit_nodes_on_a_real_engine(
         (5_000, ids),
     ):
         graph = await web.web_graph(request, identity=_TEST_IDENTITY, limit=limit)
-        nodes = [DictCodec.coerce(n)["id"] for n in ListCodec.coerce(graph["nodes"])]
+        nodes = [
+            convert(n, dict[str, object])["id"]
+            for n in convert(graph["nodes"], list[object])
+        ]
         assert nodes == [str(n) for n in kept], limit
         assert _edge_ids(graph) == {
             (a, b) for a, b in whole if a in nodes and b in nodes
@@ -1955,7 +1964,9 @@ async def test_web_graph_draws_a_focus_neighbourhood_on_a_real_engine(
             focus=focus,
             hops=hops,
         )
-        nodes = [DictCodec.coerce(n) for n in ListCodec.coerce(graph["nodes"])]
+        nodes = [
+            convert(n, dict[str, object]) for n in convert(graph["nodes"], list[object])
+        ]
         # Oldest first, as without a focus.
         assert [(n["id"], n["hops"]) for n in nodes] == [
             (str(node), distance) for node, distance in kept.items()
@@ -2001,9 +2012,10 @@ async def test_web_graph_draws_60_nodes_round_a_focus_and_1000_without(
         )
     request = cast(Request, _request(pglite_store, pglite_store.engine))
     around = await web.web_graph(request, identity=_TEST_IDENTITY, focus=hub)
-    assert len(ListCodec.coerce(around["nodes"])) == 60
-    whole = ListCodec.mappings(
+    assert len(convert(around["nodes"], list[object])) == 60
+    whole = convert(
         (await web.web_graph(request, identity=_TEST_IDENTITY))["nodes"],
+        list[dict[str, object]],
     )
     assert len(whole) == 71
     # Without a focus there is no distance to give.
@@ -2034,7 +2046,7 @@ class TestSubscribeProbe:
         if status != 200:
             return status, headers, []
         frames = [
-            DictCodec.coerce(loads(frame.removeprefix(b"data: ")))
+            parse(frame.removeprefix(b"data: "), dict[str, object])
             for frame in body.split(b"\n\n")[:-1]
         ]
         return status, headers, frames
@@ -2049,8 +2061,8 @@ class TestSubscribeProbe:
         assert headers["content-type"].startswith("text/event-stream")
         assert "no-transform" not in headers.get("cache-control", "")
         # Frames at 0.02, 0.04, 0.06 and 0.08 s; none at or after for_sec.
-        assert [IntCodec.coerce(f["seq"]) for f in frames] == [0, 1, 2, 3]
-        elapsed = [FloatCodec.coerce(f["t"]) for f in frames]
+        assert [convert(f["seq"], int) for f in frames] == [0, 1, 2, 3]
+        elapsed = [convert(f["t"], float) for f in frames]
         assert elapsed[0] >= 0.02
         assert elapsed == sorted(elapsed)
         assert elapsed[-1] < 0.09
@@ -2058,7 +2070,7 @@ class TestSubscribeProbe:
     def test_one_frame_without_an_interval(self) -> None:
         # One byte, then silence until for_sec: the idle-cut experiment.
         _, _, frames = self._get(first_after_sec=0, for_sec=0.05)
-        assert [IntCodec.coerce(f["seq"]) for f in frames] == [0]
+        assert [convert(f["seq"], int) for f in frames] == [0]
 
     def test_no_bytes_when_the_first_is_due_after_the_end(self) -> None:
         # Headers only: the experiment for a proxy that holds them.
@@ -2096,7 +2108,9 @@ def _edge_ids(graph: web.WebView) -> set[tuple[object, object]]:
     """Return the ``(from_id, to_id)`` of every edge in a ``/graph`` response."""
     return {
         (edge["from_id"], edge["to_id"])
-        for edge in (DictCodec.coerce(e) for e in ListCodec.coerce(graph["edges"]))
+        for edge in (
+            convert(e, dict[str, object]) for e in convert(graph["edges"], list[object])
+        )
     }
 
 

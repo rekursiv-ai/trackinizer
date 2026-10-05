@@ -65,7 +65,7 @@ class _PolledFsEvents:
     def __init__(self, *, writes: bool) -> None:
         self._writes = writes
         self._watches: list[tuple[_Handler, Path]] = []
-        self._before: list[dict[Path, tuple[int, int, int]]] = []
+        self._before: list[dict[Path, tuple[int, int, int, bytes]]] = []
         self._stopped = threading.Event()
         self._thread = threading.Thread(target=self._poll, daemon=True)
 
@@ -89,7 +89,9 @@ class _PolledFsEvents:
 
     def start(self) -> None:
         """Take the first snapshot before returning, so the watch is armed."""
-        self._before = [_stamps(root) for _, root in self._watches]
+        self._before = [
+            _stamps(root, contents=self._writes) for _, root in self._watches
+        ]
         self._thread.start()
 
     def stop(self) -> None:
@@ -103,7 +105,7 @@ class _PolledFsEvents:
     def _poll(self) -> None:
         while not self._stopped.wait(0.005):
             for index, (handler, root) in enumerate(self._watches):
-                after = _stamps(root)
+                after = _stamps(root, contents=self._writes)
                 for path in sorted(
                     _changed(self._before[index], after, writes=self._writes),
                 ):
@@ -118,23 +120,31 @@ class _Change:
     src_path: str
 
 
-def _stamps(root: Path) -> dict[Path, tuple[int, int, int]]:
-    """Map every file under ``root`` to its inode, mtime, and size."""
-    stamps: dict[Path, tuple[int, int, int]] = {}
+# The bytes as well, when writes are reported: a same-size rewrite within one timestamp
+# tick keeps the inode, size, and mtime it overwrote, and FSEvents reports it anyway.
+# Reading every file each poll is affordable here; a test watches a few small files.
+def _stamps(
+    root: Path,
+    *,
+    contents: bool,
+) -> dict[Path, tuple[int, int, int, bytes]]:
+    """Map every file under ``root`` to its inode, mtime, size, and maybe bytes."""
+    stamps: dict[Path, tuple[int, int, int, bytes]] = {}
     for directory, _subdirectories, files in os.walk(root):
         for name in files:
             path = Path(directory) / name
             try:
                 stat = path.stat()
+                data = path.read_bytes() if contents else b""
             except FileNotFoundError:
-                continue  # Deleted between the listing and the stat.
-            stamps[path] = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+                continue  # Deleted between the listing and the stat or the read.
+            stamps[path] = (stat.st_ino, stat.st_mtime_ns, stat.st_size, data)
     return stamps
 
 
 def _changed(
-    before: dict[Path, tuple[int, int, int]],
-    after: dict[Path, tuple[int, int, int]],
+    before: dict[Path, tuple[int, int, int, bytes]],
+    after: dict[Path, tuple[int, int, int, bytes]],
     *,
     writes: bool,
 ) -> set[Path]:

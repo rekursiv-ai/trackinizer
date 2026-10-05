@@ -18,7 +18,7 @@ import uuid
 
 import asyncpg
 
-from trackinizer.lib.custom_json import FloatCodec, ListCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.notify import (
     NOTIFICATION_BUFFER,
     Notification,
@@ -200,15 +200,20 @@ async def _apply_change(
         )
     else:
         old_cost = Cost(
-            agent_usd=FloatCodec.coerce(cost_row["old_agent"], None),
-            resource_usd=FloatCodec.coerce(cost_row["old_resource"], None),
+            agent_usd=convert(cost_row["old_agent"], float),
+            resource_usd=convert(cost_row["old_resource"], float),
         )
         new_cost = Cost(
-            agent_usd=FloatCodec.coerce(cost_row["new_agent"], None),
-            resource_usd=FloatCodec.coerce(cost_row["new_resource"], None),
+            agent_usd=convert(cost_row["new_agent"], float),
+            resource_usd=convert(cost_row["new_resource"], float),
         )
         # NULL when the row has never had a subscriber.
-        subs = tuple(ListCodec.coerce(cost_row["current_subscribers"], str))
+        default_subscribers: list[str] = []
+        subs = tuple(
+            default_subscribers
+            if (value := cost_row["current_subscribers"]) is None
+            else convert(value, list[str]),
+        )
     if extra_subscribers:
         # Update ``seen`` in-loop so duplicates *within*
         # ``extra_subscribers`` are also collapsed.
@@ -438,7 +443,7 @@ class _CascadeAuditMixin(_StoreShared):
                     and existing["subject_id"] == subject_id
                     and existing["kind"] == kind
                 ):
-                    snapshot = ListCodec.coerce(existing["subscribers_snapshot"], str)
+                    snapshot = convert(existing["subscribers_snapshot"], list[str])
                     return client_change_id, tuple(snapshot)
                 raise ConflictError(
                     f"idempotency_key {client_change_id} already used "
@@ -527,7 +532,11 @@ class _CascadeAuditMixin(_StoreShared):
                         edge_priority=cast(Issue.Priority | None, edge["priority"]),
                         edge_note=_optional_str(edge["note"]),
                         edge_valence=_optional_float(edge["valence"]),
-                        edge_labels=tuple(ListCodec.coerce(edge["labels"], str)),
+                        edge_labels=tuple(
+                            []
+                            if (labels := edge["labels"]) is None
+                            else convert(labels, list[str]),
+                        ),
                     ),
                     cascade=False,
                 )

@@ -23,7 +23,7 @@ from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Req
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import TypeAdapter
 
-from trackinizer.lib.custom_json import DictCodec, MutableJSON, MutableJSONValue, loads
+from trackinizer.lib.custom_json import convert, loads
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.server.api._deps import get_store, tag_kind, tag_row
 from trackinizer.server.api._regex_guard import regex_failures_as_400
@@ -54,6 +54,7 @@ from trackinizer.wire.filters import (
     FilterOp,
     canonical_filter_field,
 )
+from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
@@ -631,7 +632,7 @@ def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
         ) from err
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="filter must be a JSON object")
-    obj = DictCodec.coerce(payload)
+    obj = convert(payload, dict[str, object])
     field = obj.get("field")
     op = obj.get("op")
     # The presence ops carry no operand; default a missing value to "". Gate on
@@ -688,14 +689,15 @@ def _ancestor_json(ancestor: Ancestor) -> MutableJSON:
 
 def _brief_change(change: Change) -> dict[str, object]:
     """Serialize ``change`` with unset snapshot keys dropped and snapshot text cut."""
-    row = DictCodec.coerce(
+    row = convert(
         cast(object, _change_adapter().dump_python(change, mode="json")),
+        dict[str, object],
     )
     text = _snapshot_text_fields()
     for side in ("old", "new"):
         row[side] = {
             key: value[:32] if key in text and isinstance(value, str) else value
-            for key, value in DictCodec.coerce(row[side]).items()
+            for key, value in convert(row[side], dict[str, object]).items()
             if value is not None
         }
     return row

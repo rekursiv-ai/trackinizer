@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
+from unittest import mock
 
 import asyncio
 import contextlib
 import shutil
+import signal
 import stat
 import sys
 import tempfile
@@ -32,7 +34,13 @@ from trackinizer.lib.posix.terminal import Terminal
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable, Iterator
+    from collections.abc import (
+        AsyncGenerator,
+        AsyncIterator,
+        Callable,
+        Iterator,
+        Sequence,
+    )
 
 
 # Echoes each line it reads, after announcing itself; a stand-in for an agent.
@@ -378,6 +386,247 @@ class TestThreadedHost:
         assert b"ECHO:routed" in _read(scrollback)
         assert relay.submitted == 1
         assert statuses == [128 + 15]
+
+
+class TestHostBranchEdges:
+    """Exercise host lifecycle branches without a real child process."""
+
+    def test_started_callback_requires_a_pid(self, tmp_path: Path) -> None:
+        terminal = _FakeTerminal(pid=None)
+        host = Host(
+            terminal,
+            spec=HostSpec(address=tmp_path / "s", scrollback=tmp_path / "log"),
+            on_started=lambda _pid: None,
+        )
+
+        with pytest.raises(RuntimeError, match="child PID"):
+            asyncio.run(host.serve())
+        assert terminal.calls == ["start", "terminate", "wait", "close"]
+
+    def test_started_callback_receives_pid(self, tmp_path: Path) -> None:
+        started: list[int] = []
+        host = _UnservedHost(
+            _FakeTerminal(pid=123),
+            spec=HostSpec(address=tmp_path / "s", scrollback=tmp_path / "log"),
+            on_started=started.append,
+        )
+
+        assert asyncio.run(host.serve()) == 0
+        assert started == [123]
+        assert host.served == 1
+
+    def test_interrupt_records_signal_and_stops_child(self, tmp_path: Path) -> None:
+        terminal = _FakeTerminal()
+        host = Host(
+            terminal,
+            spec=HostSpec(address=tmp_path / "s", scrollback=tmp_path / "log"),
+        )
+
+        async def run() -> None:
+            host._interrupt(signal.SIGHUP)
+            stopping = host._stopping
+            assert stopping is not None
+            await stopping
+
+        asyncio.run(run())
+        assert host._interrupted == signal.SIGHUP
+        assert terminal.calls == ["terminate"]
+
+    def test_pump_calls_output_observer(self, tmp_path: Path) -> None:
+        observed: list[bytes] = []
+        host = Host(
+            _FakeTerminal(chunks=[b"paint"]),
+            spec=HostSpec(address=tmp_path / "s", scrollback=tmp_path / "log"),
+            on_output=observed.append,
+        )
+        with mock.patch("trackinizer.lib.posix.host.write_all", return_value=True):
+            asyncio.run(host._pump(1))
+        assert observed == [b"paint"]
+
+    def test_interrupted_status_overrides_child_status(self, tmp_path: Path) -> None:
+        host = _UnservedHost(
+            _FakeTerminal(),
+            spec=HostSpec(address=tmp_path / "s", scrollback=tmp_path / "log"),
+        )
+        host._interrupted = signal.SIGTERM
+
+        assert asyncio.run(host.serve()) == 128 + signal.SIGTERM
+
+    def test_record_and_replay_trim_to_a_line(self, tmp_path: Path) -> None:
+        host = Host(
+            _FakeTerminal(),
+            spec=HostSpec(
+                address=tmp_path / "s",
+                scrollback=tmp_path / "log",
+                replay_bytes=3,
+            ),
+        )
+        with mock.patch("trackinizer.lib.posix.host.write_all", return_value=True):
+            host._record(1, b"abc\\ndef")
+        assert host._replay() == b"def"
+
+    def test_record_warns_once_when_scrollback_fails(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        host = Host(
+            _FakeTerminal(),
+            spec=HostSpec(address=tmp_path / "s", scrollback=tmp_path / "log"),
+        )
+        with mock.patch("trackinizer.lib.posix.host.write_all", return_value=False):
+            host._record(1, b"x")
+            host._record(1, b"y")
+        assert host._scrollback_failed
+        assert caplog.text.count("scrollback write failed") == 1
+
+
+class TestHostSend:
+    """A viewer that cannot take more output is forgotten, not written to."""
+
+    def test_send_drops_closing_writer(self, tmp_path: Path) -> None:
+        host = Host(
+            _FakeTerminal(),
+            spec=HostSpec(address=tmp_path / "s", scrollback=tmp_path / "log"),
+        )
+        transport = _RecordingTransport(closing=True)
+
+        async def run() -> asyncio.StreamWriter:
+            writer = _writer_over(transport)
+            host._clients.add(writer)
+            host._viewers.add(writer)
+            host._send(writer, b"frame")
+            return writer
+
+        writer = asyncio.run(run())
+        assert writer not in host._clients
+        assert writer not in host._viewers
+        assert transport.writes == []
+
+    def test_send_drops_a_writer_over_the_backlog_limit(self, tmp_path: Path) -> None:
+        host = Host(
+            _FakeTerminal(),
+            spec=HostSpec(address=tmp_path / "s", scrollback=tmp_path / "log"),
+        )
+        transport = _RecordingTransport(buffered=9 * 1024 * 1024)
+
+        async def run() -> asyncio.StreamWriter:
+            writer = _writer_over(transport)
+            host._clients.add(writer)
+            host._viewers.add(writer)
+            host._send(writer, b"frame")
+            return writer
+
+        writer = asyncio.run(run())
+        assert writer not in host._clients
+        assert writer not in host._viewers
+        assert transport.closing
+        assert transport.writes == []
+
+    def test_send_writes_to_a_writer_within_the_backlog_limit(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        host = Host(
+            _FakeTerminal(),
+            spec=HostSpec(address=tmp_path / "s", scrollback=tmp_path / "log"),
+        )
+        transport = _RecordingTransport(buffered=1)
+
+        async def run() -> None:
+            host._send(_writer_over(transport), b"frame")
+            transport.close()
+
+        asyncio.run(run())
+        assert transport.writes == [b"frame"]
+
+
+class _FakeTerminal(Terminal):
+    """A terminal whose child never runs; records each lifecycle call."""
+
+    def __init__(
+        self,
+        *,
+        pid: int | None = None,
+        chunks: Sequence[bytes] = (),
+    ) -> None:
+        super().__init__(["true"])
+        self._fake_pid = pid
+        self._chunks = tuple(chunks)
+        self.calls: list[str] = []
+
+    @property
+    @override
+    def pid(self) -> int | None:
+        return self._fake_pid
+
+    @override
+    async def start(self) -> None:
+        self.calls.append("start")
+
+    @override
+    async def output(self) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            yield chunk
+
+    @override
+    async def terminate(self) -> None:
+        self.calls.append("terminate")
+
+    @override
+    async def wait(self) -> int:
+        self.calls.append("wait")
+        return 0
+
+    @override
+    async def close(self) -> None:
+        self.calls.append("close")
+
+
+class _UnservedHost(Host):
+    """A host that skips listening and pumping; counts how often it would."""
+
+    served = 0
+
+    @override
+    async def _serve_started(self) -> None:
+        self.served += 1
+
+
+class _RecordingTransport(asyncio.WriteTransport):
+    """A write transport that keeps what it is given instead of sending it."""
+
+    def __init__(self, *, buffered: int = 0, closing: bool = False) -> None:
+        super().__init__()
+        self.buffered = buffered
+        self.closing = closing
+        self.writes: list[bytes] = []
+
+    @override
+    def get_write_buffer_size(self) -> int:
+        return self.buffered
+
+    @override
+    def write(self, data: bytes | bytearray | memoryview) -> None:
+        self.writes.append(bytes(data))
+
+    @override
+    def is_closing(self) -> bool:
+        return self.closing
+
+    @override
+    def close(self) -> None:
+        self.closing = True
+
+
+def _writer_over(transport: _RecordingTransport) -> asyncio.StreamWriter:
+    """Return a real ``StreamWriter`` on the running loop over ``transport``."""
+    return asyncio.StreamWriter(
+        transport,
+        asyncio.Protocol(),
+        None,
+        asyncio.get_running_loop(),
+    )
 
 
 @contextlib.asynccontextmanager

@@ -318,7 +318,7 @@ class TestContract:
         assert "legacy/UnknownMessage" not in LEGACY_KINDS
 
     def test_non_legacy_kind_raises(self) -> None:
-        record = UncategorizedRecord(kind="queue-operation", payload=json_freeze({}))
+        record = UncategorizedRecord(kind="queue-operation", payload={})
         with pytest.raises(ValueError, match="queue-operation"):
             retype(record)
 

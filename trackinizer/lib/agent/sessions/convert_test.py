@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, Never, Self, cast
 
 import functools
 import json
@@ -12,13 +12,14 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import tracemalloc
 
 import psutil
 import pytest
 
-from trackinizer.lib.agent.sessions import claude, normalized
+from trackinizer.lib.agent.sessions import claude, convert, fuse, normalized
 from trackinizer.lib.agent.sessions.convert import (
     FileResult,
     _diff,
@@ -32,7 +33,10 @@ from trackinizer.lib.agent.sessions.convert import (
     detect_format,
     main,
 )
-from trackinizer.lib.custom_json import DictCodec, IntCodec, ListCodec, StrCodec, loads
+from trackinizer.lib.custom_json import (
+    convert as convert_json,
+    parse,
+)
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -61,14 +65,15 @@ def _first_turn(rollout: str) -> str:
     kept = [rollout.splitlines(keepends=True)[0]]
     started = False
     for line in rollout.splitlines(keepends=True)[1:]:
-        record = DictCodec.coerce(loads(line))
+        record = parse(line, dict[str, object])
         started = started or record.get("type") == "turn_context"
         if not started:
             continue
         kept.append(line)
-        if StrCodec.coerce(
-            DictCodec.coerce(record.get("payload")).get("type"),
-        ).endswith("tool_call_output"):
+        payload = convert_json(record.get("payload"), dict[str, object], default={})
+        if convert_json(payload.get("type"), str, default="").endswith(
+            "tool_call_output",
+        ):
             return "".join(kept)
     raise AssertionError("the capture has no tool output to slice at")
 
@@ -102,8 +107,10 @@ def test_convert_writes_stdout_and_out_dir(
     assert main(["convert", str(path), "--to", "json"]) == 0
     # A bare ARRAY of tagged records: a session IS its records, so nothing
     # wraps them and no metadata sits beside them.
-    document = ListCodec.mappings(loads(capsys.readouterr().out))
-    assert StrCodec.coerce(document[0].get("py/object")).endswith("TurnContext")
+    document = parse(capsys.readouterr().out, list[dict[str, object]])
+    assert convert_json(document[0].get("py/object"), str, default="").endswith(
+        "TurnContext",
+    )
 
     assert main(["convert", str(path), "--to", "json", "--out-dir", str(out_dir)]) == 0
     assert (out_dir / "session.json").exists()
@@ -176,7 +183,7 @@ def test_workers_run_in_separate_processes(
         _ = _session(tmp_path / name / "s.jsonl", _claude_session())
 
     assert main(["verify", str(tmp_path), "--workers", "4", "--format", "json"]) == 0
-    report = DictCodec.coerce(loads(capsys.readouterr().err))
+    report = parse(capsys.readouterr().err, dict[str, object])
 
     assert report["files"] == 4
     assert report["ok"] == 4
@@ -193,10 +200,12 @@ def test_verify_reports_the_wire_size_against_the_source(
     path.write_text(_claude_session())
 
     assert main(["verify", str(path), "--format", "json"]) == 0
-    report = DictCodec.coerce(
-        ListCodec.coerce(
-            DictCodec.coerce(loads(capsys.readouterr().err))["results"],
+    report = convert_json(
+        convert_json(
+            parse(capsys.readouterr().err, dict[str, object])["results"],
+            list[object],
         )[0],
+        dict[str, object],
     )
 
     assert report["source_bytes"] == path.stat().st_size
@@ -216,18 +225,20 @@ def test_verify_reports_a_size_gap_on_a_shortened_rewrite(
     )
 
     assert main(["verify", str(path), "--format", "json"]) == 1
-    report = DictCodec.coerce(
-        ListCodec.coerce(
-            DictCodec.coerce(loads(capsys.readouterr().err))["results"],
+    report = convert_json(
+        convert_json(
+            parse(capsys.readouterr().err, dict[str, object])["results"],
+            list[object],
         )[0],
+        dict[str, object],
     )
 
     assert report["byte_exact"] is False
     assert report["source_bytes"] == path.stat().st_size
     assert (
         0
-        < IntCodec.coerce(report["output_bytes"])
-        < IntCodec.coerce(report["source_bytes"])
+        < convert_json(report["output_bytes"], int)
+        < convert_json(report["source_bytes"], int)
     )
 
 
@@ -443,26 +454,62 @@ def test_a_multi_file_session_is_joined_then_split_back_byte_for_byte(
     # fused into ONE session, so a seam that lost or reordered a record shows
     # up only when the fused object is split back into the files it came from.
     project = tmp_path / "project"
-    before = _session(project / "before-clear.jsonl", _claude_session())
-    after = _session(project / "after-clear.jsonl", _claude_session())
-    # Parts join in write order. Linux stamps mtimes from a coarse clock, so two
-    # back-to-back writes often share one, and the tie then sorts by name, which
-    # puts "after" first. Date `before` a second earlier to state the order.
-    written = after.stat().st_mtime_ns - 1_000_000_000
-    os.utime(before, ns=(written, written))
+    before_text = _claude_session()
+    after_text = before_text.replace("Your entire job", "This resumed session", 1)
+    assert after_text != before_text
+    before = _session(project / "before-clear.jsonl", before_text)
+    after = _session(project / "after-clear.jsonl", after_text)
+    # Both parts carry the fixture's record stamps, so the files' write order
+    # decides here. Linux stamps mtimes from a coarse clock, so two back-to-back
+    # writes often share one, and the tie then sorts by name, which puts "after"
+    # first. Date `before` ten seconds earlier to state the order.
+    after_mtime_ns = time.time_ns()
+    before_mtime_ns = after_mtime_ns - 10 * 1_000_000_000
+    os.utime(before, ns=(before_mtime_ns, before_mtime_ns))
+    os.utime(after, ns=(after_mtime_ns, after_mtime_ns))
 
     result = convert_file(project, "auto", None, False)
 
     assert result.byte_exact
     # ONE session, whose parts are the two files -- not two sessions.
-    assert [name for name, _ in result.parts] == [before.name, after.name]
+    assert result.parts == (
+        (before.name, before_text),
+        (after.name, after_text),
+    )
     assert result.source_bytes == before.stat().st_size + after.stat().st_size
     assert result.output_bytes == result.source_bytes
 
     assert main(["verify", str(project), "--format", "json"]) == 0
-    report = DictCodec.coerce(loads(capsys.readouterr().err))
+    report = parse(capsys.readouterr().err, dict[str, object])
     assert report["files"] == 1
     assert report["ok"] == 1
+
+
+def test_parts_written_in_one_tick_join_in_the_order_their_records_were_stamped(
+    tmp_path: Path,
+) -> None:
+    # A coarse filesystem clock gives two back-to-back parts one mtime, and
+    # file names cannot break that tie: claude names a transcript with a fresh
+    # id, so "after" sorting before "before" is as likely as not. The records
+    # carry the provider's own clock, which here says "after" came a minute
+    # later.
+    project = tmp_path / "project"
+    before_text = _claude_session()
+    after_text = before_text.replace("2026-08-24T20:30:", "2026-08-24T20:31:")
+    assert after_text != before_text
+    before = _session(project / "before-clear.jsonl", before_text)
+    after = _session(project / "after-clear.jsonl", after_text)
+    tick_ns = time.time_ns()
+    for part in (before, after):
+        os.utime(part, ns=(tick_ns, tick_ns))
+
+    result = convert_file(project, "auto", None, False)
+
+    assert result.byte_exact
+    assert result.parts == (
+        (before.name, before_text),
+        (after.name, after_text),
+    )
 
 
 def test_a_session_keeps_the_subagents_nested_under_it(tmp_path: Path) -> None:
@@ -591,6 +638,197 @@ def test_workers_scale_with_the_session_count() -> None:
     assert _workers(paths=8, workers=5) == 5
     assert _workers(paths=2, workers=5) == 2
     assert _workers(paths=1, workers=5) == 1
+
+
+def test_empty_directory_reports_no_session_files(tmp_path: Path) -> None:
+    assert (
+        convert_file(tmp_path, "auto", "json", False).error == "no session files found"
+    )
+
+
+def test_convert_all_uses_a_process_pool_when_multiple_workers_are_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _session(tmp_path / "s.jsonl", _claude_session())
+    calls: list[int] = []
+
+    class Pool:
+        def __init__(self, max_workers: int, **_: object) -> None:
+            calls.append(max_workers)
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def map(
+            self,
+            function: object,
+            paths: object,
+            *_args: object,
+        ) -> list[FileResult]:
+            del paths
+            assert function is convert.convert_file
+            return [convert.convert_file(path, "auto", "json", False)]
+
+    monkeypatch.setattr(convert, "ProcessPoolExecutor", Pool)
+
+    second = _session(tmp_path / "second.jsonl", _claude_session())
+    results = convert._convert_all(
+        (path, second),
+        workers=2,
+        source="auto",
+        target="json",
+        want_diff=False,
+        fail_fast=False,
+    )
+
+    assert calls == [2]
+    assert results[0].ok
+
+
+def _no_sleep(seconds: float) -> None:
+    del seconds
+
+
+def _gone_kill(pid: int, signal: int) -> None:
+    del pid, signal
+    raise OSError("gone")
+
+
+def _gone_exit(code: int) -> Never:
+    del code
+    raise RuntimeError("gone")
+
+
+def test_parent_watcher_exits_when_launcher_disappears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(time, "sleep", _no_sleep)
+    monkeypatch.setattr(os, "kill", _gone_kill)
+    monkeypatch.setattr(os, "_exit", _gone_exit)
+
+    with pytest.raises(RuntimeError, match=r"gone"):
+        convert._watch_launcher(123, 0.0)
+
+
+def test_die_with_parent_starts_a_daemon_watcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started: list[tuple[object, tuple[object, ...], bool]] = []
+
+    class Thread:
+        def __init__(
+            self,
+            *,
+            target: object,
+            args: tuple[object, ...],
+            daemon: bool,
+        ) -> None:
+            started.append((target, args, daemon))
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(threading, "Thread", Thread)
+    convert._die_with_parent(7, 0.5)
+
+    assert started == [(convert._watch_launcher, (7, 0.5), True)]
+
+
+def test_detect_format_recognizes_sagent_records() -> None:
+    assert convert.detect_format('{"kind":"meta"}\n') == "sagent"
+
+
+def test_convert_file_reports_conversion_type_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _session(tmp_path / "s.jsonl", _claude_session())
+
+    def raise_type_error(*_args: object, **_kwargs: object) -> FileResult:
+        raise TypeError("bad")
+
+    monkeypatch.setattr(convert, "_compared", raise_type_error)
+
+    result = convert.convert_file(path, "auto", "json", False)
+
+    assert result.error == "TypeError: bad"
+
+
+def test_destination_uses_a_hash_when_all_parent_names_collide(tmp_path: Path) -> None:
+    path = Path("session.jsonl")
+    destination = tmp_path / "out"
+    destination.mkdir()
+    (destination / "session.json").write_text("")
+
+    assert convert._destination(destination, path, ".json").name.startswith("session-")
+
+
+def test_write_out_dir_writes_a_single_native_target(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    result = FileResult(path=tmp_path / "source.json", target="claude", text="native")
+
+    convert._write([result], output=None, out_dir=out, stream=StringIO())
+
+    assert (out / "source.jsonl").read_text() == "native"
+
+
+def test_write_out_dir_writes_named_parts(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    result = FileResult(
+        path=tmp_path / "source.json",
+        target="claude",
+        parts=(("part.jsonl", "native"),),
+    )
+
+    convert._write([result], output=None, out_dir=out, stream=StringIO())
+
+    assert (out / "part.jsonl").read_text() == "native"
+
+
+def test_matches_rejects_same_sized_different_text(tmp_path: Path) -> None:
+    path = tmp_path / "x"
+    path.write_text("abc")
+
+    assert convert._matches(path, "and") is False
+
+
+def test_streamed_native_conversion_writes_each_part(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    before = _session(project / "before.jsonl", _claude_session())
+    after = _session(project / "after.jsonl", _claude_session())
+    out = tmp_path / "out"
+
+    parts = [
+        list(claude.normalize(StringIO(_claude_session()))),
+        list(claude.normalize(StringIO(_claude_session()))),
+    ]
+    records = list(fuse.fuse(parts, [before.name, after.name]))
+    result = convert._streamed(
+        project,
+        records,
+        (before, after),
+        detected="claude",
+        into="claude",
+        out_dir=out,
+    )
+
+    assert result.output_bytes == before.stat().st_size + after.stat().st_size
+    assert {path.name for path in out.iterdir()} == {before.name, after.name}
+
+    fallback = tmp_path / "fallback"
+    fallback_result = convert._streamed(
+        tmp_path / "single.jsonl",
+        parts[0],
+        (before,),
+        detected="claude",
+        into="claude",
+        out_dir=fallback,
+    )
+    assert fallback_result.parts == ((before.name, ""),)
 
 
 if __name__ == "__main__":

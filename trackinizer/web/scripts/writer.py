@@ -44,13 +44,7 @@ import uuid
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    FloatCodec,
-    ListCodec,
-    StrCodec,
-    loads,
-)
+from trackinizer.lib.custom_json import ReadError, convert, loads, parse
 
 
 if TYPE_CHECKING:
@@ -153,9 +147,11 @@ def answer(client: Writes, line: str, *, clock: Clock) -> dict[str, object]:
     try:
         return _run(
             client,
-            DictCodec.coerce(loads(line), default=None),
+            parse(line, dict[str, object]),
             clock=clock,
         )
+    except ReadError:
+        return {"error": f"TypeError: cannot coerce {loads(line)!r} to dict"}
     except (ClientError, KeyError, TypeError, ValueError) as error:
         return {"error": f"{type(error).__name__}: {error}"}
 
@@ -167,16 +163,16 @@ def _run(
     clock: Clock,
 ) -> dict[str, object]:
     """Dispatch one command by its ``op``."""
-    match StrCodec.coerce(command.get("op")):
+    match convert(command.get("op"), str):
         case "create":
             created = _create(
                 client,
                 command,
-                title=StrCodec.coerce(command.get("title")),
+                title=convert(command.get("title"), str),
             )
             return {"id": str(created), "at": clock.ms()}
         case "edit":
-            field = StrCodec.coerce(command.get("field"), default=None)
+            field = convert(command.get("field"), str)
             client.edit(_uuid(command, "id"), field, command["value"], actor=_ACTOR)
             return {"at": clock.ms()}
         case "edge":
@@ -184,16 +180,14 @@ def _run(
             return {"at": clock.ms()}
         case "burst":
             ids: list[str] = []
-            title = StrCodec.coerce(command.get("title"))
+            title = convert(command.get("title"), str)
 
             def create(n: int) -> None:
                 ids.append(str(_create(client, command, title=f"{title} {n}")))
 
             return {"ats": _paced(command, clock, create), "ids": ids}
         case "steady":
-            targets = [
-                uuid.UUID(id_) for id_ in ListCodec.coerce(command.get("ids"), str)
-            ]
+            targets = [uuid.UUID(id_) for id_ in convert(command.get("ids"), list[str])]
             if not targets:
                 raise ValueError("steady needs at least one id.")
 
@@ -214,7 +208,7 @@ def _create(client: Writes, command: Mapping[str, object], *, title: str) -> uui
     """Create one Issue titled ``title`` with ``command``'s labels."""
     return client.submit(
         "Issue",
-        {"title": title, "labels": ListCodec.coerce(command.get("labels"), str)},
+        {"title": title, "labels": convert(command.get("labels"), list[str])},
     )
 
 
@@ -222,7 +216,7 @@ def _edge(client: Writes, command: Mapping[str, object]) -> None:
     ends = (
         _uuid(command, "from"),
         _uuid(command, "to"),
-        StrCodec.coerce(command.get("kind"), default=None),
+        convert(command.get("kind"), str),
     )
     if command.get("remove") is True:
         client.remove_edge(*ends, actor=_ACTOR)
@@ -240,8 +234,8 @@ def _paced(
     write: Callable[[int], None],
 ) -> list[int]:
     """Call ``write`` ``rate`` times a second for ``seconds``, evenly."""
-    rate = FloatCodec.coerce(command.get("rate"), default=None)
-    count = round(rate * FloatCodec.coerce(command.get("seconds"), default=None))
+    rate = convert(command.get("rate"), float)
+    count = round(rate * convert(command.get("seconds"), float))
     start = clock.now()
     ats: list[int] = []
     for n in range(count):
@@ -252,7 +246,7 @@ def _paced(
 
 
 def _uuid(command: Mapping[str, object], key: str) -> uuid.UUID:
-    return uuid.UUID(StrCodec.coerce(command[key], default=None))
+    return uuid.UUID(convert(command[key], str))
 
 
 def _add_arguments(parser: argparse.ArgumentParser) -> None:

@@ -13,7 +13,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Literal, Self, cast, get_args
 from uuid import UUID
 
-from trackinizer.lib.custom_json import ListCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.types.columns import ColumnSpec, Row, column_specs
 from trackinizer.types.inquiries import Artifact, Inquiry, Issue
 
@@ -244,7 +244,7 @@ class Edge:
             priority=priority,
             note=note,
             valence=valence,
-            labels=None if labels is None else tuple(ListCodec.coerce(labels, str)),
+            labels=None if labels is None else tuple(convert(labels, list[str])),
         )
 
 

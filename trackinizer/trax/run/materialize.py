@@ -47,7 +47,7 @@ from trackinizer.lib.agent.types.sessions import (
     Thinking,
     TurnContext,
 )
-from trackinizer.lib.custom_json import JSON, DictCodec, json_freeze, json_unfreeze
+from trackinizer.lib.custom_json import JSON, convert, json_freeze, json_unfreeze
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.errors import (
@@ -361,7 +361,9 @@ def _codex_declared(record: TurnContext, session_id: UUID) -> TurnContext:
     extra.setdefault("$timestamp", True)
     captured = {
         key: value
-        for key, value in json_unfreeze(DictCodec.coerce(extra.get("payload"))).items()
+        for key, value in json_unfreeze(
+            convert(extra.get("payload"), dict[str, object], default={}),
+        ).items()
         # The thread this session forked FROM is not being materialized, so
         # naming it would point the CLI at a rollout the machine may not hold.
         if key not in {"id", "session_id", "parent_thread_id"}
@@ -470,7 +472,7 @@ def _renamed(record: SessionRecord, session_id: UUID) -> SessionRecord:
     # Not thawed first: the values are re-frozen unchanged, so unfreezing the
     # whole residual only to freeze it again would walk every nested structure
     # twice for one replaced key.
-    residual = DictCodec.coerce(getattr(record, "extra", None))
+    residual = convert(getattr(record, "extra", None) or {}, dict[str, object])
     if "sessionId" not in residual:
         return record
     return replace(

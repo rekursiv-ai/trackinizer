@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest import mock
 
 import asyncio
 import contextlib
+import importlib
 import os
 import pty
+import select
 import signal
+import subprocess
 import sys
 
 import pytest
 
+from trackinizer.lib.posix import terminal
 from trackinizer.lib.posix.terminal import (
     PASTE_END,
     PASTE_START,
@@ -25,6 +30,7 @@ from trackinizer.lib.posix.terminal import (
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 
@@ -886,6 +892,265 @@ class TestWriteFailures:
 
         assert asyncio.run(run()) is True
         assert len(attempts) == 3
+
+
+class TestTerminalBranchEdges:
+    """Exercise terminal failure branches with direct deterministic probes."""
+
+    def test_clean_environment_keeps_essentials(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("PATH", "/bin")
+        with mock.patch.dict(os.environ, {"PATH": "/bin"}, clear=True):
+            term = Terminal(["true"], clean_env=True, env={"CUSTOM": "yes"})
+            child_env = term._child_env()
+        assert child_env == {
+            "PATH": "/bin",
+            "TERM": "xterm-256color",
+            "CUSTOM": "yes",
+        }
+
+    def test_start_rejects_missing_bash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def which(cmd: str) -> str | None:
+            return None if cmd == "bash" else "/bin/true"
+
+        monkeypatch.setattr("trackinizer.lib.posix.terminal.shutil.which", which)
+        with pytest.raises(ValueError, match="bash"):
+            asyncio.run(Terminal(["true"]).start())
+
+    def test_start_cleans_up_when_spawn_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        term = Terminal(["true"])
+        closed: list[int] = []
+        real_close = os.close
+
+        def close(fd: int) -> None:
+            if fd in {7, 8}:
+                closed.append(fd)
+            else:
+                real_close(fd)
+
+        def which(cmd: str) -> str:
+            del cmd
+            return "/bin/true"
+
+        def ttyname(fd: int) -> str:
+            del fd
+            return "/dev/pts/0"
+
+        def set_winsize(rows: int, cols: int) -> None:
+            del rows, cols
+
+        monkeypatch.setattr("trackinizer.lib.posix.terminal.shutil.which", which)
+        monkeypatch.setattr(os, "openpty", lambda: (7, 8))
+        monkeypatch.setattr(os, "close", close)
+        monkeypatch.setattr(term, "set_winsize", set_winsize)
+        monkeypatch.setattr(os, "ttyname", ttyname)
+        monkeypatch.setattr(
+            "trackinizer.lib.posix.terminal.subprocess.Popen",
+            mock.Mock(side_effect=OSError("spawn")),
+        )
+        with pytest.raises(OSError, match="spawn"):
+            asyncio.run(term.start())
+        assert term.master_fd == -1
+        assert closed == [8, 7]
+
+    def test_output_skips_a_transient_would_block(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        term = Terminal(["true"])
+        term._master_fd = 7
+        blocked = True
+
+        def read(fd: int, size: int) -> bytes:
+            del fd, size
+            nonlocal blocked
+            if blocked:
+                blocked = False
+                raise BlockingIOError
+            return b""
+
+        monkeypatch.setattr(os, "read", read)
+
+        def add_reader(
+            fd: int,
+            callback: Callable[[asyncio.Future[None]], None],
+            ready: asyncio.Future[None],
+        ) -> None:
+            del fd
+            callback(ready)
+
+        async def collect() -> list[bytes]:
+            monkeypatch.setattr(asyncio.get_running_loop(), "add_reader", add_reader)
+            return [chunk async for chunk in term.output()]
+
+        assert asyncio.run(collect()) == []
+
+    def test_darwin_exit_probe_uses_kqueue_contract(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        original_platform = sys.platform
+        original_version = sys.version_info
+        monkeypatch.setattr(sys, "platform", "darwin")
+        monkeypatch.setattr(sys, "version_info", (3, 12))
+        _ = importlib.reload(terminal)
+        try:
+
+            class Kernel:
+                def __init__(self) -> None:
+                    self.calls: list[tuple[object, int, object]] = []
+                    self.closed = False
+
+                def control(
+                    self,
+                    events: object,
+                    count: int,
+                    timeout: object,
+                ) -> list[object]:
+                    self.calls.append((events, count, timeout))
+                    return [object()] if timeout is None else []
+
+                def close(self) -> None:
+                    self.closed = True
+
+            kernel = Kernel()
+            seen: list[tuple[int, dict[str, int]]] = []
+
+            def kevent(pid: int, **kwargs: int) -> object:
+                seen.append((pid, kwargs))
+                return object()
+
+            monkeypatch.setattr(select, "kqueue", lambda: kernel, raising=False)
+            monkeypatch.setattr(select, "kevent", kevent, raising=False)
+            for name, value in {
+                "KQ_FILTER_PROC": 1,
+                "KQ_EV_ADD": 2,
+                "KQ_NOTE_EXIT": 4,
+            }.items():
+                monkeypatch.setattr(select, name, value, raising=False)
+
+            assert terminal._exit_seen(17, block=True)
+            assert not terminal._exit_seen(17, block=False)
+            assert seen == [
+                (17, {"filter": 1, "flags": 2, "fflags": 4}),
+                (17, {"filter": 1, "flags": 2, "fflags": 4}),
+            ]
+            assert kernel.calls[0][1:] == (1, None)
+            assert kernel.calls[1][1:] == (1, 0)
+            assert kernel.closed
+        finally:
+            monkeypatch.setattr(sys, "platform", original_platform)
+            monkeypatch.setattr(sys, "version_info", original_version)
+            importlib.reload(terminal)
+
+    def test_reap_requires_process_metadata(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        term = Terminal(["true"])
+        term._pid = 7
+
+        def waitpid(pid: int, options: int) -> tuple[int, int]:
+            del options
+            return pid, 0
+
+        monkeypatch.setattr(os, "waitpid", waitpid)
+        with pytest.raises(ValueError, match="_proc"):
+            _ = term._reap()
+
+    def test_terminate_returns_when_signal_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        term = Terminal(["true"])
+        term._pid = 7
+        sent: list[int] = []
+
+        def refuse(sig: int) -> bool:
+            sent.append(sig)
+            return False
+
+        monkeypatch.setattr(term, "_signal", refuse)
+        asyncio.run(term.terminate())
+        assert sent == [signal.SIGTERM]
+
+    def test_signal_permission_error_reports_false(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        term = Terminal(["true"])
+        term._pid = 7
+
+        def killpg(pgid: int, sig: int) -> None:
+            del pgid, sig
+            raise PermissionError
+
+        monkeypatch.setattr(os, "killpg", killpg)
+        assert not term._signal(signal.SIGTERM)
+
+    @pytest.mark.parametrize("error", [ProcessLookupError(), PermissionError()])
+    def test_signal_fallback_reports_dead_child(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        error: BaseException,
+    ) -> None:
+        term = Terminal(["true"])
+        term._pid = 7
+        monkeypatch.setattr(os, "killpg", mock.Mock(side_effect=ProcessLookupError()))
+        monkeypatch.setattr(os, "kill", mock.Mock(side_effect=error))
+        assert not term._signal(signal.SIGTERM)
+
+    def test_exit_probe_treats_reaped_child_as_exited(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(os, "waitid", mock.Mock(side_effect=ChildProcessError()))
+        assert terminal._exit_seen(7, block=False)
+
+    def test_write_oserror_reports_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        term = Terminal(["true"])
+        term._master_fd = 7
+
+        def write(fd: int, data: bytes) -> int:
+            del fd, data
+            raise OSError
+
+        monkeypatch.setattr(os, "write", write)
+
+        async def run() -> bool:
+            return await term.write(b"x")
+
+        assert not asyncio.run(run())
+
+    def test_reap_handles_already_reaped_child(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        term = Terminal(["true"])
+        term._pid = 7
+        proc = _UnspawnedPopen()
+        term._proc = proc
+
+        def waitpid(pid: int, options: int) -> tuple[int, int]:
+            del pid, options
+            raise ChildProcessError
+
+        monkeypatch.setattr(os, "waitpid", waitpid)
+        assert term._reap() == 0
+        assert proc.returncode == 0
+        assert term.pid is None
+
+
+class _UnspawnedPopen(subprocess.Popen[bytes]):
+    """A ``Popen`` with no process behind it, for code that only records status."""
+
+    def __init__(self) -> None:
+        self.returncode = None
 
 
 # The default gap outwaits codex's paste-Enter suppression; ``cat`` has none, so only

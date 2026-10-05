@@ -19,7 +19,7 @@ from fastapi import HTTPException, Request
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.custom_json import DictCodec, ListCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server import web
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.server.config import Config
@@ -139,17 +139,18 @@ async def test_fts_arm_returns_hits_with_position_and_title(store: Store) -> Non
     await _record(store, session_id, idx=0, text="advisory lock acquired cleanly")
     await _seed(store)
 
-    body = DictCodec.coerce(
+    body = convert(
         await web.web_search_sessions(
             _request(store, session_embedder=""),
             q="advisory lock",
             identity=_VIEWER,
             semantic=False,
         ),
+        dict[str, object],
     )
-    hits = ListCodec.mappings(body["hits"])
+    hits = convert(body["hits"], list[dict[str, object]])
     assert len(hits) == 1
-    hit = DictCodec.coerce(hits[0])
+    hit = convert(hits[0], dict[str, object])
     assert hit["session_id"] == str(session_id)
     assert (hit["part"], hit["idx"]) == (0, 0)
     assert hit["title"] == "deploy log"
@@ -169,19 +170,20 @@ async def test_semantic_requested_without_model_degrades_to_fts(store: Store) ->
     await _record(store, session_id, idx=0, text="postgres deadlock trace")
     await _seed(store)
 
-    body = DictCodec.coerce(
+    body = convert(
         await web.web_search_sessions(
             _request(store, session_embedder=""),
             q="deadlock",
             identity=_VIEWER,
             semantic=True,
         ),
+        dict[str, object],
     )
     assert body["degraded"] is True
     assert body["semantic"] is False
-    hits = ListCodec.mappings(body["hits"])
+    hits = convert(body["hits"], list[dict[str, object]])
     assert len(hits) == 1
-    assert DictCodec.coerce(hits[0])["source"] == "fts"
+    assert convert(hits[0], dict[str, object])["source"] == "fts"
 
 
 @pytest.mark.db_pglite
@@ -193,19 +195,20 @@ async def test_semantic_arm_runs_with_a_configured_embedder(store: Store) -> Non
     await _record(store, session_id, idx=1, text="unrelated chatter about lunch")
     await _seed(store)
 
-    body = DictCodec.coerce(
+    body = convert(
         await web.web_search_sessions(
             _request(store, session_embedder="stub-1024"),
             q="deploy the release to production",
             identity=_VIEWER,
             semantic=True,
         ),
+        dict[str, object],
     )
     assert body["degraded"] is False
     assert body["semantic"] is True
-    hits = ListCodec.mappings(body["hits"])
+    hits = convert(body["hits"], list[dict[str, object]])
     assert hits
-    top = DictCodec.coerce(hits[0])
+    top = convert(hits[0], dict[str, object])
     assert (top["session_id"], top["idx"]) == (str(session_id), 0)
     assert top["source"] in ("semantic", "both")
 
@@ -218,17 +221,23 @@ async def test_semantic_false_skips_the_model_entirely(store: Store) -> None:
     await _record(store, session_id, idx=0, text="advisory lock token here")
     await _seed(store)
 
-    body = DictCodec.coerce(
+    body = convert(
         await web.web_search_sessions(
             _request(store, session_embedder="stub-1024"),
             q="advisory lock",
             identity=_VIEWER,
             semantic=False,
         ),
+        dict[str, object],
     )
     assert body["semantic"] is False
     assert body["degraded"] is False  # Not degraded: the caller opted out.
-    assert DictCodec.coerce(ListCodec.mappings(body["hits"])[0])["source"] == "fts"
+    assert (
+        convert(convert(body["hits"], list[dict[str, object]])[0], dict[str, object])[
+            "source"
+        ]
+        == "fts"
+    )
 
 
 @pytest.mark.db_pglite
@@ -257,7 +266,7 @@ async def test_model_override_reuses_one_instance_across_requests(
     monkeypatch.setattr(registry, "build_session_embedder", counting_build)
     request = _request(store, session_embedder="")  # No default; override drives it.
     for _ in range(2):
-        body = DictCodec.coerce(
+        body = convert(
             await web.web_search_sessions(
                 request,
                 q="deploy the release to production",
@@ -265,6 +274,7 @@ async def test_model_override_reuses_one_instance_across_requests(
                 semantic=True,
                 model="stub-1024",
             ),
+            dict[str, object],
         )
         assert body["semantic"] is True
         assert body["degraded"] is False
@@ -297,7 +307,7 @@ async def test_model_override_caches_two_dims_as_distinct_entries(
     monkeypatch.setattr(registry, "build_session_embedder", counting_build)
     request = _request(store, session_embedder="")
     for override_dim in (512, 256, 512):  # 512 repeats -> its second call is cached.
-        _ = DictCodec.coerce(
+        _ = convert(
             await web.web_search_sessions(
                 request,
                 q="deploy the release to production",
@@ -306,6 +316,7 @@ async def test_model_override_caches_two_dims_as_distinct_entries(
                 model="stub",
                 dim=override_dim,
             ),
+            dict[str, object],
         )
     # 512 built once (reused on repeat), 256 built once -> two distinct entries.
     assert builds == [("stub", 512), ("stub", 256)]

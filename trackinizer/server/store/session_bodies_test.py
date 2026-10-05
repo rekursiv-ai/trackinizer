@@ -139,12 +139,18 @@ async def test_replay_read_is_byte_exact(store: Store) -> None:
     """``read_session_records`` splices the body back; the payload matches."""
     session_id = await _session(store)
     before = await store.read_session_records(session_id, part=0, limit=10)
-    original = json.dumps(json_unfreeze(before[1].payload), separators=(",", ":"))
+    original = json.dumps(
+        json_unfreeze(before[1].payload),
+        separators=(",", ":"),
+    )
 
     await offload_session_bodies(store.engine)
 
     after = await store.read_session_records(session_id, part=0, limit=10)
-    respliced = json.dumps(json_unfreeze(after[1].payload), separators=(",", ":"))
+    respliced = json.dumps(
+        json_unfreeze(after[1].payload),
+        separators=(",", ":"),
+    )
     assert respliced == original
     # The searchable projection on the replay read is the FULL text too.
     assert after[1].text == before[1].text

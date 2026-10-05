@@ -9,7 +9,7 @@ import uuid
 import httpx2
 import pytest
 
-from trackinizer.lib.custom_json import DictCodec, IntCodec, ListCodec, StrCodec, loads
+from trackinizer.lib.custom_json import convert, loads, parse
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
@@ -46,8 +46,11 @@ async def test_save_on_one_client_and_open_on_another(
             TEST_USER_ID,
         )
     install_identity(make_test_identity(api_key_id=None))
-    first = DictCodec.coerce(loads((await client.post("/api/workspaces")).content))
-    workspace_id = StrCodec.coerce(first["id"])
+    first = parse(
+        (await client.post("/api/workspaces")).content,
+        dict[str, object],
+    )
+    workspace_id = convert(first["id"], str)
     shown = await client.post(
         f"/api/workspaces/{workspace_id}/operations",
         json={
@@ -61,16 +64,16 @@ async def test_save_on_one_client_and_open_on_another(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert shown.status_code == 200
-    current = DictCodec.coerce(loads(shown.content))
+    current = parse(shown.content, dict[str, object])
     chat = next(
-        DictCodec.coerce(item)
-        for item in ListCodec.coerce(current["visuals"])
-        if DictCodec.coerce(item)["type"] == "trax.chat"
+        convert(item, dict[str, object])
+        for item in convert(current["visuals"], list[object])
+        if convert(item, dict[str, object])["type"] == "trax.chat"
     )
     install_identity(make_test_identity())
     started = await client.post("/api/sessions/start", json={"cli": "codex"})
     assert started.status_code == 201
-    session_id = StrCodec.coerce(DictCodec.coerce(loads(started.content))["id"])
+    session_id = convert(parse(started.content, dict[str, object])["id"], str)
     assert (await client.get(f"/api/sessions/{session_id}/inbound")).status_code == 200
     install_identity(make_test_identity(api_key_id=None))
     paired = await client.put(
@@ -78,7 +81,7 @@ async def test_save_on_one_client_and_open_on_another(
         json={"revision": current["revision"], "session_id": session_id},
     )
     assert paired.status_code == 200
-    current = DictCodec.coerce(loads(paired.content))
+    current = parse(paired.content, dict[str, object])
     assert current["connected_session_id"] == session_id
     save = await client.post(
         "/api/workspace-presets",
@@ -89,7 +92,7 @@ async def test_save_on_one_client_and_open_on_another(
             "agent_instructions": "Trace evidence before proposing a change.",
             "continuation_record_id": str(uuid.uuid4()),
             "floating_rects": {
-                StrCodec.coerce(chat["id"]): {
+                convert(chat["id"], str): {
                     "left": 80,
                     "top": 100,
                     "width": 420,
@@ -100,13 +103,15 @@ async def test_save_on_one_client_and_open_on_another(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert save.status_code == 200
-    preset = DictCodec.coerce(loads(save.content))
+    preset = parse(save.content, dict[str, object])
     assert preset["name"] == "ARC3 investigation"
     assert preset["agent_instructions"] == "Trace evidence before proposing a change."
-    assert "connected_session_id" not in DictCodec.coerce(preset["state"])
-    assert DictCodec.coerce(
-        ListCodec.coerce(DictCodec.coerce(preset["state"])["visuals"])[-1],
-    )["floating_rect"] == {
+    assert "connected_session_id" not in convert(preset["state"], dict[str, object])
+    visuals = convert(
+        convert(preset["state"], dict[str, object])["visuals"],
+        list[object],
+    )
+    assert convert(visuals[-1], dict[str, object])["floating_rect"] == {
         "left": 80,
         "top": 100,
         "width": 420,
@@ -120,12 +125,14 @@ async def test_save_on_one_client_and_open_on_another(
         listed = await second_browser.get("/api/workspace-presets")
         assert listed.status_code == 200
         assert [
-            DictCodec.coerce(row)["id"]
-            for row in ListCodec.coerce(loads(listed.content))
+            convert(row, dict[str, object])["id"]
+            for row in parse(listed.content, list[object])
         ] == [preset["id"]]
-        read = await second_browser.get(f"/api/workspace-presets/{preset['id']}")
-        assert read.status_code == 200
-        assert loads(read.content) == loads(save.content)
+        read_response = await second_browser.get(
+            f"/api/workspace-presets/{preset['id']}",
+        )
+        assert read_response.status_code == 200
+        assert loads(read_response.content) == loads(save.content)
 
     changed = await client.post(
         f"/api/workspaces/{workspace_id}/operations",
@@ -136,7 +143,7 @@ async def test_save_on_one_client_and_open_on_another(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert changed.status_code == 200
-    second = DictCodec.coerce(loads(changed.content))
+    second = parse(changed.content, dict[str, object])
     async with httpx2.AsyncClient(
         transport=httpx2.ASGITransport(app=app, raise_app_exceptions=False),
         base_url="http://second-browser",
@@ -147,12 +154,12 @@ async def test_save_on_one_client_and_open_on_another(
             headers={"Idempotency-Key": str(uuid.uuid4())},
         )
     assert opened.status_code == 200
-    restored = DictCodec.coerce(loads(opened.content))
-    assert restored["revision"] == IntCodec.coerce(second["revision"]) + 1
+    restored = parse(opened.content, dict[str, object])
+    assert restored["revision"] == convert(second["revision"], int) + 1
     assert restored["connected_session_id"] is None
     assert restored["agent_instructions"] == preset["agent_instructions"]
     assert restored["continuation_record_id"] == preset["continuation_record_id"]
-    assert len(ListCodec.coerce(restored["visuals"])) == 2
+    assert len(convert(restored["visuals"], list[object])) == 2
     resaved = await client.post(
         "/api/workspace-presets",
         json={
@@ -163,7 +170,7 @@ async def test_save_on_one_client_and_open_on_another(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert resaved.status_code == 200
-    second_preset = DictCodec.coerce(loads(resaved.content))
+    second_preset = parse(resaved.content, dict[str, object])
     assert second_preset["agent_instructions"] == preset["agent_instructions"]
     assert second_preset["continuation_record_id"] == preset["continuation_record_id"]
     focused = await client.post(
@@ -175,7 +182,7 @@ async def test_save_on_one_client_and_open_on_another(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert focused.status_code == 200
-    continued = DictCodec.coerce(loads(focused.content))
+    continued = parse(focused.content, dict[str, object])
     assert continued["agent_instructions"] == preset["agent_instructions"]
     assert continued["continuation_record_id"] == preset["continuation_record_id"]
     assert continued["connected_session_id"] is None
@@ -196,8 +203,14 @@ async def test_save_on_one_client_and_open_on_another(
     assert sent.status_code == 200
     install_identity(make_test_identity())
     drained = await client.get(f"/api/sessions/{session_id}/inbound")
-    messages = ListCodec.coerce(DictCodec.coerce(loads(drained.content))["messages"])
-    context = DictCodec.coerce(DictCodec.coerce(messages[0])["context"])
+    messages = convert(
+        parse(drained.content, dict[str, object])["messages"],
+        list[object],
+    )
+    context = convert(
+        convert(messages[0], dict[str, object])["context"],
+        dict[str, object],
+    )
     assert context["agent_instructions"] == preset["agent_instructions"]
     assert context["continuation_record_id"] == preset["continuation_record_id"]
 
@@ -219,8 +232,11 @@ async def test_presets_enforce_revision_owner_and_floating_target(
             foreign_id,
         )
     install_identity(make_test_identity(api_key_id=None))
-    workspace = DictCodec.coerce(loads((await client.post("/api/workspaces")).content))
-    workspace_id = StrCodec.coerce(workspace["id"])
+    workspace = parse(
+        (await client.post("/api/workspaces")).content,
+        dict[str, object],
+    )
+    workspace_id = convert(workspace["id"], str)
     base = {"workspace_id": workspace_id, "revision": 0, "name": "Research"}
     assert (
         await client.post(
@@ -253,8 +269,11 @@ async def test_presets_enforce_revision_owner_and_floating_target(
             headers={"Idempotency-Key": str(uuid.uuid4())},
         )
     ).status_code == 422
-    browse_id = StrCodec.coerce(
-        DictCodec.coerce(ListCodec.coerce(workspace["visuals"])[0])["id"],
+    browse_id = convert(
+        convert(convert(workspace["visuals"], list[object])[0], dict[str, object])[
+            "id"
+        ],
+        str,
     )
     assert (
         await client.post(
@@ -274,7 +293,7 @@ async def test_presets_enforce_revision_owner_and_floating_target(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert saved.status_code == 200
-    preset_id = StrCodec.coerce(DictCodec.coerce(loads(saved.content))["id"])
+    preset_id = convert(parse(saved.content, dict[str, object])["id"], str)
     assert (
         await client.put(f"/api/workspace-presets/{preset_id}", json={"name": "   "})
     ).status_code == 422
@@ -302,7 +321,7 @@ async def test_presets_enforce_revision_owner_and_floating_target(
         },
     )
     assert revised.status_code == 200
-    assert DictCodec.coerce(loads(revised.content))["name"] == "Research revisited"
+    assert parse(revised.content, dict[str, object])["name"] == "Research revisited"
     assert (
         await client.post(
             f"/api/workspace-presets/{preset_id}/open",
@@ -344,8 +363,11 @@ async def test_preset_save_and_open_replay_once(
             TEST_USER_ID,
         )
     install_identity(make_test_identity(api_key_id=None))
-    workspace = DictCodec.coerce(loads((await client.post("/api/workspaces")).content))
-    workspace_id = StrCodec.coerce(workspace["id"])
+    workspace = parse(
+        (await client.post("/api/workspaces")).content,
+        dict[str, object],
+    )
+    workspace_id = convert(workspace["id"], str)
     save_body = {"workspace_id": workspace_id, "revision": 0, "name": "ARC3"}
     save_headers = {"Idempotency-Key": str(uuid.uuid4())}
     saved = await client.post(
@@ -366,8 +388,9 @@ async def test_preset_save_and_open_replay_once(
         headers=save_headers,
     )
     assert mismatched_save.status_code == 409
-    assert "Idempotency-Key" in StrCodec.coerce(
-        DictCodec.coerce(loads(mismatched_save.content))["detail"],
+    assert "Idempotency-Key" in convert(
+        parse(mismatched_save.content, dict[str, object])["detail"],
+        str,
     )
     async with store.engine.acquire() as conn:
         assert (
@@ -377,7 +400,7 @@ async def test_preset_save_and_open_replay_once(
             )
             == 1
         )
-    preset_id = StrCodec.coerce(DictCodec.coerce(loads(saved.content))["id"])
+    preset_id = convert(parse(saved.content, dict[str, object])["id"], str)
     open_body = {"workspace_id": workspace_id, "revision": 0}
     open_headers = {"Idempotency-Key": str(uuid.uuid4())}
     opened = await client.post(
@@ -392,8 +415,9 @@ async def test_preset_save_and_open_replay_once(
     )
     assert opened.status_code == replayed_open.status_code == 200
     assert loads(opened.content) == loads(replayed_open.content)
-    current = DictCodec.coerce(
-        loads((await client.get(f"/api/workspaces/{workspace_id}")).content),
+    current = parse(
+        (await client.get(f"/api/workspaces/{workspace_id}")).content,
+        dict[str, object],
     )
     assert current["revision"] == 1
     mismatched_open = await client.post(
@@ -402,8 +426,9 @@ async def test_preset_save_and_open_replay_once(
         headers=open_headers,
     )
     assert mismatched_open.status_code == 409
-    assert "Idempotency-Key" in StrCodec.coerce(
-        DictCodec.coerce(loads(mismatched_open.content))["detail"],
+    assert "Idempotency-Key" in convert(
+        parse(mismatched_open.content, dict[str, object])["detail"],
+        str,
     )
     revision = 1
     latest_open_body = open_body
@@ -421,11 +446,12 @@ async def test_preset_save_and_open_replay_once(
         revision += 1
     async with store.engine.acquire() as conn:
         assert (
-            IntCodec.coerce(
+            convert(
                 await conn.fetchval(
                     "SELECT count(*) FROM visual_workspace_operations WHERE workspace_id = $1",
                     uuid.UUID(workspace_id),
                 ),
+                int,
             )
             <= 64
         )
@@ -446,17 +472,21 @@ async def test_preset_save_and_open_replay_once(
             headers={"Idempotency-Key": str(uuid.uuid4())},
         )
         assert transient.status_code == 200
-        transient_id = StrCodec.coerce(DictCodec.coerce(loads(transient.content))["id"])
+        transient_id = convert(
+            parse(transient.content, dict[str, object])["id"],
+            str,
+        )
         assert (
             await client.delete(f"/api/workspace-presets/{transient_id}")
         ).status_code == 204
     async with store.engine.acquire() as conn:
         assert (
-            IntCodec.coerce(
+            convert(
                 await conn.fetchval(
                     "SELECT count(*) FROM visual_workspace_operations WHERE workspace_id = $1",
                     uuid.UUID(workspace_id),
                 ),
+                int,
             )
             <= 64
         )
@@ -464,16 +494,16 @@ async def test_preset_save_and_open_replay_once(
 
 def test_preset_create_conflict_is_in_openapi() -> None:
     """Generated clients can decode the documented stale-revision response."""
-    spec = DictCodec.coerce(app.openapi())
-    paths = DictCodec.coerce(spec["paths"])
-    endpoint = DictCodec.coerce(paths["/api/workspace-presets"])
-    operation = DictCodec.coerce(endpoint["post"])
-    responses = DictCodec.coerce(operation["responses"])
-    conflict = DictCodec.coerce(responses["409"])
-    content = DictCodec.coerce(conflict["content"])
-    media = DictCodec.coerce(content["application/json"])
-    schema = DictCodec.coerce(media["schema"])
-    assert StrCodec.coerce(schema["$ref"]).endswith(
+    spec = convert(app.openapi(), dict[str, object])
+    paths = convert(spec["paths"], dict[str, object])
+    endpoint = convert(paths["/api/workspace-presets"], dict[str, object])
+    operation = convert(endpoint["post"], dict[str, object])
+    responses = convert(operation["responses"], dict[str, object])
+    conflict = convert(responses["409"], dict[str, object])
+    content = convert(conflict["content"], dict[str, object])
+    media = convert(content["application/json"], dict[str, object])
+    schema = convert(media["schema"], dict[str, object])
+    assert convert(schema["$ref"], str).endswith(
         "/WorkspaceConflict",
     )
 

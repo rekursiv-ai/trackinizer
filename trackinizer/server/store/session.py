@@ -25,15 +25,7 @@ else:
 
     asyncpg = lazy_import("asyncpg")  # ~60 ms; only start_session() needs it.
 
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    IntCodec,
-    JSONValue,
-    ListCodec,
-    StrCodec,
-    json_freeze,
-    loads,
-)
+from trackinizer.lib.custom_json import JSONValue, convert, json_freeze, loads_untagged
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
@@ -340,7 +332,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             assert isinstance(session_id, UUID)
             # NULL for a session captured from a transcript rather than opened
             # live; resolve_live_sessions reads the column the same way.
-            owner = StrCodec.coerce(row["owner"])
+            owner = convert(row.get("owner"), str, default="")
             if row["agentsession_ended"] is not None:
                 # Attribute the audit to the resuming caller, not the original
                 # owner.
@@ -611,7 +603,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         return [
             (
                 _uuid(row["id"]),
-                tuple(ListCodec.coerce(row["agentsession_rooms"], str)),
+                tuple(convert(row["agentsession_rooms"], list[str])),
             )
             for row in rows
         ]
@@ -917,19 +909,19 @@ def _feed_event(row: asyncpg.Record) -> FeedEvent:
     """Build one feed item from a ``session_records`` join row."""
     return FeedEvent(
         session_id=_uuid(row["session_id"]),
-        actor=StrCodec.coerce(row["owner"]),
-        rooms=ListCodec.coerce(row["agentsession_rooms"], str),
+        actor=convert(row.get("owner"), str, default=""),
+        rooms=convert(row.get("agentsession_rooms"), list[str], default=[]),
         cli=_optional_str(row["agentsession_cli"]),
-        part=IntCodec.coerce(row["part"], None),
-        seq=IntCodec.coerce(row["idx"], None),
-        kind=StrCodec.coerce(row["kind"], None),
+        part=convert(row["part"], int),
+        seq=convert(row["idx"], int),
+        kind=convert(row["kind"], str),
         created=_datetime(row["created"]),
         timestamp=_optional_datetime(row["timestamp"]),
         model=_optional_str(row["model"]),
         message=json_freeze(
-            DictCodec.coerce(loads(StrCodec.coerce(row["payload"], None))),
+            convert(loads_untagged(convert(row["payload"], str)), dict[str, object]),
         ),
-        text=StrCodec.coerce(row["text"], None),
+        text=convert(row["text"], str),
     )
 
 

@@ -15,7 +15,7 @@ import httpx2
 import pytest
 
 from trackinizer.lib import zstd_compat
-from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
+from trackinizer.lib.custom_json import convert, parse
 from trackinizer.web.scripts import measure as measurement
 from trackinizer.web.scripts.measure import (
     Row,
@@ -260,22 +260,21 @@ def test_moved_flags_a_median_time_or_size_over_2x_either_way() -> None:
         )
         return Row(name=name, samples=(sample,))
 
-    baseline = DictCodec.coerce(
-        loads(
-            json.dumps(
-                report(
-                    [
-                        row("steady", 1.0, 1000),
-                        row("slower", 1.0, 1000),
-                        row("smaller", 1.0, 3000),
-                        row("gone", 1.0, 1000),
-                    ],
-                    stream=Stream(seconds=20.0, frames=0, distinct_ids=0, status=200),
-                    url="http://server",
-                    sha="abc",
-                ),
+    baseline = parse(
+        json.dumps(
+            report(
+                [
+                    row("steady", 1.0, 1000),
+                    row("slower", 1.0, 1000),
+                    row("smaller", 1.0, 3000),
+                    row("gone", 1.0, 1000),
+                ],
+                stream=Stream(seconds=20.0, frames=0, distinct_ids=0, status=200),
+                url="http://server",
+                sha="abc",
             ),
         ),
+        dict[str, object],
     )
     current = [
         row("steady", 2.0, 500),
@@ -305,8 +304,9 @@ def test_an_error_answer_is_reported_but_never_timed_as_a_read() -> None:
         Row(name="refused", samples=(refused,)),
     ]
     stream = Stream(seconds=1.0, frames=0, distinct_ids=0, status=200)
-    summaries = ListCodec.mappings(
+    summaries = convert(
         report(rows, stream=stream, url="u", sha="s")["rows"],
+        list[dict[str, object]],
     )
 
     assert [(r["median_seconds"], r["median_json_bytes"]) for r in summaries] == [
@@ -314,17 +314,16 @@ def test_an_error_answer_is_reported_but_never_timed_as_a_read() -> None:
         (None, None),
     ]
     assert summaries[1]["statuses"] == [502]
-    baseline = DictCodec.coerce(
-        loads(
-            json.dumps(
-                report(
-                    [Row(name="mixed", samples=(ok,))],
-                    stream=stream,
-                    url="u",
-                    sha="s",
-                ),
+    baseline = parse(
+        json.dumps(
+            report(
+                [Row(name="mixed", samples=(ok,))],
+                stream=stream,
+                url="u",
+                sha="s",
             ),
         ),
+        dict[str, object],
     )
     assert moved(rows, baseline) == []
 
@@ -341,7 +340,7 @@ def test_a_refused_stream_is_its_answer_not_a_quiet_stream() -> None:
 
     assert stream == Stream(seconds=0.0, frames=0, distinct_ids=0, status=401)
     document = report([], stream=stream, url="u", sha="s")
-    assert DictCodec.coerce(document["stream"])["frames_per_sec"] is None
+    assert convert(document["stream"], dict[str, object])["frames_per_sec"] is None
 
 
 @pytest.mark.parametrize("flag", ["--repeats", "--stream-sec"])
@@ -359,7 +358,9 @@ def test_two_reports_in_one_second_never_overwrite_each_other(tmp_path: Path) ->
     second = _write({"run": 2}, url="http://server:8765", folder=tmp_path)
 
     assert first != second
-    assert [DictCodec.coerce(loads(p.read_text()))["run"] for p in (first, second)] == [
+    assert [
+        parse(p.read_text(), dict[str, object])["run"] for p in (first, second)
+    ] == [
         1,
         2,
     ]

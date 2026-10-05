@@ -166,6 +166,41 @@ def test_write_and_fetch_results_carry_what_their_calls_named() -> None:
     assert (fetch.url, fetch.content) == ("https://x.org", "page")
 
 
+def test_a_refused_edit_or_write_keeps_its_error_not_a_change() -> None:
+    """A refused file op changed nothing; typing it as one hid the refusal."""
+    records = _read(
+        _history(
+            "assistant",
+            text="",
+            tool_calls=[
+                {
+                    "id": "e",
+                    "name": "Edit",
+                    "args": {
+                        "file_path": "/a.py",
+                        "old_string": "x",
+                        "new_string": "y",
+                    },
+                },
+                {"id": "w", "name": "Write", "args": {"path": "/b.py", "content": "z"}},
+            ],
+        ),
+        _history(
+            "tool_result",
+            call_id="e",
+            content="modified since read",
+            is_error=True,
+        ),
+        _history("tool_result", call_id="w", content="not yet read", is_error=True),
+    )
+
+    assert not _only(records, FileEditResult)
+    assert not _only(records, FileWriteResult)
+    edit, write = _only(records, UncategorizedToolResult)
+    assert (edit.content, edit.extra["is_error"]) == ("modified since read", True)
+    assert (write.content, write.extra["is_error"]) == ("not yet read", True)
+
+
 def test_a_context_override_is_a_compaction() -> None:
     records = _read({"kind": "context_override", "tokens": 12, "payload": {}})
 
@@ -275,13 +310,13 @@ def test_meta_states_model_changes_and_cumulative_usage() -> None:
         _meta(total_cost_usd=0.0, tokens={"input_tokens": 0, "output_tokens": 0}),
         _meta(total_cost_usd=1.5, tokens={"input_tokens": 10, "output_tokens": 2}),
         _meta(
-            model_id="luna-6",
+            model_id="luna-6.0",
             total_cost_usd=2.0,
             tokens={"input_tokens": 20, "output_tokens": 3},
         ),
     )
 
-    assert [c.model for c in _only(records, TurnContext)] == ["opus-5.5", "luna-6"]
+    assert [c.model for c in _only(records, TurnContext)] == ["opus-5.5", "luna-6.0"]
     usage = _only(records, TokenUsage)
     assert usage[-1].info["cost_usd"] == 2.0
     assert usage[-1].info["input_tokens"] == 20
@@ -367,6 +402,81 @@ def test_a_descriptor_error_part_marks_the_result_failed() -> None:
     [result] = _only(records, UncategorizedToolResult)
     assert result.extra["is_error"] is True
     assert result.content == "boom"
+
+
+def test_legacy_text_parts_join_plain_markdown_and_error_text() -> None:
+    parts: list[dict[str, object]] = [
+        {"descriptor": "text/plain", "content": "a"},
+        {"descriptor": "text/markdown", "content": "b"},
+        {"descriptor": "text/x-error", "content": "c"},
+        {"descriptor": "image/png", "content": "d"},
+    ]
+
+    assert sagent._plain(None, parts) == "abc"
+
+
+def test_a_legacy_call_without_parts_names_nothing() -> None:
+    assert sagent._legacy_call([]) == ("", "", {})
+
+
+def test_a_legacy_compound_tool_name_keeps_its_casing() -> None:
+    parts: list[dict[str, object]] = [
+        {"descriptor": "application/x-tool-webfetch", "content": {"url": "u"}},
+    ]
+
+    assert sagent._legacy_call(parts) == ("", "WebFetch", {"url": "u"})
+
+
+def test_a_stamp_is_utc() -> None:
+    assert sagent._stamp(0.5) == "1970-01-01T00:00:00.500000+00:00"
+
+
+def test_a_zero_stamp_is_absent() -> None:
+    assert sagent._stamp(0) is None
+
+
+def test_a_stamp_past_1e11_is_nanoseconds() -> None:
+    assert sagent._stamp(1e11) == "5138-11-16T09:46:40+00:00"
+    assert sagent._stamp(100_000_000_000.5) == "1970-01-01T00:01:40+00:00"
+    assert sagent._stamp(2_000_000_000_000_000_000) == "2033-05-18T03:33:20+00:00"
+
+
+def test_a_role_assistant_turn_keeps_its_thinking() -> None:
+    records = _read(
+        {
+            "kind": "message",
+            "role": "assistant",
+            "content": "",
+            "thinking_blocks": [{"thinking": "hm", "signature": "s"}],
+            "tool_calls": [{"id": "t1", "name": "Bash", "args": {"command": "ls"}}],
+        },
+    )
+
+    assert [(t.content, t.encrypted) for t in _only(records, Thinking)] == [
+        ("hm", "s"),
+    ]
+    [call] = _only(records, ToolCall)
+    assert dict(call.arguments) == {"command": "ls"}
+
+
+def test_a_role_tool_result_keeps_its_failure() -> None:
+    records = _read(
+        {"kind": "message", "role": "tool", "tool_call_id": "t", "is_error": True},
+    )
+
+    [result] = _only(records, UncategorizedToolResult)
+    assert result.extra["is_error"] is True
+
+
+def test_an_unknown_role_keeps_its_record() -> None:
+    record: dict[str, object] = {
+        "kind": "message",
+        "role": "system",
+        "content": "be terse",
+    }
+
+    [kept] = _only(_read(record), UncategorizedRecord)
+    assert dict(kept.payload) == record
 
 
 def test_the_role_family_reads_like_history() -> None:

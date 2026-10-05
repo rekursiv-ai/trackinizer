@@ -15,6 +15,7 @@ has them ready.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, cast
 
 import uuid
@@ -22,7 +23,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from trackinizer.lib.custom_json import DatetimeCodec, MutableJSON, StrCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api._routes_shared import (
     RoleLiteral,
@@ -31,6 +32,7 @@ from trackinizer.server.api._routes_shared import (
 )
 from trackinizer.server.auth import AuthIdentity, Role, require_role
 from trackinizer.server.notify import tx
+from trackinizer.wire.json_types import MutableJSON
 
 
 if TYPE_CHECKING:
@@ -101,12 +103,16 @@ async def admin_list_users_route(
         "users": [
             {
                 "id": str(row["id"]),
-                "email": StrCodec.coerce(row["email"]),
-                "name": StrCodec.coerce(row["name"]),
-                "role": cast(Role, StrCodec.coerce(row["role"])),
-                "status": StrCodec.coerce(row["status"]),
-                "created_at": iso_format(DatetimeCodec.coerce(row["created_at"])),
-                "last_login": iso_format(DatetimeCodec.coerce(row["last_login"])),
+                "email": convert(row["email"], str),
+                "name": convert(row["name"], str),
+                "role": cast(Role, convert(row["role"], str)),
+                "status": convert(row["status"], str),
+                "created_at": iso_format(convert(row["created_at"], datetime)),
+                "last_login": iso_format(
+                    None
+                    if row["last_login"] is None
+                    else convert(row["last_login"], datetime),
+                ),
             }
             for row in rows
         ],

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from trackinizer.lib.custom_json import DictCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
@@ -98,7 +98,7 @@ class TestViewerHitsWriterRoute403:
         install_identity(make_test_identity(role="viewer"))
         r = client.post("/api/inquiries/issue", json={"title": "x"})
         assert r.status_code == 403
-        body = DictCodec.coerce(r.json())
+        body = convert(r.json(), dict[str, object])
         detail = body["detail"]
         assert isinstance(detail, str)
         assert "viewer" in detail
@@ -219,7 +219,7 @@ class TestAccountAttribution:
             json={"title": "ghost account", "account": "ghost@example.com"},
         )
         assert r.status_code == 422, r.text
-        body = DictCodec.coerce(r.json())
+        body = convert(r.json(), dict[str, object])
         detail = body["detail"]
         assert isinstance(detail, str)
         assert "not an active user" in detail
@@ -240,7 +240,7 @@ class TestAccountAttribution:
             json={"title": "blank account", "account": "  "},
         )
         assert r.status_code == 422, r.text
-        body = DictCodec.coerce(r.json())
+        body = convert(r.json(), dict[str, object])
         assert "not an active user" not in str(body)
         assert "account" in str(body)
 

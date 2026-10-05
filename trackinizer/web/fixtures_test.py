@@ -39,7 +39,7 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.lib.agent.types.sessions import AssistantMessage, ToolCall, UserMessage
-from trackinizer.lib.custom_json import DictCodec, JSONValue, ListCodec, StrCodec, loads
+from trackinizer.lib.custom_json import JSONValue, convert, loads
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_metrics import MetricPoint
 from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
@@ -409,7 +409,7 @@ def _add_evidence(
             ],
         },
     )
-    for made in ListCodec.coerce(DictCodec.coerce(answer).get("ids"), str):
+    for made in convert(convert(answer, dict[str, object]).get("ids"), list[str]):
         _ = rec.row(made)
     with Client(url) as client:
         client.log_metrics(
@@ -539,9 +539,11 @@ def _read_lists(rec: _Recorder) -> None:
         {"field": "status", "op": "is", "value": "active"},
         separators=(",", ":"),
     )
-    kinds = ListCodec.coerce(
-        DictCodec.coerce(rec.setup("GET", "/api/meta/enums")).get("inquiry_kind_all"),
-        str,
+    kinds = convert(
+        convert(rec.setup("GET", "/api/meta/enums"), dict[str, object]).get(
+            "inquiry_kind_all",
+        ),
+        list[str],
     )
     # The quarter hour that held the time an hour ago: the histogram reads only the
     # last 7 days, and its window must end before the fixture session began.
@@ -731,10 +733,12 @@ def _account(rec: _Recorder) -> None:
 
 def _admin(rec: _Recorder) -> None:
     """Change the other admin's role and status, edit the allowlist, delete the user."""
-    users = ListCodec.mappings(
-        DictCodec.coerce(rec.call("admin/listUsers", "GET", "/api/admin/users")).get(
-            "users",
-        ),
+    users = convert(
+        convert(
+            rec.call("admin/listUsers", "GET", "/api/admin/users"),
+            dict[str, object],
+        )["users"],
+        list[dict[str, object]],
     )
     user = f"/api/admin/users/{next(_id(u) for u in users if u.get('email') == _OTHER_ADMIN)}"
     entry = "/api/admin/allowlist/ada%40example.com"
@@ -787,7 +791,7 @@ def _create(rec: _Recorder, kind: str, **body: JSONValue) -> str:
 
 
 def _id(body: object) -> str:
-    return StrCodec.coerce(DictCodec.coerce(body).get("id"), default=None)
+    return convert(convert(body, dict[str, object]).get("id"), str)
 
 
 def _key(name: str) -> str:

@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import asyncio
+import os
 import platform
 
 import pytest
 
 from trackinizer.lib.posix.follow import follow_dir
-from trackinizer.lib.posix.testing import poll_fsevents
+from trackinizer.lib.posix.testing import _changed, _stamps, poll_fsevents
 
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
-    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)
@@ -64,6 +65,41 @@ def test_with_writes_a_write_is_reported(
             return await asyncio.wait_for(anext(changed), 5.0)
 
     assert asyncio.run(run()) == {held}
+
+
+def test_with_writes_a_same_size_rewrite_in_one_tick_is_reported(
+    tmp_path: Path,
+) -> None:
+    """FSEvents reports a rewrite that leaves the file's stat as it was.
+
+    A filesystem stamping whole seconds gives a same-size rewrite within one
+    tick the inode, size, and mtime it overwrote, so those alone miss it.
+    Called directly: a poll landing between the write and the restored mtime
+    would see the change through the mtime and hide the miss.
+    """
+    held = tmp_path / "held"
+    _ = held.write_text("history\n")
+    mtime_ns = held.stat().st_mtime_ns
+    before = _stamps(tmp_path, contents=True)
+    _ = held.write_text("HISTORY\n")
+    os.utime(held, ns=(mtime_ns, mtime_ns))
+
+    assert _changed(before, _stamps(tmp_path, contents=True), writes=True) == {held}
+
+
+def test_stamps_skips_a_file_deleted_during_stat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_path = tmp_path / "vanishing"
+    _ = file_path.write_text("gone")
+
+    def missing(path: Path) -> object:
+        del path
+        raise FileNotFoundError(file_path)
+
+    monkeypatch.setattr(Path, "stat", missing)
+    assert _stamps(tmp_path, contents=False) == {}
 
 
 def test_a_symlinked_root_keeps_the_callers_spelling(

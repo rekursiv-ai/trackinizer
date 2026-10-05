@@ -69,21 +69,17 @@ from trackinizer.lib.agent.types.sessions import (
 )
 from trackinizer.lib.custom_json import (
     JSON,
-    BoolCodec,
-    DictCodec,
-    IntCodec,
     JSONValue,
-    ListCodec,
     MutableJSONValue,
-    StrCodec,
-    decode_or_none,
+    convert,
+    convert_or_none,
+    extract_unmodeled_fields,
     json_freeze,
     json_unfreeze,
     loads,
-    replay,
-    residual,
+    read_field_keeping_invalid,
+    restore_unmodeled_fields,
     same_json_value,
-    take,
 )
 
 
@@ -154,10 +150,10 @@ def denormalize(
     metadata: dict[str, object] = {}
     for record in ordered:
         if isinstance(record, TurnContext) and record.encoding:
-            metadata = dict(json_unfreeze(record.encoding))
-    escaped_default = BoolCodec.coerce(metadata.get("ascii_escaped"))
+            metadata = dict(record.encoding)
+    escaped_default = convert(metadata.get("ascii_escaped"), bool, default=False)
     escape_exceptions = base64.b64decode(
-        StrCodec.coerce(metadata.get("ascii_escape_exceptions")),
+        convert(metadata.get("ascii_escape_exceptions"), str, default=""),
         validate=True,
     )
     emitter = _Emitter(
@@ -288,14 +284,16 @@ def _rename_calls(line: dict[str, object], renamed: Mapping[str, str]) -> None:
     content = cast(dict[str, object], message).get("content")
     if not isinstance(content, list):
         return
-    # The blocks the writer built, not copies of them: ``ListCodec.mappings``
-    # yields new dicts, so mutating those changed nothing on the line.
+    # The blocks the writer built, not copies of them: mutating those changes the line.
     for block in cast(list[object], content):
         if not isinstance(block, dict):
             continue
         found = cast(dict[str, object], block)
-        name = renamed.get(StrCodec.coerce(found.get("id")))
-        if name is not None and StrCodec.coerce(found.get("type")) == "tool_use":
+        name = renamed.get(convert(found.get("id"), str, default=""))
+        if (
+            name is not None
+            and convert(found.get("type"), str, default="") == "tool_use"
+        ):
             found["name"] = name
 
 
@@ -305,14 +303,18 @@ def _stated_cwd(records: Sequence[SessionRecord]) -> str:
     """Return the working directory the source session named, if any."""
     for record in records:
         if isinstance(record, TurnContext):
-            payload = DictCodec.coerce(json_unfreeze(record.extra).get("payload"))
+            payload = convert(
+                record.extra.get("payload"),
+                dict[str, object],
+                default={},
+            )
             stated = payload.get("cwd")
             if isinstance(stated, str):
                 return stated
             break
     for record in records:
         if isinstance(record, TurnContext):
-            found = json_unfreeze(record.extra).get("cwd")
+            found = (record.extra).get("cwd")
             if isinstance(found, str):
                 return found
     return ""
@@ -349,9 +351,11 @@ def _linked(
         "version": "2.1.241",
         "sessionId": str(seed),
     }
-    filled = {key: value for key, value in defaults.items() if key not in line} | dict(
-        line,
-    )
+    filled = dict(line) | {
+        key: value
+        for key, value in defaults.items()
+        if key not in line or line[key] is None
+    }
     filled["uuid"] = own
     return (_ordered_keys(filled, ["parentUuid", "isSidechain", *line]), own)
 
@@ -451,24 +455,30 @@ class _Emitter:
         call = self._calls.get(record.call_id)
         if call is None:
             return
-        message = DictCodec.coerce(call.get("message"))
-        for block in ListCodec.mappings(message.get("content")):
+        message = convert(call.get("message"), dict[str, object], default={})
+        content = convert(message.get("content"), list[object], default=[])
+        for block in (
+            cast(dict[str, object], value)
+            for value in content
+            if isinstance(value, dict)
+        ):
             # By ID, not by "the first Bash on the line": one line may open
             # several, and rewriting the first put one result's rename onto a
             # different command entirely.
             if (
-                StrCodec.coerce(block.get("name")) != "Bash"
-                or StrCodec.coerce(block.get("id")) != record.call_id
+                convert(block.get("name"), str, default="") != "Bash"
+                or convert(block.get("id"), str, default="") != record.call_id
             ):
                 continue
-            arguments = DictCodec.coerce(block.get("input"))
+            arguments = convert(block.get("input"), dict[str, object], default={})
             command = arguments.get("command")
             if not isinstance(command, str):
                 continue
             # The rendered line is the object the writer already queued, so
             # editing it in place is what makes one pass possible at all.
-            mutable = cast(dict[str, object], block["input"])
+            mutable = cast(dict[str, object], json_unfreeze(block["input"]))
             mutable["command"] = rewrite_shell_source(command, record)
+            block["input"] = mutable
 
     def _release(self) -> None:
         """Write the oldest queued line, one behind so ``close`` can trim it."""
@@ -484,7 +494,7 @@ class _Emitter:
         )
         self._held = (
             json.dumps(
-                line,
+                json_unfreeze(line),
                 ensure_ascii=self._escaped_default != exception,
                 separators=(",", ":"),
             )
@@ -591,8 +601,8 @@ def _stored(
     fallback: Sequence[str],
 ) -> tuple[Sequence[str], dict[str, MutableJSONValue]]:
     """Return source key order and replay state without mutating ``extra``."""
-    trailing = set(ListCodec.coerce(extra.get("$trailing", []), str))
-    stored = ListCodec.coerce(extra.get("$keys", []), str)
+    trailing = set(convert(extra.get("$trailing"), list[str], default=[]))
+    stored = convert(extra.get("$keys"), list[str], default=[])
     replay_extra = {key: value for key, value in extra.items() if key != "$keys"}
     if stored:
         replay_extra["$source_order"] = True
@@ -612,8 +622,8 @@ def _splice(
     record: dict[str, object] = {}
     # A ``$`` key is the reader's own note about the line's shape, not one of
     # the line's keys, so it never reaches the output.
-    trailing = set(ListCodec.coerce(extra.get("$trailing", []), str))
-    nulls = set(ListCodec.coerce(extra.get("$nulls", []), str))
+    trailing = set(convert(extra.get("$trailing"), list[str], default=[]))
+    nulls = set(convert(extra.get("$nulls"), list[str], default=[]))
     keys = {
         (key.removeprefix("$wire") if key.startswith("$wire$") else key): value
         for key, value in extra.items()
@@ -631,7 +641,7 @@ def _splice(
             record[key] = settings[key]
     # Source residuals can carry provider extensions. Synthesized records may
     # carry another adapter's residual, which must not become Claude wire.
-    if BoolCodec.coerce(extra.get("$source_order")):
+    if convert(extra.get("$source_order"), bool, default=False):
         for key, value in keys.items():
             if key not in record:
                 record[key] = value
@@ -640,7 +650,7 @@ def _splice(
             record[key] = extra[f"${key}"]
         elif key in settings:
             record[key] = settings[key]
-    for key in ListCodec.coerce(extra.get("$trailing", []), str):
+    for key in convert(extra.get("$trailing"), list[str], default=[]):
         if key in extra:
             output_key = key.removeprefix("$wire") if key.startswith("$wire$") else key
             record[output_key] = extra[key]
@@ -660,11 +670,12 @@ def _write_user(
     """Return the ``user`` line a message came from."""
     extra = dict(json_unfreeze(item.extra))
     message: dict[str, object] = {"role": "user"}
-    message.update(DictCodec.coerce(extra.pop("message", {})))
+    message.update(convert(extra.pop("message", {}), dict[str, object]))
     bare = extra.pop("$bare", False)
-    parts = IntCodec.coerce(extra.pop("$parts", 1), 1)
+    parts_value = extra.pop("$parts", 1)
+    parts = parts_value if isinstance(parts_value, int) else 1
     media_first = bool(extra.pop("$media_first", False))
-    shape = ListCodec.coerce(extra.pop("$content_shape", []))
+    shape = convert(extra.pop("$content_shape", []), list[object])
     if "$content_value" in extra:
         message["content"] = extra.pop("$content_value")
     elif bare:
@@ -683,7 +694,7 @@ def _write_user(
         message["content"] = blocks
     message = _ordered_keys(
         message,
-        ListCodec.coerce(extra.pop("$message_keys", []), str),
+        convert(extra.pop("$message_keys", []), list[str]),
     )
     named: dict[str, object] = {
         "type": "user",
@@ -718,9 +729,15 @@ def _write_user_shape(
     attachment_index = 0
     out: list[object] = []
     for value in shape:
-        block = DictCodec.coerce(value)
-        owner = results.get(StrCodec.coerce(block.get("tool_use_id")))
-        if StrCodec.coerce(block.get("type")) == "tool_result" and owner is not None:
+        if not isinstance(value, Mapping):
+            out.append(value)
+            continue
+        block = convert(cast(Mapping[str, object], value), dict[str, object])
+        owner = results.get(convert(block.get("tool_use_id"), str, default=""))
+        if (
+            convert(block.get("type"), str, default="") == "tool_result"
+            and owner is not None
+        ):
             out.append(_write_result_block(owner))
             continue
         if _restored(block, "text"):
@@ -735,7 +752,7 @@ def _write_user_shape(
                 )
             attachment_index += 1
             continue
-        out.append(_bare(block) if "$held" in block else value)
+        out.append(_bare(block) if "$held" in block else cast(dict[str, object], value))
     out.extend({"type": "text", "text": text} for text in texts[text_index:])
     out.extend(
         _write_attachment(attachment, media_first=False)
@@ -748,9 +765,9 @@ def _is_image(block: Mapping[str, object]) -> bool:
     """Whether a stencil or a whole block describes an inline image."""
     if _read_attachment(block) is not None:
         return True
-    source = DictCodec.coerce(block.get("source"))
-    return StrCodec.coerce(block.get("type")) == "image" and bool(
-        ListCodec.coerce(source.get("$held", []), str),
+    source = convert(block.get("source"), dict[str, object], default={})
+    return convert(block.get("type"), str, default="") == "image" and bool(
+        convert(source.get("$held"), list[str], default=[]),
     )
 
 
@@ -761,7 +778,7 @@ def _write_attachment_shape(
     """Replay one image's field presence and key order."""
     if attachment is None:
         return _bare(block)
-    source = DictCodec.coerce(block.get("source"))
+    source = convert(block.get("source"), dict[str, object], default={})
     if _restored(source, "data"):
         source = _replace_key(
             source,
@@ -786,10 +803,13 @@ def _assistant_stencil(value: object) -> JSONValue:
     """Empty an assistant block's values, which sit on their own records."""
     if not isinstance(value, Mapping):
         return cast(JSONValue, value)
-    block = DictCodec.coerce(cast(JSONValue, value))
+    block = convert(cast(Mapping[str, object], value), dict[str, object])
     out = _stencil(block, "text", "thinking", "signature", "input", "id", "name")
     call_id = block.get("id")
-    if StrCodec.coerce(block.get("type")) == "tool_use" and isinstance(call_id, str):
+    if convert(block.get("type"), str, default="") == "tool_use" and isinstance(
+        call_id,
+        str,
+    ):
         # WHICH call this slot held. The id itself is emptied -- the record's
         # field carries it -- but without a name for the slot the writer can
         # only fill slots in order, and deleting one call then slid every later
@@ -806,10 +826,10 @@ def _user_stencil(
     attachment: Attachment | None,
 ) -> dict[str, JSONValue]:
     """Empty a user block's values, which each sit on a different record."""
-    if StrCodec.coerce(block.get("type")) == "tool_result":
+    if convert(block.get("type"), str, default="") == "tool_result":
         return _stencil(block, "content")
     if attachment is not None:
-        source = DictCodec.coerce(block.get("source"))
+        source = convert(block.get("source"), dict[str, object], default={})
         return _stencil(block, "text") | {
             "source": _stencil(source, "data", "media_type"),
         }
@@ -819,9 +839,11 @@ def _user_stencil(
 def _text_lengths(shape: Sequence[object]) -> list[int]:
     """Return each text block's line count, in the order they were written."""
     return [
-        IntCodec.coerce(block.get("$lines"), 1)
+        convert(block.get("$lines"), int, default=1)
         for value in shape
-        if (block := DictCodec.coerce(value)) and _restored(block, "text")
+        if isinstance(value, Mapping)
+        if (block := convert(cast(Mapping[str, object], value), dict[str, object]))
+        and _restored(block, "text")
     ]
 
 
@@ -862,7 +884,7 @@ def _stencil(block: Mapping[str, object], *held: str) -> dict[str, JSONValue]:
 # too; a bare ``null`` does not, since claude writes those and no field represents one.
 def _restored(block: Mapping[str, object], key: str) -> bool:
     """Whether ``key`` is a slot the record's own field fills."""
-    if key in ListCodec.coerce(block.get("$held", []), str):
+    if key in convert(block.get("$held"), list[str], default=[]):
         return True
     return isinstance(block.get(key), str)
 
@@ -917,9 +939,9 @@ def _write_result(
 ) -> dict[str, object]:
     """Return the ``user`` line a tool's answer came from."""
     extra = dict(json_unfreeze(item.extra))
-    shape = DictCodec.coerce(extra.pop("$result", None))
+    shape = convert(extra.pop("$result", {}), dict[str, object])
     message_blocks = shape.get("message_blocks", [_write_result_block(item)])
-    content_shape = ListCodec.coerce(extra.pop("$content_shape", []))
+    content_shape = convert(extra.pop("$content_shape", []), list[object])
     if content_shape:
         siblings = {
             record.call_id: record for record in group if isinstance(record, ToolResult)
@@ -938,10 +960,10 @@ def _write_result(
         text_index = 0
         rebuilt: list[object] = []
         for value in content_shape:
-            candidate = DictCodec.coerce(value)
-            owner = siblings.get(StrCodec.coerce(candidate.get("tool_use_id")))
+            candidate = convert(value, dict[str, object])
+            owner = siblings.get(convert(candidate.get("tool_use_id"), str, default=""))
             if (
-                StrCodec.coerce(candidate.get("type")) == "tool_result"
+                convert(candidate.get("type"), str, default="") == "tool_result"
                 and owner is not None
             ):
                 rebuilt.append(_write_result_block(owner))
@@ -955,10 +977,10 @@ def _write_result(
                 rebuilt.append(_bare(candidate) if "$held" in candidate else value)
         message_blocks = rebuilt
     message = {"role": "user", "content": message_blocks}
-    message.update(DictCodec.coerce(extra.pop("message", {})))
+    message.update(convert(extra.pop("message", {}), dict[str, object]))
     message = _ordered_keys(
         message,
-        ListCodec.coerce(extra.pop("$message_keys", []), str),
+        convert(extra.pop("$message_keys", []), list[str]),
     )
     named: dict[str, object] = {
         "type": "user",
@@ -990,28 +1012,31 @@ def _result_text(item: ToolResult) -> str:
 
 def _write_result_block(item: ToolResult) -> dict[str, object]:
     """Return the ``tool_result`` block one result record came from."""
-    shape = DictCodec.coerce(json_unfreeze(item.extra).get("$result"))
+    shape = convert(item.extra.get("$result"), dict[str, object], default={})
     neutral_content = (
         item.content
         if isinstance(item, UncategorizedToolResult)
         else _result_text(item)
     )
     content = (
-        _write_result_content(item, ListCodec.coerce(shape["content"]))
+        _write_result_content(
+            item,
+            convert(shape.get("content"), list[object], default=[]),
+        )
         if "content" in shape and isinstance(item, UncategorizedToolResult)
         else shape["content"]
         if "content" in shape
         else _result_text(item)
-        if BoolCodec.coerce(shape.get("$text"))
+        if convert(shape.get("$text"), bool, default=False)
         else shape.get("text", neutral_content or "")
     )
     values: dict[str, object] = {
         "type": "tool_result",
         "tool_use_id": item.call_id,
         "content": content,
-        **DictCodec.coerce(shape.get("block", {})),
+        **convert(shape.get("block"), dict[str, object], default={}),
     }
-    keys = ListCodec.coerce(shape.get("keys"), str) or [
+    keys = convert(shape.get("keys"), list[str], default=[]) or [
         "type",
         "tool_use_id",
         "content",
@@ -1025,21 +1050,21 @@ def _write_result_content(
 ) -> list[object]:
     """Replay result content blocks while applying prose edits."""
     originals = [
-        StrCodec.coerce(part.get("text"))
+        convert(part.get("text"), str, default="")
         for value in shape
-        if (part := DictCodec.coerce(value))
-        and StrCodec.coerce(part.get("type")) == "text"
+        if (part := convert(value, dict[str, object]))
+        and convert(part.get("type"), str, default="") == "text"
     ]
     texts = iter(_split_like(item.content, originals))
     out: list[object] = []
     for value in shape:
-        part = DictCodec.coerce(value)
-        if StrCodec.coerce(part.get("type")) == "text":
+        part = convert(value, dict[str, object])
+        if convert(part.get("type"), str, default="") == "text":
             out.append(
                 _replace_key(
                     part,
                     "text",
-                    next(texts, StrCodec.coerce(part.get("text"))),
+                    next(texts, convert(part.get("text"), str, default="")),
                 ),
             )
         else:
@@ -1059,17 +1084,20 @@ def _write_tool_payload(
         return stored
     structured = isinstance(stored, dict)
     values = _result_values(item, shape)
-    payload = replay(DictCodec.coerce(stored), values)
+    payload = restore_unmodeled_fields(
+        convert({} if stored is None else stored, dict[str, object]),
+        values,
+    )
     if not payload and not structured and values:
-        # ``replay`` fills an envelope the claude reader stored, and a record
+        # ``restore_unmodeled_fields`` fills an envelope the claude reader stored, and a record
         # from another provider has none -- so it returned nothing and the line
         # carried no ``toolUseResult`` at all. Claude types a result from that
         # payload, so its absence is what made every crossed act arrive
         # uncategorized. The act's own values ARE the payload here.
         payload = {key: value for key, value in values.items() if value is not None}
-    nested = DictCodec.coerce(payload.get("file"))
+    nested = convert(payload.get("file"), dict[str, object], default={})
     if isinstance(item, FileReadResult) and nested:
-        payload["file"] = replay(
+        payload["file"] = restore_unmodeled_fields(
             nested,
             {"filePath": item.path, "content": item.content},
         )
@@ -1078,7 +1106,7 @@ def _write_tool_payload(
         # splice holds, so an edited splice makes it stale. It is dropped
         # rather than re-rendered: rebuilding it needs the file's surrounding
         # lines, which the transcript never carried.
-        stated = ListCodec.coerce(shape.get("splice"), str)
+        stated = convert(shape.get("splice"), list[object], default=[])
         splice = item.edits[0] if item.edits else None
         current = [
             splice.before if splice is not None else None,
@@ -1096,7 +1124,7 @@ def _write_tool_payload(
     # so the neutral act names its own claude tool. Without this the payload is
     # unordered and, worse, the reader has no name to type the result by, so
     # every crossed act came back uncategorized.
-    tool = StrCodec.coerce(shape.get("tool_name")) or _claude_tool(item)
+    tool = convert(shape.get("tool_name"), str, default="") or _claude_tool(item)
     if tool == "Agent" and "isAsync" not in payload:
         tool = "Agent.done"
     for key, value in payload.items():
@@ -1144,20 +1172,24 @@ def _write_search_groups(
     rows = list(item.content)
     out: list[object] = []
     taken = 0
-    groups = ListCodec.coerce(shape.get("rows"))
+    groups = convert(shape.get("rows"), list[object], default=[])
     for index, entry in enumerate(groups):
-        group_shape = DictCodec.coerce(entry)
+        if not isinstance(entry, Mapping):
+            out.append(entry)
+            continue
+        entry = cast(Mapping[str, object], entry)
+        group_shape = convert(entry, dict[str, object])
         if "template" not in group_shape:
             out.append(entry)
             continue
-        template = DictCodec.coerce(group_shape.get("template"))
-        original_content = ListCodec.coerce(template.get("content"))
+        template = convert(group_shape.get("template"), dict[str, object], default={})
+        original_content = convert(template.get("content"), list[object], default=[])
         originals = [
-            DictCodec.coerce(cast(JSONValue, value))
+            convert(cast(Mapping[str, object], value), dict[str, object])
             for value in original_content
             if isinstance(value, Mapping)
         ]
-        count = IntCodec.coerce(group_shape.get("rows"), 0)
+        count = convert(group_shape.get("rows"), int, default=0)
         if index == len(groups) - 1:
             count = max(count, len(rows) - taken)
         current = rows[taken : taken + count]
@@ -1167,6 +1199,7 @@ def _write_search_groups(
             if not isinstance(value, Mapping):
                 written.append(value)
                 continue
+            value = cast(Mapping[str, object], value)
             if current_index < len(current):
                 written.append(
                     _write_search_row(current[current_index], originals[current_index]),
@@ -1205,20 +1238,24 @@ def _write_agent_blocks(
     shape: Mapping[str, object],
 ) -> list[object]:
     """Replay agent prose blocks while preserving their boundaries."""
-    stored = ListCodec.coerce(shape.get("agent_blocks"))
+    stored = convert(shape.get("agent_blocks"), list[object], default=[])
     if not stored:
         return [{"type": "text", "text": item.content}]
     originals = [
-        StrCodec.coerce(block.get("text"))
+        convert(block.get("text"), str, default="")
         for value in stored
-        if (block := DictCodec.coerce(value))
-        and StrCodec.coerce(block.get("type")) == "text"
+        if (block := convert(value, dict[str, object]))
+        and convert(block.get("type"), str, default="") == "text"
     ]
     texts = iter(_split_like(item.content, originals))
     return [
-        _replace_key(block, "text", next(texts, StrCodec.coerce(block.get("text"))))
-        if (block := DictCodec.coerce(value))
-        and StrCodec.coerce(block.get("type")) == "text"
+        _replace_key(
+            block,
+            "text",
+            next(texts, convert(block.get("text"), str, default="")),
+        )
+        if (block := convert(value, dict[str, object]))
+        and convert(block.get("type"), str, default="") == "text"
         else value
         for value in stored
     ]
@@ -1291,11 +1328,14 @@ def _write_assistant(
     extra = dict(json_unfreeze(head.extra))
     # The line's own model, which the reader kept: a session can switch models
     # and a failed call writes a marker, so the turn's is only the fallback.
-    message: dict[str, object] = dict(DictCodec.coerce(extra.pop("message", {})))
+    message: dict[str, object] = dict(
+        convert(extra.pop("message", {}), dict[str, object]),
+    )
     if "model" not in message and context.model is not None:
         message["model"] = context.model
-    parts = IntCodec.coerce(extra.pop("$parts", 1), 1)
-    shape = ListCodec.coerce(extra.pop("$content_shape", []))
+    parts_value = extra.pop("$parts", 1)
+    parts = parts_value if isinstance(parts_value, int) else 1
+    shape = convert(extra.pop("$content_shape", []), list[object])
     message["role"] = "assistant"
     message["content"] = (
         _write_blocks_shape(group, shape)
@@ -1306,7 +1346,7 @@ def _write_assistant(
         message["usage"] = json_unfreeze(usage.info)
     elif "$usage" in extra:
         message["usage"] = extra.pop("$usage")
-    message_order = ListCodec.coerce(extra.pop("$message_keys", []), str)
+    message_order = convert(extra.pop("$message_keys", []), list[str])
     message = _ordered_keys(message, message_order)
     named: dict[str, object] = {
         "type": "assistant",
@@ -1383,14 +1423,17 @@ def _write_blocks_shape(
     thought_index = 0
     out: list[object] = []
     for value in shape:
-        block = DictCodec.coerce(value)
-        kind = StrCodec.coerce(block.get("type"))
+        if not isinstance(value, Mapping):
+            out.append(value)
+            continue
+        block = convert(cast(Mapping[str, object], value), dict[str, object])
+        kind = convert(block.get("type"), str, default="")
         if kind == "text" and _restored(block, "text"):
             if text_index < len(texts):
                 out.append(_replace_key(_bare(block), "text", texts[text_index]))
             text_index += 1
         elif kind == "tool_use":
-            stated = StrCodec.coerce(block.get("$call_id"))
+            stated = convert(block.get("$call_id"), str, default="")
             if stated:
                 owner = by_id.get(stated)
                 if owner is not None:
@@ -1406,7 +1449,7 @@ def _write_blocks_shape(
                 out.append(_write_thinking_shape(block, thoughts[thought_index]))
             thought_index += 1
         else:
-            out.append(value)
+            out.append(cast(dict[str, object], value))
     out.extend({"type": "text", "text": text} for text in texts[text_index:])
     # A call no slot claimed: one added to the session after the line was read.
     out.extend(
@@ -1430,9 +1473,10 @@ def _write_tool_call_shape(
         out = _replace_key(out, "id", item.call_id)
     if _restored(block, "name"):
         out = _replace_key(out, "name", item.name)
-    if isinstance(block.get("input"), Mapping) or "input" in ListCodec.coerce(
-        block.get("$held", []),
-        str,
+    if isinstance(block.get("input"), Mapping) or "input" in convert(
+        block.get("$held"),
+        list[str],
+        default=[],
     ):
         out = _replace_key(out, "input", json_unfreeze(item.arguments))
     return out
@@ -1487,7 +1531,7 @@ def _write_tool_call(
         "input": json_unfreeze(item.arguments),
     }
     own = dict(json_unfreeze(item.extra))
-    block.update(DictCodec.coerce(own.pop("$call", extra.pop("$call", {}))))
+    block.update(convert(own.pop("$call", extra.pop("$call", {})), dict[str, object]))
     return block
 
 
@@ -1499,7 +1543,7 @@ def _write_thinking(item: Thinking) -> dict[str, object]:
     block: dict[str, object] = {"type": "thinking", "thinking": readable or ""}
     if item.encrypted is not None:
         block["signature"] = item.encrypted
-    elif BoolCodec.coerce(item.extra.get("$signature_present")):
+    elif convert(item.extra.get("$signature_present"), bool, default=False):
         block["signature"] = ""
     return block
 
@@ -1526,16 +1570,16 @@ def _write_context_state(
 ) -> dict[str, object]:
     """Return the ``attachment`` line an injected context came from."""
     extra = dict(json_unfreeze(item.extra))
-    where = ListCodec.coerce(extra.pop("$prose", []))
+    where = convert(extra.pop("$prose", []), list[object])
     state: dict[str, object] = {"type": item.kind}
-    state.update(DictCodec.coerce(extra.pop("attachment", {})))
+    state.update(convert(extra.pop("attachment", {}), dict[str, object]))
     if where and item.content is not None:
         # Back at the index it sat, which is not always right after the kind.
         state = _insert(
             state,
-            StrCodec.coerce(where[0]),
+            convert(where[0], str),
             item.content,
-            IntCodec.coerce(where[1], 1),
+            convert(where[1], int),
         )
     named: dict[str, object] = {
         "type": "attachment",
@@ -1596,7 +1640,7 @@ def _millis(value: float | None, original: object = None) -> float | int | None:
     """Return milliseconds, retaining an unchanged source numeric literal."""
     if value is None:
         return None
-    source = decode_or_none(float, original)
+    source = None if original is None else convert(original, float)
     if source is not None and value == source / 1000:
         assert isinstance(original, int | float)
         return original
@@ -1632,7 +1676,7 @@ class _Reader:
         self._total = 0
         self._ascii_count = 0
         self._ends_newline = True
-        self._encoding: JSON = json_freeze({})
+        self._encoding: JSON = {}
         # Where the opening clear will sit once it is known. Claude spreads
         # what a fresh context is GIVEN over several ``attachment`` lines --
         # its skills, its subagents, the tools it may call -- so the record
@@ -1657,7 +1701,7 @@ class _Reader:
             self._encoding = self._current_encoding()
             self._records.append(TurnContext(encoding=self._encoding))
             self._opening = len(self._records)
-            self._records.append(ContextClear(extra=json_freeze({"$opens": True})))
+            self._records.append(ContextClear(extra=({"$opens": True})))
         if self._total % 8 == 0:
             self._ascii_bits.append(0)
         if line.isascii():
@@ -1722,13 +1766,13 @@ class _Reader:
             ContextCompaction(
                 context_id=item.context_id,
                 timestamp=item.timestamp,
-                extra=json_freeze({"$in_place": True}),
+                extra=({"$in_place": True}),
             ),
             ContextClear(
                 context_id=item.context_id,
                 timestamp=item.timestamp,
                 summary=item.content,
-                extra=json_freeze({"$in_place": True}),
+                extra=({"$in_place": True}),
             ),
             item,
         ]
@@ -1767,8 +1811,10 @@ class _Reader:
 # same one.
 def _carries_a_compaction(item: SessionRecord) -> TypeGuard[UserMessage]:
     """Whether a record is the summary claude carried across a compaction."""
-    return isinstance(item, UserMessage) and BoolCodec.coerce(
+    return isinstance(item, UserMessage) and convert(
         dict(json_unfreeze(item.extra)).get("isCompactSummary"),
+        bool,
+        default=False,
     )
 
 
@@ -1787,7 +1833,7 @@ def _without_turn_envelope(
     # three holds an ``extra`` the override could live in.
     if isinstance(record, IncompleteRecord | TurnContext | UncategorizedRecord):
         return record
-    settings = json_unfreeze(context.extra)
+    settings = context.extra
     extra = dict(json_unfreeze(record.extra))
     kept = {
         key: value
@@ -1830,21 +1876,21 @@ def _read_line_context(
     for key in (*envelope_keys(), *settings_keys()):
         if key in record:
             prior_extra[key] = json_unfreeze(record[key])
-    message = DictCodec.coerce(record.get("message"))
+    message = convert(record.get("message"), dict[str, object], default={})
     model = previous.model if previous is not None else None
     if "model" in message:
-        model = decode_or_none(str, message.get("model"))
+        model = convert(message.get("model"), str, default=None)
     effort = previous.effort if previous is not None else None
     if "effort" in record:
-        effort = _effort(StrCodec.coerce(record.get("effort")))
+        effort = _effort(convert(record.get("effort"), str, default=""))
     permission = previous.permission if previous is not None else None
     if "permissionMode" in record:
-        permission = decode_or_none(str, record.get("permissionMode"))
+        permission = convert(record.get("permissionMode"), str, default=None)
     return TurnContext(
         model=model,
         effort=effort,
         permission=permission,
-        extra=json_freeze(prior_extra),
+        extra=(prior_extra),
     )
 
 
@@ -1856,8 +1902,9 @@ def _parse(line: str) -> dict[str, object] | None:
         parsed = loads(line)
     except json.JSONDecodeError:
         return None
-    narrowed = DictCodec.coerce(parsed)
-    return narrowed if isinstance(parsed, Mapping) else None
+    if not isinstance(parsed, Mapping):
+        return None
+    return convert(parsed, dict[str, object])
 
 
 def _update_tools(
@@ -1865,17 +1912,27 @@ def _update_tools(
     tools: dict[str, tuple[str, str | None]],
 ) -> None:
     """Record calls after preceding results have consumed the prior mapping."""
-    message = DictCodec.coerce(record.get("message"))
-    for block in ListCodec.mappings(message.get("content")):
+    message = convert(record.get("message"), dict[str, object], default={})
+    content = message.get("content")
+    blocks = (
+        [
+            convert(cast(dict[str, object], block), dict[str, object])
+            for block in cast(list[object], content)
+            if isinstance(block, dict)
+        ]
+        if isinstance(content, list)
+        else []
+    )
+    for block in blocks:
         call_id = block.get("id")
-        if StrCodec.coerce(block.get("type")) == "tool_use" and isinstance(
+        if convert(block.get("type"), str, default="") == "tool_use" and isinstance(
             call_id,
             str,
         ):
-            arguments = DictCodec.coerce(block.get("input"))
+            arguments = convert(block.get("input"), dict[str, object], default={})
             tools[call_id] = (
-                StrCodec.coerce(block.get("name")),
-                decode_or_none(str, arguments.get("command")),
+                convert(block.get("name"), str, default=""),
+                convert(arguments.get("command"), str, default=None),
             )
 
 
@@ -1884,10 +1941,12 @@ def _read_record(
     tools: Mapping[str, tuple[str, str | None]],
 ) -> list[SessionRecord]:
     """Read one parsed line into the records it carries."""
-    message = DictCodec.coerce(record.get("message"))
-    record_type = StrCodec.coerce(record.get("type"))
-    spoke = record_type in {"user", "assistant"} and StrCodec.coerce(
+    message = convert(record.get("message"), dict[str, object], default={})
+    record_type = convert(record.get("type"), str, default="")
+    spoke = record_type in {"user", "assistant"} and convert(
         message.get("role"),
+        str,
+        default="",
     ) == (record_type)
     if spoke and record_type == "user":
         return _read_user(record, message, tools)
@@ -1904,7 +1963,7 @@ def _read_record(
     return [
         UncategorizedRecord(
             context_id=0,
-            timestamp=decode_or_none(str, record.get("timestamp")),
+            timestamp=convert_or_none(record.get("timestamp"), str),
             kind=record_type,
             payload=json_freeze(record),
         ),
@@ -1926,7 +1985,7 @@ def _line_residual(
     # transcript, and the calls below sit inside comprehensions that rebuilt
     # the tuple for each key they tested.
     envelope = envelope_keys()
-    extra = residual(
+    extra = extract_unmodeled_fields(
         record,
         (
             *envelope,
@@ -1972,9 +2031,10 @@ def _line_residual(
 
 def _blocks(value: object) -> list[dict[str, object]]:
     """Return every object block, including an empty object."""
+    items = cast(list[object], value) if isinstance(value, list) else []
     return [
-        DictCodec.coerce(cast(JSONValue, item))
-        for item in ListCodec.coerce(value)
+        convert(cast(Mapping[str, object], item), dict[str, object])
+        for item in items
         if isinstance(item, Mapping)
     ]
 
@@ -1987,7 +2047,7 @@ def _read_user(
     """Read a user line: prose, its attachments, or a tool's answer."""
     content: object = message.get("content")
     extra = _line_residual(record, consumed=("message",))
-    residual_message = residual(message, message_consumed())
+    residual_message = extract_unmodeled_fields(message, message_consumed())
     if residual_message:
         extra["message"] = residual_message
     if list(message) != ["role", *residual_message, "content"]:
@@ -1999,7 +2059,7 @@ def _read_user(
         return [
             UserMessage(
                 context_id=0,
-                timestamp=decode_or_none(str, record.get("timestamp")),
+                timestamp=convert_or_none(record.get("timestamp"), str),
                 content=content,
                 extra=json_freeze(extra),
             ),
@@ -2010,31 +2070,22 @@ def _read_user(
     # carrying one.
     decoded = [(block, _read_attachment(block)) for block in blocks]
     parts = [
-        StrCodec.coerce(b.get("text")) for b in blocks if isinstance(b.get("text"), str)
+        convert(b.get("text"), str, default="")
+        for b in blocks
+        if isinstance(b.get("text"), str)
     ]
     attachments = tuple(found for _, found in decoded if found is not None)
     if isinstance(content, list):
         shapes = iter(_user_stencil(block, found) for block, found in decoded)
         extra["$content_shape"] = [
             next(shapes) if isinstance(value, Mapping) else cast(JSONValue, value)
-            for value in ListCodec.coerce(cast(JSONValue, content))
+            for value in cast(list[object], content)
         ]
     if len(parts) > 1:
         extra["$parts"] = len(parts)
     if any(_media_first(block) for block, found in decoded if found is not None):
         extra["$media_first"] = True
-    # A block kind nothing here recognizes: kept whole so the line replays,
-    # rather than vanishing into an empty content list. Only when no
-    # ``$content_shape`` was stored -- that already holds every block in
-    # place, and 131 of 131 captured records carried both.
-    unknown = [
-        residual(block, ())
-        for block, found in decoded
-        if block.get("text") is None and found is None
-    ]
-    if unknown and "$content_shape" not in extra:
-        extra["$blocks"] = unknown
-    timestamp = decode_or_none(str, record.get("timestamp"))
+    timestamp = convert_or_none(record.get("timestamp"), str)
     acts: list[UserMessage | AnyToolResult] = []
     # A ``tool_result`` is never the message, whatever else it carries. One
     # that also holds a ``text`` key would otherwise be indexed twice -- once
@@ -2044,11 +2095,11 @@ def _read_user(
     message_positions = [
         index
         for index, (block, found) in enumerate(decoded)
-        if StrCodec.coerce(block.get("type")) != "tool_result"
+        if convert(block.get("type"), str, default="") != "tool_result"
         and (isinstance(block.get("text"), str) or found is not None)
     ]
     has_message = bool(message_positions) or not any(
-        StrCodec.coerce(block.get("type")) == "tool_result" for block in blocks
+        convert(block.get("type"), str, default="") == "tool_result" for block in blocks
     )
     if has_message:
         acts.append(
@@ -2069,7 +2120,7 @@ def _read_user(
             message_blocks=cast(JSONValue, content) if len(blocks) > 1 else None,
         )
         for block in blocks
-        if StrCodec.coerce(block.get("type")) == "tool_result"
+        if convert(block.get("type"), str, default="") == "tool_result"
     ]
     acts.extend(results)
     positions = (
@@ -2079,7 +2130,7 @@ def _read_user(
     ) + [
         index
         for index, block in enumerate(blocks)
-        if StrCodec.coerce(block.get("type")) == "tool_result"
+        if convert(block.get("type"), str, default="") == "tool_result"
     ]
     acts = [record for _, record in sorted(zip(positions, acts, strict=True))]
     acts[0] = _with_extra(acts[0], extra)
@@ -2095,35 +2146,36 @@ def _read_assistant(
     message: Mapping[str, object],
 ) -> list[SessionRecord]:
     """Read an assistant line into the acts it carries, plus its usage."""
-    timestamp = decode_or_none(str, record.get("timestamp"))
+    timestamp = convert_or_none(record.get("timestamp"), str)
     blocks = _blocks(message.get("content"))
     extra = _line_residual(record, consumed=("message",))
     # ``model`` stays on the line. It is the turn's setting in the usual case,
     # but a session can switch models mid-file and a failed call writes
     # claude's own ``<synthetic>`` marker in place of one -- neither of which
     # one turn-wide value can reproduce.
-    residual_message = residual(message, {*message_consumed(), "usage"})
+    residual_message = extract_unmodeled_fields(message, {*message_consumed(), "usage"})
     if residual_message:
         extra["message"] = residual_message
     if list(message) != list(_ordered_message(dict(message), extra)):
         extra["$message_keys"] = list(message)
     content_value = message.get("content")
-    content_blocks = ListCodec.coerce(content_value)
+    content_blocks = convert(content_value, list[object])
     canonical_text = (
         len(content_blocks) == 1
-        and (block := DictCodec.coerce(content_blocks[0])).keys() == {"type", "text"}
+        and (block := convert(content_blocks[0], dict[str, object])).keys()
+        == {"type", "text"}
         and isinstance(block.get("text"), str)
     )
     if not canonical_text:
         extra["$content_shape"] = [
             _assistant_stencil(value) for value in content_blocks
         ]
-    usage = DictCodec.coerce(message.get("usage"))
+    usage = convert(message.get("usage"), dict[str, object], default={})
     if "usage" in message and not usage:
         extra["$usage"] = cast(JSONValue, message["usage"])
     acts: list[AssistantMessage | Thinking | ToolCall] = []
     prose = [
-        StrCodec.coerce(block.get("text"))
+        convert(block.get("text"), str, default="")
         for block in blocks
         if isinstance(block.get("text"), str)
     ]
@@ -2132,32 +2184,36 @@ def _read_assistant(
     # A block kind nothing here recognizes: kept whole so the line replays,
     # rather than vanishing into an empty content list.
     unknown = [
-        residual(block, ())
+        extract_unmodeled_fields(block, ())
         for block in blocks
-        if StrCodec.coerce(block.get("type")) not in {"tool_use", "thinking", "text"}
+        if convert(block.get("type"), str, default="")
+        not in {"tool_use", "thinking", "text"}
     ]
     if unknown:
         extra["$blocks"] = unknown
     for block in blocks:
-        kind = StrCodec.coerce(block.get("type"))
+        kind = convert(block.get("type"), str, default="")
         if kind == "tool_use":
+            call_extra = _call_residual(block)
+            input_value = convert_or_none(block.get("input"), dict[str, object])
+            name = convert_or_none(block.get("name"), str)
             acts.append(
                 ToolCall(
                     context_id=0,
                     timestamp=timestamp,
-                    call_id=StrCodec.coerce(block.get("id")),
-                    name=StrCodec.coerce(block.get("name")),
-                    arguments=json_freeze(DictCodec.coerce(block.get("input"))),
-                    extra=json_freeze(_call_residual(block)),
+                    call_id=convert(block.get("id"), str, default=""),
+                    name=name or "",
+                    arguments=json_freeze(input_value or {}),
+                    extra=json_freeze(call_extra),
                 ),
             )
         elif kind == "thinking":
-            encrypted_text = decode_or_none(str, block.get("signature"))
+            encrypted_text = convert(block.get("signature"), str, default=None)
             acts.append(
                 Thinking(
                     context_id=0,
                     timestamp=timestamp,
-                    content=decode_or_none(str, block.get("thinking")),
+                    content=convert(block.get("thinking"), str, default=None),
                     encrypted=encrypted_text,
                     extra=json_freeze(
                         {"$signature_present": True} if "signature" in block else {},
@@ -2173,7 +2229,7 @@ def _read_assistant(
             len(blocks),
         )
         at = sum(
-            StrCodec.coerce(block.get("type")) in {"tool_use", "thinking"}
+            convert(block.get("type"), str, default="") in {"tool_use", "thinking"}
             for block in blocks[:prose_index]
         )
         acts.insert(
@@ -2205,7 +2261,14 @@ def _with_extra[
 
 def _call_residual(block: Mapping[str, object]) -> dict[str, JSONValue]:
     """Return a ``tool_use`` block's keys that no field on the call holds."""
-    extra = residual(block, {"type", "id", "name", "input"})
+    extra = extract_unmodeled_fields(block, {"type", "id", "name", "input"})
+    for key in ("name", "input"):
+        if (
+            key in block
+            and block[key] is not None
+            and not isinstance(block[key], str if key == "name" else Mapping)
+        ):
+            extra[key] = cast(JSONValue, block[key])
     return {"$call": extra} if extra else {}
 
 
@@ -2221,16 +2284,16 @@ def _read_system(record: Mapping[str, object]) -> SystemMessage:
             extra[f"${key}_value"] = cast(JSONValue, record[key])
     return SystemMessage(
         context_id=0,
-        timestamp=decode_or_none(str, record.get("timestamp")),
-        content=decode_or_none(str, record.get("content")),
-        subtype=decode_or_none(str, record.get("subtype")),
+        timestamp=convert_or_none(record.get("timestamp"), str),
+        content=convert_or_none(record.get("content"), str),
+        subtype=convert_or_none(record.get("subtype"), str),
         extra=json_freeze(extra),
     )
 
 
 def _read_attachment_record(record: Mapping[str, object]) -> ContextState:
     """Read context the harness injected for the model to read."""
-    state = DictCodec.coerce(record.get("attachment"))
+    state = convert(record.get("attachment"), dict[str, object], default={})
     # Which key holds the prose. ``content`` is not always prose -- a task
     # reminder writes a LIST there -- so only a string is taken. A message
     # queued while the agent worked (``queued_command``) holds it under
@@ -2245,9 +2308,12 @@ def _read_attachment_record(record: Mapping[str, object]) -> ContextState:
     )
     # Empty string, not absent: a hook that produced no prose still writes
     # the key, and ``None`` would drop it.
-    text = StrCodec.coerce(state.get(prose)) if prose else None
+    text = convert(state.get(prose), str, default="") if prose else None
     extra = _line_residual(record, consumed=("attachment",))
-    attachment_extra = residual(state, {"type", *((prose,) if prose else ())})
+    attachment_extra = extract_unmodeled_fields(
+        state,
+        {"type", *((prose,) if prose else ())},
+    )
     if attachment_extra:
         extra["attachment"] = attachment_extra
     if prose is not None:
@@ -2256,8 +2322,8 @@ def _read_attachment_record(record: Mapping[str, object]) -> ContextState:
         extra["$prose"] = [prose, list(state).index(prose)]
     return ContextState(
         context_id=0,
-        timestamp=decode_or_none(str, record.get("timestamp")),
-        kind=StrCodec.coerce(state.get("type")),
+        timestamp=convert_or_none(record.get("timestamp"), str),
+        kind=convert(state.get("type"), str, default=""),
         content=text,
         extra=json_freeze(extra),
     )
@@ -2278,16 +2344,19 @@ def _read_tool_result(
     if isinstance(content, str):
         parts.append(content)
     else:
-        for part in ListCodec.mappings(content):
+        for part in convert(
+            [] if content is None else content,
+            list[dict[str, object]],
+        ):
             if found := _read_attachment(part):
                 attachments.append(found)
-            elif StrCodec.coerce(part.get("type")) == "text":
-                parts.append(StrCodec.coerce(part.get("text")))
+            elif convert(part.get("type"), str, default="") == "text":
+                parts.append(convert(part.get("text"), str, default=""))
     text = "\n".join(parts)
-    call_id = StrCodec.coerce(block.get("tool_use_id"))
+    call_id = convert(block.get("tool_use_id"), str, default="")
     name, command = tools.get(call_id, ("", None))
-    result = DictCodec.coerce(record.get("toolUseResult"))
-    residual_block = residual(block, {"type", "tool_use_id", "content"})
+    result = convert(record.get("toolUseResult"), dict[str, object], default={})
+    residual_block = extract_unmodeled_fields(block, {"type", "tool_use_id", "content"})
     shape: dict[str, JSONValue] = {
         "block": residual_block,
         # The block's own key order, which is per-block rather than per-line:
@@ -2331,14 +2400,16 @@ def _read_tool_result(
 def _rendered(name: str, result: Mapping[str, object]) -> str | None:
     """Return what the record's own fields spell the block's content as."""
     if name == "Bash":
-        stdout = take(result, "stdout", str)
-        stderr = take(result, "stderr", str)
+        stdout = read_field_keeping_invalid(result, "stdout", str)
+        stderr = read_field_keeping_invalid(result, "stderr", str)
         return _shell_text(
             stdout if isinstance(stdout, str) else "",
             stderr if isinstance(stderr, str) else "",
         )
     if name == "Read":
-        content = DictCodec.coerce(result.get("file")).get("content")
+        content = convert(result.get("file"), dict[str, object], default={}).get(
+            "content",
+        )
         return _numbered(content) if isinstance(content, str) else None
     return None
 
@@ -2375,11 +2446,11 @@ def _typed_result(
     shape: dict[str, JSONValue],
 ) -> AnyToolResult:
     """Return the result as the record for what its tool did."""
-    timestamp = decode_or_none(str, record.get("timestamp"))
+    timestamp = convert_or_none(record.get("timestamp"), str)
     structured_result = isinstance(record.get("toolUseResult"), Mapping)
     if name == "Bash":
-        stdout = take(result, "stdout", str)
-        stderr = take(result, "stderr", str)
+        stdout = read_field_keeping_invalid(result, "stdout", str)
+        stderr = read_field_keeping_invalid(result, "stderr", str)
         shell = ShellCommandResult(
             context_id=0,
             timestamp=timestamp,
@@ -2390,7 +2461,10 @@ def _typed_result(
                 _result_extra(
                     extra,
                     shape,
-                    residual(result, fields={"stdout": stdout, "stderr": stderr}),
+                    extract_unmodeled_fields(
+                        result,
+                        fields={"stdout": stdout, "stderr": stderr},
+                    ),
                     structured=structured_result,
                 ),
             ),
@@ -2408,18 +2482,21 @@ def _typed_result(
     if name == "Read":
         # The payload nests under ``file``: a text read carries the content, an
         # image carries base64 that already arrived as an attachment.
-        file_state = take(result, "file", dict[str, object])
-        read = DictCodec.coerce(file_state)
-        path = take(read, "filePath", str)
-        content = take(read, "content", str)
+        file_state = read_field_keeping_invalid(result, "file", dict[str, object])
+        read_data = convert(
+            file_state if isinstance(file_state, Mapping) else {},
+            dict[str, object],
+        )
+        path = read_field_keeping_invalid(read_data, "filePath", str)
+        content = read_field_keeping_invalid(read_data, "content", str)
         if isinstance(file_state, Mapping):
-            stored = dict(residual(result, {"file"}))
-            stored["file"] = residual(
-                read,
+            stored = dict(extract_unmodeled_fields(result, {"file"}))
+            stored["file"] = extract_unmodeled_fields(
+                read_data,
                 fields={"filePath": path, "content": content},
             )
         else:
-            stored = dict(residual(result, fields={"file": file_state}))
+            stored = dict(extract_unmodeled_fields(result, fields={"file": file_state}))
         return FileReadResult(
             context_id=0,
             timestamp=timestamp,
@@ -2431,8 +2508,8 @@ def _typed_result(
             ),
         )
     if name == "Write":
-        path = take(result, "filePath", str)
-        content = take(result, "content", str)
+        path = read_field_keeping_invalid(result, "filePath", str)
+        content = read_field_keeping_invalid(result, "content", str)
         return FileWriteResult(
             context_id=0,
             timestamp=timestamp,
@@ -2443,15 +2520,18 @@ def _typed_result(
                 _result_extra(
                     extra,
                     shape,
-                    residual(result, fields={"filePath": path, "content": content}),
+                    extract_unmodeled_fields(
+                        result,
+                        fields={"filePath": path, "content": content},
+                    ),
                     structured=structured_result,
                 ),
             ),
         )
     if name == "Edit":
-        path = take(result, "filePath", str)
-        old = take(result, "oldString", str)
-        new = take(result, "newString", str)
+        path = read_field_keeping_invalid(result, "filePath", str)
+        old = read_field_keeping_invalid(result, "oldString", str)
+        new = read_field_keeping_invalid(result, "newString", str)
         if "structuredPatch" in result:
             # What the splice said when the patch was rendered, so the writer
             # can tell an edited splice from an untouched one.
@@ -2484,7 +2564,7 @@ def _typed_result(
                 _result_extra(
                     extra,
                     shape,
-                    residual(
+                    extract_unmodeled_fields(
                         result,
                         fields={
                             "filePath": path,
@@ -2501,32 +2581,43 @@ def _typed_result(
         # ``tool_use_id`` per search -- and reports only title and url, so the
         # ids and the nesting stay in the residual.
         rows = [
-            DictCodec.coerce(cast(JSONValue, row))
-            for group in ListCodec.mappings(result.get("results"))
-            for row in ListCodec.coerce(group.get("content"))
-            if isinstance(row, Mapping)
+            convert(cast(dict[str, object], row), dict[str, object])
+            for group in convert(result.get("results"), list[object], default=[])
+            if isinstance(group, dict)
+            for row in convert(
+                cast(dict[str, object], group).get("content"),
+                list[object],
+                default=[],
+            )
+            if isinstance(row, dict)
         ]
-        query = take(result, "query", str)
-        duration = take(result, "durationSeconds", float)
-        result_groups = take(result, "results", list[object])
+        query = read_field_keeping_invalid(result, "query", str)
+        duration = read_field_keeping_invalid(result, "durationSeconds", float)
+        result_groups = read_field_keeping_invalid(result, "results", list[object])
         # ``results`` is not a row list: it holds one group per search plus,
         # sometimes, the model's own prose summary. The shape is kept -- each
         # group's id and how many of the flattened rows it owns -- so the rows
         # go back inside the group they came from.
         groups: list[JSONValue] = []
-        for group in ListCodec.coerce(result.get("results")):
-            found = DictCodec.coerce(group)
-            groups.append(
-                {
-                    "template": cast(JSONValue, group),
-                    "rows": sum(
-                        isinstance(row, Mapping)
-                        for row in ListCodec.coerce(found.get("content"))
-                    ),
-                }
-                if isinstance(group, Mapping)
-                else cast(JSONValue, group),
-            )
+        for group in convert(result.get("results"), list[object], default=[]):
+            if isinstance(group, Mapping):
+                group = cast(Mapping[str, object], group)
+                found = convert(group, dict[str, object])
+                groups.append(
+                    {
+                        "template": cast(JSONValue, group),
+                        "rows": sum(
+                            isinstance(row, Mapping)
+                            for row in convert(
+                                found.get("content"),
+                                list[object],
+                                default=[],
+                            )
+                        ),
+                    },
+                )
+            else:
+                groups.append(cast(JSONValue, group))
         if "results" in result:
             shape["rows"] = groups
         return WebSearchResults(
@@ -2540,7 +2631,7 @@ def _typed_result(
                 _result_extra(
                     extra,
                     shape,
-                    residual(
+                    extract_unmodeled_fields(
                         result,
                         fields={
                             "query": query,
@@ -2553,11 +2644,11 @@ def _typed_result(
             ),
         )
     if name == "WebFetch":
-        url = take(result, "url", str)
-        content_state = take(result, "result", str)
-        code = take(result, "code", int)
-        duration = take(result, "durationMs", float)
-        size = take(result, "bytes", int)
+        url = read_field_keeping_invalid(result, "url", str)
+        content_state = read_field_keeping_invalid(result, "result", str)
+        code = read_field_keeping_invalid(result, "code", int)
+        duration = read_field_keeping_invalid(result, "durationMs", float)
+        size = read_field_keeping_invalid(result, "bytes", int)
         if isinstance(duration, float):
             shape["duration_ms"] = cast(JSONValue, result["durationMs"])
         return WebFetchResult(
@@ -2573,7 +2664,7 @@ def _typed_result(
                 _result_extra(
                     extra,
                     shape,
-                    residual(
+                    extract_unmodeled_fields(
                         result,
                         fields={
                             "url": url,
@@ -2588,21 +2679,21 @@ def _typed_result(
             ),
         )
     if name == "Agent":
-        agent_id = take(result, "agentId", str)
-        agent_kind = take(result, "agentType", str)
-        prompt = take(result, "prompt", str)
-        content_state = take(result, "content", list[object])
-        model = take(result, "resolvedModel", str)
-        state = take(result, "status", str)
-        tokens = take(result, "totalTokens", int)
-        duration = take(result, "totalDurationMs", float)
-        tool_calls = take(result, "totalToolUseCount", int)
-        output_file = take(result, "outputFile", str)
+        agent_id = read_field_keeping_invalid(result, "agentId", str)
+        agent_kind = read_field_keeping_invalid(result, "agentType", str)
+        prompt = read_field_keeping_invalid(result, "prompt", str)
+        content_state = read_field_keeping_invalid(result, "content", list[object])
+        model = read_field_keeping_invalid(result, "resolvedModel", str)
+        state = read_field_keeping_invalid(result, "status", str)
+        tokens = read_field_keeping_invalid(result, "totalTokens", int)
+        duration = read_field_keeping_invalid(result, "totalDurationMs", float)
+        tool_calls = read_field_keeping_invalid(result, "totalToolUseCount", int)
+        output_file = read_field_keeping_invalid(result, "outputFile", str)
         if isinstance(duration, float):
             shape["duration_ms"] = cast(JSONValue, result["totalDurationMs"])
         # A subagent answers in blocks, never a bare string, so its prose is
         # joined here and the block wrapper noted for the writer.
-        blocks = ListCodec.mappings(result.get("content"))
+        blocks = convert(result.get("content"), list[dict[str, object]], default=[])
         if isinstance(result.get("content"), list):
             shape["agent_blocks"] = cast(JSONValue, result["content"])
         return AgentStatusResult(
@@ -2612,7 +2703,8 @@ def _typed_result(
             agent_id=agent_id if isinstance(agent_id, str) else None,
             agent_kind=agent_kind if isinstance(agent_kind, str) else None,
             prompt=prompt if isinstance(prompt, str) else None,
-            content="\n".join(StrCodec.coerce(b.get("text")) for b in blocks) or None,
+            content="\n".join(convert(b.get("text"), str, default="") for b in blocks)
+            or None,
             model=model if isinstance(model, str) else None,
             state=state if isinstance(state, str) else None,
             tokens=tokens if isinstance(tokens, int) else None,
@@ -2623,7 +2715,7 @@ def _typed_result(
                 _result_extra(
                     extra,
                     shape,
-                    residual(
+                    extract_unmodeled_fields(
                         result,
                         fields={
                             "agentId": agent_id,
@@ -2654,7 +2746,7 @@ def _typed_result(
             _result_extra(
                 extra,
                 shape,
-                residual(result),
+                extract_unmodeled_fields(result),
                 structured=structured_result,
             ),
         ),
@@ -2679,9 +2771,9 @@ def _search_rows(rows: Sequence[Mapping[str, object]]) -> list[WebSearchResult]:
     """Read a search's result rows. Claude reports no snippet."""
     return [
         WebSearchResult(
-            url=decode_or_none(str, row.get("url")),
-            title=decode_or_none(str, row.get("title")),
-            snippet=decode_or_none(str, row.get("snippet")),
+            url=convert_or_none(row.get("url"), str),
+            title=convert_or_none(row.get("title"), str),
+            snippet=convert_or_none(row.get("snippet"), str),
         )
         for row in rows
     ]
@@ -2689,23 +2781,26 @@ def _search_rows(rows: Sequence[Mapping[str, object]]) -> list[WebSearchResult]:
 
 def _read_attachment(block: Mapping[str, object]) -> Attachment | None:
     """Read an image block, which is the only binary claude inlines."""
-    if StrCodec.coerce(block.get("type")) != "image":
+    if convert(block.get("type"), str, default="") != "image":
         return None
-    source = DictCodec.coerce(block.get("source"))
-    if StrCodec.coerce(source.get("type")) != "base64":
+    source = convert(block.get("source"), dict[str, object], default={})
+    if convert(source.get("type"), str, default="") != "base64":
         return None
     try:
-        data = base64.b64decode(StrCodec.coerce(source.get("data")), validate=True)
+        data = base64.b64decode(
+            convert(source.get("data"), str, default=""),
+            validate=True,
+        )
     except (binascii.Error, ValueError):
         return None
     return Attachment(
-        mime_descriptor=StrCodec.coerce(source.get("media_type")),
+        mime_descriptor=convert(source.get("media_type"), str, default=""),
         data=data,
     )
 
 
 def _media_first(block: Mapping[str, object]) -> bool:
     """Whether the source named the media type before the base64 payload."""
-    source = DictCodec.coerce(block.get("source"))
+    source = convert(block.get("source"), dict[str, object], default={})
     keys = [key for key in source if key in {"media_type", "data"}]
     return keys[:1] == ["media_type"]

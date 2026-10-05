@@ -27,7 +27,7 @@ from trackinizer.lib.agent.types.sessions import (
     SessionRecord,
     TurnContext,
 )
-from trackinizer.lib.custom_json import DictCodec, json_freeze, json_unfreeze
+from trackinizer.lib.custom_json import convert, json_freeze
 from trackinizer.trax.run.errors import (
     LossyConversionError,
     NotResumableError,
@@ -116,7 +116,7 @@ def prepare_resume(
         # convention rides on the context in force; rewriting without it
         # escapes different characters, so the bytes differ even though every
         # record matches.
-        encoding=json_freeze(json_unfreeze(DictCodec.coerce(part.metadata))),
+        encoding=json_freeze(convert(part.metadata, dict[str, object])),
         sealed=sealed,
         session_id=minted,
         # What captured it, so the writer knows whether this is a crossing:

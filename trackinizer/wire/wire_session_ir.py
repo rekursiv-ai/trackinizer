@@ -18,8 +18,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
-from trackinizer.lib.custom_json import JSON, json_freeze
+from trackinizer.lib.custom_json import json_freeze
 from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.json_types import JSON
 
 
 __all__ = [
@@ -71,7 +72,7 @@ class RecordBody(BaseModel):
     model: str | None = None
 
     payload: JSON = Field(default_factory=dict)
-    """The record as ``DataclassCodec`` JSON, with ciphertext removed."""
+    """The record as ``to_builtins`` JSON, with ciphertext removed."""
 
     text: str = ""
     """The search projection, computed at ingest."""

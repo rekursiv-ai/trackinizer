@@ -4,24 +4,60 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass
 from functools import partial, partialmethod
 from pathlib import Path
-from typing import TypeGuard
+from types import ModuleType, SimpleNamespace
+from typing import Protocol, TypeGuard, override, runtime_checkable
 from unittest.mock import patch
 
 import asyncio
 import contextlib
 import ctypes
 import errno
+import importlib
 import os
 import platform
 import select
+import sys
 
 import pytest
 
 from trackinizer.lib.posix import follow
 from trackinizer.lib.posix.follow import follow_dir, follow_file
 from trackinizer.lib.posix.testing import poll_fsevents
+
+
+@runtime_checkable
+class _VnodesLike(Protocol):
+    _queue: asyncio.Queue[Path]
+
+    def __init__(self, queue: asyncio.Queue[Path]) -> None: ...
+
+    def watch(self, path: Path) -> None: ...
+
+    def close(self) -> None: ...
+
+    def _ready(self) -> None: ...
+
+
+@runtime_checkable
+class _FseventsModule(Protocol):
+    _fsevents: object
+
+    def _fsevents_observer(self) -> object: ...
+
+
+@runtime_checkable
+class _DarwinFollow(Protocol):
+    _Vnodes: type[_VnodesLike]
+    _watch_lines: Callable[..., AbstractAsyncContextManager[AsyncIterator[set[Path]]]]
+    _watch_fsevents: Callable[
+        ...,
+        AbstractAsyncContextManager[AsyncIterator[set[Path]]],
+    ]
+
+    def _fsevents_observer(self) -> object: ...
 
 
 @pytest.fixture(autouse=True)
@@ -1472,7 +1508,7 @@ class _StubObserver:
         )
         for handler in self._handlers:
             assert isinstance(handler, follow._FsEventsHandler)
-            handler.on_any_event(event)
+            handler.dispatch(event)
 
 
 def _run_fsevents(fire: Callable[[_StubObserver], object]) -> list[set[Path]]:
@@ -2101,6 +2137,266 @@ def test_inotify_refused_descendant_keeps_root_watch(tmp_path: Path) -> None:
     assert watches == {7: tmp_path}
 
 
+class _MacKernel:
+    def __init__(self) -> None:
+        self.events: list[object] = []
+        self.closed = False
+
+    def fileno(self) -> int:
+        return 17
+
+    def control(self, events: object, *_args: int) -> list[object]:
+        if events is None:
+            return self.events
+        return []
+
+    def close(self) -> None:
+        self.closed = True
+
+
+@dataclass(slots=True, kw_only=True)
+class _MacWatchState:
+    darwin: _DarwinFollow
+    kernel: _MacKernel
+    loop: asyncio.AbstractEventLoop
+    opened: list[tuple[Path, int]]
+    closed: list[int]
+    inode: list[tuple[int, int]]
+    vnode: _VnodesLike
+    target: Path
+
+
+@pytest.fixture
+def mac_watch_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[_MacWatchState]:
+    original_platform = sys.platform
+    monkeypatch.setattr(sys, "platform", "darwin")
+    module_for_reload: ModuleType = follow
+    darwin = importlib.reload(module_for_reload)
+    assert isinstance(darwin, _DarwinFollow)
+    kernel = _MacKernel()
+    loop = asyncio.new_event_loop()
+    opened: list[tuple[Path, int]] = []
+    closed: list[int] = []
+    inode: list[tuple[int, int]] = []
+    monkeypatch.setattr(select, "kqueue", lambda: kernel, raising=False)
+
+    def kevent(fd: int, **kwargs: int) -> SimpleNamespace:
+        return SimpleNamespace(ident=fd, kwargs=kwargs)
+
+    monkeypatch.setattr(select, "kevent", kevent, raising=False)
+    for name, value in {
+        "KQ_FILTER_VNODE": 1,
+        "KQ_EV_ADD": 2,
+        "KQ_EV_CLEAR": 4,
+        "KQ_NOTE_WRITE": 8,
+        "KQ_NOTE_EXTEND": 16,
+        "KQ_NOTE_DELETE": 32,
+        "KQ_NOTE_RENAME": 64,
+        "KQ_NOTE_REVOKE": 128,
+    }.items():
+        monkeypatch.setattr(select, name, value, raising=False)
+    monkeypatch.setattr(os, "O_EVTONLY", 0, raising=False)
+
+    def open_file(path: str | os.PathLike[str], flags: int) -> int:
+        opened.append((Path(path), flags))
+        return 23
+
+    monkeypatch.setattr(os, "open", open_file)
+    monkeypatch.setattr(os, "close", closed.append)
+
+    def fstat(fd: int) -> SimpleNamespace:
+        del fd
+        dev, ino = inode.pop(0)
+        return SimpleNamespace(st_dev=dev, st_ino=ino)
+
+    monkeypatch.setattr(os, "fstat", fstat)
+    real_get_running_loop = asyncio.get_running_loop
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    with (
+        patch.object(loop, "add_reader"),
+        patch.object(loop, "remove_reader"),
+    ):
+        vnode = darwin._Vnodes(asyncio.Queue())
+    monkeypatch.setattr(asyncio, "get_running_loop", real_get_running_loop)
+    target = tmp_path / "log"
+    target.write_text("x")
+    yield _MacWatchState(
+        darwin=darwin,
+        kernel=kernel,
+        loop=loop,
+        opened=opened,
+        closed=closed,
+        inode=inode,
+        vnode=vnode,
+        target=target,
+    )
+    loop.close()
+    monkeypatch.setattr(sys, "platform", original_platform)
+    importlib.reload(module_for_reload)
+
+
+def test_mac_vnode_arms_file(mac_watch_state: _MacWatchState) -> None:
+    mac_watch_state.vnode.watch(mac_watch_state.target)
+    assert mac_watch_state.opened == [(mac_watch_state.target, 0)]
+
+
+def test_mac_vnode_reuses_same_inode(mac_watch_state: _MacWatchState) -> None:
+    target = mac_watch_state.target
+    identity = target.stat()
+    mac_watch_state.inode.append((identity.st_dev, identity.st_ino))
+    mac_watch_state.vnode.watch(target)
+    mac_watch_state.vnode.watch(target)
+    assert mac_watch_state.opened == [(target, 0)]
+
+
+def test_mac_vnode_replaces_changed_inode(mac_watch_state: _MacWatchState) -> None:
+    target = mac_watch_state.target
+    identity = target.stat()
+    mac_watch_state.inode.append((identity.st_dev, identity.st_ino + 999))
+    mac_watch_state.vnode.watch(target)
+    mac_watch_state.vnode.watch(target)
+    assert mac_watch_state.opened == [(target, 0), (target, 0)]
+    assert mac_watch_state.closed == [23]
+
+
+def test_mac_vnode_removes_deleted_file(mac_watch_state: _MacWatchState) -> None:
+    target = mac_watch_state.target
+    mac_watch_state.vnode.watch(target)
+    target.unlink()
+    mac_watch_state.vnode.watch(target)
+    assert mac_watch_state.closed == [23]
+
+
+def test_mac_vnode_handles_open_race(
+    mac_watch_state: _MacWatchState,
+) -> None:
+    race = mac_watch_state.target.parent / "race"
+    race.write_text("x")
+    with patch.object(os, "open", side_effect=FileNotFoundError):
+        mac_watch_state.vnode.watch(race)
+    assert mac_watch_state.opened == []
+
+
+def test_mac_vnode_closes_fd_after_registration_failure(
+    mac_watch_state: _MacWatchState,
+) -> None:
+    bad = mac_watch_state.target.parent / "bad"
+    bad.write_text("x")
+    with (
+        patch.object(select, "kevent", side_effect=OSError),
+        pytest.raises(OSError, match=r"^$"),
+    ):
+        mac_watch_state.vnode.watch(bad)
+    assert mac_watch_state.closed == [23]
+
+
+def test_mac_vnode_queues_ready_paths(mac_watch_state: _MacWatchState) -> None:
+    target = mac_watch_state.target
+    mac_watch_state.vnode.watch(target)
+    mac_watch_state.kernel.events = [SimpleNamespace(ident=23)]
+    mac_watch_state.vnode._ready()
+    assert mac_watch_state.vnode._queue.get_nowait() == target
+
+
+def test_mac_vnode_cleanup_closes_kernel_and_fd(
+    mac_watch_state: _MacWatchState,
+) -> None:
+    mac_watch_state.vnode.watch(mac_watch_state.target)
+    mac_watch_state.vnode.close()
+    assert mac_watch_state.closed == [23]
+    assert mac_watch_state.kernel.closed
+
+
+def test_mac_watch_lines_arms_existing_files(
+    mac_watch_state: _MacWatchState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    darwin = mac_watch_state.darwin
+
+    @asynccontextmanager
+    async def fsevents_stub(
+        *_directories: Path,
+        queue: asyncio.Queue[Path] | None = None,
+    ) -> AsyncGenerator[AsyncIterator[set[Path]]]:
+        del queue
+        yield _no_events()
+
+    monkeypatch.setattr(darwin, "_watch_fsevents", fsevents_stub)
+
+    def match_all(path: Path) -> bool:
+        del path
+        return True
+
+    async def run() -> None:
+        async with darwin._watch_lines(
+            mac_watch_state.target.parent,
+            match=match_all,
+            existing={mac_watch_state.target},
+        ) as changed:
+            assert [item async for item in changed] == []
+
+    with (
+        patch.object(mac_watch_state.loop, "add_reader"),
+        patch.object(mac_watch_state.loop, "remove_reader"),
+    ):
+        mac_watch_state.loop.run_until_complete(run())
+
+
+def test_fsevents_backend_validates_directories_and_imports_observer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The FSEvents adapter rejects bad roots and unavailable watchdog."""
+
+    class Missing:
+        @override
+        def __getattribute__(self, name: str) -> object:
+            if name == "FSEventsObserver":
+                raise ImportError("no")
+            raise AttributeError(name)
+
+    module_for_reload: ModuleType = follow
+    assert isinstance(follow, _FseventsModule)
+    monkeypatch.setattr(follow, "_fsevents", Missing())
+    with pytest.raises(NotImplementedError, match="unavailable"):
+        follow._fsevents_observer()
+
+    original_platform = sys.platform
+    monkeypatch.setattr(sys, "platform", "darwin")
+    darwin = importlib.reload(module_for_reload)
+    assert isinstance(darwin, _DarwinFollow)
+    try:
+
+        async def no_directories() -> None:
+            async with darwin._watch_fsevents():
+                pass
+
+        with pytest.raises(ValueError, match="directory"):
+            asyncio.run(no_directories())
+
+        async def missing_directory() -> None:
+            async with darwin._watch_fsevents(tmp_path / "missing"):
+                pass
+
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(missing_directory())
+
+        observer = _StubObserver()
+        monkeypatch.setattr(darwin, "_fsevents_observer", lambda: observer)
+
+        async def open_valid_directory() -> list[Path]:
+            async with darwin._watch_fsevents(tmp_path):
+                return observer.scheduled
+
+        assert asyncio.run(open_valid_directory()) == [tmp_path]
+    finally:
+        monkeypatch.setattr(sys, "platform", original_platform)
+        importlib.reload(module_for_reload)
+
+
 @pytest.mark.skipif(platform.system() != "Linux", reason="inotify event decoding")
 def test_inotify_ignored_and_unknown_descriptors(tmp_path: Path) -> None:
     watches = {7: tmp_path}
@@ -2117,6 +2413,28 @@ def test_inotify_empty_read_is_not_a_failure(tmp_path: Path) -> None:
         assert follow._read_inotify(follow._libc(), fd, watches) == set()
     finally:
         os.close(fd)
+
+
+def test_until_passes_wakes_then_finishes_with_final_listing(tmp_path: Path) -> None:
+    """The stop event preserves one pending wake before its final rescan."""
+    target = tmp_path / "done"
+    target.write_text("line\n")
+    until = asyncio.Event()
+
+    async def changes() -> AsyncIterator[set[Path]]:
+        yield {target}
+        await asyncio.Event().wait()
+
+    async def drive() -> list[set[Path]]:
+        iterator = follow._until(changes(), until=until, directories=(tmp_path,))
+        first = await anext(iterator)
+        until.set()
+        second = await anext(iterator)
+        with pytest.raises(StopAsyncIteration):
+            await anext(iterator)
+        return [first, second]
+
+    assert asyncio.run(drive()) == [{target}, {target}]
 
 
 def test_overflow_rescan_tolerates_vanished_directory(tmp_path: Path) -> None:

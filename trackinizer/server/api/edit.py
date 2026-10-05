@@ -26,7 +26,7 @@ import uuid  # noqa: TC003 -- Handler signature resolved by FastAPI at request t
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from trackinizer.lib.custom_json import FloatCodec, MutableJSON
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.auth import (
     AuthIdentity,
@@ -40,6 +40,9 @@ from trackinizer.wire.bodies import (
     FieldMutation,
     FieldOp,
     FieldSet,
+)
+from trackinizer.wire.json_types import (  # noqa: TC001 -- Handler return type resolved by FastAPI at request time.
+    MutableJSON,
 )
 from trackinizer.wire.routes import (
     InquiryFieldRoute,
@@ -183,7 +186,7 @@ async def _set_value(
         return await store.set_cost_axis(
             target_id,
             cast(_CostAxis, route.cost_axis),
-            FloatCodec.coerce(value),
+            convert(value, float),
             api_key_id=identity.api_key_id,
             actor=actor,
             reason=reason,
@@ -211,7 +214,7 @@ async def _run_patch(
     # add_<stem> setter, so they carry no add_method/sub_method; handle
     # them before the list-method dispatch.
     if route.cost_axis is not None:
-        amount = FloatCodec.coerce(body.value) * (1 if body.op == "add" else -1)
+        amount = convert(body.value, float) * (1 if body.op == "add" else -1)
         return await store.add_cost(
             target_id,
             Cost(**{route.cost_axis: amount}),

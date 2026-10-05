@@ -17,7 +17,7 @@ from uuid import UUID
 
 import itertools
 
-from trackinizer.lib.custom_json import DatetimeCodec, IntCodec, ListCodec, StrCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.notify import tx
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import manifest_bound, vetted_sql
@@ -294,8 +294,8 @@ class _SessionFeedMixin(_StoreShared):
         kinds = sorted(
             (
                 FeedKindFacet(
-                    kind=StrCodec.coerce(row["kind"], None),
-                    count=IntCodec.coerce(row["records"], None),
+                    kind=convert(row["kind"], str),
+                    count=convert(row["records"], int),
                 )
                 for row in rows
                 if row["session_id"] is None
@@ -344,16 +344,18 @@ class _SessionFeedMixin(_StoreShared):
             first = (
                 since
                 if since is not None
-                else DatetimeCodec.coerce(
-                    await conn.fetchval(
-                        "SELECT min(created) FROM session_records WHERE created >= $1",
-                        earliest,
-                    ),
-                    end,
+                else (
+                    end
+                    if (
+                        value := await conn.fetchval(
+                            "SELECT min(created) FROM session_records WHERE created >= $1",
+                            earliest,
+                        )
+                    )
+                    is None
+                    else convert(value, datetime)
                 )
             )
-            if first is None:
-                raise ValueError("Expected first is not None.")
             earliest = earliest.astimezone(UTC)
             start = min(max(first.astimezone(UTC), earliest), end)
             grid = BucketGrid.covering(start, end, buckets=buckets)
@@ -434,7 +436,7 @@ async def _count_buckets(
         " GROUP BY 1",
     )
     rows = await conn.fetch(sql, *params)
-    return {row["bucket"]: IntCodec.coerce(row["records"], None) for row in rows}
+    return {row["bucket"]: convert(row["records"], int) for row in rows}
 
 
 def _actor_facet(counted: asyncpg.Record, session: asyncpg.Record) -> FeedActorFacet:
@@ -443,14 +445,18 @@ def _actor_facet(counted: asyncpg.Record, session: asyncpg.Record) -> FeedActorF
     assert isinstance(session_id, UUID)
     assert isinstance(last, datetime)
     return FeedActorFacet(
-        actor=StrCodec.coerce(session["owner"]),
+        actor=convert(session.get("owner"), str, default=""),
         session_id=session_id,
-        cli=StrCodec.coerce(session["agentsession_cli"]) or None,
-        rooms=ListCodec.coerce(session["agentsession_rooms"], str),
-        count=IntCodec.coerce(counted["records"], None),
-        conversation=IntCodec.coerce(counted["conversation"], None),
+        cli=convert(session.get("agentsession_cli"), str, default="") or None,
+        rooms=convert(session.get("agentsession_rooms"), list[str], default=[]),
+        count=convert(counted["records"], int),
+        conversation=convert(counted["conversation"], int),
         last=last,
-        ended=DatetimeCodec.coerce(session["agentsession_ended"]),
+        ended=(
+            None
+            if session["agentsession_ended"] is None
+            else convert(session["agentsession_ended"], datetime)
+        ),
     )
 
 

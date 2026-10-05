@@ -21,7 +21,7 @@ from trackinizer.lib.posix.attach import (
     stop,
     submit,
 )
-from trackinizer.lib.posix.host import Host, HostSpec
+from trackinizer.lib.posix.host import Frame, Host, HostSpec, encode_frame
 from trackinizer.lib.posix.terminal import Terminal
 
 
@@ -120,8 +120,136 @@ class TestAttach:
         assert RemoteTerminal(short_dir / "s").pid is None
 
 
+class _FakeWriter:
+    """Minimal writer boundary for one-shot protocol tests."""
+
+    def __init__(self) -> None:
+        self.closed = False
+        self.frames: list[bytes] = []
+
+    def write(self, frame: bytes) -> None:
+        self.frames.append(frame)
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        return
+
+    def is_closing(self) -> bool:
+        return self.closed
+
+
+class TestRemoteTerminalEdges:
+    """Connection lifecycle branches that need no real Unix socket."""
+
+    def test_output_without_connection_is_empty(self, short_dir: Path) -> None:
+        async def run() -> list[bytes]:
+            return [chunk async for chunk in RemoteTerminal(short_dir / "s").output()]
+
+        assert asyncio.run(run()) == []
+
+    def test_close_without_connection_is_idempotent(self, short_dir: Path) -> None:
+        async def run() -> None:
+            await RemoteTerminal(short_dir / "s").close()
+
+        asyncio.run(run())
+
+
 class TestOneShotClients:
     """Messages and stops sent without a terminal."""
+
+    def test_submit_ack_false_is_reported(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        writer = _FakeWriter()
+
+        async def run() -> bool:
+            reader = asyncio.StreamReader()
+            reader.feed_data(encode_frame(Frame.ACK, b"\x00"))
+
+            async def connect(
+                address: Path,
+            ) -> tuple[asyncio.StreamReader, _FakeWriter]:
+                del address
+                return reader, writer
+
+            with monkeypatch.context() as patch:
+                patch.setattr(asyncio, "open_unix_connection", connect)
+                return await submit(Path("unused"), text="message")
+
+        assert asyncio.run(run()) is False
+        assert writer.closed
+
+    def test_submit_exit_is_reported_as_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        writer = _FakeWriter()
+
+        async def run() -> bool:
+            reader = asyncio.StreamReader()
+            reader.feed_data(encode_frame(Frame.EXIT, b"\x00\x00\x00\x01"))
+
+            async def connect(
+                address: Path,
+            ) -> tuple[asyncio.StreamReader, _FakeWriter]:
+                del address
+                return reader, writer
+
+            with monkeypatch.context() as patch:
+                patch.setattr(asyncio, "open_unix_connection", connect)
+                return await submit(Path("unused"), text="message")
+
+        assert asyncio.run(run()) is False
+        assert writer.closed
+
+    def test_submit_malformed_stream_is_reported_as_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        writer = _FakeWriter()
+
+        async def run() -> bool:
+            reader = asyncio.StreamReader()
+            reader.feed_data(b"\x63\x00\x00\x00\x00")
+
+            async def connect(
+                address: Path,
+            ) -> tuple[asyncio.StreamReader, _FakeWriter]:
+                del address
+                return reader, writer
+
+            with monkeypatch.context() as patch:
+                patch.setattr(asyncio, "open_unix_connection", connect)
+                return await submit(Path("unused"), text="message")
+
+        assert asyncio.run(run()) is False
+        assert writer.closed
+
+    def test_stop_malformed_stream_reports_no_status(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        writer = _FakeWriter()
+
+        async def run() -> int | None:
+            reader = asyncio.StreamReader()
+            reader.feed_data(b"\x63\x00\x00\x00\x00")
+
+            async def connect(
+                address: Path,
+            ) -> tuple[asyncio.StreamReader, _FakeWriter]:
+                del address
+                return reader, writer
+
+            with monkeypatch.context() as patch:
+                patch.setattr(asyncio, "open_unix_connection", connect)
+                return await stop(Path("unused"))
+
+        assert asyncio.run(run()) is None
+        assert writer.closed
 
     def test_submit_then_stop(self, short_dir: Path) -> None:
         async def run() -> tuple[bool, int | None]:

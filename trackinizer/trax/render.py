@@ -11,13 +11,7 @@ import json
 import shutil
 import sys
 
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    FloatCodec,
-    IntCodec,
-    ListCodec,
-    StrCodec,
-)
+from trackinizer.lib.custom_json import convert
 from trackinizer.trax.context import err_stream, out_stream
 from trackinizer.types.edges import EDGE_POLICIES, Edge
 
@@ -190,8 +184,8 @@ def format_table(
         rows,
         (
             ("ref", lambda r: f"{r.get('kind', '?')}#{r.get('seq', '?')}"),
-            ("status", lambda r: StrCodec.coerce(r.get("status"))),
-            ("title", lambda r: StrCodec.coerce(r.get("title"))),
+            ("status", lambda r: convert(r.get("status"), str, default="")),
+            ("title", lambda r: convert(r.get("title"), str, default="")),
             ("priority", lambda r: _row_value(r.get("priority"))),
             ("owner", lambda r: _row_value(r.get("owner"))),
             ("kind", lambda r: _row_value(r.get("issue_kind"))),
@@ -257,11 +251,10 @@ def format_edge(view: Mapping[str, object], *, changes: bool = False) -> str:
       result: Formatted edge display with newline-terminated lines.
 
     """
-    edge = DictCodec.coerce(view["edge"])
+    edge = convert(view["edge"], dict[str, object])
     lines = [f"edge: {view['title']!s}"]
-    endpoints = view["endpoints"]
-    assert isinstance(endpoints, (list, tuple))
-    for endpoint in ListCodec.mappings(list(cast(Sequence[object], endpoints))):
+    endpoints = convert(view["endpoints"], list[dict[str, object]])
+    for endpoint in endpoints:
         lines.append("")
         lines.append(f"{endpoint['label']}:")
         lines.append(
@@ -271,7 +264,7 @@ def format_edge(view: Mapping[str, object], *, changes: bool = False) -> str:
     lines.append("")
     lines.append("edge:")
     lines.extend(_format_selected_edge(edge))
-    change_rows = ListCodec.mappings(view.get("changes"))
+    change_rows = convert(view.get("changes"), list[dict[str, object]], default=[])
     if changes and change_rows:
         lines.append("")
         lines.append("Recent changes:")
@@ -298,7 +291,7 @@ def format_show(
       result: Formatted inquiry display with newline-terminated lines.
 
     """
-    self_view = DictCodec.coerce(view["self"])
+    self_view = convert(view["self"], dict[str, object])
     lines: list[str] = []
     ref = f"{self_view.get('kind')}#{self_view.get('seq')}"
     lines.append(f"{ref}  [{self_view.get('status')}]")
@@ -309,9 +302,9 @@ def format_show(
     lines.append(f"  title:       {self_view.get('title') or ''}")
     if self_view.get("description"):
         lines.append(f"  description: {self_view['description']}")
-    if labels := ListCodec.coerce(self_view.get("labels"), str):
+    if labels := convert(self_view.get("labels"), list[str], default=[]):
         lines.append(f"  labels:      {','.join(labels)}")
-    if subs := ListCodec.coerce(self_view.get("subscribers"), str):
+    if subs := convert(self_view.get("subscribers"), list[str], default=[]):
         lines.append(f"  subscribers: {','.join(subs)}")
     lines.extend(
         f"  {extra:11}: {value}"
@@ -345,12 +338,12 @@ def format_show(
         )
     )
     if self_view.get("codechanges") is not None:
-        ids = ListCodec.coerce(self_view["codechanges"], str)
+        ids = convert(self_view["codechanges"], list[str])
         lines.append(f"  codechanges: {len(ids)} entries")
         lines.extend(f"    - {cid}" for cid in ids)
-    cost = DictCodec.coerce(self_view.get("marginal_cost"))
-    agent_cost = FloatCodec.coerce(cost.get("agent_usd"))
-    resource_cost = FloatCodec.coerce(cost.get("resource_usd"))
+    cost = convert(self_view.get("marginal_cost"), dict[str, object], default={})
+    agent_cost = convert(cost.get("agent_usd"), float, default=0.0)
+    resource_cost = convert(cost.get("resource_usd"), float, default=0.0)
     if agent_cost:
         lines.append(f"  agent-cost:  ${agent_cost:.4f}")
     if resource_cost:
@@ -359,7 +352,11 @@ def format_show(
         lines.append(f"  created:     {created}")
     if modified := _format_local_time(self_view.get("modified")):
         lines.append(f"  modified:    {modified}")
-    if selected_edge := DictCodec.coerce(view.get("selected_edge")):
+    if selected_edge := convert(
+        view.get("selected_edge"),
+        dict[str, object],
+        default={},
+    ):
         lines.append("")
         lines.append("Selected edge:")
         lines.extend(_format_selected_edge(selected_edge))
@@ -369,7 +366,7 @@ def format_show(
         lines.append("")
         lines.extend(_format_relations(edges, inbound=False))
         lines.extend(_format_relations(backlinks, inbound=True))
-    rows = ListCodec.mappings(view.get("changes"))
+    rows = convert(view.get("changes"), list[dict[str, object]], default=[])
     if changes and rows:
         lines.append("")
         lines.append("Recent changes:")
@@ -413,23 +410,23 @@ def format_session_hits(body: Mapping[str, object]) -> str:
         requested but unavailable.
 
     """
-    hits = ListCodec.mappings(body.get("hits"))
+    hits = convert(body.get("hits"), list[dict[str, object]], default=[])
     lines: list[str] = []
     if body.get("degraded"):
         lines.append("(semantic search unavailable; showing full-text results only)")
     if not hits:
         return ("\n".join([*lines, "(no matches)"])) + "\n"
     for raw in hits:
-        hit = DictCodec.coerce(raw)
+        hit = convert(raw, dict[str, object])
         session = str(hit.get("session_id", ""))[:8]
-        part = IntCodec.coerce(hit.get("part"))
-        idx = IntCodec.coerce(hit.get("idx"))
-        score = FloatCodec.coerce(hit.get("score"))
+        part = convert(hit.get("part"), int, default=0)
+        idx = convert(hit.get("idx"), int, default=0)
+        score = convert(hit.get("score"), float, default=0.0)
         lines.append(
-            f"{score:.4f}  {StrCodec.coerce(hit.get('source')):8}  "
-            f"{session}#{part}/{idx}  {StrCodec.coerce(hit.get('title'))}",
+            f"{score:.4f}  {convert(hit.get('source'), str, default=''):8}  "
+            f"{session}#{part}/{idx}  {convert(hit.get('title'), str, default='')}",
         )
-        snippet = StrCodec.coerce(hit.get("snippet")).strip()
+        snippet = convert(hit.get("snippet"), str, default="").strip()
         if snippet:
             lines.append(f"  {snippet}")
     return "\n".join(lines) + "\n"
@@ -541,15 +538,21 @@ def _row_value(value: object, depth: int = 0) -> str:
 
 
 def _row_cost(row: Mapping[str, object], key: str) -> str:
-    value = FloatCodec.coerce(DictCodec.coerce(row.get("marginal_cost")).get(key))
+    value = convert(
+        convert(row.get("marginal_cost"), dict[str, object], default={}).get(key),
+        float,
+        default=0.0,
+    )
     return f"${value:.2f}" if value else ""
 
 
 def _relation_groups(value: object) -> dict[str, Sequence[Mapping[str, object]]]:
     """Narrow an ``edges`` / ``backlinks`` view: edge kind -> peer rows."""
+    if value is None:
+        return {}
     return {
-        kind: ListCodec.mappings(peers)
-        for kind, peers in DictCodec.coerce(value).items()
+        kind: convert(peers, list[dict[str, object]])
+        for kind, peers in convert(value, dict[str, object]).items()
     }
 
 
@@ -591,8 +594,8 @@ _CHANGE_DELTA_HIDDEN_KEYS: frozenset[str] = frozenset(
 
 
 def _format_change_delta(change: Mapping[str, object]) -> list[str]:
-    old = DictCodec.coerce(change.get("old"))
-    new = DictCodec.coerce(change.get("new"))
+    old = convert(change.get("old"), dict[str, object], default={})
+    new = convert(change.get("new"), dict[str, object], default={})
     return [
         f"{key}: {old_text or '∅'} -> {new_text or '∅'}"
         for key in tuple(dict.fromkeys((*old.keys(), *new.keys())))
@@ -656,7 +659,7 @@ def _edge_annotation(peer: Mapping[str, object]) -> str:
         parts.append(f"prio={peer['priority']}")
     if "valence" in peer:
         parts.append(f"val={peer['valence']}")
-    if labels := ListCodec.coerce(peer.get("labels"), str):
+    if labels := convert(peer.get("labels"), list[str], default=[]):
         parts.append("labels=" + ",".join(labels))
     if note := peer.get("note"):
         parts.append(str(note))

@@ -8,7 +8,7 @@ import uuid
 
 import pytest
 
-from trackinizer.lib.custom_json import DictCodec, IntCodec, ListCodec, StrCodec, loads
+from trackinizer.lib.custom_json import convert, loads, parse
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     TEST_USER_ID,
@@ -89,7 +89,10 @@ async def test_report_key_does_not_reuse_an_unrelated_artifact(
     )
     assert published.status_code == 201, published.text
     artifact_id = uuid.UUID(
-        StrCodec.coerce(DictCodec.coerce(loads(published.content))["artifact_id"]),
+        convert(
+            parse(published.content, dict[str, object])["artifact_id"],
+            str,
+        ),
     )
     assert artifact_id != unrelated_id
     async with store.engine.acquire() as conn:
@@ -153,10 +156,13 @@ async def test_artifact_user_storage_quota_is_atomic_and_replayable(
         stored = await conn.fetchval(
             "SELECT content_bytes FROM visual_report_revisions WHERE artifact_id = $1",
             uuid.UUID(
-                StrCodec.coerce(DictCodec.coerce(loads(first.content))["artifact_id"]),
+                convert(
+                    parse(first.content, dict[str, object])["artifact_id"],
+                    str,
+                ),
             ),
         )
-        assert IntCodec.coerce(stored) > 0
+        assert convert(stored, int) > 0
         await conn.execute(
             "UPDATE visual_report_revisions SET content_bytes = 499999999 "
             "WHERE author_id = $1",
@@ -236,8 +242,8 @@ async def test_report_publish_is_atomic_immutable_and_team_readable(
         headers={"Idempotency-Key": key},
     )
     assert first.status_code == 201, first.text
-    published = DictCodec.coerce(loads(first.content))
-    artifact_id = StrCodec.coerce(published["artifact_id"])
+    published = parse(first.content, dict[str, object])
+    artifact_id = convert(published["artifact_id"], str)
     assert published["revision"] == 1
     assert published["html"] == first_payload["html"]
 
@@ -276,14 +282,14 @@ async def test_report_publish_is_atomic_immutable_and_team_readable(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert second.status_code == 201, second.text
-    second_revision = DictCodec.coerce(loads(second.content))
+    second_revision = parse(second.content, dict[str, object])
     assert second_revision["revision"] == 2
     assert second_revision["artifact_id"] != artifact_id
     latest = await client.get(
         f"/api/artifacts/{second_revision['artifact_id']}/content",
     )
     assert latest.status_code == 200
-    assert DictCodec.coerce(loads(latest.content))["html"] == (
+    assert parse(latest.content, dict[str, object])["html"] == (
         "<h1>Atlas revision two</h1>"
     )
 
@@ -297,20 +303,22 @@ async def test_report_publish_is_atomic_immutable_and_team_readable(
     )
     earlier = await client.get(f"/api/artifacts/{artifact_id}/content")
     assert earlier.status_code == 200
-    revision = DictCodec.coerce(loads(earlier.content))
+    revision = parse(earlier.content, dict[str, object])
     assert revision["html"] == "<h1>Atlas revision one</h1>"
-    assert IntCodec.coerce(revision["revision"]) == 1
-    assert StrCodec.coerce(revision["author"]) == TEST_USER_EMAIL
+    assert convert(revision["revision"], int) == 1
+    assert convert(revision["author"], str) == TEST_USER_EMAIL
     async with store.engine.acquire() as conn:
         await conn.execute("DELETE FROM users WHERE id = $1", TEST_USER_ID)
     preserved = await client.get(f"/api/artifacts/{artifact_id}/content")
     assert preserved.status_code == 200
-    assert DictCodec.coerce(loads(preserved.content))["author"] == TEST_USER_EMAIL
+    assert parse(preserved.content, dict[str, object])["author"] == TEST_USER_EMAIL
     await store.purge(issue_id, actor=TEST_USER_EMAIL)
     await store.purge(uuid.UUID(artifact_id), actor=TEST_USER_EMAIL)
     historical = await client.get(f"/api/artifacts/{artifact_id}/content")
     assert historical.status_code == 200
-    assert DictCodec.coerce(loads(historical.content))["issue_id"] == str(issue_id)
+    assert parse(historical.content, dict[str, object])["issue_id"] == str(
+        issue_id,
+    )
     denied = await client.post(
         "/api/artifacts/content",
         json=first_payload,
@@ -351,7 +359,7 @@ async def test_next_revision_supersedes_the_one_it_updates(
     )
     assert first.status_code == 201, first.text
     first_id = uuid.UUID(
-        StrCodec.coerce(DictCodec.coerce(loads(first.content))["artifact_id"]),
+        convert(parse(first.content, dict[str, object])["artifact_id"], str),
     )
     second_payload = {
         **payload,
@@ -366,7 +374,7 @@ async def test_next_revision_supersedes_the_one_it_updates(
     )
     assert second.status_code == 201, second.text
     second_id = uuid.UUID(
-        StrCodec.coerce(DictCodec.coerce(loads(second.content))["artifact_id"]),
+        convert(parse(second.content, dict[str, object])["artifact_id"], str),
     )
     replay = await client.post(
         "/api/artifacts/content",
@@ -414,8 +422,9 @@ async def test_html_route_serves_the_revision_as_a_sandboxed_page(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert published.status_code == 201, published.text
-    artifact_id = StrCodec.coerce(
-        DictCodec.coerce(loads(published.content))["artifact_id"],
+    artifact_id = convert(
+        parse(published.content, dict[str, object])["artifact_id"],
+        str,
     )
 
     response = await client.get(f"/api/artifacts/{artifact_id}/html")
@@ -529,13 +538,17 @@ async def test_structured_report_freezes_signed_evidence(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert published.status_code == 201, published.text
-    revision = DictCodec.coerce(loads(published.content))
-    artifact_id = StrCodec.coerce(revision["artifact_id"])
-    sections = ListCodec.coerce(revision["sections"])
-    finding = DictCodec.coerce(
-        ListCodec.coerce(DictCodec.coerce(sections[0])["findings"])[0],
+    revision = parse(published.content, dict[str, object])
+    artifact_id = convert(revision["artifact_id"], str)
+    sections = convert(revision["sections"], list[object])
+    finding = convert(
+        convert(convert(sections[0], dict[str, object])["findings"], list[object])[0],
+        dict[str, object],
     )
-    citation = DictCodec.coerce(ListCodec.coerce(finding["citations"])[0])
+    citation = convert(
+        convert(finding["citations"], list[object])[0],
+        dict[str, object],
+    )
     assert citation["title"] == "Measured result"
     assert citation["claim_title"] == "Scaling helps"
     assert citation["valence"] == 0.75
@@ -554,7 +567,7 @@ async def test_structured_report_freezes_signed_evidence(
     )
     earlier = await client.get(f"/api/artifacts/{artifact_id}/content")
     assert earlier.status_code == 200
-    assert DictCodec.coerce(loads(earlier.content))["sections"] == sections
+    assert parse(earlier.content, dict[str, object])["sections"] == sections
     assert (await client.get(f"/api/artifacts/{artifact_id}/html")).status_code == 404
 
     await store.add_edge(

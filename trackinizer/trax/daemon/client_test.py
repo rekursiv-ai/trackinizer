@@ -329,6 +329,34 @@ class TestDelegate:
                 delegate(["issue"], socket_override=sock, source_version="v2") is None
             )
 
+    def test_spawns_the_daemon_with_the_callers_fingerprint(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """The daemon serves the fingerprint taken before it imported anything.
+
+        Fingerprinting in the daemon, after it imported the CLI, would vouch
+        for an edit that landed during those imports, and it would serve the
+        code from before the edit under a matching version.
+        """
+        spawned: list[dict[str, object]] = []
+        monkeypatch.setattr(
+            subprocess,
+            "Popen",
+            functools.partial(_refuse_spawn, spawned),
+        )
+
+        delegate(["issue"], socket_override=tmp_path / "s.sock", source_version="v1")
+
+        assert spawned[0]["argv"] == [
+            sys.executable,
+            "-m",
+            "trackinizer.trax",
+            "--__serve",
+            "v1",
+        ]
+
     def test_spawned_daemon_imports_the_clients_source(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -386,9 +414,8 @@ def _refuse_spawn(
     *args: object,
     **kwargs: object,
 ) -> None:
-    """Record a spawn's keyword arguments, then fail it as the OS would."""
-    del args
-    spawned.append(kwargs)
+    """Record a spawn's argv and keyword arguments, then fail it as the OS would."""
+    spawned.append({"argv": args[0], **kwargs})
     raise OSError("spawn refused by test")
 
 

@@ -25,7 +25,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, TextIO
 
 from trackinizer.lib.agent.types.sessions import ContextClear, TurnContext
-from trackinizer.lib.custom_json import json_freeze
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 
 
@@ -60,8 +59,8 @@ def normalize(stream: TextIO) -> Iterator[TraxRecord]:
             # -- no CLI wrote these bytes -- so the context states only what
             # the file itself shows, and the clear names the empty context a
             # scrape genuinely begins from.
-            yield TurnContext(encoding=json_freeze({"newline_terminated": True}))
-            yield ContextClear(extra=json_freeze({"$opens": True}))
+            yield TurnContext(encoding={"newline_terminated": True})
+            yield ContextClear(extra={"$opens": True})
         total += 1
         ends_newline = line.endswith("\n")
         yield Stdout(text=line)
@@ -69,7 +68,7 @@ def normalize(stream: TextIO) -> Iterator[TraxRecord]:
         # The last line lost its newline, which is knowable only here. Restated
         # rather than mutated: a record already yielded is the caller's, and a
         # later state record superseding an earlier one is how a stream says so.
-        yield TurnContext(encoding=json_freeze({"newline_terminated": False}))
+        yield TurnContext(encoding={"newline_terminated": False})
 
 
 def denormalize(records: Iterable[TraxRecord], stream: TextIO) -> None:

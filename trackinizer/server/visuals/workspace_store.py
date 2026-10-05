@@ -8,7 +8,7 @@ import hashlib
 import json
 import uuid
 
-from trackinizer.lib.custom_json import IntCodec, StrCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.notify import tx
 from trackinizer.server.visuals.reports import read_artifact_content_on_conn
@@ -192,7 +192,7 @@ async def send_workspace_message(
             )
             if record_row is not None:
                 record_fields = dict(record_row)
-                record_fields["title"] = StrCodec.coerce(record_fields["title"])[:512]
+                record_fields["title"] = convert(record_fields.get("title"), str)[:512]
                 record = WorkspaceRecordContext.model_validate(record_fields)
         artifact_content = None
         if record_id is not None and (record is None or record.kind == "Artifact"):
@@ -419,7 +419,7 @@ async def apply_workspace_operation(
             key,
         )
         if receipt is not None:
-            if StrCodec.coerce(receipt["request_hash"]) != request_hash:
+            if receipt["request_hash"] != request_hash:
                 raise ReplayConflictError(current)
             return WorkspaceState.model_validate(receipt["response"])
         if body.revision != current.revision:
@@ -556,7 +556,7 @@ def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
     data = WorkspaceData.model_validate(row["state"])
     return WorkspaceState(
         id=cast(uuid.UUID, row["id"]),
-        revision=IntCodec.coerce(row["revision"]),
+        revision=convert(row.get("revision"), int),
         connected_session_id=cast(uuid.UUID | None, row["session_id"]),
         visuals=data.visuals,
         focused_instance=data.focused_instance,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
-from trackinizer.lib.custom_json import DictCodec, IntCodec, loads
+from trackinizer.lib.custom_json import convert, loads
 from trackinizer.server.visuals.catalog import default_catalog
 
 
@@ -22,8 +22,11 @@ def test_every_catalog_visual_has_matching_frontend_renderer() -> None:
     """The build cannot advertise a visual the browser cannot render."""
     manifest = _CWD / "src/visuals/renderer-versions.json"
     versions = {
-        key: IntCodec.coerce(value)
-        for key, value in DictCodec.coerce(loads(manifest.read_bytes())).items()
+        key: convert(value, int)
+        for key, value in convert(
+            loads(manifest.read_bytes()),
+            dict[str, object],
+        ).items()
     }
     assert versions == {
         visual.type: visual.version for visual in default_catalog().visuals

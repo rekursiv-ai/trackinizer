@@ -12,7 +12,7 @@ from fastapi import HTTPException
 import pytest
 
 from trackinizer.conftest import make_store, new_uuid, set_field_row
-from trackinizer.lib.custom_json import DictCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.api.edit import _run_compare_and_set
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.wire.bodies import FieldSet
@@ -121,7 +121,7 @@ class TestRoutes:
             json={"value": "ghost@example.com", "actor": "alice"},
         )
         assert r.status_code == 422, r.text
-        body = DictCodec.coerce(r.json())
+        body = convert(r.json(), dict[str, object])
         assert "not an active user" in str(body["detail"])
 
     def test_account_has_no_delete_route(
@@ -191,7 +191,7 @@ class TestRoutes:
         # (``_mutate_list_field`` normalizes and rejects the empty element),
         # which surfaces as a 409 ConflictError -- not the old Pydantic 422.
         assert r.status_code == 409
-        body = DictCodec.coerce(r.json())
+        body = convert(r.json(), dict[str, object])
         assert "must be non-empty" in str(body["detail"])
 
     def test_add_issue_kind_route(
@@ -295,7 +295,7 @@ class TestRoutes:
             },
         )
         assert r.status_code == 409
-        body = DictCodec.coerce(r.json())
+        body = convert(r.json(), dict[str, object])
         assert "expected 'active'" in str(body["detail"])
 
     def test_transition_owner_route_accepts_null_expectation(
@@ -335,7 +335,7 @@ class TestRoutes:
         )
 
         assert response.status_code == 409
-        body = DictCodec.coerce(response.json())
+        body = convert(response.json(), dict[str, object])
         assert "expected None" in str(body["detail"])
 
     def test_misspelled_guard_field_is_422_not_blind_write(

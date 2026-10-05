@@ -25,7 +25,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from trackinizer.lib.custom_json import JSON
+from trackinizer.wire.json_types import JSON
 
 
 _MAX_MESSAGE_CHARS: Final = 16_384

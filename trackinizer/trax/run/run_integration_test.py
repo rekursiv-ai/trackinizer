@@ -52,7 +52,7 @@ import uvicorn
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.agent.types.sessions import SessionRecord, UserMessage
-from trackinizer.lib.custom_json import DictCodec, IntCodec, ListCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.lib.userdirs import state_dir
@@ -344,7 +344,7 @@ def _latest_session_row(
             params={"kind": "AgentSession", "limit": 50},
         )
         listing.raise_for_status()
-        rows = ListCodec.mappings(listing.json())
+        rows = convert(listing.json(), list[dict[str, object]])
         if cli is not None:
             rows = [r for r in rows if r.get("cli") == cli]
         return rows[0] if rows else None
@@ -372,20 +372,20 @@ def _latest_session_records(
     with httpx2.Client(base_url=base_url, timeout=30.0) as http:
         parts = http.get(f"/api/sessions/{session_id}/parts")
         parts.raise_for_status()
-        listing = DictCodec.coerce(parts.json())
-        for part in ListCodec.mappings(listing["parts"]):
+        listing = convert(parts.json(), dict[str, object])
+        for part in convert(listing["parts"], list[dict[str, object]]):
             page = http.get(
                 f"/api/sessions/{session_id}/records",
-                params={"part": IntCodec.coerce(part["part"]), "limit": 1000},
+                params={"part": convert(part["part"], int), "limit": 1000},
             )
             page.raise_for_status()
-            body = DictCodec.coerce(page.json())
+            body = convert(page.json(), dict[str, object])
             # ``RecordBody`` carries no ``part`` -- the route resolves one and
             # returns it alongside -- so stamp it here, or a caller checking
             # positions cannot tell two parts apart.
             found.extend(
                 {**record, "part": body["part"]}
-                for record in ListCodec.mappings(body["records"])
+                for record in convert(body["records"], list[dict[str, object]])
             )
     return found
 
@@ -443,13 +443,13 @@ def _assert_transcript_synced(base_url: str, *, cli: str) -> None:
     # position derived from its place in the file's normalized stream.
     for record in records:
         assert isinstance(record["payload"], dict)
-        assert IntCodec.coerce(record["idx"]) >= 0
+        assert convert(record["idx"], int) >= 0
     # Each part numbers its records from 0 with no gaps: the key is derived
     # from stream position, so a hole means a record was dropped in ingest.
     by_part: dict[int, list[int]] = {}
     for record in records:
-        part = IntCodec.coerce(record["part"])
-        by_part.setdefault(part, []).append(IntCodec.coerce(record["idx"]))
+        part = convert(record["part"], int)
+        by_part.setdefault(part, []).append(convert(record["idx"], int))
     for part, idxs in by_part.items():
         assert sorted(idxs) == list(range(len(idxs))), (
             f"gap in part {part}'s positions: {sorted(idxs)}"

@@ -18,7 +18,6 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from trackinizer.lib.custom_json import MutableJSON
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.types.edges import Edge
@@ -31,6 +30,7 @@ from trackinizer.wire.bodies import (
     FieldSet,
 )
 from trackinizer.wire.edge_bodies import CreateEdge, CreateEdgeBatch
+from trackinizer.wire.json_types import MutableJSON
 from trackinizer.wire.routes import (
     EdgeFieldRoute,
     edge_field_path,

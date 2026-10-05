@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
+from trackinizer.lib.custom_json import convert, parse
 from trackinizer.wire.bodies import SubmitExperiment, SubmitIssue
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.wire_metrics import MetricPoint, experiment_metrics_path
@@ -217,7 +217,10 @@ async def test_rank_returns_every_cell_up_to_the_cap_and_refuses_more(
         },
     )
     assert ranked.status_code == 200
-    rows = ListCodec.coerce(DictCodec.coerce(loads(ranked.content))["rows"], object)
+    rows = convert(
+        parse(ranked.content, dict[str, object])["rows"],
+        list[object],
+    )
     assert len(rows) == 60
     assert (over_limit.status_code, over_ids.status_code) == (422, 422)
 

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from contextlib import suppress
+from importlib import util
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, override
 from unittest.mock import AsyncMock, MagicMock
 
 import asyncio
@@ -17,7 +19,7 @@ import threading
 import time
 import uuid
 
-from py_pglite import PGliteManager
+from py_pglite import PGliteConfig, PGliteManager
 
 import asyncpg
 import pytest
@@ -28,6 +30,7 @@ from trackinizer.lib.userdirs import cache_dir
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable
+    from types import CodeType
 
 
 def _cache_dir_under(root: Path) -> Callable[[], Path]:
@@ -364,6 +367,41 @@ def test_cache_key_tracks_vendored_lockfile_content() -> None:
     assert len(key) == 16
     assert (substrate._CWD / "pglite-package.json").exists()
     assert (substrate._CWD / "pglite-package-lock.json").exists()
+
+
+def test_install_lock_stale_window_exceeds_install_timeout() -> None:
+    assert substrate._INSTALL_LOCK_STALE_SECONDS > substrate._INSTALL_TIMEOUT_SECONDS
+
+
+class _InvertedSubstrate(SourceFileLoader):
+    """Load a copy of substrate.py compiled under the real file's name.
+
+    The name lets coverage credit the guard line. The loader's own path is the
+    tmp copy, so the inverted bytecode is never cached in substrate's
+    ``__pycache__``, where it broke every later import of the package.
+    """
+
+    @override
+    def get_code(self, fullname: str) -> CodeType:
+        del fullname
+        return compile(Path(self.path).read_bytes(), substrate.__file__, "exec")
+
+
+def test_install_lock_invariant_rejects_inverted_constants(tmp_path: Path) -> None:
+    stale = "_INSTALL_LOCK_STALE_SECONDS: Final = 900.0"
+    source = Path(substrate.__file__).read_text()
+    assert stale in source
+    copy = tmp_path / "substrate_inverted.py"
+    copy.write_text(source.replace(stale, "_INSTALL_LOCK_STALE_SECONDS: Final = 300.0"))
+    loader = _InvertedSubstrate("substrate_inverted", str(copy))
+    spec = util.spec_from_loader("substrate_inverted", loader)
+    assert spec is not None
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"^PGlite install lock stale window must exceed the install timeout$",
+    ):
+        loader.exec_module(util.module_from_spec(spec))
 
 
 def test_install_lock_reclaimed_when_stale(tmp_path: Path) -> None:
@@ -738,6 +776,375 @@ def _make_conn() -> AsyncMock:
     conn.set_type_codec = AsyncMock()
     conn.is_closed = MagicMock(return_value=False)
     return conn
+
+
+@pytest.mark.asyncio
+async def test_pglite_enter_starts_and_returns_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = PGliteEngine(workdir=Path("unused"), extensions=())
+    start = AsyncMock()
+    monkeypatch.setattr(engine, "_start_with_retries", start)
+
+    assert await engine.__aenter__() is engine
+    start.assert_awaited_once_with()
+
+
+def test_lock_owner_rejects_invalid_owner() -> None:
+    lock = asyncio.Lock()
+    setattr(lock, substrate._LOCK_OWNER_ATTR, object())
+
+    with pytest.raises(ValueError, match="Expected owner"):
+        substrate._lock_owner(lock)
+
+
+@pytest.mark.asyncio
+async def test_pglite_start_once_tcp_configures_port_and_manager(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = PGliteEngine(workdir=tmp_path, extensions=("pgvector",), use_tcp=True)
+    manager = MagicMock()
+    manager.start = MagicMock()
+    configs: list[PGliteConfig] = []
+
+    def make_manager(config: PGliteConfig) -> MagicMock:
+        configs.append(config)
+        return manager
+
+    monkeypatch.setattr(substrate, "_pick_free_port", lambda: 54_321)
+    monkeypatch.setattr(substrate, "PGliteManager", make_manager)
+    monkeypatch.setattr(substrate, "_link_shared_node_modules", MagicMock())
+    monkeypatch.setattr(substrate, "_drain_node_stdout", MagicMock())
+    monkeypatch.setattr(engine, "_open_conn", AsyncMock(return_value=_make_conn()))
+
+    await engine._start_once(tmp_path)
+
+    assert configs
+    config = configs[0]
+    assert config.use_tcp is True
+    assert config.tcp_port == 54_321
+    assert engine._manager is manager
+    manager.start.assert_called_once_with()
+    assert (tmp_path / "pglite_manager.js").read_text().find("54321") >= 0
+
+
+@pytest.mark.asyncio
+async def test_pglite_teardown_failed_start_delegates_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = PGliteEngine(workdir=Path("unused"), extensions=())
+    shutdown = AsyncMock()
+    monkeypatch.setattr(engine, "_shutdown", shutdown)
+
+    await engine._teardown_failed_start()
+
+    shutdown.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_pglite_acquire_requires_entered_engine() -> None:
+    with pytest.raises(ValueError, match="engine not entered"):
+        PGliteEngine(workdir=Path("unused"), extensions=()).acquire()
+
+
+@pytest.mark.asyncio
+async def test_pglite_open_conn_requires_entered_engine() -> None:
+    with pytest.raises(ValueError, match="engine not entered"):
+        await PGliteEngine(workdir=Path("unused"), extensions=())._open_conn()
+
+
+@pytest.mark.asyncio
+async def test_pglite_open_conn_retries_and_surfaces_last_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = PGliteEngine(workdir=Path("unused"), extensions=())
+    manager = MagicMock()
+    manager.get_asyncpg_uri.return_value = "postgresql://x"
+    monkeypatch.setattr(engine, "_manager", manager)
+    first = asyncpg.ConnectionDoesNotExistError("first")
+    second = asyncpg.ConnectionDoesNotExistError("second")
+    fresh = _make_conn()
+    connect = AsyncMock(side_effect=[first, second, fresh])
+    sleeps = AsyncMock()
+    monkeypatch.setattr(asyncpg, "connect", connect)
+    monkeypatch.setattr(asyncio, "sleep", sleeps)
+
+    result = await engine._open_conn(attempts=3, backoff_seconds=0.1)
+
+    assert result is fresh
+    assert connect.await_count == 3
+    assert [call.args[0] for call in sleeps.await_args_list] == [0.1, 0.2]
+
+
+@pytest.mark.asyncio
+async def test_pglite_open_conn_zero_attempts_has_clear_internal_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = PGliteEngine(workdir=Path("unused"), extensions=())
+    monkeypatch.setattr(engine, "_manager", MagicMock())
+
+    with pytest.raises(ValueError, match="Expected last_error"):
+        await engine._open_conn(attempts=0)
+
+
+@pytest.mark.asyncio
+async def test_pglite_open_conn_raises_last_connection_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = PGliteEngine(workdir=Path("unused"), extensions=())
+    monkeypatch.setattr(engine, "_manager", MagicMock())
+    error = OSError("connection refused")
+    monkeypatch.setattr(asyncpg, "connect", AsyncMock(side_effect=error))
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    with pytest.raises(OSError, match="connection refused"):
+        await engine._open_conn(attempts=1)
+
+
+@pytest.mark.asyncio
+async def test_pglite_live_conn_requires_connection_after_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = PGliteEngine(workdir=Path("unused"), extensions=())
+    manager = MagicMock()
+    manager.is_running.return_value = False
+    monkeypatch.setattr(engine, "_manager", manager)
+    monkeypatch.setattr(engine, "_shutdown", AsyncMock())
+    monkeypatch.setattr(engine, "_start_with_retries", AsyncMock())
+
+    with pytest.raises(ValueError, match=r"Expected self\._conn"):
+        await engine._live_conn()
+
+
+@pytest.mark.asyncio
+async def test_pglite_notify_and_listen_deliver_payload() -> None:
+    engine = PGliteEngine(workdir=Path("unused"), extensions=())
+    stream = engine.listen("channel")
+    next_payload = asyncio.create_task(_anext(stream))
+    await asyncio.sleep(0)
+
+    await engine.notify("channel", "payload")
+
+    assert await next_payload == "payload"
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_postgres_enter_configures_pool_listener_and_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = AsyncMock()
+    listener = AsyncMock()
+    monkeypatch.setattr(asyncpg, "create_pool", AsyncMock(return_value=pool))
+    monkeypatch.setattr(asyncpg, "connect", AsyncMock(return_value=listener))
+    engine = PostgresEngine("postgresql:///unused", listen_channel="updates")
+
+    assert await engine.__aenter__() is engine
+    assert engine._pool is pool
+    assert engine._listener is listener
+    listener.add_listener.assert_awaited_once_with("updates", engine._on_notify)
+    await engine.__aexit__()
+    listener.close.assert_awaited_once_with()
+    pool.close.assert_awaited_once_with()
+
+
+def test_postgres_on_notify_publishes_string_payload() -> None:
+    engine = PostgresEngine("postgresql:///unused", listen_channel="updates")
+    connection = asyncpg.Connection.__new__(asyncpg.Connection)
+
+    stream = engine.listen("updates")
+
+    async def check() -> None:
+        next_payload = asyncio.create_task(_anext(stream))
+        await asyncio.sleep(0)
+        engine._on_notify(connection, 7, "updates", 123)
+        assert await next_payload == "123"
+        await stream.aclose()
+
+    asyncio.run(check())
+
+
+def test_postgres_acquire_requires_entered_engine() -> None:
+    with pytest.raises(ValueError, match="engine not entered"):
+        PostgresEngine("postgresql:///unused", listen_channel="updates").acquire()
+
+
+@pytest.mark.asyncio
+async def test_postgres_exit_requires_pool() -> None:
+    with pytest.raises(ValueError, match=r"Expected self\._pool"):
+        await PostgresEngine(
+            "postgresql:///unused",
+            listen_channel="updates",
+        ).__aexit__()
+
+
+@pytest.mark.asyncio
+async def test_postgres_notify_executes_parameterized_pg_notify(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = PostgresEngine("postgresql:///unused", listen_channel="updates")
+    conn = AsyncMock()
+
+    class AcquireContext:
+        async def __aenter__(self) -> AsyncMock:
+            return conn
+
+        async def __aexit__(self, *exc: object) -> None:
+            del exc
+
+    class Pool:
+        def acquire(self) -> AcquireContext:
+            return AcquireContext()
+
+    monkeypatch.setattr(engine, "_pool", Pool())
+
+    await engine.notify("updates", "payload")
+
+    conn.execute.assert_awaited_once_with(
+        "SELECT pg_notify($1, $2)",
+        "updates",
+        "payload",
+    )
+
+
+@pytest.mark.asyncio
+async def test_local_bus_drops_oldest_payload_on_overflow() -> None:
+    bus = substrate._LocalBus()
+    stream = bus.subscribe("events", queue_maxsize=1)
+    task = asyncio.create_task(_anext(stream))
+    await asyncio.sleep(0)
+    bus.publish("events", "old")
+    bus.publish("events", "new")
+
+    assert await task == "new"
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_local_bus_removes_subscriber_when_closed() -> None:
+    bus = substrate._LocalBus()
+    stream = bus.subscribe("events")
+    task = asyncio.create_task(_anext(stream))
+    await asyncio.sleep(0)
+    assert bus._subscribers["events"]
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+    await stream.aclose()
+
+    assert not bus._subscribers["events"]
+
+
+def test_drain_node_stdout_handles_missing_and_failing_streams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = PGliteManager.__new__(PGliteManager)
+    monkeypatch.setattr(manager, "process", None, raising=False)
+    substrate._drain_node_stdout(manager)
+
+    no_stdout = PGliteManager.__new__(PGliteManager)
+    monkeypatch.setattr(
+        no_stdout,
+        "process",
+        MagicMock(stdout=None),
+        raising=False,
+    )
+    substrate._drain_node_stdout(no_stdout)
+
+    class Thread:
+        def __init__(self) -> None:
+            self.started = False
+
+        def start(self) -> None:
+            self.started = True
+
+    targets: list[Callable[[], None]] = []
+    thread = Thread()
+
+    def make_thread(*, target: Callable[[], None], daemon: bool) -> Thread:
+        del daemon
+        targets.append(target)
+        return thread
+
+    monkeypatch.setattr(threading, "Thread", make_thread)
+    stdout = MagicMock()
+    stdout.readline.side_effect = OSError("closed")
+    manager = PGliteManager.__new__(PGliteManager)
+    monkeypatch.setattr(
+        manager,
+        "process",
+        MagicMock(stdout=stdout),
+        raising=False,
+    )
+    substrate._drain_node_stdout(manager)
+    assert thread.started
+    targets.pop()()
+    stdout.readline.assert_called_once_with()
+
+    complete = MagicMock()
+    complete.readline.side_effect = ["line", ""]
+    manager = PGliteManager.__new__(PGliteManager)
+    monkeypatch.setattr(
+        manager,
+        "process",
+        MagicMock(stdout=complete),
+        raising=False,
+    )
+    substrate._drain_node_stdout(manager)
+    targets.pop()()
+    assert complete.readline.call_count == 2
+
+
+def test_install_wait_retries_until_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr(substrate, "cache_dir", _cache_dir_under(tmp_path))
+
+    def no_lock(lock: Path) -> bool:
+        del lock
+        return False
+
+    monkeypatch.setattr(substrate, "_try_acquire_install_lock", no_lock)
+    monkeypatch.setattr(substrate, "_cache_key", lambda: "key")
+    root = tmp_path / "caches" / "rekursiv-ai" / "pglite" / "node-modules" / "key"
+    ready = root / ".ready"
+
+    def make_ready(seconds: float) -> None:
+        sleeps.append(seconds)
+        ready.parent.mkdir(parents=True, exist_ok=True)
+        ready.touch()
+
+    monkeypatch.setattr(substrate, "_real_sleep", make_ready)
+    assert substrate._ensure_shared_node_modules() == ready.parent / "node_modules"
+    assert sleeps == [0.2]
+
+
+def test_real_sleep_delegates_to_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleep = MagicMock()
+    monkeypatch.setattr(time, "sleep", sleep)
+
+    substrate._real_sleep(0.3)
+
+    sleep.assert_called_once_with(0.3)
+
+
+def test_pick_free_port_is_bindable() -> None:
+    port = substrate._pick_free_port()
+
+    assert 0 < port < 65_536
+
+
+def test_manager_js_extension_parts_validate_and_render() -> None:
+    requires, config = substrate._manager_js_extension_parts(("pgvector",))
+
+    assert "require('@electric-sql/pglite-pgvector')" in requires
+    assert config == "{ pgvector: vector }"
+    assert substrate._manager_js_extension_parts(()) == ("", "{}")
+    with pytest.raises(ValueError, match="unknown pglite extension"):
+        substrate._manager_js_extension_parts(("missing",))
 
 
 if __name__ == "__main__":

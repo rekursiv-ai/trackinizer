@@ -22,7 +22,7 @@ from trackinizer.lib.agent.sessions import (
     codex,
 )
 from trackinizer.lib.agent.types.sessions import SessionRecord, Thinking
-from trackinizer.lib.custom_json import DictCodec, json_freeze
+from trackinizer.lib.custom_json import convert, json_freeze
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.trax.run.adapters.tail import Tail
@@ -150,7 +150,7 @@ def _without_session_id(records: Sequence[TraxRecord]) -> list[TraxRecord]:
     """Each record with any ``sessionId`` dropped from its residual."""
     out: list[TraxRecord] = []
     for record in records:
-        residual = DictCodec.coerce(getattr(record, "extra", None))
+        residual = convert(getattr(record, "extra", None) or {}, dict[str, object])
         if "sessionId" not in residual:
             out.append(record)
             continue

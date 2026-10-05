@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import DictCodec, StrCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.tools import replay_live_graph
 
 
@@ -180,7 +180,8 @@ def test_detail_order_key_uses_source_created_then_id() -> None:
     )
 
     ids = [
-        StrCodec.coerce(DictCodec.coerce(detail["self"])["id"]) for detail in ordered
+        convert(convert(detail["self"], dict[str, object])["id"], str)
+        for detail in ordered
     ]
     assert ids == [
         "00000000-0000-0000-0000-000000000000",

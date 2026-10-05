@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 import pytest
 
+from trackinizer.lib.custom_json import json_freeze
 from trackinizer.wire.wire_sessions import (
     FeedCursor,
     FeedEvent,
@@ -120,6 +121,33 @@ class TestFeedEvent:
             created=_NOW,
         )
         assert event.part == -1
+
+    def test_a_frozen_message_serializes_as_plain_json(self) -> None:
+        """The store builds ``message`` with ``json_freeze``; the feed must dump it."""
+        event = FeedEvent(
+            session_id=uuid.uuid4(),
+            actor="scientist",
+            seq=0,
+            kind="UserMessage",
+            created=_NOW,
+            message=json_freeze({"attachments": [{"mime": "image/png"}]}),
+        )
+        assert event.model_dump(mode="json")["message"] == {
+            "attachments": [{"mime": "image/png"}],
+        }
+
+    def test_a_non_json_message_is_a_validation_error(self) -> None:
+        with pytest.raises(ValidationError):
+            FeedEvent.model_validate(
+                {
+                    "session_id": uuid.uuid4(),
+                    "actor": "scientist",
+                    "seq": 0,
+                    "kind": "UserMessage",
+                    "created": _NOW,
+                    "message": {"when": object()},
+                },
+            )
 
 
 class TestFeedCursor:

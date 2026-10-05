@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import PurePath
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import json
 
@@ -49,16 +49,7 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
     WebFetchResult,
 )
-from trackinizer.lib.custom_json import (
-    BoolCodec,
-    DictCodec,
-    FloatCodec,
-    IntCodec,
-    ListCodec,
-    StrCodec,
-    json_freeze,
-    loads,
-)
+from trackinizer.lib.custom_json import convert, json_freeze, parse
 
 
 if TYPE_CHECKING:
@@ -117,7 +108,7 @@ def is_sagent(head: str) -> bool:
         if not line.strip():
             continue
         try:
-            record = DictCodec.coerce(loads(line))
+            record = parse(line, dict[str, object])
         except json.JSONDecodeError:
             return False
         kind = record.get("kind")
@@ -156,18 +147,18 @@ class _Reader:
 
         """
         try:
-            record = DictCodec.coerce(loads(line), default=None)
+            record = parse(line, dict[str, object])
         except (json.JSONDecodeError, ValueError, TypeError):
             return [IncompleteRecord(text=line)]
-        kind = StrCodec.coerce(record.get("kind"))
+        kind = convert(record.get("kind"), str, default="")
         if kind == "history":
             return self._history(record)
         if kind == "meta":
             return self._meta(record)
         if kind == "persistent_agent":
-            label = StrCodec.coerce(record.get("label"))
+            label = convert(record.get("label"), str, default="")
             self.children[label] = PurePath(
-                StrCodec.coerce(record.get("session_dir")),
+                convert(record.get("session_dir"), str),
             ).name
         if kind == "message" and "descriptor" in record:
             return self._descriptor(record)
@@ -181,34 +172,34 @@ class _Reader:
 
     def _history(self, record: dict[str, object]) -> list[SessionRecord]:
         """Normalize one ``kind: history`` record."""
-        kind = StrCodec.coerce(record.get("type"))
+        kind = convert(record.get("type"), str, default="")
         stamp = _stamp(record.get("timestamp"))
-        text = StrCodec.coerce(record.get("text"))
+        text = convert(record.get("text"), str, default="")
         if kind == "user":
             return [UserMessage(timestamp=stamp, content=text)]
         if kind == "assistant":
             thoughts = [
                 (
-                    StrCodec.coerce(b.get("thinking")),
-                    StrCodec.coerce(b.get("signature")),
+                    _str(b.get("thinking")),
+                    _str(b.get("signature")),
                 )
-                for b in ListCodec.mappings(record.get("thinking_blocks"))
+                for b in _mappings(record.get("thinking_blocks"))
             ]
             calls = [
                 (
-                    StrCodec.coerce(c.get("id")),
-                    StrCodec.coerce(c.get("name")),
-                    DictCodec.coerce(c.get("args")),
+                    _str(c.get("id")),
+                    _str(c.get("name")),
+                    convert(c.get("args"), dict[str, object], default={}),
                 )
-                for c in ListCodec.mappings(record.get("tool_calls"))
+                for c in _mappings(record.get("tool_calls"))
             ]
             return self._turn(stamp, thoughts=thoughts, text=text, calls=calls)
         if kind == "tool_result":
             return [
                 self._result(
-                    StrCodec.coerce(record.get("call_id")),
-                    StrCodec.coerce(record.get("content")),
-                    failed=BoolCodec.coerce(record.get("is_error")),
+                    _str(record.get("call_id")),
+                    _str(record.get("content")),
+                    failed=_bool(record.get("is_error")),
                     stamp=stamp,
                 ),
             ]
@@ -217,21 +208,27 @@ class _Reader:
                 AgentToAgentMessage(
                     timestamp=stamp,
                     content=text,
-                    sender=StrCodec.coerce(record.get("source")),
+                    sender=convert(record.get("source"), str, default=""),
                 ),
             ]
         if kind == "compact_complete":
             return [
-                ContextCompaction(timestamp=stamp, extra=json_freeze(_scalars(record))),
+                ContextCompaction(
+                    timestamp=stamp,
+                    extra=json_freeze(_scalars(record)),
+                ),
             ]
         return [
-            UncategorizedRecord(kind=f"history/{kind}", payload=json_freeze(record)),
+            UncategorizedRecord(
+                kind=f"history/{kind}",
+                payload=json_freeze(record),
+            ),
         ]
 
     def _meta(self, record: dict[str, object]) -> list[SessionRecord]:
         """Split a meta record: a model change is a setting, spend is accounting."""
         out: list[SessionRecord] = []
-        model = StrCodec.coerce(record.get("model_id")) or None
+        model = convert(record.get("model_id"), str, default="") or None
         if model is not None and model != self.model:
             self.model = model
             out.append(
@@ -239,31 +236,42 @@ class _Reader:
                     model=model,
                     extra=json_freeze(
                         {
-                            k: StrCodec.coerce(record.get(k))
+                            k: _str(record.get(k))
                             for k in ("provider", "session_id", "bash_cwd", "name")
                             if k in record
                         },
                     ),
                 ),
             )
-        tokens = DictCodec.coerce(record.get("tokens"))
-        spend = DictCodec.coerce(record.get("spend"))
-        cost = FloatCodec.coerce(record.get("total_cost_usd")) or sum(
-            FloatCodec.coerce(v) for v in spend.values()
-        )
+        tokens = convert(record.get("tokens"), dict[str, object], default={})
+        spend = convert(record.get("spend"), dict[str, object], default={})
+        total_cost = convert(record.get("total_cost_usd"), float, default=0.0)
+        cost = total_cost or sum(convert(v, float) for v in spend.values())
         out.append(
             TokenUsage(
                 info=json_freeze(
                     {
                         "cost_usd": cost,
-                        "input_tokens": IntCodec.coerce(tokens.get("input_tokens")),
-                        "output_tokens": IntCodec.coerce(tokens.get("output_tokens")),
-                        "cache_read_tokens": IntCodec.coerce(
-                            tokens.get("cache_read_tokens"),
+                        "input_tokens": convert(
+                            tokens.get("input_tokens"),
+                            int,
+                            default=0,
                         ),
-                        "rounds": IntCodec.coerce(
+                        "output_tokens": convert(
+                            tokens.get("output_tokens"),
+                            int,
+                            default=0,
+                        ),
+                        "cache_read_tokens": convert(
+                            tokens.get("cache_read_tokens"),
+                            int,
+                            default=0,
+                        ),
+                        "rounds": convert(
                             record.get("num_tool_call_rounds")
-                            or record.get("turn_count"),
+                            or record.get("turn_count")
+                            or 0,
+                            int,
                         ),
                     },
                 ),
@@ -312,12 +320,12 @@ class _Reader:
     ) -> AnyToolResult:
         """Type a result by the call it answers."""
         call = self.calls.pop(call_id, None)
-        extra = json_freeze({"is_error": failed})
+        extra = {"is_error": failed}
         name = call.name.lower() if call is not None else ""
         args = call.arguments if call is not None else {}
-        path = StrCodec.coerce(args.get("file_path") or args.get("path")) or None
+        path = _str(args.get("file_path") or args.get("path")) or None
         if name == "bash":
-            command = StrCodec.coerce(args.get("command"))
+            command = _str(args.get("command"))
             return ShellCommandResult(
                 timestamp=stamp,
                 call_id=call_id,
@@ -333,12 +341,15 @@ class _Reader:
                 content=content,
                 extra=extra,
             )
+        # A refused file op changed nothing; keep its error text instead.
+        if failed and name in {"write", "edit"}:
+            name = ""
         if name == "write":
             return FileWriteResult(
                 timestamp=stamp,
                 call_id=call_id,
                 path=path,
-                content=StrCodec.coerce(args.get("content")) or None,
+                content=_str(args.get("content")) or None,
                 extra=extra,
             )
         if name == "edit":
@@ -348,8 +359,8 @@ class _Reader:
                 path=path,
                 edits=(
                     Splice(
-                        before=StrCodec.coerce(args.get("old_string")),
-                        after=StrCodec.coerce(args.get("new_string")),
+                        before=_str(args.get("old_string")),
+                        after=_str(args.get("new_string")),
                     ),
                 ),
                 extra=extra,
@@ -358,19 +369,19 @@ class _Reader:
             return WebFetchResult(
                 timestamp=stamp,
                 call_id=call_id,
-                url=StrCodec.coerce(args.get("url")) or None,
+                url=_str(args.get("url")) or None,
                 content=content,
                 extra=extra,
             )
         if name == "agentspawn":
-            label = StrCodec.coerce(args.get("label"))
+            label = _str(args.get("label"))
             return AgentStatusResult(
                 timestamp=stamp,
                 call_id=call_id,
                 agent_id=self.children.get(label) if label else None,
                 agent_kind=label or None,
-                prompt=StrCodec.coerce(args.get("prompt")) or None,
-                model=StrCodec.coerce(args.get("model_id")) or None,
+                prompt=_str(args.get("prompt")) or None,
+                model=_str(args.get("model_id")) or None,
                 content=content,
                 extra=extra,
             )
@@ -383,10 +394,10 @@ class _Reader:
 
     def _descriptor(self, record: dict[str, object]) -> list[SessionRecord]:
         """Normalize the older descriptor-tagged message family."""
-        descriptor = StrCodec.coerce(record.get("descriptor"))
+        descriptor = _str(record.get("descriptor"))
         stamp = _stamp(record.get("_timestamp"))
         content = record.get("content")
-        parts = ListCodec.mappings(content)
+        parts = _mappings(content)
         if descriptor in {
             "text/x-user-message",
             "multipart/x-user-message",
@@ -398,25 +409,25 @@ class _Reader:
             calls: list[tuple[str, str, dict[str, object]]] = []
             text: list[str] = []
             for part in parts:
-                kind = StrCodec.coerce(part.get("descriptor"))
+                kind = _str(part.get("descriptor"))
                 body = part.get("content")
                 if kind.startswith("application/x-thinking"):
-                    block = DictCodec.coerce(body)
+                    block = _dict(body)
                     thoughts.append(
                         (
-                            StrCodec.coerce(block.get("thinking")),
-                            StrCodec.coerce(block.get("signature")),
+                            _str(block.get("thinking")),
+                            _str(block.get("signature")),
                         ),
                     )
                 elif kind in {"text/plain", "text/markdown"}:
-                    text.append(StrCodec.coerce(body))
+                    text.append(_str(body))
                 elif kind == "multipart/x-tool-call":
-                    calls.append(_legacy_call(ListCodec.mappings(body)))
+                    calls.append(_legacy_call(_mappings(body)))
             return self._turn(stamp, thoughts=thoughts, text="".join(text), calls=calls)
         if descriptor == "multipart/x-tool-result":
             call_id = next(
                 (
-                    StrCodec.coerce(p.get("content"))
+                    _str(p.get("content"))
                     for p in parts
                     if p.get("descriptor") == "text/x-queue-id"
                 ),
@@ -440,38 +451,41 @@ class _Reader:
 
     def _role(self, record: dict[str, object]) -> list[SessionRecord]:
         """Normalize the oldest role-tagged message family."""
-        role = StrCodec.coerce(record.get("role"))
-        text = StrCodec.coerce(record.get("content"))
+        role = _str(record.get("role"))
+        text = _str(record.get("content"))
         if role == "user":
             return [UserMessage(content=text)]
         if role == "assistant":
             thoughts = [
                 (
-                    StrCodec.coerce(b.get("thinking")),
-                    StrCodec.coerce(b.get("signature")),
+                    _str(b.get("thinking")),
+                    _str(b.get("signature")),
                 )
-                for b in ListCodec.mappings(record.get("thinking_blocks"))
+                for b in _mappings(record.get("thinking_blocks"))
             ]
             calls = [
                 (
-                    StrCodec.coerce(c.get("id")),
-                    StrCodec.coerce(c.get("name")),
-                    DictCodec.coerce(c.get("input") or c.get("args")),
+                    _str(c.get("id")),
+                    _str(c.get("name")),
+                    _dict(c.get("input") or c.get("args")),
                 )
-                for c in ListCodec.mappings(record.get("tool_calls"))
+                for c in _mappings(record.get("tool_calls"))
             ]
             return self._turn(None, thoughts=thoughts, text=text, calls=calls)
         if role == "tool":
             return [
                 self._result(
-                    StrCodec.coerce(record.get("tool_call_id")),
+                    _str(record.get("tool_call_id")),
                     text,
-                    failed=BoolCodec.coerce(record.get("is_error")),
+                    failed=_bool(record.get("is_error")),
                     stamp=None,
                 ),
             ]
         return [
-            UncategorizedRecord(kind=f"message/{role}", payload=json_freeze(record)),
+            UncategorizedRecord(
+                kind=f"message/{role}",
+                payload=json_freeze(record),
+            ),
         ]
 
 
@@ -494,13 +508,13 @@ def _legacy_call(
     """Return ``(call_id, name, arguments)`` from a legacy tool-call part list."""
     call_id, name, arguments = "", "", dict[str, object]()
     for part in parts:
-        kind = StrCodec.coerce(part.get("descriptor"))
+        kind = _str(part.get("descriptor"))
         if kind == "text/x-queue-id":
-            call_id = StrCodec.coerce(part.get("content"))
+            call_id = _str(part.get("content"))
         elif kind.startswith("application/x-tool-"):
             tail = kind.removeprefix("application/x-tool-")
             name = compound.get(tail, tail.capitalize())
-            arguments = DictCodec.coerce(part.get("content"))
+            arguments = _dict(part.get("content"))
     return call_id, name, arguments
 
 
@@ -509,7 +523,7 @@ def _plain(content: object, parts: list[dict[str, object]]) -> str:
     if isinstance(content, str):
         return content
     return "".join(
-        StrCodec.coerce(p.get("content"))
+        _str(p.get("content"))
         for p in parts
         if p.get("descriptor") in {"text/plain", "text/markdown", "text/x-error"}
     )
@@ -519,12 +533,35 @@ def _plain(content: object, parts: list[dict[str, object]]) -> str:
 # past year 5000 in seconds is nanoseconds.
 def _stamp(value: object) -> str | None:
     """Return an epoch timestamp as ISO-8601 UTC, or ``None``."""
-    seconds = FloatCodec.coerce(value)
+    seconds = _float(value)
     if seconds <= 0:
         return None
     if seconds > 1e11:
         seconds /= 1e9
     return datetime.fromtimestamp(seconds, tz=UTC).isoformat()
+
+
+def _str(value: object) -> str:
+    return "" if value is None else convert(value, str)
+
+
+def _bool(value: object) -> bool:
+    return False if value is None else convert(value, bool)
+
+
+def _float(value: object) -> float:
+    return 0.0 if value is None else convert(value, float)
+
+
+def _dict(value: object) -> dict[str, object]:
+    return {} if value is None else convert(value, dict[str, object])
+
+
+def _mappings(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    values = cast(list[object] | tuple[object, ...], value)
+    return convert(values, list[dict[str, object]])
 
 
 def _scalars(record: Mapping[str, object]) -> dict[str, object]:

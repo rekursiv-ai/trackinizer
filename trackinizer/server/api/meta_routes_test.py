@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 import pytest
 
-from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec, loads
+from trackinizer.lib.custom_json import convert, parse
 from trackinizer.server.api import meta_routes
 from trackinizer.server.version import build_sha
 from trackinizer.types.columns import column_specs
@@ -68,23 +68,23 @@ def test_enums_route_reflects_the_type_literals(client: TestClient) -> None:
     """
     r = client.get("/api/meta/enums")
     assert r.status_code == 200
-    body = DictCodec.coerce(loads(r.content))
-    assert ListCodec.coerce(body["status"], str) == list(
+    body = parse(r.content, dict[str, object])
+    assert convert(body["status"], list[str]) == list(
         map(str, get_args(cast(object, Issue.Status.__value__))),
     )
-    assert ListCodec.coerce(body["judgement"], str) == list(
+    assert convert(body["judgement"], list[str]) == list(
         map(str, get_args(cast(object, Belief.Judgement.__value__))),
     )
-    assert ListCodec.coerce(body["issue_kind"], str) == list(
+    assert convert(body["issue_kind"], list[str]) == list(
         map(str, get_args(cast(object, Issue.Kind.__value__))),
     )
-    assert ListCodec.coerce(body["publication_type"], str) == list(
+    assert convert(body["publication_type"], list[str]) == list(
         map(str, get_args(cast(object, Paper.PublicationType.__value__))),
     )
-    assert ListCodec.coerce(body["edge_kind"], str) == list(
+    assert convert(body["edge_kind"], list[str]) == list(
         map(str, get_args(cast(object, Edge.Kind.__value__))),
     )
-    assert ListCodec.coerce(body["inquiry_kind_all"], str) == list(
+    assert convert(body["inquiry_kind_all"], list[str]) == list(
         map(str, get_args(cast(object, Inquiry.InquiryKind.__value__))),
     )
 
@@ -99,7 +99,7 @@ def test_fields_route_matches_server_route_table(client: TestClient) -> None:
     """
     r = client.get("/api/meta/fields")
     assert r.status_code == 200
-    body = DictCodec.coerce(loads(r.content))
+    body = parse(r.content, dict[str, object])
     assert body == field_owner_kind()
     # The fields that actually drifted must be present and correctly owned.
     # ``ended`` is intentionally NOT a field route: it is stamped only by
@@ -121,25 +121,25 @@ def test_edges_route_serves_topology_and_labels(client: TestClient) -> None:
     """
     r = client.get("/api/meta/edges")
     assert r.status_code == 200
-    body = DictCodec.coerce(loads(r.content))
+    body = parse(r.content, dict[str, object])
     # The payload is topology merged with labels, one entry per kind.
     for kind, topo in edge_topology().items():
-        entry = DictCodec.coerce(body[kind])
-        assert ListCodec.coerce(entry["from_kinds"], str) == topo["from_kinds"]
-        assert ListCodec.coerce(entry["to_kinds"], str) == topo["to_kinds"]
+        entry = convert(body[kind], dict[str, object])
+        assert convert(entry["from_kinds"], list[str]) == topo["from_kinds"]
+        assert convert(entry["to_kinds"], list[str]) == topo["to_kinds"]
     for kind, lab in edge_labels().items():
-        entry = DictCodec.coerce(body[kind])
-        assert StrCodec.coerce(entry["forward"]) == lab["forward"]
-        assert StrCodec.coerce(entry["inverse"]) == lab["inverse"]
+        entry = convert(body[kind], dict[str, object])
+        assert convert(entry["forward"], str) == lab["forward"]
+        assert convert(entry["inverse"], str) == lab["inverse"]
     # Citations are Artifact -> {Belief, Experiment}; both directions agree.
     for kind in ("proves", "favors"):
-        entry = DictCodec.coerce(body[kind])
-        assert ListCodec.coerce(entry["to_kinds"], str) == ["Belief", "Experiment"]
-        assert "Paper" in ListCodec.coerce(entry["from_kinds"], str)
+        entry = convert(body[kind], dict[str, object])
+        assert convert(entry["to_kinds"], list[str]) == ["Belief", "Experiment"]
+        assert "Paper" in convert(entry["from_kinds"], list[str])
     # cites_paper labels are the CLI aliases, not the raw storage kind.
-    cites_paper = DictCodec.coerce(body["cites_paper"])
-    assert StrCodec.coerce(cites_paper["forward"]) == "cites"
-    assert StrCodec.coerce(cites_paper["inverse"]) == "cited_by"
+    cites_paper = convert(body["cites_paper"], dict[str, object])
+    assert convert(cites_paper["forward"], str) == "cites"
+    assert convert(cites_paper["inverse"], str) == "cited_by"
     # The dropped dis-edge kinds carry no entry (valence sign now).
     for gone in ("disproves", "disfavors", "refutes_experiment"):
         assert gone not in body
@@ -153,10 +153,10 @@ def test_edges_route_adds_each_kinds_annotations(client: TestClient) -> None:
     annotations each kind takes against the annotate route is pinned on PGlite
     below; here, the shape: additive, the ``Edge`` field names in field order.
     """
-    body = DictCodec.coerce(loads(client.get("/api/meta/edges").content))
+    body = parse(client.get("/api/meta/edges").content, dict[str, object])
     columns = list(column_specs(Edge))
     for kind in edge_topology():
-        entry = DictCodec.coerce(body[kind])
+        entry = convert(body[kind], dict[str, object])
         assert set(entry) == {
             "from_kinds",
             "to_kinds",
@@ -164,7 +164,7 @@ def test_edges_route_adds_each_kinds_annotations(client: TestClient) -> None:
             "inverse",
             "annotations",
         }
-        taken = ListCodec.coerce(entry["annotations"], str)
+        taken = convert(entry["annotations"], list[str])
         assert taken == [column for column in columns if column in taken], kind
 
 
@@ -183,9 +183,10 @@ async def test_served_annotations_are_what_the_annotate_route_takes_on_a_real_en
     http, store = pglite_route_client
     edges = await _one_edge_per_kind(store)
     served = {
-        kind: ListCodec.coerce(DictCodec.coerce(rule)["annotations"], str)
-        for kind, rule in DictCodec.coerce(
-            loads((await http.get("/api/meta/edges")).content),
+        kind: convert(convert(rule, dict[str, object])["annotations"], list[str])
+        for kind, rule in parse(
+            (await http.get("/api/meta/edges")).content,
+            dict[str, object],
         ).items()
     }
     values: dict[str, object] = {

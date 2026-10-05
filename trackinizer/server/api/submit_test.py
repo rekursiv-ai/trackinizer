@@ -12,7 +12,7 @@ import asyncpg
 import pytest
 
 from trackinizer.conftest import executed_sql
-from trackinizer.lib.custom_json import DictCodec, ListCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.wire.bodies import SubmitBase
 
 
@@ -40,7 +40,7 @@ class TestRoutes:
         client, _store, _engine = route_client
         r = client.post("/api/inquiries/issue", json={"title": "t"})
         assert r.status_code == 201
-        body = DictCodec.coerce(r.json())
+        body = convert(r.json(), dict[str, object])
         assert "id" in body
 
     def test_submit_codechange_allows_unset_sha(
@@ -76,11 +76,11 @@ class TestRoutes:
             },
         )
         assert r.status_code == 200
-        body = DictCodec.coerce(r.json())
+        body = convert(r.json(), dict[str, object])
         # Inquiry ids are server-minted; assert structure, not equality
         # against the sent idempotency_keys.
         assert list(body) == ["ids"]
-        ids = ListCodec.coerce(body["ids"], str)
+        ids = convert(body["ids"], list[str])
         assert len(ids) == 2
         assert all(_is_uuid(s) for s in ids)
 
@@ -262,8 +262,8 @@ class TestRoutes:
         ]
         r = client.post("/api/inquiries/batch", json={"items": items})
         assert r.status_code == 200
-        body = DictCodec.coerce(r.json())
-        ids = ListCodec.coerce(body["ids"], str)
+        body = convert(r.json(), dict[str, object])
+        ids = convert(body["ids"], list[str])
         assert len(ids) == len(item_keys)
         assert all(_is_uuid(s) for s in ids)
         verbs = [s for s in executed_sql(conn) if s in ("BEGIN", "COMMIT", "ROLLBACK")]
@@ -379,7 +379,7 @@ class TestRoutes:
             },
         )
         assert r.status_code == 200
-        body = DictCodec.coerce(r.json())
+        body = convert(r.json(), dict[str, object])
         assert body["ids"] == [str(v) for v in existing.values()]
         inserts = [
             c

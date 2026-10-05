@@ -12,7 +12,7 @@ import asyncpg
 import pytest
 
 from trackinizer.conftest import executed_sql
-from trackinizer.lib.custom_json import DictCodec, ListCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_ID,
@@ -80,7 +80,7 @@ class _JsonResponse(Protocol):
 
 def _json(response: _JsonResponse) -> dict[str, object]:
     """Narrow a TestClient JSON body at the HTTP boundary."""
-    return DictCodec.coerce(response.json())
+    return convert(response.json(), dict[str, object])
 
 
 def _json_detail(response: _JsonResponse) -> str:
@@ -238,8 +238,8 @@ class TestAdminUsers:
         engine.conn.fetch = AsyncMock(return_value=[row])
         r = client.get("/api/admin/users")
         assert r.status_code == 200, r.text
-        body = DictCodec.coerce(r.json())
-        users = ListCodec.mappings(body["users"])
+        body = convert(r.json(), dict[str, object])
+        users = convert(body["users"], list[dict[str, object]])
         assert len(users) == 1
         user = users[0]
         assert user["email"] == "bob@example.com"
@@ -727,8 +727,8 @@ class TestAdminAllowlist:
         )
         r = client.get("/api/admin/allowlist")
         assert r.status_code == 200, r.text
-        body = DictCodec.coerce(r.json())
-        entries = ListCodec.mappings(body["entries"])
+        body = convert(r.json(), dict[str, object])
+        entries = convert(body["entries"], list[dict[str, object]])
         assert len(entries) == 1
         entry = entries[0]
         assert entry["email_or_pattern"] == "*@example.com"
@@ -993,7 +993,7 @@ class TestProfileRoute:
         )
         r = client.get("/api/me/profile")
         assert r.status_code == 200, r.text
-        body = DictCodec.coerce(r.json())
+        body = convert(r.json(), dict[str, object])
         assert body["email"]
         assert body["role"] == "admin"
         assert body["name"] == "Alice"

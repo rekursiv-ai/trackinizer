@@ -9,7 +9,7 @@ from pydantic import ValidationError
 import pytest
 
 from trackinizer.conftest import make_store, queue_field_rows
-from trackinizer.lib.custom_json import StrCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.visuals.reports import (
     ArtifactContentRevision,
     ArtifactFindingDraft,
@@ -173,7 +173,7 @@ async def test_read_artifact_content_returns_the_stored_revision_or_none() -> No
     assert revision is not None
     assert (revision.revision, revision.html) == (2, "<h1>Hi</h1>")
     sql, *params = engine.conn.fetchrow.call_args.args
-    assert "WHERE revisions.artifact_id = $1" in StrCodec.coerce(sql)
+    assert "WHERE revisions.artifact_id = $1" in convert(sql, str)
     assert params == [artifact_id, True]
     assert await read_artifact_content(store, uuid.uuid4()) is None
 

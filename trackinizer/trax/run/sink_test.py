@@ -18,7 +18,7 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.lib.agent.types.sessions import AssistantMessage, ToolCall, UserMessage
-from trackinizer.lib.custom_json import DictCodec, loads
+from trackinizer.lib.custom_json import convert, parse
 from trackinizer.lib.posix.follow import follow_tree
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter
@@ -544,7 +544,7 @@ class TestTrackinizerSinkManifestMetadata:
         sink.close()
 
         assert client.manifests, "no manifest was sent at all"
-        metadata = DictCodec.coerce(client.manifests[0].metadata)
+        metadata = convert(client.manifests[0].metadata, dict[str, object])
         assert "ascii_escape_exceptions" in metadata, (
             "the manifest carries no encoding; a resume rewrites the file "
             "with different bytes than were captured"
@@ -582,7 +582,8 @@ class TestTrackinizerSinkManifestMetadata:
 
         assert len(client.manifests) >= 2
         escaped = [
-            DictCodec.coerce(m.metadata).get("ascii_escaped") for m in client.manifests
+            convert(m.metadata, dict[str, object]).get("ascii_escaped")
+            for m in client.manifests
         ]
         assert len(set(escaped)) > 1, (
             "every batch declared the same majority; the manifest pinned one "
@@ -1893,7 +1894,7 @@ def test_replacement_overwrites_every_reused_position(batch_size: int) -> None:
 
 
 def _row(line: str) -> dict[str, object]:
-    return DictCodec.coerce(loads(line))
+    return parse(line, dict[str, object])
 
 
 if __name__ == "__main__":

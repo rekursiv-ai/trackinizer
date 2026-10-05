@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
-from trackinizer.lib.custom_json import DictCodec, StrCodec
+from trackinizer.lib.custom_json import convert
 
 
 if TYPE_CHECKING:
@@ -158,12 +158,13 @@ def read_session_cookie(
         return None
     serializer = URLSafeTimedSerializer(secret, salt=_SESSION_SALT)
     try:
-        payload = DictCodec.coerce(
+        payload = convert(
             cast(dict[str, object], serializer.loads(raw, max_age=max_age_seconds)),
+            dict[str, object],
         )
     except BadSignature:
         return None
-    return StrCodec.coerce(payload.get("user_id"), default=None)
+    return convert(payload.get("user_id"), str)
 
 
 def clear_session_cookie(response: _SetsCookies) -> None:
@@ -236,16 +237,17 @@ def read_oauth_state_cookie(
         return None
     serializer = URLSafeTimedSerializer(secret, salt=_OAUTH_STATE_SALT)
     try:
-        payload = DictCodec.coerce(
+        payload = convert(
             cast(
                 dict[str, object],
                 serializer.loads(raw, max_age=OAUTH_STATE_MAX_AGE_SECONDS),
             ),
+            dict[str, object],
         )
     except BadSignature:
         return None
-    state = StrCodec.coerce(payload.get("state"))
-    next_url = StrCodec.coerce(payload.get("next"))
+    state = convert(payload.get("state"), str, default="")
+    next_url = convert(payload.get("next"), str, default="")
     if not state or not next_url:
         return None
     return state, next_url

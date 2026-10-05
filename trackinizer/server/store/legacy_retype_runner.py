@@ -53,13 +53,7 @@ from uuid import UUID
 import json
 
 from trackinizer.lib.agent.types.sessions import UncategorizedRecord
-from trackinizer.lib.custom_json import (
-    DataclassCodec,
-    DictCodec,
-    StrCodec,
-    json_unfreeze,
-    loads,
-)
+from trackinizer.lib.custom_json import convert, json_unfreeze, loads_untagged
 from trackinizer.server.notify import tx
 from trackinizer.server.store.legacy_retype import (
     LEGACY_KINDS,
@@ -215,6 +209,8 @@ class _Output:
 
 async def _read_sources(conn: Conn, session_id: UUID) -> list[_Source]:
     """Read the part's rows in ``idx`` order, ciphertext joined, rows locked."""
+    # pragma: no mutate start -- the db_pglite tests exercise this SQL, and the
+    # mutation run deselects them.
     rows = await conn.fetch(
         "SELECT r.kind, r.context_id, r.timestamp, r.model, r.created, "
         "r.payload, r.text, "
@@ -228,6 +224,7 @@ async def _read_sources(conn: Conn, session_id: UUID) -> list[_Source]:
         session_id,
         _LEGACY_PART,
     )
+    # pragma: no mutate end
     sources: list[_Source] = []
     for row in rows:
         kind = row["kind"]
@@ -265,8 +262,13 @@ async def _read_sources(conn: Conn, session_id: UUID) -> list[_Source]:
                 created=created,
                 payload_text=payload_text,
                 text=text,
-                legacy_kind=StrCodec.coerce(
-                    DictCodec.coerce(loads(payload_text)).get("kind"),
+                # A row already retyped has no legacy ``kind``.
+                legacy_kind=convert(
+                    convert(loads_untagged(payload_text), dict[str, object]).get(
+                        "kind",
+                    ),
+                    str,
+                    default="",
                 ),
                 ciphertext="" if raw_bytes is None else raw_bytes.decode(),
             ),
@@ -300,9 +302,9 @@ def _outputs_for(
                 ciphertext=source.ciphertext,
             ),
         ]
-    record = DataclassCodec.from_json(
+    record = convert(
+        convert(loads_untagged(source.payload_text), dict[str, object]),
         UncategorizedRecord,
-        DictCodec.coerce(loads(source.payload_text)),
     )
     out = retype(
         record,

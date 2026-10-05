@@ -51,15 +51,7 @@ import time
 import httpx2
 
 from trackinizer.lib import zstd_compat
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    FloatCodec,
-    IntCodec,
-    JSONValue,
-    ListCodec,
-    StrCodec,
-    loads,
-)
+from trackinizer.lib.custom_json import JSONValue, convert, loads, parse
 from trackinizer.trax.profile import load_profile
 
 
@@ -133,17 +125,20 @@ def main() -> int:
         headers["Authorization"] = f"Bearer {profile.api_key}"
     queries = flags.query or ["trackinizer", "membership check", "title:^web"]
     with httpx2.Client(base_url=url, headers=headers, timeout=30.0) as http:
-        version = DictCodec.coerce(_read(http, "/api/version"))
+        version = convert(_read(http, "/api/version"), dict[str, object])
         rows = measure(http, repeats=flags.repeats, queries=queries, hub=flags.hub)
         stream = sample_stream(http, seconds=flags.stream_sec)
-    sha = StrCodec.coerce(version.get("sha"))
+    sha = convert(version.get("sha"), str)
     now = datetime.now(UTC).astimezone()
     folder = Path("/opt/scratch/artifacts/trackinizer-web/measure") / f"{now:%Y-%m-%d}"
     path = _write(report(rows, stream=stream, url=url, sha=sha), url=url, folder=folder)
     _print_table(rows, stream)
     print(f"\nserver {sha} at {url}\nwrote {path}")
     if flags.baseline:
-        changes = moved(rows, DictCodec.coerce(loads(flags.baseline.read_text())))
+        changes = moved(
+            rows,
+            parse(flags.baseline.read_text(), dict[str, object]),
+        )
         print(f"\nmoved more than 2x from {flags.baseline}: {len(changes) or 'none'}")
         for name, what, before, after in changes:
             print(f"  {name}: {what} {before:g} -> {after:g}")
@@ -170,12 +165,15 @@ def measure(
       rows: One per measurement, in the order of the plan's table.
 
     """
-    kinds = ListCodec.coerce(
-        DictCodec.coerce(_read(http, "/api/meta/enums")).get("inquiry_kind_all"),
-        str,
+    kinds = convert(
+        convert(_read(http, "/api/meta/enums"), dict[str, object]).get(
+            "inquiry_kind_all",
+        ),
+        list[str],
     )
-    issues = ListCodec.mappings(
+    issues = convert(
         _read(http, "/api/inquiries", (("kind", "Issue"), ("limit", 50))),
+        list[dict[str, object]],
     )
     return [
         *_boot_rows(http, repeats=repeats),
@@ -215,8 +213,11 @@ def sample_stream(http: httpx2.Client, *, seconds: float) -> Stream:
                 return Stream(seconds=0.0, frames=0, distinct_ids=0, status=status)
             for line in response.iter_lines():
                 if line.startswith("data:"):
-                    frame = DictCodec.coerce(loads(line.removeprefix("data:")))
-                    ids.append(StrCodec.coerce(frame.get("id")))
+                    frame = parse(
+                        line.removeprefix("data:"),
+                        dict[str, object],
+                    )
+                    ids.append(convert(frame.get("id"), str))
                 if time.perf_counter() - start >= seconds:
                     break
     except httpx2.ReadTimeout:
@@ -285,8 +286,8 @@ def moved(
 
     """
     before = {
-        StrCodec.coerce(old.get("name")): old
-        for old in ListCodec.mappings(baseline.get("rows"))
+        convert(old.get("name"), str): old
+        for old in convert(baseline.get("rows"), list[dict[str, object]], default=[])
     }
     changes: list[tuple[str, str, float, float]] = []
     for row in rows:
@@ -297,12 +298,12 @@ def moved(
         pairs = (
             (
                 "median seconds",
-                FloatCodec.coerce(old.get("median_seconds")),
+                convert(old.get("median_seconds"), float),
                 now_seconds,
             ),
             (
                 "median JSON bytes",
-                FloatCodec.coerce(old.get("median_json_bytes")),
+                convert(old.get("median_json_bytes"), float),
                 now_bytes,
             ),
         )
@@ -383,12 +384,12 @@ def _list_rows(
     kinds: Sequence[str],
     repeats: int,
 ) -> list[Row]:
-    profile = DictCodec.coerce(_read(http, "/api/me/profile"))
+    profile = convert(_read(http, "/api/me/profile"), dict[str, object])
     mine = json.dumps(
         {
             "field": "account",
             "op": "is",
-            "value": StrCodec.coerce(profile.get("email")),
+            "value": convert(profile.get("email"), str),
         },
     )
     every: Params = tuple(("kind", kind) for kind in kinds)
@@ -421,7 +422,7 @@ def _detail_rows(
     hub: str,
     repeats: int,
 ) -> list[Row]:
-    newest = [StrCodec.coerce(row.get("id")) for row in issues[:5]]
+    newest = [convert(row.get("id"), str) for row in issues[:5]]
     rows = [
         _row(
             "detail: newest Issues",
@@ -432,14 +433,14 @@ def _detail_rows(
     ]
     hub_id = _hub_id(http, issues=issues, hub=hub)
     if hub_id:
-        view = DictCodec.coerce(_read(http, f"/api/web/get/{hub_id}"))
-        head = DictCodec.coerce(view.get("self"))
+        view = convert(_read(http, f"/api/web/get/{hub_id}"), dict[str, object])
+        head = convert(view.get("self"), dict[str, object])
         relations = sum(
-            len(ListCodec.coerce(peers))
+            len(convert(peers, list[object]))
             for side in ("edges", "backlinks")
-            for peers in DictCodec.coerce(view.get(side)).values()
+            for peers in convert(view.get(side), dict[str, object]).values()
         )
-        ref = f"{StrCodec.coerce(head.get('kind'))}#{IntCodec.coerce(head.get('seq'))}"
+        ref = f"{convert(head.get('kind'), str)}#{convert(head.get('seq'), int)}"
         rows.append(
             _row(
                 "detail: hub",
@@ -460,12 +461,12 @@ def _hub_id(
     """Return the id of `hub` (`Kind#seq`), or of the parent most `issues` narrow."""
     if hub:
         kind, _, seq = hub.partition("#")
-        found = DictCodec.coerce(_read(http, f"/api/inquiries/{kind}/{seq}"))
-        return StrCodec.coerce(found.get("id"))
+        found = convert(_read(http, f"/api/inquiries/{kind}/{seq}"), dict[str, object])
+        return convert(found.get("id"), str)
     parents = Counter(
-        StrCodec.coerce(parent.get("id"))
+        convert(parent.get("id"), str)
         for row in issues
-        for parent in ListCodec.mappings(row.get("narrows"))
+        for parent in convert(row.get("narrows"), list[dict[str, object]], default=[])
     )
     return parents.most_common(1)[0][0] if parents else ""
 
@@ -481,10 +482,11 @@ def _activity_rows(http: httpx2.Client, *, repeats: int) -> list[Row]:
         )
         for tab in tabs
     ]
-    newest = ListCodec.mappings(
+    newest = convert(
         _read(http, "/api/change_log", (("kind", "status"), ("limit", 1))),
+        list[dict[str, object]],
     )
-    since = StrCodec.coerce(newest[0].get("created")) if newest else "1970-01-01"
+    since = convert(newest[0].get("created"), str) if newest else "1970-01-01"
     rows.append(
         _row(
             "activity: status since the newest",
@@ -542,9 +544,9 @@ def _live_rows(
 ) -> list[Row]:
     spans: Params = tuple(
         ("seq_range", span)
-        for span in _spans(sorted(IntCodec.coerce(row.get("seq")) for row in issues))
+        for span in _spans(sorted(convert(row.get("seq"), int) for row in issues))
     )
-    ids = "|".join(StrCodec.coerce(row.get("id")) for row in issues[:13])
+    ids = "|".join(convert(row.get("id"), str) for row in issues[:13])
     check = json.dumps({"field": "id", "op": "re", "value": f"^({ids})$"})
     three: Params = tuple(("kind", kind) for kind in kinds[:3])
     return [
@@ -601,10 +603,14 @@ def _get(http: httpx2.Client, path: str, params: Params = ()) -> Sample:
     if response.is_error:
         # A proxy's error page is not JSON; its start says enough.
         try:
-            detail = DictCodec.coerce(loads(body)).get("detail")
+            detail = convert(
+                parse(body, dict[str, object]).get("detail"),
+                object,
+                default="",
+            )
         except ValueError:
             detail = body[:200].decode(errors="replace")
-        message = StrCodec.coerce(detail)
+        message = convert(detail, str)
     return Sample(
         seconds=seconds,
         status=response.status_code,

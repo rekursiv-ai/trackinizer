@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Protocol, cast
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
 
-from trackinizer.lib.custom_json import MutableJSON, StrCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.auth import (
     AuthIdentity,
@@ -34,6 +34,7 @@ from trackinizer.wire.bodies import (
     SubmitWebResult,
     SubmitWebSearch,
 )
+from trackinizer.wire.json_types import MutableJSON
 
 
 if TYPE_CHECKING:
@@ -47,7 +48,7 @@ router = APIRouter()
 
 # Each body class keyed by its PascalCase kind discriminator.
 _BODY_BY_KIND: dict[str, type[SubmitBase]] = {
-    StrCodec.coerce(cast(str, body.model_fields["kind"].default), default=None): body
+    convert(cast(str, body.model_fields["kind"].default), str): body
     for body in (
         SubmitIssue,
         SubmitArtifact,
@@ -146,10 +147,7 @@ async def submit_route(
     body_cls = SUBMIT_BODY.get(kind)
     if body_cls is None:
         raise HTTPException(status_code=404, detail=f"unknown inquiry kind {kind!r}")
-    discriminator = StrCodec.coerce(
-        cast(str, body_cls.model_fields["kind"].default),
-        default=None,
-    )
+    discriminator = convert(cast(str, body_cls.model_fields["kind"].default), str)
     try:
         req = body_cls.model_validate({**payload, "kind": discriminator})
     except ValidationError as err:

@@ -15,6 +15,7 @@ from trackinizer.lib.agent.sessions import claude
 from trackinizer.lib.agent.sessions.claude import _group
 from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,
+    AgentToAgentMessage,
     AssistantMessage,
     Attachment,
     ContextClear,
@@ -40,11 +41,12 @@ from trackinizer.lib.agent.types.sessions import (
     WebSearchResult,
     WebSearchResults,
 )
-from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
+from trackinizer.lib.custom_json import convert, parse
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
+    from pathlib import Path
 
 
 ENVELOPE = (
@@ -625,9 +627,9 @@ def test_deleting_one_call_does_not_move_another_across_prose() -> None:
 
 def _content_blocks(native: str) -> list[dict[str, object]]:
     """Return the message content blocks of a written line."""
-    record = DictCodec.coerce(loads(native.splitlines()[0]))
-    message = DictCodec.coerce(record.get("message"))
-    return list(ListCodec.mappings(message.get("content")))
+    record = parse(native.splitlines()[0], dict[str, object])
+    message = convert(record.get("message"), dict[str, object], default={})
+    return list(convert(message.get("content"), list[dict[str, object]], default=[]))
 
 
 def test_a_malformed_failure_marker_prevents_lifting() -> None:
@@ -1504,6 +1506,302 @@ def test_grouping_still_joins_the_acts_of_one_line() -> None:
     groups = [list(group) for group in _group((lead, call, usage, next_line))]
 
     assert groups == [[lead, call, usage], [next_line]]
+
+
+def test_claude_helpers_preserve_missing_and_malformed_values() -> None:
+    line: dict[str, object] = {"message": {"content": [7, {}]}}
+    claude._rename_calls(line, {"c": "Bash"})
+    assert line == {"message": {"content": [7, {}]}}
+    assert claude._split_widths(None, [1]) == []
+    assert claude._split_widths("a", []) == ["a"]
+    assert claude._split_widths("a\nb", [1]) == ["a\nb"]
+    assert claude._split_widths("a\nb", [1, 1]) == ["a", "b"]
+    assert claude._read_attachment({"type": "image", "source": {"type": "bad"}}) is None
+    assert (
+        claude._read_attachment(
+            {"type": "image", "source": {"type": "base64", "data": "!"}},
+        )
+        is None
+    )
+    assert claude._effort("future") is None
+    assert claude._millis(None) is None
+    assert claude._millis(1.5, 1500) == 1500
+    assert claude._millis(1.5, 1501) == 1500.0
+
+
+def test_claude_shape_writers_preserve_absent_blocks() -> None:
+    attachment = Attachment(mime_descriptor="image/png", data=b"hi")
+    block = {
+        "type": "image",
+        "source": {"type": "base64", "data": None, "$held": ["data"]},
+    }
+    assert claude._write_attachment_shape(block, None) == block
+    assert (
+        convert(
+            claude._write_attachment_shape(block, attachment)["source"],
+            dict[str, object],
+        )["data"]
+        == "aGk="
+    )
+    assert claude._write_thinking_shape({"type": "thinking"}, None) == {
+        "type": "thinking",
+    }
+    assert claude._write_agent_blocks(
+        AgentStatusResult(call_id="c", content="hi"),
+        {},
+    ) == [
+        {"type": "text", "text": "hi"},
+    ]
+    assert claude._result_values(UncategorizedToolResult(call_id="c"), {}) == {}
+    assert claude._write_result_content(
+        UncategorizedToolResult(call_id="c", content="new"),
+        [{"type": "text", "text": "old"}, {"type": "other"}],
+    ) == [{"type": "text", "text": "new"}, {"type": "other"}]
+
+
+def test_claude_writer_special_result_shapes() -> None:
+    assert (
+        claude._write_result_block(
+            UncategorizedToolResult(
+                call_id="c",
+                content=None,
+                extra={"$result": {"$text": True}},
+            ),
+        )["content"]
+        == ""
+    )
+    assert (
+        claude._write_tool_payload(
+            UncategorizedToolResult(call_id="c"),
+            {"toolUseResult": "failed"},
+            {},
+        )
+        == "failed"
+    )
+    assert claude._write_blocks(
+        (Thinking(content="t"), ToolCall(call_id="c", name="x")),
+        1,
+        {},
+    ) == [
+        {"type": "thinking", "thinking": "t"},
+        {"type": "tool_use", "id": "c", "name": "x", "input": {}},
+    ]
+    assert claude._write_thinking(
+        Thinking(summary="summary", extra={"$signature_present": True}),
+    ) == {
+        "type": "thinking",
+        "thinking": "summary",
+        "signature": "",
+    }
+
+
+def test_claude_reader_context_and_result_edge_cases() -> None:
+    previous = TurnContext(model="old", effort="low", permission="ask")
+    updated = claude._read_line_context(
+        {"message": {"model": "new"}, "effort": "high"},
+        previous,
+    )
+    assert (updated.model, updated.effort, updated.permission) == ("new", "high", "ask")
+    assert claude._parse("{") is None
+    assert (
+        claude._carries_a_compaction(
+            UserMessage(extra={"isCompactSummary": True}),
+        )
+        is True
+    )
+    assert claude._numbered("a\nb") == "1\ta\n2\tb"
+
+
+def test_claude_writer_handles_special_record_shapes(tmp_path: Path) -> None:
+    assert claude._rename_calls({"message": 7}, {}) is None
+    assert claude._rename_calls({"message": {"content": {}}}, {}) is None
+    assert (
+        claude._rename_calls(
+            {"message": {"content": ["text", {"type": "tool_use", "id": "c"}]}},
+            {"c": "Bash"},
+        )
+        is None
+    )
+    assert (
+        claude._stated_cwd(
+            (
+                TurnContext(extra={"payload": {"cwd": 7}}),
+                TurnContext(extra={"cwd": "/work"}),
+            ),
+        )
+        == "/work"
+    )
+    assert claude._stated_cwd((TurnContext(extra={"payload": {"cwd": 7}}),)) == ""
+    assert (
+        claude._write_group((TokenUsage(info={"input_tokens": 1}),), TurnContext(), {})
+        is None
+    )
+    assert (
+        claude._write_group((AgentToAgentMessage(content="hi"),), TurnContext(), {})
+        is None
+    )
+    assert (
+        claude._write_group((SystemMessage(content="bad"),), TurnContext(), {})
+        is not None
+    )
+    assert (
+        claude._write_group((UncategorizedRecord(kind="foreign"),), TurnContext(), {})
+        == {}
+    )
+    assert claude._splice(
+        ["type"],
+        {"type": "user"},
+        {"$source_order": True, "future": 1, "$sessionId": "s"},
+        {},
+    ) == {"type": "user", "future": 1, "sessionId": "s"}
+    assert claude._write_tool_call_shape({"type": "tool_use", "id": "c"}, None) == {
+        "type": "tool_use",
+        "id": "c",
+    }
+    assert (
+        convert(
+            claude._write_attachment(
+                Attachment(mime_descriptor="image/png", data=b"x"),
+                media_first=True,
+            )["source"],
+            dict[str, object],
+        )["media_type"]
+        == "image/png"
+    )
+    assert (
+        convert(
+            claude._write_attachment(
+                Attachment(mime_descriptor="image/png", data=b"x"),
+                media_first=False,
+            )["source"],
+            dict[str, object],
+        )["data"]
+        == "eA=="
+    )
+    assert (
+        convert(
+            claude._write_user(
+                UserMessage(content="hi", extra={"promptSource": "user"}),
+                TurnContext(permission="ask"),
+                {},
+            ),
+            dict[str, object],
+        )["permissionMode"]
+        == "ask"
+    )
+    assert claude._split("a\nb", 2) == ["a", "b"]
+    assert claude._split("a\nb", 3) == ["a\nb"]
+    assert claude._write_tool_call_shape(
+        {
+            "type": "tool_use",
+            "id": "old",
+            "name": "old",
+            "input": {},
+            "$held": ["id", "name", "input"],
+        },
+        ToolCall(
+            call_id="new",
+            name="Read",
+            arguments={"path": str(tmp_path / "input")},
+        ),
+    ) == {
+        "type": "tool_use",
+        "id": "new",
+        "name": "Read",
+        "input": {"path": str(tmp_path / "input")},
+    }
+
+
+def test_claude_writer_skips_non_string_shell_commands() -> None:
+    stream = StringIO()
+    writer = claude._Emitter(
+        stream,
+        escaped_default=False,
+        exceptions=b"",
+        newline_terminated=True,
+    )
+    line: dict[str, object] = {
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "c",
+                    "name": "Bash",
+                    "input": {"command": 7},
+                },
+            ],
+        },
+    }
+    call = ToolCall(call_id="c", name="Bash")
+    writer.add(line, calls=(call,))
+    writer._apply_shell_edit(
+        FileWriteResult(call_id="c", path="x", content="new", extra={"$shell": True}),
+    )
+    assert line == {
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "c",
+                    "name": "Bash",
+                    "input": {"command": 7},
+                },
+            ],
+        },
+    }
+
+
+def test_claude_user_shape_replays_results_and_stencils() -> None:
+    result = UncategorizedToolResult(call_id="c", content="done")
+    shape = [
+        {"type": "tool_result", "tool_use_id": "c", "$held": ["content"]},
+        {"type": "text", "text": "old", "$held": ["text"]},
+        {"type": "other"},
+    ]
+    assert claude._write_user_shape(UserMessage(content="new"), shape, (result,)) == [
+        {"type": "tool_result", "tool_use_id": "c", "content": "done"},
+        {"type": "text", "text": "new"},
+        {"type": "other"},
+    ]
+    assert claude._write_user_shape(
+        UserMessage(content="new"),
+        [{"type": "other"}],
+    ) == [
+        {"type": "other"},
+        {"type": "text", "text": "new"},
+    ]
+    assert claude._write_user_shape(
+        UserMessage(content="new"),
+        [{"type": "other", "$held": ["value"]}],
+    ) == [{"type": "other"}, {"type": "text", "text": "new"}]
+    assert claude._write_user_shape(UserMessage(content="new"), [7]) == [
+        7,
+        {"type": "text", "text": "new"},
+    ]
+    result_line = convert(
+        claude._write_result(
+            UncategorizedToolResult(
+                call_id="c",
+                content="done",
+                extra={"$content_shape": [{"type": "other"}]},
+            ),
+            {},
+        ),
+        dict[str, object],
+    )
+    assert convert(result_line["message"], dict[str, object])["content"] == [
+        {"type": "other"},
+    ]
+
+
+def test_claude_user_reader_preserves_unknown_blocks() -> None:
+    records = claude._read_user(
+        {"type": "user", "timestamp": "t"},
+        {"role": "user", "content": {"future": 1}},
+        {},
+    )
+    assert isinstance(records[0], UserMessage)
+    assert records[0].extra["$content_value"] == {"future": 1}
 
 
 if __name__ == "__main__":

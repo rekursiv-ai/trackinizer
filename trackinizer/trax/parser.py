@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal, cast, get_args
 import uuid
 
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import FloatCodec, ListCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.trax.grammar import (
     AGAINST_RELATION_SPELLINGS,
     COST_FIELDS,
@@ -637,7 +637,7 @@ def edge_metadata(
             # this branch handling every remaining valid field.
             if op not in ("to", "add", "del"):
                 raise ClientError("edge label uses to, add, or del")
-            labels = ListCodec.coerce(metadata.get("labels"), str)
+            labels = convert(metadata.get("labels"), list[str], default=[])
             if op == "to":
                 labels = resolve_labels((value,))
             elif op == "add":
@@ -1326,7 +1326,7 @@ def _apply_valence_alias(edge: Edge, metadata: dict[str, object]) -> dict[str, o
     if given is None:
         metadata["valence"] = edge.valence_default
         return metadata
-    value = FloatCodec.coerce(given)
+    value = convert(given, float)
     if value < 0:
         # The magnitude is non-negative; the for/against polarity is carried by
         # the spelling (plain vs ``dis*``), not by a negative value. A positive

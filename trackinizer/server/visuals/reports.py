@@ -11,7 +11,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from trackinizer.lib.custom_json import DictCodec, FloatCodec, IntCodec, StrCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import set_client_change_id
 from trackinizer.wire.bodies import SubmitArtifact
@@ -281,21 +281,23 @@ async def publish_artifact_content(
                 raise ValueError("Previous Artifact does not belong to this Issue.")
             report_id = uuid.UUID(str(report["id"]))
         content, content_bytes = await _snapshot_content(conn, body)
-        used_bytes = IntCodec.coerce(
+        used_bytes = convert(
             await conn.fetchval(
                 "SELECT coalesce(sum(content_bytes), 0)::bigint "
                 "FROM visual_report_revisions WHERE author_id = $1",
                 user_id,
             ),
+            int,
         )
         if used_bytes + content_bytes > 500_000_000:
             raise ValueError("Publisher Artifact storage exceeds 500 MB.")
-        revision = IntCodec.coerce(
+        revision = convert(
             await conn.fetchval(
                 "SELECT coalesce(max(revision), 0) + 1 "
                 "FROM visual_report_revisions WHERE report_id = $1",
                 report_id,
             ),
+            int,
         )
         artifact_id = await store.submit_artifact(
             SubmitArtifact(
@@ -410,7 +412,7 @@ async def read_artifact_content_on_conn(
         return None
     if include_html:
         return _revision_from_row(cast("Mapping[str, object]", row))
-    content = DictCodec.coerce(row["content"], default=None)
+    content = convert(row["content"], dict[str, object])
     return _revision_from_row(
         {**dict(row), "content": {**content, "html": None}},
     )
@@ -496,9 +498,9 @@ async def _snapshot_citation(conn: Conn, ref: ArtifactCitationRef) -> ArtifactCi
         raise ValueError("Cited record does not exist.")
     citation = ArtifactCitation(
         record_id=ref.record_id,
-        kind=StrCodec.coerce(record["kind"]),
-        seq=IntCodec.coerce(record["seq"]),
-        title=StrCodec.coerce(record["title"])[:2_000],
+        kind=convert(record["kind"], str),
+        seq=convert(record["seq"], int),
+        title=convert(record["title"], str)[:2_000],
     )
     if ref.claim_id is None or ref.edge_kind is None:
         return citation
@@ -524,11 +526,11 @@ async def _snapshot_citation(conn: Conn, ref: ArtifactCitationRef) -> ArtifactCi
         seq=citation.seq,
         title=citation.title,
         claim_id=ref.claim_id,
-        claim_kind=StrCodec.coerce(claim["kind"]),
-        claim_seq=IntCodec.coerce(claim["seq"]),
-        claim_title=StrCodec.coerce(claim["title"])[:2_000],
+        claim_kind=convert(claim["kind"], str),
+        claim_seq=convert(claim["seq"], int),
+        claim_title=convert(claim["title"], str)[:2_000],
         edge_kind=ref.edge_kind,
-        valence=FloatCodec.coerce(edge["valence"]),
+        valence=convert(edge["valence"], float),
         note=note,
     )
 

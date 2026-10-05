@@ -20,7 +20,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from trackinizer.lib.custom_json import DictCodec, json_freeze
+from trackinizer.lib.custom_json import convert, json_freeze
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.session_access import require_session_write_access
 from trackinizer.server.auth import AuthIdentity, require_role
@@ -91,7 +91,7 @@ async def append_session_records_route(
         else await store.upsert_session_manifest(
             session_id,
             name=body.name,
-            metadata=json_freeze(DictCodec.coerce(manifest.metadata)),
+            metadata=json_freeze(convert(manifest.metadata, dict[str, object])),
             ir_id=manifest.ir_id,
             format=manifest.format,
             records=manifest.records,

@@ -33,14 +33,7 @@ from trackinizer.conftest import (
     queue_field_rows,
     set_field_row,
 )
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    FloatCodec,
-    IntCodec,
-    ListCodec,
-    StrCodec,
-    loads,
-)
+from trackinizer.lib.custom_json import convert, parse
 from trackinizer.server import web
 from trackinizer.server.api import query
 from trackinizer.server.api.app import app
@@ -108,8 +101,8 @@ class TestRoutes:
         )
 
         assert response.status_code == 409
-        body = DictCodec.coerce(response.json())
-        assert "release its owner" in StrCodec.coerce(body["detail"])
+        body = convert(response.json(), dict[str, object])
+        assert "release its owner" in convert(body["detail"], str)
         assert not any(
             isinstance(call.args[0], str) and "DELETE FROM inquiries" in call.args[0]
             for call in engine.conn.execute.call_args_list
@@ -129,7 +122,7 @@ class TestRoutes:
             json={"actor": "user", "reason": ""},
         )
         assert r.status_code == 404
-        body = DictCodec.coerce(r.json())
+        body = convert(r.json(), dict[str, object])
         assert body["code"] == "not_found"
 
     def test_list_kind_route_rejects_bad_bounds(
@@ -256,12 +249,12 @@ class TestRoutes:
             for record in caplog.records
             if getattr(record, "event", "") == "trackinizer_query_completed"
         )
-        fields = DictCodec.coerce(record.__dict__)
-        assert StrCodec.coerce(fields.get("request_id")) == request_id
-        assert StrCodec.coerce(fields.get("kind")) == "Experiment"
-        assert IntCodec.coerce(fields.get("filter_count"), 0) == 2
-        assert IntCodec.coerce(fields.get("returned_rows"), -1) == 0
-        assert FloatCodec.coerce(fields.get("duration_sec"), -1) >= 0
+        fields = convert(record.__dict__, dict[str, object])
+        assert convert(fields.get("request_id"), str) == request_id
+        assert convert(fields.get("kind"), str) == "Experiment"
+        assert convert(fields.get("filter_count"), int, default=0) == 2
+        assert convert(fields.get("returned_rows"), int, default=-1) == 0
+        assert convert(fields.get("duration_sec"), float, default=-1) >= 0
 
     def test_list_kind_route_rejects_isnull_on_not_null_column(
         self,
@@ -552,12 +545,16 @@ class TestRoutes:
         )
         with patch.object(store, "list_changes", new_callable=AsyncMock) as mock:
             mock.return_value = [change]
-            (whole,) = ListCodec.mappings(client.get("/api/change_log").json())
-            (brief,) = ListCodec.mappings(
-                client.get("/api/change_log", params={"brief": "true"}).json(),
+            (whole,) = convert(
+                client.get("/api/change_log").json(),
+                list[dict[str, object]],
             )
-        assert DictCodec.coerce(whole["new"])["description"] == "e" * 100
-        assert DictCodec.coerce(whole["new"])["title"] is None
+            (brief,) = convert(
+                client.get("/api/change_log", params={"brief": "true"}).json(),
+                list[dict[str, object]],
+            )
+        assert convert(whole["new"], dict[str, object])["description"] == "e" * 100
+        assert convert(whole["new"], dict[str, object])["title"] is None
         assert brief["old"] == {"description": "d" * 32}
         assert brief["new"] == {"description": "e" * 32}
         assert {k: v for k, v in brief.items() if k not in {"old", "new"}} == {
@@ -643,7 +640,7 @@ class TestRoutes:
         )
         r = client.post("/api/inquiries/lookup", json=[str(good), str(bad)])
         assert r.status_code == 200
-        body = DictCodec.coerce(loads(r.content))
+        body = parse(r.content, dict[str, object])
         assert body["found"] == {str(good): "Issue"}
         assert body["missing"] == [str(bad)]
 
@@ -763,23 +760,26 @@ class TestCoverageRoutesAndCli:
             [],
         ]
         assert (
-            DictCodec.coerce(client.get(f"/api/inquiries/{target_id}").json())["kind"]
-            == "Issue"
-        )
-        assert DictCodec.coerce(client.get("/api/inquiries/Issue/1").json())[
-            "id"
-        ] == str(target_id)
-        assert (
-            DictCodec.coerce(
-                ListCodec.coerce(
-                    client.get("/api/inquiries", params={"kind": "Issue"}).json(),
-                    object,
-                )[0],
+            convert(
+                client.get(f"/api/inquiries/{target_id}").json(),
+                dict[str, object],
             )["kind"]
             == "Issue"
         )
+        assert convert(client.get("/api/inquiries/Issue/1").json(), dict[str, object])[
+            "id"
+        ] == str(target_id)
         assert (
-            DictCodec.coerce(client.get("/api/inquiries/next_issue").json())["kind"]
+            convert(
+                client.get("/api/inquiries", params={"kind": "Issue"}).json(),
+                list[dict[str, object]],
+            )[0]["kind"]
+            == "Issue"
+        )
+        assert (
+            convert(client.get("/api/inquiries/next_issue").json(), dict[str, object])[
+                "kind"
+            ]
             == "Issue"
         )
 
@@ -811,7 +811,7 @@ class TestCoverageRoutesAndCli:
             params=[("kind", "Issue"), *(("fields", name) for name in fields)],
         )
         assert r.status_code == 200, r.text
-        (row,) = ListCodec.mappings(r.json())
+        (row,) = convert(r.json(), list[dict[str, object]])
         # ``judgement`` is a Belief field, so an Issue row has no such key.
         assert set(row) == set(fields) - {"judgement"}
         assert engine.conn.fetch.await_count == reads
@@ -826,9 +826,10 @@ class TestCoverageRoutesAndCli:
         engine.conn.fetchval.return_value = 1
         set_field_row(engine.conn, {"agent_usd": 1.0, "resource_usd": 2.0})
         assert (
-            DictCodec.coerce(client.get(f"/api/inquiries/{target_id}/cost").json())[
-                "agent_usd"
-            ]
+            convert(
+                client.get(f"/api/inquiries/{target_id}/cost").json(),
+                dict[str, object],
+            )["agent_usd"]
             == 1.0
         )
         engine.conn.fetch.side_effect = [
@@ -840,12 +841,10 @@ class TestCoverageRoutesAndCli:
             [],
         ]
         assert (
-            DictCodec.coerce(
-                ListCodec.coerce(
-                    client.get(f"/api/inquiries/{target_id}/proves_belief").json(),
-                    object,
-                )[0],
-            )["kind"]
+            convert(
+                client.get(f"/api/inquiries/{target_id}/proves_belief").json(),
+                list[dict[str, object]],
+            )[0]["kind"]
             == "Experiment"
         )
         assert (
@@ -913,7 +912,7 @@ class TestMissingResourceIs404:
         engine.conn.fetch.return_value = []  # No proving edges.
         r = client.get(f"/api/inquiries/{new_uuid()}/confidence")
         assert r.status_code == 200
-        assert DictCodec.coerce(r.json())["confidence"] == 0.5
+        assert convert(r.json(), dict[str, object])["confidence"] == 0.5
 
     def test_authority_unknown_id_is_404(
         self,
@@ -940,7 +939,7 @@ class TestMissingResourceIs404:
         )
         r = client.get(f"/api/inquiries/{new_uuid()}/authority")
         assert r.status_code == 200
-        assert DictCodec.coerce(r.json()) == {"proves_authority": 0.42}
+        assert convert(r.json(), dict[str, object]) == {"proves_authority": 0.42}
 
 
 # -- Property: the list endpoint never 500s on malformed query params ----------
@@ -1058,26 +1057,29 @@ async def test_fields_keep_the_named_values_on_a_real_engine(
             actor="alice",
         )
     kinds = [("kind", kind) for kind in sorted(KIND_TO_CLASS)]
-    full = ListCodec.mappings((await http.get("/api/inquiries", params=kinds)).json())
+    full = convert(
+        (await http.get("/api/inquiries", params=kinds)).json(),
+        list[dict[str, object]],
+    )
     assert len(full) == 10
     for row in full:
         seq = f"{row['seq']}..{row['seq']}"
         named = await http.get(
             "/api/inquiries",
             params=[
-                ("kind", StrCodec.coerce(row["kind"])),
+                ("kind", convert(row["kind"], str)),
                 ("seq_range", seq),
                 *(("fields", key) for key in row),
             ],
         )
-        assert ListCodec.mappings(named.json()) == [row], row["kind"]
+        assert convert(named.json(), list[dict[str, object]]) == [row], row["kind"]
     subset = ("id", "title", "priority", "judgement", "proved_by", "narrows")
     named = await http.get(
         "/api/inquiries",
         params=[*kinds, *(("fields", name) for name in subset)],
     )
     assert named.status_code == 200, named.text
-    rows = ListCodec.mappings(named.json())
+    rows = convert(named.json(), list[dict[str, object]])
     assert rows == [{k: v for k, v in row.items() if k in subset} for row in full]
     # The relations are real when named: the edges were read.
     assert any(row.get("narrows") for row in rows)
@@ -1115,16 +1117,16 @@ async def test_brief_changes_drop_unset_keys_and_cut_text_on_a_real_engine(
         edge_kind="narrows",
         actor="alice",
     )
-    full = ListCodec.mappings((await http.get("/api/change_log")).json())
+    full = convert((await http.get("/api/change_log")).json(), list[dict[str, object]])
     brief = await http.get("/api/change_log", params={"brief": "true"})
     assert brief.status_code == 200, brief.text
-    rows = ListCodec.mappings(brief.json())
+    rows = convert(brief.json(), list[dict[str, object]])
     assert rows == [_briefed(row) for row in full]
     (edit,) = (row for row in rows if row["kind"] == "description")
-    assert DictCodec.coerce(edit["old"])["description"] == first[:32]
-    assert DictCodec.coerce(edit["new"])["description"] == second[:32]
+    assert convert(edit["old"], dict[str, object])["description"] == first[:32]
+    assert convert(edit["new"], dict[str, object])["description"] == second[:32]
     peers = {
-        DictCodec.coerce(row["new"]).get("peer_id")
+        convert(row["new"], dict[str, object]).get("peer_id")
         for row in rows
         if row["kind"] == "edge_added"
     }
@@ -1154,7 +1156,7 @@ async def test_change_log_takes_several_kinds_before_its_limit_on_a_real_engine(
     async def kinds(*query: tuple[str, str]) -> list[object]:
         r = await http.get("/api/change_log", params=query)
         assert r.status_code == 200, r.text
-        return [row["kind"] for row in ListCodec.mappings(r.json())]
+        return [row["kind"] for row in convert(r.json(), list[dict[str, object]])]
 
     many = await kinds(("kind", "status"), ("kind", "title"), ("limit", "2"))
     assert many == ["title", "status"]
@@ -1292,7 +1294,9 @@ async def _check_ancestry(http: httpx2.AsyncClient, store: Store) -> None:
     assert "gp" not in {title for title, _ in capped}
     # Without the param, a row is as it was.
     plain = await http.get("/api/inquiries", params={"kind": "Issue", "limit": 5})
-    assert all("ancestors" not in row for row in ListCodec.mappings(plain.json()))
+    assert all(
+        "ancestors" not in row for row in convert(plain.json(), list[dict[str, object]])
+    )
 
 
 def _briefed(row: Mapping[str, object]) -> dict[str, object]:
@@ -1303,7 +1307,7 @@ def _briefed(row: Mapping[str, object]) -> dict[str, object]:
             key: value[:32]
             if key in {"title", "description"} and isinstance(value, str)
             else value
-            for key, value in DictCodec.coerce(row[side]).items()
+            for key, value in convert(row[side], dict[str, object]).items()
             if value is not None
         }
     return out
@@ -1331,7 +1335,9 @@ async def _titles_where(
         params=[("kind", "Issue"), ("filter", json.dumps(clause))],
     )
     assert r.status_code == 200, r.text
-    return sorted(StrCodec.coerce(row["title"]) for row in ListCodec.mappings(r.json()))
+    return sorted(
+        convert(row["title"], str) for row in convert(r.json(), list[dict[str, object]])
+    )
 
 
 async def _ancestry(
@@ -1351,15 +1357,15 @@ async def _ancestry(
         ],
     )
     assert r.status_code == 200, r.text
-    (row,) = ListCodec.mappings(r.json())
+    (row,) = convert(r.json(), list[dict[str, object]])
     names = {made: title for title, made in ids.items()}
     out: list[tuple[str, list[str]]] = []
-    for entry in ListCodec.mappings(row.get("ancestors")):
+    for entry in convert(row.get("ancestors"), list[dict[str, object]], default=[]):
         assert set(entry) == {"id", "kind", "seq", "title", "status", "child_ids"}
         assert entry["kind"] == "Issue"
-        title = names[uuid.UUID(StrCodec.coerce(entry["id"]))]
+        title = names[uuid.UUID(convert(entry["id"], str))]
         assert entry["title"] == title
-        children = ListCodec.coerce(entry["child_ids"], str)
+        children = convert(entry["child_ids"], list[str])
         out.append((title, [names[uuid.UUID(child)] for child in children]))
     return out
 

@@ -17,7 +17,7 @@ from trackinizer.lib.agent.types.sessions import (
     TurnContext,
     UserMessage,
 )
-from trackinizer.lib.custom_json import DictCodec, StrCodec
+from trackinizer.lib.custom_json import convert
 
 
 if TYPE_CHECKING:
@@ -211,11 +211,48 @@ def test_chain_orders_parts_by_the_thread_each_forked_from() -> None:
     assert [_declared_id(part) for part in ordered] == ["a", "b", "c"]
 
 
+def test_unfuse_drains_an_abandoned_part_before_yielding_the_next() -> None:
+    first = _part("a", UserMessage(content="Hi."))
+    second = _part("b", UserMessage(content="Again."))
+    parts = fuse.unfuse(fuse.fuse([first, second]))
+
+    abandoned = next(parts)
+    assert next(abandoned) == first[0]
+    assert list(next(parts)) == second
+
+
+def test_names_of_a_stream_starting_at_a_seam_names_an_empty_root() -> None:
+    record = ContextClear(extra={"$seam": "second"})
+
+    assert fuse.names_of([record]) == ["", "second"]
+
+
+def test_chain_deduplicates_a_cycle_and_keeps_the_cycle_component() -> None:
+    first = [TurnContext(extra={"payload": {"id": "a", "forked_from_id": "b"}})]
+    second = [TurnContext(extra={"payload": {"id": "b", "forked_from_id": "a"}})]
+
+    assert fuse.chain([first, second]) == [first, second]
+
+
+def test_chain_deduplicates_a_successor_list_repeating_one_part() -> None:
+    root = _part("root", UserMessage(content="root"))
+    child = [TurnContext(extra={"payload": {"id": "child", "forked_from_id": "root"}})]
+
+    assert fuse.chain([root, child, child]) == [root, child]
+
+
+def test_chain_treats_a_part_without_context_as_a_root() -> None:
+    part = [UserMessage(content="orphan")]
+
+    assert fuse.chain([part]) == [part]
+
+
 def _declared_id(part: Sequence[SessionRecord]) -> str:
     """Return the thread id a part's launch settings name."""
     opening = part[0]
     assert isinstance(opening, TurnContext)
-    return StrCodec.coerce(DictCodec.coerce(opening.extra.get("payload")).get("id"))
+    payload = convert(opening.extra["payload"], dict[str, object])
+    return convert(payload["id"], str)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ import uuid
 
 import pytest
 
-from trackinizer.lib.custom_json import DictCodec, ListCodec
+from trackinizer.lib.custom_json import convert
 from trackinizer.server.api.app import app
 from trackinizer.server.auth import AuthIdentity, current_user, generate_token
 
@@ -62,7 +62,7 @@ class TestCreateToken:
         r = client.post("/api/me/tokens", json={"name": "laptop"})
         assert r.status_code == 200, r.text
         raw: object = r.json()
-        body = DictCodec.coerce(raw)
+        body = convert(raw, dict[str, object])
         assert body["name"] == "laptop"
         # Defaults to caller's user role when ``role`` is omitted.
         assert body["role"] == "writer"
@@ -116,7 +116,7 @@ class TestCreateToken:
         engine.conn.fetchval = AsyncMock(return_value="writer")
         r = client.post("/api/me/tokens", json={"name": "ro", "role": "viewer"})
         assert r.status_code == 200, r.text
-        body = DictCodec.coerce(r.json())
+        body = convert(r.json(), dict[str, object])
         assert body["role"] == "viewer"
 
     def test_scoped_key_cannot_mint_above_its_ceiling(
@@ -175,10 +175,10 @@ class TestListTokens:
         r = client.get("/api/me/tokens")
         assert r.status_code == 200, r.text
         raw: object = r.json()
-        body = DictCodec.coerce(raw)
-        token_values = ListCodec.coerce(body["tokens"])
+        body = convert(raw, dict[str, object])
+        token_values = convert(body["tokens"], list[object])
         assert len(token_values) == 1
-        tok = DictCodec.coerce(token_values[0])
+        tok = convert(token_values[0], dict[str, object])
         assert tok["id"] == str(key_id)
         assert tok["prefix"] == "trax_aBcDeFgH"
         # The new ``role`` column lands in the wire shape so the UI can

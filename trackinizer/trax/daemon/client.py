@@ -39,8 +39,9 @@ Derived rather than written literally so the respawn target follows the
 package if it is ever moved or renamed."""
 
 SERVE_FLAG: Final = "--__serve"
-"""Hidden flag that turns this entry point into the daemon. Underscored and
-undocumented: it is an implementation detail of ``trax``, not a verb."""
+"""Hidden flag that turns this entry point into the daemon, followed by the
+source fingerprint it serves. Underscored and undocumented: it is an
+implementation detail of ``trax``, not a verb."""
 
 STALE_EXIT_CODE: Final = 75
 """Daemon's answer when its source predates the caller's. 75 is EX_TEMPFAIL:
@@ -144,7 +145,7 @@ def delegate(
         # local socket address must leave the original in-process CLI working.
         return None
     response = _try_once(argv, path, source_version)
-    if response is None and spawn and _spawn(path):
+    if response is None and spawn and _spawn(path, source_version=source_version):
         response = _try_once(argv, path, source_version)
     if response is None or response.exit_code == STALE_EXIT_CODE:
         # Stale daemon: it is shutting itself down, but this invocation must
@@ -269,10 +270,14 @@ def _request(argv: Sequence[str], source_version: str) -> Request:
 # directory first on ``sys.path``. Inherited from a caller inside another checkout, the
 # daemon imported that checkout's package, answered every request stale, and exited.
 #
+# The daemon serves the caller's fingerprint rather than taking its own: this one was
+# taken before the daemon imports anything, so it cannot vouch for an edit that lands
+# while the daemon imports the CLI.
+#
 # Readiness is a successful connect, not the socket file appearing: a stale file from a
 # killed daemon exists immediately, and waiting on existence would report ready before
 # anything is listening.
-def _spawn(path: Path) -> bool:
+def _spawn(path: Path, *, source_version: str) -> bool:
     """Start a detached daemon and wait until it ACCEPTS, returning success."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     # 3.2ms, paid only on the once-per-daemon-lifetime spawn. Every other
@@ -281,7 +286,7 @@ def _spawn(path: Path) -> bool:
 
     try:
         subprocess.Popen(  # noqa: S603 -- fixed interpreter and module path.
-            [sys.executable, "-m", _CLI_MODULE, SERVE_FLAG],
+            [sys.executable, "-m", _CLI_MODULE, SERVE_FLAG, source_version],
             cwd=_CWD.parents[__name__.count(".") - 1],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

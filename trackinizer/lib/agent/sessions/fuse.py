@@ -43,12 +43,7 @@ from trackinizer.lib.agent.types.sessions import (
     TurnContext,
     UserMessage,
 )
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    StrCodec,
-    json_freeze,
-    json_unfreeze,
-)
+from trackinizer.lib.custom_json import convert, json_unfreeze
 
 
 if TYPE_CHECKING:
@@ -162,11 +157,11 @@ def names_of(records: Iterable[SessionRecord], *, seam: str = "$seam") -> list[s
     out: list[str] = []
     for record in records:
         if isinstance(record, TurnContext) and seam in record.extra and not out:
-            out.append(StrCodec.coerce(dict(json_unfreeze(record.extra)).get(seam)))
+            out.append(convert(dict(record.extra)[seam], str))
         elif isinstance(record, ContextClear) and seam in record.extra:
             if not out:
                 out.append("")
-            out.append(StrCodec.coerce(dict(json_unfreeze(record.extra)).get(seam)))
+            out.append(convert(dict(record.extra)[seam], str))
     return out
 
 
@@ -192,7 +187,8 @@ def chain(
     found = list(parts)
     by_id: dict[str, Sequence[SessionRecord]] = {}
     for part in found:
-        own = StrCodec.coerce(_declared(part).get("id"))
+        own_value = _declared(part).get("id")
+        own = None if own_value is None else convert(own_value, str)
         if own:
             by_id[own] = part
     # A LIST per parent: a thread may be resumed more than once, and keeping
@@ -201,7 +197,8 @@ def chain(
     successors: dict[str, list[Sequence[SessionRecord]]] = {}
     roots: list[Sequence[SessionRecord]] = []
     for part in found:
-        parent = StrCodec.coerce(_declared(part).get(forked_from))
+        parent_value = _declared(part).get(forked_from)
+        parent = None if parent_value is None else convert(parent_value, str)
         if parent and parent in by_id:
             successors.setdefault(parent, []).append(part)
         else:
@@ -220,8 +217,10 @@ def chain(
                 continue
             seen.add(id(part))
             ordered.append(part)
-            own = StrCodec.coerce(_declared(part).get("id"))
-            stack.extend(reversed(successors.get(own, [])))
+            own_value = _declared(part).get("id")
+            own = None if own_value is None else convert(own_value, str)
+            if own:
+                stack.extend(reversed(successors.get(own, [])))
     # A component whose links form a CYCLE has no root, so the walk above never
     # started on it -- the ``seen`` guard only stops a re-visit, it cannot reach
     # an unreachable node. Those parts were dropped silently, and a file that
@@ -236,7 +235,8 @@ def _declared(part: Sequence[SessionRecord]) -> dict[str, object]:
     """Return the launch settings a part declared, by its wire key names."""
     for record in part:
         if isinstance(record, TurnContext):
-            return DictCodec.coerce(dict(json_unfreeze(record.extra)).get("payload"))
+            payload = dict(record.extra).get("payload")
+            return {} if payload is None else convert(payload, dict[str, object])
     return {}
 
 
@@ -251,7 +251,7 @@ def _named(
         if index or not isinstance(record, TurnContext):
             yield record
             continue
-        extra = dict(json_unfreeze(record.extra))
+        extra = dict(record.extra)
         extra[seam] = name
         yield _restated(record, extra)
 
@@ -279,11 +279,7 @@ def _unnamed(record: SessionRecord, *, seam: str) -> SessionRecord:
         return record
     return _restated(
         record,
-        {
-            key: value
-            for key, value in dict(json_unfreeze(record.extra)).items()
-            if key != seam
-        },
+        {key: value for key, value in dict(record.extra).items() if key != seam},
     )
 
 
@@ -297,7 +293,7 @@ def _restated(record: TurnContext, extra: Mapping[str, object]) -> TurnContext:
         effort=record.effort,
         summary_kind=record.summary_kind,
         encoding=record.encoding,
-        extra=json_freeze(dict(extra)),
+        extra=json_unfreeze(extra),
     )
 
 
@@ -333,5 +329,5 @@ def _boundary(
     return prefix, ContextClear(
         timestamp=opened or None,
         summary=carried,
-        extra=json_freeze({seam: name}),
+        extra={seam: name},
     )

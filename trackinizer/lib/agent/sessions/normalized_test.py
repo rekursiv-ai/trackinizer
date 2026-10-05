@@ -27,7 +27,7 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedToolResult,
     UserMessage,
 )
-from trackinizer.lib.custom_json import ListCodec, StrCodec, loads
+from trackinizer.lib.custom_json import convert, parse
 
 
 if TYPE_CHECKING:
@@ -118,9 +118,10 @@ def test_session_json_is_a_bare_array_of_tagged_records() -> None:
 
     text = stream.getvalue()
     assert text.endswith("\n")
-    document = ListCodec.mappings(loads(text))
+    document = parse(text, list[dict[str, object]])
     assert [
-        StrCodec.coerce(entry.get("py/object")).rpartition(".")[2] for entry in document
+        convert(entry.get("py/object"), str, default="").rpartition(".")[2]
+        for entry in document
     ] == ["TurnContext", "UserMessage"]
 
 

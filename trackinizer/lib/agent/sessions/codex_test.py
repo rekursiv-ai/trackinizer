@@ -26,6 +26,7 @@ from trackinizer.lib.agent.types.sessions import (
     IncompleteRecord,
     SessionRecord,
     ShellCommandResult,
+    Splice,
     SystemMessage,
     Thinking,
     TokenUsage,
@@ -36,15 +37,11 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedRecord,
     UncategorizedToolResult,
     UserMessage,
+    WebFetchResult,
     WebSearchResult,
     WebSearchResults,
 )
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    MutableJSONValue,
-    json_unfreeze,
-    loads,
-)
+from trackinizer.lib.custom_json import MutableJSONValue, convert, parse
 
 
 if TYPE_CHECKING:
@@ -84,7 +81,7 @@ def test_a_session_declares_its_context_and_identity() -> None:
     # follows. The per-turn settings then supersede it.
     launch = records[0]
     assert isinstance(launch, TurnContext)
-    declaration = DictCodec.coerce(launch.extra.get("payload"))
+    declaration = convert(launch.extra.get("payload"), dict[str, object])
     assert declaration["cwd"] == "/workspace"
     assert declaration["session_id"] == "s1"
     assert isinstance(records[1], ContextClear)
@@ -278,8 +275,8 @@ def test_a_foreign_subtype_is_not_written_as_a_codex_role() -> None:
 
     codex.denormalize([SystemMessage(content="", subtype="turn_duration")], out)
 
-    outer = DictCodec.coerce(loads(out.getvalue().splitlines()[0]))
-    payload = DictCodec.coerce(outer["payload"])
+    outer = parse(out.getvalue().splitlines()[0], dict[str, object])
+    payload = convert(outer["payload"], dict[str, object])
     assert payload["role"] == "system"
 
 
@@ -803,7 +800,7 @@ def test_a_patch_diff_is_stored_once() -> None:
     assert isinstance(record, FileEditResult)
 
     assert render_udiff(record.edits) == diff
-    assert diff not in json.dumps(json_unfreeze(record.extra)), (
+    assert diff not in json.dumps(dict(record.extra)), (
         "the diff is on the record already"
     )
 
@@ -830,9 +827,9 @@ def test_the_launch_payload_is_stored_once() -> None:
     records = list(codex.normalize(StringIO(native)))
     launch = records[0]
     assert isinstance(launch, TurnContext)
-    extra = json_unfreeze(launch.extra)
+    extra = dict(launch.extra)
 
-    assert "payload" not in DictCodec.coerce(extra.get("$outer"))
+    assert "payload" not in convert(extra.get("$outer"), dict[str, object])
     # The stamp the opening context's own field already carries.
     assert "$launch_timestamp_raw" not in extra
 
@@ -920,9 +917,10 @@ def test_a_legacy_patch_diff_is_stored_once() -> None:
     # answer this: the needle holds a real newline and the haystack holds the
     # escaped ``\\n``, so the search misses a diff that is plainly there --
     # which is how this assertion passed against a 100%-duplicated corpus.
-    stored = DictCodec.coerce(json_unfreeze(record.extra).get("changes"))
+    stored = convert(dict(record.extra).get("changes"), dict[str, object])
     assert [
-        DictCodec.coerce(entry).get("unified_diff") for entry in stored.values()
+        convert(entry, dict[str, object]).get("unified_diff")
+        for entry in stored.values()
     ] == [None], "the diff is on the record already"
 
     output = StringIO()
@@ -1267,6 +1265,267 @@ def test_grouping_still_joins_a_patch_that_touched_several_paths() -> None:
     groups = [list(group) for group in _grouped((lead, follower, other))]
 
     assert groups == [[lead, follower], [other]]
+
+
+def test_codex_small_helpers_preserve_edge_shapes() -> None:
+    assert codex._write_line("t", 3, "x", {}, template={}) == (
+        '{"timestamp":"t","ordinal":3,"type":"x","payload":{}}\n'
+    )
+    assert codex._canonical_order({"type": "Bash", "stdout": "x"}) == [
+        "type",
+        "stdout",
+    ]
+    assert codex._ordered("x", {"z": 1}) == {"z": 1}
+    assert codex._write_rows(WebSearchResults(call_id="c"), {}) is None
+    assert codex._write_content(
+        "",
+        (),
+        {"$order": ["text"]},
+        text_key="input_text",
+    ) == [
+        {"type": "input_text", "text": ""},
+    ]
+    assert codex._split("", [0]) == []
+    assert codex._is_command_shape("ls") is True
+    assert codex._is_command_shape(["ls"]) is True
+    assert codex._is_command_shape(["ls", 1]) is False
+    assert codex._command("") is None
+    assert codex._command("ls") == ("ls",)
+    assert codex._effort("ultra") == "max"
+    assert codex._effort("unknown") is None
+    assert codex._read_attachment({"type": "input_image", "image_url": "bad"}) is None
+
+
+def test_codex_writer_handles_unmapped_and_special_records() -> None:
+    assert codex._write_record(UncategorizedRecord(kind="foreign/type"))
+    assert codex._write_record(UncategorizedRecord(kind="foreign")) == []
+    assert codex._write_record(ContextClear()) == []
+    assert (
+        codex._write_record(AgentToAgentMessage(content="hi"))[0][0] == "response_item"
+    )
+    error = SystemMessage(content="oops", extra={"$event": True})
+    assert codex._write_record(error)[0][0] == "event_msg"
+    assert codex._write_record(SystemMessage(content="ok"))[0][0] == "response_item"
+    assert (
+        codex._write_result(
+            WebSearchResults(call_id="c", query="q"),
+        )
+        is not None
+    )
+    assert codex._write_result(WebFetchResult(call_id="c", content="x")) is not None
+    assert codex._write_completed(WebFetchResult(call_id="c"), {}) is None
+
+
+def test_codex_reader_handles_multiblock_and_malformed_shapes() -> None:
+    parts = codex._read_content(
+        [{"type": "input_text", "text": "a"}, {"type": "input_text", "text": "b"}],
+    )
+    assert parts[0] == ("a", "b")
+    thinking = codex._read_thinking(
+        {
+            "summary": [
+                {"type": "summary_text", "text": "a"},
+                {"type": "summary_text", "text": "b"},
+            ],
+        },
+        0,
+        None,
+    )
+    assert thinking.summary == "a\nb"
+    assert codex._declared_instructions({"base_instructions": "prompt"}) == "prompt"
+    assert (
+        codex._declared_instructions({"base_instructions": {"text": "prompt"}})
+        == "prompt"
+    )
+    assert codex._declared_instructions({"base_instructions": 7}) is None
+    assert codex._parse_arguments("{") is None
+
+
+def test_codex_patch_and_usage_helpers_report_exact_values() -> None:
+    assert (
+        codex._is_canonical_usage(
+            {"info": {}, "rate_limits": {}},
+            {},
+            ({}, {}),
+        )
+        is True
+    )
+    assert codex._is_canonical_usage({"other": 1}, {}, ({}, {})) is False
+    assert codex._stencil_changes({"changes": {"a": 7}})["changes"] == {"a": 7}
+    assert codex._shell_residual({"type": "x", "command": 7}, "x")["$present"] == [
+        "type",
+        "command",
+    ]
+
+
+def test_codex_completed_result_preserves_missing_edit_path() -> None:
+    result = FileEditResult(call_id="c", edits=(Splice(before="a", after="b"),))
+    assert codex._write_completed(result, {}) is None
+
+
+def test_codex_writer_handles_empty_and_legacy_shapes() -> None:
+    assert codex._with_instructions({"base_instructions": None}, []) == {
+        "base_instructions": None,
+    }
+    assert codex._write_context(TurnContext(effort="high"))["effort"] == "high"
+    assert codex._write_record(ContextCompaction(extra={"$echoes": "compact"})) == [
+        ("event_msg", {"type": "compact"}),
+    ]
+    assert codex._write_record(ContextClear()) == []
+    assert codex._write_record(IncompleteRecord(text="x")) == []
+    launch = StringIO()
+    codex.denormalize(
+        [
+            IncompleteRecord(text="first\n"),
+            TurnContext(extra={"payload": {}, "line": 2}),
+        ],
+        launch,
+    )
+    assert launch.getvalue() == (
+        'first\n{"timestamp":null,"type":"session_meta","payload":{}}\n'
+    )
+    assert codex._write_result(ToolResult(call_id="c")) is None
+    assert (
+        codex._write_output(
+            UncategorizedToolResult(call_id="c", extra={"$whole": True, "type": "x"}),
+            {"$whole": True, "type": "x", "other": 1},
+        )["type"]
+        == "x"
+    )
+    shell = ShellCommandResult(
+        call_id="c",
+        command=("echo", "ok"),
+        stdout="out",
+        stderr="",
+        exit_code=0,
+        extra={"$present": ["type", "call_id", "command", "stdout", "exit_code"]},
+    )
+    assert (
+        codex._write_legacy_end(
+            shell,
+            "shell_end",
+            {"$present": ["type", "call_id", "command", "stdout", "exit_code"]},
+            {},
+        )["stdout"]
+        == "out"
+    )
+    assert (
+        codex._write_changes(
+            {"a": FileWriteResult(call_id="c", path="a", content="x")},
+            {"a": {}},
+        )
+        is None
+    )
+    assert (
+        codex._write_rows(
+            WebSearchResults(
+                call_id="c",
+                content=(),
+                extra={"$rows": [{}], "$row_order": ["row"]},
+            ),
+            {"$rows": [{}], "$row_order": ["row"]},
+        )
+        == []
+    )
+    assert codex._write_content(
+        "x",
+        (),
+        {"$order": ["text", "text"]},
+        text_key="input_text",
+    ) == [
+        {"type": "input_text", "text": "x"},
+    ]
+    assert codex._write_content(
+        "x",
+        (),
+        {"$order": ["image"]},
+        text_key="input_text",
+    ) == [{"type": "input_text", "text": "x"}]
+    assert codex._write_content(
+        "x",
+        (Attachment(mime_descriptor="image/png", data=b"x"),),
+        {"$order": ["image"]},
+        text_key="input_text",
+    )
+
+
+def test_codex_reader_preserves_residual_and_multiline_shapes() -> None:
+    assert (
+        codex._read_thinking({"encrypted_content": "sealed"}, 0, None).extra[
+            "$summary_absent"
+        ]
+        is True
+    )
+    assert codex._read_thinking(
+        {
+            "summary": [
+                {"type": "summary_text", "text": "a"},
+                {"type": "summary_text", "text": "b"},
+            ],
+        },
+        0,
+        None,
+    ).extra["$parts"] == (1, 1)
+    parsed_call = codex._read_tool_call(
+        {
+            "type": "function_call",
+            "call_id": "c",
+            "name": "x",
+            "arguments": '{"a": 1, "a": 2}',
+        },
+        0,
+        None,
+    )
+    assert isinstance(parsed_call, ToolCall)
+    assert parsed_call.extra["$raw"] == '{"a": 1, "a": 2}'
+    assert codex._is_canonical_usage({"info": {}}, {"other": 1}, ({}, {})) is False
+    assert codex._stencil_changes({"changes": {"a": {"other": 1}}})["changes"] == {
+        "a": {"other": 1},
+    }
+    assert codex._shell_residual({"type": "x", "command": []}, "x")["$present"] == [
+        "type",
+        "command",
+    ]
+    assert (
+        codex._read_context({"effort": "ultra", "summary": "auto"}, None).effort
+        == "max"
+    )
+    message = codex._read_response_item(
+        "agent_message",
+        {
+            "author": "a",
+            "recipient": "b",
+            "content": [
+                {"type": "input_text", "text": "a"},
+                {"type": "input_text", "text": "b"},
+            ],
+        },
+        0,
+        None,
+    )
+    assert isinstance(message, AgentToAgentMessage)
+    assert message.extra["$parts"] == (1, 1)
+
+
+def test_codex_line_state_preserves_noncanonical_records() -> None:
+    item = UncategorizedRecord(
+        kind="response_item/x",
+        payload={"value": 1, "$codex_line": {"value": {"old": 1}}},
+    )
+    stored = codex._with_line_state(
+        item,
+        {"payload": {}, "type": "x", "timestamp": "t", "extra": 1},
+    )
+    assert isinstance(stored, UncategorizedRecord)
+    assert "$codex_line" in stored.payload
+    state, restored = codex._pop_line_state(stored)
+    assert state["payload_at"] == 0
+    assert isinstance(restored, UncategorizedRecord)
+    assert restored.payload["$codex_line"] == {"value": {"old": 1}}
+    assert codex._with_line_state(
+        IncompleteRecord(text="x"),
+        {"payload": {}},
+    ) == IncompleteRecord(text="x")
 
 
 if __name__ == "__main__":

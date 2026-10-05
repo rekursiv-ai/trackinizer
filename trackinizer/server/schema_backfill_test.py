@@ -18,12 +18,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.agent.types.sessions import UncategorizedRecord
-from trackinizer.lib.custom_json import (
-    DataclassCodec,
-    DictCodec,
-    json_freeze,
-    json_unfreeze,
-)
+from trackinizer.lib.custom_json import convert, json_freeze, json_unfreeze, to_builtins
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.session_records import SessionRecordRow
@@ -170,7 +165,7 @@ def test_the_dotted_tag_matches_what_the_codec_emits() -> None:
     No database: the claim is about the MIGRATION TEXT agreeing with what the
     codec emits, which is decidable by reading both.
     """
-    emitted = DataclassCodec.to_json(UncategorizedRecord(kind="x"))
+    emitted = to_builtins(UncategorizedRecord(kind="x"))
     assert (
         emitted["py/object"]
         == "trackinizer.lib.agent.types.sessions.UncategorizedRecord"
@@ -193,7 +188,7 @@ async def test_the_original_kind_survives_as_provenance(store: Store) -> None:
     await _run_backfill(store)
 
     rows = await store.read_session_records(session_id, part=-1, limit=500)
-    kinds = [DictCodec.coerce(row.payload).get("kind") for row in rows]
+    kinds = [convert(row.payload, dict[str, object]).get("kind") for row in rows]
     assert kinds == [
         "legacy/UserMessage",
         "legacy/AssistantMessage",

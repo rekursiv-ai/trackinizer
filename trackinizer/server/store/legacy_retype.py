@@ -48,15 +48,7 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedToolResult,
     UserMessage,
 )
-from trackinizer.lib.custom_json import (
-    BoolCodec,
-    DictCodec,
-    IntCodec,
-    ListCodec,
-    StrCodec,
-    json_freeze,
-    json_unfreeze,
-)
+from trackinizer.lib.custom_json import convert, json_freeze
 
 
 if TYPE_CHECKING:
@@ -158,11 +150,10 @@ def retype(
             f"ciphertext accompanies {record.kind!r}, but only a "
             "legacy/AssistantMessage carried sealed reasoning",
         )
-    # Unfrozen before narrowing: ``json_freeze`` maps arrays to TUPLES, and
-    # ``ListCodec.coerce`` narrows only ``list`` -- a frozen ``tool_calls``
-    # would silently coerce to [] and the calls would vanish. Same asymmetry
+    # ``json_freeze`` maps arrays to TUPLES; ``read`` converts the payload
+    # whole, so a frozen ``tool_calls`` survives narrowing. Same asymmetry
     # ``SessionRecordRow.record()`` documents.
-    payload = DictCodec.coerce(json_unfreeze(record.payload))
+    payload = convert(record.payload, dict[str, object])
     match record.kind:
         case "legacy/UserMessage":
             return Retyped(
@@ -170,7 +161,7 @@ def retype(
                     UserMessage(
                         context_id=record.context_id,
                         timestamp=timestamp,
-                        content=StrCodec.coerce(payload.get("text")),
+                        content=convert(payload.get("text"), str, default=""),
                         attachments=_attachments(payload),
                     ),
                 ),
@@ -181,20 +172,20 @@ def retype(
                     AgentToAgentMessage(
                         context_id=record.context_id,
                         timestamp=timestamp,
-                        content=StrCodec.coerce(payload.get("text")),
+                        content=convert(payload.get("text"), str, default=""),
                         attachments=_attachments(payload),
-                        sender=StrCodec.coerce(payload.get("source")),
+                        sender=convert(payload.get("source"), str, default=""),
                     ),
                 ),
             )
         case "legacy/SystemMessage":
-            role = StrCodec.coerce(payload.get("role"))
+            role = convert(payload.get("role"), str, default="")
             return Retyped(
                 records=(
                     SystemMessage(
                         context_id=record.context_id,
                         timestamp=timestamp,
-                        content=StrCodec.coerce(payload.get("text")),
+                        content=convert(payload.get("text"), str, default=""),
                         # The old default ("system") is noise; only a wire
                         # role that differed is provenance (axiom 10).
                         extra={"role": role} if role and role != "system" else {},
@@ -216,8 +207,8 @@ def retype(
                     UncategorizedToolResult(
                         context_id=record.context_id,
                         timestamp=timestamp,
-                        call_id=StrCodec.coerce(payload.get("call_id")),
-                        content=StrCodec.coerce(payload.get("content")),
+                        call_id=convert(payload.get("call_id"), str, default=""),
+                        content=convert(payload.get("content"), str, default=""),
                         attachments=_attachments(payload),
                         # Only receipt fields the provider actually set: the
                         # old union's defaults (False, "") are noise a reader
@@ -225,13 +216,27 @@ def retype(
                         extra={
                             key: value
                             for key, value in (
-                                ("is_error", BoolCodec.coerce(payload.get("is_error"))),
-                                ("diff", StrCodec.coerce(payload.get("diff"))),
+                                (
+                                    "is_error",
+                                    convert(
+                                        payload.get("is_error"),
+                                        bool,
+                                        default=False,
+                                    ),
+                                ),
+                                ("diff", convert(payload.get("diff"), str, default="")),
                                 (
                                     "diff_file_path",
-                                    StrCodec.coerce(payload.get("diff_file_path")),
+                                    convert(
+                                        payload.get("diff_file_path"),
+                                        str,
+                                        default="",
+                                    ),
                                 ),
-                                ("summary", StrCodec.coerce(payload.get("summary"))),
+                                (
+                                    "summary",
+                                    convert(payload.get("summary"), str, default=""),
+                                ),
                             )
                             if value
                         },
@@ -244,21 +249,29 @@ def retype(
                     ContextCompaction(
                         context_id=record.context_id,
                         timestamp=timestamp,
-                        summary=StrCodec.coerce(payload.get("text")),
+                        summary=convert(payload.get("text"), str, default=""),
                         extra={
                             key: value
                             for key, value in (
                                 (
                                     "token_before",
-                                    IntCodec.coerce(payload.get("token_before")),
+                                    convert(
+                                        payload.get("token_before"),
+                                        int,
+                                        default=0,
+                                    ),
                                 ),
                                 (
                                     "token_after",
-                                    IntCodec.coerce(payload.get("token_after")),
+                                    convert(payload.get("token_after"), int, default=0),
                                 ),
                                 (
                                     "fallback_reason",
-                                    StrCodec.coerce(payload.get("fallback_reason")),
+                                    convert(
+                                        payload.get("fallback_reason"),
+                                        str,
+                                        default="",
+                                    ),
                                 ),
                             )
                             if value
@@ -270,8 +283,8 @@ def retype(
             return Retyped(
                 slash=SlashCommandOut(
                     timestamp=timestamp,
-                    command=StrCodec.coerce(payload.get("command")),
-                    args=StrCodec.coerce(payload.get("args")),
+                    command=convert(payload.get("command"), str, default=""),
+                    args=convert(payload.get("args"), str, default=""),
                 ),
             )
 
@@ -288,11 +301,11 @@ def _assistant_fan_out(
         AssistantMessage(
             context_id=record.context_id,
             timestamp=timestamp,
-            content=StrCodec.coerce(payload.get("text")),
+            content=convert(payload.get("text"), str, default=""),
             attachments=_attachments(payload),
         ),
     ]
-    thinking = StrCodec.coerce(payload.get("thinking"))
+    thinking = convert(payload.get("thinking"), str, default="")
     if thinking or ciphertext:
         records.append(
             Thinking(
@@ -306,16 +319,26 @@ def _assistant_fan_out(
         ToolCall(
             context_id=record.context_id,
             timestamp=timestamp,
-            call_id=StrCodec.coerce(call.get("id")),
-            name=StrCodec.coerce(call.get("name")),
-            arguments=json_freeze(DictCodec.coerce(call.get("args"))),
+            call_id=convert(call.get("id"), str, default=""),
+            name=convert(call.get("name"), str, default=""),
+            arguments=json_freeze(
+                convert(call.get("args"), dict[str, object], default={}),
+            ),
         )
-        for call in ListCodec.mappings(payload.get("tool_calls"))
+        for call in convert(
+            payload.get("tool_calls"),
+            list[dict[str, object]],
+            default=[],
+        )
     )
     tokens = {
         key: count
-        for key, value in DictCodec.coerce(payload.get("tokens")).items()
-        if (count := IntCodec.coerce(value))
+        for key, value in convert(
+            payload.get("tokens"),
+            dict[str, object],
+            default={},
+        ).items()
+        if (count := convert(value, int))
     }
     if tokens:
         records.append(
@@ -335,7 +358,7 @@ def _assistant_fan_out(
 # rather than guessing at the union member's codec shape unverified.
 def _attachments(payload: Mapping[str, object]) -> tuple[Attachment, ...]:
     """Rebuild inline attachments; raise on any shape never seen in the wild."""
-    items = ListCodec.mappings(payload.get("attachments"))
+    items = convert(payload.get("attachments"), list[dict[str, object]], default=[])
     if items:
         raise ValueError(
             "legacy attachment encountered; the live corpus carried none and "
