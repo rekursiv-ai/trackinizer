@@ -1,0 +1,79 @@
+/* The cluster briefing (ThreadBriefing.tsx) in the roots list's place, and the
+   node insights (NodeInsights.tsx) at the top of Peek: the design prototype's
+   panels, on the app's tokens. Colours read the list panels' (--text, --muted,
+   --line), and the verdicts the evidence hues (--l-evidence, --l-against). */
+
+.briefing {
+  display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent;
+}
+.briefing-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 1; }
+.briefing-crumb { font-size: 12px; }
+.briefing-hero { padding: 12px 14px 4px; }
+.briefing-ref { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.briefing-title { margin: 6px 0 0; font-size: 16px; font-weight: 550; line-height: 1.35; text-wrap: balance; }
+.briefing-sub { margin: 4px 0 0; font-size: 11.5px; }
+
+.briefing-verdicts { margin-top: 10px; }
+.briefing-vbar { display: flex; gap: 1px; height: 4px; border-radius: 2px; overflow: hidden; background: var(--surface-raised); }
+.briefing-vbar span { display: block; height: 100%; }
+.briefing-vbar .is-proven, .briefing-vkey .is-proven { background: var(--l-evidence); }
+.briefing-vbar .is-unproven { background: var(--surface-hover); }
+.briefing-vbar .is-disproven { background: var(--l-against); }
+.briefing-vkey { display: flex; flex-wrap: wrap; gap: 3px 12px; margin-top: 7px; font-size: 10.5px; color: var(--muted); }
+.briefing-vkey i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
+.briefing-vkey .is-proven { background: var(--l-evidence); }
+.briefing-vkey .is-unproven { background: var(--surface-hover); }
+.briefing-vkey .is-disproven { background: var(--l-against); }
+.briefing-vkey-side { flex-basis: 100%; color: var(--muted); }
+
+.briefing-sec { padding: 14px 14px 4px; }
+.briefing-sec h5 { display: flex; margin: 0 0 7px; font: 500 10.5px var(--mono); letter-spacing: 0.02em; color: var(--muted); text-transform: lowercase; }
+.briefing-sec-side { margin-left: auto; color: var(--muted); }
+.briefing-prose { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+
+.briefing-turns { list-style: none; margin: 0; padding: 0 0 0 12px; border-left: 1px solid var(--line-strong); }
+.briefing-turn { position: relative; padding: 0 0 10px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.briefing-turn::before { content: ""; position: absolute; left: -16px; top: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.briefing-turn-date { display: block; font-size: 10.5px; color: var(--muted); }
+.briefing-turn-what { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 2px; }
+.briefing-turn-title { color: var(--muted); }
+
+.briefing-next { padding: 0 0 10px; border-bottom: 1px solid var(--row-divider); }
+.briefing-next-run { font-size: 12.5px; line-height: 1.55; color: var(--text); }
+.briefing-next-template { color: var(--muted); }
+.briefing-next-settle { margin-top: 3px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.briefing-next-meta { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 4px; font-size: 10.5px; color: var(--muted); }
+
+.briefing-row { display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; gap: 8px; width: 100%; padding: 4px 5px; margin: 0 -5px 1px; border-radius: 5px; text-align: left; font-size: 12px; color: var(--text); }
+.briefing-row:hover { background: var(--surface-hover); }
+.briefing-row-ref { color: var(--muted); }
+.briefing-row-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.briefing-row:hover .briefing-row-title { color: var(--text); }
+.briefing-row-side { color: var(--muted); font-size: 11px; }
+.briefing-dot { width: 7px; height: 7px; border-radius: 50%; }
+.briefing-dot.is-proven { background: var(--l-evidence); }
+.briefing-dot.is-open { background: var(--surface-hover); }
+.briefing-dot.is-hollow { background: none; border: 1.3px solid var(--l-against); }
+
+.briefing-pill { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line-strong); background: var(--surface-raised); color: var(--ink-muted); font-size: 10.5px; }
+.briefing-pill:hover { border-color: var(--muted); color: var(--text); }
+
+/* The node's insights at the top of Peek, its detail under them. */
+.node-insights { flex-shrink: 0; max-height: 46%; overflow-y: auto; overscroll-behavior: contain; border-bottom: 1px solid var(--line); scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+.node-insights .briefing-sec:last-child { padding-bottom: 12px; }
+.node-chain { list-style: none; margin: 0; padding: 0; }
+.node-chain-step { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 0 6px; font-size: 12px; }
+.node-chain-verb { flex-basis: 100%; margin: 0 0 2px 10px; padding-left: 10px; border-left: 1px solid var(--line-strong); font-size: 10.5px; color: var(--muted); }
+.node-chain-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.node-mix { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; font: 11.5px var(--mono); color: var(--muted); }
+.node-mix-item { display: inline-flex; align-items: center; gap: 6px; }
+.node-mix-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.node-mix-dot.is-exp { background: var(--g-kind-Experiment, var(--violet)); }
+.node-mix-dot.is-source { background: var(--g-kind-Paper, var(--accent-hover)); }
+.node-mix-dot.is-belief { background: var(--g-kind-Belief, var(--violet)); }
+.node-mix-dot.is-work { background: var(--g-kind-Issue, var(--accent)); }
+.node-mix-sub { display: flex; gap: 14px; margin: 6px 0 0; font-size: 11px; color: var(--muted); }
+.node-mix-sub .is-against { color: var(--l-against); }
+.node-next { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--muted); }

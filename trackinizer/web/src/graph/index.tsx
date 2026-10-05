@@ -31,12 +31,14 @@ import "./graph.css";
 import { hopCounts, isWithin, reach } from "./hops";
 import { graphQuery, useLiveGraph } from "./live";
 import { type DrawNode, GraphModel, type Lens } from "./model";
+import { NodeInsights } from "./NodeInsights";
 import { useThemePalette } from "./palette";
 import { type Covered, type CreateRenderer, forceGraphRenderer, type Renderer } from "./renderer";
 import { replay } from "./replay";
 import { findRoots } from "./roots";
 import { RootsPanel } from "./RootsPanel";
 import { hopsName, MAX_ROWS, type MatchGroup, RESULTS, SearchBox, type SearchKey, SearchResults, searchNodes } from "./search";
+import { ThreadBriefing } from "./ThreadBriefing";
 
 /** The graph route, as the hash holds it. */
 type Place = Extract<Route, { name: "graph" }>;
@@ -147,6 +149,15 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
   const searching = query.trim() !== "";
   const grouped = place.grouped ?? true;
   const roots = useMemo(() => (grouped && data ? findRoots(data) : null), [grouped, data]);
+  /** What a focus, a selection or a hover lights names: its busiest nodes, capped, so a ring keeps readable. */
+  const litLabels = useMemo(() => {
+    if (lit === null) return [];
+    return model.nodes
+      .filter((drawn) => !drawn.hidden && lit.has(drawn.id))
+      .sort((a, b) => b.degree - a.degree)
+      .slice(0, LABELLED_MAX)
+      .map((drawn) => drawn.id);
+  }, [lit, model, data]);
   const lens = useMemo<Lens>(
     () => ({
       hiddenKinds: shownBy.kinds,
@@ -156,13 +167,15 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
       only,
       strong: new Set([focusNode?.id, selected?.id].filter((id) => id !== undefined)),
       matches: new Set(matches.map((row) => row.id)),
-      labelled: new Set(roots?.groups.flatMap((group) => (group.root ? [group.key] : [])) ?? []),
+      labelled: new Set([...(roots?.groups.flatMap((group) => (group.root ? [group.key] : [])) ?? []), ...litLabels]),
     }),
-    [shownBy, lit, focusNode, only, selected, matches, roots],
+    [shownBy, lit, focusNode, only, selected, matches, roots, litLabels],
   );
 
   const focusOn = (row: GraphNode) => go({ focus: { ref: { kind: row.kind, seq: row.seq }, hops: focus?.hops ?? 1 } });
   const onDoubleClick = useEffectEvent((node: DrawNode) => focusOn(node));
+  // An island's name on the canvas: pick its root, as the roots list's row would.
+  const onIsland = useEffectEvent((key: string) => frameRoot(key));
   useEffect(() => {
     const canvas = host.current!;
     const made = createRenderer(
@@ -171,6 +184,7 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
         hover: (node) => setHovered(node ? { node, ...made.screenOf(node) } : null),
         click: (node) => setSelectedId(node?.id ?? null),
         doubleClick: (node) => onDoubleClick(node),
+        island: (key) => onIsland(key),
       },
       () => coveredOf(canvas),
     );
@@ -214,6 +228,22 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
   }, [panels, renderer]);
   // force-graph reads each node's group only as the force takes its nodes, so a new answer registers it again.
   useEffect(() => renderer?.group(roots ? (node) => roots.home.get(node.id) : null), [renderer, roots]);
+  // Each island's name while grouped: its root's title, in the theme's inks. The
+  // canvas draws them only while zoomed out far enough that root labels alone
+  // would not carry, and a click on one picks the root.
+  const islandNames = useMemo(() => {
+    if (!roots) return null;
+    const names = new Map<string, string>();
+    for (const group of roots.groups) if (group.root) names.set(group.key, group.root.title || "(untitled)");
+    return names;
+  }, [roots]);
+  useEffect(() => {
+    if (!renderer) return;
+    renderer.nameIslands(
+      grouped && islandNames ? (key) => islandNames.get(key) : null,
+      { title: palette.halo, count: palette.fallback, outline: palette.background },
+    );
+  }, [renderer, grouped, islandNames, palette]);
   // A selected node the graph no longer has stays unselected should it come back (R3-03).
   useEffect(() => {
     if (selectedId !== null && data && !selected) setSelectedId(null);
@@ -243,16 +273,23 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
     setFraming(null);
   }, [framing, renderer]);
   /**
-   * A root picked in the roots list: Peek opens on it, and its island is framed
+   * A root picked in the roots list or by its island's name: its briefing takes
+   * the roots list's place, Peek opens on the root, and its island is framed
    * beside Peek. The island is the nodes laid out by it (`home`), not all under
    * it: a node under several roots sits by the nearest, in another island.
    */
   const frameRoot = (key: string) => {
     const group = roots?.groups.find((found) => found.key === key);
     if (!group || !roots) return;
+    // Selecting the root opens Peek on it, and its briefing heads that; the nodes
+    // under no root have no root to select, so their pick only frames them.
     setSelectedId(group.root?.id ?? null);
     setFraming(new Set([...roots.home].flatMap(([id, home]) => (home === key ? [id] : []))));
   };
+  // The cluster the selection tops, if it tops one: its briefing heads Peek, so
+  // that reading a thread and reading a record are the same act, and the roots
+  // list keeps its place while they are read.
+  const threadGroup = selected === undefined ? undefined : roots?.groups.find((found) => found.root?.id === selected.id);
   const setLimit = (limit: number) => {
     // A Replay holds answers back; a new limit's answer draws at once.
     replayer.stop();
@@ -415,7 +452,12 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
           />
         ) : roots && view.roots ? (
           // Beside an open Peek, a strip, so the graph keeps at least half the width at 1,280 px.
-          <RootsPanel id={rootsId} roots={roots} onSelect={frameRoot} compact={selected !== undefined && !peek.collapsed} />
+          <RootsPanel
+            id={rootsId}
+            roots={roots}
+            onSelect={frameRoot}
+            compact={selected !== undefined && !peek.collapsed}
+          />
         ) : null}
         <div className="graph-stage">
           <div className="graph-canvas" ref={host} aria-busy={!data} />
@@ -445,7 +487,12 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
           {selected ? (
             // Its own box, so the capture sees Peek's links before they navigate; Peek places itself.
             <div className="graph-peek" onClickCapture={followLink}>
-              <Peek row={selected} panel={peek} onClose={() => setSelectedId(null)} />
+              <Peek row={selected} panel={peek} onClose={() => setSelectedId(null)}>
+                {data && threadGroup ? (
+                  <ThreadBriefing group={threadGroup} graph={{ nodes, edges: data.edges }} onSelectNode={select} />
+                ) : null}
+                {data ? <NodeInsights node={selected} graph={{ nodes, edges: data.edges }} onSelectNode={select} /> : null}
+              </Peek>
             </div>
           ) : null}
         </div>
@@ -680,6 +727,8 @@ function readViewState(saved: unknown): ViewState | null {
 
 const STATE_KEY = "trackinizer.v2.graph";
 const TIP_OFFSET_PX = 12;
+/** The most nodes of a lit neighbourhood that name themselves under it. */
+const LABELLED_MAX = 24;
 const NO_NODES: readonly GraphNode[] = [];
 const NO_STRINGS: ReadonlySet<string> = new Set();
 const NO_COUNTS = { 1: 0, 2: 0, 3: 0, all: 0 } as const;

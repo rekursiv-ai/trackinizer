@@ -1,6 +1,7 @@
 import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ALL_NODES, type Graph } from "../api/graph";
 import { type Sent, stubFetch } from "../api/testing";
@@ -23,8 +24,9 @@ vi.mock("../ui/Peek", async (importOriginal) => {
   const { PanelToggle } = await import("../ui/panel");
   return {
     ...(await importOriginal<typeof import("../ui/Peek")>()),
-    Peek: ({ row, panel, onClose }: { row: { kind: string; seq: number }; panel: Panel; onClose: () => void }) => (
+    Peek: ({ row, panel, onClose, children }: { row: { kind: string; seq: number }; panel: Panel; onClose: () => void; children?: ReactNode }) => (
       <aside id="peek" aria-label="Peek" data-collapsed={panel.collapsed}>
+        {children}
         <h2>
           {row.kind}#{row.seq}
         </h2>
@@ -528,7 +530,7 @@ test("hovering a node shows its kind, status, ref and title by it, as text (S9),
 test("a click selects a node: Peek opens on it, it takes the strong halo, and its light holds while the pointer roams; Close clears it", async () => {
   const { user } = await shown();
   act(() => renderer.events!.click(renderer.node("Issue 1")));
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#1");
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#1");
   expect(halos()).toEqual(["Issue 1: halo"]);
   expect(dimmed()).toEqual(["A paper"]);
   act(() => renderer.events!.hover(renderer.node("A paper")));
@@ -553,9 +555,9 @@ test("a link in Peek to a node the graph draws selects it in place and centres o
   act(() => renderer.events!.click(renderer.node("Issue 2")));
   // fireEvent answers false when the click's default, following the link, was prevented.
   expect(fireEvent.click(screen.getByRole("link", { name: "Parent by ref" }))).toBe(false);
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#1");
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#1");
   expect(fireEvent.click(screen.getByRole("link", { name: "Paper by id" }))).toBe(false);
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Paper#3");
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Paper#3");
   expect(renderer.centred).toEqual(["Issue 1", "A paper"]);
   expect(fireEvent.click(screen.getByRole("link", { name: "Open" }))).toBe(true);
   expect(fireEvent.click(screen.getByRole("link", { name: "Not drawn" }))).toBe(true);
@@ -573,7 +575,7 @@ test("a Peek link to a node the graph loaded but does not draw navigates: one a 
   sessionStorage.setItem("trackinizer.v2.graph", JSON.stringify({ ...kept, hiddenKinds: [], only: true }));
   history.replaceState(null, "", "#/graph?focus=Issue/1&hops=1");
   await shown("2 of 3 nodes");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#1");
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#1");
   expect(fireEvent.click(screen.getByRole("link", { name: "Paper by id" }))).toBe(true);
 });
 
@@ -600,13 +602,13 @@ test("search lights its matches on the canvas and lists them newest first; Enter
   await user.keyboard("{ArrowDown}{ArrowDown}");
   expect(titles([screen.getByRole("option", { selected: true })])).toEqual(["Issue 1"]);
   await user.keyboard("{ArrowUp}{Enter}");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#2");
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#2");
   expect(renderer.centred).toEqual(["Issue 2"]);
   expect((search() as HTMLInputElement).value).toBe("issue");
   expect(titles(screen.getAllByRole("option"))).toEqual(["Issue 2", "Issue 1"]);
   // A click picks too.
   await user.click(screen.getAllByRole("option")[1]!);
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#1");
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#1");
 });
 
 test("search finds no node a filter hides, so a pick never centres on empty space (G4)", async () => {
@@ -644,7 +646,7 @@ test("search by #seq picks the first match on Enter; no match says so; Escape em
   await user.click(search());
   fireEvent.change(search(), { target: { value: "#3" } });
   await user.keyboard("{Enter}");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Paper#3");
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Paper#3");
   fireEvent.change(search(), { target: { value: "nothing like it" } });
   expect(screen.getByRole("listbox", { name: "Matches" }).textContent).toContain("No matches");
   await user.keyboard("{Escape}");
@@ -663,7 +665,7 @@ test("Enter after a re-read leaves fewer matches than the marked one picks a mat
   act(() => client.setQueryData(graphQuery(1000).queryKey, { nodes: [node(1)], edges: [] }));
   await screen.findByText("1 of 1 node match");
   await user.keyboard("{Enter}");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#1");
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#1");
 });
 
 test("the keys: f fits, / goes to search", async () => {
@@ -790,13 +792,13 @@ test("opened on a focus, as Show in graph opens it, the view selects the focus: 
   answers.set(1000, CHAIN);
   history.replaceState(null, "", "#/graph?focus=Issue/2&hops=1");
   await shown("6 nodes");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#2");
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#2");
   expect(renderer.framed).toEqual([{ titles: ["Issue 1", "Issue 2", "Issue 3"], covered: { right: 360 } }]);
   expect(renderer.centred).toEqual([]);
   // A focus moved within the view selects nothing new.
   act(() => renderer.events!.doubleClick(renderer.node("Issue 4")));
   await waitFor(() => expect(location.hash).toBe("#/graph?focus=Issue/4&hops=1"));
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#2");
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#2");
 });
 
 test("a focus by an id in capitals finds its node, and the hash spells the id in lower case", async () => {
@@ -888,36 +890,34 @@ test("the graph opens grouped by root: each root's subgraph is an island, the ro
   expect(document.activeElement).toBe(rootsList());
 });
 
-test("a root picked in the list opens in Peek and its island is framed beside Peek; Unrooted is only framed", async () => {
+test("a root picked in the list opens its briefing in Peek, and its island is framed beside Peek; Unrooted is only framed", async () => {
   answers.set(1000, TREES);
   history.replaceState(null, "", "#/graph");
   const { user } = await shown("6 nodes");
   rootsList()!.focus();
   await user.keyboard("jj{Enter}");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#1");
+  // The briefing of the cluster the root tops, above the detail, in Peek.
+  expect(within(peek()!).getByRole("heading", { name: "Issue 1" })).toBeTruthy();
+  expect(within(peek()!).getByRole("heading", { name: "Issue#1" })).toBeTruthy();
   expect(renderer.framed.map((frame) => frame.titles)).toEqual([["Issue 1", "Issue 2"]]);
   expect(renderer.centred).toEqual([]);
-  // Beside Peek the list is a strip of glyphs, each named by its root.
+  // Unrooted has no thread to brief, so its pick only frames it.
   await user.click(screen.getByRole("option", { name: "Unrooted" }));
   expect(peek()).toBeNull();
   expect(renderer.framed.at(-1)).toEqual({ titles: ["Issue 6"], covered: { right: 0 } });
 });
 
-test("while grouped, Peek narrows the roots list to a strip that keeps its marked root and its keys; closing Peek widens it again", async () => {
+test("a picked root's briefing shows in Peek, and the roots list keeps its place and its box", async () => {
   answers.set(1000, TREES);
   history.replaceState(null, "", "#/graph");
   const { user } = await shown("6 nodes");
   rootsList()!.focus();
   await user.keyboard("jj{Enter}");
-  const panel = () => screen.getByRole("complementary", { name: "Roots" });
-  expect(panel().classList.contains("is-compact")).toBe(true);
-  expect(screen.queryByRole("searchbox", { name: "Filter roots" })).toBeNull();
-  expect(within(rootsList()!).getByRole("option", { selected: true }).getAttribute("aria-label")).toBe("Issue#1 Issue 1");
-  await user.keyboard("k{Enter}");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#3");
+  expect(within(peek()!).getByRole("heading", { name: "Issue 1" })).toBeTruthy();
+  // Beside Peek the list is a strip; closing Peek widens it, and the box is back.
   await user.click(screen.getByRole("button", { name: "Close peek" }));
-  expect(panel().classList.contains("is-compact")).toBe(false);
   expect(screen.getByRole("searchbox", { name: "Filter roots" })).toBeTruthy();
+  expect(screen.getByRole("complementary", { name: "Roots" })).toBeTruthy();
 });
 
 test("the graph's keys work from the roots list: . focuses on the root picked, / searches, and Esc clears the selection, then the focus", async () => {
@@ -1001,7 +1001,7 @@ test("Peek's button, or ], collapses it and frames the canvas again; the selecti
   expect(renderer.refits).toHaveLength(1);
   expect(halos()).toEqual(["Issue 1: halo"]);
   act(() => renderer.events!.click(renderer.node("Issue 2")));
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#2");
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#2");
   expect(collapsed()).toBe("true");
   await user.keyboard("]");
   expect(collapsed()).toBe("false");
@@ -1035,7 +1035,7 @@ test("the search results' button, or [, collapses them to a strip with their cou
   expect(halos()).toEqual(["Issue 1: match", "Issue 2: match"]);
   await user.click(search());
   await user.keyboard("{Enter}");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#2");
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#2");
   search().blur();
   // user-event spells the [ key "[[".
   await user.keyboard("[[");

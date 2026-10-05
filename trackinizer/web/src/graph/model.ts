@@ -171,7 +171,9 @@ export class GraphModel {
       const dimmed = lit !== null && far === undefined;
       const halo = strong.has(drawn.id) ? "strong" : matches.has(drawn.id) ? "match" : null;
       const label = labelled.has(drawn.id) ? drawn.title || "(untitled)" : null;
-      drawn.look = nodeLook(drawn, this.#palette, { dimmed, far: far !== undefined && far >= 2, halo, label });
+      // What a focus lights keeps its kind's hue at every zoom: the reader asked
+      // what this neighbourhood is made of, and the answer should not wait for a zoom.
+      drawn.look = nodeLook(drawn, this.#palette, { dimmed, far: far !== undefined && far >= 2, halo, label, near: lit !== null && !dimmed });
       drawn.hidden = hiddenKinds.has(drawn.kind) || hiddenStatuses.has(drawn.status) || (only && dimmed);
     }
     for (const link of this.links) {
@@ -227,5 +229,5 @@ const SLOW_DOWN = 0.25;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
 /** Every node and link is styled before the canvas sees it; this only fills the field until then. */
-const NO_LOOK: NodeLook = { radius: 0, fill: "", fillAlpha: 0, wash: null, washAlpha: 0, ring: "", ringAlpha: 0, dot: null, halo: null, label: null };
+const NO_LOOK: NodeLook = { radius: 0, fill: "", fillAlpha: 0, wash: null, washAlpha: 0, ring: "", ringAlpha: 0, dot: null, halo: null, label: null, duo: "" };
 const NO_LINK_LOOK: LinkLook = { color: "", width: 0, dash: null };

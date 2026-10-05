@@ -40,6 +40,8 @@ export const PALETTE: Palette = {
   faint: "faint",
   halo: "halo",
   match: "match",
+  duoRecord: "duo-record",
+  duoBelief: "duo-belief",
 };
 
 /** The server's vocabulary as far as the graph reads it: kinds, statuses and edge kinds. */
@@ -82,6 +84,10 @@ export class FakeRenderer implements Renderer {
   refits: Covered[] = [];
   /** Each node's group, by title, as the last `group` set it; null when not grouped. */
   groups: Map<string, string | undefined> | null = null;
+  /** Each island name as the last `nameIslands` set it, by group key; null when unnamed. */
+  islandNames: Map<string, string> | null = null;
+  /** The ink the last `nameIslands` was given. */
+  islandInk: { title: string; count: string; outline: string } | null = null;
   disposed = false;
   events: RendererEvents | null = null;
   /** What the view says covers the canvas, as a renderer measures it each time it frames. */
@@ -135,6 +141,18 @@ export class FakeRenderer implements Renderer {
 
   group(groupOf: ((node: DrawNode) => string | undefined) | null): void {
     this.groups = groupOf ? new Map(this.nodes.map((drawn) => [drawn.title, groupOf(drawn)])) : null;
+  }
+
+  nameIslands(name: ((key: string) => string | undefined) | null, ink: { title: string; count: string; outline: string }): void {
+    this.islandNames = name
+      ? new Map([...this.groups?.entries() ?? []].flatMap(([, key]) => (key === undefined ? [] : [[key, name(key) ?? ""]])))
+      : null;
+    this.islandInk = ink;
+  }
+
+  /** A click on the island named `key`, as the canvas would report one. */
+  clickIsland(key: string): void {
+    this.events?.island(key);
   }
 
   zoomBy(factor: number): void {

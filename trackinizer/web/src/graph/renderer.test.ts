@@ -19,6 +19,7 @@ const { FakeForceGraph } = vi.hoisted(() => {
     "linkColor",
     "linkDirectionalArrowLength",
     "linkDirectionalArrowRelPos",
+    "linkCurvature",
     "d3VelocityDecay",
     "d3AlphaDecay",
     "d3AlphaMin",
@@ -26,6 +27,7 @@ const { FakeForceGraph } = vi.hoisted(() => {
     "onNodeClick",
     "onBackgroundClick",
     "onRenderFramePost",
+    "onEngineTick",
     "d3ReheatSimulation",
     "_destructor",
   ];
@@ -104,7 +106,11 @@ beforeEach(() => {
       disconnect() {}
     },
   );
-  renderer = forceGraphRenderer(document.createElement("div"), { hover: () => {}, click: () => {}, doubleClick: () => {} }, () => ({ right: 0 }));
+  renderer = forceGraphRenderer(
+    document.createElement("div"),
+    { hover: () => {}, click: () => {}, doubleClick: () => {}, island: () => {} },
+    () => ({ right: 0 }),
+  );
 });
 
 afterEach(() => {
@@ -142,15 +148,23 @@ test("grouping keeps what the view asked to frame: a focus's nodes, not every no
     [10, 0],
     [1_000, 1_000],
   ]);
-  const near = (drawn: DrawNode) => drawn.x! < 100;
+  // The layout engine moves the nodes as it packs them, so the frame is judged
+  // against where the framed pair stand now, not where they stood.
+  const pair = nodes.slice(0, 2);
+  const nearIds = new Set(pair.map(({ id }) => id));
+  const near = (drawn: DrawNode) => nearIds.has(drawn.id);
+  const centreOf = (list: readonly DrawNode[]): [number, number] => [
+    (Math.min(...list.map((n) => n.x!)) + Math.max(...list.map((n) => n.x!))) / 2,
+    (Math.min(...list.map((n) => n.y!)) + Math.max(...list.map((n) => n.y!))) / 2,
+  ];
   renderer.setData(nodes, [], () => true);
   renderer.fit(near);
   renderer.group(null);
   graph().settle();
-  expect([graph().centre, graph().scale]).toEqual([[5, 0], 4]);
+  expect([graph().centre, graph().scale]).toEqual([centreOf(pair), 4]);
   // Grouping a settled graph frames it again once the islands form, as last asked.
   renderer.group(() => "island");
   graph().centerAt(0, 0);
   graph().settle();
-  expect(graph().centre).toEqual([5, 0]);
+  expect(graph().centre).toEqual(centreOf(pair));
 });

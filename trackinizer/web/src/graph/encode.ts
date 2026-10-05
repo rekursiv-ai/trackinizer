@@ -24,6 +24,10 @@ export type Palette = {
   readonly halo: string;
   /** The ring around a search match: the app's link accent. */
   readonly match: string;
+  /** Every kind but Belief, drawn as one tint while the view is zoomed out. */
+  readonly duoRecord: string;
+  /** A Belief while the view is zoomed out: the one hue that carries from far off. */
+  readonly duoBelief: string;
 };
 
 /** How one node is drawn: a disc of `fill`, maybe washed, ringed, maybe dotted. */
@@ -43,6 +47,12 @@ export type NodeLook = {
   readonly halo: string | null;
   /** Text under the disc, outlined in the background so edges never cross it: a root's title while grouped. */
   readonly label: { readonly text: string; readonly color: string; readonly outline: string } | null;
+  /**
+   * The fill to draw at a distance, which `fillAt` eases into `fill` as the view
+   * is zoomed in. It equals `fill` where the kind's own hue should show at every
+   * zoom: inside a focus, where the colour is the answer to what was asked.
+   */
+  readonly duo: string;
 };
 
 /** Where a node stands in what the view lights and finds. */
@@ -55,6 +65,8 @@ export type Standing = {
   readonly halo?: "strong" | "match" | null;
   /** Text to draw under it. */
   readonly label?: string | null;
+  /** Inside a lit focus: draw the kind's own hue at every zoom, not the distant tint. */
+  readonly near?: boolean;
 };
 
 /** How one edge is drawn; its arrow takes its colour. */
@@ -90,7 +102,7 @@ export type NodeShape = {
 export function nodeLook(
   shape: NodeShape,
   palette: Palette,
-  { dimmed = false, far = false, halo = null, label = null }: Standing = {},
+  { dimmed = false, far = false, halo = null, label = null, near = false }: Standing = {},
 ): NodeLook {
   const fill = palette.kinds[shape.kind] ?? palette.fallback;
   const retired = shape.status === "abandoned" || shape.status === "invalid";
@@ -99,9 +111,12 @@ export function nodeLook(
   const fade = far ? FAR_FADE : 1;
   const alpha = (dimmed ? DIMMED_ALPHA : retired ? RETIRED_ALPHA : 1) * fade;
   const fillAlpha = dimmed || retired ? alpha : (0.35 + 0.65 * (belief ? (shape.confidence ?? 1) : 1)) * fade;
-  const radius = Math.min(14, 4 + 2.2 * Math.sqrt(shape.degree));
+  // The design's sizes: a base by kind (a Belief the biggest of the small, so a
+  // claim reads at every zoom), authority — here the degree — lifting a hub
+  // above its fellows, and a root Issue the largest of its island.
+  const radius = Math.min(11, (BASE_OF[shape.kind] ?? 2.5) + 6.5 * (shape.degree / (shape.degree + 6)));
   return {
-    radius: shape.root ? Math.max(radius, 12) + 4 : radius,
+    radius: shape.root ? Math.max(radius, 12) : radius,
     fill,
     fillAlpha: judgement === "disproven" ? 0 : fillAlpha,
     wash: judgement === "undecidable" ? palette.background : null,
@@ -111,7 +126,63 @@ export function nodeLook(
     dot: judgement === "proven" && !retired && !dimmed ? (palette.status.complete ?? palette.fallback) : null,
     halo: halo === "strong" ? palette.halo : halo === "match" ? palette.match : null,
     label: label === null ? null : { text: label.length > LABEL_CHARS ? `${label.slice(0, LABEL_CHARS - 1)}…` : label, color: palette.halo, outline: palette.background },
+    duo: near ? fill : belief ? palette.duoBelief : palette.duoRecord,
   };
+}
+
+/**
+ * The fill to draw `look` with at `zoom`: its distant tint eased into its kind's
+ * own hue between `DUO_ZOOM` and `KIND_ZOOM`.
+ *
+ * Far off, a thousand nodes in nine hues read as confetti, and the shape of the
+ * work is lost; one tint for records and one for Beliefs leaves each island a
+ * single form with its claims picked out. Close up there are few enough nodes on
+ * screen to tell nine hues apart, and the kind is what the reader wants.
+ *
+ * The blend is quantised to `BLEND_STEPS`, so a pan at one zoom asks for the
+ * same few colours rather than a new one each frame, and every mix is kept
+ * (`mixed`): over a drag, the work is a map lookup per node.
+ */
+export function fillAt(look: NodeLook, zoom: number): string {
+  if (look.duo === look.fill) return look.fill;
+  const eased = (zoom - DUO_ZOOM) / (KIND_ZOOM - DUO_ZOOM);
+  const step = Math.round(Math.min(1, Math.max(0, eased)) * BLEND_STEPS) / BLEND_STEPS;
+  if (step === 0) return look.duo;
+  if (step === 1) return look.fill;
+  return mix(look.duo, look.fill, step);
+}
+
+/** `from` and `to` mixed, `amount` of the way from one to the other; either unreadable gives `to`. */
+export function mix(from: string, to: string, amount: number): string {
+  const key = `${from}|${to}|${amount}`;
+  const kept = mixed.get(key);
+  if (kept !== undefined) return kept;
+  const [a, b] = [channels(from), channels(to)];
+  const blended =
+    a === null || b === null
+      ? to
+      : `#${[0, 1, 2].map((index) => Math.round(a[index]! + (b[index]! - a[index]!) * amount).toString(16).padStart(2, "0")).join("")}`;
+  // Bounded by the palette's colours times the blend's steps, so it cannot grow with the graph.
+  mixed.set(key, blended);
+  return blended;
+}
+
+/** `colour`'s red, green and blue, or null when it is neither `#rgb`, `#rrggbb` nor `rgb(…)`. */
+function channels(colour: string): [number, number, number] | null {
+  const text = colour.trim();
+  if (text.startsWith("#")) {
+    const digits = text.slice(1);
+    const wide = digits.length === 6 ? digits : digits.length === 3 ? [...digits].map((digit) => digit + digit).join("") : null;
+    if (wide === null) return null;
+    const value = Number.parseInt(wide, 16);
+    return Number.isNaN(value) ? null : [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+  }
+  const parts = /^rgba?\(([^)]+)\)$/.exec(text);
+  if (!parts) return null;
+  const numbers = parts[1]!.split(/[,/\s]+/).filter(Boolean).map(Number);
+  return numbers.length >= 3 && numbers.slice(0, 3).every((number) => Number.isFinite(number))
+    ? [numbers[0]!, numbers[1]!, numbers[2]!]
+    : null;
 }
 
 /**
@@ -164,13 +235,33 @@ export function readPalette(
     faint: token("--g-faint"),
     halo: token("--text"),
     match: token("--accent-hover"),
+    duoRecord: token("--g-duo-record") || fallback,
+    duoBelief: token("--g-duo-belief") || fallback,
   };
 }
 
 const RETIRED_ALPHA = 0.25;
+/** The design's base radius, by kind, before a hub's degree lifts it. */
+const BASE_OF: { [kind: string]: number } = {
+  Belief: 3.8,
+  Issue: 2.9,
+  Experiment: 3.3,
+  Paper: 2.3,
+  CodeChange: 2.3,
+  WebSearch: 2.2,
+  WebResult: 1.9,
+  AgentSession: 3.4,
+  Artifact: 2.5,
+};
 /** Under the retired look's alpha, so a dimmed node never reads as retired work (the design's 0.14). */
 const DIMMED_ALPHA = 0.14;
 /** How much of its look a node two or more hops from the focus keeps. */
 const FAR_FADE = 0.7;
 const LABEL_CHARS = 40;
 const FAVORS_DASH = [4, 3];
+/** At or below this zoom the graph is two tints; above `KIND_ZOOM` it is the kind hues, and between, a blend. */
+export const DUO_ZOOM = 0.55;
+const KIND_ZOOM = 1.3;
+/** How many blends the ease takes, so panning asks for a handful of colours and not one a frame. */
+const BLEND_STEPS = 4;
+const mixed = new Map<string, string>();

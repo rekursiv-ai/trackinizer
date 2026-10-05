@@ -20,13 +20,13 @@ test("a node fills with its kind's hue and rings with its status's; an unknown k
   expect(nodeLook(shape({ kind: "Gadget", status: "paused" }), PALETTE)).toMatchObject({ fill: "fallback", ring: "fallback" });
 });
 
-test("a node's radius grows with the square root of its degree up to 14; a root Issue is the largest", () => {
+test("a node's radius is its kind's base, lifted by its degree; a root Issue is the largest", () => {
   const radius = (fields: Partial<Parameters<typeof nodeLook>[0]>) => nodeLook(shape(fields), PALETTE).radius;
-  expect(radius({ degree: 0 })).toBe(4);
-  expect(radius({ degree: 4 })).toBeCloseTo(8.4);
-  expect(radius({ degree: 100 })).toBe(14);
-  expect(radius({ root: true })).toBe(16);
-  expect(radius({ root: true, degree: 100 })).toBe(18);
+  expect(radius({ degree: 0 })).toBe(2.9);
+  expect(radius({ degree: 4 })).toBeCloseTo(2.9 + 6.5 * (4 / 10));
+  expect(radius({ degree: 100 })).toBeCloseTo(2.9 + 6.5 * (100 / 106));
+  expect(radius({ root: true })).toBe(12);
+  expect(radius({ root: true, degree: 100 })).toBe(12);
 });
 
 test("an abandoned or invalid node recedes to a quarter", () => {
@@ -104,6 +104,8 @@ test("the palette is the theme's tokens for every kind, edge kind and status, or
     ["--g-faint", "#888888"],
     ["--text", "#999999"],
     ["--accent-hover", "#aaaaaa"],
+    ["--g-duo-record", "#bbbbbb"],
+    ["--g-duo-belief", "#cccccc"],
   ]) {
     root.style.setProperty(name!, ` ${value}`);
   }
@@ -118,5 +120,7 @@ test("the palette is the theme's tokens for every kind, edge kind and status, or
     faint: "#888888",
     halo: "#999999",
     match: "#aaaaaa",
+    duoRecord: "#bbbbbb",
+    duoBelief: "#cccccc",
   });
 });
