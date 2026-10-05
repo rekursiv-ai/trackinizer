@@ -49,7 +49,7 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
     WebFetchResult,
 )
-from trackinizer.lib.custom_json import convert, json_freeze, parse
+from trackinizer.lib.custom_json import convert_or_none, json_freeze, parse
 
 
 if TYPE_CHECKING:
@@ -111,7 +111,7 @@ def is_sagent(head: str) -> bool:
             record = parse(line, dict[str, object])
         except json.JSONDecodeError:
             return False
-        kind = record.get("kind")
+        kind = convert_or_none(record.get("kind"), str)
         return kind in only_sagent or (
             kind == "message" and ("descriptor" in record or "role" in record)
         )
@@ -150,15 +150,15 @@ class _Reader:
             record = parse(line, dict[str, object])
         except (json.JSONDecodeError, ValueError, TypeError):
             return [IncompleteRecord(text=line)]
-        kind = convert(record.get("kind"), str, default="")
+        kind = _str(record.get("kind"))
         if kind == "history":
             return self._history(record)
         if kind == "meta":
             return self._meta(record)
         if kind == "persistent_agent":
-            label = convert(record.get("label"), str, default="")
+            label = _str(record.get("label"))
             self.children[label] = PurePath(
-                convert(record.get("session_dir"), str),
+                _str(record.get("session_dir")),
             ).name
         if kind == "message" and "descriptor" in record:
             return self._descriptor(record)
@@ -172,9 +172,9 @@ class _Reader:
 
     def _history(self, record: dict[str, object]) -> list[SessionRecord]:
         """Normalize one ``kind: history`` record."""
-        kind = convert(record.get("type"), str, default="")
+        kind = _str(record.get("type"))
         stamp = _stamp(record.get("timestamp"))
-        text = convert(record.get("text"), str, default="")
+        text = _str(record.get("text"))
         if kind == "user":
             return [UserMessage(timestamp=stamp, content=text)]
         if kind == "assistant":
@@ -189,7 +189,7 @@ class _Reader:
                 (
                     _str(c.get("id")),
                     _str(c.get("name")),
-                    convert(c.get("args"), dict[str, object], default={}),
+                    _dict(c.get("args")),
                 )
                 for c in _mappings(record.get("tool_calls"))
             ]
@@ -208,7 +208,7 @@ class _Reader:
                 AgentToAgentMessage(
                     timestamp=stamp,
                     content=text,
-                    sender=convert(record.get("source"), str, default=""),
+                    sender=_str(record.get("source")),
                 ),
             ]
         if kind == "compact_complete":
@@ -228,7 +228,7 @@ class _Reader:
     def _meta(self, record: dict[str, object]) -> list[SessionRecord]:
         """Split a meta record: a model change is a setting, spend is accounting."""
         out: list[SessionRecord] = []
-        model = convert(record.get("model_id"), str, default="") or None
+        model = _str(record.get("model_id")) or None
         if model is not None and model != self.model:
             self.model = model
             out.append(
@@ -243,35 +243,21 @@ class _Reader:
                     ),
                 ),
             )
-        tokens = convert(record.get("tokens"), dict[str, object], default={})
-        spend = convert(record.get("spend"), dict[str, object], default={})
-        total_cost = convert(record.get("total_cost_usd"), float, default=0.0)
-        cost = total_cost or sum(convert(v, float) for v in spend.values())
+        tokens = _dict(record.get("tokens"))
+        spend = _dict(record.get("spend"))
+        total_cost = _float(record.get("total_cost_usd"))
+        cost = total_cost or sum(_float(v) for v in spend.values())
         out.append(
             TokenUsage(
                 info=json_freeze(
                     {
                         "cost_usd": cost,
-                        "input_tokens": convert(
-                            tokens.get("input_tokens"),
-                            int,
-                            default=0,
-                        ),
-                        "output_tokens": convert(
-                            tokens.get("output_tokens"),
-                            int,
-                            default=0,
-                        ),
-                        "cache_read_tokens": convert(
-                            tokens.get("cache_read_tokens"),
-                            int,
-                            default=0,
-                        ),
-                        "rounds": convert(
+                        "input_tokens": _int(tokens.get("input_tokens")),
+                        "output_tokens": _int(tokens.get("output_tokens")),
+                        "cache_read_tokens": _int(tokens.get("cache_read_tokens")),
+                        "rounds": _int(
                             record.get("num_tool_call_rounds")
-                            or record.get("turn_count")
-                            or 0,
-                            int,
+                            or record.get("turn_count"),
                         ),
                     },
                 ),
@@ -525,7 +511,7 @@ def _plain(content: object, parts: list[dict[str, object]]) -> str:
     return "".join(
         _str(p.get("content"))
         for p in parts
-        if p.get("descriptor") in {"text/plain", "text/markdown", "text/x-error"}
+        if _str(p.get("descriptor")) in {"text/plain", "text/markdown", "text/x-error"}
     )
 
 
@@ -541,27 +527,35 @@ def _stamp(value: object) -> str | None:
     return datetime.fromtimestamp(seconds, tz=UTC).isoformat()
 
 
+# A log field of the wrong type reads as absent, as a missing one does: ``convert``
+# raises on it, and one malformed field would abort the whole session read.
 def _str(value: object) -> str:
-    return "" if value is None else convert(value, str)
+    return convert_or_none(value, str) or ""
 
 
 def _bool(value: object) -> bool:
-    return False if value is None else convert(value, bool)
+    return convert_or_none(value, bool) or False
+
+
+def _int(value: object) -> int:
+    return convert_or_none(value, int) or 0
 
 
 def _float(value: object) -> float:
-    return 0.0 if value is None else convert(value, float)
+    return convert_or_none(value, float) or 0.0
 
 
 def _dict(value: object) -> dict[str, object]:
-    return {} if value is None else convert(value, dict[str, object])
+    return convert_or_none(value, dict[str, object]) or {}
 
 
 def _mappings(value: object) -> list[dict[str, object]]:
     if not isinstance(value, (list, tuple)):
         return []
     values = cast(list[object] | tuple[object, ...], value)
-    return convert(values, list[dict[str, object]])
+    return [
+        m for v in values if (m := convert_or_none(v, dict[str, object])) is not None
+    ]
 
 
 def _scalars(record: Mapping[str, object]) -> dict[str, object]:

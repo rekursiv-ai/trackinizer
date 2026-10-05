@@ -15,6 +15,7 @@ import json
 
 from trackinizer.lib.agent.sessions import gemini
 from trackinizer.lib.agent.sessions.convert import _dropped, detect_format
+from trackinizer.lib.agent.sessions.testdata.mistype import mistyped
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
     ContextClear,
@@ -359,6 +360,60 @@ def test_empty_text_and_empty_object_are_incomplete_documents() -> None:
         ContextClear,
         IncompleteRecord,
     ]
+
+
+def _nested() -> str:
+    """Return a document whose turns nest objects, as the CLI's own do."""
+    return json.dumps(
+        {
+            "sessionId": "s1",
+            "projectHash": "p",
+            "messages": [
+                {"type": "user", "content": "list it", "id": "u1"},
+                {
+                    "type": "gemini",
+                    "content": "done",
+                    "thoughts": [{"subject": "plan", "description": "ls"}],
+                    "tokens": {"input": 3, "output": 4, "total": 7},
+                    "model": "gemini-3-pro",
+                    "toolCalls": [
+                        {
+                            "id": "c1",
+                            "name": "run_shell_command",
+                            "args": {"command": "ls", "env": {"A": "1"}},
+                            "result": [{"functionResponse": {"output": "a"}}],
+                            "status": "success",
+                        },
+                    ],
+                },
+            ],
+        },
+    )
+
+
+def test_a_document_with_nested_fields_round_trips_byte_exact() -> None:
+    """A nested object is written back as the object it was read as."""
+    text = _nested()
+
+    out = StringIO()
+    gemini.denormalize(gemini.normalize(StringIO(text)), out)
+
+    assert out.getvalue() == text
+
+
+def test_a_mistyped_field_aborts_neither_the_read_nor_the_write() -> None:
+    """A document field of the wrong type reads as absent, as a missing one does."""
+    failed: list[str] = []
+    for path, changed in mistyped(parse(_nested(), dict[str, object])):
+        try:
+            gemini.denormalize(
+                gemini.normalize(StringIO(json.dumps(changed))),
+                StringIO(),
+            )
+        except TypeError as error:
+            failed.append(f"{path}: {error}")
+
+    assert failed == []
 
 
 if __name__ == "__main__":

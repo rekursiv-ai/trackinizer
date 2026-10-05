@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from io import StringIO
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Final
 
 import json
 
@@ -12,6 +13,7 @@ import pytest
 
 from trackinizer.lib.agent.sessions import codex
 from trackinizer.lib.agent.sessions.codex import _grouped
+from trackinizer.lib.agent.sessions.testdata.mistype import mistyped
 from trackinizer.lib.agent.sessions.udiff import parse_udiff, render_udiff
 from trackinizer.lib.agent.types.sessions import (
     AgentToAgentMessage,
@@ -48,12 +50,20 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 
+_CWD: Final = Path(__file__).resolve().parent
+
+
 META = '{"type":"session_meta","payload":{"session_id":"s1","cwd":"/workspace"}}\n'
 CONTEXT = (
     '{"type":"turn_context","payload":{"turn_id":"t1","cwd":"/workspace",'
     '"model":"gpt-5.6-sol","effort":"medium","summary":"auto",'
     '"approval_policy":"never"}}\n'
 )
+
+FIXTURE: Final = (
+    (_CWD / "testdata" / "codex_main.jsonl").read_text().splitlines(keepends=True)
+)
+"""A real rollout, one line per element."""
 
 
 def _item(payload: str) -> str:
@@ -183,6 +193,23 @@ def test_reasoning_normalizes_to_a_summary_beside_its_sealed_half() -> None:
     assert thinking.encrypted == "sealed"
 
 
+def test_a_record_before_any_turn_names_the_opening_context() -> None:
+    native = META + _item(
+        '{"type":"message","role":"user",'
+        '"content":[{"type":"input_text","text":"hi"}]}',
+    )
+
+    records = list(codex.normalize(StringIO(native)))
+
+    [message] = [record for record in records if isinstance(record, UserMessage)]
+    assert message.context_id is not None
+    assert isinstance(records[message.context_id], TurnContext)
+
+
+def test_an_empty_rollout_reads_as_no_records() -> None:
+    assert list(codex.normalize(StringIO(""))) == []
+
+
 def test_a_function_call_decodes_its_nested_arguments() -> None:
     native = META + _item(
         '{"type":"function_call","call_id":"c1","name":"Read",'
@@ -195,6 +222,19 @@ def test_a_function_call_decodes_its_nested_arguments() -> None:
     assert isinstance(call, ToolCall)
     assert call.name == "Read"
     assert call.arguments == {"path": "/a"}
+
+
+def test_a_call_whose_arguments_nest_objects_round_trips_byte_exact() -> None:
+    """The argument string is re-encoded from the call's own nested values."""
+    native = META + _item(
+        '{"type":"function_call","call_id":"c1","name":"update_plan",'
+        '"arguments":"{\\"plan\\":[{\\"step\\":\\"read\\",\\"status\\":\\"done\\"}]}"}',
+    )
+    output = StringIO()
+
+    codex.denormalize(codex.normalize(StringIO(native)), output)
+
+    assert output.getvalue() == native
 
 
 def test_a_malformed_argument_string_does_not_abort_the_file() -> None:
@@ -1526,6 +1566,25 @@ def test_codex_line_state_preserves_noncanonical_records() -> None:
         IncompleteRecord(text="x"),
         {"payload": {}},
     ) == IncompleteRecord(text="x")
+
+
+@pytest.mark.parametrize("index", range(len(FIXTURE)))
+def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(index: int) -> None:
+    """A log field of the wrong type reads as absent, as a missing one does.
+
+    The rest of the rollout stays as written, so a line read in context -- a
+    result after its call, an item after its turn -- meets its wrong field there.
+    """
+    failed: list[str] = []
+    for path, changed in mistyped(parse(FIXTURE[index], dict[str, object])):
+        line = json.dumps(changed, ensure_ascii=False, separators=(",", ":")) + "\n"
+        rollout = "".join([*FIXTURE[:index], line, *FIXTURE[index + 1 :]])
+        try:
+            codex.denormalize(codex.normalize(StringIO(rollout)), StringIO())
+        except TypeError as error:
+            failed.append(f"{path}: {error}")
+
+    assert failed == []
 
 
 if __name__ == "__main__":

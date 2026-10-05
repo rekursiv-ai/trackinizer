@@ -394,7 +394,7 @@ def _codex_residual(
 # never named, which is how :func:`_ordered` splices.
 def _canonical_order(source: Mapping[str, object]) -> list[str]:
     """Return the key order :data:`_ORDER` reproduces for this payload."""
-    order = payload_orders().get(convert(source.get("type"), str, default=""), ())
+    order = payload_orders().get(convert_or_none(source.get("type"), str) or "", ())
     return [key for key in order if key in source] + [
         key for key in source if key not in order
     ]
@@ -701,7 +701,7 @@ def _write_call(
             "arguments": convert(extra.pop("$raw"), str)
             if "$raw" in extra
             else json.dumps(
-                dict(item.arguments),
+                json_unfreeze(item.arguments),
                 ensure_ascii=False,
                 separators=None if spaced else (",", ":"),
             ),
@@ -711,7 +711,7 @@ def _write_call(
         payload = {
             "call_id": item.call_id,
             "name": item.name,
-            "input": convert(item.arguments.get("input"), str, default=""),
+            "input": convert_or_none(item.arguments.get("input"), str) or "",
         }
     if present is not None:
         defaults = {
@@ -852,7 +852,7 @@ def _write_legacy_end(
         _ = extra.pop("$splice_counts", None)
         changes = _write_changes(
             by_path,
-            convert(extra.get("changes"), dict[str, object], default={}),
+            convert_or_none(extra.get("changes"), dict[str, object]) or {},
         )
         if changes is not None:
             extra["changes"] = changes
@@ -877,11 +877,11 @@ def _write_changes(
         path: found
         for path, entry in stored.items()
         if (
-            found := convert(
-                convert(entry, dict[str, object]).get("$filled"),
+            found := convert_or_none(
+                (convert_or_none(entry, dict[str, object]) or {}).get("$filled"),
                 str,
-                default="",
             )
+            or ""
         )
     }
     paths = list(filled)
@@ -889,7 +889,7 @@ def _write_changes(
         return None
     out: dict[str, MutableJSONValue] = {}
     for path, entry in stored.items():
-        found = dict(convert(entry, dict[str, object]))
+        found = dict(convert_or_none(entry, dict[str, object]) or {})
         owner = by_path.get(path)
         if path in filled and owner is not None:
             # Each entry from the record that owns THAT path: an add states the
@@ -959,7 +959,7 @@ def _write_completed(
             _ = nested.pop("$splice_counts", None)
             changes = _write_changes(
                 by_path,
-                convert(nested.get("changes"), dict[str, object], default={}),
+                convert_or_none(nested.get("changes"), dict[str, object]) or {},
             )
             if changes is not None:
                 nested["changes"] = changes
@@ -1190,15 +1190,14 @@ class _Reader:
 
     def __init__(self) -> None:
         self._records: list[SessionRecord] = []
-        self._declared: dict[str, JSONValue] = {}
-        self._launch_timestamp: str | None = None
+        # The launch line's settings, once read: only the first one declares.
+        self._declared: dict[str, JSONValue] | None = None
         # The index of the most recent ``turn_context``; every later record
-        # names it. Codex writes one per turn, so this moves as the stream
-        # advances.
-        self._context_id: int | None = None
+        # names it. The opening context sits at 0, and codex writes one per
+        # turn, so this moves as the stream advances.
+        self._context_id = 0
         self._position = 0
         self._ends_newline = True
-        self._opened = False
         # Where the opening clear sits, and what the fresh context was given.
         # Codex NAMES a prompt on its launch line and then sends more before
         # the first turn -- a skills block, a role prompt -- so the record
@@ -1207,7 +1206,9 @@ class _Reader:
         self._opening: int | None = None
         self._given: list[str] = []
         # How much of ``_records`` the caller already holds.
+        # pragma: no mutate start -- only ever a slice bound, where None is 0.
         self._yielded = 0
+        # pragma: no mutate end
 
     def read(self, line: str) -> Iterator[SessionRecord]:
         """Consume one rollout line; yield the records it produced.
@@ -1230,11 +1231,10 @@ class _Reader:
         position = self._position
         self._position += 1
         self._ends_newline = line.endswith("\n")
-        if not self._opened:
+        if not position:
             # Settings before the acts they govern. Codex declares them on its
             # launch line, so a rollout that opens with one supersedes this
             # immediately -- the reader states what it knows and restates.
-            self._opened = True
             self._records.append(
                 TurnContext(
                     # No ``ascii_escaped``: codex writes raw UTF-8 on every one
@@ -1243,7 +1243,6 @@ class _Reader:
                     encoding={"newline_terminated": True},
                 ),
             )
-            self._context_id = 0
         del emitted
         self._read(line, position)
         # From what was last handed over, never from where this line began:
@@ -1274,7 +1273,7 @@ class _Reader:
             self._opening = None
             at, self._yielded = self._yielded, len(self._records)
             yield from self._records[at:]
-        if self._position and not self._ends_newline:
+        if not self._ends_newline:
             # Knowable only here: a later state record supersedes the opening
             # one rather than mutating a record already handed to the caller.
             yield TurnContext(encoding={"newline_terminated": False})
@@ -1298,18 +1297,17 @@ class _Reader:
         if not isinstance(payload_value, Mapping):
             self._records.append(IncompleteRecord(text=line))
             return
-        outer = convert(record.get("type"), str, default="")
-        payload = convert(record.get("payload"), dict[str, object], default={})
+        outer = convert_or_none(record.get("type"), str) or ""
+        payload = convert_or_none(record.get("payload"), dict[str, object]) or {}
         timestamp = convert_or_none(record.get("timestamp"), str)
-        if outer == "session_meta" and not self._declared:
+        if outer == "session_meta" and self._declared is None:
             # The launch line IS settings, so it supersedes the opening
             # context rather than becoming a record beside it. The clear that
             # follows states what the model begins from; both are derived, so
             # neither costs a line on the way back out.
             self._declared = _read_declaration(record, payload, position)
-            self._launch_timestamp = convert_or_none(record.get("timestamp"), str)
             declared = TurnContext(
-                timestamp=self._launch_timestamp,
+                timestamp=timestamp,
                 encoding={"newline_terminated": True},
                 extra=dict(self._declared),
             )
@@ -1339,10 +1337,9 @@ class _Reader:
             self._records.append(
                 ContextClear(
                     timestamp=timestamp,
-                    cleared_session_id=convert(
+                    cleared_session_id=convert_or_none(
                         payload.get("forked_from_id"),
                         str,
-                        default="",
                     )
                     or None,
                     system_prompt=declared_prompt,
@@ -1465,7 +1462,7 @@ def _read_declaration(
     if raw is not None and not isinstance(raw, str):
         extra["$launch_timestamp_raw"] = cast(JSONValue, raw)
     if "ordinal" in record:
-        extra["ordinal"] = convert(record.get("ordinal"), int, default=0)
+        extra["ordinal"] = convert_or_none(record.get("ordinal"), int) or 0
     return extra
 
 
@@ -1542,9 +1539,9 @@ def _read_context(payload: Mapping[str, object], timestamp: str | None) -> TurnC
     """Read the settings line codex writes once per turn."""
     model = read_field_keeping_invalid(payload, "model", str)
     permission = read_field_keeping_invalid(payload, "approval_policy", str)
-    wire = convert(payload.get("effort"), str, default="")
+    wire = convert_or_none(payload.get("effort"), str) or ""
     effort = _effort(wire)
-    summary = _summary_kind(convert(payload.get("summary"), str, default=""))
+    summary = _summary_kind(convert_or_none(payload.get("summary"), str) or "")
     # Through ``restore_unmodeled_fields``, not consumed and re-appended: a key the writer adds
     # back lands at the end, and codex writes ``summary`` BEFORE
     # ``truncation_policy`` on 57 captured rollouts.
@@ -1580,7 +1577,7 @@ def _read_records(
     timestamp: str | None,
 ) -> list[SessionRecord]:
     """Read one line into the records its payload carries."""
-    kind = convert(payload.get("type"), str, default="")
+    kind = convert_or_none(payload.get("type"), str) or ""
     if outer == "response_item":
         return [_read_response_item(kind, payload, context_id, timestamp)]
     if outer == "event_msg":
@@ -1650,17 +1647,17 @@ def _read_compacted(
     timestamp: str | None,
 ) -> list[SessionRecord]:
     """Read the line that replaces a session's history with a summary."""
-    entries = convert(payload.get("replacement_history"), list[object], default=[])
+    entries = convert_or_none(payload.get("replacement_history"), list[object]) or []
     kept: list[SessionRecord] = []
     sealed: str | None = None
     for value in entries:
-        entry = convert(value, dict[str, object])
-        if convert(entry.get("type"), str, default="") == "compaction":
+        entry = convert_or_none(value, dict[str, object]) or {}
+        if convert_or_none(entry.get("type"), str) == "compaction":
             sealed = convert_or_none(entry.get("encrypted_content"), str)
             continue
         kept.append(
             _read_response_item(
-                convert(entry.get("type"), str, default=""),
+                convert_or_none(entry.get("type"), str) or "",
                 entry,
                 context_id,
                 timestamp,
@@ -1679,7 +1676,13 @@ def _read_compacted(
         extra["$history"] = [
             cast(JSONValue, value)
             for value in entries
-            if convert(convert(value, dict[str, object]).get("type"), str, default="")
+            if (
+                convert_or_none(
+                    (convert_or_none(value, dict[str, object]) or {}).get("type"),
+                    str,
+                )
+                or ""
+            )
             == "compaction"
         ]
     # TWO records: the event, then the window it opened. What a compaction
@@ -1729,7 +1732,7 @@ def _read_response_item(
         return UncategorizedToolResult(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(payload.get("call_id"), str, default=""),
+            call_id=convert_or_none(payload.get("call_id"), str) or "",
             extra=_codex_residual(payload, {"call_id"}) | {"$whole": True},
         )
     if kind == "agent_message":
@@ -1858,7 +1861,7 @@ def _read_content(
             continue
         part = convert(cast(dict[str, object], value), dict[str, object])
         if isinstance(part.get("text"), str):
-            parts.append(convert(part.get("text"), str, default=""))
+            parts.append(convert_or_none(part.get("text"), str) or "")
             templates.append(_stencil(part, "text"))
         elif (found := _read_attachment(part)) is not None:
             # Whatever else the block carries. ``detail`` is metadata ABOUT the
@@ -1893,11 +1896,11 @@ def _read_thinking(
     parts: list[str] = []
     templates: list[JSONValue] = []
     order: list[JSONValue] = []
-    for value in convert(payload.get("summary"), list[object], default=[]):
+    for value in convert_or_none(payload.get("summary"), list[object]) or []:
         if isinstance(value, Mapping):
             block = convert(cast(dict[str, object], value), dict[str, object])
             if isinstance(block.get("text"), str):
-                parts.append(convert(block.get("text"), str, default=""))
+                parts.append(convert_or_none(block.get("text"), str) or "")
                 templates.append(_stencil(block, "text"))
                 order.append("text")
                 continue
@@ -1932,7 +1935,7 @@ def _read_tool_call(
     timestamp: str | None,
 ) -> ToolCall | UncategorizedRecord:
     """Read a tool invocation, whose arguments are JSON inside JSON."""
-    kind = convert(payload.get("type"), str, default="")
+    kind = convert_or_none(payload.get("type"), str) or ""
     freeform = kind != "function_call"
     consumed: set[str] = set()
     for key in ("call_id", "name"):
@@ -1945,10 +1948,10 @@ def _read_tool_call(
     extra["$present"] = list(payload)
     if freeform:
         arguments: dict[str, object] = {
-            "input": convert(payload.get("input"), str, default=""),
+            "input": convert_or_none(payload.get("input"), str) or "",
         }
     else:
-        text = convert(payload.get("arguments"), str, default="")
+        text = convert_or_none(payload.get("arguments"), str) or ""
         parsed = _parse_arguments(text)
         if parsed is None and isinstance(payload.get("arguments"), str):
             # The model wrote something that is not JSON. Calling it an empty
@@ -2010,7 +2013,7 @@ def _read_tool_result(
     if isinstance(output, str):
         content = output
     elif isinstance(output, list):
-        output_list = convert(payload.get("output"), list[object], default=[])
+        output_list = convert_or_none(payload.get("output"), list[object]) or []
         parts, attachments, templates = _read_content(output_list)
         content = "\n".join(parts)
         extra["$parts"] = [len(part) for part in parts] or [0]
@@ -2023,7 +2026,7 @@ def _read_tool_result(
     return UncategorizedToolResult(
         context_id=context_id,
         timestamp=timestamp,
-        call_id=convert(payload.get("call_id"), str, default=""),
+        call_id=convert_or_none(payload.get("call_id"), str) or "",
         content=content,
         attachments=attachments,
         extra=json_freeze(extra),
@@ -2052,7 +2055,7 @@ def _read_search_call(
         context_id=context_id,
         timestamp=timestamp,
         call_id=convert_or_none(payload.get(id_key), str) or "",
-        name=convert(payload.get("type"), str, default="").removesuffix("_call"),
+        name=(convert_or_none(payload.get("type"), str) or "").removesuffix("_call"),
         arguments=json_freeze(
             convert_or_none(payload.get(arg_key), dict[str, object]) or {},
         ),
@@ -2061,7 +2064,7 @@ def _read_search_call(
             | {
                 "$id": id_key,
                 "$args": arg_key,
-                "$kind": convert(payload.get("type"), str, default=""),
+                "$kind": convert_or_none(payload.get("type"), str) or "",
             },
         ),
     )
@@ -2146,7 +2149,7 @@ def _read_event(
         return UncategorizedToolResult(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(payload.get("call_id"), str, default=""),
+            call_id=convert_or_none(payload.get("call_id"), str) or "",
             extra=_echoing(payload, kind, {"call_id"}),
         )
     # The pre-0.149 spelling of what ``item_completed`` now carries; the act
@@ -2155,16 +2158,16 @@ def _read_event(
         shell = ShellCommandResult(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(payload.get("call_id"), str, default=""),
+            call_id=convert_or_none(payload.get("call_id"), str) or "",
             command=_command(payload.get("command")),
-            stdout=convert(payload.get("stdout"), str, default=""),
-            stderr=convert(payload.get("stderr"), str, default=""),
+            stdout=convert_or_none(payload.get("stdout"), str) or "",
+            stderr=convert_or_none(payload.get("stderr"), str) or "",
             exit_code=convert_or_none(payload.get("exit_code"), int),
             extra=_shell_residual(payload, kind),
         )
         return lift_shell_result(shell) or shell
     if kind == "patch_apply_end":
-        changes = convert(payload.get("changes"), dict[str, object], default={})
+        changes = convert_or_none(payload.get("changes"), dict[str, object]) or {}
         edits, counts = _patch_edits(changes)
         return _per_path_edits(
             changes,
@@ -2172,7 +2175,7 @@ def _read_event(
             counts,
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(payload.get("call_id"), str, default=""),
+            call_id=convert_or_none(payload.get("call_id"), str) or "",
             extra=_stencil_changes(_echoing(payload, kind, {"call_id"}), counts),
         )
     if kind == "web_search_end":
@@ -2207,10 +2210,10 @@ def _read_event(
         return WebSearchResults(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(payload.get("call_id"), str, default=""),
+            call_id=convert_or_none(payload.get("call_id"), str) or "",
             # An empty query is a value: 2 captured searches carry one, and
             # ``None`` would drop the key.
-            query=convert(payload.get("query"), str, default="")
+            query=convert_or_none(payload.get("query"), str) or ""
             if "query" in payload
             else None,
             content=tuple(_search_rows(rows)),
@@ -2343,8 +2346,8 @@ def _read_completed(
     timestamp: str | None,
 ) -> SessionRecord | list[SessionRecord]:
     """Read an ``item_completed`` event by the kind of item it completed."""
-    item = convert(payload.get("item"), dict[str, object], default={})
-    item_type = convert(item.get("type"), str, default="")
+    item = convert_or_none(payload.get("item"), dict[str, object]) or {}
+    item_type = convert_or_none(item.get("type"), str) or ""
     outer = _codex_residual(payload, {"type", "item"}) | {"$echoes": "item_completed"}
     if item_type == "CommandExecution":
         consumed = {"type"}
@@ -2364,10 +2367,10 @@ def _read_completed(
         shell = ShellCommandResult(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(item.get("id"), str, default=""),
+            call_id=convert_or_none(item.get("id"), str) or "",
             command=_command(item.get("command")),
-            stdout=convert(item.get("stdout"), str, default=""),
-            stderr=convert(item.get("stderr"), str, default=""),
+            stdout=convert_or_none(item.get("stdout"), str) or "",
+            stderr=convert_or_none(item.get("stderr"), str) or "",
             exit_code=convert_or_none(item.get("exit_code"), int),
             extra=outer | {"item": nested},
         )
@@ -2378,7 +2381,7 @@ def _read_completed(
             consumed.add("id")
         nested = _codex_residual(item, consumed)
         nested["$present"] = list(item)
-        changes = convert(item.get("changes"), dict[str, object], default={})
+        changes = convert_or_none(item.get("changes"), dict[str, object]) or {}
         edits, counts = _patch_edits(changes)
         return _per_path_edits(
             changes,
@@ -2386,7 +2389,7 @@ def _read_completed(
             counts,
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(item.get("id"), str, default=""),
+            call_id=convert_or_none(item.get("id"), str) or "",
             extra=outer | {"item": _stencil_changes(nested, counts)},
         )
     if item_type == "WebSearch":
@@ -2399,7 +2402,7 @@ def _read_completed(
         return WebSearchResults(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(item.get("id"), str, default=""),
+            call_id=convert_or_none(item.get("id"), str) or "",
             query=convert_or_none(item.get("query"), str),
             extra=outer | {"item": nested},
         )
@@ -2433,10 +2436,10 @@ def _patch_edits(changes: Mapping[str, object]) -> tuple[tuple[Splice, ...], lis
     out: list[Splice] = []
     counts: list[int] = []
     for value in changes.values():
-        entry = convert(value, dict[str, object])
+        entry = convert_or_none(value, dict[str, object]) or {}
         content = entry.get("content")
         if entry.get("unified_diff") is not None:
-            found = parse_udiff(convert(entry.get("unified_diff"), str, default=""))
+            found = parse_udiff(convert_or_none(entry.get("unified_diff"), str) or "")
             out.extend(found)
             counts.append(len(found))
         elif isinstance(content, str):
@@ -2463,8 +2466,14 @@ def _per_path_edits(
     paths = [
         path
         for path, entry in changes.items()
-        if isinstance(convert(entry, dict[str, object]).get("unified_diff"), str)
-        or isinstance(convert(entry, dict[str, object]).get("content"), str)
+        if isinstance(
+            (convert_or_none(entry, dict[str, object]) or {}).get("unified_diff"),
+            str,
+        )
+        or isinstance(
+            (convert_or_none(entry, dict[str, object]) or {}).get("content"),
+            str,
+        )
     ]
     out: list[SessionRecord] = []
     at = 0
@@ -2478,7 +2487,7 @@ def _per_path_edits(
         # A write ONLY when content is the form the entry used. An entry
         # carrying both keys is an update whose diff the reader took, and
         # typing it by key presence made the writer fill the wrong one.
-        entry = convert(changes.get(path), dict[str, object])
+        entry = convert_or_none(changes.get(path), dict[str, object]) or {}
         added = not isinstance(entry.get("unified_diff"), str) and isinstance(
             entry.get("content"),
             str,
@@ -2530,9 +2539,11 @@ def _search_rows(rows: Sequence[Mapping[str, object]]) -> list[WebSearchResult]:
 
 def _read_attachment(part: Mapping[str, object]) -> Attachment | None:
     """Read an inline image, which codex writes as a data URL."""
-    if convert(part.get("type"), str, default="") != "input_image":
+    if convert_or_none(part.get("type"), str) != "input_image":
         return None
-    header, separator, data = convert(part.get("image_url"), str, default="").partition(
+    header, separator, data = (
+        convert_or_none(part.get("image_url"), str) or ""
+    ).partition(
         ",",
     )
     if (

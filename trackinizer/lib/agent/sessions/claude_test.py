@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from dataclasses import replace
 from io import StringIO
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Final
 from unittest.mock import patch
 
 import base64
+import json
 
 import pytest
 
 from trackinizer.lib.agent.sessions import claude
 from trackinizer.lib.agent.sessions.claude import _group
+from trackinizer.lib.agent.sessions.testdata.mistype import mistyped
 from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,
     AgentToAgentMessage,
@@ -46,12 +49,19 @@ from trackinizer.lib.custom_json import convert, parse
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
-    from pathlib import Path
+
+
+_CWD: Final = Path(__file__).resolve().parent
 
 
 ENVELOPE = (
     '"userType":"external","cwd":"/workspace","sessionId":"s1","version":"2.1.241"'
 )
+FIXTURES: Final = {
+    name: (_CWD / "testdata" / name).read_text().splitlines(keepends=True)
+    for name in ("claude_main.jsonl", "claude_sidechain.jsonl")
+}
+"""Real sessions, one line per element, by file name."""
 
 
 def _line(**fields: str) -> str:
@@ -254,6 +264,24 @@ def test_a_record_outside_the_transcript_maps_to_its_own_type(
     records = list(claude.normalize(StringIO(native + "\n")))
 
     assert isinstance(_last_act(records), expected)
+
+
+def test_a_system_line_reads_its_time_text_and_kind() -> None:
+    native = (
+        '{"type":"system","subtype":"informational","content":"Hook ran",'
+        '"timestamp":"2026-08-24T20:29:52.614Z","uuid":"y1"}\n'
+    )
+
+    message = _last_act(list(claude.normalize(StringIO(native))))
+
+    assert isinstance(message, SystemMessage)
+    assert (message.timestamp, message.content, message.subtype) == (
+        "2026-08-24T20:29:52.614Z",
+        "Hook ran",
+        "informational",
+    )
+    # Read into fields, so not kept a second time in the residual.
+    assert not {"content", "subtype"} & set(message.extra)
 
 
 def test_a_queued_message_is_its_contexts_prose() -> None:
@@ -800,8 +828,13 @@ def test_a_null_read_file_round_trips() -> None:
     assert output.getvalue() == native
 
 
-@pytest.mark.parametrize("payload", ["{}", "null"], ids=["empty", "null"])
+@pytest.mark.parametrize(
+    "payload",
+    ["{}", "null", '"Error: Exit code 1"', '[{"type":"text","text":"ok"}]'],
+    ids=["empty", "null", "failed-call-string", "mcp-block-list"],
+)
 def test_an_explicit_tool_payload_round_trips(payload: str) -> None:
+    """A failed call answers with a bare string, an MCP tool with a block list."""
     native = _line(
         type='"assistant"',
         message=(
@@ -822,6 +855,38 @@ def test_an_explicit_tool_payload_round_trips(payload: str) -> None:
     claude.denormalize(records, output)
 
     assert output.getvalue() == native
+
+
+@pytest.mark.parametrize(
+    ("name", "index"),
+    [(name, index) for name, lines in FIXTURES.items() for index in range(len(lines))],
+)
+def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(
+    name: str,
+    index: int,
+) -> None:
+    """A log field of the wrong type reads as absent, as a missing one does.
+
+    The line is read beside the call or result it pairs with by tool id, so a
+    result meets its wrong field on the path the call's tool name selects.
+    """
+    lines = FIXTURES[name]
+    ids = {token for token in lines[index].split('"') if token.startswith("toolu_")}
+    window = [
+        at
+        for at, line in enumerate(lines)
+        if at == index or any(f'"{id_}"' in line for id_ in ids)
+    ]
+    failed: list[str] = []
+    for path, changed in mistyped(parse(lines[index], dict[str, object])):
+        line = json.dumps(changed, ensure_ascii=False, separators=(",", ":")) + "\n"
+        session = "".join(line if at == index else lines[at] for at in window)
+        try:
+            claude.denormalize(claude.normalize(StringIO(session)), StringIO())
+        except TypeError as error:
+            failed.append(f"{path}: {error}")
+
+    assert failed == []
 
 
 @pytest.mark.parametrize(
@@ -1593,6 +1658,26 @@ def test_claude_writer_special_result_shapes() -> None:
         "thinking": "summary",
         "signature": "",
     }
+
+
+def test_a_line_context_reads_what_the_line_states_and_keeps_the_rest() -> None:
+    previous = TurnContext(
+        model="old",
+        effort="low",
+        permission="ask",
+        extra={"cwd": "/w"},
+    )
+
+    kept = claude._read_line_context({}, previous)
+    stated = claude._read_line_context(
+        {"permissionMode": "plan", "effort": 7},
+        previous,
+    )
+
+    assert (kept.model, kept.effort, kept.permission) == ("old", "low", "ask")
+    assert dict(kept.extra) == {"cwd": "/w"}
+    # A stated field replaces the prior one, even when its value is unreadable.
+    assert (stated.permission, stated.effort) == ("plan", None)
 
 
 def test_claude_reader_context_and_result_edge_cases() -> None:
