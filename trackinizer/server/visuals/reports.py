@@ -434,10 +434,8 @@ async def _snapshot_content(
         "sections": [section.model_dump(mode="json") for section in sections],
         "citations": [citation.model_dump(mode="json") for citation in citations],
     }
-    content_bytes = len(json.dumps(content, ensure_ascii=False).encode("utf-8"))
-    if body.format == "structured" and content_bytes > 30_000_000:
-        raise ValueError("Artifact file exceeds 30 MB.")
-    return content, content_bytes
+    # No size cap here: the draft's field limits bound structured JSON near 20 MB.
+    return content, len(json.dumps(content, ensure_ascii=False).encode())
 
 
 type CitationCache = dict[
@@ -502,7 +500,7 @@ async def _snapshot_citation(conn: Conn, ref: ArtifactCitationRef) -> ArtifactCi
         seq=convert(record["seq"], int),
         title=convert(record["title"], str)[:2_000],
     )
-    if ref.claim_id is None or ref.edge_kind is None:
+    if ref.claim_id is None:
         return citation
     claim = await conn.fetchrow(
         "SELECT kind, seq, title FROM inquiries WHERE id = $1",
@@ -546,6 +544,5 @@ def _revision_from_row(row: Mapping[str, object]) -> ArtifactContentRevision:
             "issue_id": row["issue_id"],
             "author": row["author"],
             "created_at": row["created_at"],
-            "scope": "team",
         },
     )
