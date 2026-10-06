@@ -51,6 +51,7 @@ import uvicorn
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import SessionRecord, UserMessage
 from trackinizer.lib.custom_json import convert
 from trackinizer.lib.posix.relay import ThreadedRelay
@@ -61,7 +62,6 @@ from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store
-from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.trax.run.session import (
     RunConfig,
     _drain_filesystem_loop,
@@ -82,6 +82,7 @@ if TYPE_CHECKING:
 
     from trackinizer.trax.run.custom_types import Event
     from trackinizer.trax.run.slash import SlashCommand
+    from trackinizer.types.streams import TraxRecord
     from trackinizer.wire.wire_session_ir import RecordBody
 
 
@@ -564,7 +565,7 @@ class _LineAdapter:
         del path
         return None
 
-    def reader(self) -> Tail:
+    def reader(self) -> Tail[TraxRecord]:
         return Tail(_line_records)
 
 

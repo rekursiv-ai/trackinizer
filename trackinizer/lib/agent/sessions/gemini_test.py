@@ -13,9 +13,11 @@ from io import StringIO
 
 import json
 
+import pytest
+
 from trackinizer.lib.agent.sessions import gemini
 from trackinizer.lib.agent.sessions.convert import _dropped, detect_format
-from trackinizer.lib.agent.sessions.testdata.mistype import mistyped
+from trackinizer.lib.agent.sessions.testdata.mistype import mistyped, unread, without
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
     ContextClear,
@@ -36,7 +38,7 @@ def _content(record: SessionRecord) -> str:
     return record.content or ""
 
 
-def _document(*messages: dict[str, object], session_id: str = "s1") -> str:
+def _document(*messages: object, session_id: str = "s1") -> str:
     """Return a gemini session document holding ``messages``."""
     return json.dumps({"sessionId": session_id, "messages": list(messages)})
 
@@ -352,6 +354,62 @@ def test_an_uncategorized_record_is_written_as_its_payload() -> None:
     ]
 
 
+def test_nested_tool_arguments_round_trip() -> None:
+    # Frozen mappings were copied one level deep, and ``json.dump`` cannot
+    # encode the ``mappingproxy`` that remained inside.
+    message = parse(
+        '{"type": "gemini", "content": "", "meta": {"deep": {"k": 1}},'
+        ' "toolCalls": [{"id": "t", "name": "f", "args": {"n": {"x": [1]}},'
+        ' "x": {"y": {}}}]}',
+        dict[str, object],
+    )
+    text = _document(message)
+
+    out = StringIO()
+    gemini.denormalize(gemini.normalize(StringIO(text)), out)
+
+    assert out.getvalue() == text
+
+
+def test_different_foreign_streams_of_one_length_get_different_ids() -> None:
+    def session_id(content: str) -> str:
+        out = StringIO()
+        gemini.denormalize([UserMessage(content=content)], out)
+        return convert(parse(out.getvalue(), dict[str, object])["sessionId"], str)
+
+    assert session_id("a") != session_id("b")
+    assert session_id("a") == session_id("a")
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"type": 7, "content": "x"},
+        {"type": "user", "content": [1]},
+        {"type": "gemini", "content": {}},
+        {"type": "gemini", "content": "", "toolCalls": "x"},
+        {"type": "gemini", "content": "", "toolCalls": [7]},
+        7,
+    ],
+    ids=["type", "user-content", "gemini-content", "calls", "call", "scalar"],
+)
+def test_a_malformed_message_round_trips(message: object) -> None:
+    # One malformed field raised ``ReadError`` out of ``normalize`` and lost
+    # the whole document.
+    text = _document({"type": "user", "content": "before"}, message)
+
+    out = StringIO()
+    gemini.denormalize(gemini.normalize(StringIO(text)), out)
+
+    assert out.getvalue() == text
+
+
+def test_a_top_level_array_is_kept_verbatim() -> None:
+    records = _read("[1, 2]")
+
+    assert records[-1] == IncompleteRecord(text="[1, 2]")
+
+
 def test_empty_text_and_empty_object_are_incomplete_documents() -> None:
     assert [type(record) for record in _read("   ")] == [TurnContext, ContextClear]
     records = _read("{}")
@@ -403,17 +461,25 @@ def test_a_document_with_nested_fields_round_trips_byte_exact() -> None:
 
 def test_a_mistyped_field_aborts_neither_the_read_nor_the_write() -> None:
     """A document field of the wrong type reads as absent, as a missing one does."""
+    document = parse(_nested(), dict[str, object])
     failed: list[str] = []
-    for path, changed in mistyped(parse(_nested(), dict[str, object])):
+    for path, changed in mistyped(document):
+        records = list(gemini.normalize(StringIO(json.dumps(changed))))
+        missing = json.dumps(without(document, path))
         try:
-            gemini.denormalize(
-                gemini.normalize(StringIO(json.dumps(changed))),
-                StringIO(),
-            )
+            gemini.denormalize(records, StringIO())
         except TypeError as error:
             failed.append(f"{path}: {error}")
+        # Anything else in a message is kept verbatim with its message rather
+        # than read as absent: reading it so would lose the value when the
+        # document is written back.
+        kept_whole = path.startswith("messages") and not path.endswith(".type")
+        if not kept_whole and unread(records) > unread(
+            gemini.normalize(StringIO(missing)),
+        ):
+            failed.append(f"{path}: the document reads worse than without the field")
 
-    assert failed == []
+    assert failed == [], "\n".join(failed)
 
 
 if __name__ == "__main__":

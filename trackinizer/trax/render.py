@@ -307,7 +307,7 @@ def format_show(
     if subs := convert(self_view.get("subscribers"), list[str], default=[]):
         lines.append(f"  subscribers: {','.join(subs)}")
     lines.extend(
-        f"  {extra:11}: {value}"
+        f"  {extra + ':':12} {value}"
         for extra in (
             "judgement",
             "confidence",
@@ -410,7 +410,7 @@ def format_session_hits(body: Mapping[str, object]) -> str:
         requested but unavailable.
 
     """
-    hits = convert(body.get("hits"), list[dict[str, object]], default=[])
+    hits = convert(body.get("hits"), list[dict[str, object]], default=None)
     lines: list[str] = []
     if body.get("degraded"):
         lines.append("(semantic search unavailable; showing full-text results only)")

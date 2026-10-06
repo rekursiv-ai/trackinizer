@@ -11,10 +11,12 @@ embedder is configured (a keyword search must never load an 8 GB model).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
+from unittest.mock import Mock
 from uuid import UUID, uuid4
 
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 
 import pytest
 import pytest_asyncio
@@ -298,12 +300,13 @@ async def test_model_override_caches_two_dims_as_distinct_entries(
     await _seed(store)
 
     builds: list[tuple[str, int | None]] = []
-    real_build = registry.build_session_embedder
 
-    def counting_build(name: str, *, dim: int | None = None) -> object:
+    def counting_build(name: str, *, dim: int | None = None) -> StubEmbedder:
         builds.append((name, dim))
-        return real_build(name, dim=dim)
+        assert dim is not None
+        return StubEmbedder(dim=dim)
 
+    monkeypatch.setattr(registry, "weights_present", Mock(return_value=True))
     monkeypatch.setattr(registry, "build_session_embedder", counting_build)
     request = _request(store, session_embedder="")
     for override_dim in (512, 256, 512):  # 512 repeats -> its second call is cached.
@@ -313,13 +316,13 @@ async def test_model_override_caches_two_dims_as_distinct_entries(
                 q="deploy the release to production",
                 identity=_VIEWER,
                 semantic=True,
-                model="stub",
+                model="qwen3-embedding-4b",
                 dim=override_dim,
             ),
             dict[str, object],
         )
     # 512 built once (reused on repeat), 256 built once -> two distinct entries.
-    assert builds == [("stub", 512), ("stub", 256)]
+    assert builds == [("qwen3-embedding-4b", 512), ("qwen3-embedding-4b", 256)]
 
 
 @pytest.mark.db_pglite
@@ -368,6 +371,64 @@ async def test_bad_limit_and_empty_query_are_400(store: Store) -> None:
         assert caught.value.status_code == 400
     with pytest.raises(HTTPException) as caught:
         await web.web_search_sessions(request, q="   ", identity=_VIEWER)
+    assert caught.value.status_code == 400
+
+
+@pytest.mark.parametrize("override", [False, True])
+def test_uncached_model_degrades_without_construction(
+    monkeypatch: pytest.MonkeyPatch,
+    override: bool,
+) -> None:
+    build = Mock(side_effect=AssertionError("Uncached model constructed"))
+    monkeypatch.setattr(registry, "weights_present", Mock(return_value=False))
+    monkeypatch.setattr(registry, "build_session_embedder", build)
+    app = FastAPI()
+    app.state.config = Config(session_embedder="qwen3-embedding-4b")
+    request = Request({"type": "http", "app": app})
+    assert (
+        web._search_embedder(
+            request,
+            semantic=True,
+            model="qwen3-embedding-4b" if override else "",
+            dim=None,
+        )
+        is None
+    )
+    build.assert_not_called()
+
+
+def test_override_alias_uses_resolved_identity_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build = Mock(return_value=StubEmbedder(dim=512))
+    monkeypatch.setattr(registry, "weights_present", Mock(return_value=True))
+    monkeypatch.setattr(registry, "build_session_embedder", build)
+    request = Request({"type": "http", "app": FastAPI()})
+    first = web._override_embedder(request, "qwen3-embedding-4b", 512)
+    second = web._override_embedder(request, "qwen3-embedding-4b@512", None)
+    assert first is second
+    assert build.call_count == 1
+
+
+@pytest.mark.parametrize("semantic", [False, True])
+def test_dimension_without_model_is_rejected(semantic: bool) -> None:
+    request = Request({"type": "http", "app": FastAPI()})
+    with pytest.raises(HTTPException) as caught:
+        web._search_embedder(request, semantic=semantic, model="", dim=256)
+    assert caught.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_feed_rejects_reversed_window_before_reading_store() -> None:
+    request = Request({"type": "http", "app": FastAPI()})
+    since = datetime(2026, 9, 1, tzinfo=UTC)
+    with pytest.raises(HTTPException) as caught:
+        await web.web_feed(
+            request,
+            _VIEWER,
+            since=since,
+            until=since - timedelta(days=1),
+        )
     assert caught.value.status_code == 400
 
 

@@ -13,7 +13,7 @@ import pytest
 
 from trackinizer.lib.agent.sessions import codex
 from trackinizer.lib.agent.sessions.codex import _grouped
-from trackinizer.lib.agent.sessions.testdata.mistype import mistyped
+from trackinizer.lib.agent.sessions.testdata.mistype import mistyped, unread, without
 from trackinizer.lib.agent.sessions.udiff import parse_udiff, render_udiff
 from trackinizer.lib.agent.types.sessions import (
     AgentToAgentMessage,
@@ -64,6 +64,9 @@ FIXTURE: Final = (
     (_CWD / "testdata" / "codex_main.jsonl").read_text().splitlines(keepends=True)
 )
 """A real rollout, one line per element."""
+
+_KEPT_AS_TEXT: Final = frozenset({"payload.call_id", "payload.item.id"})
+"""Fields whose wrong value only the line's own text can write back."""
 
 
 def _item(payload: str) -> str:
@@ -129,6 +132,51 @@ def test_context_replay_preserves_null_and_malformed_semantic_fields() -> None:
 )
 def test_provider_dollar_keys_round_trip(line: str) -> None:
     native = META + line
+    output = StringIO()
+
+    codex.denormalize(codex.normalize(StringIO(native)), output)
+
+    assert output.getvalue() == native
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '{"type":7,"payload":{}}\n',
+        '{"type":"session_meta","payload":{"session_id":7,"base_instructions":7}}\n',
+        '{"type":"turn_context","payload":{"effort":7,"summary":[1]}}\n',
+        '{"type":"response_item","payload":{"type":7}}\n',
+        '{"type":"response_item","payload":{"type":"function_call","call_id":7}}\n',
+        '{"type":"event_msg","payload":{"type":"item_completed","item":7}}\n',
+    ],
+    ids=["outer", "repeat-meta", "context", "item-type", "call-id", "event-item"],
+)
+def test_a_line_with_a_malformed_field_round_trips(line: str) -> None:
+    # One malformed field raised ``ReadError`` out of ``normalize`` and lost
+    # the whole rollout.
+    native = META + line
+    output = StringIO()
+
+    codex.denormalize(codex.normalize(StringIO(native)), output)
+
+    assert output.getvalue() == native
+
+
+def test_a_malformed_launch_line_keeps_its_bytes() -> None:
+    native = '{"type":"session_meta","payload":{"session_id":"s"},"ordinal":"x"}\n'
+    output = StringIO()
+
+    codex.denormalize(codex.normalize(StringIO(native)), output)
+
+    assert output.getvalue() == native
+
+
+def test_a_compacted_line_with_an_empty_history_round_trips() -> None:
+    # Presence was tested after the key was popped, so an empty history read as
+    # "not stated" and the line came back as ``{"message":null}``.
+    native = META + (
+        '{"type":"compacted","payload":{"message":"","replacement_history":[]}}\n'
+    )
     output = StringIO()
 
     codex.denormalize(codex.normalize(StringIO(native)), output)
@@ -1575,16 +1623,27 @@ def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(index: int) -> N
     The rest of the rollout stays as written, so a line read in context -- a
     result after its call, an item after its turn -- meets its wrong field there.
     """
+    record = parse(FIXTURE[index], dict[str, object])
     failed: list[str] = []
-    for path, changed in mistyped(parse(FIXTURE[index], dict[str, object])):
-        line = json.dumps(changed, ensure_ascii=False, separators=(",", ":")) + "\n"
-        rollout = "".join([*FIXTURE[:index], line, *FIXTURE[index + 1 :]])
+    for path, changed in mistyped(record):
+        records = list(codex.normalize(StringIO(_swapped(index, changed))))
+        missing = _swapped(index, without(record, path))
         try:
-            codex.denormalize(codex.normalize(StringIO(rollout)), StringIO())
+            codex.denormalize(records, StringIO())
         except TypeError as error:
             failed.append(f"{path}: {error}")
+        if path not in _KEPT_AS_TEXT and unread(records) > unread(
+            codex.normalize(StringIO(missing)),
+        ):
+            failed.append(f"{path}: the line reads worse than without the field")
 
-    assert failed == []
+    assert failed == [], "\n".join(failed)
+
+
+def _swapped(index: int, record: object) -> str:
+    """Return the rollout with line ``index`` replaced by ``record``."""
+    line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+    return "".join([*FIXTURE[:index], line, *FIXTURE[index + 1 :]])
 
 
 if __name__ == "__main__":

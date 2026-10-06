@@ -33,6 +33,7 @@ from trackinizer.wire.bodies import (
     Citation,
     SubmitAgentSession,
     SubmitArtifact,
+    SubmitBase,
     SubmitBelief,
     SubmitExperiment,
     SubmitIssue,
@@ -562,6 +563,42 @@ class TestSubmitEmbedsBeforeTx:
 def _tx_verbs(conn: AsyncMock) -> list[str]:
     """Return the BEGIN/COMMIT/ROLLBACK verbs issued on ``conn``, in order."""
     return [s for s in executed_sql(conn) if s in ("BEGIN", "COMMIT", "ROLLBACK")]
+
+
+class TestSubmitDispatch:
+    """``Store.submit`` routes a body to its own kind's ``submit_X``."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("body", "method"),
+        [
+            (SubmitIssue(title="i", account="a@example.com"), "submit_issue"),
+            (SubmitArtifact(title="a", account="a@example.com"), "submit_artifact"),
+            (SubmitPaper(title="p", account="a@example.com"), "submit_paper"),
+        ],
+    )
+    async def test_routes_each_body_to_its_kind(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        body: SubmitIssue | SubmitArtifact | SubmitPaper,
+        method: str,
+    ) -> None:
+        store, _engine = make_store()
+        expected = new_uuid()
+        called = AsyncMock(return_value=expected)
+        monkeypatch.setattr(store, method, called)
+        assert await store.submit(body, api_key_id=None, actor="me") == expected
+        called.assert_awaited_once_with(body, api_key_id=None, actor="me", conn=None)
+
+    @pytest.mark.asyncio
+    async def test_rejects_the_abstract_base(self) -> None:
+        store, _engine = make_store()
+        with pytest.raises(TypeError, match="SubmitBase"):
+            await store.submit(
+                SubmitBase.model_construct(),
+                api_key_id=None,
+                actor="me",
+            )
 
 
 class TestSubmitBatch:

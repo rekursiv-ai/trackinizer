@@ -1,7 +1,8 @@
 """The inquiry-kind verbs (``issue``, ``belief``, ...) and the helper commands.
 
-The 8 kind names share one ``Kind`` command; ``recent``, ``next``,
-``blocked``, ``graph``, ``board``, and ``cost`` each get their own class.
+The nine kind names share one ``Kind`` command. Helpers cover recent activity,
+search, identity, scheduling, graphs, costs, confidence, authority, messaging,
+version, export, and visual workspaces.
 """
 
 from __future__ import annotations
@@ -155,7 +156,7 @@ _NEGATIVE_CITATION_LABELS: Final[Mapping[Edge.Kind, tuple[str, str]]] = {
 
 
 class Kind(Command):
-    """The 8 inquiry-kind names, each acting as a verb.
+    """The nine inquiry-kind names, each acting as a verb.
 
     One parser handles every shape; :meth:`run` routes by looking at the
     trailing positionals:
@@ -230,6 +231,28 @@ class Kind(Command):
 
     @classmethod
     @override
+    def dispatch(
+        cls,
+        verb: str,
+        rest: list[str],
+        client_factory: Callable[[], Client],
+    ) -> None:
+        """Parse inquiry arguments without consuming a native runner's tail.
+
+        Args:
+          verb: Inquiry kind spelling.
+          rest: Unparsed command arguments.
+          client_factory: Authenticated client factory.
+
+        """
+        if verb == "agentsession" and (split := _split_run_tail(rest)) is not None:
+            args = cls.make_parser().parse_args(split[0])
+            cls.run_resume(split[0], split[1], args, client_factory)
+            return
+        super().dispatch(verb, rest, client_factory)
+
+    @classmethod
+    @override
     def run(
         cls,
         verb: str,
@@ -299,7 +322,7 @@ class Kind(Command):
           tokens: Row-specific suffix (edge index if any).
           args: CLI namespace (sort, format, width).
           client_factory: Callable that creates a client.
-          against: Flip the edge direction for display.
+          against: Select citations with negative valence.
 
         """
         if len(tokens) > 1:
@@ -385,15 +408,10 @@ class Kind(Command):
         if not starts_with_ref(before):
             raise ClientError("run needs one session: trax agentsession 42 run claude")
         target, *runner_args = tail
-        # ``--lossy`` gates the CONVERSION, which happens before any runner
-        # exists, so it is the tail's own rather than something to forward.
-        #
-        # Read off the parsed namespace, not the raw tail: this parser
-        # declares the flag (it must, or it rejects the command outright) and
-        # therefore has already consumed it -- scanning ``runner_args`` for it
-        # found nothing and every ``--lossy`` resume was refused anyway.
-        lossy = bool(_arg_bool(args, "lossy"))
-        forwarded = [arg for arg in runner_args if arg != "--lossy"]
+        boundary = runner_args.index("--") if "--" in runner_args else len(runner_args)
+        options, native = runner_args[:boundary], runner_args[boundary:]
+        lossy = _arg_bool(args, "lossy") or "--lossy" in options
+        forwarded = [arg for arg in options if arg != "--lossy"] + native
         ref, consumed = consume_ref(before, 0, kind_hint="AgentSession")
         if before[consumed:]:
             raise ClientError(
@@ -896,6 +914,8 @@ class Kind(Command):
             echo(f"added: {source} {edge_kind} {target}")
         elif result.changed:
             echo(f"annotated: {source} {edge_kind} {target}")
+        else:
+            echo(f"exists: {source} {edge_kind} {target}")
 
     @classmethod
     def run_create(
@@ -960,7 +980,6 @@ class Kind(Command):
         cls._flatten_inline_tree(
             edge_actions,
             from_index=0,
-            actor=actor,
             client=client,
             items=items,
             edges=edges,
@@ -1112,7 +1131,6 @@ class Kind(Command):
         actions: Sequence[EdgeAction],
         *,
         from_index: int,
-        actor: Inquiry.Actor,
         client: Client,
         items: list[tuple[Inquiry.InquiryKind, Mapping[str, object]]],
         edges: list[dict[str, object]],
@@ -1138,7 +1156,6 @@ class Kind(Command):
                 cls._flatten_inline_tree(
                     target.edges,
                     from_index=new_index,
-                    actor=actor,
                     client=client,
                     items=items,
                     edges=edges,
@@ -1334,7 +1351,6 @@ class Kind(Command):
         cls._flatten_inline_tree(
             target.edges,
             from_index=0,
-            actor=actor,
             client=client,
             items=items,
             edges=edges,
@@ -3136,29 +3152,37 @@ def _query_rows(
     return rows
 
 
-# ``metric`` is not a kind/field/edge/relation word, so its first appearance is
-# unambiguously the grid-tail marker. Returns ``None`` when ``rest`` carries no
-# ``metric`` word (an ordinary list/create/edit command).
 def _split_metric_tail(
     rest: Sequence[str],
 ) -> tuple[Sequence[str], Sequence[str]] | None:
-    """Split ``rest`` at the first ``metric`` keyword into ``(before, tail)``."""
+    """Split a grid marker after a complete subject, query, or create clause."""
     for index, token_text in enumerate(rest):
-        if token_text.lower() == "metric":
+        if token_text.lower() == "metric" and _metric_prefix(rest[:index]):
             return rest[:index], rest[index + 1 :]
     return None
 
 
-# ``run`` is not a field, kind, edge, or relation word on an AgentSession, so its first
-# appearance is unambiguously the resume marker. Returns ``None`` for an ordinary
-# list/show command.
+def _metric_prefix(tokens: Sequence[str]) -> bool:
+    """Whether a grid marker may follow these complete grammar clauses."""
+    try:
+        if starts_with_ref(tokens):
+            return consume_ref(tokens, 0, kind_hint="Experiment")[1] == len(tokens)
+        return parse_list_query("Experiment", tokens) is not None or bool(
+            parse_actions(tokens),
+        )
+    except ClientError:
+        return False
+
+
 def _split_run_tail(
     rest: Sequence[str],
 ) -> tuple[Sequence[str], Sequence[str]] | None:
-    """Split ``rest`` at the ``run`` keyword into ``(subject, tail)``."""
-    for index, token_text in enumerate(rest):
-        if token_text.lower() == "run":
-            return rest[:index], rest[index + 1 :]
+    """Split a resume marker only immediately after its session subject."""
+    if not starts_with_ref(rest):
+        return None
+    _, consumed = consume_ref(rest, 0, kind_hint="AgentSession")
+    if consumed < len(rest) and rest[consumed].lower() == "run":
+        return rest[:consumed], rest[consumed + 1 :]
     return None
 
 

@@ -144,7 +144,7 @@ class SessionRecordRow:
     not self-join per row. A projection, never read back into a record."""
 
     payload: JSON
-    """The record as ``DataclassCodec`` JSON, with ciphertext removed."""
+    """Frozen ``to_builtins`` data, tagged by record type, without ciphertext."""
 
     text: str = ""
     """The search projection; see :func:`search_text`."""

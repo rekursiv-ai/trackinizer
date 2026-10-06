@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Final, cast
@@ -19,7 +19,6 @@ from fastapi.responses import JSONResponse
 from starlette.types import Send
 
 import asyncpg
-import fastjsonschema
 
 from trackinizer.addons.addon import ServerContext
 from trackinizer.addons.deployment import Deployment, supervise
@@ -78,6 +77,7 @@ _logger = logging.getLogger(__name__)
 
 
 __all__ = [
+    "ROUTERS",
     "RequestLoggingMiddleware",
     "app",
     "check_violation_handler",
@@ -85,8 +85,8 @@ __all__ = [
     "fk_violation_handler",
     "lifespan",
     "not_found_handler",
-    "schema_handler",
     "unique_violation_handler",
+    "validation_handler",
 ]
 
 
@@ -165,44 +165,55 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         # when its weights are absent -- never downloaded in-band -- and warmed
         # in the background when present, so the first query pays inference
         # only.
-        warm_task = _resolve_session_embedder(app, config)
-        # Subscriber push: copies committed change rows into subscribers'
-        # live-session inbound queues (doorbell-driven; see subscriber_push).
-        push_task = asyncio.create_task(
-            push_changes_to_live_subscribers(app.state.store, app.state.inbound),
-        )
-        # Authority sweep: recomputes the derived load-bearing (PageRank)
-        # columns off the request path, coalescing edge-change bursts.
-        authority_task = asyncio.create_task(authority_sweep_loop(app.state.store))
-        # Session reaper: closes sessions whose run went silent (killed, host
-        # crashed), so a dead agent stops showing as live.
-        reaper_task = asyncio.create_task(
-            session_reaper_loop(app.state.store, inbound=app.state.inbound),
-        )
-        addon_tasks = _start_addon_services(
-            deployment_of(app),
-            context=ServerContext(store=app.state.store, inbound=app.state.inbound),
-        )
+        tasks: list[asyncio.Task[None]] = []
         try:
+            warm_task = _resolve_session_embedder(app, config)
+            if warm_task is not None:
+                tasks.append(warm_task)
+            # Subscriber push: copies committed change rows into subscribers'
+            # live-session inbound queues (doorbell-driven; see subscriber_push).
+            tasks.append(
+                asyncio.create_task(
+                    push_changes_to_live_subscribers(
+                        app.state.store,
+                        app.state.inbound,
+                    ),
+                ),
+            )
+            # Authority sweep: recomputes the derived load-bearing (PageRank)
+            # columns off the request path, coalescing edge-change bursts.
+            tasks.append(asyncio.create_task(authority_sweep_loop(app.state.store)))
+            # Session reaper: closes sessions whose run went silent (killed, host
+            # crashed), so a dead agent stops showing as live.
+            tasks.append(
+                asyncio.create_task(
+                    session_reaper_loop(app.state.store, inbound=app.state.inbound),
+                ),
+            )
+            tasks.extend(
+                _start_addon_services(
+                    deployment_of(app),
+                    context=ServerContext(
+                        store=app.state.store,
+                        inbound=app.state.inbound,
+                    ),
+                ),
+            )
             yield
         finally:
-            for addon_task in addon_tasks:
-                addon_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await addon_task
-            push_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await push_task
-            authority_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await authority_task
-            reaper_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await reaper_task
-            if warm_task is not None:
-                warm_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await warm_task
+            for task in tasks:
+                task.cancel()
+            for task, outcome in zip(
+                tasks,
+                await asyncio.gather(*tasks, return_exceptions=True),
+                strict=True,
+            ):
+                if isinstance(outcome, Exception):
+                    _logger.error(
+                        "background task %s failed",
+                        task.get_name(),
+                        exc_info=outcome,
+                    )
         # Bracket the engine teardown so an operator (and the shutdown-latency
         # investigation) can see where time goes: a gap BEFORE this line is
         # uvicorn draining in-flight connections; a gap until "engine closed"
@@ -224,8 +235,20 @@ def _resolve_session_embedder(
 ) -> asyncio.Task[None] | None:
     """Cache the session embedder on ``app.state``; degrade or warm as needed."""
     name = config.session_embedder
-    embedder = registry.build_session_embedder(name)
+    embedder = registry.build_cached_session_embedder(
+        name,
+        dim=config.session_embedder_dim,
+    )
     if embedder is None:
+        if name:
+            _logger.error(
+                "session embedder %r configured but its weights are NOT in the HF "
+                "cache; semantic session search is DISABLED (full-text only). "
+                "Run `python -m trackinizer.server.prep_models` on this host "
+                "to download them, then restart. A request will NEVER download "
+                "them in-band.",
+                name,
+            )
         app.state.session_embedder = None
         return None
     if registry.is_weightless(name):
@@ -233,21 +256,8 @@ def _resolve_session_embedder(
         # background warm.
         app.state.session_embedder = embedder
         return None
-    if registry.weights_present(name):
-        # A real model with cached weights is ready. Warm the lazy load off the
-        # request path so the first query pays inference only, not the load.
-        app.state.session_embedder = embedder
-        return asyncio.create_task(_warm_session_embedder(embedder))
-    _logger.error(
-        "session embedder %r configured but its weights are NOT in the HF "
-        "cache; semantic session search is DISABLED (full-text only). "
-        "Run `python -m trackinizer.server.prep_models` on this host "
-        "to download them, then restart. A request will NEVER download "
-        "them in-band.",
-        name,
-    )
-    app.state.session_embedder = None
-    return None
+    app.state.session_embedder = embedder
+    return asyncio.create_task(_warm_session_embedder(embedder))
 
 
 async def _warm_session_embedder(embedder: QueryEmbedder) -> None:
@@ -352,7 +362,9 @@ class _RequestLogSpan:
 
     async def send(self, message: Message) -> None:
         if message["type"] == "http.response.start":
-            self.status_code = convert(cast(object, message["status"]), int)
+            # ASGI's typed message union exposes status as Any here.
+            status = cast(object, message["status"])
+            self.status_code = convert(status, int)
             self.response_start_sec = time.perf_counter() - self.started
             headers = list(cast(list[tuple[bytes, bytes]], message.get("headers", [])))
             headers = [
@@ -449,31 +461,6 @@ async def validation_handler(request: Request, exc: ValidationError) -> JSONResp
     return JSONResponse(
         status_code=422,
         content={"detail": str(exc), "code": exc.code},
-    )
-
-
-@app.exception_handler(fastjsonschema.JsonSchemaValueException)
-async def schema_handler(
-    request: Request,
-    exc: fastjsonschema.JsonSchemaValueException,
-) -> JSONResponse:
-    """Translate a ``fastjsonschema`` validation error into HTTP 422.
-
-    A schema mismatch in a client-supplied record ``payload`` is a malformed
-    request, not a server fault, so it must surface as 422 rather than 500.
-
-    Args:
-      request: FastAPI Request object (unused).
-      exc: A fastjsonschema validation error.
-
-    Returns:
-      response: JSON response with 422 status, detail, and code='schema'.
-
-    """
-    del request
-    return JSONResponse(
-        status_code=422,
-        content={"detail": str(exc), "code": "schema"},
     )
 
 

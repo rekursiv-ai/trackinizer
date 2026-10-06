@@ -29,6 +29,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.agent.sessions import claude, codex
+from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import (
     SessionRecord,
     Thinking,
@@ -37,7 +38,6 @@ from trackinizer.lib.agent.types.sessions import (
 from trackinizer.lib.custom_json import json_freeze
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
-from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 

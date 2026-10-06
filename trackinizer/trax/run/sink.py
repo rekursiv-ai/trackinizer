@@ -57,9 +57,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from trackinizer.client.client import Client
+    from trackinizer.lib.agent.sessions.tail import Tail
     from trackinizer.trax.run.adapters.custom_types import Adapter
-    from trackinizer.trax.run.adapters.tail import Tail
     from trackinizer.trax.run.slash import SlashCommand
+    from trackinizer.types.streams import TraxRecord
 
 
 class Sink(Protocol):
@@ -199,7 +200,7 @@ class Sink(Protocol):
         return kinds
 
     @property
-    def readers(self) -> dict[Path, Tail]:
+    def readers(self) -> dict[Path, Tail[TraxRecord]]:
         """Per-file readers, one per source file this sink has seen.
 
         A PROPERTY over a lazily built dict rather than an attribute every
@@ -213,7 +214,7 @@ class Sink(Protocol):
             self._readers = built
         return built
 
-    _readers: dict[Path, Tail] | None = None
+    _readers: dict[Path, Tail[TraxRecord]] | None = None
     """Backing store for :attr:`readers`; ``None`` until first use.
 
     Declared on the Protocol with a class-level default so the lazy build
@@ -747,7 +748,7 @@ class ResilientSink(Sink):
     # file spells its bytes, and it reads that off the file's reader.
     @property
     @override
-    def readers(self) -> dict[Path, Tail]:
+    def readers(self) -> dict[Path, Tail[TraxRecord]]:
         return self._primary.readers
 
     # The runner opens the sink before spawning the child CLI, so an open failure
@@ -954,7 +955,7 @@ class LockedSink(Sink):
     # Shares the inner sink's readers, for the reason ``ResilientSink`` gives.
     @property
     @override
-    def readers(self) -> dict[Path, Tail]:
+    def readers(self) -> dict[Path, Tail[TraxRecord]]:
         return self._inner.readers
 
     @override

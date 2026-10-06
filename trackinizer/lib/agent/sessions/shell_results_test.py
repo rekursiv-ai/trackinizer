@@ -22,7 +22,7 @@ from trackinizer.lib.agent.types.sessions import (
 
 
 if TYPE_CHECKING:
-    from trackinizer.lib.agent.sessions.shell_results import Operation, _BashNode
+    from trackinizer.lib.agent.sessions.shell_results import _BashNode
 
 
 class _Node:
@@ -284,6 +284,9 @@ def test_an_append_lifts_to_the_lines_it_added(script: str, udiff: str) -> None:
         ("sed -n '/^def /,/^class /p' a.txt", ((None, None),)),
         ("head -20 a.txt", ((1, 20),)),
         ("head -n 20 a.txt", ((1, 20),)),
+        # An unstated count is coreutils' default of 10, not the whole file.
+        ("head a.txt", ((1, 10),)),
+        ("tail a.txt", ((None, 10),)),
         # ``tail`` counts backwards from the end, so it states a count only.
         ("tail -5 a.txt", ((None, 5),)),
         ("tail -n 5 a.txt", ((None, 5),)),
@@ -300,6 +303,8 @@ def test_an_append_lifts_to_the_lines_it_added(script: str, udiff: str) -> None:
         "sed-regex",
         "head-bare",
         "head-n",
+        "head-default",
+        "tail-default",
         "tail-bare",
         "tail-n",
         "cat",
@@ -602,6 +607,32 @@ def test_replay_uses_the_operand_position_when_argv_values_repeat() -> None:
     assert replay.command == ("/bin/cat", "new")
 
 
+def test_replay_renames_the_operand_not_an_earlier_word_with_its_text() -> None:
+    # The script and the file carry the same text, so a lookup by value
+    # rewrote the script and left the file named as before.
+    shell = ShellCommandResult(
+        call_id="c1",
+        command=("sed", "-i", "s/a/b/", "s/a/b/"),
+        exit_code=0,
+    )
+    lifted = lift_shell_result(shell)
+    assert isinstance(lifted, FileEditResult)
+
+    replay = shell_result_for_replay(replace(lifted, path="x"))
+
+    assert replay is not None
+    assert replay.command == ("sed", "-i", "s/a/b/", "x")
+
+
+def test_an_edited_quoted_heredoc_write_rewrites_its_content() -> None:
+    script = "cat > f << 'EOF'\nold\nEOF\n"
+    result = FileWriteResult(call_id="c1", path="f", content="new\n")
+
+    assert shell_results.rewrite_shell_source(script, result) == (
+        "/usr/bin/printf %s 'new\n' > f\n"
+    )
+
+
 def test_replay_preserves_stderr_from_the_shell_result() -> None:
     shell = ShellCommandResult(
         call_id="c1",
@@ -626,52 +657,28 @@ def test_rewrite_of_an_unrecognized_command_is_unchanged() -> None:
     )
 
 
-def _write_operation(source: str) -> Operation:
-    del source
-    return ("write", "a.txt", (0, 1), "old", (), None)
-
-
-def _write_without_content(source: str) -> Operation:
-    del source
-    return ("write", "a.txt", (0, 1), None, (), None)
-
-
-def _no_simple_command(source: str) -> None:
-    del source
-
-
 def _other_utility(executable: str) -> str:
     del executable
     return "other"
 
 
-def test_rewrite_rejects_a_write_without_a_parseable_simple_command(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    result = FileWriteResult(call_id="c1", path="a.txt", content="new")
-    monkeypatch.setattr(
-        shell_results,
-        "_operation",
-        _write_operation,
-    )
-    monkeypatch.setattr(shell_results, "_simple_command", _no_simple_command)
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("cd sub && echo old >| a.txt", "cd sub && /usr/bin/printf %s new >| a.txt"),
+        (
+            "cd sub && cat > a.txt <<- 'EOF'\n\told\n\tEOF\n",
+            "cd sub && /usr/bin/printf %s new > a.txt\n",
+        ),
+    ],
+    ids=["chdir", "tab-heredoc"],
+)
+def test_a_rewrite_splices_into_the_original_spans(script: str, expected: str) -> None:
+    # Both halves of the old reparse: a heredoc's body and terminator are
+    # replaced with the command, and the chdir prefix and trailer survive.
+    result = FileWriteResult(call_id="c1", path="sub/a.txt", content="new")
 
-    with pytest.raises(ValueError, match="Expected found is not None"):
-        shell_results.rewrite_shell_source("echo old > a.txt", result)
-
-
-def test_lifting_rejects_a_matched_write_with_missing_content(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    shell = ShellCommandResult(call_id="c1", command=("cat", "a.txt"), exit_code=0)
-    monkeypatch.setattr(
-        shell_results,
-        "_operation",
-        _write_without_content,
-    )
-
-    with pytest.raises(ValueError, match="Expected content is not None"):
-        lift_shell_result(shell)
+    assert shell_results.rewrite_shell_source(script, result) == expected
 
 
 def test_rewrite_shell_source_changes_only_a_write_content() -> None:
@@ -883,7 +890,7 @@ def test_line_reader_supports_lines_equals_and_rejects_dash_paths() -> None:
         "head",
         ["head", "a"],
         [path, count],
-    ) == ("read", "a", count.pos, None, ())
+    ) == ("read", "a", count.pos, None, ((1, 10),))
     assert shell_results._simple_command("") is None
 
     class Parser:

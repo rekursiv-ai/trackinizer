@@ -39,6 +39,7 @@ from trackinizer.lib.agent.types.sessions import (
     WebSearchResult,
     WebSearchResults,
 )
+from trackinizer.lib.custom_json import convert, json_freeze, json_unfreeze
 from trackinizer.types.session_records import (
     _BY_KIND,
     MAX_SEARCH_TEXT_BYTES,
@@ -298,6 +299,24 @@ def _union_members(alias: object) -> list[type]:
             continue
         stack.extend(get_args(value))
     return out
+
+
+def test_templates_decode_from_both_frozen_and_mutable_payloads() -> None:
+    record = SystemMessage(
+        content="instructions",
+        extra=json_freeze(
+            {"$templates": [{"role": "developer", "content": ["instructions"]}]},
+        ),
+    )
+    row = SessionRecordRow.of(session_id=uuid4(), part=0, idx=0, record=record)
+    for decoded in (
+        convert(row.payload, SystemMessage),
+        convert(json_unfreeze(row.payload), SystemMessage),
+        row.record(),
+    ):
+        assert isinstance(decoded, SystemMessage)
+        assert decoded.content == record.content
+        assert json_unfreeze(decoded.extra) == json_unfreeze(record.extra)
 
 
 if __name__ == "__main__":

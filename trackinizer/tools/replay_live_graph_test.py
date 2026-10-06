@@ -5,13 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, override
 
 import logging
+import sys
 import uuid
+
+import pytest
 
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
-
-    import pytest
 
     from trackinizer.types.inquiries import Inquiry
 
@@ -188,6 +189,26 @@ def test_detail_order_key_uses_source_created_then_id() -> None:
         "ffffffff-ffff-ffff-ffff-ffffffffffff",
         "11111111-1111-1111-1111-111111111111",
     ]
+
+
+@pytest.mark.parametrize("other", [["--traverse"], ["--limit", "2"]])
+def test_seed_rejects_ignored_options(
+    other: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["replay", "--target", "https://target.test", "--seed", "Issue#1", *other],
+    )
+
+    def connect(source: str) -> Client:
+        del source
+        pytest.fail("argument validation must precede connections")
+
+    monkeypatch.setattr(replay_live_graph, "_source_client", connect)
+    with pytest.raises(SystemExit, match="2"):
+        replay_live_graph.main()
 
 
 if __name__ == "__main__":

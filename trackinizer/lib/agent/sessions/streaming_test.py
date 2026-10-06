@@ -204,6 +204,27 @@ def test_normalize_does_not_hold_the_stream_it_reads(adapter: _Adapter) -> None:
 
 
 @pytest.mark.parametrize(
+    "reader",
+    [
+        pytest.param(claude._Reader, id="claude"),
+        pytest.param(codex._Reader, id="codex"),
+    ],
+)
+def test_normalize_does_not_hold_the_records_it_yielded(
+    reader: type[claude._Reader | codex._Reader],
+) -> None:
+    # A yielded record is the caller's; a reader that keeps every one holds a
+    # copy of the session, which is the materialization axiom 11 forbids.
+    lines = _lines_for(claude if reader is claude._Reader else codex, 64)
+    state = reader()
+
+    for line in lines:
+        _ = list(state.read(line))
+
+    assert len(state._pending) <= 2
+
+
+@pytest.mark.parametrize(
     "adapter",
     [pytest.param(claude, id="claude"), pytest.param(codex, id="codex")],
 )

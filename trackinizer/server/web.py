@@ -60,7 +60,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from trackinizer.lib.absent import ABSENT
 from trackinizer.lib.custom_json import convert
-from trackinizer.server.api._deps import tag_row
+from trackinizer.server.api._deps import get_store, tag_row
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api._routes_shared import parse_fields
 from trackinizer.server.auth import (
@@ -98,6 +98,7 @@ if TYPE_CHECKING:
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
     from trackinizer.server.store.core import Store
+    from trackinizer.types.embedder import QueryEmbedder
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -109,24 +110,8 @@ type WebView = dict[str, object]
 router = APIRouter()
 
 
-def get_store(request: Request) -> Store:
-    """Return the process-wide store."""
-    return _state(request).store
-
-
 _SESSION_SEARCH_MAX_LIMIT: Final = 200
 _SESSION_SEARCH_MAPPER: Final = FootprintMapper().name
-
-
-class _QueryEmbedder(Protocol):
-    """A session embedder that can embed a query with its instruction prefix."""
-
-    name: str
-    dim: int
-
-    async def embed_query(self, text: str) -> list[float]:
-        """Embed a search query on the query-side manifold."""
-        ...
 
 
 # See ``_AppRoute``: shared caches must never store an /app/ response.
@@ -687,6 +672,7 @@ async def web_feed(
     del identity
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be in [1, 1000]")
+    _check_window(since, until)
     after = _feed_cursor(after_created, after_session, after_part, after_seq)
     events = await get_store(request).read_feed(
         after=after,
@@ -806,9 +792,6 @@ async def web_feed_histogram(
         buckets=buckets,
         scope=scope,
     )
-
-
-# -- Search query parsing ----------------------------------------------------
 
 
 # -- JSON serialization ------------------------------------------------------
@@ -1072,7 +1055,7 @@ def _feed_cursor(
             status_code=400,
             detail="after_created, after_session, after_seq must be given together",
         )
-    return (created, session_id, 0 if part is None else convert(part, int), seq)
+    return (created, session_id, 0 if part is None else part, seq)
 
 
 def _check_window(since: datetime | None, until: datetime | None) -> None:
@@ -1338,10 +1321,10 @@ class _AppState(Protocol):
     # Populated lazily by ``_session_embedder``; ``config`` is set by the app
     # lifespan (absent in the duck-typed test apps, hence the getattr reads).
     config: object
-    session_embedder: _QueryEmbedder | None
+    session_embedder: QueryEmbedder | None
     # A/B override embedders, cached per stored name by ``_override_embedder`` so
     # repeated ``?model=`` queries reuse one loaded model.
-    session_embedder_overrides: dict[str, _QueryEmbedder]
+    session_embedder_overrides: dict[str, QueryEmbedder]
 
 
 class _AppLike(Protocol):
@@ -1393,12 +1376,12 @@ def _isoformat(value: object) -> str:
 # ``embed_query``, so caching the instance is cheap and only the first semantic
 # search pays the model load. ``None`` (unset knob or no config) means the
 # semantic arm is unavailable and the route degrades.
-def _session_embedder(request: Request) -> _QueryEmbedder | None:
+def _session_embedder(request: Request) -> QueryEmbedder | None:
     """Return the process's default session-search embedder, or ``None``."""
     state = _state(request)
     cached = getattr(state, "session_embedder", ABSENT)
     if cached is not ABSENT:
-        return cast("_QueryEmbedder | None", cached)
+        return cast("QueryEmbedder | None", cached)
     # ``isinstance`` narrowing, not ``getattr(config, ...)``: the lifespan
     # stores a real ``Config`` (``api/app.py``), so a typed read means a field
     # rename breaks type-checking here instead of silently disabling the
@@ -1406,10 +1389,7 @@ def _session_embedder(request: Request) -> _QueryEmbedder | None:
     config: object = getattr(state, "config", None)
     name = config.session_embedder if isinstance(config, Config) else ""
     dim = config.session_embedder_dim if isinstance(config, Config) else None
-    embedder = cast(
-        "_QueryEmbedder | None",
-        registry.build_session_embedder(name, dim=dim),
-    )
+    embedder = registry.build_cached_session_embedder(name, dim=dim)
     state.session_embedder = embedder
     return embedder
 
@@ -1428,27 +1408,25 @@ def _override_embedder(
     request: Request,
     name: str,
     dim: int | None,
-) -> _QueryEmbedder:
-    """Return the cached A/B override embedder for ``(name, dim)``; 400 if unknown."""
+) -> QueryEmbedder | None:
+    """Return the locally cached A/B model; degrade if uncached, 400 if unknown."""
     state = _state(request)
-    cache = getattr(state, "session_embedder_overrides", ABSENT)
-    if cache is ABSENT:
-        cache = {}
-        state.session_embedder_overrides = cache
-    overrides = cast("dict[tuple[str, int | None], _QueryEmbedder]", cache)
-    key = (name, dim)
-    cached = overrides.get(key)
-    if cached is not None:
-        return cached
+    if not hasattr(state, "session_embedder_overrides"):
+        state.session_embedder_overrides = {}
+    overrides = state.session_embedder_overrides
     try:
-        embedder = registry.build_session_embedder(name, dim=dim)
+        key = (
+            name if registry.is_weightless(name) else registry.resolved_name(name, dim)
+        )
+        cached = overrides.get(key)
+        if cached is not None:
+            return cached
+        embedder = registry.build_cached_session_embedder(name, dim=dim)
     except ConfigError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
-    if embedder is None:
-        raise HTTPException(status_code=400, detail="model must be non-empty")
-    typed = cast("_QueryEmbedder", embedder)
-    overrides[key] = typed
-    return typed
+    if embedder is not None:
+        overrides[key] = embedder
+    return embedder
 
 
 def _search_embedder(
@@ -1457,8 +1435,10 @@ def _search_embedder(
     semantic: bool,
     model: str,
     dim: int | None,
-) -> _QueryEmbedder | None:
+) -> QueryEmbedder | None:
     """Select the query embedder: the ``model``/``dim`` override, else the default."""
+    if dim is not None and not model:
+        raise HTTPException(status_code=400, detail="dim requires model")
     if not semantic:
         return None
     if model:

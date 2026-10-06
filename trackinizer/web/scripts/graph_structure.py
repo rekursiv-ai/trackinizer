@@ -60,7 +60,7 @@ def main() -> int:
 
     """
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 2)[2],
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
@@ -204,7 +204,7 @@ def load(text: str) -> Structure:
 
     Raises:
       ValueError: A kind, status or edge kind outside trackinizer's vocabulary,
-        or an edge whose end is not a node.
+        an index outside the list it indexes, or an edge whose end is not a node.
 
     """
     columns = parse(text, dict[str, object])
@@ -213,16 +213,17 @@ def load(text: str) -> Structure:
     edge_kinds = convert(columns.get("edge_kinds"), list[str], default=[])
     nodes = tuple(
         Node(
-            kind=_known(kinds[kind], _KINDS),
-            status=_known(statuses[status], _STATUSES),
+            kind=_known(_at(kinds, kind, of="kinds"), _KINDS),
+            status=_known(_at(statuses, status, of="statuses"), _STATUSES),
         )
         for kind, status in _rows(columns.get("nodes"), width=2)
     )
+    ends = range(len(nodes))
     edges = tuple(
         Link(
-            from_index=_node_index(source, len(nodes)),
-            to_index=_node_index(target, len(nodes)),
-            kind=_known(edge_kinds[kind], _EDGE_KINDS),
+            from_index=_at(ends, source, of="nodes"),
+            to_index=_at(ends, target, of="nodes"),
+            kind=_known(_at(edge_kinds, kind, of="edge kinds"), _EDGE_KINDS),
             sign=_known(sign, (-1, 0, 1)),
         )
         for source, target, kind, sign in _rows(columns.get("edges"), width=4)
@@ -265,10 +266,9 @@ def _known[T: str | int](value: object, vocabulary: Sequence[T]) -> T:
 
 
 def _sign(valence: object) -> int:
-    """Return the sign of ``valence``: 0 when the edge has none."""
-    if valence is None:
-        return 0
-    return -1 if convert(valence, float) < 0 else 1
+    """Return the sign of ``valence``: 0 when the edge has none or it is neutral."""
+    value = convert(valence, float, default=0.0)
+    return (value > 0) - (value < 0)
 
 
 def _rows(value: object, *, width: int) -> list[list[int]]:
@@ -280,10 +280,11 @@ def _rows(value: object, *, width: int) -> list[list[int]]:
     return rows
 
 
-def _node_index(index: int, count: int) -> int:
-    if index < 0 or index >= count:
-        raise ValueError(f"edge end {index} is not one of {count} nodes")
-    return index
+def _at[T](items: Sequence[T], index: int, *, of: str) -> T:
+    """Return ``items[index]``, or raise ``ValueError``: no negative index wraps."""
+    if index < 0 or index >= len(items):
+        raise ValueError(f"{index} is not one of {len(items)} {of}")
+    return items[index]
 
 
 if __name__ == "__main__":

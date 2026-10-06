@@ -8,6 +8,8 @@ from typing import cast
 import inspect
 import json
 
+import pytest
+
 from trackinizer.lib.agent.sessions import sagent
 from trackinizer.lib.agent.sessions.convert import detect_format, main
 from trackinizer.lib.agent.sessions.testdata.mistype import mistyped
@@ -31,6 +33,7 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
     WebFetchResult,
 )
+from trackinizer.lib.custom_json import json_freeze
 
 
 def _read(*lines: dict[str, object] | str) -> list[SessionRecord]:
@@ -517,6 +520,30 @@ def test_convert_names_the_format_but_does_not_offer_it() -> None:
 
     assert detect_format(head) == "sagent"
     assert "sagent" not in offered
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"kind": "persistent_agent", "label": "x"},
+        {"kind": "persistent_agent", "label": "x", "session_dir": 7},
+        {"kind": "history", "type": "user", "text": 3},
+        {"kind": "history", "type": "tool_result", "call_id": "c", "content": [1]},
+        {"kind": "history", "type": "assistant", "tool_calls": [{"id": 1}]},
+        {"kind": "meta", "tokens": {"input_tokens": "x"}, "spend": {"a": "b"}},
+        {"kind": "message", "descriptor": "multipart/x-tool-result", "content": [7]},
+    ],
+    ids=["no-dir", "int-dir", "int-text", "list-content", "int-id", "bad-meta", "part"],
+)
+def test_a_malformed_record_degrades_to_an_uncategorized_one(
+    record: dict[str, object],
+) -> None:
+    # Narrowing ran outside the parse's ``try``, so one bad field raised out
+    # of ``normalize`` and aborted the whole read.
+    records = _read(record, _history("user", text="after"))
+
+    assert _only(records, UncategorizedRecord)[0].payload == json_freeze(record)
+    assert [u.content for u in _only(records, UserMessage)] == ["after"]
 
 
 def test_sagent_is_recognized_by_its_record_kinds() -> None:

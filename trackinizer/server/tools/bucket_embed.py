@@ -38,6 +38,8 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 import asyncio
 
+from trackinizer.lib.custom_json import convert
+
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -217,8 +219,11 @@ def _embed_one_bucket(
     pooled = _last_token_pool(output.last_hidden_state)
     truncated = pooled[: len(texts), :dim]
     normalized = functional.normalize(truncated, p=2, dim=1)
-    listed = cast(object, normalized.to(torch.float32).cpu().tolist())
-    return cast("list[list[float]]", listed)
+    # Needed: without this cast, the export (OSS copy) fails its type check.
+    return convert(
+        cast(object, normalized.to(torch.float32).cpu().tolist()),
+        list[list[float]],
+    )
 
 
 # Left-padded per the Qwen recipe: the last real token is at position -1 for

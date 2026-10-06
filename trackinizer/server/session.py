@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.custom_json import ReadError, convert
 
 
 if TYPE_CHECKING:
@@ -158,13 +158,12 @@ def read_session_cookie(
         return None
     serializer = URLSafeTimedSerializer(secret, salt=_SESSION_SALT)
     try:
-        payload = convert(
-            cast(dict[str, object], serializer.loads(raw, max_age=max_age_seconds)),
-            dict[str, object],
-        )
-    except BadSignature:
+        # Itsdangerous returns Any; conversion below validates the payload shape.
+        loaded = cast(object, serializer.loads(raw, max_age=max_age_seconds))
+        payload = convert(loaded, dict[str, object])
+        return convert(payload.get("user_id"), str, default=None)
+    except (BadSignature, ReadError):
         return None
-    return convert(payload.get("user_id"), str)
 
 
 def clear_session_cookie(response: _SetsCookies) -> None:
@@ -237,17 +236,16 @@ def read_oauth_state_cookie(
         return None
     serializer = URLSafeTimedSerializer(secret, salt=_OAUTH_STATE_SALT)
     try:
-        payload = convert(
-            cast(
-                dict[str, object],
-                serializer.loads(raw, max_age=OAUTH_STATE_MAX_AGE_SECONDS),
-            ),
-            dict[str, object],
+        # Itsdangerous returns Any; conversion below validates the payload shape.
+        loaded = cast(
+            object,
+            serializer.loads(raw, max_age=OAUTH_STATE_MAX_AGE_SECONDS),
         )
-    except BadSignature:
+        payload = convert(loaded, dict[str, object])
+        state = convert(payload.get("state"), str, default=None)
+        next_url = convert(payload.get("next"), str, default=None)
+    except (BadSignature, ReadError):
         return None
-    state = convert(payload.get("state"), str, default="")
-    next_url = convert(payload.get("next"), str, default="")
     if not state or not next_url:
         return None
     return state, next_url

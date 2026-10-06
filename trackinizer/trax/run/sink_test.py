@@ -46,7 +46,8 @@ from trackinizer.wire.wire_sessions import (
 
 
 if TYPE_CHECKING:
-    from trackinizer.trax.run.adapters.tail import Tail
+    from trackinizer.lib.agent.sessions.tail import Tail
+    from trackinizer.types.streams import TraxRecord
 
 
 _PART = Path("/sessions/a.jsonl")
@@ -1413,7 +1414,7 @@ class TestSinkFeed:
 
         class _Recording(IOStreamAdapter):
             @override
-            def reader(self) -> Tail:
+            def reader(self) -> Tail[TraxRecord]:
                 built.append(self.name)
                 return super().reader()
 
@@ -1662,7 +1663,7 @@ def test_consecutive_restart_chunks(
         sink = LockedSink(primary)
     if destination == "resilient":
         sink = ResilientSink(primary, fallback_path=tmp_path / "fallback.jsonl")
-    readers: list[Tail] = []
+    readers: list[Tail[TraxRecord]] = []
     try:
         for index in range(3):
             sink.feed(IOStreamAdapter(), _PART, b"one\n", restart=index > 0)
@@ -1717,7 +1718,7 @@ def test_repeated_claude_replacement_pipeline(tmp_path: Path, *, server: bool) -
         if server
         else FileSink(output)
     )
-    readers: list[Tail] = []
+    readers: list[Tail[TraxRecord]] = []
     try:
         asyncio.run(_replace_claude(tmp_path, sink, readers))
         positions = (
@@ -1744,7 +1745,11 @@ def _is_async_generator[T](
     return isinstance(value, AsyncGenerator)
 
 
-async def _replace_claude(root: Path, sink: Sink, readers: list[Tail]) -> None:
+async def _replace_claude(
+    root: Path,
+    sink: Sink,
+    readers: list[Tail[TraxRecord]],
+) -> None:
     target = root / "log.jsonl"
     target.write_text('{"type":"user","message":{"role":"user","content":"one"}}\n')
     lines = follow_tree(root, match=lambda p: p == target, replay=True)

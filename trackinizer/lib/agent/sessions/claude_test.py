@@ -15,7 +15,7 @@ import pytest
 
 from trackinizer.lib.agent.sessions import claude
 from trackinizer.lib.agent.sessions.claude import _group
-from trackinizer.lib.agent.sessions.testdata.mistype import mistyped
+from trackinizer.lib.agent.sessions.testdata.mistype import mistyped, unread, without
 from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,
     AgentToAgentMessage,
@@ -44,7 +44,7 @@ from trackinizer.lib.agent.types.sessions import (
     WebSearchResult,
     WebSearchResults,
 )
-from trackinizer.lib.custom_json import convert, parse
+from trackinizer.lib.custom_json import ReadError, convert, parse
 
 
 if TYPE_CHECKING:
@@ -62,6 +62,25 @@ FIXTURES: Final = {
     for name in ("claude_main.jsonl", "claude_sidechain.jsonl")
 }
 """Real sessions, one line per element, by file name."""
+
+_KEPT_AS_TEXT: Final = frozenset(
+    {
+        "permissionMode",
+        "message.model",
+        "message.content",
+        "message.content.0.type",
+        "message.content.0.tool_use_id",
+        "message.content.0.content",
+        "toolUseResult.results.0.content",
+        "attachment",
+        "attachment.type",
+    },
+)
+"""Fields whose wrong value only the line's own text can write back.
+
+Read as absent, the line would be rewritten with a different value, so the line is
+kept as text instead.
+"""
 
 
 def _line(**fields: str) -> str:
@@ -877,16 +896,28 @@ def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(
         for at, line in enumerate(lines)
         if at == index or any(f'"{id_}"' in line for id_ in ids)
     ]
+    record = parse(lines[index], dict[str, object])
     failed: list[str] = []
-    for path, changed in mistyped(parse(lines[index], dict[str, object])):
-        line = json.dumps(changed, ensure_ascii=False, separators=(",", ":")) + "\n"
-        session = "".join(line if at == index else lines[at] for at in window)
+    for path, changed in mistyped(record):
+        session = _swapped(lines, window, index, changed)
+        records = list(claude.normalize(StringIO(session)))
+        missing = _swapped(lines, window, index, without(record, path))
         try:
-            claude.denormalize(claude.normalize(StringIO(session)), StringIO())
+            claude.denormalize(records, StringIO())
         except TypeError as error:
             failed.append(f"{path}: {error}")
+        if path not in _KEPT_AS_TEXT and unread(records) > unread(
+            claude.normalize(StringIO(missing)),
+        ):
+            failed.append(f"{path}: the line reads worse than without the field")
 
-    assert failed == []
+    assert failed == [], "\n".join(failed)
+
+
+def _swapped(lines: list[str], window: list[int], index: int, record: object) -> str:
+    """Return the session of ``window`` with line ``index`` replaced by ``record``."""
+    line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+    return "".join(line if at == index else lines[at] for at in window)
 
 
 @pytest.mark.parametrize(
@@ -1471,6 +1502,63 @@ def test_clearing_assistant_acts_removes_source_blocks() -> None:
     assert '"content":[{"future":true}]' in output.getvalue()
 
 
+_FOREIGN = TurnContext(encoding={"newline_terminated": True})
+
+
+def _tool_uses(records: Sequence[SessionRecord]) -> list[str]:
+    """Return the id of every ``tool_use`` block a claude rewrite holds."""
+    output = StringIO()
+    claude.denormalize(records, output)
+    rebuilt = list(claude.normalize(StringIO(output.getvalue())))
+    return [record.call_id for record in rebuilt if isinstance(record, ToolCall)]
+
+
+def test_an_untyped_foreign_result_after_a_typed_one_does_not_abort() -> None:
+    # Only a TYPED result has a claude tool to name; an untyped one after an
+    # assistant line reached the synthetic-call path and raised ``KeyError``.
+    records = [
+        _FOREIGN,
+        ShellCommandResult(call_id="a", command=("ls",)),
+        AssistantMessage(content="x"),
+        UncategorizedToolResult(call_id="b", content="y"),
+    ]
+
+    assert _tool_uses(records) == ["a"]
+
+
+def test_a_foreign_call_after_its_result_is_written_once() -> None:
+    # The call is synthesized ahead of its answer, so the real one arriving
+    # later would state the same id a second time.
+    records = [
+        _FOREIGN,
+        ShellCommandResult(call_id="a", command=("ls",)),
+        ToolCall(call_id="a", name="shell"),
+    ]
+
+    assert _tool_uses(records) == ["a"]
+
+
+def test_a_call_added_after_a_deleted_one_is_still_written() -> None:
+    native = _line(
+        type='"assistant"',
+        message=(
+            '{"role":"assistant","content":['
+            '{"type":"tool_use","id":"a","name":"Read","input":{}},'
+            '{"type":"tool_use","id":"b","name":"Read","input":{}}]}'
+        ),
+    )
+    records = list(claude.normalize(StringIO(native)))
+    # Same context and an empty residual, so the new call stays on the line.
+    kept = [
+        replace(record, call_id="c")
+        if isinstance(record, ToolCall) and record.call_id == "b"
+        else record
+        for record in records
+    ]
+
+    assert _tool_uses(kept) == ["a", "c"]
+
+
 def test_thinking_encryption_uses_provider_string() -> None:
     native = _line(
         type='"assistant"',
@@ -1688,6 +1776,104 @@ def test_claude_reader_context_and_result_edge_cases() -> None:
     )
     assert (updated.model, updated.effort, updated.permission) == ("new", "high", "ask")
     assert claude._parse("{") is None
+    assert claude._effort(7) is None
+
+
+def test_a_line_stating_no_settings_keeps_the_previous_ones() -> None:
+    previous = TurnContext(
+        model="m",
+        effort="low",
+        permission="ask",
+        extra={"gitBranch": "main"},
+    )
+
+    kept = claude._read_line_context({"type": "user"}, previous)
+
+    assert kept == replace(previous, extra={"gitBranch": "main"})
+
+
+def test_a_line_s_own_settings_replace_the_previous_ones() -> None:
+    previous = TurnContext(model="m", effort="low", permission="ask")
+
+    updated = claude._read_line_context(
+        {"permissionMode": "plan", "effort": "max", "message": {"model": "n"}},
+        previous,
+    )
+
+    assert (updated.model, updated.effort, updated.permission) == ("n", "max", "plan")
+
+
+def test_a_null_model_clears_the_previous_one() -> None:
+    previous = TurnContext(model="m")
+
+    updated = claude._read_line_context({"message": {"model": None}}, previous)
+
+    assert updated.model is None
+
+
+@pytest.mark.parametrize(
+    "record",
+    [{"permissionMode": 7}, {"message": {"model": 7}}],
+)
+def test_a_malformed_setting_is_a_read_error(record: dict[str, object]) -> None:
+    # The line's guard keeps it as its bytes; a guessed setting would be wrong.
+    with pytest.raises(ReadError):
+        claude._read_line_context(record, TurnContext(model="m"))
+
+
+def test_a_line_with_malformed_settings_round_trips() -> None:
+    # A non-string setting raised out of ``normalize`` and lost the file.
+    native = _line(
+        type='"user"',
+        permissionMode="7",
+        message='{"role":"user","content":"hi"}',
+    ) + _line(
+        type='"assistant"',
+        message='{"role":"assistant","model":7,"content":[]}',
+    )
+    output = StringIO()
+
+    claude.denormalize(claude.normalize(StringIO(native)), output)
+
+    assert output.getvalue() == native
+
+
+@pytest.mark.parametrize(
+    "native",
+    [
+        _line(type='"assistant"', message='{"role":"assistant","content":7}'),
+        _line(type='"assistant"', message='{"role":7,"content":[]}'),
+        _line(type='"user"', message='{"role":"user","content":[7]}'),
+        _line(type='"attachment"', attachment="[7]"),
+        _line(type="7", message='{"role":"user","content":"x"}'),
+        _line(
+            type='"user"',
+            message=(
+                '{"role":"user","content":[{"type":"tool_result",'
+                '"tool_use_id":"c","content":"x"}]}'
+            ),
+            toolUseResult='{"type":"text","file":7}',
+        ),
+    ],
+    ids=["content", "role", "block", "attachment", "type", "tool-file"],
+)
+def test_a_line_with_a_malformed_field_round_trips(native: str) -> None:
+    # One malformed field raised ``ReadError`` out of ``normalize`` -- or out
+    # of the writer -- and lost the whole file.
+    output = StringIO()
+
+    claude.denormalize(claude.normalize(StringIO(native)), output)
+
+    assert output.getvalue() == native
+
+
+def test_a_system_line_reads_its_own_fields() -> None:
+    message = claude._read_system(
+        {"type": "system", "timestamp": "t", "content": "c", "subtype": "s"},
+    )
+
+    assert (message.timestamp, message.content, message.subtype) == ("t", "c", "s")
+    assert not {"content", "subtype"} & set(message.extra)
     assert (
         claude._carries_a_compaction(
             UserMessage(extra={"isCompactSummary": True}),

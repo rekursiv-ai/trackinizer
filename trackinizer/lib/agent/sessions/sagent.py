@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import PurePath
 from types import MappingProxyType
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import json
 
@@ -49,7 +49,13 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
     WebFetchResult,
 )
-from trackinizer.lib.custom_json import convert_or_none, json_freeze, parse
+from trackinizer.lib.custom_json import (
+    ReadError,
+    convert,
+    json_freeze,
+    loads,
+    parse,
+)
 
 
 if TYPE_CHECKING:
@@ -108,12 +114,15 @@ def is_sagent(head: str) -> bool:
         if not line.strip():
             continue
         try:
-            record = parse(line, dict[str, object])
+            record = loads(line)
         except json.JSONDecodeError:
             return False
-        kind = convert_or_none(record.get("kind"), str)
-        return kind in only_sagent or (
-            kind == "message" and ("descriptor" in record or "role" in record)
+        if not isinstance(record, dict):
+            return False
+        kind = record.get("kind")
+        return isinstance(kind, str) and (
+            kind in only_sagent
+            or (kind == "message" and ("descriptor" in record or "role" in record))
         )
     return False
 
@@ -150,7 +159,17 @@ class _Reader:
             record = parse(line, dict[str, object])
         except (json.JSONDecodeError, ValueError, TypeError):
             return [IncompleteRecord(text=line)]
-        kind = _str(record.get("kind"))
+        # The WHOLE read is the guarded region, not only the parse: every field
+        # below is narrowed as it is read, and one malformed field raised out of
+        # ``normalize`` and lost the rest of the file. A record this reader
+        # cannot type keeps its bytes, as an unrecognized family does.
+        try:
+            return self._dispatch(_str(record.get("kind")), record)
+        except ReadError:
+            return [UncategorizedRecord(kind="unknown", payload=json_freeze(record))]
+
+    def _dispatch(self, kind: str, record: dict[str, object]) -> list[SessionRecord]:
+        """Return the records one parsed line states, by its family."""
         if kind == "history":
             return self._history(record)
         if kind == "meta":
@@ -527,35 +546,33 @@ def _stamp(value: object) -> str | None:
     return datetime.fromtimestamp(seconds, tz=UTC).isoformat()
 
 
-# A log field of the wrong type reads as absent, as a missing one does: ``convert``
-# raises on it, and one malformed field would abort the whole session read.
+# A missing or null field reads as empty; a mistyped one raises, and the per-record guard in
+# ``_Reader.read`` keeps that record whole.
 def _str(value: object) -> str:
-    return convert_or_none(value, str) or ""
+    return convert(value, str, default="")
 
 
 def _bool(value: object) -> bool:
-    return convert_or_none(value, bool) or False
+    return convert(value, bool, default=False)
 
 
 def _int(value: object) -> int:
-    return convert_or_none(value, int) or 0
+    return convert(value, int, default=0)
 
 
 def _float(value: object) -> float:
-    return convert_or_none(value, float) or 0.0
+    return convert(value, float, default=0.0)
 
 
 def _dict(value: object) -> dict[str, object]:
-    return convert_or_none(value, dict[str, object]) or {}
+    return convert(value, dict[str, object], default={})
 
 
 def _mappings(value: object) -> list[dict[str, object]]:
-    if not isinstance(value, (list, tuple)):
+    # A part's ``content`` is a string or a list of parts; only the list has any.
+    if isinstance(value, str):
         return []
-    values = cast(list[object] | tuple[object, ...], value)
-    return [
-        m for v in values if (m := convert_or_none(v, dict[str, object])) is not None
-    ]
+    return convert(value, list[dict[str, object]], default=[])
 
 
 def _scalars(record: Mapping[str, object]) -> dict[str, object]:

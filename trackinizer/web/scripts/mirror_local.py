@@ -81,7 +81,7 @@ def main() -> int:
 
     """
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 2)[2],
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
@@ -172,8 +172,8 @@ def tally(events: Iterable[Mapping[str, object]]) -> list[Activity]:
     return [
         Activity(
             session_id=session_id,
-            cli=convert(last[session_id].get("cli"), str),
-            rooms=tuple(convert(last[session_id].get("rooms"), list[str])),
+            cli=convert(last[session_id].get("cli"), str, default=""),
+            rooms=tuple(convert(last[session_id].get("rooms"), list[str], default=[])),
             events=count,
         )
         for session_id, count in counts.items()
@@ -696,10 +696,10 @@ def _open(target: Client, node: SourceNode) -> tuple[UUID, bool, bool]:
     started = target.session_start(
         SessionStart(
             cli=convert(row.get("cli"), str),
-            title=convert(row.get("title"), str) or None,
+            title=convert(row.get("title"), str, default="") or None,
             started=convert(row.get("started"), datetime, default=None),
-            actor=convert(row.get("owner"), str) or None,
-            rooms=convert(row.get("rooms"), list[str]) or None,
+            actor=convert(row.get("owner"), str, default="") or None,
+            rooms=convert(row.get("rooms"), list[str], default=[]) or None,
             idempotency_key=key,
         ),
     )
@@ -778,20 +778,11 @@ def _add_edges(
     ids: Mapping[UUID, UUID],
 ) -> tuple[int, list[str]]:
     """Add the edges the target lacks; return how many landed, and each refusal."""
-    graph = convert(
-        target.get("/api/web/graph", params={"limit": 5000}),
-        dict[str, object],
-    )
-    local = {
-        (
-            UUID(convert(e.get("from_id"), str)),
-            UUID(convert(e.get("to_id"), str)),
-            convert(e.get("edge_kind"), str),
-        )
-        for e in convert(graph.get("edges"), list[dict[str, object]], default=[])
-    }
+    copied = [edge for edge in edges if edge.from_id in ids and edge.to_id in ids]
+    local = _local_edges(target, {ids[edge.from_id] for edge in copied})
     items = [
-        _edge_item(edge, ids=ids) for edge in missing_edges(edges, ids=ids, local=local)
+        _edge_item(edge, ids=ids)
+        for edge in missing_edges(copied, ids=ids, local=local)
     ]
     added = 0
     failures: list[str] = []
@@ -812,6 +803,25 @@ def _add_edges(
             )
             items = chunk[done + 1 :] + items
     return added, failures
+
+
+# Read by each copied edge's ``from`` end, not from the graph route: that returns only
+# the newest nodes, so on a large target an older copied edge looks missing, is posted
+# again, upserts as a no-op, and is counted as added.
+def _local_edges(
+    target: Client,
+    subjects: Iterable[UUID],
+) -> set[tuple[UUID, UUID, str]]:
+    """Return the target's outbound edges of ``subjects``: ``(from, to, kind)``."""
+    local: set[tuple[UUID, UUID, str]] = set()
+    for subject in subjects:
+        view = convert(target.get(f"/api/web/get/{subject}"), dict[str, object])
+        for kind, peers in convert(view.get("edges"), dict[str, object]).items():
+            local.update(
+                (subject, UUID(convert(peer.get("id"), str)), kind)
+                for peer in convert(peers, list[dict[str, object]])
+            )
+    return local
 
 
 def _edge_item(edge: SourceEdge, *, ids: Mapping[UUID, UUID]) -> dict[str, object]:

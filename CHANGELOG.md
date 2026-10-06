@@ -279,10 +279,6 @@ All notable trackinizer changes are documented here. This project follows
   `data_dir()/rekursiv-ai/trackinizer/`. Nothing migrates the old
   locations, so an existing profile or database is simply not found and
   has to be moved by hand.
-- A malformed request body returns HTTP 422 instead of 500. A stray key
-  in a client-supplied `message` raised a bare `ValueError` out of the
-  codec, which matched no handler; it is now a `SchemaError` the API
-  maps to 422, reporting both the offending and the valid field names.
 - Filters whose two evaluators would disagree are refused with a 400
   naming the spelling that works, rather than answered differently
   depending on which evaluator ran. Refused: a regex on a column with no

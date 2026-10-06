@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 import json
 import uuid
 
+import pytest
+
 from trackinizer.client.errors import ClientError
 from trackinizer.web.scripts.writer import Clock, answer
 
@@ -39,19 +41,19 @@ def test_each_command_writes_through_the_client_and_answers_when_the_write_retur
         field="title",
         value="Renamed",
     ) == {"at": 1_000_000}
-    _ask(
+    assert _ask(
         client,
         clock,
         op="edge",
         **{"from": str(_A), "to": str(_B), "kind": "requires"},
-    )
-    _ask(
+    ) == {"at": 1_000_000}
+    assert _ask(
         client,
         clock,
         op="edge",
         remove=True,
         **{"from": str(_A), "to": str(_B), "kind": "requires"},
-    )
+    ) == {"at": 1_000_000}
     assert client.calls == [
         ("submit", "Issue", {"title": "Hello", "labels": ["x"]}),
         ("edit", _B, "title", "Renamed", "e2e-writer"),
@@ -75,7 +77,7 @@ def test_a_burst_keeps_its_slots_from_the_start_so_a_slow_write_is_caught_up() -
     )
     # Slots at 0, 0.25, 0.5 and 0.75 s. The second write took 0.4 s, so the
     # third starts at once, late, and the fourth is back on its slot.
-    assert result["ats"] == [0, 650, 650, 750]
+    assert result == {"ats": [0, 650, 650, 750], "ids": [str(_A)] * 4}
     assert clock.slept == [0.0, 0.25, 0.0, 0.1]
     assert [call[2] for call in client.calls] == [
         {"title": f"Burst {n}", "labels": ["b"]} for n in range(4)
@@ -84,14 +86,14 @@ def test_a_burst_keeps_its_slots_from_the_start_so_a_slow_write_is_caught_up() -
 
 def test_steady_edits_take_the_ids_in_turn() -> None:
     client = _Client()
-    _ask(
+    assert _ask(
         client,
         _FakeClock(start=0.0),
         op="steady",
         ids=[str(_A), str(_B)],
         rate=2,
         seconds=1.5,
-    )
+    ) == {"ats": [0, 500, 1000]}
     assert [call[1] for call in client.calls] == [_A, _B, _A]
     assert [call[3] for call in client.calls] == [
         "Steady edit 0",
@@ -112,9 +114,9 @@ def test_a_failed_command_answers_with_its_error() -> None:
     assert _ask(client, clock, op="edit", field="title", value="x") == {
         "error": "KeyError: 'id'",
     }
-    assert answer(client, "[1, 2]", clock=clock.clock()) == {
-        "error": "TypeError: cannot coerce [1, 2] to dict",
-    }
+    assert str(answer(client, "[1, 2]", clock=clock.clock())["error"]).startswith(
+        "ReadError: Expected `object`, got `array`",
+    )
 
 
 def test_steady_edits_with_no_ids_answer_an_error_and_the_writer_carries_on() -> None:
@@ -124,6 +126,43 @@ def test_steady_edits_with_no_ids_answer_an_error_and_the_writer_carries_on() ->
         "error": "ValueError: steady needs at least one id.",
     }
     assert _ask(client, clock, op="edit", id=str(_B), field="title", value="x") == {
+        "at": 0,
+    }
+
+
+def test_a_field_of_the_wrong_type_is_named_in_the_error() -> None:
+    """N1-04: a field's error names the field, not the whole command."""
+    client = _Client()
+    clock = _FakeClock(start=0.0)
+    error = _ask(client, clock, op="create", title=7, labels=[])["error"]
+    assert str(error).startswith("ReadError: 'title': ")
+    error = _ask(client, clock, op="edit", id="not-a-uuid", field="title", value="x")
+    assert str(error["error"]).startswith("ReadError: 'id': ")
+    assert answer(client, "not json", clock=clock.clock())["error"]
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    "pacing",
+    [
+        '"rate": Infinity, "seconds": 1',
+        '"rate": 1, "seconds": Infinity',
+        '"rate": NaN, "seconds": 1',
+        '"rate": 1e308, "seconds": 1e308',
+    ],
+)
+def test_a_burst_paced_beyond_any_count_answers_an_error_and_the_writer_carries_on(
+    pacing: str,
+) -> None:
+    """N1-05: non-finite pacing is refused, never an escaping OverflowError."""
+    client = _Client()
+    clock = _FakeClock(start=0.0)
+    line = f'{{"op": "burst", {pacing}, "title": "t", "labels": []}}'
+    assert str(answer(client, line, clock=clock.clock())["error"]).startswith(
+        "ValueError: ",
+    )
+    assert _ask(client, clock, op="create", title="x", labels=[]) == {
+        "id": str(_A),
         "at": 0,
     }
 

@@ -6,6 +6,8 @@ from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+import json
+
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex, fuse
@@ -239,6 +241,45 @@ def test_chain_deduplicates_a_successor_list_repeating_one_part() -> None:
     child = [TurnContext(extra={"payload": {"id": "child", "forked_from_id": "root"}})]
 
     assert fuse.chain([root, child, child]) == [root, child]
+
+
+def _rollout(own: str, parent: str = "", *, lead: str = "") -> list[SessionRecord]:
+    """Return a codex rollout's records, optionally forked and lead-blanked."""
+    payload = {"id": own, **({"forked_from_id": parent} if parent else {})}
+    native = (
+        lead
+        + '{"type":"session_meta","payload":'
+        + json.dumps(payload)
+        + "}\n"
+        + '{"type":"response_item","payload":{"type":"message","role":"user",'
+        + '"content":[{"type":"input_text","text":"from '
+        + own
+        + '"}]}}\n'
+    )
+    return list(codex.normalize(StringIO(native)))
+
+
+def test_a_fork_opening_with_a_blank_line_still_chains() -> None:
+    # The blank line's opening context holds only an encoding, so taking the
+    # FIRST context as the declaration read no id and no parent at all.
+    root = _rollout("a")
+    fork = _rollout("b", "a", lead="\n")
+
+    assert fuse.chain([fork, root]) == [root, fork]
+
+
+def test_a_codex_fork_s_seam_states_what_crossed_it() -> None:
+    # Codex names the parent on its launch settings, never on a user turn.
+    joined = list(fuse.fuse(fuse.chain([_rollout("a"), _rollout("b", "a")])))
+
+    seams = [r for r in joined if isinstance(r, ContextClear) and "$seam" in r.extra]
+    assert [seam.summary for seam in seams] == ["from b"]
+
+
+@pytest.mark.parametrize("name", ["../x.jsonl", "/abs.jsonl", "a/b.jsonl", ".."])
+def test_a_seam_naming_a_path_is_refused(name: str) -> None:
+    with pytest.raises(ValueError, match="seam names a path"):
+        fuse.names_of([ContextClear(extra={"$seam": name})])
 
 
 def test_chain_treats_a_part_without_context_as_a_root() -> None:

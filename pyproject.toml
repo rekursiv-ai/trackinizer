@@ -28,7 +28,6 @@ dependencies = [
     "py-pglite[asyncpg,extensions]>=0.5.3",
     # web server / api
     "fastapi>=0.123.9",
-    "fastjsonschema>=2.22.2",
     "starlette>=0.40",
     "uvicorn>=0.30.0",
     # http client

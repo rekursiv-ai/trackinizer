@@ -25,12 +25,12 @@ from difflib import unified_diff
 from io import StringIO
 from itertools import repeat
 from pathlib import Path
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, Protocol, TextIO, cast, override
 
 import argparse
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -38,7 +38,7 @@ import time
 from trackinizer.lib.agent.sessions import claude, codex, gemini, normalized, sagent
 from trackinizer.lib.agent.sessions.fuse import chain, fuse, names_of, unfuse
 from trackinizer.lib.agent.types.sessions import IncompleteRecord
-from trackinizer.lib.custom_json import convert, loads, parse
+from trackinizer.lib.custom_json import loads
 
 
 if TYPE_CHECKING:
@@ -131,6 +131,12 @@ def main(
         parser.error("convert requires --to")
     if flags.output is not None and len(paths) > 1:
         parser.error("--output takes a single input path")
+    if flags.command == "verify" and (
+        flags.output is not None or flags.out_dir is not None
+    ):
+        # Verify keeps no text, so a destination would receive empty files --
+        # and the source's own directory would lose the sources.
+        parser.error("verify writes nothing; --output and --out-dir need convert")
     results = _convert_all(
         paths,
         workers=flags.workers,
@@ -138,7 +144,9 @@ def main(
         target=flags.to,
         want_diff=flags.diff,
         fail_fast=flags.fail_fast,
-        destination=_destination_for(flags),
+        # ``verify`` keeps none of the text; a ``convert`` with a directory
+        # writes it there, and one with nowhere to put it brings it home.
+        destination=flags.out_dir if flags.command == "convert" else False,
         parent_poll_sec=flags.parent_poll_sec,
     )
     lossy = [r for r in results if r.dropped]
@@ -209,18 +217,23 @@ def convert_file(
                 # The open raises, and the handler below names the real fault.
                 with part.open(encoding="utf-8") as handle:
                     _ = handle.read(1)
-                return FileResult(path=path, error="unrecognized session format")
+                return FileResult(
+                    path=path,
+                    error=f"unsupported session format: {found}"
+                    if found
+                    else "unrecognized session format",
+                )
             detected = detected or found
             # Streamed, never read whole: ONE non-ASCII character makes
             # CPython hold the entire file as 4 bytes per character, so a
             # 273 MB rollout cost 1.09 GB as a string before parsing began.
             # Drained inside the ``with``: ``normalize`` is a generator now, so
             # a stored-but-unconsumed one would resume on a closed handle.
-            with part.open(encoding="utf-8") as handle:
+            # ``newline=""``: translating ``\r\n`` made the reader see bytes
+            # the file does not hold, and a CRLF file then verified as exact.
+            with part.open(encoding="utf-8", newline="") as handle:
                 streams.append(list(_adapter(found).normalize(handle)))
-        except (OSError, UnicodeDecodeError) as exc:
-            return FileResult(path=path, error=f"{type(exc).__name__}: {exc}")
-        except (TypeError, ValueError) as exc:
+        except (OSError, UnicodeDecodeError, TypeError, ValueError) as exc:
             return FileResult(path=path, error=f"{type(exc).__name__}: {exc}")
     into = target or detected
     # By the provider's clock first: its records carry stamps to the
@@ -258,10 +271,11 @@ def detect_format(native: str) -> Format:
     """Return the format that wrote ``native``, or an empty string.
 
     Args:
-      native: Session file text.
+      native: Session file text, or as much of its head as identifies it.
 
     Returns:
-      source: A member of :data:`FORMATS`, or ``""`` when unrecognized.
+      source: ``claude``, ``codex``, ``gemini``, ``json``, or ``sagent`` (read
+        only, so recognized in order to be refused); ``""`` when unrecognized.
 
     """
     stripped = native.lstrip()
@@ -270,18 +284,23 @@ def detect_format(native: str) -> Format:
     # ``Session`` existed to hold metadata beside them, and the sniffer went on
     # requiring the brace -- which read every normalized document as no format
     # at all, so ``convert x.json --to codex`` refused a file it had written.
-    if stripped.startswith("[") and '"py/object"' in stripped[:200]:
+    # An EMPTY stream is that same array with nothing in it.
+    if stripped.startswith("[") and (
+        '"py/object"' in stripped[:200] or re.fullmatch(r"\[\s*\]\s*", stripped)
+    ):
         return "json"
     # Gemini before the line walk: its document is ONE object, so its first
     # line is a fragment that parses as nothing and the walk would fall
-    # through to "". Recognized by the pair of keys it always carries.
-    if stripped.startswith("{"):
-        try:
-            document = parse(native, dict[str, object])
-        except json.JSONDecodeError:
-            document = {}
-        if "sessionId" in document and "messages" in document:
-            return "gemini"
+    # through to "". Recognized by the pair of keys it always carries, by
+    # their spelling rather than a parse: a sniff reads only the head, and a
+    # pretty-printed document's head is no complete object.
+    if (
+        stripped.startswith("{")
+        and "\n" in stripped.rstrip()
+        and re.search(r'^\s*"sessionId"\s*:', stripped, re.MULTILINE)
+        and re.search(r'^\s*"messages"\s*:', stripped, re.MULTILINE)
+    ) or _is_gemini_document(stripped):
+        return "gemini"
     # Before the line walk: sagent's ``context_override`` records carry a
     # ``payload`` key, which the walk would read as codex. Detected so a sagent
     # file is refused by name; it is read-only, so it is no ``convert`` format.
@@ -294,12 +313,25 @@ def detect_format(native: str) -> Format:
             record = loads(line)
         except json.JSONDecodeError:
             continue
-        keys = set(convert(record, dict[str, object]))
+        if not isinstance(record, dict):
+            continue
+        keys = set(record)
         if "payload" in keys:
             return "codex"
         if {"sessionId", "uuid", "parentUuid", "agentId"} & keys:
             return "claude"
     return ""
+
+
+def _is_gemini_document(text: str) -> bool:
+    """Whether ``text`` parses whole as a gemini session object."""
+    if not text.startswith("{"):
+        return False
+    try:
+        document = loads(text)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(document, dict) and {"sessionId", "messages"} <= set(document)
 
 
 class _Flags(Protocol):
@@ -322,9 +354,10 @@ class _Flags(Protocol):
 class _Adapter(Protocol):
     """The stream interface every format adapter module provides.
 
-    Both directions stream (axiom 11): ``normalize`` yields each record as its
-    line lands, so a session still being written reads as far as it has been
-    written, and ``denormalize`` consumes an iterable rather than a container.
+    Neither direction holds the text (axiom 11): ``normalize`` yields each
+    record as its line lands, so a session still being written reads as far as
+    it has been written, and ``denormalize`` streams what it writes -- though it
+    holds the records it was given, for its second pass.
     """
 
     def normalize(self, stream: TextIO, /) -> Iterator[SessionRecord]:
@@ -535,9 +568,9 @@ def _collect(compared: Iterable[FileResult], *, fail_fast: bool) -> list[FileRes
 # makes ``/clear`` recoverable, since the transcript claude opens to answer it names
 # nothing but sits in the same directory.
 #
-# A named FILE is one session too. Walking a tree yields the innermost directories that
-# hold transcripts -- a project directory holds one session per conversation, not one
-# per file.
+# A named FILE is one session too. Walking a tree yields each transcript FILE that no
+# other session claims as a part -- a project directory holds one session per
+# conversation, and a claude subagent's file belongs to the session beside it.
 def _session_files(paths: Sequence[Path]) -> Iterator[Path]:
     """Yield one path per SESSION, not per file."""
     seen: set[Path] = set()
@@ -592,48 +625,32 @@ def _write(
     output: Path | None,
     out_dir: Path | None,
     stream: TextIO,
-    suffixes: Mapping[Format, str] = MappingProxyType(
-        {
-            "claude": ".jsonl",
-            "codex": ".jsonl",
-            "gemini": ".json",
-            "json": ".json",
-        },
-    ),
 ) -> None:
     """Write converted text to the chosen destination."""
     converted = [r for r in results if r.ok and r.target is not None]
     if not converted:
         return
     if output is not None:
-        # Only when the run actually produced text. ``verify`` keeps none --
-        # it asks whether the bytes agree, not for a copy of them -- so an
-        # unguarded write emptied whatever ``-o`` named, destroying a file the
-        # command never claimed to touch.
-        if converted[0].text:
-            output.write_text(converted[0].text, encoding="utf-8")
+        output.write_text(converted[0].text, encoding="utf-8", newline="")
         return
     if out_dir is not None:
         out_dir.mkdir(parents=True, exist_ok=True)
         for result in converted:
-            if not result.text and not result.parts:
-                # Already streamed to disk by the conversion itself, which is
-                # what leaves a result with neither text nor parts. Skipping on
-                # an EMPTY text instead swallowed a target whose rendering is
-                # legitimately empty, so a conversion produced no file at all
-                # while the run reported success.
+            # The normalized form was already streamed to disk by the
+            # conversion itself; a native one carries its text as parts.
+            if result.target == "json":
                 continue
-            if result.parts:
-                # A session spread over several files goes back as several:
-                # its own name for each, so the directory is reproduced.
-                for name, text in result.parts:
-                    (out_dir / name).write_text(text, encoding="utf-8")
-                continue
-            suffix = suffixes[result.target or "json"]
-            (out_dir / f"{result.path.stem}{suffix}").write_text(
-                result.text,
-                encoding="utf-8",
-            )
+            # A session spread over several files goes back as several: its
+            # own name for each, so the directory is reproduced. When an
+            # earlier session already wrote one of those names, the whole
+            # session moves into a directory of its own rather than
+            # overwriting it.
+            home = out_dir
+            if any((out_dir / name).exists() for name, _ in result.parts):
+                home = _destination(out_dir, result.path, "")
+                home.mkdir()
+            for name, text in result.parts:
+                (home / name).write_text(text, encoding="utf-8", newline="")
         return
     # No destination and a single input: stdout is the conversion's output.
     if len(converted) == 1 and converted[0].target != converted[0].source:
@@ -739,15 +756,6 @@ def _status(result: FileResult, *, verifying: bool) -> str:
     return f"{result.source} -> {result.target}"
 
 
-# ``verify`` never needs it, and a ``convert`` with a directory writes it there; only a
-# convert with nowhere to put it brings the text home.
-def _destination_for(flags: _Flags) -> Path | Literal[False] | None:
-    """Return where one run's converted text should go."""
-    if flags.command != "convert":
-        return False
-    return flags.out_dir
-
-
 # Part by part, holding one part's source and one part's rewrite at a time: the whole of
 # either is a copy of the session, and a corpus of those is what once took 21 GB.
 def _compared(
@@ -771,14 +779,7 @@ def _compared(
         # format cannot express, and the ``--lossy`` gate refuses the run
         # before anything reaches disk -- which a streamed write would have
         # already broken by the time the gate reads the result.
-        return _streamed(
-            path,
-            records,
-            parts,
-            detected=detected,
-            into=into,
-            out_dir=out_dir,
-        )
+        return _streamed(path, records, parts, detected=detected, out_dir=out_dir)
     names = names_of(records)
     written: list[tuple[str, str]] = []
     lost: Counter[str] = Counter()
@@ -826,7 +827,7 @@ def _compared(
                 kind, _, count = dropped.rpartition(":")
                 lost[kind] += int(count)
             if want_diff and not diff and source_path is not None:
-                diff = _diff(source_path.read_text(encoding="utf-8"), text)
+                diff = _diff(source_path.read_bytes().decode("utf-8"), text)
         written.append((name or (source_path.name if source_path else ""), text))
     # Only when the caller wants it: ``verify`` asks whether the bytes agree,
     # and rendering a 273 MB session to answer that costs 2.6 GB.
@@ -861,54 +862,32 @@ def _streamed(
     parts: Sequence[Path],
     *,
     detected: Format,
-    into: Format,
     out_dir: Path,
-    suffixes: Mapping[Format, str] = MappingProxyType(
-        {
-            "claude": ".jsonl",
-            "codex": ".jsonl",
-            "gemini": ".json",
-            "json": ".json",
-        },
-    ),
 ) -> FileResult:
-    """Write one conversion to ``out_dir``, holding no copy of its text."""
+    """Write one normalized document to ``out_dir``, holding no copy of it."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    source_bytes = sum(part.stat().st_size for part in parts)
-    output_bytes = 0
-    written: list[tuple[str, str]] = []
-    if into == "json":
-        # The normalized form is ONE document per session.
-        destination = _destination(out_dir, path, suffixes["json"])
-        with destination.open("w", encoding="utf-8") as handle:
-            _adapter(into).denormalize(records, handle)
-        output_bytes = destination.stat().st_size
-        written.append((destination.name, ""))
-    else:
-        # A native target goes back as the files it was spread across, each
-        # under its own name, so the source directory is reproduced.
-        names = names_of(records)
-        for index, part in enumerate(unfuse(records)):
-            name = names[index] if index < len(names) else ""
-            if not name:
-                name = (
-                    parts[index].name
-                    if index < len(parts)
-                    else f"{path.stem}-{index}{suffixes[into]}"
-                )
-            destination = out_dir / name
-            with destination.open("w", encoding="utf-8") as handle:
-                _adapter(into).denormalize(part, handle)
-            output_bytes += destination.stat().st_size
-            written.append((name, ""))
+    destination = _destination(out_dir, path, ".json")
+    with destination.open("w", encoding="utf-8", newline="") as handle:
+        normalized.denormalize(records, handle)
+    # By CONTENT: equal sizes say nothing about equal bytes. Only a json source
+    # is one document that the output could equal.
+    exact = detected == "json" and len(parts) == 1
+    if exact:
+        sink = _Comparing(parts[0])
+        try:
+            with destination.open(encoding="utf-8", newline="") as written:
+                for chunk in iter(lambda: written.read(1 << 16), ""):
+                    _ = sink.write(chunk)
+        finally:
+            sink.close()
+        exact = sink.matched
     return FileResult(
         path=path,
         source=detected,
-        target=into,
-        parts=() if into == "json" else tuple(written),
-        byte_exact=detected == into and output_bytes == source_bytes,
-        source_bytes=source_bytes,
-        output_bytes=output_bytes,
+        target="json",
+        byte_exact=exact,
+        source_bytes=sum(part.stat().st_size for part in parts),
+        output_bytes=destination.stat().st_size,
     )
 
 
@@ -939,7 +918,7 @@ class _Comparing(StringIO):
     """
 
     def __init__(self, path: Path) -> None:
-        self._handle = path.open(encoding="utf-8")
+        self._handle = path.open(encoding="utf-8", newline="")
         self._pending = ""
         self.matched = True
         self.written = 0
@@ -988,7 +967,7 @@ def _matches(path: Path, text: str) -> bool:
     if path.stat().st_size != len(text.encode("utf-8")):
         return False
     at = 0
-    with path.open(encoding="utf-8") as handle:
+    with path.open(encoding="utf-8", newline="") as handle:
         for line in handle:
             if not text.startswith(line, at):
                 return False
@@ -997,7 +976,9 @@ def _matches(path: Path, text: str) -> bool:
 
 
 # Enough lines to find one carrying a key that names the provider, and no more: a whole
-# file is megabytes to answer a question its first line usually settles.
+# file is megabytes to answer a question its first line usually settles. A gemini
+# document is ONE object, so its head is no complete JSON; ``detect_format`` recognizes
+# it by its keys' spelling instead, wherever the head ends.
 #
 # A file that cannot be READ names no format, rather than raising. Sniffing is what
 # DISCOVERY now uses to tell a gemini document from claude's own ``.json`` sidecars, and
@@ -1006,7 +987,7 @@ def _matches(path: Path, text: str) -> bool:
 def _sniff(path: Path) -> Format:
     """Return the format that wrote ``path``, reading only its head."""
     try:
-        with path.open(encoding="utf-8") as handle:
+        with path.open(encoding="utf-8", newline="") as handle:
             head = "".join(line for _, line in zip(range(64), handle, strict=False))
     except (OSError, UnicodeDecodeError):
         return ""

@@ -12,18 +12,25 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import itertools
+import json
 
 from asyncpg.pool import PoolConnectionProxy
 
 import pytest
 
-from trackinizer.lib.agent.types.sessions import UncategorizedRecord
-from trackinizer.lib.custom_json import json_freeze
+from trackinizer.lib.agent.types.sessions import (
+    AgentToAgentMessage,
+    Attachment,
+    UncategorizedRecord,
+    UserMessage,
+)
+from trackinizer.lib.custom_json import json_freeze, json_unfreeze
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     BucketGrid,
     FeedScope,
 )
+from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_sessions import (
     FeedActorFacet,
     FeedBucket,
@@ -650,6 +657,75 @@ async def test_an_empty_feed_is_one_empty_bucket(integ_store: Store) -> None:
         scope=WHOLE_FEED,
     )
     assert histogram.counts == [FeedBucket(start=_T0, count=0)]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("peer", [False, True])
+async def test_typed_attachment_only_messages_are_conversation(
+    integ_store: Store,
+    peer: bool,
+) -> None:
+    session_id = await _session(integ_store, "attached")
+    attachments = (Attachment(mime_descriptor="image/png", data=b"image"),)
+    record = (
+        AgentToAgentMessage(
+            content="Message Type: MESSAGE\nTask name: /root\nSender: /peer\nPayload:\n",
+            attachments=attachments,
+        )
+        if peer
+        else UserMessage(attachments=attachments)
+    )
+    row = SessionRecordRow.of(session_id=session_id, part=0, idx=0, record=record)
+    await _records(
+        integ_store,
+        session_id,
+        [(row.kind, _T0, json.dumps(json_unfreeze(row.payload)))],
+    )
+    facets = await integ_store.read_feed_facets(
+        since=None,
+        until=None,
+        scope=WHOLE_FEED,
+    )
+    assert [(actor.count, actor.conversation) for actor in facets.actors] == [(1, 1)]
+    events = await integ_store.read_feed(conversation=True)
+    assert [(event.session_id, event.kind) for event in events] == [
+        (session_id, row.kind),
+    ]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    "scope",
+    [
+        FeedScope(actors=("picked",)),
+        FeedScope(clis=("codex",)),
+        FeedScope(kinds=("UserMessage",)),
+        FeedScope(rooms=("picked-room",)),
+    ],
+)
+async def test_histogram_without_since_uses_scoped_first_record(
+    integ_store: Store,
+    scope: FeedScope,
+) -> None:
+    first = await _session(integ_store, "outside")
+    picked = await _session(integ_store, "picked", cli="codex", rooms=("picked-room",))
+    await _records(integ_store, first, [("ToolCall", _T0, "{}")])
+    await _records(
+        integ_store,
+        picked,
+        [("UserMessage", _T0 + timedelta(hours=5.5), _HUMAN)],
+    )
+    histogram = await integ_store.read_feed_histogram(
+        since=None,
+        until=_T0 + timedelta(hours=7),
+        earliest=_T0,
+        buckets=2,
+        scope=scope,
+    )
+    assert histogram.start == _T0 + timedelta(hours=4)
+    assert [bucket.count for bucket in histogram.counts] == [1, 0]
 
 
 # ---- Helpers ----------------------------------------------------------------

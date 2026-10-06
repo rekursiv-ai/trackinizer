@@ -9,7 +9,6 @@ edit machinery is reused through the composed :class:`Store`.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
@@ -25,7 +24,7 @@ else:
 
     asyncpg = lazy_import("asyncpg")  # ~60 ms; only start_session() needs it.
 
-from trackinizer.lib.custom_json import JSONValue, convert, json_freeze, loads_untagged
+from trackinizer.lib.custom_json import convert, json_freeze, loads_untagged
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
@@ -72,22 +71,6 @@ _SEEN_AGAIN_SQL: Final = (
 )
 
 
-def _strip_postgres_nuls(value: JSONValue) -> JSONValue:
-    """Drop non-displayable NUL artifacts that PostgreSQL JSONB cannot store."""
-    if isinstance(value, str):
-        return value.replace("\0", "")
-    if isinstance(value, Mapping):
-        mapping = value
-        return {
-            key.replace("\0", ""): _strip_postgres_nuls(item)
-            for key, item in mapping.items()
-        }
-    if isinstance(value, Sequence):
-        sequence = value
-        return [_strip_postgres_nuls(item) for item in sequence]
-    return value
-
-
 class _SessionMixin(_SubmitMixin, _EditMixin):
     """Agent-session lifecycle and the cross-session event feed.
 
@@ -126,8 +109,9 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             taken = {
                 row["owner"]
                 for row in await conn.fetch(
-                    "SELECT owner FROM inquiries "
-                    "WHERE kind = 'AgentSession' AND owner IS NOT NULL",
+                    "SELECT owner FROM inquiries WHERE kind = 'AgentSession' "
+                    "AND (owner = $1 OR starts_with(owner, $1 || '#'))",
+                    requested,
                 )
             }
         if requested not in taken:
@@ -158,9 +142,9 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         AgentSession's ``agentsession_cli_session_id``, re-attach that session
         instead of minting a new one -- same id, same granted handle -- and
         re-open it if ended (clear ``ended``, status back to ``active``), so the
-        resumed run continues the original log. ``next_seq`` is the event log's
-        continuation point (``max(seq)+1``, or 0 for a fresh session) so the
-        caller seeds its sequence and appends rather than colliding at seq 0.
+        resumed run continues the original log. ``next_seq`` is always 0: record
+        keys derive from their position in the source file, so a resumed run
+        re-derives the same keys and needs no continuation point.
 
         Idempotent: when this request reuses a prior start's idempotency key,
         the original session id AND its granted owner are replayed -- the

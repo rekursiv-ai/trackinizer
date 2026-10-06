@@ -21,12 +21,14 @@ import os
 import re
 
 from trackinizer.lib.agent.sessions import codex
+from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.custom_json import convert
-from trackinizer.trax.run.adapters.tail import Tail
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+    from trackinizer.types.streams import TraxRecord
 
 
 _ROLLOUT_NAME: Final = re.compile(
@@ -106,6 +108,6 @@ class CodexAdapter:
         # the match cannot succeed without it.
         return convert(found["session_id"], str)
 
-    def reader(self) -> Tail:
+    def reader(self) -> Tail[TraxRecord]:
         """Return a fresh IR reader for one codex rollout file."""
         return Tail(codex.normalize)

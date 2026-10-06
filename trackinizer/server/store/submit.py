@@ -9,7 +9,7 @@ through each item so a mixed-kind batch commits or rolls back atomically.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 import uuid
@@ -58,11 +58,9 @@ else:
 
 
 __all__ = [
-    "SUBMIT_METHOD",
     "PostInsert",
     "PreInsert",
     "_SubmitMixin",
-    "_SubmitOnConn",
 ]
 
 
@@ -70,48 +68,101 @@ type PostInsert = Callable[[Conn, UUID, UUID], Awaitable[None]]
 type PreInsert = Callable[[Conn], Awaitable[None]]
 
 
-T_Submit_contra = TypeVar("T_Submit_contra", contravariant=True)
+class _SubmitMixin(_EditMixin, _EdgeMixin):
+    """Per-kind inquiry creation for :class:`Store`."""
 
-
-class _SubmitOnConn(Protocol[T_Submit_contra]):
-    """A ``submit_X`` bound method that can join a caller's transaction.
-
-    ``req`` is typed ``Any`` deliberately: each ``submit_X`` accepts its own
-    concrete ``SubmitBase`` subtype (``SubmitIssue``, ``SubmitBelief``, ...). A
-    Protocol parameter is contravariant, so a narrower ``SubmitBase`` would make
-    every concrete method fail to satisfy this Protocol. The dispatch in
-    ``submit_batch`` always passes a real ``SubmitBase``, and ``SUBMIT_METHOD``
-    keys the right method by the body's concrete type, so runtime safety holds.
-    """
-
-    def __call__(
+    async def submit(
         self,
-        req: T_Submit_contra,
+        req: SubmitBase,
         *,
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
-        conn: Conn | None,
-    ) -> Awaitable[UUID]: ...
+        conn: Conn | None = None,
+    ) -> UUID:
+        """Create ``req`` through its own kind's ``submit_X``.
 
+        The one dispatch both the single-submit route and ``submit_batch`` use.
 
-# Submit body type -> the ``Store`` method that creates that kind. Drives
-# ``submit_batch`` dispatch (one shared transaction over mixed kinds) and the
-# single-submit route's dispatch, so both read one source of truth.
-SUBMIT_METHOD: dict[type[SubmitBase], str] = {
-    SubmitIssue: "submit_issue",
-    SubmitArtifact: "submit_artifact",
-    SubmitExperiment: "submit_experiment",
-    SubmitPaper: "submit_paper",
-    SubmitBelief: "submit_belief",
-    SubmitCodeChange: "submit_codechange",
-    SubmitWebResult: "submit_webresult",
-    SubmitWebSearch: "submit_websearch",
-    SubmitAgentSession: "submit_agentsession",
-}
+        Args:
+          req: A concrete submit body.
+          api_key_id: API key that authorized the submit, if any.
+          actor: Audit actor recorded on the new row.
+          conn: Transaction to join; None opens one.
 
+        Returns:
+          inquiry_id: The server-minted id.
 
-class _SubmitMixin(_EditMixin, _EdgeMixin):
-    """Per-kind inquiry creation for :class:`Store`."""
+        Raises:
+          TypeError: ``req`` is not a concrete kind's body.
+
+        """
+        match req:
+            case SubmitIssue():
+                created = self.submit_issue(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitArtifact():
+                created = self.submit_artifact(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitExperiment():
+                created = self.submit_experiment(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitPaper():
+                created = self.submit_paper(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitBelief():
+                created = self.submit_belief(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitCodeChange():
+                created = self.submit_codechange(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitWebResult():
+                created = self.submit_webresult(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitWebSearch():
+                created = self.submit_websearch(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitAgentSession():
+                created = self.submit_agentsession(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case _:
+                raise TypeError(f"No submit path for {type(req).__name__}.")
+        return await created
 
     async def submit_issue(
         self,
@@ -677,22 +728,17 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             self.engine.acquire() as conn,
             tx(conn),
         ):
-            ids: list[UUID] = []
-            for item in items:
-                method = cast(
-                    _SubmitOnConn[SubmitBase],
-                    getattr(self, SUBMIT_METHOD[type(item)]),
+            # Sequential on one connection: asyncpg runs one query at a time.
+            # Per-item actor override wins, mirroring the single-submit route.
+            ids = [
+                await self.submit(
+                    item,
+                    api_key_id=api_key_id,
+                    actor=item.actor or actor,
+                    conn=conn,
                 )
-                ids.append(
-                    await method(
-                        item,
-                        api_key_id=api_key_id,
-                        # Per-item actor override wins, mirroring the
-                        # single-submit route's ``req.actor or email``.
-                        actor=item.actor or actor,
-                        conn=conn,
-                    ),
-                )
+                for item in items
+            ]
             # Known gap: the items replay a keyed retry, but the edges carry no
             # key. A retry adds each again if it is absent, so an edge removed
             # since the first attempt comes back.

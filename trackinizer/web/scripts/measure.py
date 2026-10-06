@@ -10,7 +10,8 @@ in parallel, a 50-Issue list, Mine across every kind at 20 and 50 per kind,
 details of the newest Issues and of a hub, each Activity tab and a `since`
 refetch, search one kind at a time, every kind in parallel as the palette sends
 it, and all kinds in one request, a seq-range refetch of 50 rows, a membership
-check of 13 ids, and the live stream's frame rate. Times run to the last byte.
+check of up to 13 ids, and the live stream's frame rate; the reads of the newest
+Issues are skipped when there are none. Times run to the last byte.
 Sizes are the JSON's and the body's on the wire, compressed as the server's proxy
 sends them (zstd, gzip). An answer that is an error (a 400 over the search budget, a
 proxy's 502) is kept with its status and message, but never timed as a read:
@@ -19,9 +20,10 @@ medians are of successful answers only. The report goes to
 it lists every row whose median time or JSON size moved more than 2x from an
 earlier report.
 
-The server is the active trax profile's by default, read with its token. Any
-other --url gets no token, which suits the local preview (--no-auth), so the
-profile's token never leaves for another host.
+The server is the active trax profile's by default, read with its token. A --url
+that names another server (host, port and path, as mirror_local.py compares
+them) gets no token, which suits the local preview (--no-auth), so the profile's
+token never leaves for another host.
 
 Examples:
   ./measure.py                                  # the profile's server, read-only
@@ -51,12 +53,15 @@ import time
 import httpx2
 
 from trackinizer.lib import zstd_compat
-from trackinizer.lib.custom_json import JSONValue, convert, loads, parse
+from trackinizer.lib.custom_json import JSONValue, ReadError, convert, loads, parse
 from trackinizer.trax.profile import load_profile
+from trackinizer.web.scripts.mirror_local import source_token
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, Sequence
+
+    from trackinizer.trax.profile import Profile
 
 
 # How to undo each `Content-Encoding` the client offers: the body is read raw so
@@ -113,18 +118,19 @@ def main() -> int:
 
     """
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 2)[2],
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
     flags = cast(_Flags, parser.parse_args())
     profile = load_profile()
     url = (flags.url or profile.url).rstrip("/")
-    headers = {"Accept-Encoding": ", ".join(_DECODERS)}
-    if url == profile.url.rstrip("/") and profile.api_key:
-        headers["Authorization"] = f"Bearer {profile.api_key}"
     queries = flags.query or ["trackinizer", "membership check", "title:^web"]
-    with httpx2.Client(base_url=url, headers=headers, timeout=30.0) as http:
+    with httpx2.Client(
+        base_url=url,
+        headers=_headers(url, profile),
+        timeout=30.0,
+    ) as http:
         version = convert(_read(http, "/api/version"), dict[str, object])
         rows = measure(http, repeats=flags.repeats, queries=queries, hub=flags.hub)
         stream = sample_stream(http, seconds=flags.stream_sec)
@@ -298,12 +304,12 @@ def moved(
         pairs = (
             (
                 "median seconds",
-                convert(old.get("median_seconds"), float),
+                convert(old.get("median_seconds"), float, default=None),
                 now_seconds,
             ),
             (
                 "median JSON bytes",
-                convert(old.get("median_json_bytes"), float),
+                convert(old.get("median_json_bytes"), float, default=None),
                 now_bytes,
             ),
         )
@@ -322,6 +328,14 @@ class _Flags(Protocol):
     hub: str
     stream_sec: float
     baseline: Path | None
+
+
+def _headers(url: str, profile: Profile) -> dict[str, str]:
+    """Return the request headers: every coding decoded, and the token on its server."""
+    headers = {"Accept-Encoding": ", ".join(_DECODERS)}
+    if token := source_token(url, profile):
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 def _add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -423,14 +437,17 @@ def _detail_rows(
     repeats: int,
 ) -> list[Row]:
     newest = [convert(row.get("id"), str) for row in issues[:5]]
-    rows = [
-        _row(
-            "detail: newest Issues",
-            *(partial(_get, http, f"/api/web/get/{id_}") for id_ in newest),
-            repeats=repeats,
-            note=f"{len(newest)} Issues",
-        ),
-    ]
+    rows: list[Row] = []
+    # With no Issues the row would take no sample, and report an empty median.
+    if newest:
+        rows.append(
+            _row(
+                "detail: newest Issues",
+                *(partial(_get, http, f"/api/web/get/{id_}") for id_ in newest),
+                repeats=repeats,
+                note=f"{len(newest)} Issues",
+            ),
+        )
     hub_id = _hub_id(http, issues=issues, hub=hub)
     if hub_id:
         view = convert(_read(http, f"/api/web/get/{hub_id}"), dict[str, object])
@@ -542,12 +559,16 @@ def _live_rows(
     issues: Sequence[Mapping[str, object]],
     repeats: int,
 ) -> list[Row]:
+    # With no Issues, both reads would ask for nothing (no seq_range, `^()$`) and time
+    # an empty answer as if it were the live layer's refetch.
+    if not issues:
+        return []
     spans: Params = tuple(
         ("seq_range", span)
         for span in _spans(sorted(convert(row.get("seq"), int) for row in issues))
     )
-    ids = "|".join(convert(row.get("id"), str) for row in issues[:13])
-    check = json.dumps({"field": "id", "op": "re", "value": f"^({ids})$"})
+    ids = [convert(row.get("id"), str) for row in issues[:13]]
+    check = json.dumps({"field": "id", "op": "re", "value": f"^({'|'.join(ids)})$"})
     three: Params = tuple(("kind", kind) for kind in kinds[:3])
     return [
         _row(
@@ -562,7 +583,7 @@ def _live_rows(
             note=f"{len(spans)} ranges",
         ),
         _row(
-            "membership: 13 ids, three kinds",
+            f"membership: {len(ids)} ids, three kinds",
             partial(_get, http, "/api/inquiries", (*three, ("filter", check))),
             repeats=repeats,
             note=", ".join(kinds[:3]),
@@ -599,25 +620,29 @@ def _get(http: httpx2.Client, path: str, params: Params = ()) -> Sample:
         raw = b"".join(response.iter_raw())
     seconds = time.perf_counter() - start
     body = _decoded(raw, response.headers.get("content-encoding", ""))
-    message = ""
-    if response.is_error:
-        # A proxy's error page is not JSON; its start says enough.
-        try:
-            detail = convert(
-                parse(body, dict[str, object]).get("detail"),
-                object,
-                default="",
-            )
-        except ValueError:
-            detail = body[:200].decode(errors="replace")
-        message = convert(detail, str)
     return Sample(
         seconds=seconds,
         status=response.status_code,
         json_bytes=len(body),
         wire_bytes=len(raw),
-        message=message,
+        message=_message(body) if response.is_error else "",
     )
+
+
+# FastAPI's `detail` is a string for a refusal and a list for a 422; a proxy answers
+# JSON of its own shape, or an HTML page.
+def _message(body: bytes) -> str:
+    """Return an error body's `detail`, else its JSON, else the start of its text."""
+    try:
+        value = loads(body)
+    except ValueError:
+        return body[:200].decode(errors="replace")
+    try:
+        fields = convert(value, dict[str, object])
+    except ReadError:
+        fields = {}
+    detail = fields.get("detail", value)
+    return detail if isinstance(detail, str) else json.dumps(detail)
 
 
 def _serial(http: httpx2.Client, reads: Iterable[tuple[str, Params]]) -> Sample:

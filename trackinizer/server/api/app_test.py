@@ -15,7 +15,6 @@ from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
 import asyncpg
-import fastjsonschema
 import pytest
 
 from trackinizer.conftest import FakeEngine, make_store
@@ -29,12 +28,12 @@ from trackinizer.server.api.app import (
     fk_violation_handler,
     lifespan,
     not_found_handler,
-    schema_handler,
     unique_violation_handler,
     validation_handler,
 )
 from trackinizer.server.config import Config
-from trackinizer.server.embedders import qwen3_4b
+from trackinizer.server.embedders import qwen3_4b, registry
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.types.errors import (
     ConflictError,
     NotFoundError,
@@ -125,26 +124,6 @@ class TestCLIHelpers:
         body = parse(bytes(response.body), dict[str, object])
         assert response.status_code == 422
         assert body == {"detail": "bad input", "code": "validation"}
-
-    def test_schema_handler_emits_422_and_code(self) -> None:
-        req = cast(Request, Mock())
-        response = asyncio.run(
-            schema_handler(
-                req,
-                fastjsonschema.JsonSchemaValueException("stray key"),
-            ),
-        )
-        body = parse(bytes(response.body), dict[str, object])
-        assert response.status_code == 422
-        assert body == {"detail": "stray key", "code": "schema"}
-
-    def test_schema_error_is_registered_not_merely_defined(self) -> None:
-        # The handler function existing is not what stops the 500 -- FastAPI
-        # only consults REGISTERED handlers for client-side schema failures.
-        assert (
-            app.app.exception_handlers.get(fastjsonschema.JsonSchemaValueException)
-            is schema_handler
-        )
 
 
 class TestRequestLogging:
@@ -399,6 +378,27 @@ class TestAuthDisabledWarning:
 class TestSessionEmbedderResolution:
     """``_resolve_session_embedder`` decides degrade-vs-warm without downloading."""
 
+    def test_startup_passes_dimension_to_gate_and_builder(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        check = Mock(return_value=True)
+        build = Mock(return_value=StubEmbedder(dim=256))
+
+        def is_weightless(name: str) -> bool:
+            del name
+            return True
+
+        monkeypatch.setattr(registry, "weights_present", check)
+        monkeypatch.setattr(registry, "build_session_embedder", build)
+        monkeypatch.setattr(registry, "is_weightless", is_weightless)
+        app._resolve_session_embedder(
+            FastAPI(),
+            Config(session_embedder="qwen3-embedding-4b", session_embedder_dim=256),
+        )
+        check.assert_called_once_with("qwen3-embedding-4b", dim=256)
+        build.assert_called_once_with("qwen3-embedding-4b", dim=256)
+
     def test_unset_knob_leaves_embedder_none(self) -> None:
         fastapi_app = FastAPI()
         task = app._resolve_session_embedder(
@@ -467,6 +467,42 @@ class TestSessionEmbedderResolution:
         embedder, _task = asyncio.run(_drive())
         assert embedder is not None
         assert warmed == ["warmed"]  # The warm task ran, without downloading.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("startup_failure", [False, True])
+async def test_lifespan_joins_tasks_after_startup_or_background_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    startup_failure: bool,
+) -> None:
+    store, engine = make_store()
+    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
+    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
+    monkeypatch.setattr(app, "Store", Mock(return_value=store))
+    monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        app,
+        "push_changes_to_live_subscribers",
+        AsyncMock(side_effect=RuntimeError("background failed")),
+    )
+    services = (
+        Mock(side_effect=RuntimeError("startup failed"))
+        if startup_failure
+        else Mock(return_value=[])
+    )
+    monkeypatch.setattr(app, "_start_addon_services", services)
+    fastapi_app = FastAPI()
+    fastapi_app.state.config = Config()
+    before = asyncio.all_tasks()
+    if startup_failure:
+        with pytest.raises(RuntimeError, match="startup failed"):
+            async with lifespan(fastapi_app):
+                pass
+    else:
+        async with lifespan(fastapi_app):
+            await asyncio.sleep(0)
+    assert asyncio.all_tasks() <= before
+    assert engine.exited
 
 
 async def _record_warm(embedder: object, sink: list[str]) -> None:

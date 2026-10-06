@@ -24,13 +24,15 @@ from typing import TYPE_CHECKING, Final
 
 import logging
 
+from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.trax.run.adapters import scrape
-from trackinizer.trax.run.adapters.tail import Tail
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
     from pathlib import Path
+
+    from trackinizer.types.streams import TraxRecord
 
 
 __all__ = ["IOStreamAdapter", "LineCapture"]
@@ -96,7 +98,7 @@ class IOStreamAdapter:
         del path
         return None
 
-    def reader(self) -> Tail:
+    def reader(self) -> Tail[TraxRecord]:
         """Return a fresh IR reader for one captured stream.
 
         Every line becomes a stream record: the contract is verbatim

@@ -19,6 +19,7 @@ from trackinizer.trax.grammar import (
     ListQuery,
 )
 from trackinizer.trax.run.errors import NotResumableError
+from trackinizer.trax.run.materialize import Materialized
 from trackinizer.trax.verbs import (
     LABELS_BY_EDGE_KIND,
     Blocked,
@@ -3664,6 +3665,91 @@ def test_workspace_show_uses_current_revision_and_renders_updated_state(
             "revision": 8,
             "operation": expected,
         }
+
+
+@pytest.mark.parametrize(
+    ("verb", "value"),
+    [("agentsession", "run"), ("experiment", "metric")],
+)
+def test_tail_keywords_are_literal_field_values(
+    verb: str,
+    value: str,
+    client: FakeClient,
+) -> None:
+    run([verb, "1", "title", "to", value], client)
+    edits = [call for call in client.calls if call[0] == "edit"]
+    assert edits[0][1][1:3] == ("title", value)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        ["claude", "--as", "bob", "--", "--model", "opus"],
+        ["claude", "--detach", "--name", "job"],
+        ["claude", "--", "--lossy"],
+    ],
+)
+def test_resume_preserves_runner_tail(
+    tail: list[str],
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    written = Materialized(path=tmp_path / "session.jsonl", cli_session_id=uuid.uuid4())
+
+    def prepare(*args: object, **kwargs: object) -> Materialized:
+        del args, kwargs
+        return written
+
+    seen: list[list[str]] = []
+
+    def enter(argv: list[str], **kwargs: object) -> None:
+        del kwargs
+        seen.append(argv)
+
+    monkeypatch.setattr(verbs, "prepare_resume", prepare)
+    monkeypatch.setattr("trackinizer.trax.run.session.main", enter)
+    run(["agentsession", "1", "run", *tail], client)
+    assert seen == [tail]
+
+
+def test_noop_metadata_link_echoes_exists(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    command = ["belief", "3", "proves", "paper", "5", "valence", "to", "0.9"]
+    run(command, client)
+    capsys.readouterr()
+    run(command, client)
+    assert "exists: Belief#3 proves Paper#5" in capsys.readouterr().out
+
+
+def test_actor_resolution_precedence_and_default(
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("USER", "unix")
+    monkeypatch.setenv("USERNAME", "windows")
+    client.author = "profile"
+    for command, expected in (
+        (["issue", "1", "title", "to", "x", "--as", "explicit"], "explicit"),
+        (["issue", "1", "title", "to", "x"], "profile"),
+    ):
+        run(command, client)
+        assert [call for call in client.calls if call[0] == "edit"][-1][2][
+            "actor"
+        ] == expected
+    client.author = ""
+    run(["issue", "1", "title", "to", "x"], client)
+    assert [call for call in client.calls if call[0] == "edit"][-1][2][
+        "actor"
+    ] == "unix"
+    monkeypatch.delenv("USER")
+    monkeypatch.delenv("USERNAME")
+    run(["issue", "1", "title", "to", "x"], client)
+    assert [call for call in client.calls if call[0] == "edit"][-1][2][
+        "actor"
+    ] == "user"
 
 
 if __name__ == "__main__":

@@ -15,10 +15,10 @@ Reads are paginated per kind; edges are harvested from each node's
 ``/api/web/get`` projection (outbound ``edges`` only, to avoid double-counting)
 and deduplicated. Only the fields the graph view needs are copied.
 
-With ``--traverse`` the replay walks the graph breadth-first from its roots and
-inserts ONE node (plus its edges to already-inserted nodes) at a time, pausing
+With ``--traverse`` the replay inserts nodes oldest-first by creation time,
+one node (plus its edges to already-inserted nodes) at a time, pausing
 ``--delay`` seconds between inserts. The target's SSE stream then pushes each
-node to an open graph view, so the real graph visibly grows by traversal
+node to an open graph view, so the real graph visibly grows in authoring
 order instead of appearing all at once -- the live-growth demo on real data.
 
 Examples:
@@ -53,8 +53,7 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-# One ``web_get`` detail's ``edges``/``backlinks`` projection: edge-kind -> the
-# to this shape at the read boundary restores the peer-row types downstream.
+# A detail's edges/backlinks projection maps each edge kind to its peer rows.
 type _PeerMap = Mapping[str, Sequence[Mapping[str, object]]]
 
 
@@ -88,11 +87,13 @@ def main() -> int:
 
     """
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 2)[2],
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
     flags = cast(_Flags, parser.parse_args())
+    if flags.seed and (flags.traverse or flags.limit):
+        parser.error("--seed cannot be combined with --traverse or --limit")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     # The httpx2 per-request INFO lines (one per node fetch) drown the replay's
     # own progress; quiet them to WARNING.
@@ -152,21 +153,21 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
         "repeatable. Pulls ONLY the connected subgraph reachable from the seeds "
         "(a BFS over the live edges), so the replay shows a chosen story -- a "
         "root issue with its sub-issues, beliefs, evidence, and citations -- "
-        "and grows until that component is exhausted. Pair with --traverse.",
+        "and grows until that component is exhausted. Incompatible with "
+        "--traverse and --limit.",
     )
     parser.add_argument(
         "--traverse",
         action="store_true",
-        help="Insert one node at a time in breadth-first order (live-growth "
+        help="Insert one node at a time in creation-time order (live-growth "
         "demo) instead of bulk batches.",
     )
     parser.add_argument(
         "--delay",
         type=float,
         default=0.01,
-        help="Rate-limit pause (seconds) between write batches in --seed mode, "
-        "so the embedded pglite target is not bursted (default 0.01; batching "
-        "already keeps writes to a handful of transactions).",
+        help="Pause (seconds) between write batches in --seed mode or node "
+        "inserts in --traverse mode (default 0.01).",
     )
 
 
@@ -260,17 +261,6 @@ def _pull_edges(
     return out
 
 
-# The crawl INTERLEAVES discovery and insertion: as the BFS from the seeds reaches each
-# node it is inserted right away (in small ``chunk`` batches), so the target -- and an
-# open graph view via SSE -- starts filling almost immediately instead of waiting
-# for the whole component to be read first. Each chunk is sorted by source ``created``
-# before insert, so the write order is locally deterministic. A node that arrives
-# before its peer is not stranded: the graph view reads the whole graph again on each
-# change, so an edge shows once its other endpoint lands.
-#
-# Small batches (not one row at a time) keep the embedded pglite target healthy -- per-
-# row writes burst it into 500s and orphaned sockets. ``delay`` rate-limits between
-# chunks. Returns the inserted node count.
 def _flush(
     pending: list[dict[str, object]],
     target: Client,
@@ -290,6 +280,8 @@ def _flush(
         time.sleep(delay)
 
 
+# Interleave discovery with insertion so the graph grows before the crawl finishes.
+# Small batches avoid per-row writes bursting the embedded pglite target into 500s.
 def _crawl_and_insert(
     source: Client,
     target: Client,

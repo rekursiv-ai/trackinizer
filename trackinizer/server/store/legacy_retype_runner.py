@@ -26,10 +26,8 @@ rewrite preserves, so retyped history must not re-surface as fresh activity.
 Idempotent by content: a part with no ``legacy/*`` payload kinds is a no-op,
 so a cancelled run resumes by re-running.
 
-Sharding: ``retype_all`` splits sessions by ``hashtext(session_id::text)`` --
-the split ``session_ir_storage_cost.md`` measured at 171 s where the serial
-form burned 19 minutes. Shards are disjoint; each session rewrites under its
-own transaction.
+Sharding: ``retype_all`` splits sessions by ``hashtext(session_id::text)``.
+Shards are disjoint; each session rewrites under its own transaction.
 
 Maintenance run-hook (``docs/db_schema_migration.md``: a backfill runs
 against the live database BEFORE any restart, old server still serving)::
@@ -309,7 +307,11 @@ def _outputs_for(
     out = retype(
         record,
         timestamp=(
-            source.timestamp.isoformat() if source.timestamp is not None else None
+            source.timestamp.isoformat()
+            if source.timestamp is not None
+            else source.created.isoformat()
+            if source.legacy_kind == "legacy/SlashCommand"
+            else None
         ),
         ciphertext=source.ciphertext,
     )

@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast
 
 import asyncio
 
+from trackinizer.lib.custom_json import convert
+
 
 if TYPE_CHECKING:
     from torch.nn import functional
@@ -162,8 +164,11 @@ class JinaV5Embedder:
         )
         tensor = cast("torch.Tensor", raw)
         normalized = functional.normalize(tensor, p=2, dim=1)
-        listed = cast(object, normalized.to(torch.float32).cpu().tolist())
-        return cast("list[list[float]]", listed)
+        # Needed: without this cast, the export (OSS copy) fails its type check.
+        return convert(
+            cast(object, normalized.to(torch.float32).cpu().tolist()),
+            list[list[float]],
+        )
 
 
 # Module-level so the heavy import stays off import time; each Jina module's

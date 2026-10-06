@@ -20,11 +20,13 @@ from typing import TYPE_CHECKING
 import hashlib
 
 from trackinizer.lib.agent.sessions import gemini
-from trackinizer.trax.run.adapters.tail import Tail
+from trackinizer.lib.agent.sessions.tail import Tail
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+    from trackinizer.types.streams import TraxRecord
 
 
 class GeminiAdapter:
@@ -99,7 +101,7 @@ class GeminiAdapter:
         del path
         return None
 
-    def reader(self) -> Tail:
+    def reader(self) -> Tail[TraxRecord]:
         """Return a fresh IR reader for one gemini session document.
 
         Whole-file: gemini rewrites in place, so each chunk is the entire

@@ -35,6 +35,7 @@ import uuid
 import pytest
 
 from trackinizer.client.client import Client
+from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
     IncompleteRecord,
@@ -53,7 +54,6 @@ from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter
-from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.session import (
     RunConfig,
@@ -81,6 +81,7 @@ from trackinizer.wire.wire_sessions import (
 
 if TYPE_CHECKING:
     from trackinizer.trax.run.adapters.custom_types import Adapter
+    from trackinizer.types.streams import TraxRecord
     from trackinizer.wire.wire_session_ir import RecordBody
     from trackinizer.wire.wire_sessions import SessionStart
 
@@ -238,7 +239,7 @@ class _FakeAdapter:
         del path
         return None
 
-    def reader(self) -> Tail:
+    def reader(self) -> Tail[TraxRecord]:
         return Tail(_line_records)
 
 
@@ -258,7 +259,7 @@ class _WholeFileAdapter(_FakeAdapter):
         return path.suffix == ".json"
 
     @override
-    def reader(self) -> Tail:
+    def reader(self) -> Tail[TraxRecord]:
         return Tail(_document_records, whole_file=True)
 
 
@@ -269,7 +270,7 @@ class _PoisonAdapter(_FakeAdapter):
     cli_binary: str = "poison"
 
     @override
-    def reader(self) -> Tail:
+    def reader(self) -> Tail[TraxRecord]:
         return Tail(_poison_records)
 
 
@@ -567,7 +568,7 @@ class TestSessionScoping:
         }
         pids = {"A": 101, "B": 102}
 
-        def line_reader(self: CodexAdapter) -> Tail:
+        def line_reader(self: CodexAdapter) -> Tail[TraxRecord]:
             del self
             return Tail(_line_records)
 
@@ -649,7 +650,7 @@ class TestSessionScoping:
         session_id = "00000000-0000-7000-8000-000000000003"
         sink = _RecordingSink()
 
-        def line_reader(self: CodexAdapter) -> Tail:
+        def line_reader(self: CodexAdapter) -> Tail[TraxRecord]:
             del self
             return Tail(_line_records)
 
@@ -1785,7 +1786,7 @@ class _UuidAdapter(_FakeAdapter):
     cli_binary: str = "uuids"
 
     @override
-    def reader(self) -> Tail:
+    def reader(self) -> Tail[TraxRecord]:
         return Tail(_uuid_records)
 
 

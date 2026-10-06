@@ -18,7 +18,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
 
-    from trackinizer.trax.run.adapters.tail import Tail
+    from trackinizer.lib.agent.sessions.tail import Tail
+    from trackinizer.types.streams import TraxRecord
 
 
 __all__ = ["Adapter", "StreamAdapter"]
@@ -120,7 +121,7 @@ class Adapter(Protocol):
         """
         ...
 
-    def reader(self) -> Tail:
+    def reader(self) -> Tail[TraxRecord]:
         """Return a fresh reader for one of this CLI's session files.
 
         One per FILE, not per run: a reader carries the position it has read

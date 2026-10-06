@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 
 import pytest
@@ -169,6 +170,68 @@ def test_param_count_matches_the_published_model_sizes() -> None:
     assert param_count(QWEN3_8B) == pytest.approx(7.6e9, rel=0.1)
     # Octen is a Qwen3-8B fine-tune with identical dims.
     assert param_count(OCTEN_8B) == param_count(QWEN3_8B)
+
+
+def test_param_count_reads_each_specs_own_vocab_size() -> None:
+    """Two specs with identical shapes but different vocabularies stay distinct.
+
+    The vocab table was a dict keyed by spec EQUALITY, so equal-shaped specs
+    (QWEN3_8B == OCTEN_8B) collided on one key and silently shared one entry.
+    """
+    small = dataclasses.replace(OCTEN_8B, vocab_size=1_000)
+    large = dataclasses.replace(OCTEN_8B, vocab_size=2_000)
+    assert param_count(large) - param_count(small) == 1_000 * OCTEN_8B.hidden_dim
+
+
+def test_sweep_and_optimal_boundaries_share_validation() -> None:
+    """Both entry points reject the same malformed inputs the same way."""
+    cases: tuple[tuple[dict[int, int], str], ...] = (
+        ({}, r"^freq is empty$"),
+        ({0: 1}, r"^length must be positive, got 0$"),
+        ({100: 0}, r"^count must be positive, got 0$"),
+    )
+    for bad, message in cases:
+        with pytest.raises(ValueError, match=message):
+            optimal_boundaries(bad, 1)
+        with pytest.raises(ValueError, match=message):
+            sweep(bad, max_k=1)
+    with pytest.raises(ValueError, match=r"^max_k must be positive, got 0$"):
+        sweep({100: 1}, max_k=0)
+
+
+def test_sweep_cost_equals_brute_force_minimum_for_every_k() -> None:
+    """Each k's DP cost equals the exhaustive minimum over all <= k edge sets."""
+    freq = {1: 7, 3: 2, 4: 9, 10: 1, 11: 5, 30: 3}
+    lengths = sorted(freq)
+    cost = transformer_cost(QWEN3_0P6B)
+    for point in sweep(freq, max_k=len(lengths) + 1, cost=cost):
+        brute = min(
+            bucketed_cost(freq, [*inner, lengths[-1]], cost=cost)
+            for size in range(min(point.k, len(lengths)))
+            for inner in itertools.combinations(lengths[:-1], size)
+        )
+        assert point.cost == pytest.approx(brute, rel=1e-12), point.k
+
+
+def test_ties_keep_the_fewest_and_earliest_edges() -> None:
+    """Equal-cost alternatives resolve to the earliest cut, as before the refactor.
+
+    With cost {1: 1, 2: 2, 3: 3}, two buckets cut after 1 ([1, 3]: 1 + 2*3) and
+    after 2 ([2, 3]: 2*2 + 3) tie at 7; one bucket costs 9.
+    """
+    freq = {1: 1, 2: 1, 3: 1}
+    assert optimal_boundaries(freq, 2, cost=float) == [1, 3]
+    assert optimal_boundaries({1: 1, 2: 1}, 2, cost=_flat_cost) == [2]
+
+
+def _flat_cost(edge: int) -> float:
+    del edge
+    return 1.0
+
+
+def test_length_one_is_a_valid_length() -> None:
+    assert optimal_boundaries({1: 4}, 1) == [1]
+    assert sweep({1: 4}, max_k=1)[0].edges == [1]
 
 
 def test_derive_rows_meets_or_exceeds_the_proven_live_table() -> None:

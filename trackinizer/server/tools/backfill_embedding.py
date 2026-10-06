@@ -11,7 +11,7 @@ via ``CUDA_VISIBLE_DEVICES``) pull pages as they free up, so a straggler page
 never idles another GPU. Static hash-sharding measured 2x slower end-to-end:
 the last shard ran alone for hours while its siblings' GPUs sat idle.
 
-Each worker owns its own DB connection, skips records whose stored
+Each worker owns its own DB connection, skips records whose freshness marker
 ``text_md5`` already matches (the sweep predicate, so re-runs resume at scan
 speed), embeds unit texts length-sorted so a forward batch pads to similar
 lengths, and writes one ``unnest`` DELETE+INSERT per flush. The library sweep
@@ -30,12 +30,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from multiprocessing.sharedctypes import Synchronized
 from pathlib import Path
+from queue import Full
 from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 from uuid import UUID
 
 import argparse
 import asyncio
+import ctypes
 import hashlib
 import multiprocessing
 import os
@@ -55,7 +58,7 @@ from trackinizer.server.values import manifest_bound, vetted_sql
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from multiprocessing import Queue
 
     from asyncpg import Record
@@ -69,8 +72,8 @@ if TYPE_CHECKING:
     type RecordKey = tuple[datetime, UUID, int, int]
     type QueuedKey = tuple[datetime, str, int, int]
 
-# (inclusive_lo, lo_key, hi_key) page bounds.
-type PageTask = tuple[bool, "QueuedKey", "QueuedKey"]
+# (lo_key, hi_key): the page's first and last pending rows, both inclusive.
+type PageTask = tuple["QueuedKey", "QueuedKey"]
 
 # The GPU pipeline's default when ``--model`` is unset: the production 4B model.
 _DEFAULT_MODEL = "qwen3-embedding-4b@1024"  # house-ignore[globals] -- a CLI default, read once in main().
@@ -84,7 +87,7 @@ def main() -> int:
 
     """
     parser = argparse.ArgumentParser(
-        description="".join((__doc__ or "").split("\n", 2)[2:]),
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
@@ -101,10 +104,35 @@ def main() -> int:
     # A CPU slot is the empty-string device: CUDA_VISIBLE_DEVICES="" hides
     # every GPU from that process and the worker falls back to CPU inference.
     slots = gpus * flags.workers_per_gpu + [""] * flags.cpu_workers
-    queue: Queue[PageTask | None] = multiprocessing.Queue(maxsize=len(slots) * 2)
+    if not slots:
+        parser.error("no worker slots: pass --gpus and/or --cpu-workers")
     # The GPU pipeline backfills ONE model per invocation (run it again per
     # model to bulk-backfill several); --follow above maintains all of them.
     model = models[0]
+    # The scanner walks only rows pending for THIS resolved model+mapper, so it
+    # needs the stored identity workers write (resolved torch-free here, not by
+    # building the embedder) and the mapper name. The GPU pipeline produces ONLY
+    # vectors, so it scans the mapper's EMBEDDED kinds (F+E prose); fts-only
+    # records (heads, SystemMessage) carry no vector and are marked fresh by the
+    # steady-state library sweep (--follow), not this bulk path.
+    scan_mapper = FootprintMapper()
+    resolved = registry.resolved_name(model, flags.dim)
+    kinds = sorted(scan_mapper.embedded_kinds)
+    # One run-wide denominator, counted before any worker can write, and one
+    # run-wide done counter: per-worker counts made every worker report the
+    # global pending as its own shard, inflating the ETA by the worker count.
+    progress = _Progress(
+        pending=asyncio.run(
+            _pending_count(
+                flags.dsn,
+                mapper_name=scan_mapper.name,
+                model=resolved,
+                indexed_kinds=kinds,
+            ),
+        ),
+        done=multiprocessing.Value(ctypes.c_int64, 0),
+    )
+    queue: Queue[PageTask | None] = multiprocessing.Queue(maxsize=len(slots) * 2)
     workers = [
         multiprocessing.Process(
             target=_worker_entry,
@@ -120,6 +148,7 @@ def main() -> int:
                     compile_cache=flags.compile_cache,
                 ),
                 queue,
+                progress,
             ),
             name=f"embed-worker-{i}-{'gpu' + gpu if gpu else 'cpu'}",
         )
@@ -127,30 +156,32 @@ def main() -> int:
     ]
     for worker in workers:
         worker.start()
-    # The scanner walks only rows pending for THIS resolved model+mapper, so it
-    # needs the stored identity workers write (resolved torch-free here, not by
-    # building the embedder) and the mapper name. The GPU pipeline produces ONLY
-    # vectors, so it scans the mapper's EMBEDDED kinds (F+E prose); fts-only
-    # records (heads, SystemMessage) carry no vector and are marked fresh by the
-    # steady-state library sweep (--follow), not this bulk path.
-    scan_mapper = FootprintMapper()
-    asyncio.run(
-        _scan(
-            flags.dsn,
-            queue,
-            flags.page,
-            len(workers),
-            mapper_name=scan_mapper.name,
-            model=registry.resolved_name(model, flags.dim),
-            indexed_kinds=sorted(scan_mapper.embedded_kinds),
-        ),
-    )
+    aborted = False
+    try:
+        asyncio.run(
+            _scan(
+                flags.dsn,
+                queue,
+                flags.page,
+                len(workers),
+                mapper_name=scan_mapper.name,
+                model=resolved,
+                indexed_kinds=kinds,
+                alive=lambda: any(worker.is_alive() for worker in workers),
+            ),
+        )
+    except _NoLiveWorkersError as error:
+        # Nobody will drain the queued pages; without this the queue's feeder
+        # thread blocks interpreter exit on them.
+        queue.cancel_join_thread()
+        print(error)
+        aborted = True
     failed = 0
     for worker in workers:
         worker.join()
         failed += worker.exitcode != 0
-    print("ALL DONE" if failed == 0 else f"{failed} workers FAILED")
-    return 1 if failed else 0
+    print(f"{failed} workers FAILED" if failed or aborted else "ALL DONE")
+    return 1 if failed or aborted else 0
 
 
 class Flags(Protocol):
@@ -175,10 +206,9 @@ class Flags(Protocol):
 class _WorkerConfig:
     """The per-worker payload, one positional argument across the mp boundary.
 
-    Bundled into one frozen dataclass so ``Process(args=(config, queue))`` passes
-    two positionals (multiprocessing ``args`` are always positional, so keyword-
-    only params cannot cross), and the worker functions take one config rather
-    than eight positionals.
+    Bundled into one frozen dataclass because multiprocessing ``args`` are always
+    positional (keyword-only params cannot cross), so the worker functions take
+    one config rather than eight positionals.
 
     Attributes:
       dsn: Postgres DSN.
@@ -201,6 +231,24 @@ class _WorkerConfig:
     dim: int | None
     gpu_vram_gb: float | None
     compile_cache: Path
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Progress:
+    """Run-wide progress shared by every worker.
+
+    Attributes:
+      pending: Records pending for the run, counted once before any worker writes.
+      done: Records written so far across all workers (a process-shared counter).
+
+    """
+
+    pending: int
+    done: Synchronized[int]
+
+
+class _NoLiveWorkersError(RuntimeError):
+    """Every embed worker exited while the scanner still had pages to feed."""
 
 
 def _add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -307,14 +355,14 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
 # predicate is the fix for the pending-forever leak: a never-indexed kind
 # (telemetry: AgentStatusResult, ContextState, TokenUsage, ...) or an empty-text
 # row otherwise never gets a marker, so the ``NOT EXISTS`` md5 check counts it
-# pending on every run forever. The fragment is inlined at its two call sites (not
-# a module global).
+# pending on every run forever.
 #
 # PENDING keys on ``session_index_state`` (the freshness marker), NOT on
 # ``session_embeddings``: an fts-only kind (a machine-output head, a SystemMessage)
 # writes no vector, so a NOT-EXISTS against the embedding table would count it
 # pending forever. The marker is written for every swept record, embedded or not,
-# so it is the correct pending oracle.
+# so it is the ONE freshness oracle -- the scanner, the count, and the workers'
+# re-check (:func:`_read_stage`) all read it.
 def _pending_page_sql(join: str, predicate: str, *, first: bool) -> str:
     """Return the keyset page SQL over INDEXABLE + PENDING rows for one scan step."""
     keyset = (
@@ -328,17 +376,26 @@ def _pending_page_sql(join: str, predicate: str, *, first: bool) -> str:
         join,
         "WHERE ",
         keyset,
+        _pending_where(predicate),
+        " ORDER BY r.created, r.session_id, r.part, r.idx LIMIT ",
+        limit,
+    )
+
+
+def _pending_where(predicate: str) -> str:
+    """Return the INDEXABLE + PENDING filter over ``r`` (``$1..$3`` bound)."""
+    return vetted_sql(
         predicate,
         " AND r.kind = ANY($3::text[]) AND r.text <> ''",
         " AND NOT EXISTS (SELECT 1 FROM session_index_state s "
         "WHERE s.session_id = r.session_id AND s.part = r.part "
         "AND s.idx = r.idx AND s.mapper = $1 AND s.model = $2 "
-        "AND s.text_md5 = md5(r.text)) "
-        "ORDER BY r.created, r.session_id, r.part, r.idx LIMIT ",
-        limit,
+        "AND s.text_md5 = md5(r.text))",
     )
 
 
+# Each task is the page's first and last pending keys, both inclusive, so a worker's
+# span read covers every pending row the page walked.
 async def _scan(
     dsn: str,
     queue: Queue[PageTask | None],
@@ -348,6 +405,8 @@ async def _scan(
     mapper_name: str,
     model: str,
     indexed_kinds: Sequence[str],
+    alive: Callable[[], bool],
+    poll_sec: float = 1.0,
 ) -> None:
     """Feed pending-only page bounds to the queue; close with one sentinel/worker."""
     start = time.monotonic()
@@ -373,12 +432,13 @@ async def _scan(
             if not rows:
                 break
             last = _key(rows[-1])
-            task: PageTask = (
-                cursor is None,
-                _queued(_key(rows[0])),
-                _queued(last),
+            await asyncio.to_thread(
+                _put,
+                queue,
+                (_queued(_key(rows[0])), _queued(last)),
+                alive=alive,
+                poll_sec=poll_sec,
             )
-            await asyncio.to_thread(queue.put, task)
             cursor = last
             fed += len(rows)
             elapsed = time.monotonic() - start
@@ -387,7 +447,27 @@ async def _scan(
                 flush=True,
             )
     for _ in range(n_workers):
-        queue.put(None)
+        await asyncio.to_thread(_put, queue, None, alive=alive, poll_sec=poll_sec)
+
+
+def _put(
+    queue: Queue[PageTask | None],
+    item: PageTask | None,
+    *,
+    alive: Callable[[], bool],
+    poll_sec: float,
+) -> None:
+    """Put ``item``, re-checking every ``poll_sec`` that some consumer is alive."""
+    while True:
+        try:
+            queue.put(item, timeout=poll_sec)
+        except Full:
+            if not alive():
+                raise _NoLiveWorkersError(
+                    "every embed worker exited; aborting the scan",
+                ) from None
+        else:
+            return
 
 
 def _key(row: Record) -> RecordKey:
@@ -409,7 +489,11 @@ def _queued(key: RecordKey) -> QueuedKey:
     return (created, str(session_id), part, idx)
 
 
-def _worker_entry(config: _WorkerConfig, queue: Queue[PageTask | None]) -> None:
+def _worker_entry(
+    config: _WorkerConfig,
+    queue: Queue[PageTask | None],
+    progress: _Progress,
+) -> None:
     """Pin this process to one GPU (or CPU when ``gpu`` is empty); run its loop."""
     # BOTH must precede the first torch import in this process (torch reads them
     # once at init): CUDA_VISIBLE_DEVICES so the embedder sees one card ("cuda:0"
@@ -426,7 +510,7 @@ def _worker_entry(config: _WorkerConfig, queue: Queue[PageTask | None]) -> None:
         os.environ["OMP_NUM_THREADS"] = str(
             max(1, cpus // 8) if cpus is not None else 1,
         )
-    asyncio.run(_worker(config, "cuda:0" if config.gpu else "cpu", queue))
+    asyncio.run(_worker(config, "cuda:0" if config.gpu else "cpu", queue, progress))
 
 
 # An explicit ``--gpu-vram-gb`` wins (containers can misreport device memory). Otherwise
@@ -512,6 +596,7 @@ async def _worker(
     config: _WorkerConfig,
     device: str,
     queue: Queue[PageTask | None],
+    progress: _Progress,
 ) -> None:
     """Run the 3-stage pipeline: read pages, embed pools, write vectors."""
     mapper = FootprintMapper()
@@ -542,12 +627,6 @@ async def _worker(
         index_engine.acquire() as conn,
     ):
         await ensure_model_index(conn, embedder.name, embedder.dim)
-        pending = await _pending_count(
-            conn,
-            mapper_name=mapper.name,
-            model=embedder.name,
-            indexed_kinds=sorted(mapper.embedded_kinds),
-        )
     pools: asyncio.Queue[Pool | None] = asyncio.Queue(maxsize=2)
     writes: asyncio.Queue[tuple[Pool, list[list[float]]] | None] = asyncio.Queue(
         maxsize=2,
@@ -567,6 +646,7 @@ async def _worker(
                 pools,
                 mapper=mapper,
                 embedder=embedder,
+                indexed_kinds=sorted(mapper.embedded_kinds),
                 flush_units=config.flush_units,
             ),
         )
@@ -579,7 +659,7 @@ async def _worker(
                 mapper_name=mapper.name,
                 name=name,
                 start=start,
-                pending=pending,
+                progress=progress,
             ),
         )
     # Clean exit only (a crash never reaches here, leaving the prior cache intact):
@@ -588,6 +668,9 @@ async def _worker(
     print(f"{name} DONE in {time.monotonic() - start:.0f}s", flush=True)
 
 
+# The span read re-applies the scanner's own pending filter (:func:`_pending_where`), so
+# a row another worker finished since the scan is skipped by the same freshness oracle
+# that queued it.
 async def _read_stage(
     conn: Conn,
     queue: Queue[PageTask | None],
@@ -595,53 +678,30 @@ async def _read_stage(
     *,
     mapper: SemanticMapper,
     embedder: Embedder,
+    indexed_kinds: Sequence[str],
     flush_units: int,
 ) -> None:
-    """Fetch pages, md5-filter, and emit embed-ready pools."""
+    """Fetch each page's still-pending rows and emit embed-ready pools."""
+    join, predicate = manifest_bound("r")
+    sql = vetted_sql(
+        "SELECT r.created, r.session_id, r.part, r.idx, r.kind, r.text "
+        "FROM session_records r ",
+        join,
+        "WHERE (r.created, r.session_id, r.part, r.idx) >= ($4, $5::uuid, $6, $7) "
+        "AND (r.created, r.session_id, r.part, r.idx) <= ($8, $9::uuid, $10, $11) "
+        "AND ",
+        _pending_where(predicate),
+        " ORDER BY r.created, r.session_id, r.part, r.idx",
+    )
+    kinds = list(indexed_kinds)
     pool: Pool = []
     pooled_units = 0
     while True:
         task = await asyncio.to_thread(queue.get)
         if task is None:
             break
-        inclusive, lo, hi = task
-        # Two static texts, not an f-string comparator: the only inline piece
-        # is the >= / > choice for the first (inclusive) page. The manifest bound
-        # (``r.idx < m.records``) excludes stale tail rows and carries no ``>=``,
-        # so the ``>=`` replace targets only the keyset comparator.
-        join, predicate = manifest_bound("r")
-        inclusive_sql = vetted_sql(
-            "SELECT r.created, r.session_id, r.part, r.idx, r.kind, r.text "
-            "FROM session_records r ",
-            join,
-            "WHERE (r.created, r.session_id, r.part, r.idx) >= ($1, $2::uuid, $3, $4) "
-            "AND (r.created, r.session_id, r.part, r.idx) <= ($5, $6::uuid, $7, $8) "
-            "AND ",
-            predicate,
-            " ORDER BY r.created, r.session_id, r.part, r.idx",
-        )
-        exclusive_sql = inclusive_sql.replace(">=", ">")
-        rows = await conn.fetch(
-            inclusive_sql if inclusive else exclusive_sql,
-            *lo,
-            *hi,
-        )
-        # One round-trip for the whole page's md5 state, not one per record.
-        stored = {
-            (r["session_id"], r["part"], r["idx"]): r["text_md5"]
-            for r in await conn.fetch(
-                "SELECT DISTINCT e.session_id, e.part, e.idx, e.text_md5 "
-                "FROM session_embeddings e JOIN unnest($1::uuid[], $2::int[], "
-                "$3::int[]) AS t(session_id, part, idx) "
-                "ON e.session_id = t.session_id AND e.part = t.part "
-                "AND e.idx = t.idx WHERE e.mapper = $4 AND e.model = $5",
-                [r["session_id"] for r in rows],
-                [r["part"] for r in rows],
-                [r["idx"] for r in rows],
-                mapper.name,
-                embedder.name,
-            )
-        }
+        lo, hi = task
+        rows = await conn.fetch(sql, mapper.name, embedder.name, kinds, *lo, *hi)
         for row in rows:
             kind = row["kind"]
             text = row["text"]
@@ -656,8 +716,6 @@ async def _read_stage(
                 text.encode(),
                 usedforsecurity=False,
             ).hexdigest()
-            if stored.get((row["session_id"], row["part"], row["idx"])) == text_md5:
-                continue
             pool.append((row, units, text_md5))
             pooled_units += len(units)
             if pooled_units >= flush_units:
@@ -740,37 +798,35 @@ async def _embed_pool(
 # marker), so an fts-only record counts pending until swept and fresh after, never
 # forever. ``md5(r.text)`` is computed in-DB, matching the worker's app-side md5.
 async def _pending_count(
-    conn: Conn,
+    dsn: str,
     *,
     mapper_name: str,
     model: str,
     indexed_kinds: Sequence[str],
 ) -> int:
     """Return the number of INDEXABLE records needing a (re-)sweep."""
-    # Bound by the live manifest prefix (stale tail never sweeps) and the mapper's
-    # indexable contract (never-indexed kinds / empty text never sweep).
     join, predicate = manifest_bound("r")
-    value = await conn.fetchval(
-        vetted_sql(
-            "SELECT count(*) FROM session_records r ",
-            join,
-            "WHERE ",
-            predicate,
-            " AND r.kind = ANY($3::text[]) AND r.text <> ''",
-            " AND NOT EXISTS ("
-            "SELECT 1 FROM session_index_state s "
-            "WHERE s.session_id = r.session_id AND s.part = r.part "
-            "AND s.idx = r.idx AND s.mapper = $1 AND s.model = $2 "
-            "AND s.text_md5 = md5(r.text))",
-        ),
-        mapper_name,
-        model,
-        list(indexed_kinds),
-    )
+    async with (
+        PostgresEngine(dsn=dsn, listen_channel=NOTIFY_CHANNEL) as engine,
+        engine.acquire() as conn,
+    ):
+        value = await conn.fetchval(
+            vetted_sql(
+                "SELECT count(*) FROM session_records r ",
+                join,
+                "WHERE ",
+                _pending_where(predicate),
+            ),
+            mapper_name,
+            model,
+            list(indexed_kinds),
+        )
     assert isinstance(value, int)
     return value
 
 
+# ``done``, ``pending`` and the rate are all run-wide (every worker's writes), so each
+# worker's ETA line estimates the whole run.
 async def _write_stage(
     conn: Conn,
     writes: asyncio.Queue[tuple[Pool, list[list[float]]] | None],
@@ -779,20 +835,22 @@ async def _write_stage(
     mapper_name: str,
     name: str,
     start: float,
-    pending: int,
+    progress: _Progress,
 ) -> None:
-    """Write each embedded pool; report this worker's shard progress per flush."""
-    done = 0
-    rate = 0.0  # EMA of records/sec.
+    """Write each embedded pool; report run-wide progress per flush."""
+    seen = progress.done.value
+    rate = 0.0  # EMA of run-wide records/sec.
     last = start
     while (item := await writes.get()) is not None:
         pool, vectors = item
         await _write_pool(conn, pool, vectors, embedder, mapper_name)
-        done += len(pool)
+        with progress.done.get_lock():
+            progress.done.value += len(pool)
+            done = progress.done.value
         now = time.monotonic()
-        rate = _update_rate(rate, len(pool), now - last)
-        last = now
-        remaining = max(0, pending - done)
+        rate = _update_rate(rate, done - seen, now - last)
+        seen, last = done, now
+        remaining = max(0, progress.pending - done)
         print(
             f"{name}: done={done} pending={remaining} "
             f"rate={rate:.1f} rec/s eta={_format_eta(remaining, rate)}",

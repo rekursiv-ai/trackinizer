@@ -7,19 +7,17 @@ dispatch over many items in one all-or-nothing transaction.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Protocol, cast
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
 
-from trackinizer.lib.custom_json import convert
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.auth import (
     AuthIdentity,
     assert_account_active,
     require_role,
 )
-from trackinizer.server.store.submit import SUBMIT_METHOD
 from trackinizer.wire.bodies import (
     SubmitAgentSession,
     SubmitArtifact,
@@ -38,7 +36,6 @@ from trackinizer.wire.json_types import MutableJSON
 
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
     from uuid import UUID
 
     from trackinizer.server.store.core import Store
@@ -46,9 +43,10 @@ if TYPE_CHECKING:
 
 router = APIRouter()
 
-# Each body class keyed by its PascalCase kind discriminator.
+# Each body class keyed by its PascalCase kind discriminator, read off an
+# unvalidated instance: the ``kind`` literal is the one declaration of it.
 _BODY_BY_KIND: dict[str, type[SubmitBase]] = {
-    convert(cast(str, body.model_fields["kind"].default), str): body
+    body.model_construct().kind: body
     for body in (
         SubmitIssue,
         SubmitArtifact,
@@ -61,6 +59,9 @@ _BODY_BY_KIND: dict[str, type[SubmitBase]] = {
         SubmitAgentSession,
     )
 }
+
+# Lowercase URL kind token -> the PascalCase discriminator it names.
+_KIND_BY_TOKEN: dict[str, str] = {kind.lower(): kind for kind in _BODY_BY_KIND}
 
 # Lowercase URL kind token (the {kind} path segment) -> submit body. The
 # token is just ``kind.lower()`` -- one canonical spelling per kind.
@@ -147,7 +148,7 @@ async def submit_route(
     body_cls = SUBMIT_BODY.get(kind)
     if body_cls is None:
         raise HTTPException(status_code=404, detail=f"unknown inquiry kind {kind!r}")
-    discriminator = convert(cast(str, body_cls.model_fields["kind"].default), str)
+    discriminator = _KIND_BY_TOKEN[kind]
     try:
         req = body_cls.model_validate({**payload, "kind": discriminator})
     except ValidationError as err:
@@ -161,16 +162,6 @@ async def submit_route(
             detail=err.errors(include_context=False),
         ) from err
     return {"id": str(await _submit_one(get_store(request), req, identity))}
-
-
-class _SubmitMethod(Protocol):
-    def __call__(
-        self,
-        req: SubmitBase,
-        *,
-        api_key_id: UUID | None,
-        actor: str,
-    ) -> Awaitable[UUID]: ...
 
 
 # The default is the authenticated ``identity.email`` -- never the spoofable ``actor``
@@ -187,8 +178,7 @@ async def _submit_one(
 ) -> UUID:
     account = _resolve_account(req, identity)
     await assert_account_active(store.engine, account)
-    method = cast(_SubmitMethod, getattr(store, SUBMIT_METHOD[type(req)]))
-    return await method(
+    return await store.submit(
         req.model_copy(update={"account": account}),
         api_key_id=identity.api_key_id,
         actor=req.actor or identity.email,

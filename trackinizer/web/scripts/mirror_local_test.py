@@ -99,6 +99,30 @@ def test_tally_counts_each_session_with_its_cli_and_rooms() -> None:
     ]
 
 
+def test_tally_keeps_a_session_whose_cli_is_unknown() -> None:
+    """N1 sibling: ``FeedEvent.cli`` is optional; a null one is not a crash."""
+    a = uuid.uuid4()
+    assert tally([{"session_id": str(a), "cli": None, "rooms": []}]) == [
+        Activity(session_id=a, cli="", rooms=(), events=1),
+    ]
+
+
+def test_a_session_with_no_rooms_or_owner_is_copied() -> None:
+    """N1 sibling: ``AgentSession.rooms`` and ``owner`` are optional on the row."""
+    rows = {**_ROWS, _B: {**_ROWS[_B], "rooms": None, "owner": None}}
+    source, target = _Source(rows=rows), _Target()
+    with _Fake(source.handle) as source_http, _Fake(target.handle) as target_http:
+        report = mirror(
+            ReadOnlySource(source_http),
+            target_http,
+            now=_T0,
+            hours=24,
+            sessions=2,
+            records=10,
+        )
+    assert report.opened == 2
+
+
 def _activity(cli: str, events: int, *rooms: str) -> Activity:
     return Activity(session_id=uuid.uuid4(), cli=cli, rooms=rooms, events=events)
 
@@ -221,12 +245,39 @@ def test_mirror_reads_with_get_only_interleaves_and_reruns_add_nothing() -> None
     ]
     ended = convert(target.rows[alpha]["ended"], datetime)
     assert ended == _T0 + timedelta(hours=1)
-    assert target.rows[target.keys[mirror_key(_BELIEF)]]["judgement"] == "proven"
+    copied = {"title", "status", "labels", "description", "idempotency_key"}
+    issue = target.rows[target.keys[mirror_key(_ISSUE)]]
+    assert {key: issue[key] for key in copied - {"idempotency_key"}} == {
+        "title": "Issue 1",
+        "status": "active",
+        "labels": ["mirror"],
+        "description": "copied",
+    }
+    assert copied <= issue.keys()
+    assert "owner" not in issue
+    belief = target.rows[target.keys[mirror_key(_BELIEF)]]
+    assert (belief["judgement"], belief["confidence"], belief["owner"]) == (
+        "proven",
+        0.8,
+        "ada@example.com",
+    )
+    assert copied <= belief.keys()
     # The rerun finds every row, skips the ended session, re-sends the live one.
     assert (second.opened, second.written, second.skipped) == (0, 0, 3)
     assert (second.ended, second.edges) == (0, 0)
     assert len(target.rows) == first.nodes
     assert (first.unfilled, second.unfilled) == ((), ())
+
+
+def test_a_rerun_finds_edges_older_than_any_window_of_the_target_graph() -> None:
+    """N1-11: a target past the graph's window still has every copied edge."""
+    source, target = _Source(), _Target(windowed=True)
+    with _Fake(source.handle) as source_http, _Fake(target.handle) as target_http:
+        reader = ReadOnlySource(source_http)
+        first = mirror(reader, target_http, now=_T0, hours=24, sessions=2, records=10)
+        second = mirror(reader, target_http, now=_T0, hours=24, sessions=2, records=10)
+    assert (first.edges, second.edges) == (2, 0)
+    assert target.edge_posts == 1
 
 
 def test_rerun_names_a_picked_session_that_ended_here_without_records() -> None:
@@ -318,7 +369,8 @@ class _Source:
 
     def _event(self, session: uuid.UUID) -> dict[str, object]:
         row = self.rows[session]
-        return {"session_id": str(session), "cli": row["cli"], "rooms": row["rooms"]}
+        rooms = convert(row["rooms"], list[str], default=[])
+        return {"session_id": str(session), "cli": row["cli"], "rooms": rooms}
 
 
 def _row(
@@ -344,7 +396,14 @@ def _row(
 _ROWS: Mapping[uuid.UUID, dict[str, object]] = {
     _ISSUE: _row("Issue", 1, _ISSUE),
     _CHILD: _row("Issue", 2, _CHILD),
-    _BELIEF: _row("Belief", 1, _BELIEF, judgement="proven", confidence=0.8),
+    _BELIEF: _row(
+        "Belief",
+        1,
+        _BELIEF,
+        judgement="proven",
+        confidence=0.8,
+        owner="ada@example.com",
+    ),
     _A: _row(
         "AgentSession",
         7,
@@ -384,13 +443,19 @@ _EDGES: list[dict[str, object]] = [
 
 @dataclass(slots=True, kw_only=True)
 class _Target:
-    """The local server's ingest routes, as far as the mirror relies on them."""
+    """The local server's ingest routes, as far as the mirror relies on them.
 
+    ``windowed`` stands for a target with more nodes than its graph route
+    returns: the graph shows none of the mirror's edges.
+    """
+
+    windowed: bool = False
     keys: dict[uuid.UUID, uuid.UUID] = field(default_factory=dict)
     rows: dict[uuid.UUID, dict[str, object]] = field(default_factory=dict)
     records: set[tuple[uuid.UUID, str, int]] = field(default_factory=set)
     order: list[tuple[uuid.UUID, int]] = field(default_factory=list)
     edges: set[tuple[str, str, str]] = field(default_factory=set)
+    edge_posts: int = 0
 
     def handle(self, request: httpx2.Request) -> httpx2.Response:
         path = request.url.path
@@ -408,6 +473,7 @@ class _Target:
             ]
             return _json(200, {"ids": [str(i) for i in ids]})
         if path == "/api/edges/batch":
+            self.edge_posts += 1
             items = convert(body["items"], list[dict[str, object]])
             for item in items:
                 from_id, to_id, kind = (
@@ -427,9 +493,20 @@ class _Target:
     def _get(self, path: str) -> httpx2.Response:
         if path == "/api/web/graph":
             edges = [
-                {"from_id": f, "to_id": t, "edge_kind": k} for f, t, k in self.edges
+                {"from_id": f, "to_id": t, "edge_kind": k}
+                for f, t, k in self.edges
+                if not self.windowed
             ]
             return _json(200, {"nodes": [], "edges": edges})
+        if path.startswith("/api/web/get/"):
+            subject = path.removeprefix("/api/web/get/")
+            if uuid.UUID(subject) not in self.rows:
+                return _json(404, {"detail": "not found"})
+            outbound: dict[str, list[dict[str, object]]] = {}
+            for f, t, k in sorted(self.edges):
+                if f == subject:
+                    outbound.setdefault(k, []).append({"id": t})
+            return _json(200, {"self": {}, "edges": outbound, "backlinks": {}})
         if path.endswith("/parts"):
             session = uuid.UUID(path.split("/")[3])
             names = sorted({name for s, name, _ in self.records if s == session})

@@ -22,6 +22,7 @@ import json
 
 from trackinizer.lib.absent import Absent
 from trackinizer.lib.agent.sessions.codex_orders import payload_orders
+from trackinizer.lib.agent.sessions.provider_fields import read_or_default
 from trackinizer.lib.agent.sessions.shell_results import (
     lift_shell_result,
     shell_result_for_replay,
@@ -63,8 +64,8 @@ from trackinizer.lib.custom_json import (
     Invalid,
     JSONValue,
     MutableJSONValue,
+    ReadError,
     convert,
-    convert_or_none,
     extract_unmodeled_fields,
     json_freeze,
     json_unfreeze,
@@ -132,15 +133,16 @@ is a foreign CLI's subtype and is rejected with ``invalid_enum_value``.
 def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
     """Denormalize records as Codex rollout JSONL.
 
+    Two passes over the records, so they are held as a list: the launch line
+    is written from the context that CARRIES a payload and the newline
+    convention from the LAST context stating one, and either may sit anywhere
+    in the stream. The output is streamed, one line held back.
+
     Args:
       records: Provider-neutral records, in stream order.
       stream: Destination text stream.
 
     """
-    # The state records the writer needs before it can emit anything: the
-    # launch settings, and the prompt the opening clear states. Both are at
-    # the head of the stream by the grammar, so this reads a BOUNDED prefix
-    # rather than the file (axiom 11).
     ordered = list(records)
     # The one CARRYING a launch payload, not merely the first: a rollout whose
     # first line is blank states its encoding before it declares itself, so the
@@ -153,7 +155,7 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
         ),
         TurnContext(),
     )
-    declaration: dict[str, object] = dict(dict(settings.extra))
+    declaration: dict[str, object] = dict(settings.extra)
     encoding_source = next(
         (
             cast(dict[str, object], record.encoding)
@@ -167,7 +169,7 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
         # A later context supersedes: whether the file ended on a newline is
         # knowable only at EOF, so the reader restates it there.
         if isinstance(record, TurnContext) and "newline_terminated" in record.encoding:
-            encoding = dict(dict(record.encoding))
+            encoding = dict(record.encoding)
     # Numbering lines is a per-file convention, and the launch line is the one
     # that shows it: a file whose ``session_meta`` carries an ordinal numbers
     # every line, one whose does not numbers none.
@@ -192,7 +194,7 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
             ),
             template=convert(declaration.get("$outer"), dict[str, object], default={}),
             include_timestamp=bool(declaration.get("$timestamp", True)),
-            payload_at=convert_or_none(declaration.get("$payload_at"), int),
+            payload_at=convert(declaration.get("$payload_at"), int, default=None),
         )
         if "payload" in declaration
         else None
@@ -284,7 +286,7 @@ def _with_instructions(
     if opening is None or opening.system_prompt is None:
         return dict(payload)
     declared = opening.system_prompt[
-        : convert(dict(dict(opening.extra)).get("$declared"), int, default=0)
+        : convert(dict(opening.extra).get("$declared"), int, default=0)
     ]
     if isinstance(stencil, Mapping):
         held = cast(Mapping[str, object], stencil)
@@ -394,7 +396,7 @@ def _codex_residual(
 # never named, which is how :func:`_ordered` splices.
 def _canonical_order(source: Mapping[str, object]) -> list[str]:
     """Return the key order :data:`_ORDER` reproduces for this payload."""
-    order = payload_orders().get(convert_or_none(source.get("type"), str) or "", ())
+    order = payload_orders().get(convert(source.get("type"), str, default=""), ())
     return [key for key in order if key in source] + [
         key for key in source if key not in order
     ]
@@ -454,7 +456,7 @@ def _write_record(
         if "/" not in item.kind:
             return []
         outer, _, _ = item.kind.partition("/")
-        return [(outer, dict(dict(item.payload)))]
+        return [(outer, dict(item.payload))]
     if isinstance(item, ContextState):
         return [("world_state", _ordered("world_state", dict(item.extra)))]
     if isinstance(item, ContextCompaction):
@@ -540,8 +542,9 @@ def _write_compacted(
     extra: dict[str, MutableJSONValue],
 ) -> dict[str, object]:
     """Return the ``compacted`` line a history replacement came from."""
+    # Presence before the pop: an EMPTY history is still a stated one (axiom 2).
+    stated = "$history" in extra or bool(item.history)
     markers = convert(extra.pop("$history", []), list[object])
-    stated = "$history" in extra or bool(markers) or bool(item.history)
     payload: dict[str, object] = {}
     if (item.summary is not None and "message" in extra) or not stated:
         # ``message`` only where the line stated one. Codex seals the summary
@@ -551,9 +554,7 @@ def _write_compacted(
     if stated:
         payload["message"] = payload.get("message", "")
         entries: list[object] = [
-            _write_record(record)[0][1]
-            for record in item.history
-            if _write_record(record)
+            entry for record in item.history for _, entry in _write_record(record)[:1]
         ]
         entries.extend(
             cast(dict[str, object], marker) if isinstance(marker, Mapping) else marker
@@ -711,7 +712,7 @@ def _write_call(
         payload = {
             "call_id": item.call_id,
             "name": item.name,
-            "input": convert_or_none(item.arguments.get("input"), str) or "",
+            "input": convert(item.arguments.get("input"), str, default=""),
         }
     if present is not None:
         defaults = {
@@ -852,7 +853,7 @@ def _write_legacy_end(
         _ = extra.pop("$splice_counts", None)
         changes = _write_changes(
             by_path,
-            convert_or_none(extra.get("changes"), dict[str, object]) or {},
+            convert(extra.get("changes"), dict[str, object], default={}),
         )
         if changes is not None:
             extra["changes"] = changes
@@ -877,11 +878,11 @@ def _write_changes(
         path: found
         for path, entry in stored.items()
         if (
-            found := convert_or_none(
-                (convert_or_none(entry, dict[str, object]) or {}).get("$filled"),
+            found := convert(
+                (convert(entry, dict[str, object], default={})).get("$filled"),
                 str,
+                default="",
             )
-            or ""
         )
     }
     paths = list(filled)
@@ -889,7 +890,7 @@ def _write_changes(
         return None
     out: dict[str, MutableJSONValue] = {}
     for path, entry in stored.items():
-        found = dict(convert_or_none(entry, dict[str, object]) or {})
+        found = dict(convert(entry, dict[str, object], default={}))
         owner = by_path.get(path)
         if path in filled and owner is not None:
             # Each entry from the record that owns THAT path: an add states the
@@ -959,7 +960,7 @@ def _write_completed(
             _ = nested.pop("$splice_counts", None)
             changes = _write_changes(
                 by_path,
-                convert_or_none(nested.get("changes"), dict[str, object]) or {},
+                convert(nested.get("changes"), dict[str, object], default={}),
             )
             if changes is not None:
                 nested["changes"] = changes
@@ -1007,7 +1008,10 @@ def _write_rows(
         return None
     templates = convert(extra.pop("$rows", []), list[object])
     row_order = extra.pop("$row_order", [])
-    order = convert(row_order, list[str]) if isinstance(row_order, list) else []
+    try:
+        order = convert(row_order, list[str])
+    except ReadError:
+        order = []
     named = [
         {"url": row.url, "title": row.title, "snippet": row.snippet}
         for row in item.content
@@ -1053,7 +1057,10 @@ def _write_content(
 ) -> list[object]:
     """Return content members in native order, then append new semantics."""
     parts_value = extra.pop("$parts", [])
-    parts = convert(parts_value, list[int]) if isinstance(parts_value, list) else []
+    try:
+        parts = convert(parts_value, list[int])
+    except ReadError:
+        parts = []
     prose = _split(content, parts)
     if "$templates" in extra:
         templates = convert(extra.pop("$templates"), list[object])
@@ -1061,7 +1068,10 @@ def _write_content(
         templates = convert(extra.pop("$blocks", []), list[object])
     has_order = "$order" in extra
     order_value = extra.pop("$order", [])
-    order = convert(order_value, list[str]) if isinstance(order_value, list) else []
+    try:
+        order = convert(order_value, list[str])
+    except ReadError:
+        order = []
     if not has_order:
         order = ["text"] * len(prose)
         order.extend(["image"] * len(attachments))
@@ -1189,7 +1199,12 @@ class _Reader:
     """
 
     def __init__(self) -> None:
-        self._records: list[SessionRecord] = []
+        # Only what is not yet the caller's: a yielded record is dropped, so the
+        # reader holds the opening's few lines rather than the session.
+        self._pending: list[SessionRecord] = []
+        # The stream index of ``_pending[0]``. A record names its context by
+        # stream index (axiom 5), which counts records already handed over.
+        self._base = 0
         # The launch line's settings, once read: only the first one declares.
         self._declared: dict[str, JSONValue] | None = None
         # The index of the most recent ``turn_context``; every later record
@@ -1205,10 +1220,6 @@ class _Reader:
         # arrives.
         self._opening: int | None = None
         self._given: list[str] = []
-        # How much of ``_records`` the caller already holds.
-        # pragma: no mutate start -- only ever a slice bound, where None is 0.
-        self._yielded = 0
-        # pragma: no mutate end
 
     def read(self, line: str) -> Iterator[SessionRecord]:
         """Consume one rollout line; yield the records it produced.
@@ -1221,13 +1232,12 @@ class _Reader:
         fully described.
 
         Args:
-          line: Raw rollout line to parse (Settings, LaunchOrInitialize, Turn, etc).
+          line: One raw rollout line.
 
         Returns:
           result: Records parsed from this line; axiom 11 applies once yielded.
 
         """
-        emitted = len(self._records)
         position = self._position
         self._position += 1
         self._ends_newline = line.endswith("\n")
@@ -1235,7 +1245,7 @@ class _Reader:
             # Settings before the acts they govern. Codex declares them on its
             # launch line, so a rollout that opens with one supersedes this
             # immediately -- the reader states what it knows and restates.
-            self._records.append(
+            self._pending.append(
                 TurnContext(
                     # No ``ascii_escaped``: codex writes raw UTF-8 on every one
                     # of 13138 captured non-ASCII lines, so the convention is
@@ -1243,21 +1253,25 @@ class _Reader:
                     encoding={"newline_terminated": True},
                 ),
             )
-        del emitted
         self._read(line, position)
-        # From what was last handed over, never from where this line began:
-        # the opening HOLDS records across several lines, so a per-line start
-        # would re-yield the block on the line that releases it.
-        start, self._yielded = self._yielded, self._release()
-        return iter(self._records[start : self._yielded])
+        return self._release()
 
     # Everything, once the opening is closed. While it is open, only the records BEFORE
     # the clear: codex keeps sending instructions after its launch line, so the clear is
     # not yet what it will be, and a record is the caller's the moment it is yielded
     # (axiom 11).
-    def _release(self) -> int:
-        """How far the stream may be handed over, given the window's state."""
-        return len(self._records) if self._opening is None else self._opening
+    def _release(self) -> Iterator[SessionRecord]:
+        """Hand over every record the window's state allows, and forget it."""
+        cut = (
+            len(self._pending) if self._opening is None else self._opening - self._base
+        )
+        released, self._pending = self._pending[:cut], self._pending[cut:]
+        self._base += cut
+        return iter(released)
+
+    def _at(self) -> int:
+        """Return the stream index the next appended record takes."""
+        return self._base + len(self._pending)
 
     def close(self) -> Iterator[SessionRecord]:
         """Yield what only the END of the stream could say.
@@ -1271,8 +1285,7 @@ class _Reader:
             # its instructions, no turn yet. EOF closes the window that no
             # first act closed, or the clear would never be handed over at all.
             self._opening = None
-            at, self._yielded = self._yielded, len(self._records)
-            yield from self._records[at:]
+            yield from self._release()
         if not self._ends_newline:
             # Knowable only here: a later state record supersedes the opening
             # one rather than mutating a record already handed to the caller.
@@ -1282,95 +1295,126 @@ class _Reader:
         """Append whatever one line contributes to the record stream."""
         # Every line yields a record, so a blank one cannot vanish.
         if not line.strip():
-            self._records.append(IncompleteRecord(text=line))
+            self._pending.append(IncompleteRecord(text=line))
             return
         try:
             decoded = loads(line)
         except json.JSONDecodeError:
-            self._records.append(IncompleteRecord(text=line))
+            self._pending.append(IncompleteRecord(text=line))
             return
         if not isinstance(decoded, dict):
-            self._records.append(IncompleteRecord(text=line))
+            self._pending.append(IncompleteRecord(text=line))
             return
         record = convert(decoded, dict[str, object])
-        payload_value = record.get("payload")
-        if not isinstance(payload_value, Mapping):
-            self._records.append(IncompleteRecord(text=line))
-            return
-        outer = convert_or_none(record.get("type"), str) or ""
-        payload = convert_or_none(record.get("payload"), dict[str, object]) or {}
-        timestamp = convert_or_none(record.get("timestamp"), str)
-        if outer == "session_meta" and self._declared is None:
-            # The launch line IS settings, so it supersedes the opening
-            # context rather than becoming a record beside it. The clear that
-            # follows states what the model begins from; both are derived, so
-            # neither costs a line on the way back out.
-            self._declared = _read_declaration(record, payload, position)
-            declared = TurnContext(
-                timestamp=timestamp,
-                encoding={"newline_terminated": True},
-                extra=dict(self._declared),
-            )
-            if position:
-                # A launch line the file did not open with -- 1 captured
-                # rollout begins with a blank one. The opening context has
-                # already been YIELDED by now, so it is superseded by a fresh
-                # record rather than rewritten: a record handed to the caller
-                # is the caller's (axiom 11), and overwriting index 0 lost the
-                # declaration into a slot the blank line's record had taken.
-                self._context_id = len(self._records)
-                self._records.append(declared)
+        # Every field is narrowed BEFORE anything is committed: a line with one
+        # malformed field raised out of ``normalize`` and lost the rest of the
+        # file. Kept as its text instead, it still writes back as its bytes.
+        try:
+            payload = convert(record["payload"], dict[str, object])
+            outer = read_or_default(record.get("type"), str, default="")
+            if outer == "session_meta" and self._declared is None:
+                launch = (
+                    _read_declaration(record, payload, position),
+                    read_or_default(record.get("timestamp"), str, default=None),
+                )
+                read: list[SessionRecord] = []
             else:
-                self._records[0] = declared
-            declared_prompt = _declared_instructions(payload)
-            opens: dict[str, JSONValue] = {"$opens": True}
-            if declared_prompt is not None:
-                self._given.append(declared_prompt)
-                # How much of the assembled prompt the LAUNCH LINE owns. The
-                # clear states everything the fresh context was given, and the
-                # rest arrives as later system messages -- so a writer
-                # rebuilding ``base_instructions`` from the whole thing put
-                # the skills block on the launch line, where codex never
-                # wrote it, and the rollout no longer matched its own bytes.
-                opens["$declared"] = len(declared_prompt)
-            self._opening = len(self._records)
-            self._records.append(
-                ContextClear(
-                    timestamp=timestamp,
-                    cleared_session_id=convert_or_none(
-                        payload.get("forked_from_id"),
-                        str,
-                    )
-                    or None,
-                    system_prompt=declared_prompt,
-                    extra=opens,
-                ),
-            )
+                launch = None
+                read = self._read_line(outer, record, payload)
+        except (KeyError, ReadError):
+            self._pending.append(IncompleteRecord(text=line))
             return
+        if launch is not None:
+            self._launch(launch, payload, position)
+            return
+        for item in read:
+            if isinstance(item, TurnContext):
+                self._context_id = self._at()
+                self._pending.append(item)
+            else:
+                self._pending.append(self._opened_with(item))
+
+    def _read_line(
+        self,
+        outer: str,
+        record: Mapping[str, object],
+        payload: Mapping[str, object],
+    ) -> list[SessionRecord]:
+        """Return the records one line states, committing nothing."""
+        timestamp = read_or_default(record.get("timestamp"), str, default=None)
         if outer == "session_meta":
             # 19 captured rollouts declare the session twice -- a fork
             # re-announcing itself. Only the first is the file's declaration;
             # a later one is a record in the stream like any other.
-            self._records.append(
-                _with_line_state(
-                    UncategorizedRecord(
-                        context_id=self._context_id,
-                        timestamp=timestamp,
-                        kind="session_meta/repeat",
-                        payload=json_freeze(payload),
-                    ),
-                    record,
-                ),
+            repeat = UncategorizedRecord(
+                context_id=self._context_id,
+                timestamp=timestamp,
+                kind="session_meta/repeat",
+                payload=json_freeze(payload),
             )
-            return
+            return [_with_line_state(repeat, record)]
         if outer == "turn_context":
-            self._context_id = len(self._records)
-            self._records.append(
-                _with_line_state(_read_context(payload, timestamp), record),
-            )
-            return
-        for item in _read_records(outer, payload, self._context_id, timestamp):
-            self._records.append(self._opened_with(_with_line_state(item, record)))
+            return [_with_line_state(_read_context(payload, timestamp), record)]
+        return [
+            _with_line_state(item, record)
+            for item in _read_records(outer, payload, self._context_id, timestamp)
+        ]
+
+    # The launch line IS settings, so it supersedes the opening context rather than
+    # becoming a record beside it. The clear that follows states what the model begins
+    # from; both are derived, so neither costs a line on the way back out.
+    def _launch(
+        self,
+        launch: tuple[dict[str, JSONValue], str | None],
+        payload: Mapping[str, object],
+        position: int,
+    ) -> None:
+        """Commit the launch line's context and the clear it opens."""
+        declaration, timestamp = launch
+        self._declared = declaration
+        declared = TurnContext(
+            timestamp=timestamp,
+            encoding={"newline_terminated": True},
+            extra=dict(declaration),
+        )
+        if position:
+            # A launch line the file did not open with -- 1 captured rollout
+            # begins with a blank one. The opening context has already been
+            # YIELDED by now, so it is superseded by a fresh record rather
+            # than rewritten: a record handed to the caller is the caller's
+            # (axiom 11), and overwriting index 0 lost the declaration into a
+            # slot the blank line's record had taken.
+            self._context_id = self._at()
+            self._pending.append(declared)
+        else:
+            # Still held: the first line has not been released yet.
+            if self._base != 0:
+                raise ValueError("Expected self._base == 0.")
+            self._pending[0] = declared
+        declared_prompt = _declared_instructions(payload)
+        opens: dict[str, JSONValue] = {"$opens": True}
+        if declared_prompt is not None:
+            self._given.append(declared_prompt)
+            # How much of the assembled prompt the LAUNCH LINE owns. The clear
+            # states everything the fresh context was given, and the rest
+            # arrives as later system messages -- so a writer rebuilding
+            # ``base_instructions`` from the whole thing put the skills block
+            # on the launch line, where codex never wrote it, and the rollout
+            # no longer matched its own bytes.
+            opens["$declared"] = len(declared_prompt)
+        self._opening = self._at()
+        self._pending.append(
+            ContextClear(
+                timestamp=timestamp,
+                cleared_session_id=read_or_default(
+                    payload.get("forked_from_id"),
+                    str,
+                    default=None,
+                ),
+                system_prompt=declared_prompt,
+                extra=opens,
+            ),
+        )
 
     # The clear is what delineates a session, so it has to state everything the fresh
     # context was GIVEN -- not only the prompt the launch line named. Codex sends its
@@ -1386,9 +1430,10 @@ class _Reader:
             return item
         if isinstance(item, SystemMessage) and item.content:
             self._given.append(item.content)
-            opening = self._records[self._opening]
+            at = self._opening - self._base
+            opening = self._pending[at]
             assert isinstance(opening, ContextClear)
-            self._records[self._opening] = replace(
+            self._pending[at] = replace(
                 opening,
                 system_prompt="\n".join(self._given),
             )
@@ -1462,7 +1507,7 @@ def _read_declaration(
     if raw is not None and not isinstance(raw, str):
         extra["$launch_timestamp_raw"] = cast(JSONValue, raw)
     if "ordinal" in record:
-        extra["ordinal"] = convert_or_none(record.get("ordinal"), int) or 0
+        extra["ordinal"] = read_or_default(record.get("ordinal"), int, default=0)
     return extra
 
 
@@ -1490,7 +1535,7 @@ def _with_line_state(item: SessionRecord, outer: Mapping[str, object]) -> Sessio
     if _is_canonical_line(outer):
         return item
     if isinstance(item, UncategorizedRecord):
-        payload = dict(dict(item.payload))
+        payload = dict(item.payload)
         if "$codex_line" in payload:
             state["value"] = json_unfreeze(payload["$codex_line"])
         payload["$codex_line"] = state
@@ -1517,7 +1562,7 @@ def _pop_line_state(
 ) -> tuple[dict[str, object], _CompleteRecord]:
     """Remove and return record-owned Codex line replay state."""
     if isinstance(item, UncategorizedRecord):
-        payload = dict(dict(item.payload))
+        payload = dict(item.payload)
         state = convert(payload.get("$codex_line"), dict[str, object], default={})
         if not isinstance(state.get("outer"), Mapping):
             return {}, item
@@ -1539,9 +1584,9 @@ def _read_context(payload: Mapping[str, object], timestamp: str | None) -> TurnC
     """Read the settings line codex writes once per turn."""
     model = read_field_keeping_invalid(payload, "model", str)
     permission = read_field_keeping_invalid(payload, "approval_policy", str)
-    wire = convert_or_none(payload.get("effort"), str) or ""
+    wire = read_or_default(payload.get("effort"), str, default="")
     effort = _effort(wire)
-    summary = _summary_kind(convert_or_none(payload.get("summary"), str) or "")
+    summary = _summary_kind(read_or_default(payload.get("summary"), str, default=""))
     # Through ``restore_unmodeled_fields``, not consumed and re-appended: a key the writer adds
     # back lands at the end, and codex writes ``summary`` BEFORE
     # ``truncation_policy`` on 57 captured rollouts.
@@ -1577,7 +1622,7 @@ def _read_records(
     timestamp: str | None,
 ) -> list[SessionRecord]:
     """Read one line into the records its payload carries."""
-    kind = convert_or_none(payload.get("type"), str) or ""
+    kind = read_or_default(payload.get("type"), str, default="")
     if outer == "response_item":
         return [_read_response_item(kind, payload, context_id, timestamp)]
     if outer == "event_msg":
@@ -1630,7 +1675,11 @@ def _declared_instructions(payload: Mapping[str, object]) -> str | None:
         return declared
     if not isinstance(declared, Mapping):
         return None
-    return convert_or_none(cast(Mapping[str, object], declared).get("text"), str)
+    return read_or_default(
+        cast(Mapping[str, object], declared).get("text"),
+        str,
+        default=None,
+    )
 
 
 # ``replacement_history`` is the context AFTER compacting -- the turns the CLI kept,
@@ -1647,23 +1696,27 @@ def _read_compacted(
     timestamp: str | None,
 ) -> list[SessionRecord]:
     """Read the line that replaces a session's history with a summary."""
-    entries = convert_or_none(payload.get("replacement_history"), list[object]) or []
+    entries = read_or_default(
+        payload.get("replacement_history"),
+        list[object],
+        default=[],
+    )
     kept: list[SessionRecord] = []
     sealed: str | None = None
     for value in entries:
-        entry = convert_or_none(value, dict[str, object]) or {}
-        if convert_or_none(entry.get("type"), str) == "compaction":
-            sealed = convert_or_none(entry.get("encrypted_content"), str)
+        entry = read_or_default(value, dict[str, object], default={})
+        if entry.get("type") == "compaction":
+            sealed = read_or_default(entry.get("encrypted_content"), str, default=None)
             continue
         kept.append(
             _read_response_item(
-                convert_or_none(entry.get("type"), str) or "",
+                read_or_default(entry.get("type"), str, default=""),
                 entry,
                 context_id,
                 timestamp,
             ),
         )
-    stated = convert_or_none(payload.get("message"), str)
+    stated = read_or_default(payload.get("message"), str, default=None)
     consumed: set[str] = set()
     if stated is not None:
         consumed.add("message")
@@ -1677,11 +1730,11 @@ def _read_compacted(
             cast(JSONValue, value)
             for value in entries
             if (
-                convert_or_none(
-                    (convert_or_none(value, dict[str, object]) or {}).get("type"),
+                read_or_default(
+                    (read_or_default(value, dict[str, object], default={})).get("type"),
                     str,
+                    default="",
                 )
-                or ""
             )
             == "compaction"
         ]
@@ -1732,7 +1785,7 @@ def _read_response_item(
         return UncategorizedToolResult(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert_or_none(payload.get("call_id"), str) or "",
+            call_id=convert(payload.get("call_id"), str, default=""),
             extra=_codex_residual(payload, {"call_id"}) | {"$whole": True},
         )
     if kind == "agent_message":
@@ -1747,8 +1800,8 @@ def _read_response_item(
             timestamp=timestamp,
             content="\n".join(parts) if parts else None,
             attachments=attachments,
-            sender=convert_or_none(payload.get("author"), str),
-            recipient=convert_or_none(payload.get("recipient"), str),
+            sender=read_or_default(payload.get("author"), str, default=None),
+            recipient=read_or_default(payload.get("recipient"), str, default=None),
             extra=json_freeze(extra),
         )
     return UncategorizedRecord(
@@ -1766,7 +1819,7 @@ def _read_message(
 ) -> SessionRecord:
     """Read a message by the role that sent it."""
     role_value = payload.get("role")
-    role = convert_or_none(payload.get("role"), str)
+    role = read_or_default(payload.get("role"), str, default=None)
     content_value = payload.get("content")
     content_list: list[object] = (
         cast(list[object], content_value) if isinstance(content_value, list) else []
@@ -1861,7 +1914,7 @@ def _read_content(
             continue
         part = convert(cast(dict[str, object], value), dict[str, object])
         if isinstance(part.get("text"), str):
-            parts.append(convert_or_none(part.get("text"), str) or "")
+            parts.append(read_or_default(part.get("text"), str, default=""))
             templates.append(_stencil(part, "text"))
         elif (found := _read_attachment(part)) is not None:
             # Whatever else the block carries. ``detail`` is metadata ABOUT the
@@ -1896,17 +1949,21 @@ def _read_thinking(
     parts: list[str] = []
     templates: list[JSONValue] = []
     order: list[JSONValue] = []
-    for value in convert_or_none(payload.get("summary"), list[object]) or []:
+    for value in read_or_default(payload.get("summary"), list[object], default=[]):
         if isinstance(value, Mapping):
             block = convert(cast(dict[str, object], value), dict[str, object])
             if isinstance(block.get("text"), str):
-                parts.append(convert_or_none(block.get("text"), str) or "")
+                parts.append(read_or_default(block.get("text"), str, default=""))
                 templates.append(_stencil(block, "text"))
                 order.append("text")
                 continue
         templates.append(cast(JSONValue, value))
         order.append("other")
-    encrypted_text = convert_or_none(payload.get("encrypted_content"), str)
+    encrypted_text = read_or_default(
+        payload.get("encrypted_content"),
+        str,
+        default=None,
+    )
     consumed: set[str] = set()
     if isinstance(summary_value, list):
         consumed.add("summary")
@@ -1935,7 +1992,7 @@ def _read_tool_call(
     timestamp: str | None,
 ) -> ToolCall | UncategorizedRecord:
     """Read a tool invocation, whose arguments are JSON inside JSON."""
-    kind = convert_or_none(payload.get("type"), str) or ""
+    kind = read_or_default(payload.get("type"), str, default="")
     freeform = kind != "function_call"
     consumed: set[str] = set()
     for key in ("call_id", "name"):
@@ -1948,10 +2005,10 @@ def _read_tool_call(
     extra["$present"] = list(payload)
     if freeform:
         arguments: dict[str, object] = {
-            "input": convert_or_none(payload.get("input"), str) or "",
+            "input": read_or_default(payload.get("input"), str, default=""),
         }
     else:
-        text = convert_or_none(payload.get("arguments"), str) or ""
+        text = read_or_default(payload.get("arguments"), str, default="")
         parsed = _parse_arguments(text)
         if parsed is None and isinstance(payload.get("arguments"), str):
             # The model wrote something that is not JSON. Calling it an empty
@@ -1977,8 +2034,8 @@ def _read_tool_call(
     return ToolCall(
         context_id=context_id,
         timestamp=timestamp,
-        call_id=convert_or_none(payload.get("call_id"), str) or "",
-        name=convert_or_none(payload.get("name"), str) or "",
+        call_id=convert(payload.get("call_id"), str, default=""),
+        name=read_or_default(payload.get("name"), str, default=""),
         arguments=json_freeze(convert(arguments, dict[str, object])),
         extra=json_freeze(extra),
     )
@@ -2013,7 +2070,7 @@ def _read_tool_result(
     if isinstance(output, str):
         content = output
     elif isinstance(output, list):
-        output_list = convert_or_none(payload.get("output"), list[object]) or []
+        output_list = read_or_default(payload.get("output"), list[object], default=[])
         parts, attachments, templates = _read_content(output_list)
         content = "\n".join(parts)
         extra["$parts"] = [len(part) for part in parts] or [0]
@@ -2026,7 +2083,7 @@ def _read_tool_result(
     return UncategorizedToolResult(
         context_id=context_id,
         timestamp=timestamp,
-        call_id=convert_or_none(payload.get("call_id"), str) or "",
+        call_id=convert(payload.get("call_id"), str, default=""),
         content=content,
         attachments=attachments,
         extra=json_freeze(extra),
@@ -2054,17 +2111,19 @@ def _read_search_call(
     return ToolCall(
         context_id=context_id,
         timestamp=timestamp,
-        call_id=convert_or_none(payload.get(id_key), str) or "",
-        name=(convert_or_none(payload.get("type"), str) or "").removesuffix("_call"),
+        call_id=convert(payload.get(id_key), str, default=""),
+        name=(read_or_default(payload.get("type"), str, default="")).removesuffix(
+            "_call",
+        ),
         arguments=json_freeze(
-            convert_or_none(payload.get(arg_key), dict[str, object]) or {},
+            read_or_default(payload.get(arg_key), dict[str, object], default={}),
         ),
         extra=json_freeze(
             _codex_residual(payload, consumed)
             | {
                 "$id": id_key,
                 "$args": arg_key,
-                "$kind": convert_or_none(payload.get("type"), str) or "",
+                "$kind": read_or_default(payload.get("type"), str, default=""),
             },
         ),
     )
@@ -2127,7 +2186,7 @@ def _read_event(
         return SystemMessage(
             context_id=context_id,
             timestamp=timestamp,
-            content=convert_or_none(payload.get("message"), str),
+            content=read_or_default(payload.get("message"), str, default=None),
             subtype="error",
             # An error is an EVENT, not a response item, so the writer needs
             # to know which outer kind wrote it.
@@ -2149,7 +2208,7 @@ def _read_event(
         return UncategorizedToolResult(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert_or_none(payload.get("call_id"), str) or "",
+            call_id=convert(payload.get("call_id"), str, default=""),
             extra=_echoing(payload, kind, {"call_id"}),
         )
     # The pre-0.149 spelling of what ``item_completed`` now carries; the act
@@ -2158,16 +2217,16 @@ def _read_event(
         shell = ShellCommandResult(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert_or_none(payload.get("call_id"), str) or "",
+            call_id=convert(payload.get("call_id"), str, default=""),
             command=_command(payload.get("command")),
-            stdout=convert_or_none(payload.get("stdout"), str) or "",
-            stderr=convert_or_none(payload.get("stderr"), str) or "",
-            exit_code=convert_or_none(payload.get("exit_code"), int),
+            stdout=read_or_default(payload.get("stdout"), str, default=""),
+            stderr=read_or_default(payload.get("stderr"), str, default=""),
+            exit_code=read_or_default(payload.get("exit_code"), int, default=None),
             extra=_shell_residual(payload, kind),
         )
         return lift_shell_result(shell) or shell
     if kind == "patch_apply_end":
-        changes = convert_or_none(payload.get("changes"), dict[str, object]) or {}
+        changes = read_or_default(payload.get("changes"), dict[str, object], default={})
         edits, counts = _patch_edits(changes)
         return _per_path_edits(
             changes,
@@ -2175,7 +2234,7 @@ def _read_event(
             counts,
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert_or_none(payload.get("call_id"), str) or "",
+            call_id=convert(payload.get("call_id"), str, default=""),
             extra=_stencil_changes(_echoing(payload, kind, {"call_id"}), counts),
         )
     if kind == "web_search_end":
@@ -2210,10 +2269,10 @@ def _read_event(
         return WebSearchResults(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert_or_none(payload.get("call_id"), str) or "",
+            call_id=convert(payload.get("call_id"), str, default=""),
             # An empty query is a value: 2 captured searches carry one, and
             # ``None`` would drop the key.
-            query=convert_or_none(payload.get("query"), str) or ""
+            query=read_or_default(payload.get("query"), str, default="")
             if "query" in payload
             else None,
             content=tuple(_search_rows(rows)),
@@ -2328,7 +2387,7 @@ def _shell_residual(payload: Mapping[str, object], kind: str) -> dict[str, JSONV
         ("stderr", str),
         ("exit_code", int),
     ):
-        if convert_or_none(payload.get(key), target) is not None:
+        if read_or_default(payload.get(key), target, default=None) is not None:
             consumed.add(key)
     extra = _codex_residual(payload, consumed) | {"$echoes": kind}
     extra["$present"] = list(payload)
@@ -2346,8 +2405,8 @@ def _read_completed(
     timestamp: str | None,
 ) -> SessionRecord | list[SessionRecord]:
     """Read an ``item_completed`` event by the kind of item it completed."""
-    item = convert_or_none(payload.get("item"), dict[str, object]) or {}
-    item_type = convert_or_none(item.get("type"), str) or ""
+    item = read_or_default(payload.get("item"), dict[str, object], default={})
+    item_type = read_or_default(item.get("type"), str, default="")
     outer = _codex_residual(payload, {"type", "item"}) | {"$echoes": "item_completed"}
     if item_type == "CommandExecution":
         consumed = {"type"}
@@ -2360,18 +2419,18 @@ def _read_completed(
             ("stderr", str),
             ("exit_code", int),
         ):
-            if convert_or_none(item.get(key), target) is not None:
+            if read_or_default(item.get(key), target, default=None) is not None:
                 consumed.add(key)
         nested = _codex_residual(item, consumed)
         nested["$present"] = list(item)
         shell = ShellCommandResult(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert_or_none(item.get("id"), str) or "",
+            call_id=convert(item.get("id"), str, default=""),
             command=_command(item.get("command")),
-            stdout=convert_or_none(item.get("stdout"), str) or "",
-            stderr=convert_or_none(item.get("stderr"), str) or "",
-            exit_code=convert_or_none(item.get("exit_code"), int),
+            stdout=read_or_default(item.get("stdout"), str, default=""),
+            stderr=read_or_default(item.get("stderr"), str, default=""),
+            exit_code=read_or_default(item.get("exit_code"), int, default=None),
             extra=outer | {"item": nested},
         )
         return lift_shell_result(shell) or shell
@@ -2381,7 +2440,7 @@ def _read_completed(
             consumed.add("id")
         nested = _codex_residual(item, consumed)
         nested["$present"] = list(item)
-        changes = convert_or_none(item.get("changes"), dict[str, object]) or {}
+        changes = read_or_default(item.get("changes"), dict[str, object], default={})
         edits, counts = _patch_edits(changes)
         return _per_path_edits(
             changes,
@@ -2389,7 +2448,7 @@ def _read_completed(
             counts,
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert_or_none(item.get("id"), str) or "",
+            call_id=convert(item.get("id"), str, default=""),
             extra=outer | {"item": _stencil_changes(nested, counts)},
         )
     if item_type == "WebSearch":
@@ -2402,8 +2461,8 @@ def _read_completed(
         return WebSearchResults(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert_or_none(item.get("id"), str) or "",
-            query=convert_or_none(item.get("query"), str),
+            call_id=convert(item.get("id"), str, default=""),
+            query=read_or_default(item.get("query"), str, default=None),
             extra=outer | {"item": nested},
         )
     # ``AgentMessage``/``UserMessage``/``Reasoning`` complete an item that
@@ -2436,10 +2495,12 @@ def _patch_edits(changes: Mapping[str, object]) -> tuple[tuple[Splice, ...], lis
     out: list[Splice] = []
     counts: list[int] = []
     for value in changes.values():
-        entry = convert_or_none(value, dict[str, object]) or {}
+        entry = read_or_default(value, dict[str, object], default={})
         content = entry.get("content")
         if entry.get("unified_diff") is not None:
-            found = parse_udiff(convert_or_none(entry.get("unified_diff"), str) or "")
+            found = parse_udiff(
+                read_or_default(entry.get("unified_diff"), str, default=""),
+            )
             out.extend(found)
             counts.append(len(found))
         elif isinstance(content, str):
@@ -2467,11 +2528,11 @@ def _per_path_edits(
         path
         for path, entry in changes.items()
         if isinstance(
-            (convert_or_none(entry, dict[str, object]) or {}).get("unified_diff"),
+            (read_or_default(entry, dict[str, object], default={})).get("unified_diff"),
             str,
         )
         or isinstance(
-            (convert_or_none(entry, dict[str, object]) or {}).get("content"),
+            (read_or_default(entry, dict[str, object], default={})).get("content"),
             str,
         )
     ]
@@ -2487,7 +2548,7 @@ def _per_path_edits(
         # A write ONLY when content is the form the entry used. An entry
         # carrying both keys is an update whose diff the reader took, and
         # typing it by key presence made the writer fill the wrong one.
-        entry = convert_or_none(changes.get(path), dict[str, object]) or {}
+        entry = read_or_default(changes.get(path), dict[str, object], default={})
         added = not isinstance(entry.get("unified_diff"), str) and isinstance(
             entry.get("content"),
             str,
@@ -2529,9 +2590,9 @@ def _search_rows(rows: Sequence[Mapping[str, object]]) -> list[WebSearchResult]:
     """Read a search's result rows."""
     return [
         WebSearchResult(
-            url=convert_or_none(row.get("url"), str),
-            title=convert_or_none(row.get("title"), str),
-            snippet=convert_or_none(row.get("snippet"), str),
+            url=read_or_default(row.get("url"), str, default=None),
+            title=read_or_default(row.get("title"), str, default=None),
+            snippet=read_or_default(row.get("snippet"), str, default=None),
         )
         for row in rows
     ]
@@ -2539,10 +2600,10 @@ def _search_rows(rows: Sequence[Mapping[str, object]]) -> list[WebSearchResult]:
 
 def _read_attachment(part: Mapping[str, object]) -> Attachment | None:
     """Read an inline image, which codex writes as a data URL."""
-    if convert_or_none(part.get("type"), str) != "input_image":
+    if part.get("type") != "input_image":
         return None
     header, separator, data = (
-        convert_or_none(part.get("image_url"), str) or ""
+        read_or_default(part.get("image_url"), str, default="")
     ).partition(
         ",",
     )

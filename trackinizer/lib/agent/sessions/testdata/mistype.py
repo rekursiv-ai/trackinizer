@@ -1,6 +1,8 @@
 """Copies of a JSON record with one field swapped to another JSON type.
 
     mistyped    # record -> (path, copy) for every field and every other type
+    without     # (record, path) -> copy with that field missing
+    unread      # records -> how many a reader kept as text or as uncategorized
 
 A reader of a third-party log treats a field of the wrong type the way it
 treats a missing one, as absent: one malformed field must not abort the read of
@@ -14,12 +16,16 @@ from typing import TYPE_CHECKING, Final, cast
 
 import copy
 
+from trackinizer.lib.agent.types.sessions import IncompleteRecord, UncategorizedRecord
+
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterable, Iterator
+
+    from trackinizer.lib.agent.types.sessions import SessionRecord
 
 
-__all__ = ["mistyped"]
+__all__ = ["mistyped", "unread", "without"]
 
 
 _SAMPLES: Final = ("x", 7, 1.5, True, ["x"], {"x": 1})
@@ -41,6 +47,46 @@ def mistyped(record: object) -> Iterator[tuple[str, object]]:
         for sample in _SAMPLES:
             if type(sample) is not type(value):
                 yield ".".join(map(str, path)), _replaced(record, path, sample)
+
+
+def without(record: object, path: str) -> object:
+    """Return a deep copy of ``record`` with the field at dotted ``path`` removed.
+
+    Args:
+      record: A parsed JSON value.
+      path: Dotted keys, as :func:`mistyped` yields; a list member is its index.
+
+    Returns:
+      copy: ``record`` without that field; the input is not touched.
+
+    """
+    out = copy.deepcopy(record)
+    holder = out
+    keys = path.split(".")
+    for key in keys[:-1]:
+        holder = (
+            cast(list[object], holder)[int(key)]
+            if isinstance(holder, list)
+            else cast(dict[str, object], holder)[key]
+        )
+    if isinstance(holder, list):
+        del cast(list[object], holder)[int(keys[-1])]
+    else:
+        del cast(dict[str, object], holder)[keys[-1]]
+    return out
+
+
+def unread(records: Iterable[SessionRecord]) -> int:
+    """Count the records a reader could not type, kept as text or as uncategorized.
+
+    Args:
+      records: What a reader returned for one session.
+
+    Returns:
+      count: Records that are an ``IncompleteRecord`` or ``UncategorizedRecord``.
+
+    """
+    return sum(isinstance(r, IncompleteRecord | UncategorizedRecord) for r in records)
 
 
 def _fields(

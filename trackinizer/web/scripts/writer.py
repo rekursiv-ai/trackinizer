@@ -32,19 +32,21 @@ Examples:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Protocol, cast
 
 import argparse
+import functools
 import json
+import math
 import sys
 import time
 import uuid
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import ReadError, convert, loads, parse
+from trackinizer.lib.custom_json import ReadError, convert, parse
 
 
 if TYPE_CHECKING:
@@ -62,7 +64,7 @@ def main() -> int:
 
     """
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 2)[2],
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
@@ -144,14 +146,10 @@ def answer(client: Writes, line: str, *, clock: Clock) -> dict[str, object]:
       answer: The command's result, or ``{"error": ...}`` when it failed.
 
     """
+    # ReadError is a TypeError, so a field of the wrong type answers with the field's
+    # own message; a separate arm for it would misreport every field as the line.
     try:
-        return _run(
-            client,
-            parse(line, dict[str, object]),
-            clock=clock,
-        )
-    except ReadError:
-        return {"error": f"TypeError: cannot coerce {loads(line)!r} to dict"}
+        return _run(client, parse(line, dict[str, object]), clock=clock)
     except (ClientError, KeyError, TypeError, ValueError) as error:
         return {"error": f"{type(error).__name__}: {error}"}
 
@@ -163,60 +161,65 @@ def _run(
     clock: Clock,
 ) -> dict[str, object]:
     """Dispatch one command by its ``op``."""
-    match convert(command.get("op"), str):
+    match _field(command, "op", str):
         case "create":
-            created = _create(
-                client,
-                command,
-                title=convert(command.get("title"), str),
-            )
+            created = _create(client, command, title=_field(command, "title", str))
             return {"id": str(created), "at": clock.ms()}
         case "edit":
-            field = convert(command.get("field"), str)
-            client.edit(_uuid(command, "id"), field, command["value"], actor=_ACTOR)
+            client.edit(
+                _field(command, "id", uuid.UUID),
+                _field(command, "field", str),
+                command["value"],
+                actor=_ACTOR,
+            )
             return {"at": clock.ms()}
         case "edge":
             _edge(client, command)
             return {"at": clock.ms()}
         case "burst":
             ids: list[str] = []
-            title = convert(command.get("title"), str)
+            title = _field(command, "title", str)
 
             def create(n: int) -> None:
                 ids.append(str(_create(client, command, title=f"{title} {n}")))
 
             return {"ats": _paced(command, clock, create), "ids": ids}
         case "steady":
-            targets = [uuid.UUID(id_) for id_ in convert(command.get("ids"), list[str])]
+            targets = _field(command, "ids", list[uuid.UUID])
             if not targets:
                 raise ValueError("steady needs at least one id.")
-
-            def edit(n: int) -> None:
-                client.edit(
-                    targets[n % len(targets)],
-                    "title",
-                    f"Steady edit {n}",
-                    actor=_ACTOR,
-                )
-
+            edit = functools.partial(_steady_edit, client, targets)
             return {"ats": _paced(command, clock, edit)}
         case op:
             raise ValueError(f"Unknown op {op!r}.")
+
+
+def _field[T](command: Mapping[str, object], key: str, target: type[T]) -> T:
+    """Return ``command[key]`` as ``target``; a ReadError names ``key``."""
+    try:
+        return convert(command[key], target)
+    except ReadError as error:
+        raise ReadError(f"{key!r}: {error}") from error
 
 
 def _create(client: Writes, command: Mapping[str, object], *, title: str) -> uuid.UUID:
     """Create one Issue titled ``title`` with ``command``'s labels."""
     return client.submit(
         "Issue",
-        {"title": title, "labels": convert(command.get("labels"), list[str])},
+        {"title": title, "labels": _field(command, "labels", list[str])},
     )
+
+
+def _steady_edit(client: Writes, targets: Sequence[uuid.UUID], n: int) -> None:
+    """Retitle the ``n``-th edit's target, taking ``targets`` in turn."""
+    client.edit(targets[n % len(targets)], "title", f"Steady edit {n}", actor=_ACTOR)
 
 
 def _edge(client: Writes, command: Mapping[str, object]) -> None:
     ends = (
-        _uuid(command, "from"),
-        _uuid(command, "to"),
-        convert(command.get("kind"), str),
+        _field(command, "from", uuid.UUID),
+        _field(command, "to", uuid.UUID),
+        _field(command, "kind", str),
     )
     if command.get("remove") is True:
         client.remove_edge(*ends, actor=_ACTOR)
@@ -224,8 +227,6 @@ def _edge(client: Writes, command: Mapping[str, object]) -> None:
         client.add_edge(*ends, actor=_ACTOR)
 
 
-# Return when each returned.
-#
 # Each write has its own slot counted from the start, so one slow write is caught up by
 # those after it instead of pushing every later one back.
 def _paced(
@@ -234,19 +235,17 @@ def _paced(
     write: Callable[[int], None],
 ) -> list[int]:
     """Call ``write`` ``rate`` times a second for ``seconds``, evenly."""
-    rate = convert(command.get("rate"), float)
-    count = round(rate * convert(command.get("seconds"), float))
+    rate = _field(command, "rate", float)
+    total = rate * _field(command, "seconds", float)
+    if math.isinf(total) or math.isnan(total):
+        raise ValueError(f"rate {rate} for {command['seconds']} s is no count.")
     start = clock.now()
     ats: list[int] = []
-    for n in range(count):
+    for n in range(round(total)):
         clock.sleep(max(0.0, start + n / rate - clock.now()))
         write(n)
         ats.append(clock.ms())
     return ats
-
-
-def _uuid(command: Mapping[str, object], key: str) -> uuid.UUID:
-    return uuid.UUID(convert(command[key], str))
 
 
 def _add_arguments(parser: argparse.ArgumentParser) -> None:

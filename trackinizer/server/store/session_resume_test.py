@@ -21,13 +21,13 @@ from trackinizer.lib.agent.sessions import (
     claude,
     codex,
 )
+from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import SessionRecord, Thinking
 from trackinizer.lib.custom_json import convert, json_freeze
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
-from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.trax.run.errors import CiphertextDroppedError
-from trackinizer.trax.run.materialize import materialize_claude
+from trackinizer.trax.run.materialize import materialize
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 from trackinizer.wire.bodies import SubmitAgentSession
@@ -132,7 +132,8 @@ async def test_a_claude_session_resumes_to_its_stored_records(store: Store) -> N
     records, sealed = await _read_back(store, session_id, part)
     manifests = await store.read_session_manifests(session_id)
 
-    written = materialize_claude(
+    written = materialize(
+        target="claude",
         records=records,
         encoding=manifests[0].metadata,
         sealed=sealed,
@@ -177,7 +178,8 @@ async def test_a_codex_capture_resumes_as_claude(store: Store) -> None:
     records, sealed = await _read_back(store, session_id, part)
     manifests = await store.read_session_manifests(session_id)
 
-    written = materialize_claude(
+    written = materialize(
+        target="claude",
         records=records,
         encoding=manifests[0].metadata,
         sealed=sealed,
@@ -203,7 +205,8 @@ async def test_the_materialized_file_names_the_minted_id(store: Store) -> None:
     records, sealed = await _read_back(store, session_id, part)
     manifests = await store.read_session_manifests(session_id)
 
-    written = materialize_claude(
+    written = materialize(
+        target="claude",
         records=records,
         encoding=manifests[0].metadata,
         sealed=sealed,
@@ -292,7 +295,8 @@ async def test_dropped_ciphertext_refuses_the_resume(store: Store) -> None:
 
     assert any(isinstance(r, Thinking) for r in records), "fixture carries no thinking"
     with pytest.raises(CiphertextDroppedError):
-        materialize_claude(
+        materialize(
+            target="claude",
             records=records,
             encoding=manifests[0].metadata,
             sealed=sealed,

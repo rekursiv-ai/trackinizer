@@ -13,10 +13,11 @@ claude or codex through the ordinary :mod:`convert` path.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, TextIO
-from uuid import UUID, uuid5
+from uuid import NAMESPACE_DNS, UUID, uuid5
 
 import json
 
+from trackinizer.lib.agent.sessions.provider_fields import read_or_default
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
     ContextClear,
@@ -28,8 +29,10 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
 )
 from trackinizer.lib.custom_json import (
-    JSONValue,
-    convert_or_none,
+    MutableJSON,
+    MutableJSONValue,
+    ReadError,
+    convert,
     extract_unmodeled_fields,
     json_freeze,
     json_unfreeze,
@@ -62,12 +65,21 @@ def normalize(stream: TextIO) -> Iterator[SessionRecord]:
     yield from _read(stream.read())
 
 
-def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
+def denormalize(
+    records: Iterable[SessionRecord],
+    stream: TextIO,
+    *,
+    seed: UUID = NAMESPACE_DNS,
+) -> None:
     """Denormalize records as a Gemini session document.
 
     Args:
       records: Provider-neutral records, in stream order.
       stream: Destination text stream.
+      seed: Namespace for the ``sessionId`` a FOREIGN stream is missing. The
+        format is sniffed by that key, so a document without one reads as no
+        format at all. The id is derived from the messages written, so one
+        stream converts to one id and two different streams to two.
 
     """
     ordered = [
@@ -92,11 +104,10 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
         (record for record in ordered if isinstance(record, TurnContext)),
         TurnContext(),
     )
-    # Deep copies: a frozen record nests ``mappingproxy`` values, which
-    # ``json.dumps`` refuses, so a shallow ``dict`` fails on any nested field.
-    stored = dict(json_unfreeze(declared.extra))
+    stored = json_unfreeze(declared.extra)
     compact = bool(stored.pop("$compact", False))
-    document: dict[str, JSONValue] = {}
+    messages = _write_messages(body)
+    document: dict[str, MutableJSONValue] = {}
     # Only keys a gemini document itself carries. Another adapter's metadata
     # names its own conventions -- claude states ``ascii_escaped`` and an
     # escape bitmap -- and writing those through put keys on the wire gemini
@@ -105,14 +116,12 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
     if "sessionId" in stored:
         document.update(stored)
     else:
-        # A stream from another provider declares no gemini id, and identity is
-        # the caller's rather than the session's -- but the format is SNIFFED
-        # by this key's presence, so a document without one reads as no format
-        # at all. Derived from the records so two conversions agree.
-        document["sessionId"] = str(uuid5(_GEMINI_NAMESPACE, str(len(body))))
-    document["messages"] = [
-        json_unfreeze(json_freeze(message)) for message in _write_messages(body)
-    ]
+        # Derived from WHAT is written, so two conversions of one stream agree
+        # and two streams that merely have the same length do not collide.
+        document["sessionId"] = str(
+            uuid5(seed, json.dumps(messages, ensure_ascii=False, sort_keys=True)),
+        )
+    document["messages"] = messages
     json.dump(
         document,
         stream,
@@ -125,12 +134,12 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
 # records rather than one nested blob.
 def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
     """Normalize one gemini message into its acts."""
-    kind = convert_or_none(message.get("type"), str) or ""
+    kind = read_or_default(message.get("type"), str, default="")
     if kind == "user":
         return [
             UserMessage(
-                content=convert_or_none(message.get("content"), str) or "",
-                timestamp=convert_or_none(message.get("$timestamp"), str),
+                content=convert(message.get("content"), str, default=""),
+                timestamp=read_or_default(message.get("$timestamp"), str, default=None),
                 extra=json_freeze(
                     extract_unmodeled_fields(
                         message,
@@ -146,8 +155,8 @@ def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
                 payload=json_freeze(message),
             ),
         ]
-    calls = convert_or_none(message.get("toolCalls"), list[object]) or []
-    stamp = convert_or_none(message.get("$timestamp"), str)
+    calls = convert(message.get("toolCalls"), list[object], default=[])
+    stamp = read_or_default(message.get("$timestamp"), str, default=None)
     kept = dict(
         extract_unmodeled_fields(
             message,
@@ -162,32 +171,38 @@ def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
         kept["$tool_calls_present"] = True
     return [
         AssistantMessage(
-            content=convert_or_none(message.get("content"), str) or "",
+            content=convert(message.get("content"), str, default=""),
             timestamp=stamp,
             extra=json_freeze(kept),
         ),
         *(
             ToolCall(
-                call_id=convert_or_none(call.get("id"), str) or "",
-                name=convert_or_none(call.get("name"), str) or "",
+                call_id=convert(call.get("id"), str, default=""),
+                name=convert(call.get("name"), str, default=""),
                 timestamp=stamp,
                 arguments=json_freeze(
-                    convert_or_none(call.get("args"), dict[str, object]) or {},
+                    convert(call.get("args"), dict[str, object], default={}),
                 ),
                 extra=json_freeze(
                     extract_unmodeled_fields(call, ("id", "name", "args")),
                 ),
             )
             for call in (
-                convert_or_none(value, dict[str, object]) or {} for value in calls
+                convert(value, dict[str, object], default={}) for value in calls
             )
         ),
     ]
 
 
-def _write_messages(records: Iterable[SessionRecord]) -> list[dict[str, JSONValue]]:
+# Every value THAWED: a record's residual is frozen to arbitrary depth, and ``json``
+# cannot encode the ``mappingproxy`` a one-level copy leaves inside.
+def _write_messages(
+    records: Iterable[SessionRecord],
+) -> list[MutableJSONValue]:
     """Rebuild the document's message list from the stream's records."""
-    out: list[dict[str, JSONValue]] = []
+    out: list[MutableJSONValue] = []
+    # The last message written, when it is a ``gemini`` turn a call can join.
+    open_turn: MutableJSON | None = None
     for record in records:
         match record:
             case UserMessage():
@@ -203,23 +218,21 @@ def _write_messages(records: Iterable[SessionRecord]) -> list[dict[str, JSONValu
                         **(
                             {"$timestamp": record.timestamp} if record.timestamp else {}
                         ),
-                        **record.extra,
+                        **json_unfreeze(record.extra),
                     },
                 )
+                open_turn = None
             case AssistantMessage():
-                extra = dict(record.extra)
+                extra = json_unfreeze(record.extra)
                 empty_calls = extra.pop("$tool_calls_present", None) is not None
-                out.append(
-                    {
-                        "type": "gemini",
-                        "content": record.content or "",
-                        **(
-                            {"$timestamp": record.timestamp} if record.timestamp else {}
-                        ),
-                        **extra,
-                        **({"toolCalls": []} if empty_calls else {}),
-                    },
-                )
+                open_turn = {
+                    "type": "gemini",
+                    "content": record.content or "",
+                    **({"$timestamp": record.timestamp} if record.timestamp else {}),
+                    **extra,
+                    **({"toolCalls": []} if empty_calls else {}),
+                }
+                out.append(open_turn)
             case ToolCall():
                 # A call belongs to the turn that made it: gemini nests them,
                 # so the sibling record folds back into the prior message.
@@ -229,52 +242,33 @@ def _write_messages(records: Iterable[SessionRecord]) -> list[dict[str, JSONValu
                 # own, and a fused session can open mid-conversation -- and
                 # folding it there claimed the person made the call. Asserting
                 # a turn was already open instead aborted the conversion.
-                open_turn = (
-                    out and convert_or_none(out[-1].get("type"), str) == "gemini"
-                )
-                if not open_turn:
-                    opened: dict[str, JSONValue] = {"type": "gemini", "content": ""}
+                if open_turn is None:
+                    open_turn = {"type": "gemini", "content": ""}
                     if record.timestamp:
-                        opened["$timestamp"] = record.timestamp
-                    out.append(opened)
-                call: dict[str, JSONValue] = {
-                    "id": record.call_id,
-                    "name": record.name,
-                    "args": dict(record.arguments),
-                    **record.extra,
-                }
-                appended: list[JSONValue] = [
-                    *(
-                        json_unfreeze(
-                            json_freeze(
-                                convert_or_none(existing, dict[str, object]) or {},
-                            ),
-                        )
-                        for existing in convert_or_none(
-                            out[-1].get("toolCalls"),
-                            list[object],
-                        )
-                        or []
-                    ),
-                    call,
-                ]
-                out[-1]["toolCalls"] = appended
+                        open_turn["$timestamp"] = record.timestamp
+                    out.append(open_turn)
+                calls = open_turn.setdefault("toolCalls", [])
+                assert isinstance(calls, list)
+                calls.append(
+                    {
+                        "id": record.call_id,
+                        "name": record.name,
+                        "args": json_unfreeze(record.arguments),
+                        **json_unfreeze(record.extra),
+                    },
+                )
             case UncategorizedRecord():
-                out.append(dict(record.payload))
+                payload = json_unfreeze(record.payload)
+                # A message the reader could not type, kept as it was: possibly
+                # no object at all, so it rides under a key of its own.
+                out.append(payload.get("$message", payload))
+                open_turn = None
             case _:
                 # Every other IR record kind came from another provider; a
                 # gemini document has no shape for it, so a conversion into
                 # this format reports lossy rather than inventing one.
                 continue
     return out
-
-
-_GEMINI_NAMESPACE = UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
-"""Namespace for deriving the ``sessionId`` a foreign stream declares none of.
-
-The DNS namespace constant, used as an arbitrary fixed seed: what matters is
-that the derivation is stable across processes, not which namespace it names.
-"""
 
 
 def _read(text: str) -> list[SessionRecord]:
@@ -295,10 +289,14 @@ def _read(text: str) -> list[SessionRecord]:
     # A document that is not an object carries no session: an array or a bare
     # scalar is kept verbatim rather than read as an empty one, which would
     # silently discard whatever the file did hold.
-    document = convert_or_none(decoded, dict[str, object]) or {}
-    if not document:
+    if not isinstance(decoded, dict) or not decoded:
         return [*out, IncompleteRecord(text=text)]
-    messages = convert_or_none(document.get("messages"), list[object]) or []
+    document = convert(decoded, dict[str, object])
+    try:
+        messages = convert(document.get("messages"), list[object], default=[])
+    except ReadError:
+        # No message list, no messages to keep one by one: the document is kept whole.
+        return [*out, IncompleteRecord(text=text)]
     # Everything outside ``messages`` is the file's own declaration, which is
     # settings: it rides the opening context rather than a record of its own.
     extra = dict(extract_unmodeled_fields(document, ("messages",)))
@@ -313,5 +311,16 @@ def _read(text: str) -> list[SessionRecord]:
         extra=json_freeze(extra),
     )
     for message in messages:
-        out.extend(_read_message(convert_or_none(message, dict[str, object]) or {}))
+        # One message is the unit a malformed field can spoil: it raised out of
+        # ``normalize`` and lost the document. Kept whole instead, it is
+        # written back exactly as it was read.
+        try:
+            out.extend(_read_message(convert(message, dict[str, object])))
+        except ReadError:
+            out.append(
+                UncategorizedRecord(
+                    kind="",
+                    payload=json_freeze({"$message": message}),
+                ),
+            )
     return out

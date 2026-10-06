@@ -12,12 +12,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from queue import Full
 from typing import TYPE_CHECKING, Protocol, Self, cast, override
 from uuid import UUID, uuid4
 
 import argparse
 import asyncio
 import contextlib
+import ctypes
 import hashlib
 import multiprocessing
 import os
@@ -46,6 +48,7 @@ if TYPE_CHECKING:
     from collections.abc import (
         AsyncGenerator,
         AsyncIterator,
+        Callable,
         Coroutine,
         Mapping,
         Sequence,
@@ -219,28 +222,115 @@ async def _session_with_records(store: Store, count: int) -> UUID:
     return session_id
 
 
-async def _drain_scan(pg_dsn: str, *, page: int) -> list[tuple[int, int]]:
-    """Run ``_scan`` once and return each queued page's (lo_idx, hi_idx) bounds."""
-    queue: multiprocessing.Queue[backfill_embedding.PageTask | None] = (
-        multiprocessing.Queue()
-    )
+async def _scan_tasks(
+    pg_dsn: str,
+    *,
+    page: int,
+) -> list[backfill_embedding.PageTask]:
+    """Run ``_scan`` once and return every queued page task, sentinel dropped."""
+    queue = _FakeQueue()
     await backfill_embedding._scan(
         pg_dsn,
-        queue,
+        cast("Queue[backfill_embedding.PageTask | None]", queue),
         page,
         n_workers=1,
         mapper_name=_MAPPER,
         model=_MODEL,
         indexed_kinds=sorted(FootprintMapper().embedded_kinds),
+        alive=lambda: True,
     )
-    bounds: list[tuple[int, int]] = []
-    while True:
-        task = queue.get()
-        if task is None:  # The one worker sentinel closes the feed.
-            break
-        _inclusive, lo, hi = task
-        bounds.append((lo[3], hi[3]))  # (…, part, idx) -> idx is element 3.
-    return bounds
+    *tasks, sentinel = queue.put_items
+    assert sentinel is None  # The one worker sentinel closes the feed.
+    return [task for task in tasks if task is not None]
+
+
+async def _drain_scan(pg_dsn: str, *, page: int) -> list[tuple[int, int]]:
+    """Run ``_scan`` once and return each queued page's (lo_idx, hi_idx) bounds."""
+    # (…, part, idx) -> idx is element 3.
+    return [(lo[3], hi[3]) for lo, hi in await _scan_tasks(pg_dsn, page=page)]
+
+
+async def _read_idxs(
+    store: Store,
+    tasks: Sequence[backfill_embedding.PageTask],
+) -> list[int]:
+    """Feed ``tasks`` through ``_read_stage``; return the pooled records' idxs."""
+    pools: asyncio.Queue[backfill_embedding.Pool | None] = asyncio.Queue()
+    async with store.engine.acquire() as conn:
+        await backfill_embedding._read_stage(
+            conn,
+            cast("Queue[backfill_embedding.PageTask | None]", _FakeQueue(*tasks, None)),
+            pools,
+            mapper=FootprintMapper(),
+            embedder=StubEmbedder(dim=1024),
+            indexed_kinds=sorted(FootprintMapper().embedded_kinds),
+            flush_units=1_000,
+        )
+    idxs: list[int] = []
+    while (pool := pools.get_nowait()) is not None:
+        for row, _units, _md5 in pool:
+            idx = row["idx"]
+            assert isinstance(idx, int)
+            idxs.append(idx)
+    return idxs
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_scan_then_read_embeds_every_pending_row_across_pages(
+    store: Store,
+    pg_dsn: str,
+) -> None:
+    """The scanner's page bounds and the read stage agree: no row is dropped.
+
+    Four pending rows in 2-row pages. A later page whose lo is its own first
+    pending row must be read inclusively; reading it with ``>`` lost idx 2.
+    """
+    await _session_with_records(store, 4)
+
+    tasks = await _scan_tasks(pg_dsn, page=2)
+
+    assert len(tasks) == 2
+    assert await _read_idxs(store, tasks) == [0, 1, 2, 3]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_read_stage_skips_rows_whose_freshness_marker_matches(
+    store: Store,
+) -> None:
+    """The read stage's re-check uses the scanner's oracle (the marker).
+
+    A fresh marker with no vector row (an fts-only sweep, or a pruned vector)
+    must not be re-embedded; a stale marker must be.
+    """
+    session_id = await _session_with_records(store, 3)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO session_index_state "
+            "(session_id, part, idx, mapper, model, text_md5) VALUES "
+            "($1, 0, 0, $2, $3, md5('scan record 0 about deploys and locks')), "
+            "($1, 0, 1, $2, $3, 'stale')",
+            session_id,
+            _MAPPER,
+            _MODEL,
+        )
+        first = await conn.fetchval(
+            "SELECT min(created) FROM session_records WHERE session_id = $1",
+            session_id,
+        )
+        last = await conn.fetchval(
+            "SELECT max(created) FROM session_records WHERE session_id = $1",
+            session_id,
+        )
+    assert isinstance(first, datetime)
+    assert isinstance(last, datetime)
+    task: backfill_embedding.PageTask = (
+        (first, str(session_id), 0, 0),
+        (last, str(session_id), 0, 2),
+    )
+
+    assert await _read_idxs(store, [task]) == [1, 2]
 
 
 async def _session_with_typed_records(
@@ -299,23 +389,18 @@ async def test_scanner_skips_unembeddable_kinds_and_empty_text(
     )
 
     bounds = await _drain_scan(pg_dsn, page=10)
-    pending = await _pending_via_count(store, session_id)
+    # The store fixture is truncated per test, so the global count is this session's.
+    del session_id
+    pending = await backfill_embedding._pending_count(
+        pg_dsn,
+        mapper_name=_MAPPER,
+        model=_MODEL,
+        indexed_kinds=sorted(FootprintMapper().embedded_kinds),
+    )
 
     queued_idxs = {idx for lo, hi in bounds for idx in (lo, hi)}
     assert queued_idxs == {0}  # Only the indexed, non-empty row.
     assert pending == 1  # ContextState + empty-text row are NOT counted.
-
-
-async def _pending_via_count(store: Store, session_id: UUID) -> int:
-    """Return ``_pending_count`` scoped to one session (for the exclusion test)."""
-    del session_id  # The store fixture is truncated per test, so the count is global.
-    async with store.engine.acquire() as conn:
-        return await backfill_embedding._pending_count(
-            conn,
-            mapper_name=_MAPPER,
-            model=_MODEL,
-            indexed_kinds=sorted(FootprintMapper().embedded_kinds),
-        )
 
 
 @pytest.mark.db_pglite
@@ -393,14 +478,16 @@ def test_worker_entry_sets_process_environment_and_runs_worker(
         compile_cache=tmp_path / "compile.bin",
     )
     queue = cast("Queue[backfill_embedding.PageTask | None]", object())
-    calls: list[tuple[backfill_embedding._WorkerConfig, str, object]] = []
+    progress = _progress(pending=0)
+    calls: list[tuple[backfill_embedding._WorkerConfig, str, object, object]] = []
 
     async def fake_worker(
         worker_config: backfill_embedding._WorkerConfig,
         device: str,
         worker_queue: object,
+        worker_progress: object,
     ) -> None:
-        calls.append((worker_config, device, worker_queue))
+        calls.append((worker_config, device, worker_queue, worker_progress))
 
     def run(coroutine: Coroutine[object, object, object]) -> None:
         try:
@@ -416,8 +503,8 @@ def test_worker_entry_sets_process_environment_and_runs_worker(
     monkeypatch.setattr(backfill_embedding, "_worker", fake_worker)
     monkeypatch.setattr(asyncio, "run", run)
 
-    assert backfill_embedding._worker_entry(config, queue) is None
-    assert calls == [(config, "cpu", queue)]
+    assert backfill_embedding._worker_entry(config, queue, progress) is None
+    assert calls == [(config, "cpu", queue, progress)]
     assert os.environ["CUDA_VISIBLE_DEVICES"] == ""
     assert os.environ["PYTORCH_CUDA_ALLOC_CONF"] == "expandable_segments:True"
     assert os.environ["OMP_NUM_THREADS"] == expected_threads
@@ -443,8 +530,9 @@ def test_worker_entry_defaults_to_one_thread_when_cpu_count_is_unknown(
         worker_config: backfill_embedding._WorkerConfig,
         device: str,
         worker_queue: object,
+        worker_progress: object,
     ) -> None:
-        del worker_config, device, worker_queue
+        del worker_config, device, worker_queue, worker_progress
 
     def run(coroutine: Coroutine[object, object, object]) -> None:
         try:
@@ -463,7 +551,7 @@ def test_worker_entry_defaults_to_one_thread_when_cpu_count_is_unknown(
     monkeypatch.setattr(backfill_embedding, "_worker", fake_worker)
     monkeypatch.setattr(asyncio, "run", run)
 
-    backfill_embedding._worker_entry(config, queue)
+    backfill_embedding._worker_entry(config, queue, _progress(pending=0))
 
     assert cpu_count_calls == [None]
     assert os.environ["OMP_NUM_THREADS"] == "1"
@@ -484,14 +572,16 @@ def test_worker_entry_uses_pinned_gpu_without_cpu_thread_cap(
         compile_cache=tmp_path / "compile.bin",
     )
     queue = cast("Queue[backfill_embedding.PageTask | None]", object())
-    calls: list[tuple[backfill_embedding._WorkerConfig, str, object]] = []
+    progress = _progress(pending=0)
+    calls: list[tuple[backfill_embedding._WorkerConfig, str, object, object]] = []
 
     async def fake_worker(
         worker_config: backfill_embedding._WorkerConfig,
         device: str,
         worker_queue: object,
+        worker_progress: object,
     ) -> None:
-        calls.append((worker_config, device, worker_queue))
+        calls.append((worker_config, device, worker_queue, worker_progress))
 
     def run(coroutine: Coroutine[object, object, object]) -> None:
         try:
@@ -506,8 +596,8 @@ def test_worker_entry_uses_pinned_gpu_without_cpu_thread_cap(
     monkeypatch.setattr(backfill_embedding, "_worker", fake_worker)
     monkeypatch.setattr(asyncio, "run", run)
 
-    assert backfill_embedding._worker_entry(config, queue) is None
-    assert calls == [(config, "cuda:0", queue)]
+    assert backfill_embedding._worker_entry(config, queue, progress) is None
+    assert calls == [(config, "cuda:0", queue, progress)]
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "3"
     assert os.environ["PYTORCH_CUDA_ALLOC_CONF"] == "expandable_segments:True"
     assert "OMP_NUM_THREADS" not in os.environ
@@ -926,7 +1016,9 @@ def test_follow_embedder_rejects_disabled_models(
 
 
 @pytest.mark.asyncio
-async def test_pending_count_returns_integer_and_binds_all_inputs() -> None:
+async def test_pending_count_returns_integer_and_binds_all_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class Connection:
         def __init__(self) -> None:
             self.args: tuple[object, ...] | None = None
@@ -936,14 +1028,17 @@ async def test_pending_count_returns_integer_and_binds_all_inputs() -> None:
             return 7
 
     conn = Connection()
+    engines = _EngineFactory(conn)
+    monkeypatch.setattr(backfill_embedding, "PostgresEngine", engines)
     result = await backfill_embedding._pending_count(
-        cast("Conn", conn),
+        "postgresql://count",
         mapper_name="mapper",
         model="model",
         indexed_kinds=["UserMessage", "AssistantMessage"],
     )
 
     assert result == 7
+    assert engines.opened == [("postgresql://count", NOTIFY_CHANNEL)]
     assert conn.args is not None
     query, *args = conn.args
     assert isinstance(query, str)
@@ -1225,6 +1320,7 @@ async def test_write_stage_writes_reports_and_stops_on_sentinel(
 
     embedder = _LengthFake()
     conn = cast("Conn", object())
+    progress = _progress(pending=2)
     await backfill_embedding._write_stage(
         conn,
         writes,
@@ -1232,7 +1328,7 @@ async def test_write_stage_writes_reports_and_stops_on_sentinel(
         mapper_name="mapper",
         name="worker-1",
         start=0.0,
-        pending=2,
+        progress=progress,
     )
 
     assert calls == [
@@ -1243,6 +1339,59 @@ async def test_write_stage_writes_reports_and_stops_on_sentinel(
     assert printed == [
         ("worker-1: done=1 pending=1 rate=11.0 rec/s eta=0:00", {"flush": True}),
         ("worker-1: done=2 pending=0 rate=12.0 rec/s eta=?", {"flush": True}),
+    ]
+    assert progress.done.value == 2
+
+
+def _progress(*, pending: int) -> backfill_embedding._Progress:
+    return backfill_embedding._Progress(
+        pending=pending,
+        done=multiprocessing.Value(ctypes.c_int64, 0),
+    )
+
+
+@pytest.mark.asyncio
+async def test_write_stages_report_run_wide_progress_against_one_denominator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two workers share one pending total; each line reports the run, not a shard.
+
+    Previously each worker counted the GLOBAL pending as its own shard and only
+    its own writes as done, so with N workers the remaining (and ETA) was ~N
+    times too high: worker-2 below would have printed ``pending=9``.
+    """
+
+    async def fake_write_pool(*args: object) -> int:
+        del args
+        return 0
+
+    monkeypatch.setattr(backfill_embedding, "_write_pool", fake_write_pool)
+    monkeypatch.setattr(time, "monotonic", lambda: 1.0)
+    printed = _PrintRecorder()
+    monkeypatch.setattr(backfill_embedding, "print", printed, raising=False)
+    progress = _progress(pending=10)
+    pool: backfill_embedding.Pool = [(cast("Record", {"id": 1}), (), "digest")]
+
+    for name in ("worker-1", "worker-2"):
+        writes: asyncio.Queue[
+            tuple[backfill_embedding.Pool, list[list[float]]] | None
+        ] = asyncio.Queue()
+        await writes.put((pool, []))
+        await writes.put(None)
+        await backfill_embedding._write_stage(
+            cast("Conn", object()),
+            writes,
+            embedder=_LengthFake(),
+            mapper_name="mapper",
+            name=name,
+            start=0.0,
+            progress=progress,
+        )
+
+    lines = [str(args[0]) for args, _kwargs in printed.calls]
+    assert [line.split(" rate=")[0] for line in lines] == [
+        "worker-1: done=1 pending=9",
+        "worker-2: done=2 pending=8",
     ]
 
 
@@ -1351,12 +1500,62 @@ class _FakeQueue:
     def __init__(self, *items: backfill_embedding.PageTask | None) -> None:
         self._items = list(items)
         self.put_items: list[backfill_embedding.PageTask | None] = []
+        self.put_timeouts: list[float] = []
 
     def get(self) -> backfill_embedding.PageTask | None:
         return self._items.pop(0)
 
-    def put(self, item: backfill_embedding.PageTask | None) -> None:
+    def put(
+        self,
+        item: backfill_embedding.PageTask | None,
+        *,
+        timeout: float,
+    ) -> None:
+        self.put_timeouts.append(timeout)
         self.put_items.append(item)
+
+
+class _FullQueue:
+    """A queue nobody drains: every timed ``put`` raises ``queue.Full``."""
+
+    def __init__(self) -> None:
+        self.attempts = 0
+
+    def put(self, item: object, *, timeout: float) -> None:
+        del item, timeout
+        self.attempts += 1
+        raise Full
+
+
+def test_put_aborts_when_every_consumer_has_exited() -> None:
+    """A put blocked on a full queue re-checks liveness and aborts on all-dead.
+
+    The old untimed ``queue.put`` blocked forever once every worker died.
+    """
+    queue = _FullQueue()
+    liveness = iter([True, True, False])
+
+    with pytest.raises(backfill_embedding._NoLiveWorkersError):
+        backfill_embedding._put(
+            cast("Queue[backfill_embedding.PageTask | None]", queue),
+            None,
+            alive=lambda: next(liveness),
+            poll_sec=0.0,
+        )
+
+    assert queue.attempts == 3
+
+
+def test_put_returns_once_the_item_is_accepted() -> None:
+    queue = _FakeQueue()
+    backfill_embedding._put(
+        cast("Queue[backfill_embedding.PageTask | None]", queue),
+        None,
+        alive=lambda: False,
+        poll_sec=0.5,
+    )
+    assert queue.put_items == [None]
+    assert queue.put_timeouts == [0.5]
 
 
 class _Clock:
@@ -1414,16 +1613,14 @@ _READ_SQL = (
     "SELECT r.created, r.session_id, r.part, r.idx, r.kind, r.text "
     "FROM session_records r "
     "JOIN session_manifests m ON m.session_id = r.session_id AND m.part = r.part "
-    "WHERE (r.created, r.session_id, r.part, r.idx) {op} ($1, $2::uuid, $3, $4) "
-    "AND (r.created, r.session_id, r.part, r.idx) <= ($5, $6::uuid, $7, $8) "
-    "AND r.idx < m.records ORDER BY r.created, r.session_id, r.part, r.idx"
-)
-_STORED_SQL = (
-    "SELECT DISTINCT e.session_id, e.part, e.idx, e.text_md5 "
-    "FROM session_embeddings e JOIN unnest($1::uuid[], $2::int[], "
-    "$3::int[]) AS t(session_id, part, idx) "
-    "ON e.session_id = t.session_id AND e.part = t.part "
-    "AND e.idx = t.idx WHERE e.mapper = $4 AND e.model = $5"
+    "WHERE (r.created, r.session_id, r.part, r.idx) >= ($4, $5::uuid, $6, $7) "
+    "AND (r.created, r.session_id, r.part, r.idx) <= ($8, $9::uuid, $10, $11) "
+    "AND r.idx < m.records AND r.kind = ANY($3::text[]) AND r.text <> '' "
+    "AND NOT EXISTS (SELECT 1 FROM session_index_state s "
+    "WHERE s.session_id = r.session_id AND s.part = r.part "
+    "AND s.idx = r.idx AND s.mapper = $1 AND s.model = $2 "
+    "AND s.text_md5 = md5(r.text)) "
+    "ORDER BY r.created, r.session_id, r.part, r.idx"
 )
 
 
@@ -1436,32 +1633,23 @@ def _queued(idx: int) -> tuple[datetime, str, int, int]:
 
 
 @pytest.mark.asyncio
-async def test_read_stage_skips_fresh_rows_and_flushes_at_the_unit_budget(
+async def test_read_stage_skips_unembedded_rows_and_flushes_at_the_unit_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Skips unit-less and md5-fresh rows; flushes once pooled units reach budget."""
+    """Skips unit-less rows; flushes once pooled units reach the budget.
+
+    Freshness is filtered in SQL (asserted on the bound query), so every row the
+    page read returns is pending.
+    """
     page_one = [
         _record(0, "FtsOnly", "no vector"),
-        _record(1, "One", "fresh"),
         _record(2, "One", "a"),
         _record(3, "One", "b"),
         _record(4, "One", "c"),
     ]
     page_two = [_record(5, "Two", "d"), _record(6, "One", "e")]
-    conn = _ScriptedConn(
-        page_one,
-        [
-            {"session_id": _SID, "part": 0, "idx": 1, "text_md5": _md5("fresh")},
-            {"session_id": _SID, "part": 0, "idx": 2, "text_md5": _md5("old a")},
-        ],
-        page_two,
-        [],
-    )
-    queue = _FakeQueue(
-        (True, _queued(0), _queued(4)),
-        (False, _queued(4), _queued(6)),
-        None,
-    )
+    conn = _ScriptedConn(page_one, page_two)
+    queue = _FakeQueue((_queued(0), _queued(4)), (_queued(5), _queued(6)), None)
     hashes = _RecordingHashlib()
     monkeypatch.setattr(backfill_embedding, "hashlib", hashes)
     pools: asyncio.Queue[backfill_embedding.Pool | None] = asyncio.Queue()
@@ -1472,6 +1660,7 @@ async def test_read_stage_skips_fresh_rows_and_flushes_at_the_unit_budget(
         pools,
         mapper=_UnitsByKind(),
         embedder=_LengthFake(),
+        indexed_kinds=("One", "Two"),
         flush_units=2,
     )
 
@@ -1480,11 +1669,11 @@ async def test_read_stage_skips_fresh_rows_and_flushes_at_the_unit_budget(
         emitted.append(pools.get_nowait())
     assert emitted == [
         [
-            (page_one[2], (IndexUnit(text="a"),), _md5("a")),
-            (page_one[3], (IndexUnit(text="b"),), _md5("b")),
+            (page_one[1], (IndexUnit(text="a"),), _md5("a")),
+            (page_one[2], (IndexUnit(text="b"),), _md5("b")),
         ],
         [
-            (page_one[4], (IndexUnit(text="c"),), _md5("c")),
+            (page_one[3], (IndexUnit(text="c"),), _md5("c")),
             (
                 page_two[0],
                 (IndexUnit(text="d", chunk=0), IndexUnit(text="d", chunk=1)),
@@ -1495,16 +1684,12 @@ async def test_read_stage_skips_fresh_rows_and_flushes_at_the_unit_budget(
         None,
     ]
     assert hashes.calls == [
-        (text.encode(), False) for text in ("fresh", "a", "b", "c", "d", "e")
+        (text.encode(), False) for text in ("a", "b", "c", "d", "e")
     ]
+    head = ("mapper-v1", "length-fake", ["One", "Two"])
     assert conn.fetches == [
-        (_READ_SQL.format(op=">="), (*_queued(0), *_queued(4))),
-        (
-            _STORED_SQL,
-            ([_SID] * 5, [0] * 5, [0, 1, 2, 3, 4], "mapper-v1", "length-fake"),
-        ),
-        (_READ_SQL.format(op=">"), (*_queued(4), *_queued(6))),
-        (_STORED_SQL, ([_SID] * 2, [0] * 2, [5, 6], "mapper-v1", "length-fake")),
+        (_READ_SQL, (*head, *_queued(0), *_queued(4))),
+        (_READ_SQL, (*head, *_queued(5), *_queued(6))),
     ]
 
 
@@ -1512,7 +1697,7 @@ async def test_read_stage_skips_fresh_rows_and_flushes_at_the_unit_budget(
 async def test_scan_feeds_keyset_pages_then_one_sentinel_per_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pages advance by the last key; the first is inclusive; progress prints."""
+    """Pages advance by the last key; each task spans its own rows; progress prints."""
     keys = [
         {"created": _CREATED, "session_id": _SID, "part": 0, "idx": idx}
         for idx in range(3)
@@ -1533,6 +1718,8 @@ async def test_scan_feeds_keyset_pages_then_one_sentinel_per_worker(
         mapper_name="mapper-v1",
         model="model@4",
         indexed_kinds=("One", "Two"),
+        alive=lambda: True,
+        poll_sec=0.25,
     )
 
     join, predicate = manifest_bound("r")
@@ -1545,9 +1732,10 @@ async def test_scan_feeds_keyset_pages_then_one_sentinel_per_worker(
         (later, (*head, _CREATED, _SID, 0, 1, 2)),
         (later, (*head, _CREATED, _SID, 0, 2, 2)),
     ]
+    assert queue.put_timeouts == [0.25] * 5
     assert queue.put_items == [
-        (True, _queued(0), _queued(1)),
-        (False, _queued(2), _queued(2)),
+        (_queued(0), _queued(1)),
+        (_queued(2), _queued(2)),
         None,
         None,
         None,
@@ -1609,16 +1797,6 @@ async def test_worker_wires_the_three_stages_and_persists_the_compile_cache(
     async def ensure(conn: object, model: str, dim: int) -> None:
         calls.append(("ensure", conn, model, dim))
 
-    async def pending(
-        conn: object,
-        *,
-        mapper_name: str,
-        model: str,
-        indexed_kinds: list[str],
-    ) -> int:
-        calls.append(("pending", conn, mapper_name, model, indexed_kinds))
-        return 9
-
     async def read_stage(
         conn: object,
         source: object,
@@ -1626,9 +1804,18 @@ async def test_worker_wires_the_three_stages_and_persists_the_compile_cache(
         *,
         mapper: object,
         embedder: object,
+        indexed_kinds: list[str],
         flush_units: int,
     ) -> None:
-        stages["read"] = (conn, source, pools, mapper, embedder, flush_units)
+        stages["read"] = (
+            conn,
+            source,
+            pools,
+            mapper,
+            embedder,
+            indexed_kinds,
+            flush_units,
+        )
 
     async def embed_stage(
         pools: object,
@@ -1647,9 +1834,9 @@ async def test_worker_wires_the_three_stages_and_persists_the_compile_cache(
         mapper_name: str,
         name: str,
         start: float,
-        pending: int,
+        progress: object,
     ) -> None:
-        stages["write"] = (conn, writes, embedder, mapper_name, name, start, pending)
+        stages["write"] = (conn, writes, embedder, mapper_name, name, start, progress)
 
     printed = _PrintRecorder()
     monkeypatch.setattr(registry, "build_backfill_embedder", build)
@@ -1659,7 +1846,6 @@ async def test_worker_wires_the_three_stages_and_persists_the_compile_cache(
     monkeypatch.setattr(model_buckets, "resolve_plan", plan)
     monkeypatch.setattr(backfill_embedding, "PostgresEngine", engines)
     monkeypatch.setattr(backfill_embedding, "ensure_model_index", ensure)
-    monkeypatch.setattr(backfill_embedding, "_pending_count", pending)
     monkeypatch.setattr(backfill_embedding, "_read_stage", read_stage)
     monkeypatch.setattr(backfill_embedding, "_embed_stage", embed_stage)
     monkeypatch.setattr(backfill_embedding, "_write_stage", write_stage)
@@ -1667,7 +1853,8 @@ async def test_worker_wires_the_three_stages_and_persists_the_compile_cache(
     monkeypatch.setattr(backfill_embedding, "time", _Clock(50.0, 53.4))
     monkeypatch.setattr(backfill_embedding, "print", printed, raising=False)
 
-    await backfill_embedding._worker(config, "cuda:0", queue)
+    progress = _progress(pending=9)
+    await backfill_embedding._worker(config, "cuda:0", queue, progress)
 
     assert calls == [
         ("build", "qwen", "cuda:0", 7, 4),
@@ -1675,21 +1862,15 @@ async def test_worker_wires_the_three_stages_and_persists_the_compile_cache(
         ("vram", "cuda:0", 24.0),
         ("plan", "length-fake", 31.5, 1),
         ("ensure", index_conn, "length-fake", 1),
-        (
-            "pending",
-            index_conn,
-            mapper.name,
-            "length-fake",
-            sorted(mapper.embedded_kinds),
-        ),
         ("save", cache),
     ]
     assert engines.opened == [
         ("postgresql://worker", NOTIFY_CHANNEL),
         ("postgresql://worker", NOTIFY_CHANNEL),
     ]
-    conn, source, pools, read_mapper, read_embedder, flush_units = stages["read"]
+    conn, source, pools, read_mapper, read_embedder, kinds, flush_units = stages["read"]
     assert (conn, source, read_embedder, flush_units) == (read_conn, queue, embedder, 5)
+    assert kinds == sorted(mapper.embedded_kinds)
     assert isinstance(read_mapper, FootprintMapper)
     assert isinstance(pools, asyncio.Queue)
     assert pools.maxsize == 2
@@ -1705,7 +1886,7 @@ async def test_worker_wires_the_three_stages_and_persists_the_compile_cache(
         mapper.name,
         "embed-worker-3",
         50.0,
-        9,
+        progress,
     )
     assert printed.calls == [(("embed-worker-3 DONE in 3s",), {"flush": True})]
 
@@ -1856,6 +2037,98 @@ class _FakeProcess:
     def join(self) -> None:
         self.events.append(f"join {self.name}")
 
+    def is_alive(self) -> bool:
+        return False
+
+
+class _MainQueue:
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def cancel_join_thread(self) -> None:
+        self.cancelled = True
+
+
+def test_main_rejects_zero_worker_slots_before_scanning(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--gpus ''`` with no CPU workers is a usage error, not an "ALL DONE" run.
+
+    Previously the scanner fed pages to nobody and the run exited 0.
+    """
+    scanned: list[object] = []
+
+    async def scan(*args: object, **kwargs: object) -> None:
+        scanned.append((args, kwargs))
+
+    async def pending_count(*args: object, **kwargs: object) -> int:
+        scanned.append((args, kwargs))
+        return 0
+
+    monkeypatch.setattr(backfill_embedding, "_pending_count", pending_count)
+    monkeypatch.setattr(backfill_embedding, "_scan", scan)
+    monkeypatch.setattr(sys, "argv", ["backfill", "postgresql://main", "--gpus", ""])
+
+    with pytest.raises(SystemExit, match=r"^2$"):
+        backfill_embedding.main()
+
+    assert scanned == []
+    assert "no worker slots" in capsys.readouterr().err
+
+
+def test_main_aborts_with_failure_when_every_worker_dies_mid_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scan aborted for lack of live workers exits 1, never "ALL DONE".
+
+    The workers' exit codes are 0 here, so only the abort itself can fail the
+    run; the queue's feeder thread is released so the process can exit.
+    """
+    queue = _MainQueue()
+    events: list[str] = []
+    liveness: list[bool] = []
+
+    def make_process(
+        *,
+        target: object,
+        args: tuple[object, ...],
+        name: str,
+    ) -> _FakeProcess:
+        return _FakeProcess(
+            target=target,
+            args=args,
+            name=name,
+            exitcode=0,
+            events=events,
+        )
+
+    async def scan(*args: object, alive: Callable[[], bool], **kwargs: object) -> None:
+        del args, kwargs
+        liveness.append(alive())
+        raise backfill_embedding._NoLiveWorkersError("every embed worker exited")
+
+    async def pending_count(dsn: str, **kwargs: object) -> int:
+        del dsn, kwargs
+        return 0
+
+    def make_queue(maxsize: int) -> _MainQueue:
+        del maxsize
+        return queue
+
+    printed = _PrintRecorder()
+    monkeypatch.setattr(multiprocessing, "Process", make_process)
+    monkeypatch.setattr(multiprocessing, "Queue", make_queue)
+    monkeypatch.setattr(backfill_embedding, "_pending_count", pending_count)
+    monkeypatch.setattr(backfill_embedding, "_scan", scan)
+    monkeypatch.setattr(backfill_embedding, "print", printed, raising=False)
+    monkeypatch.setattr(sys, "argv", ["backfill", "postgresql://main"])
+
+    assert backfill_embedding.main() == 1
+    assert liveness == [False]
+    assert queue.cancelled
+    assert [args[0] for args, _kwargs in printed.calls][-1] != "ALL DONE"
+
 
 @pytest.mark.parametrize(
     ("exit_codes", "message", "status"),
@@ -1874,6 +2147,7 @@ def test_main_runs_one_worker_per_slot_scans_then_reports(
     processes: list[_FakeProcess] = []
     maxsizes: list[int] = []
     scans: list[tuple[object, ...]] = []
+    counts: list[tuple[object, ...]] = []
     resolved: list[tuple[str, int | None]] = []
     queue = object()
     codes = iter(exit_codes)
@@ -1902,6 +2176,17 @@ def test_main_runs_one_worker_per_slot_scans_then_reports(
         resolved.append((name, dim))
         return f"{name}@resolved"
 
+    async def pending_count(
+        dsn: str,
+        *,
+        mapper_name: str,
+        model: str,
+        indexed_kinds: list[str],
+    ) -> int:
+        events.append("count")
+        counts.append((dsn, mapper_name, model, indexed_kinds))
+        return 11
+
     async def scan(
         dsn: str,
         source: object,
@@ -1911,14 +2196,17 @@ def test_main_runs_one_worker_per_slot_scans_then_reports(
         mapper_name: str,
         model: str,
         indexed_kinds: list[str],
+        alive: Callable[[], bool],
     ) -> None:
         events.append("scan")
+        assert alive() is False  # Every fake process reports dead.
         scans.append((dsn, source, page, n_workers, mapper_name, model, indexed_kinds))
 
     printed = _PrintRecorder()
     monkeypatch.setattr(multiprocessing, "Process", make_process)
     monkeypatch.setattr(multiprocessing, "Queue", make_queue)
     monkeypatch.setattr(registry, "resolved_name", resolved_name)
+    monkeypatch.setattr(backfill_embedding, "_pending_count", pending_count)
     monkeypatch.setattr(backfill_embedding, "_scan", scan)
     monkeypatch.setattr(backfill_embedding, "print", printed, raising=False)
     monkeypatch.setattr(
@@ -1964,17 +2252,29 @@ def test_main_runs_one_worker_per_slot_scans_then_reports(
 
     names = ["embed-worker-0-gpu0", "embed-worker-1-gpu1", "embed-worker-2-cpu"]
     assert maxsizes == [6]
+    progress = processes[0].args[2]
+    assert isinstance(progress, backfill_embedding._Progress)
+    assert progress.pending == 11
     assert [(p.target, p.args, p.name) for p in processes] == [
-        (backfill_embedding._worker_entry, (config(gpu), queue), name)
+        (backfill_embedding._worker_entry, (config(gpu), queue, progress), name)
         for gpu, name in zip(("0", "1", ""), names, strict=True)
     ]
     assert events == [
+        "count",
         *(f"start {name}" for name in names),
         "scan",
         *(f"join {name}" for name in names),
     ]
     mapper = FootprintMapper()
     assert resolved == [("m1", 4)]
+    assert counts == [
+        (
+            "postgresql://main",
+            mapper.name,
+            "m1@resolved",
+            sorted(mapper.embedded_kinds),
+        ),
+    ]
     assert scans == [
         (
             "postgresql://main",

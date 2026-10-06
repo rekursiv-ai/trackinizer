@@ -15,10 +15,16 @@ from trackinizer.lib.agent.sessions import (
     claude,
     codex,
 )
-from trackinizer.lib.agent.types.sessions import UncategorizedRecord, UserMessage
+from trackinizer.lib.agent.sessions.tail import Tail
+from trackinizer.lib.agent.types.sessions import (
+    IncompleteRecord,
+    Thinking,
+    UncategorizedRecord,
+    UserMessage,
+)
 from trackinizer.lib.custom_json import JSON, json_freeze
-from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.trax.run.errors import (
+    CiphertextDroppedError,
     LossyConversionError,
     NotResumableError,
 )
@@ -32,6 +38,8 @@ from trackinizer.wire.wire_session_ir import PartBody, RecordBody
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from trackinizer.types.streams import TraxRecord
 
 
@@ -59,7 +67,8 @@ class _FakeClient:
     """Serves one stored session, recording what the resume stamps."""
 
     def __init__(self, name: str, *, session_format: str) -> None:
-        self.records, self.encoding = _records(name)
+        records, self.encoding = _records(name)
+        self.records: Sequence[TraxRecord] = records
         self._format = session_format
         self.stamped: list[str] = []
 
@@ -194,6 +203,36 @@ class TestTheStampPrecedesTheRun:
 
 class TestLossyConversion:
     """A cross-format resume that DROPS records needs the flag."""
+
+    @pytest.mark.parametrize(
+        ("source", "target", "text"),
+        [("claude", "codex", '{"x":1}'), ("codex", "codex", "{}{}")],
+    )
+    def test_filtered_raw_records_require_lossy(
+        self,
+        source: str,
+        target: str,
+        text: str,
+    ) -> None:
+        client = _FakeClient("claude_sidechain.jsonl", session_format=source)
+        client.records = [UserMessage(content="kept"), IncompleteRecord(text=text)]
+        with pytest.raises(LossyConversionError, match="IncompleteRecord"):
+            prepare_resume(cast_client(client), uuid4(), target)
+        assert client.stamped == []
+
+    def test_missing_seal_stamps_nothing(self) -> None:
+        client = _FakeClient("claude_sidechain.jsonl", session_format="claude")
+        client.records = [Thinking(encrypted="")]
+        with pytest.raises(CiphertextDroppedError, match="no longer stored"):
+            prepare_resume(cast_client(client), uuid4(), "claude")
+        assert client.stamped == []
+
+    def test_failed_file_write_stamps_nothing(self, tmp_path: Path) -> None:
+        client = _FakeClient("claude_sidechain.jsonl", session_format="claude")
+        (tmp_path / "claude").write_text("not a directory")
+        with pytest.raises(NotADirectoryError):
+            prepare_resume(cast_client(client), uuid4(), "claude")
+        assert client.stamped == []
 
     def test_a_claude_session_is_never_lossy(self) -> None:
         """Same format in and out: nothing to drop, no flag needed."""

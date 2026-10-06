@@ -279,7 +279,7 @@ def retype(
                     ),
                 ),
             )
-        case _:
+        case "legacy/SlashCommand":
             return Retyped(
                 slash=SlashCommandOut(
                     timestamp=timestamp,
@@ -287,6 +287,8 @@ def retype(
                     args=convert(payload.get("args"), str, default=""),
                 ),
             )
+        case _:
+            raise AssertionError(f"Missing mapping for legacy kind: {record.kind!r}")
 
 
 def _assistant_fan_out(
@@ -338,7 +340,7 @@ def _assistant_fan_out(
             dict[str, object],
             default={},
         ).items()
-        if (count := convert(value, int))
+        if isinstance(value, int) and not isinstance(value, bool) and (count := value)
     }
     if tokens:
         records.append(

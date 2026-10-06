@@ -185,6 +185,33 @@ def test_the_opening_clear_states_what_the_fresh_context_was_given() -> None:
     assert "- tdd: write it" in opening.system_prompt
 
 
+def test_the_opening_clear_a_consumer_holds_is_the_assembled_one() -> None:
+    """The clear handed over is final: axiom 11 makes a yielded record final.
+
+    Claude yielded the clear after the first attachment line and then
+    replaced only its own copy, so a consumer held a clear stating ``A``
+    while the session had given ``A`` and ``B``.
+    """
+    attachments = "".join(
+        json.dumps(
+            {
+                "type": "attachment",
+                "attachment": {"type": "skill_listing", "content": text},
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+            separators=(",", ":"),
+        )
+        + "\n"
+        for text in ("A", "B")
+    )
+
+    records = _read(claude, attachments + _CLAUDE)
+
+    opening = records[1]
+    assert isinstance(opening, ContextClear)
+    assert opening.system_prompt == "A\nB"
+
+
 def test_the_opening_clear_gathers_every_instruction_not_just_a_declared_one() -> None:
     """Codex names ``base_instructions`` AND sends more before the first turn.
 

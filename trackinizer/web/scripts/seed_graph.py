@@ -150,9 +150,9 @@ def islands(structure: Structure) -> Islands:
 def showcase(structure: Structure, found: Islands) -> Showcase:
     """Pick the island the demo opens, and the Belief in it that it selects.
 
-    The island is the one of at most 100 nodes whose edges carry the most
-    valences, one of them against, so its evidence draws in both colours and it
-    frames large; the Belief is the one in it cited most.
+    The island is the one of at most 100 nodes whose Beliefs its own edges cite
+    with the most valences, one of them against, so its evidence draws in both
+    colours and it frames large; the Belief is the one in it cited most.
 
     Args:
       structure: The nodes and edges.
@@ -170,7 +170,12 @@ def showcase(structure: Structure, found: Islands) -> Showcase:
     against: set[int] = set()
     for link in structure.edges:
         home = found.home.get(link.to_index)
-        if link.sign and home is not None and home == found.home.get(link.from_index):
+        if (
+            link.sign
+            and structure.nodes[link.to_index].kind == "Belief"
+            and home is not None
+            and home == found.home.get(link.from_index)
+        ):
             cited[home, link.to_index] += 1
             if link.sign < 0:
                 against.add(home)
@@ -181,12 +186,8 @@ def showcase(structure: Structure, found: Islands) -> Showcase:
     if not candidates:
         raise ValueError("no island has evidence against a Belief in it")
     root = max(candidates, key=lambda r: (weight[r], r))
-    beliefs = [
-        (count, n)
-        for (home, n), count in cited.items()
-        if home == root and structure.nodes[n].kind == "Belief"
-    ]
-    return Showcase(root=root, belief=max(beliefs)[1])
+    belief = max((count, n) for (home, n), count in cited.items() if home == root)
+    return Showcase(root=root, belief=belief[1])
 
 
 def seed_graph(
@@ -266,11 +267,9 @@ _AGENTS: Final = (
 )
 
 
-# Each node's id.
-#
-# The batch route adds edges only beside a node it creates, and a transaction a batch
-# keeps a PGlite server quick (a transaction an edge took 0.2 s each), so the newest
-# nodes are held back to carry the edges, a batch each.
+# The batch route adds edges only beside a node it creates. One transaction per batch
+# keeps a PGlite server quick, where one per edge took 0.2 s each, so the newest nodes
+# are held back to carry the edges, a batch each.
 def _write(
     client: GraphClient,
     structure: Structure,
@@ -280,7 +279,7 @@ def _write(
 ) -> list[uuid.UUID]:
     """Create the nodes oldest first and the edges in ``cascade_order``."""
     pending = cascade_order(structure)
-    first = len(structure.nodes) - math.ceil(len(pending) / BATCH_MAX_ITEMS)
+    first = _first_carrier(len(structure.nodes), pending)
     ids: list[uuid.UUID] = []
     for chunk in itertools.batched(range(first), BATCH_MAX_ITEMS):
         ids.extend(
@@ -309,6 +308,25 @@ def _write(
     return ids
 
 
+# A carrier takes up to ``BATCH_MAX_ITEMS`` edges whose ends are no newer than it.
+# Filling carriers oldest first with any edges they can take then lands every edge
+# exactly when, for each node, the edges whose newer end is that node or newer fit the
+# carriers from there on.
+def _first_carrier(nodes: int, edges: Sequence[Link]) -> int:
+    """Return the oldest of the fewest newest nodes that can carry ``edges``."""
+    first = nodes - math.ceil(len(edges) / BATCH_MAX_ITEMS)
+    newest = Counter(max(link.from_index, link.to_index) for link in edges)
+    later = 0
+    for n in reversed(range(nodes)):
+        later += newest[n]
+        if later > BATCH_MAX_ITEMS * (nodes - n):
+            raise ValueError(
+                f"{len(edges)} edges found no batch: {later} end at node {n} or "
+                f"newer, past what {nodes - n} carriers of {BATCH_MAX_ITEMS} hold",
+            )
+    return first
+
+
 # A complete session is created live, as every session is, and its end completes it.
 # Ended before its edges are added, its end alerts nothing.
 def _end_sessions(
@@ -332,7 +350,7 @@ def _bodies(
 ) -> list[dict[str, object]]:
     """Each node's submit body: title, status and owner, a Belief's verdict, the showcase's text."""
     contents = parse(GRAPH_CONTENTS.read_text(), dict[str, object])
-    written = convert(contents.get("roots"), list[str], default=[])
+    written = convert(contents["roots"], list[str])
     named = {root: written[k % len(written)] for k, root in enumerate(found.roots)}
     kinds = convert(contents.get("kinds"), dict[str, object])
     built = {

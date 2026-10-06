@@ -109,10 +109,12 @@ def tag_kind(inquiry: Inquiry | None) -> MutableJSON | None:
 def _jsonable(value: object) -> object:
     """Convert one value -- and everything under it -- to JSON-shaped data."""
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {
-            field.name: _jsonable(cast(object, getattr(value, field.name)))
-            for field in dataclasses.fields(value)
-        }
+        result: dict[str, object] = {}
+        for field in dataclasses.fields(value):
+            # Dataclass reflection returns Any; this cast establishes the recursive boundary.
+            field_value = cast(object, getattr(value, field.name))
+            result[field.name] = _jsonable(field_value)
+        return result
     if isinstance(value, tuple | list):
         # Tuples become lists: the projection fields (edges, ``labels``,
         # ``issue_kind``) are tuples on the model, and a caller comparing

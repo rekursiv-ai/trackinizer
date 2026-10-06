@@ -317,8 +317,8 @@ class TestDetailFormats:
             "owner:       alice",
             "labels:      math",
             "subscribers: bob",
-            "judgement  : proven",
-            "confidence : 0.9",
+            "judgement:   proven",
+            "confidence:  0.9",
             "codechanges: 1 entries",
             "    - c1",
             "agent-cost:  $1.0000",
@@ -518,7 +518,7 @@ class TestDetailFormats:
                 },
             },
         )
-        assert "kind       : task,bug" in text
+        assert "kind:        task,bug" in text
         assert "issue_kind" not in text
         assert "['task'" not in text
 
@@ -705,6 +705,67 @@ def test_row_value_depth_cap() -> None:
         cursor = nxt
     cursor.append("leaf")
     assert "..." in _row_value(deep)
+
+
+def test_show_extra_labels_share_the_fixed_value_column() -> None:
+    text = render.format_show({"self": {"title": "VALUE", "judgement": "VALUE"}})
+    rows = [line for line in text.splitlines() if "VALUE" in line]
+    assert len(rows) == 2
+    assert rows[0].index("VALUE") == rows[1].index("VALUE")
+    assert "judgement:" in rows[1]
+
+
+def test_session_hit_rendering_all_branches() -> None:
+    assert render.format_session_hits({}) == "(no matches)\n"
+    assert (
+        render.format_session_hits({"degraded": True})
+        == "(semantic search unavailable; showing full-text results only)\n(no matches)\n"
+    )
+    assert (
+        render.format_session_hits(
+            {
+                "hits": [
+                    {
+                        "session_id": "123456789",
+                        "part": 2,
+                        "idx": 3,
+                        "score": 0.125,
+                        "source": "fts",
+                        "title": "title",
+                        "snippet": "  excerpt  ",
+                    },
+                ],
+            },
+        )
+        == "0.1250  fts       12345678#2/3  title\n  excerpt\n"
+    )
+    empty_hit: dict[str, object] = {}
+    assert (
+        render.format_session_hits({"hits": [empty_hit]})
+        == "0.0000            #0/0  \n"
+    )
+    assert (
+        render.format_session_hits({"hits": [{"snippet": "   "}]})
+        == "0.0000            #0/0  \n"
+    )
+
+
+def test_label_resolution_splits_and_trims() -> None:
+    assert render.resolve_labels(None) == []
+    empty: list[str] = []
+    assert render.resolve_labels(empty) == []
+    assert render.resolve_labels([" a, b ,,", "c", " "]) == ["a", "b", "c"]
+
+
+def test_actor_display_uses_system_and_omits_redundant_principal() -> None:
+    assert render._format_actor({}) == "actor=system"
+    assert (
+        render._format_actor({"actor": "alice", "principal": "alice"}) == "actor=alice"
+    )
+    assert (
+        render._format_actor({"actor": "alice", "principal": "bob"})
+        == "actor=alice principal=bob"
+    )
 
 
 if __name__ == "__main__":

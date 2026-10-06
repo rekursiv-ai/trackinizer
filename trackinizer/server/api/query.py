@@ -689,10 +689,9 @@ def _ancestor_json(ancestor: Ancestor) -> MutableJSON:
 
 def _brief_change(change: Change) -> dict[str, object]:
     """Serialize ``change`` with unset snapshot keys dropped and snapshot text cut."""
-    row = convert(
-        cast(object, _change_adapter().dump_python(change, mode="json")),
-        dict[str, object],
-    )
+    # Pydantic's JSON dump is Any; convert narrows the runtime shape below.
+    dumped = cast(object, _change_adapter().dump_python(change, mode="json"))
+    row = convert(dumped, dict[str, object])
     text = _snapshot_text_fields()
     for side in ("old", "new"):
         row[side] = {

@@ -25,11 +25,13 @@ import os
 import re
 
 from trackinizer.lib.agent.sessions import claude
-from trackinizer.trax.run.adapters.tail import Tail
+from trackinizer.lib.agent.sessions.tail import Tail
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+    from trackinizer.types.streams import TraxRecord
 
 
 _NOT_KEPT: Final = re.compile(r"[^A-Za-z0-9-]")
@@ -118,6 +120,6 @@ class ClaudeAdapter:
             return None
         return path.stem or None
 
-    def reader(self) -> Tail:
+    def reader(self) -> Tail[TraxRecord]:
         """Return a fresh IR reader for one claude session file."""
         return Tail(claude.normalize)

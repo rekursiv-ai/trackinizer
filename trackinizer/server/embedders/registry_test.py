@@ -9,6 +9,7 @@ importing the registry stays torch-free -- config.py imports it at config time.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import Mock
 
 import importlib
 import subprocess
@@ -202,6 +203,18 @@ def test_weights_present_is_true_for_weightless() -> None:
     """A stub / unset name is always 'present' (no weights to download)."""
     assert registry.weights_present("")
     assert registry.weights_present("stub-1024")
+
+
+def test_cached_builder_never_constructs_uncached_weights(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    check = Mock(return_value=False)
+    build = Mock(side_effect=AssertionError("Uncached model constructed"))
+    monkeypatch.setattr(registry, "weights_present", check)
+    monkeypatch.setattr(registry, "build_session_embedder", build)
+    assert registry.build_cached_session_embedder("qwen3-embedding-4b", dim=256) is None
+    check.assert_called_once_with("qwen3-embedding-4b", dim=256)
+    build.assert_not_called()
 
 
 if __name__ == "__main__":

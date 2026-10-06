@@ -17,9 +17,9 @@ So the generator runs on its own thread and blocks for its next line, and
 second reader here and no second parse: the adapter's own ``normalize`` is what
 runs, so a dialect fix reaches capture and conversion at once.
 
-Typed to :data:`TraxRecord` rather than the shared IR, because this drives
-EVERY adapter: the CLI dialects yield the shared members, and the scrape adds
-the three stream records only it can emit.
+Generic over the record type, because this drives EVERY adapter: the CLI
+dialects yield the shared members, and the trackinizer scrape adds the three
+stream records only it can emit. The lib layer cannot name that union.
 """
 
 from __future__ import annotations
@@ -32,13 +32,12 @@ import queue
 import threading
 
 from trackinizer.lib.agent.types.sessions import TurnContext
-from trackinizer.types.streams import TraxRecord
 
 
 __all__ = ["Tail"]
 
 
-type Normalize = Callable[[TextIO], Iterator[TraxRecord]]
+type Normalize[R] = Callable[[TextIO], Iterator[R]]
 
 
 class _Signal:
@@ -57,7 +56,7 @@ _NO_MORE_LINES: Final = _Signal()
 """There will be no further lines, so the reader may finish."""
 
 
-class Tail:
+class Tail[R]:
     """One file's reader, fed a line at a time.
 
     Stateful and single-threaded FROM THE CALLER's side: one instance per FILE,
@@ -66,16 +65,16 @@ class Tail:
     the first's.
     """
 
-    def __init__(self, normalize: Normalize, *, whole_file: bool = False) -> None:
+    def __init__(self, normalize: Normalize[R], *, whole_file: bool = False) -> None:
         self._normalize = normalize
         self._whole_file = whole_file
         self._encoding: dict[str, object] = {}
         self._lines: queue.SimpleQueue[str | _Signal] = queue.SimpleQueue()
-        self._produced: queue.SimpleQueue[TraxRecord | _Signal] = queue.SimpleQueue()
+        self._produced: queue.SimpleQueue[R | _Signal] = queue.SimpleQueue()
         self._reader: threading.Thread | None = None
         self._ended = False
 
-    def feed(self, text: str) -> list[TraxRecord]:
+    def feed(self, text: str) -> list[R]:
         """Consume one pushed chunk; return the records it produced.
 
         A LIST, not a generator. The caller emits each record as it arrives and
@@ -113,7 +112,7 @@ class Tail:
         self._lines.put(text)
         return self._collect()
 
-    def close(self) -> list[TraxRecord]:
+    def close(self) -> list[R]:
         """Tell the reader no more lines are coming; return what only EOF says.
 
         Whether the file ended on a newline is knowable nowhere else, and it is
@@ -169,7 +168,7 @@ class Tail:
     def _read(
         self,
         lines: queue.SimpleQueue[str | _Signal],
-        produced: queue.SimpleQueue[TraxRecord | _Signal],
+        produced: queue.SimpleQueue[R | _Signal],
     ) -> None:
         """Run the adapter's generator using only this reader's queues."""
         try:
@@ -185,9 +184,9 @@ class Tail:
         finally:
             produced.put(_ENDED)
 
-    def _collect(self) -> list[TraxRecord]:
+    def _collect(self) -> list[R]:
         """Take records until the reader asks for another line or finishes."""
-        out: list[TraxRecord] = []
+        out: list[R] = []
         while True:
             item = self._produced.get()
             if item is _WANTS_A_LINE:
@@ -214,14 +213,14 @@ class Tail:
                 raise TypeError("Expected not isinstance(item, _Signal).")
             out.append(self._remembered(item))
 
-    def _remembered(self, record: TraxRecord) -> TraxRecord:
+    def _remembered(self, record: R) -> R:
         """Keep the whole-file properties a rewrite needs, as they are stated."""
         if isinstance(record, TurnContext) and record.encoding:
             self._encoding = dict(record.encoding)
         return record
 
 
-class _Pulled(StringIO):
+class _Pulled[R](StringIO):
     """The stream a reader iterates, answered one pushed line at a time.
 
     The handoff is what makes ``feed`` exact: the reader has finished the line
@@ -233,7 +232,7 @@ class _Pulled(StringIO):
     def __init__(
         self,
         lines: queue.SimpleQueue[str | _Signal],
-        produced: queue.SimpleQueue[TraxRecord | _Signal],
+        produced: queue.SimpleQueue[R | _Signal],
     ) -> None:
         super().__init__()
         self._lines = lines
@@ -248,7 +247,7 @@ class _Pulled(StringIO):
         return line
 
     @override
-    def __iter__(self) -> _Pulled:
+    def __iter__(self) -> _Pulled[R]:
         return self
 
     @override

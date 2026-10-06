@@ -109,12 +109,19 @@ WHOLE_FEED: Final = FeedScope()
 # (``peerPayload`` in the web app). ``payload`` is ``json``, which each ``->``
 # parses again, so the kind tests come first and only messages and context state
 # are parsed.
+_ATTACHMENT_COUNT: Final = (
+    "coalesce(json_array_length(CASE"
+    " WHEN json_typeof(e.payload -> 'attachments') = 'array'"
+    " THEN e.payload -> 'attachments'"
+    " ELSE e.payload -> 'attachments' -> 'py/tuple' END), 0)"
+)
+
 CONVERSATION: Final = (
     "((e.kind IN ('UserMessage', 'AssistantMessage', 'AgentToAgentMessage')"
     " AND (e.payload ->> 'content' ~ '[^[:space:]]'"
     " AND (e.kind <> 'AgentToAgentMessage' OR e.payload ->> 'content' !~"
     " '^Message Type: [A-Z_]+\\nTask name: [^\\n]*\\nSender: [^\\n]*\\nPayload:\\s*$')"
-    " OR json_array_length(e.payload -> 'attachments' -> 'py/tuple') > 0)"
+    f" OR {_ATTACHMENT_COUNT} > 0)"
     " AND (e.kind <> 'UserMessage'"
     " OR (e.payload -> 'extra' ->> 'isMeta') IS DISTINCT FROM 'true'"
     " AND coalesce(e.payload ->> 'content', '') !~ '^\\s*<(codex_internal_context( [a-z_]+=\"[^\"]*\")*"
@@ -132,7 +139,7 @@ UNREADABLE: Final = (
     " AND coalesce(e.payload ->> 'summary', '') = '')"
     " OR (e.kind = 'AgentToAgentMessage' AND e.payload ->> 'content' ~"
     " '^Message Type: [A-Z_]+\\nTask name: [^\\n]*\\nSender: [^\\n]*\\nPayload:\\s*$'"
-    " AND coalesce(json_array_length(e.payload -> 'attachments' -> 'py/tuple'), 0) = 0))"
+    f" AND {_ATTACHMENT_COUNT} = 0))"
 )
 """SQL true of a record, aliased ``e``, that has nothing to read."""
 
@@ -340,19 +347,25 @@ class _SessionFeedMixin(_StoreShared):
 
         """
         end = until.astimezone(UTC) if until is not None else datetime.now(UTC)
+        params: list[object] = [earliest, end]
+        clauses = ["r.created >= $1", "r.created <= $2"]
+        clauses.extend(scope.clauses(params, kind="r.kind"))
+        joined = (
+            "JOIN inquiries i ON i.id = r.session_id " if scope.names_sessions else ""
+        )
+        first_sql = vetted_sql(
+            "SELECT min(r.created) FROM session_records r ",
+            joined,
+            "WHERE ",
+            " AND ".join(clauses),
+        )
         async with self.engine.acquire() as conn:
             first = (
                 since
                 if since is not None
                 else (
                     end
-                    if (
-                        value := await conn.fetchval(
-                            "SELECT min(created) FROM session_records WHERE created >= $1",
-                            earliest,
-                        )
-                    )
-                    is None
+                    if (value := await conn.fetchval(first_sql, *params)) is None
                     else convert(value, datetime)
                 )
             )

@@ -35,8 +35,8 @@ from trackinizer.trax.run.errors import (
 from trackinizer.trax.run.materialize import (
     RESUMABLE_TARGETS,
     Materialized,
-    identified,
     materialize,
+    prepared,
 )
 from trackinizer.types.streams import Stderr, Stdin, Stdout
 
@@ -57,7 +57,7 @@ def prepare_resume(
     *,
     lossy: bool = False,
 ) -> Materialized:
-    """Stamp the server, materialize the newest part, return where it landed.
+    """Materialize the newest part, stamp the server, return where it landed.
 
     Args:
       client: Talks to the server holding the session.
@@ -99,7 +99,19 @@ def prepare_resume(
     # MEASURED, not predicted from the format pair: the same two formats can
     # be lossless for one session and lossy for another, depending on which
     # record kinds it actually holds. ``convert`` decides losses the same way.
-    if not lossy and (dropped := _undroppable(records, part.format, target)):
+    minted = uuid4()
+    encoding = json_freeze(convert(part.metadata, dict[str, object]))
+    ready = prepared(
+        target=target,
+        records=records,
+        encoding=encoding,
+        sealed=sealed,
+        source=part.format,
+        session_id=minted,
+    )
+    if not lossy and (
+        dropped := _undroppable(records, part.format, target, ready=ready)
+    ):
         raise LossyConversionError(
             f"resuming a {part.format!r} session as {target!r} drops "
             f"{', '.join(dropped)}; pass --lossy to accept a shortened "
@@ -107,9 +119,7 @@ def prepare_resume(
         )
     # The id is minted here and stamped BEFORE the runner opens its session,
     # so the resumed run re-attaches this row rather than forking a new one.
-    minted = uuid4()
-    client.set_cli_session_id(session_id, str(minted))
-    return materialize(
+    written = materialize(
         target=target,
         records=records,
         # How the SOURCE FILE spelled its bytes. Claude's ascii-escaping
@@ -124,6 +134,8 @@ def prepare_resume(
         # the format they were read from.
         source=part.format,
     )
+    client.set_cli_session_id(session_id, str(minted))
+    return written
 
 
 # Written and re-read rather than reasoned about: whether a conversion loses anything
@@ -140,20 +152,25 @@ def prepare_resume(
 # their counts legitimately differ across a crossing while no turn is touched. Counting
 # them made every claude-to-codex resume demand ``--lossy`` for a transcript that loses
 # nothing, which is a flag meaning the opposite of what it says.
-#
-# A session resumed in the format it was captured in converts nothing, so it can lose
-# nothing and the round trip is skipped.
 def _undroppable(
     records: Sequence[SessionRecord],
     source: str,
     target: str,
+    *,
+    ready: Sequence[SessionRecord] | None = None,
 ) -> tuple[str, ...]:
     """Acts writing as ``target`` would lose, measured by rewriting."""
-    if source == target:
-        return ()
+    if ready is None:
+        ready = prepared(
+            target=target,
+            records=records,
+            encoding=json_freeze({}),
+            source=source,
+            session_id=uuid4(),
+        )
     writer = claude if target == "claude" else codex
     out = StringIO()
-    writer.denormalize(identified(target, records, uuid4()), out)
+    writer.denormalize(ready, out)
     rebuilt = writer.normalize(StringIO(out.getvalue()))
     return tuple(sorted((_acts(records) - _acts(rebuilt)).elements()))
 

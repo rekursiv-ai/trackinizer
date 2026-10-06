@@ -30,7 +30,6 @@ from trackinizer.trax.run.materialize import (
     RESUMABLE_TARGETS,
     _codex_cli_version,
     materialize,
-    materialize_claude,
 )
 
 
@@ -90,14 +89,14 @@ class TestTheFileIsThisMachinesOwn:
         And for a codex capture it would name an id claude never issued, so
         the CLI would refuse a session it has no record of.
         """
-        first = materialize_claude(records=_records(), encoding=_encoding())
-        second = materialize_claude(records=_records(), encoding=_encoding())
+        first = materialize(target="claude", records=_records(), encoding=_encoding())
+        second = materialize(target="claude", records=_records(), encoding=_encoding())
 
         assert first.cli_session_id != second.cli_session_id
 
     def test_the_file_is_named_for_the_minted_id(self) -> None:
         """``--resume <uuid>`` finds the file by that name, so they must agree."""
-        written = materialize_claude(records=_records(), encoding=_encoding())
+        written = materialize(target="claude", records=_records(), encoding=_encoding())
 
         assert written.path.stem == str(written.cli_session_id)
         assert written.path.suffix == ".jsonl"
@@ -109,7 +108,7 @@ class TestTheFileIsThisMachinesOwn:
         name the CAPTURED session is one the CLI will not associate with the
         id it was asked to resume.
         """
-        written = materialize_claude(records=_records(), encoding=_encoding())
+        written = materialize(target="claude", records=_records(), encoding=_encoding())
 
         declared = {
             parse(line, dict[str, object])["sessionId"]
@@ -130,7 +129,8 @@ class TestTheFileIsThisMachinesOwn:
         Not every record carries one: the IR holds no identity, so a record the
         server returned without a provider residual states nothing to rewrite.
         """
-        written = materialize_claude(
+        written = materialize(
+            target="claude",
             records=[UserMessage(content="hi"), AssistantMessage(content="hello")],
             # A FOREIGN encoding, which is what makes the writer synthesize
             # claude's identity keys at all: a codex-captured session states
@@ -150,7 +150,7 @@ class TestTheFileIsThisMachinesOwn:
         Resuming in a different directory is expected: the file lands in the
         project THIS cwd names, which is where the CLI will look for it.
         """
-        written = materialize_claude(records=_records(), encoding=_encoding())
+        written = materialize(target="claude", records=_records(), encoding=_encoding())
 
         assert written.path.parent.parent == tmp_path / "claude" / "projects"
 
@@ -159,7 +159,7 @@ class TestTheRewriteIsReadableBack:
     """What is written must normalize back to what went in."""
 
     def test_the_records_survive_the_round_trip(self) -> None:
-        written = materialize_claude(records=_records(), encoding=_encoding())
+        written = materialize(target="claude", records=_records(), encoding=_encoding())
 
         with written.path.open(encoding="utf-8") as handle:
             reread = list(claude.normalize(handle))
@@ -176,7 +176,7 @@ class TestTheRewriteIsReadableBack:
         is only where claude states it -- the ``sessionId`` each line carries
         in its own residual.
         """
-        written = materialize_claude(records=_records(), encoding=_encoding())
+        written = materialize(target="claude", records=_records(), encoding=_encoding())
 
         with written.path.open(encoding="utf-8") as handle:
             declared = {
@@ -195,7 +195,8 @@ class TestCiphertext:
     def test_ciphertext_is_spliced_back_into_its_record(self) -> None:
         """The bytes live in another table; the file needs them inline."""
         sealed = "c2VhbGVkLXJlYXNvbmluZw=="
-        written = materialize_claude(
+        written = materialize(
+            target="claude",
             records=[Thinking(encrypted="")],
             encoding=json_freeze({}),
             sealed=[sealed],
@@ -212,7 +213,8 @@ class TestCiphertext:
         inside the provider with nothing pointing back at retention.
         """
         with pytest.raises(CiphertextDroppedError, match="no longer stored"):
-            materialize_claude(
+            materialize(
+                target="claude",
                 records=[Thinking(encrypted="")],
                 encoding=json_freeze({}),
                 sealed=[None],
@@ -224,7 +226,8 @@ class TestCiphertext:
     ) -> None:
         """A half-written file would be captured as this run's own transcript."""
         with pytest.raises(CiphertextDroppedError):
-            materialize_claude(
+            materialize(
+                target="claude",
                 records=[UserMessage(content="a"), Thinking(encrypted="")],
                 encoding=json_freeze({}),
                 sealed=[None, None],
@@ -232,9 +235,28 @@ class TestCiphertext:
 
         assert not list((tmp_path / "claude" / "projects").rglob("*.jsonl"))
 
+    @pytest.mark.parametrize("source", ["claude", "codex"])
+    def test_unsealed_summary_and_foreign_dropped_seal_resume(
+        self,
+        source: str,
+    ) -> None:
+        written = materialize(
+            target="claude",
+            records=[
+                Thinking(
+                    summary="summary",
+                    encrypted="" if source == "codex" else None,
+                ),
+            ],
+            encoding=json_freeze({}),
+            source=source,
+        )
+        assert "summary" in written.path.read_text(encoding="utf-8")
+
     def test_readable_thinking_needs_no_ciphertext(self) -> None:
         """A summarized reasoning block was never sealed, so it replays fine."""
-        written = materialize_claude(
+        written = materialize(
+            target="claude",
             records=[Thinking(content="visible reasoning")],
             encoding=json_freeze({}),
             sealed=[None],

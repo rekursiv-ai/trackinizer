@@ -392,6 +392,29 @@ def test_a_malformed_row_names_the_field(
         _read(rows, uuid4())
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_slash_command_without_timestamp_uses_capture_time(store: Store) -> None:
+    session_id = await _legacy_session(store)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE session_records SET timestamp = NULL WHERE session_id = $1 "
+            "AND payload::jsonb ->> 'kind' = 'legacy/SlashCommand'",
+            session_id,
+        )
+        created = await conn.fetchval(
+            "SELECT created FROM session_records WHERE session_id = $1 "
+            "AND payload::jsonb ->> 'kind' = 'legacy/SlashCommand'",
+            session_id,
+        )
+        await retype_session(conn, session_id)
+        timestamp = await conn.fetchval(
+            "SELECT timestamp FROM session_slash_commands WHERE session_id = $1",
+            session_id,
+        )
+    assert timestamp == created
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 

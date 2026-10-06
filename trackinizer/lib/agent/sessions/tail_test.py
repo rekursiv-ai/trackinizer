@@ -11,9 +11,8 @@ import threading
 
 import pytest
 
-from trackinizer.lib.agent.types.sessions import UserMessage
-from trackinizer.trax.run.adapters import tail
-from trackinizer.types.streams import TraxRecord
+from trackinizer.lib.agent.sessions import tail
+from trackinizer.lib.agent.types.sessions import SessionRecord, UserMessage
 
 
 if TYPE_CHECKING:
@@ -103,6 +102,13 @@ def test_unstarted_close_needs_no_reader() -> None:
     assert reader._reader is None
 
 
+def test_a_fresh_reader_has_read_nothing() -> None:
+    reader = tail.Tail(_records)
+    assert reader.encoding == {}
+    assert reader._ended is False
+    assert reader._produced.empty()
+
+
 def test_whole_file_reading_stays_threadless() -> None:
     reader = tail.Tail(_records, whole_file=True)
     assert reader.feed("first\n") == [
@@ -117,7 +123,7 @@ def test_whole_file_reading_stays_threadless() -> None:
     assert reader._reader is None
 
 
-def _records(stream: TextIO) -> Iterator[TraxRecord]:
+def _records(stream: TextIO) -> Iterator[SessionRecord]:
     for line in stream:
         text = line.rstrip("\n")
         if text == "boom":
@@ -128,10 +134,13 @@ def _records(stream: TextIO) -> Iterator[TraxRecord]:
     yield UserMessage(content="EOF")
 
 
-class _PausingQueue(queue.SimpleQueue[TraxRecord | tail._Signal]):
+class _PausingQueue(queue.SimpleQueue[SessionRecord | tail._Signal]):
     """Pause after publishing a selected signal, before the reader can exit."""
 
-    def __init__(self, pause_when: Callable[[TraxRecord | tail._Signal], bool]) -> None:
+    def __init__(
+        self,
+        pause_when: Callable[[SessionRecord | tail._Signal], bool],
+    ) -> None:
         super().__init__()
         self._pause_when = pause_when
         self.published = threading.Event()
@@ -140,7 +149,7 @@ class _PausingQueue(queue.SimpleQueue[TraxRecord | tail._Signal]):
     @override
     def put(
         self,
-        item: TraxRecord | tail._Signal,
+        item: SessionRecord | tail._Signal,
         block: bool = True,
         timeout: float | None = None,
     ) -> None:
@@ -167,13 +176,13 @@ def _observe_join(
 
 def _returned(
     progress: queue.SimpleQueue[str],
-    completed: Future[list[TraxRecord]],
+    completed: Future[list[SessionRecord]],
 ) -> None:
     del completed
     progress.put("returned")
 
 
-def _finish_reader(reader: tail.Tail) -> None:
+def _finish_reader(reader: tail.Tail[SessionRecord]) -> None:
     worker = reader._reader
     if worker is not None:
         reader._lines.put(tail._NO_MORE_LINES)

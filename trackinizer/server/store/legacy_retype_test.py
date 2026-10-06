@@ -27,6 +27,7 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
 )
 from trackinizer.lib.custom_json import json_freeze
+from trackinizer.server.store import legacy_retype
 from trackinizer.server.store.legacy_retype import (
     LEGACY_KINDS,
     retype,
@@ -200,6 +201,21 @@ class TestAssistantMessageFanOut:
         assert usage.info.get("input") == 7
         assert usage.info.get("output") == 3
 
+    @pytest.mark.parametrize("invalid", [None, "7", [], {}])
+    def test_invalid_optional_token_counts_do_not_abort_turn(
+        self,
+        invalid: object,
+    ) -> None:
+        out = retype(
+            _legacy(
+                "legacy/AssistantMessage",
+                {"tokens": {"input": invalid, "output": 3}},
+            ),
+        )
+        assert isinstance(out.records[0], AssistantMessage)
+        usage = next(record for record in out.records if isinstance(record, TokenUsage))
+        assert usage.info == {"output": 3}
+
     def test_all_zero_tokens_produce_no_token_usage(self) -> None:
         # The old union defaulted ``tokens`` to an all-zero TokenCount, so 020
         # payloads carry a zeros object even for turns that were never billed.
@@ -314,6 +330,18 @@ class TestAttachments:
 
 
 class TestContract:
+    def test_new_kind_requires_an_explicit_mapping(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            legacy_retype,
+            "LEGACY_KINDS",
+            LEGACY_KINDS | {"legacy/New"},
+        )
+        with pytest.raises(AssertionError, match="legacy/New"):
+            retype(_legacy("legacy/New", {}))
+
     def test_unknown_message_is_not_a_member(self) -> None:
         assert "legacy/UnknownMessage" not in LEGACY_KINDS
 
