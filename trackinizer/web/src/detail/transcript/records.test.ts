@@ -53,12 +53,12 @@ test("a tool call shows its main argument as written, and its other arguments ap
   });
   // Codex's shell names its argv, which the codec writes as a tuple; the shell
   // that runs a script goes, as Codex's own TUI drops it.
-  const argv = { command: { "py/tuple": ["bash", "-lc", "ls -la"] }, workdir: "/w" };
+  const argv = { command: ["bash", "-lc", "ls -la"], workdir: "/w" };
   expect(recordView(record("ToolCall", { name: "shell", arguments: argv }))).toMatchObject({
     primary: "ls -la",
     args: [["workdir", "/w"]],
   });
-  const opaque = { channel: "#eng", blocks: { "py/tuple": [{ type: "section" }] } };
+  const opaque = { channel: "#eng", blocks: [{ type: "section" }] };
   expect(recordView(record("ToolCall", { name: "mcp__slack__post", arguments: opaque }))).toMatchObject({
     primary: "",
     args: [
@@ -69,7 +69,7 @@ test("a tool call shows its main argument as written, and its other arguments ap
 });
 
 test("a shell result names its command as a shell would read it, apart from its output and exit (B8)", () => {
-  const argv = { "py/tuple": ["echo", "it's", "a b", "--x=1"] };
+  const argv = ["echo", "it's", "a b", "--x=1"];
   expect(recordView(record("ShellCommandResult", { command: argv, stdout: "it's\n", stderr: "", exit_code: 0 }))).toEqual({
     shape: "shell",
     label: "Shell command",
@@ -81,20 +81,18 @@ test("a shell result names its command as a shell would read it, apart from its 
     tool: "command",
     failed: false,
   });
-  const script = { "py/tuple": ["/bin/bash", "-lc", "cd /w && date -u"] };
+  const script = ["/bin/bash", "-lc", "cd /w && date -u"];
   expect(recordView(record("ShellCommandResult", { command: script, stdout: "", stderr: "", exit_code: 0 }))).toMatchObject({ command: "cd /w && date -u" });
   // Sagent's argv is the whole command line as one word.
-  const line = { "py/tuple": ["date -u +%s; ls 'a b'"] };
+  const line = ["date -u +%s; ls 'a b'"];
   expect(recordView(record("ShellCommandResult", { command: line, stdout: "", stderr: "", exit_code: 0 }))).toMatchObject({ command: "date -u +%s; ls 'a b'" });
 });
 
 test("an edit is a unified diff: the provider's own context and header, else the line it named (B9)", () => {
-  const edits = {
-    "py/tuple": [
-      { before: "old\n", after: "new\n", lead: "@@ -3,3 +3,3 @@\n ctx a\n", trail: " ctx b\n", start: 4, count: 1, bare: { "py/set": [] } },
-      { before: "x\n", after: "", lead: null, trail: null, start: 10, count: 1, bare: { "py/set": [] } },
-    ],
-  };
+  const edits = [
+      { before: "old\n", after: "new\n", lead: "@@ -3,3 +3,3 @@\n ctx a\n", trail: " ctx b\n", start: 4, count: 1, bare: [] },
+      { before: "x\n", after: "", lead: null, trail: null, start: 10, count: 1, bare: [] },
+    ];
   const view = recordView(record("FileEditResult", { path: "a.py", edits }));
   expect(view).toMatchObject({ shape: "edit", label: "File edit", source: "a.py" });
   expect(view.shape === "edit" && view.lines.map((line) => `${line.kind}:${line.text}`)).toEqual([
@@ -109,7 +107,7 @@ test("an edit is a unified diff: the provider's own context and header, else the
   // Each line's number in the file it is in: the new file's for context and
   // added lines, the old one's for removed lines; none where the provider gave none.
   expect(view.shape === "edit" && view.lines.map((line) => line.line)).toEqual([null, 3, 4, 4, 5, null, 10]);
-  const bare = recordView(record("FileEditResult", { path: "a.py", edits: { "py/tuple": [{ before: "a\n", after: "b\n", lead: null, trail: null }] } }));
+  const bare = recordView(record("FileEditResult", { path: "a.py", edits: [{ before: "a\n", after: "b\n", lead: null, trail: null }] }));
   expect(bare.shape === "edit" && bare.lines.map((line) => line.line)).toEqual([null, null]);
 });
 
@@ -191,7 +189,7 @@ test("a provider's own record shows its fields, a message in one as written, not
     kind: "event_msg/item_completed/UserMessage",
     payload: {
       type: "item_completed",
-      item: { type: "UserMessage", content: { "py/tuple": [{ type: "text", text: "Line one.\nLine two." }, "x"] }, meta: {} },
+      item: { type: "UserMessage", content: [{ type: "text", text: "Line one.\nLine two." }, "x"], meta: {} },
     },
   });
   expect(recordView(echo)).toMatchObject({
@@ -341,7 +339,7 @@ test("a background task's notice shows its status, summary and result, not its t
 
 test("a record with nothing to read, which no view draws or counts: sealed reasoning with no summary, and a sealed codex peer message", () => {
   const envelope = "Message Type: MESSAGE\nTask name: /root\nSender: /root/prototype\nPayload:\n";
-  const peer = (content: string, attachments: unknown[] = []) => record("AgentToAgentMessage", { content, sender: "/root/prototype", attachments: { "py/tuple": attachments } });
+  const peer = (content: string, attachments: unknown[] = []) => record("AgentToAgentMessage", { content, sender: "/root/prototype", attachments: attachments });
   const records = [
     record("Thinking", { content: null, encrypted: "gAAAA", summary: null }),
     record("Thinking", { content: "", encrypted: "", summary: null }),

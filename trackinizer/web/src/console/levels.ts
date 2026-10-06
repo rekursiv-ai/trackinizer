@@ -83,8 +83,7 @@ type Fields = { readonly [field: string]: unknown };
 /** A message is conversation when it says something: text, or an attachment (a codec tuple). */
 function said(payload: Fields): Level {
   const text = typeof payload.content === "string" ? payload.content.trim() : "";
-  const attachments = isFields(payload.attachments) ? payload.attachments["py/tuple"] : payload.attachments;
-  return text || (Array.isArray(attachments) && attachments.length) ? 1 : 4;
+  return text || (Array.isArray(payload.attachments) && payload.attachments.length) ? 1 : 4;
 }
 
 function isFields(value: unknown): value is Fields {

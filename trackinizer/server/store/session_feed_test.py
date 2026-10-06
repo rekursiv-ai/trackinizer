@@ -21,10 +21,9 @@ import pytest
 from trackinizer.lib.agent.types.sessions import (
     AgentToAgentMessage,
     Attachment,
-    UncategorizedRecord,
     UserMessage,
 )
-from trackinizer.lib.custom_json import json_freeze, json_unfreeze
+from trackinizer.lib.custom_json import json_unfreeze
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     BucketGrid,
@@ -50,11 +49,10 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _T0 = datetime(2026, 9, 1, tzinfo=UTC)
 _HUMAN = '{"content": "Go ahead.", "extra": {}}'
 _HARNESS = '{"content": "Stop hook feedback", "extra": {"isMeta": true}}'
-_SAID = '{"content": "Done.", "attachments": {"py/tuple": []}, "extra": {}}'
-_BLANK = '{"content": " \\n", "attachments": {"py/tuple": []}, "extra": {}}'
+_SAID = '{"content": "Done.", "attachments": [], "extra": {}}'
+_BLANK = '{"content": " \\n", "attachments": [], "extra": {}}'
 _ATTACHED = (
-    '{"content": null, "attachments": {"py/tuple": [{"mime_descriptor": "image/png"}]},'
-    ' "extra": {}}'
+    '{"content": null, "attachments": [{"mime_descriptor": "image/png"}], "extra": {}}'
 )
 _QUEUED = (
     '{"kind": "queued_command", "content": null,'
@@ -63,13 +61,13 @@ _QUEUED = (
 # A codex agent's message to another, in the envelope codex writes before it.
 _PEER = (
     '{"content": "Message Type: %s\\nTask name: /root\\nSender: /root/prototype'
-    '\\nPayload:\\n%s", "attachments": {"py/tuple": []}, "extra": {}}'
+    '\\nPayload:\\n%s", "attachments": [], "extra": {}}'
 )
 # What a harness writes on the user's turn, no person: codex's context, and the
 # notice Claude Code gives when a background task ends.
 _CODEX_CONTEXT = (
     '{"content": "<codex_internal_context source=\\"goal\\">\\nKeep going.\\n'
-    '</codex_internal_context>", "attachments": {"py/tuple": []}, "extra": {}}'
+    '</codex_internal_context>", "attachments": [], "extra": {}}'
 )
 _TASK_NOTICE = (
     '{"content": "<task-notification>\\n<status>completed</status>\\n'
@@ -488,42 +486,6 @@ async def test_every_feed_read_shows_only_each_part_s_live_prefix(
     )
     for events in reads:
         assert [(event.part, event.seq) for event in events] == [(0, 0), (0, 1)]
-
-
-# Archived before tuples became plain arrays: the tag sits in an untyped payload,
-# where nothing fails on it.
-_OLD_UNCATEGORIZED = (
-    '{"kind": "attachment", "payload": {"names": {"py/tuple": ["Bash"]}}}'
-)
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_row_stored_in_the_old_format_reads_back_untagged(
-    integ_store: Store,
-) -> None:
-    """A resume and the feed both see an archived row in the current shape."""
-    session = await _session(integ_store, "archivist")
-    await _records(
-        integ_store,
-        session,
-        [("UncategorizedRecord", _T0, _OLD_UNCATEGORIZED)],
-    )
-
-    (row,) = await integ_store.read_session_records(session, part=0)
-    events = [
-        event for event in await integ_store.read_feed() if event.session_id == session
-    ]
-
-    assert row.record() == UncategorizedRecord(
-        kind="attachment",
-        payload=json_freeze({"names": ["Bash"]}),
-    )
-    assert [
-        event.model_dump(mode="json")["message"]["payload"] for event in events
-    ] == [
-        {"names": ["Bash"]},
-    ]
 
 
 # ---- The histogram ----------------------------------------------------------

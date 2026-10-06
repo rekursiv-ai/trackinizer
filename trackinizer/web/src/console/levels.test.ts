@@ -57,8 +57,8 @@ test("+ Calls adds tool calls, + Output their results and thinking, and All the 
   }
   // A message with nothing in it is bookkeeping, as the transcript folds it.
   expect(levelOf(record("AssistantMessage", { content: "  " }))).toBe(4);
-  const image = { "py/object": "trackinizer.lib.agent.types.sessions.Attachment", mime_descriptor: "image/png", data: { "py/b64": "AA==" } };
-  expect(levelOf(record("UserMessage", { content: "", attachments: { "py/tuple": [image] } }))).toBe(1);
+  const image = { "py/object": "trackinizer.lib.agent.types.sessions.Attachment", mime_descriptor: "image/png", data: "AA==" };
+  expect(levelOf(record("UserMessage", { content: "", attachments: [image] }))).toBe(1);
 });
 
 test("the server reads only a low level's kinds; + Output and All read every kind", () => {

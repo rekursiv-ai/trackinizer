@@ -24,7 +24,7 @@ else:
 
     asyncpg = lazy_import("asyncpg")  # ~60 ms; only start_session() needs it.
 
-from trackinizer.lib.custom_json import convert, json_freeze, loads_untagged
+from trackinizer.lib.custom_json import convert, json_freeze, loads
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
@@ -903,7 +903,7 @@ def _feed_event(row: asyncpg.Record) -> FeedEvent:
         timestamp=_optional_datetime(row["timestamp"]),
         model=_optional_str(row["model"]),
         message=json_freeze(
-            convert(loads_untagged(convert(row["payload"], str)), dict[str, object]),
+            convert(loads(convert(row["payload"], str)), dict[str, object]),
         ),
         text=convert(row["text"], str),
     )

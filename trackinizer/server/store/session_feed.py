@@ -112,8 +112,7 @@ WHOLE_FEED: Final = FeedScope()
 _ATTACHMENT_COUNT: Final = (
     "coalesce(json_array_length(CASE"
     " WHEN json_typeof(e.payload -> 'attachments') = 'array'"
-    " THEN e.payload -> 'attachments'"
-    " ELSE e.payload -> 'attachments' -> 'py/tuple' END), 0)"
+    " THEN e.payload -> 'attachments' END), 0)"
 )
 
 CONVERSATION: Final = (

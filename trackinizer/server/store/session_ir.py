@@ -26,7 +26,7 @@ from trackinizer.lib.custom_json import (
     convert,
     json_freeze,
     json_unfreeze,
-    loads_untagged,
+    loads,
 )
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.cascade import _CascadeAuditMixin
@@ -664,11 +664,9 @@ def _encoded_payload(payload: JSON) -> str:
     return json.dumps(json_unfreeze(payload), separators=(",", ":"))
 
 
-# ``loads_untagged`` unwraps rows stored in the old tagged format, so every reader sees
-# one shape; text with no tag pays only one regex scan.
 def _decoded_payload(raw: str) -> JSON:
     """Return the stored payload text back as frozen JSON, key order intact."""
-    return json_freeze(convert(loads_untagged(raw), dict[str, object]))
+    return json_freeze(convert(loads(raw), dict[str, object]))
 
 
 # Claude writes standard base64 and codex base64url, so one decode/encode pair cannot
