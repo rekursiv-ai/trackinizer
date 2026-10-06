@@ -244,6 +244,50 @@ class TestAwaitMessages:
         assert delivered == [["one message"]], f"message delivered twice: {results}"
 
 
+class TestRevokingTheLeaseEndsTheHold:
+    """A session's end releases the request its own poller is parked in.
+
+    The run ends its session as it exits, with its poller parked in a hold; a
+    hold that outlived the lease kept every exit waiting out its full length.
+    """
+
+    def test_the_hold_returns_when_the_lease_is_revoked(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        queue.mark_poller(session)
+
+        async def run() -> list[Inbound]:
+            hold = asyncio.create_task(queue.await_messages(session, timeout_sec=3_600))
+            await asyncio.sleep(0)
+            assert queue._waiters[session]
+            queue.forget_poller(session)
+            return await asyncio.wait_for(hold, timeout=5)
+
+        assert asyncio.run(run()) == []
+        assert not queue._waiters
+
+    def test_a_released_hold_takes_nothing(self) -> None:
+        """A message queued as the poller leaves stays queued, not handed to it.
+
+        The leaving run can no longer type what it receives, so a hold that
+        drained on release would consume the message and drop it.
+        """
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        queue.mark_poller(session)
+
+        async def run() -> list[Inbound]:
+            hold = asyncio.create_task(queue.await_messages(session, timeout_sec=3_600))
+            await asyncio.sleep(0)
+            assert queue._waiters[session]
+            _ = queue.enqueue(session, Inbound(text="sent as the run exits"))
+            queue.forget_poller(session)
+            return await asyncio.wait_for(hold, timeout=5)
+
+        assert asyncio.run(run()) == []
+        assert queue.pending(session) == 1
+
+
 class TestSendIdempotency:
     """``send_once`` dedups a replayed key without re-enqueuing."""
 

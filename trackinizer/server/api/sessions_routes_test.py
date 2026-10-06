@@ -9,6 +9,7 @@ not drain the session's inbound queue).
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
 
@@ -206,6 +207,52 @@ class TestSessionEndAtomicity:
         assert r.status_code == 200, r.text
         # A clean close releases the now-dead session's queue.
         assert inbound.pending(session_id) == 0
+
+
+class TestInboundHoldEndsWithTheSession:
+    def test_an_end_during_the_poll_leaves_nothing_parked(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A session ended while its poll awaits the store must not hold that poll.
+
+        The end released only the holds already parked, so a hold this poll took
+        afterwards would keep the exiting run waiting out all of it.
+        """
+        client, store, _engine = route_client
+        inbound = InboundQueue()
+        app.state.inbound = inbound
+        session_id = uuid.uuid4()
+        hold = AsyncMock(return_value=[])
+        monkeypatch.setattr(InboundQueue, "await_messages", hold)
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
+        )
+        monkeypatch.setattr(
+            store,
+            "record_session_seen",
+            partial(_seen_as_the_session_ends, inbound, session_id),
+        )
+        r = client.get(
+            f"/api/sessions/{session_id}/inbound",
+            params={"wait_sec": 25},
+        )
+        assert r.status_code == 200, r.text
+        hold.assert_not_awaited()
+
+
+async def _seen_as_the_session_ends(
+    inbound: InboundQueue,
+    session_id: uuid.UUID,
+    *args: object,
+    **kwargs: object,
+) -> None:
+    """Stand in for the liveness write, with the session's end landing during it."""
+    del args, kwargs
+    inbound.forget_poller(session_id)
 
 
 class TestInboundEnqueueRejectsSource:

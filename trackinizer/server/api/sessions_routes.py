@@ -283,7 +283,8 @@ async def session_inbound_drain_route(
     to an interval late. Zero (the default) returns whatever is pending now,
     preserving the original contract for any caller that does not want to
     block. The ceiling keeps a held request shorter than the idle timeout of
-    a proxy that would otherwise cut it.
+    a proxy that would otherwise cut it. Ending the session ends the hold, so
+    the run that ends it as it exits is not kept waiting on its own poller.
 
     Writers retain shared access to session drains. Viewer access is scoped to
     the opening API key so reading chat does not grant graph-write permission.
@@ -324,7 +325,8 @@ async def session_inbound_drain_route(
         session_id=session_id,
     ):
         session = await _require_session(store, session_id)
-    if session.status == "active" and session.ended is None:
+    polling = session.status == "active" and session.ended is None
+    if polling:
         inbound.mark_poller(session_id)
         await store.record_session_seen(
             session_id,
@@ -335,6 +337,12 @@ async def session_inbound_drain_route(
     # a waiting caller re-arms rarely, short enough to stay under the idle timeout
     # of an intermediary that would otherwise cut the connection mid-wait.
     held = min(max(wait_sec, 0.0), 30.0)
+    # An end served while this request awaited the store revoked the lease just
+    # marked, and released only the holds already parked; one taken now would keep
+    # the exiting run waiting out all of it. No await separates this check from the
+    # hold registering, so an end cannot land between them.
+    if polling and not inbound.has_poller(session_id):
+        held = 0.0
     drained = (
         await inbound.await_messages(session_id, timeout_sec=held)
         if held

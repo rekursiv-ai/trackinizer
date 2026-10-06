@@ -73,6 +73,9 @@ class _Waiter:
 
     event: asyncio.Event = field(default_factory=asyncio.Event)
 
+    released: bool = False
+    """Set when its session's lease is revoked: the hold ends taking nothing."""
+
 
 @dataclass(slots=True, kw_only=True)
 class InboundQueue:
@@ -159,10 +162,16 @@ class InboundQueue:
             }
             return list(self._poller_expires)
 
+    # A lease is revoked as its session ends, and that session's poller is then parked
+    # in a held request. Left parked, the hold keeps the exiting run -- which ends its
+    # session before it stops its poller -- waiting out the whole hold.
     def forget_poller(self, session_id: UUID) -> None:
-        """Revoke a lease when a session ends cleanly."""
+        """Revoke a session's lease and end every hold parked on it."""
         with self._lock:
             self._poller_expires.pop(session_id, None)
+            for waiter in self._waiters.get(session_id, ()):
+                waiter.released = True
+            self._wake(session_id)
 
     def send_once(
         self,
@@ -328,14 +337,15 @@ class InboundQueue:
 
         Returns empty at the timeout rather than holding forever -- a proxy
         will cut an idle connection anyway, and the caller needs a turn to
-        notice it should stop.
+        notice it should stop. Returns empty at once when the session's lease
+        is revoked (:meth:`forget_poller`).
 
         Args:
           session_id: Session to drain.
           timeout_sec: How long to wait when nothing is pending.
 
         Returns:
-          messages: Everything queued, oldest first; empty on timeout.
+          messages: Everything queued, oldest first; empty on timeout or release.
 
         """
         waiter = _Waiter(loop=asyncio.get_running_loop())
@@ -352,6 +362,10 @@ class InboundQueue:
                 return []
         finally:
             self._release(session_id, waiter)
+        # A released poller is leaving: a message drained for it now would be typed
+        # into a CLI that has exited, so it stays queued instead.
+        if waiter.released:
+            return []
         return self.drain(session_id)
 
     def _release(self, session_id: UUID, waiter: _Waiter) -> None:

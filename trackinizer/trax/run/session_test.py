@@ -70,10 +70,16 @@ from trackinizer.trax.run.session import (
     resume_argv,
     run,
 )
-from trackinizer.trax.run.sink import ResilientSink, Sink, TrackinizerSink
+from trackinizer.trax.run.sink import (
+    LockedSink,
+    ResilientSink,
+    Sink,
+    TrackinizerSink,
+)
 from trackinizer.trax.run.slash import SlashCommand
 from trackinizer.wire.wire_session_ir import AppendRecordsResponse
 from trackinizer.wire.wire_sessions import (
+    SessionEndResponse,
     SessionStartResponse,
     WorkspaceMessageContext,
 )
@@ -83,7 +89,7 @@ if TYPE_CHECKING:
     from trackinizer.trax.run.adapters.custom_types import Adapter
     from trackinizer.types.streams import TraxRecord
     from trackinizer.wire.wire_session_ir import RecordBody
-    from trackinizer.wire.wire_sessions import SessionStart
+    from trackinizer.wire.wire_sessions import SessionEnd, SessionStart
 
 
 @pytest.fixture(autouse=True)
@@ -2401,7 +2407,10 @@ class TestSpawnWiring:
         )
         assert status == 0
         assert wiring.argv[0] == "claude"
-        assert "session-log watch not ready" in capsys.readouterr().err
+        assert (
+            "[trax run] session-log watch not ready within 0s; starting the CLI "
+            "anyway (early output may not be captured)\n"
+        ) in capsys.readouterr().err
 
     def test_a_stream_run_without_a_command_starts_no_worker(
         self,
@@ -2739,6 +2748,93 @@ class TestTeardownRunsEvenWhenTheRelayRaises:
         )
 
 
+class TestExitDoesNotWaitOutTheInboundHold:
+    """A run's exit ends the held request its inbound poller is parked in.
+
+    The server holds that request until a message arrives or the session ends,
+    and closing the sink is what ends the session -- so a teardown that joined
+    the poller before closing waited out the whole hold on every exit.
+    """
+
+    def test_the_session_ends_while_the_poller_is_still_parked(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        server = _HoldingServer()
+        client = cast(Client, server)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+        monkeypatch.setattr(session, "ThreadedRelay", partial(_ExitsOnceParked, server))
+        monkeypatch.setattr(session, "_drain_filesystem_loop", _drain_until_stop)
+        monkeypatch.setattr(shutil, "which", _always_found)
+
+        status = session._spawn_and_drain(
+            RunConfig(cli_name="claude", client=client, quiesce_seconds=0.0),
+            ClaudeAdapter(),
+            LockedSink(TrackinizerSink(client, "claude")),
+            _Stats(),
+        )
+
+        assert status == 0
+        assert server.holds == ["ended"], "the hold ran out instead of being ended"
+        assert "inbound poll thread did not stop" not in capsys.readouterr().err
+
+
+class _HoldingServer:
+    """Holds each inbound wait until the session ends, as the server route does."""
+
+    def __init__(self) -> None:
+        self.session = uuid.uuid4()
+        self.parked = threading.Event()
+        self.ended = threading.Event()
+        self.holds: list[str] = []
+
+    def session_start(self, body: SessionStart) -> SessionStartResponse:
+        return SessionStartResponse(id=self.session, seq=0, actor=body.actor)
+
+    def session_end(
+        self,
+        session_id: uuid.UUID,
+        body: SessionEnd | None = None,
+    ) -> SessionEndResponse:
+        del body
+        self.ended.set()
+        return SessionEndResponse(id=session_id)
+
+    def drain_inbound(
+        self,
+        session_id: uuid.UUID,
+        *,
+        wait_sec: float = 0.0,
+    ) -> list[tuple[str, str | None, str | None, WorkspaceMessageContext | None]]:
+        del session_id
+        self.parked.set()
+        self.holds.append("ended" if self.ended.wait(wait_sec) else "timed out")
+        return []
+
+
+class _ExitsOnceParked:
+    """A CLI that exits once inbound delivery is parked in its held request."""
+
+    def __init__(self, server: _HoldingServer, argv: object, **kwargs: object) -> None:
+        del argv, kwargs
+        self._server = server
+
+    def run(self) -> int:
+        assert self._server.parked.wait(5.0), "inbound delivery never parked"
+        return 0
+
+
+def _drain_until_stop(*args: object, armed: threading.Event, **kwargs: object) -> None:
+    """Arm, then capture nothing until the teardown stops the drain."""
+    del kwargs
+    armed.set()
+    stop = args[4]
+    assert isinstance(stop, threading.Event)
+    _ = stop.wait(5.0)
+
+
 class TestInboundIsWaitDriven:
     """Inbound delivery waits on the server, rather than asking repeatedly.
 
@@ -2891,6 +2987,61 @@ class TestInboundBatchSurvivesOneBadMessage:
         assert relay.submitted[:2] == ["first", "third"], (
             f"a bad message took the rest of its batch with it: {relay.submitted}"
         )
+
+
+class TestDeliverOne:
+    """One drained message reaches the CLI with all of its routing, or is logged."""
+
+    def test_a_stream_child_gets_the_whole_routed_envelope(self) -> None:
+        relay = _RecordingRelay()
+        envelope = '{"agent_message": "go"}'
+        session._deliver_one(
+            cast(ThreadedRelay, relay),
+            envelope,
+            "trackinizer",
+            "lab",
+            context=None,
+            stream=True,
+        )
+        assert relay.submitted == [f"[lab] trackinizer: {envelope}"]
+
+    def test_workspace_context_rides_with_the_text(self) -> None:
+        relay = _RecordingRelay()
+        context = WorkspaceMessageContext(workspace_id=uuid.uuid4(), visible_visuals=[])
+        session._deliver_one(
+            cast(ThreadedRelay, relay),
+            "look",
+            "alice@x",
+            None,
+            context=context,
+            stream=False,
+        )
+        assert relay.submitted == [
+            _render_inbound("look", "alice@x", None, context=context),
+        ]
+        assert "Trackinizer context" in relay.submitted[0]
+
+    def test_an_undeliverable_message_is_logged_with_its_cause(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The sender believes it was delivered, so the loss must be traceable."""
+        with caplog.at_level("WARNING", logger=session.__name__):
+            session._deliver_one(
+                cast(ThreadedRelay, _PickyRelay(reject="poison")),
+                "poison",
+                None,
+                None,
+                context=None,
+                stream=False,
+            )
+        (record,) = [r for r in caplog.records if r.name == session.__name__]
+        assert record.getMessage() == (
+            "trax run: could not deliver an inbound message; "
+            "continuing with the rest of the batch"
+        )
+        assert record.exc_info is not None
+        assert isinstance(record.exc_info[1], RuntimeError)
 
 
 class TestInboundSurvivesACaptureDegrade:

@@ -113,17 +113,14 @@ _QUEUE_DRAIN_SEC: Final = 0.05
 # How long each inbound request asks the server to hold. Must not exceed the
 # route's own ceiling, or the server returns first and the extra is wasted.
 # Longer means fewer re-arms; it does not affect delivery latency, which is
-# whenever the message is enqueued.
+# whenever the message is enqueued, nor exit latency, since ending the session
+# ends the request.
 _INBOUND_WAIT_SEC: Final = 25.0
 
-# Total time the worker threads get to stop before the runner proceeds to
-# ``sink.close``. Shared across every join rather than granted per thread: two
-# sequential 30s budgets plus the sink's own 5s lock timeout made a wedged exit
-# take 65s, which reads as a hang. One deadline bounds the whole teardown.
-#
-# It has to exceed ``_INBOUND_WAIT_SEC``: the poll thread only re-checks
-# ``stop`` between requests, so on a perfectly healthy exit it can still be
-# parked in one for that long, and a shorter budget would warn every time.
+# Total time the worker threads get to stop at teardown. Shared across every
+# join rather than granted per thread: two sequential 30s budgets plus the
+# sink's own 5s lock timeout made a wedged exit take 65s, which reads as a hang.
+# One deadline bounds the whole teardown.
 _JOIN_DEADLINE_SEC: Final = 30.0
 
 
@@ -846,6 +843,11 @@ def _spawn_and_drain(
         # deadlocking against a straggler that outlived the deadline.
         deadline = time.monotonic() + _JOIN_DEADLINE_SEC
         _join_with_watchdog(drain_thread, "drain", deadline=deadline)
+        # Closed BEFORE the poller is joined: it is parked in a request the server
+        # holds until a message arrives or the session ends, and this close ends the
+        # session. Joined first, every exit would wait out the whole hold. ``run``
+        # closes again on every path; the second close is a no-op.
+        sink.close()
         if poll_thread is not None:
             _join_with_watchdog(poll_thread, "inbound poll", deadline=deadline)
     return rc

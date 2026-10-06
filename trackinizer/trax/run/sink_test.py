@@ -1608,6 +1608,18 @@ class TestLockedSink:
         sink.close()
         assert client.ended == [client._id]
 
+    def test_a_second_close_is_a_no_op(self) -> None:
+        """The runner closes mid-teardown, then again on every path.
+
+        A second pass would retry a degraded sink's catch-up against the server
+        that already failed it.
+        """
+        inner = _BlockingSink(threading.Event())
+        sink = LockedSink(inner)
+        sink.close()
+        sink.close()
+        assert inner.log == [("close", "enter"), ("close", "exit")]
+
     def test_close_returns_when_worker_wedged_holding_lock(self) -> None:
         """``close`` must not deadlock when a worker is wedged holding the lock.
 

@@ -945,6 +945,7 @@ class LockedSink(Sink):
     def __init__(self, inner: Sink) -> None:
         self._inner = inner
         self._lock = threading.RLock()
+        self._closed = False
 
     @property
     @override
@@ -1020,6 +1021,13 @@ class LockedSink(Sink):
 
     @override
     def close(self) -> None:
+        # Once: the runner closes mid-teardown to end the session, then again on
+        # every path. A second pass would retry a degraded sink's catch-up against
+        # the server that already failed it, or wait out the lock bound again
+        # behind a wedged worker.
+        if self._closed:
+            return
+        self._closed = True
         # Non-blocking teardown: a worker wedged inside a locked ``emit`` /
         # ``flush`` (a hung server POST that outlived the join watchdog) still
         # holds the lock. Acquire with a short bound and, on failure, skip the
