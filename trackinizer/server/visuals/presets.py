@@ -11,7 +11,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.server.notify import tx
 from trackinizer.server.visuals.workspace_store import (
     ReplayConflictError,
@@ -192,7 +192,7 @@ async def create_preset(
             return WorkspacePreset.model_validate(receipt["response"])
         if source.revision != body.revision:
             raise RevisionConflictError(source)
-        count = convert(
+        count = from_plain(
             await conn.fetchval(
                 "SELECT count(*) FROM visual_workspace_presets WHERE user_id = $1",
                 user_id,

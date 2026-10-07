@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 import asyncio
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 
 
 if TYPE_CHECKING:
@@ -220,7 +220,7 @@ def _embed_one_bucket(
     truncated = pooled[: len(texts), :dim]
     normalized = functional.normalize(truncated, p=2, dim=1)
     # Needed: without this cast, the export (OSS copy) fails its type check.
-    return convert(
+    return from_plain(
         cast(object, normalized.to(torch.float32).cpu().tolist()),
         list[list[float]],
     )

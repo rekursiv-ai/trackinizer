@@ -40,7 +40,7 @@ import socket
 import sys
 import time
 
-from trackinizer.lib.custom_json import convert, parse, to_builtins
+from trackinizer.lib.codec import from_plain, loads, to_plain
 from trackinizer.lib.posix.attach import attach, stop, submit
 from trackinizer.lib.posix.host import HostSpec
 from trackinizer.lib.posix.terminal import write_all
@@ -473,7 +473,7 @@ def _read_record(paths: Path) -> HostRecord | None:
     """Return the host's record, or None when it has none (or none readable)."""
     try:
         text = (paths / "host.json").read_text()
-        return convert(parse(text, dict[str, object]), HostRecord)
+        return from_plain(from_plain(loads(text), dict[str, object]), HostRecord)
     except (OSError, ValueError, TypeError):
         return None
 
@@ -483,7 +483,7 @@ def _read_record(paths: Path) -> HostRecord | None:
 def _write_record(paths: Path, record: HostRecord) -> None:
     """Persist ``record`` as the host's ``host.json``."""
     staged = paths / "host.json.tmp"
-    _ = staged.write_text(json.dumps(to_builtins(record), indent=2) + "\n")
+    _ = staged.write_text(json.dumps(to_plain(record), indent=2) + "\n")
     _ = staged.replace(paths / "host.json")
 
 

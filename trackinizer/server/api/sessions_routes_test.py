@@ -17,7 +17,7 @@ import uuid
 
 import pytest
 
-from trackinizer.lib.custom_json import convert, parse
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
@@ -80,7 +80,7 @@ class TestSendMessageIdempotency:
             headers={"Idempotency-Key": key},
         )
         assert r1.status_code == 200, r1.text
-        assert convert(r1.json(), dict[str, object])["delivered"] == []
+        assert from_plain(r1.json(), dict[str, object])["delivered"] == []
 
         # The session is now live: the same key must deliver, not replay [].
         session_id = uuid.uuid4()
@@ -101,7 +101,9 @@ class TestSendMessageIdempotency:
             headers={"Idempotency-Key": key},
         )
         assert r2.status_code == 200, r2.text
-        assert convert(r2.json(), dict[str, object])["delivered"] == [str(session_id)]
+        assert from_plain(r2.json(), dict[str, object])["delivered"] == [
+            str(session_id),
+        ]
 
     def test_nonempty_delivery_is_recorded_for_replay(
         self,
@@ -131,7 +133,9 @@ class TestSendMessageIdempotency:
             json={"actor": "scientist", "text": "hi", "room": "sear"},
             headers={"Idempotency-Key": key},
         )
-        assert convert(r1.json(), dict[str, object])["delivered"] == [str(session_id)]
+        assert from_plain(r1.json(), dict[str, object])["delivered"] == [
+            str(session_id),
+        ]
         # Replay: the recorded receipt comes back; the queue is not
         # enqueued a second time.
         r2 = client.post(
@@ -139,7 +143,9 @@ class TestSendMessageIdempotency:
             json={"actor": "scientist", "text": "hi", "room": "sear"},
             headers={"Idempotency-Key": key},
         )
-        assert convert(r2.json(), dict[str, object])["delivered"] == [str(session_id)]
+        assert from_plain(r2.json(), dict[str, object])["delivered"] == [
+            str(session_id),
+        ]
         assert app.state.inbound.pending(session_id) == 1
 
 
@@ -350,7 +356,7 @@ class TestInboundEnqueueRejectsSource:
             headers={"Idempotency-Key": key},
         )
         assert first.status_code == 200, first.text
-        assert convert(first.json(), dict[str, object])["queued"] == 1
+        assert from_plain(first.json(), dict[str, object])["queued"] == 1
         # Same key -> deduped: still exactly one message queued.
         retry = client.post(
             f"/api/sessions/{session_id}/inbound",
@@ -358,7 +364,7 @@ class TestInboundEnqueueRejectsSource:
             headers={"Idempotency-Key": key},
         )
         assert retry.status_code == 200, retry.text
-        assert convert(retry.json(), dict[str, object])["queued"] == 1
+        assert from_plain(retry.json(), dict[str, object])["queued"] == 1
         assert inbound.pending(session_id) == 1
 
 
@@ -389,7 +395,7 @@ class TestSessionStartAccountValidation:
             json={"cli": "claude", "cli_session_id": "abc"},
         )
         assert r.status_code == 422, r.text
-        detail = convert(r.json(), dict[str, object])["detail"]
+        detail = from_plain(r.json(), dict[str, object])["detail"]
         assert isinstance(detail, str)
         assert "not an active user" in detail
 
@@ -441,7 +447,7 @@ class TestViewerOwnedSessionLifecycle:
         response = client.post("/api/sessions/start", json={"cli": "codex"})
 
         assert response.status_code == 201, response.text
-        assert convert(response.json(), dict[str, object])["id"] == str(session_id)
+        assert from_plain(response.json(), dict[str, object])["id"] == str(session_id)
         call = start.await_args
         assert call is not None
         assert call.kwargs["api_key_id"] == TEST_API_KEY_ID
@@ -555,7 +561,7 @@ async def test_a_dead_run_is_closed_and_a_returning_one_reopened(
         json=_SLASH_ONLY,
     )
     assert uploaded.status_code == 200, uploaded.text
-    assert parse(uploaded.content, dict[str, object])["slash_commands"] == 1
+    assert from_plain(loads(uploaded.content), dict[str, object])["slash_commands"] == 1
     assert (await _session(store, session_id=session_id)).status == "active"
 
 
@@ -685,7 +691,10 @@ async def _start(client: httpx2.AsyncClient) -> uuid.UUID:
     )
     assert started.status_code == 201, started.text
     return uuid.UUID(
-        convert(parse(started.content, dict[str, object])["id"], str),
+        from_plain(
+            from_plain(loads(started.content), dict[str, object])["id"],
+            str,
+        ),
     )
 
 

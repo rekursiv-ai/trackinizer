@@ -21,7 +21,7 @@ from trackinizer.lib.agent.types.sessions import (
     TurnContext,
     UserMessage,
 )
-from trackinizer.lib.custom_json import json_freeze
+from trackinizer.lib.codec import immutable
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_ir import SlashCommandRow
@@ -88,7 +88,7 @@ async def _bounded(
     _ = await store.upsert_session_manifest(
         session_id,
         name=name,
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=len(records),
@@ -149,7 +149,7 @@ async def test_recent_turns_cross_parts_and_ignore_tool_bursts(store: Store) -> 
     _ = await store.upsert_session_manifest(
         session_id,
         name="second.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=1,
@@ -214,7 +214,7 @@ async def test_a_shrunk_part_reads_only_its_live_prefix(store: Store) -> None:
     part = await store.upsert_session_manifest(
         session_id,
         name="s.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=5,
@@ -228,7 +228,7 @@ async def test_a_shrunk_part_reads_only_its_live_prefix(store: Store) -> None:
     _ = await store.upsert_session_manifest(
         session_id,
         name="s.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=2,
@@ -506,7 +506,7 @@ async def test_manifest_upserts_per_batch(store: Store) -> None:
     await store.upsert_session_manifest(
         session_id,
         name="a.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=1,
@@ -515,7 +515,7 @@ async def test_manifest_upserts_per_batch(store: Store) -> None:
     part = await store.upsert_session_manifest(
         session_id,
         name="a.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=9,
@@ -538,7 +538,7 @@ async def test_a_second_file_gets_the_next_part(store: Store) -> None:
     first = await store.upsert_session_manifest(
         session_id,
         name="a.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=1,
@@ -547,7 +547,7 @@ async def test_a_second_file_gets_the_next_part(store: Store) -> None:
     second = await store.upsert_session_manifest(
         session_id,
         name="b.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=1,
@@ -568,7 +568,7 @@ async def test_purging_the_session_cascades_every_table(store: Store) -> None:
     await store.upsert_session_manifest(
         session_id,
         name="a.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=1,
@@ -621,7 +621,7 @@ async def test_a_killed_run_leaves_a_valid_prefix(store: Store) -> None:
     part = await store.upsert_session_manifest(
         session_id,
         name="killed.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=2,
@@ -656,7 +656,7 @@ async def test_a_resumed_run_resolves_to_the_existing_part(store: Store) -> None
     first = await store.upsert_session_manifest(
         session_id,
         name="s.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=ir_id,
         format="claude",
         records=1,
@@ -665,7 +665,7 @@ async def test_a_resumed_run_resolves_to_the_existing_part(store: Store) -> None
     second = await store.upsert_session_manifest(
         session_id,
         name="s.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=ir_id,
         format="claude",
         records=4,

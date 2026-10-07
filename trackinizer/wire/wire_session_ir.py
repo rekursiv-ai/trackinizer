@@ -18,7 +18,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
-from trackinizer.lib.custom_json import json_freeze
+from trackinizer.lib.codec import immutable
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.json_types import JSON
 
@@ -126,7 +126,7 @@ class RecordBody(BaseModel):
             context_id=self.context_id,
             timestamp=self.timestamp,
             model=self.model,
-            payload=json_freeze(dict(self.payload)),
+            payload=immutable(dict(self.payload)),
             text=self.text,
             ciphertext=self.ciphertext,
         )

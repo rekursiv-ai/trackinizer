@@ -33,7 +33,7 @@ from trackinizer.conftest import (
     queue_field_rows,
     set_field_row,
 )
-from trackinizer.lib.custom_json import convert, parse
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server import web
 from trackinizer.server.api import query
 from trackinizer.server.api.app import app
@@ -101,8 +101,8 @@ class TestRoutes:
         )
 
         assert response.status_code == 409
-        body = convert(response.json(), dict[str, object])
-        assert "release its owner" in convert(body["detail"], str)
+        body = from_plain(response.json(), dict[str, object])
+        assert "release its owner" in from_plain(body["detail"], str)
         assert not any(
             isinstance(call.args[0], str) and "DELETE FROM inquiries" in call.args[0]
             for call in engine.conn.execute.call_args_list
@@ -122,7 +122,7 @@ class TestRoutes:
             json={"actor": "user", "reason": ""},
         )
         assert r.status_code == 404
-        body = convert(r.json(), dict[str, object])
+        body = from_plain(r.json(), dict[str, object])
         assert body["code"] == "not_found"
 
     def test_list_kind_route_rejects_bad_bounds(
@@ -249,12 +249,12 @@ class TestRoutes:
             for record in caplog.records
             if getattr(record, "event", "") == "trackinizer_query_completed"
         )
-        fields = convert(record.__dict__, dict[str, object])
-        assert convert(fields.get("request_id"), str) == request_id
-        assert convert(fields.get("kind"), str) == "Experiment"
-        assert convert(fields.get("filter_count"), int, default=0) == 2
-        assert convert(fields.get("returned_rows"), int, default=-1) == 0
-        assert convert(fields.get("duration_sec"), float, default=-1) >= 0
+        fields = from_plain(record.__dict__, dict[str, object])
+        assert from_plain(fields.get("request_id"), str) == request_id
+        assert from_plain(fields.get("kind"), str) == "Experiment"
+        assert from_plain(fields.get("filter_count"), int, default=0) == 2
+        assert from_plain(fields.get("returned_rows"), int, default=-1) == 0
+        assert from_plain(fields.get("duration_sec"), float, default=-1) >= 0
 
     def test_list_kind_route_rejects_isnull_on_not_null_column(
         self,
@@ -545,16 +545,16 @@ class TestRoutes:
         )
         with patch.object(store, "list_changes", new_callable=AsyncMock) as mock:
             mock.return_value = [change]
-            (whole,) = convert(
+            (whole,) = from_plain(
                 client.get("/api/change_log").json(),
                 list[dict[str, object]],
             )
-            (brief,) = convert(
+            (brief,) = from_plain(
                 client.get("/api/change_log", params={"brief": "true"}).json(),
                 list[dict[str, object]],
             )
-        assert convert(whole["new"], dict[str, object])["description"] == "e" * 100
-        assert convert(whole["new"], dict[str, object])["title"] is None
+        assert from_plain(whole["new"], dict[str, object])["description"] == "e" * 100
+        assert from_plain(whole["new"], dict[str, object])["title"] is None
         assert brief["old"] == {"description": "d" * 32}
         assert brief["new"] == {"description": "e" * 32}
         assert {k: v for k, v in brief.items() if k not in {"old", "new"}} == {
@@ -640,7 +640,7 @@ class TestRoutes:
         )
         r = client.post("/api/inquiries/lookup", json=[str(good), str(bad)])
         assert r.status_code == 200
-        body = parse(r.content, dict[str, object])
+        body = from_plain(loads(r.content), dict[str, object])
         assert body["found"] == {str(good): "Issue"}
         assert body["missing"] == [str(bad)]
 
@@ -760,26 +760,28 @@ class TestCoverageRoutesAndCli:
             [],
         ]
         assert (
-            convert(
+            from_plain(
                 client.get(f"/api/inquiries/{target_id}").json(),
                 dict[str, object],
             )["kind"]
             == "Issue"
         )
-        assert convert(client.get("/api/inquiries/Issue/1").json(), dict[str, object])[
-            "id"
-        ] == str(target_id)
+        assert from_plain(
+            client.get("/api/inquiries/Issue/1").json(),
+            dict[str, object],
+        )["id"] == str(target_id)
         assert (
-            convert(
+            from_plain(
                 client.get("/api/inquiries", params={"kind": "Issue"}).json(),
                 list[dict[str, object]],
             )[0]["kind"]
             == "Issue"
         )
         assert (
-            convert(client.get("/api/inquiries/next_issue").json(), dict[str, object])[
-                "kind"
-            ]
+            from_plain(
+                client.get("/api/inquiries/next_issue").json(),
+                dict[str, object],
+            )["kind"]
             == "Issue"
         )
 
@@ -811,7 +813,7 @@ class TestCoverageRoutesAndCli:
             params=[("kind", "Issue"), *(("fields", name) for name in fields)],
         )
         assert r.status_code == 200, r.text
-        (row,) = convert(r.json(), list[dict[str, object]])
+        (row,) = from_plain(r.json(), list[dict[str, object]])
         # ``judgement`` is a Belief field, so an Issue row has no such key.
         assert set(row) == set(fields) - {"judgement"}
         assert engine.conn.fetch.await_count == reads
@@ -826,7 +828,7 @@ class TestCoverageRoutesAndCli:
         engine.conn.fetchval.return_value = 1
         set_field_row(engine.conn, {"agent_usd": 1.0, "resource_usd": 2.0})
         assert (
-            convert(
+            from_plain(
                 client.get(f"/api/inquiries/{target_id}/cost").json(),
                 dict[str, object],
             )["agent_usd"]
@@ -841,7 +843,7 @@ class TestCoverageRoutesAndCli:
             [],
         ]
         assert (
-            convert(
+            from_plain(
                 client.get(f"/api/inquiries/{target_id}/proves_belief").json(),
                 list[dict[str, object]],
             )[0]["kind"]
@@ -912,7 +914,7 @@ class TestMissingResourceIs404:
         engine.conn.fetch.return_value = []  # No proving edges.
         r = client.get(f"/api/inquiries/{new_uuid()}/confidence")
         assert r.status_code == 200
-        assert convert(r.json(), dict[str, object])["confidence"] == 0.5
+        assert from_plain(r.json(), dict[str, object])["confidence"] == 0.5
 
     def test_authority_unknown_id_is_404(
         self,
@@ -939,7 +941,7 @@ class TestMissingResourceIs404:
         )
         r = client.get(f"/api/inquiries/{new_uuid()}/authority")
         assert r.status_code == 200
-        assert convert(r.json(), dict[str, object]) == {"proves_authority": 0.42}
+        assert from_plain(r.json(), dict[str, object]) == {"proves_authority": 0.42}
 
 
 # -- Property: the list endpoint never 500s on malformed query params ----------
@@ -1057,7 +1059,7 @@ async def test_fields_keep_the_named_values_on_a_real_engine(
             actor="alice",
         )
     kinds = [("kind", kind) for kind in sorted(KIND_TO_CLASS)]
-    full = convert(
+    full = from_plain(
         (await http.get("/api/inquiries", params=kinds)).json(),
         list[dict[str, object]],
     )
@@ -1067,19 +1069,19 @@ async def test_fields_keep_the_named_values_on_a_real_engine(
         named = await http.get(
             "/api/inquiries",
             params=[
-                ("kind", convert(row["kind"], str)),
+                ("kind", from_plain(row["kind"], str)),
                 ("seq_range", seq),
                 *(("fields", key) for key in row),
             ],
         )
-        assert convert(named.json(), list[dict[str, object]]) == [row], row["kind"]
+        assert from_plain(named.json(), list[dict[str, object]]) == [row], row["kind"]
     subset = ("id", "title", "priority", "judgement", "proved_by", "narrows")
     named = await http.get(
         "/api/inquiries",
         params=[*kinds, *(("fields", name) for name in subset)],
     )
     assert named.status_code == 200, named.text
-    rows = convert(named.json(), list[dict[str, object]])
+    rows = from_plain(named.json(), list[dict[str, object]])
     assert rows == [{k: v for k, v in row.items() if k in subset} for row in full]
     # The relations are real when named: the edges were read.
     assert any(row.get("narrows") for row in rows)
@@ -1117,16 +1119,19 @@ async def test_brief_changes_drop_unset_keys_and_cut_text_on_a_real_engine(
         edge_kind="narrows",
         actor="alice",
     )
-    full = convert((await http.get("/api/change_log")).json(), list[dict[str, object]])
+    full = from_plain(
+        (await http.get("/api/change_log")).json(),
+        list[dict[str, object]],
+    )
     brief = await http.get("/api/change_log", params={"brief": "true"})
     assert brief.status_code == 200, brief.text
-    rows = convert(brief.json(), list[dict[str, object]])
+    rows = from_plain(brief.json(), list[dict[str, object]])
     assert rows == [_briefed(row) for row in full]
     (edit,) = (row for row in rows if row["kind"] == "description")
-    assert convert(edit["old"], dict[str, object])["description"] == first[:32]
-    assert convert(edit["new"], dict[str, object])["description"] == second[:32]
+    assert from_plain(edit["old"], dict[str, object])["description"] == first[:32]
+    assert from_plain(edit["new"], dict[str, object])["description"] == second[:32]
     peers = {
-        convert(row["new"], dict[str, object]).get("peer_id")
+        from_plain(row["new"], dict[str, object]).get("peer_id")
         for row in rows
         if row["kind"] == "edge_added"
     }
@@ -1156,7 +1161,7 @@ async def test_change_log_takes_several_kinds_before_its_limit_on_a_real_engine(
     async def kinds(*query: tuple[str, str]) -> list[object]:
         r = await http.get("/api/change_log", params=query)
         assert r.status_code == 200, r.text
-        return [row["kind"] for row in convert(r.json(), list[dict[str, object]])]
+        return [row["kind"] for row in from_plain(r.json(), list[dict[str, object]])]
 
     many = await kinds(("kind", "status"), ("kind", "title"), ("limit", "2"))
     assert many == ["title", "status"]
@@ -1295,7 +1300,8 @@ async def _check_ancestry(http: httpx2.AsyncClient, store: Store) -> None:
     # Without the param, a row is as it was.
     plain = await http.get("/api/inquiries", params={"kind": "Issue", "limit": 5})
     assert all(
-        "ancestors" not in row for row in convert(plain.json(), list[dict[str, object]])
+        "ancestors" not in row
+        for row in from_plain(plain.json(), list[dict[str, object]])
     )
 
 
@@ -1307,7 +1313,7 @@ def _briefed(row: Mapping[str, object]) -> dict[str, object]:
             key: value[:32]
             if key in {"title", "description"} and isinstance(value, str)
             else value
-            for key, value in convert(row[side], dict[str, object]).items()
+            for key, value in from_plain(row[side], dict[str, object]).items()
             if value is not None
         }
     return out
@@ -1336,7 +1342,8 @@ async def _titles_where(
     )
     assert r.status_code == 200, r.text
     return sorted(
-        convert(row["title"], str) for row in convert(r.json(), list[dict[str, object]])
+        from_plain(row["title"], str)
+        for row in from_plain(r.json(), list[dict[str, object]])
     )
 
 
@@ -1357,15 +1364,15 @@ async def _ancestry(
         ],
     )
     assert r.status_code == 200, r.text
-    (row,) = convert(r.json(), list[dict[str, object]])
+    (row,) = from_plain(r.json(), list[dict[str, object]])
     names = {made: title for title, made in ids.items()}
     out: list[tuple[str, list[str]]] = []
-    for entry in convert(row.get("ancestors"), list[dict[str, object]], default=[]):
+    for entry in from_plain(row.get("ancestors"), list[dict[str, object]], default=[]):
         assert set(entry) == {"id", "kind", "seq", "title", "status", "child_ids"}
         assert entry["kind"] == "Issue"
-        title = names[uuid.UUID(convert(entry["id"], str))]
+        title = names[uuid.UUID(from_plain(entry["id"], str))]
         assert entry["title"] == title
-        children = convert(entry["child_ids"], list[str])
+        children = from_plain(entry["child_ids"], list[str])
         out.append((title, [names[uuid.UUID(child)] for child in children]))
     return out
 

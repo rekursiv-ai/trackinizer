@@ -14,7 +14,7 @@ import logging
 
 import asyncpg
 
-from trackinizer.lib.custom_json import convert, parse
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.lib.postgres import DatabaseEngine
 
 
@@ -199,8 +199,8 @@ async def iter_sse_events(
 def _sse_frame(payload: str) -> bytes:
     """One SSE ``data:`` frame for a NOTIFY payload; empty for a malformed one."""
     try:
-        payload_data = parse(payload, dict[str, object])
-        subject_id = convert(payload_data["id"], str)
+        payload_data = from_plain(loads(payload), dict[str, object])
+        subject_id = from_plain(payload_data["id"], str)
     except (json.JSONDecodeError, KeyError, TypeError):
         # Drop one bad payload rather than kill the stream, but LOG it: a
         # silent drop would hide a payload-shape regression (the producer

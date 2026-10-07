@@ -53,7 +53,7 @@ from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import SessionRecord, UserMessage
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.lib.userdirs import state_dir
@@ -345,7 +345,7 @@ def _latest_session_row(
             params={"kind": "AgentSession", "limit": 50},
         )
         listing.raise_for_status()
-        rows = convert(listing.json(), list[dict[str, object]])
+        rows = from_plain(listing.json(), list[dict[str, object]])
         if cli is not None:
             rows = [r for r in rows if r.get("cli") == cli]
         return rows[0] if rows else None
@@ -373,20 +373,20 @@ def _latest_session_records(
     with httpx2.Client(base_url=base_url, timeout=30.0) as http:
         parts = http.get(f"/api/sessions/{session_id}/parts")
         parts.raise_for_status()
-        listing = convert(parts.json(), dict[str, object])
-        for part in convert(listing["parts"], list[dict[str, object]]):
+        listing = from_plain(parts.json(), dict[str, object])
+        for part in from_plain(listing["parts"], list[dict[str, object]]):
             page = http.get(
                 f"/api/sessions/{session_id}/records",
-                params={"part": convert(part["part"], int), "limit": 1000},
+                params={"part": from_plain(part["part"], int), "limit": 1000},
             )
             page.raise_for_status()
-            body = convert(page.json(), dict[str, object])
+            body = from_plain(page.json(), dict[str, object])
             # ``RecordBody`` carries no ``part`` -- the route resolves one and
             # returns it alongside -- so stamp it here, or a caller checking
             # positions cannot tell two parts apart.
             found.extend(
                 {**record, "part": body["part"]}
-                for record in convert(body["records"], list[dict[str, object]])
+                for record in from_plain(body["records"], list[dict[str, object]])
             )
     return found
 
@@ -444,13 +444,13 @@ def _assert_transcript_synced(base_url: str, *, cli: str) -> None:
     # position derived from its place in the file's normalized stream.
     for record in records:
         assert isinstance(record["payload"], dict)
-        assert convert(record["idx"], int) >= 0
+        assert from_plain(record["idx"], int) >= 0
     # Each part numbers its records from 0 with no gaps: the key is derived
     # from stream position, so a hole means a record was dropped in ingest.
     by_part: dict[int, list[int]] = {}
     for record in records:
-        part = convert(record["part"], int)
-        by_part.setdefault(part, []).append(convert(record["idx"], int))
+        part = from_plain(record["part"], int)
+        by_part.setdefault(part, []).append(from_plain(record["idx"], int))
     for part, idxs in by_part.items():
         assert sorted(idxs) == list(range(len(idxs))), (
             f"gap in part {part}'s positions: {sorted(idxs)}"

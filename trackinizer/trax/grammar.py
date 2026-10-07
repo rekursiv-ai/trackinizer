@@ -27,7 +27,7 @@ import re
 import uuid
 
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.types.columns import flat_column_specs
 from trackinizer.types.inquiries import (
     CITATION_VALENCE_DEFAULT,
@@ -591,7 +591,7 @@ def _coerce_config(value: str) -> object:
     except ValueError as err:
         raise ValueError(f"config must be valid JSON: {err}") from err
     try:
-        config = convert(parsed, dict[str, object])
+        config = from_plain(parsed, dict[str, object])
     except TypeError as err:
         raise ValueError("config must be a JSON object") from err
     try:

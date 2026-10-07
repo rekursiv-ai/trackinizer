@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from unittest.mock import patch
 
 import subprocess
@@ -20,7 +20,7 @@ from trackinizer.lib.agent.types.sessions import (
     TurnContext,
     UserMessage,
 )
-from trackinizer.lib.custom_json import JSON, convert, json_freeze, loads, parse
+from trackinizer.lib.codec import PlainTree, from_plain, immutable, loads
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.errors import (
     CiphertextDroppedError,
@@ -31,6 +31,10 @@ from trackinizer.trax.run.materialize import (
     _codex_cli_version,
     materialize,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 # Asked of the MODULE that owns it, not counted in parents from here: the
@@ -54,7 +58,7 @@ def _records() -> list[SessionRecord]:
 # The LAST context stating one: the escaping convention is a majority over the lines
 # read, so the reader restates it as it moves and the final statement is the one in
 # force for the whole file.
-def _encoding() -> JSON:
+def _encoding() -> Mapping[str, PlainTree]:
     """How that fixture spells its bytes, which the rewrite needs verbatim."""
     return next(
         record.encoding
@@ -111,7 +115,7 @@ class TestTheFileIsThisMachinesOwn:
         written = materialize(target="claude", records=_records(), encoding=_encoding())
 
         declared = {
-            parse(line, dict[str, object])["sessionId"]
+            from_plain(loads(line), dict[str, object])["sessionId"]
             for line in written.path.read_text(encoding="utf-8").splitlines()
         }
         assert declared == {str(written.cli_session_id)}
@@ -135,11 +139,11 @@ class TestTheFileIsThisMachinesOwn:
             # A FOREIGN encoding, which is what makes the writer synthesize
             # claude's identity keys at all: a codex-captured session states
             # one, and that is the crossing this whole path exists for.
-            encoding=json_freeze({"newline_terminated": True}),
+            encoding=immutable({"newline_terminated": True}),
         )
 
         declared = {
-            parse(line, dict[str, object]).get("sessionId")
+            from_plain(loads(line), dict[str, object]).get("sessionId")
             for line in written.path.read_text(encoding="utf-8").splitlines()
         }
         assert declared == {str(written.cli_session_id)}
@@ -180,7 +184,7 @@ class TestTheRewriteIsReadableBack:
 
         with written.path.open(encoding="utf-8") as handle:
             declared = {
-                convert(getattr(record, "extra", None) or {}, dict[str, object]).get(
+                from_plain(getattr(record, "extra", None) or {}, dict[str, object]).get(
                     "sessionId",
                 )
                 for record in claude.normalize(handle)
@@ -198,7 +202,7 @@ class TestCiphertext:
         written = materialize(
             target="claude",
             records=[Thinking(encrypted="")],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
             sealed=[sealed],
         )
 
@@ -216,7 +220,7 @@ class TestCiphertext:
             materialize(
                 target="claude",
                 records=[Thinking(encrypted="")],
-                encoding=json_freeze({}),
+                encoding=immutable({}),
                 sealed=[None],
             )
 
@@ -229,7 +233,7 @@ class TestCiphertext:
             materialize(
                 target="claude",
                 records=[UserMessage(content="a"), Thinking(encrypted="")],
-                encoding=json_freeze({}),
+                encoding=immutable({}),
                 sealed=[None, None],
             )
 
@@ -248,7 +252,7 @@ class TestCiphertext:
                     encrypted="" if source == "codex" else None,
                 ),
             ],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
             source=source,
         )
         assert "summary" in written.path.read_text(encoding="utf-8")
@@ -258,7 +262,7 @@ class TestCiphertext:
         written = materialize(
             target="claude",
             records=[Thinking(content="visible reasoning")],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
             sealed=[None],
         )
 
@@ -306,7 +310,7 @@ class TestMaterializingCodex:
         written = materialize(
             target="codex",
             records=[UserMessage(content="hi")],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
         )
 
         assert written.path.name.startswith("rollout-")
@@ -318,7 +322,7 @@ class TestMaterializingCodex:
         written = materialize(
             target="codex",
             records=[UserMessage(content="hi")],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
         )
 
         assert detect_format(written.path.read_text(encoding="utf-8")) == "codex"
@@ -333,14 +337,14 @@ class TestMaterializingCodex:
         written = materialize(
             target="codex",
             records=[UserMessage(content="hi")],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
         )
 
-        declared = parse(
-            written.path.read_text(encoding="utf-8").splitlines()[0],
+        declared = from_plain(
+            loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
             dict[str, object],
         )
-        payload = convert(declared["payload"], dict[str, object])
+        payload = from_plain(declared["payload"], dict[str, object])
         assert payload["id"] == str(written.cli_session_id)
 
     def test_the_launch_payload_is_one_codex_will_load(self) -> None:
@@ -356,14 +360,14 @@ class TestMaterializingCodex:
         written = materialize(
             target="codex",
             records=[UserMessage(content="hi")],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
         )
 
-        declared = parse(
-            written.path.read_text(encoding="utf-8").splitlines()[0],
+        declared = from_plain(
+            loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
             dict[str, object],
         )
-        payload = convert(declared["payload"], dict[str, object])
+        payload = from_plain(declared["payload"], dict[str, object])
         assert declared["ordinal"] == 0
         assert set(payload) >= {
             "cli_version",
@@ -392,7 +396,7 @@ class TestMaterializingCodex:
         written = materialize(
             target="codex",
             records=[IncompleteRecord(text="{"), UserMessage(content="hi")],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
         )
 
         assert written.path.exists()
@@ -412,7 +416,7 @@ class TestMaterializingCodex:
                 Thinking(summary="weighing it", encrypted="CAISsgIKpgEIERgCKkBjy88X"),
                 UserMessage(content="hi"),
             ],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
             # A claude-captured session, which is the only case that carries a
             # seal codex did not issue.
             source="claude",
@@ -436,7 +440,7 @@ class TestMaterializingCodex:
                 UserMessage(content="hi"),
                 IncompleteRecord(text='{"type":"cost-state"}{"type":"atis-latch"}'),
             ],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
             source="claude",
         )
 
@@ -463,7 +467,7 @@ class TestMaterializingCodex:
                 UserMessage(content="hi"),
                 IncompleteRecord(text='{"type":"cost-state"}{"type":"atis-latch"}'),
             ],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
             # NOT a crossing: the format that captured it is the one written.
             source="codex",
         )
@@ -484,11 +488,11 @@ class TestMaterializingCodex:
         written = materialize(
             target="codex",
             records=[UserMessage(content="hi")],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
         )
 
-        declared = parse(
-            written.path.read_text(encoding="utf-8").splitlines()[0],
+        declared = from_plain(
+            loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
             dict[str, object],
         )
         timestamp = declared["timestamp"]
@@ -511,11 +515,11 @@ class TestMaterializingCodex:
         written = materialize(
             target="codex",
             records=[UserMessage(content="hi"), AssistantMessage(content="hello")],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
         )
 
         lines = [
-            parse(line, dict[str, object])
+            from_plain(loads(line), dict[str, object])
             for line in written.path.read_text(encoding="utf-8").splitlines()
         ]
         assert all(isinstance(line.get("timestamp"), str) for line in lines)
@@ -528,7 +532,7 @@ class TestMaterializingCodex:
         rollout was actually recorded under.
         """
         captured = TurnContext(
-            extra=json_freeze(
+            extra=immutable(
                 {
                     "payload": {
                         "id": "old",
@@ -548,12 +552,12 @@ class TestMaterializingCodex:
         written = materialize(
             target="codex",
             records=[captured, UserMessage(content="hi")],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
         )
 
-        payload = convert(
-            parse(
-                written.path.read_text(encoding="utf-8").splitlines()[0],
+        payload = from_plain(
+            from_plain(
+                loads(written.path.read_text(encoding="utf-8").splitlines()[0]),
                 dict[str, object],
             )["payload"],
             dict[str, object],
@@ -572,12 +576,12 @@ class TestMaterializingCodex:
         written = materialize(
             target="codex",
             records=[UserMessage(content="hi")],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
         )
 
         index = next(iter(CodexAdapter().session_dirs())).parent / "session_index.jsonl"
         entries = [
-            parse(line, dict[str, object])
+            from_plain(loads(line), dict[str, object])
             for line in index.read_text(encoding="utf-8").splitlines()
         ]
         assert [entry["id"] for entry in entries] == [str(written.cli_session_id)]
@@ -594,11 +598,11 @@ class TestMaterializingCodex:
         written = materialize(
             target="codex",
             records=[UserMessage(content="hi")],
-            encoding=json_freeze({}),
+            encoding=immutable({}),
         )
 
         ids = [
-            parse(line, dict[str, object])["id"]
+            from_plain(loads(line), dict[str, object])["id"]
             for line in index.read_text(encoding="utf-8").splitlines()
         ]
         assert ids == ["kept", str(written.cli_session_id)]
@@ -609,7 +613,7 @@ class TestMaterializingCodex:
             _ = materialize(
                 target="gemini",
                 records=[UserMessage(content="hi")],
-                encoding=json_freeze({}),
+                encoding=immutable({}),
             )
 
 

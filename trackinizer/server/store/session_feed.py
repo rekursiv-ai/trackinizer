@@ -17,7 +17,7 @@ from uuid import UUID
 
 import itertools
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.server.notify import tx
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import manifest_bound, vetted_sql
@@ -300,8 +300,8 @@ class _SessionFeedMixin(_StoreShared):
         kinds = sorted(
             (
                 FeedKindFacet(
-                    kind=convert(row["kind"], str),
-                    count=convert(row["records"], int),
+                    kind=from_plain(row["kind"], str),
+                    count=from_plain(row["records"], int),
                 )
                 for row in rows
                 if row["session_id"] is None
@@ -365,7 +365,7 @@ class _SessionFeedMixin(_StoreShared):
                 else (
                     end
                     if (value := await conn.fetchval(first_sql, *params)) is None
-                    else convert(value, datetime)
+                    else from_plain(value, datetime)
                 )
             )
             earliest = earliest.astimezone(UTC)
@@ -448,7 +448,7 @@ async def _count_buckets(
         " GROUP BY 1",
     )
     rows = await conn.fetch(sql, *params)
-    return {row["bucket"]: convert(row["records"], int) for row in rows}
+    return {row["bucket"]: from_plain(row["records"], int) for row in rows}
 
 
 def _actor_facet(counted: asyncpg.Record, session: asyncpg.Record) -> FeedActorFacet:
@@ -457,17 +457,17 @@ def _actor_facet(counted: asyncpg.Record, session: asyncpg.Record) -> FeedActorF
     assert isinstance(session_id, UUID)
     assert isinstance(last, datetime)
     return FeedActorFacet(
-        actor=convert(session.get("owner"), str, default=""),
+        actor=from_plain(session.get("owner"), str, default=""),
         session_id=session_id,
-        cli=convert(session.get("agentsession_cli"), str, default="") or None,
-        rooms=convert(session.get("agentsession_rooms"), list[str], default=[]),
-        count=convert(counted["records"], int),
-        conversation=convert(counted["conversation"], int),
+        cli=from_plain(session.get("agentsession_cli"), str, default="") or None,
+        rooms=from_plain(session.get("agentsession_rooms"), list[str], default=[]),
+        count=from_plain(counted["records"], int),
+        conversation=from_plain(counted["conversation"], int),
         last=last,
         ended=(
             None
             if session["agentsession_ended"] is None
-            else convert(session["agentsession_ended"], datetime)
+            else from_plain(session["agentsession_ended"], datetime)
         ),
     )
 

@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
-from trackinizer.lib.custom_json import convert, loads
+import json
+
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.visuals.catalog import default_catalog
 
 
@@ -15,15 +17,17 @@ _CWD: Final = Path(__file__).resolve().parent
 def test_preview_catalog_matches_backend() -> None:
     """A dev preview of an older server shows only backend-defined visuals."""
     snapshot = _CWD / "src/visuals/catalog.preview.json"
-    assert loads(snapshot.read_bytes()) == default_catalog().model_dump(mode="json")
+    assert json.loads(snapshot.read_bytes()) == default_catalog().model_dump(
+        mode="json",
+    )
 
 
 def test_every_catalog_visual_has_matching_frontend_renderer() -> None:
     """The build cannot advertise a visual the browser cannot render."""
     manifest = _CWD / "src/visuals/renderer-versions.json"
     versions = {
-        key: convert(value, int)
-        for key, value in convert(
+        key: from_plain(value, int)
+        for key, value in from_plain(
             loads(manifest.read_bytes()),
             dict[str, object],
         ).items()

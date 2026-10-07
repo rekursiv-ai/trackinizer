@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast
 
 import asyncio
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 
 
 if TYPE_CHECKING:
@@ -165,7 +165,7 @@ class JinaV5Embedder:
         tensor = cast("torch.Tensor", raw)
         normalized = functional.normalize(tensor, p=2, dim=1)
         # Needed: without this cast, the export (OSS copy) fails its type check.
-        return convert(
+        return from_plain(
             cast(object, normalized.to(torch.float32).cpu().tolist()),
             list[list[float]],
         )

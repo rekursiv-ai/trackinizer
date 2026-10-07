@@ -51,7 +51,7 @@ from uuid import UUID
 import json
 
 from trackinizer.lib.agent.types.sessions import UncategorizedRecord
-from trackinizer.lib.custom_json import convert, json_unfreeze, loads
+from trackinizer.lib.codec import from_plain, loads, mutable
 from trackinizer.server.notify import tx
 from trackinizer.server.store.legacy_retype import (
     LEGACY_KINDS,
@@ -261,8 +261,8 @@ async def _read_sources(conn: Conn, session_id: UUID) -> list[_Source]:
                 payload_text=payload_text,
                 text=text,
                 # A row already retyped has no legacy ``kind``.
-                legacy_kind=convert(
-                    convert(loads(payload_text), dict[str, object]).get(
+                legacy_kind=from_plain(
+                    from_plain(loads(payload_text), dict[str, object]).get(
                         "kind",
                     ),
                     str,
@@ -300,8 +300,8 @@ def _outputs_for(
                 ciphertext=source.ciphertext,
             ),
         ]
-    record = convert(
-        convert(loads(source.payload_text), dict[str, object]),
+    record = from_plain(
+        from_plain(loads(source.payload_text), dict[str, object]),
         UncategorizedRecord,
     )
     out = retype(
@@ -334,7 +334,7 @@ def _outputs_for(
                 model=source.model,
                 created=source.created,
                 payload_text=json.dumps(
-                    json_unfreeze(row.payload),
+                    mutable(row.payload),
                     separators=(",", ":"),
                 ),
                 text=row.text,

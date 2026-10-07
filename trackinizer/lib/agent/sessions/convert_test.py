@@ -33,9 +33,10 @@ from trackinizer.lib.agent.sessions.convert import (
     detect_format,
     main,
 )
-from trackinizer.lib.custom_json import (
-    convert as convert_json,
-    parse,
+from trackinizer.lib.codec import (
+    from_plain,
+    from_plain as convert_json,
+    loads,
 )
 
 
@@ -65,7 +66,7 @@ def _first_turn(rollout: str) -> str:
     kept = [rollout.splitlines(keepends=True)[0]]
     started = False
     for line in rollout.splitlines(keepends=True)[1:]:
-        record = parse(line, dict[str, object])
+        record = from_plain(loads(line), dict[str, object])
         started = started or record.get("type") == "turn_context"
         if not started:
             continue
@@ -107,7 +108,7 @@ def test_convert_writes_stdout_and_out_dir(
     assert main(["convert", str(path), "--to", "json"]) == 0
     # A bare ARRAY of tagged records: a session IS its records, so nothing
     # wraps them and no metadata sits beside them.
-    document = parse(capsys.readouterr().out, list[dict[str, object]])
+    document = from_plain(loads(capsys.readouterr().out), list[dict[str, object]])
     assert convert_json(document[0].get("py/object"), str, default="").endswith(
         "TurnContext",
     )
@@ -249,7 +250,7 @@ def test_workers_run_in_separate_processes(
         _ = _session(tmp_path / name / "s.jsonl", _claude_session())
 
     assert main(["verify", str(tmp_path), "--workers", "4", "--format", "json"]) == 0
-    report = parse(capsys.readouterr().err, dict[str, object])
+    report = from_plain(loads(capsys.readouterr().err), dict[str, object])
 
     assert report["files"] == 4
     assert report["ok"] == 4
@@ -268,7 +269,7 @@ def test_verify_reports_the_wire_size_against_the_source(
     assert main(["verify", str(path), "--format", "json"]) == 0
     report = convert_json(
         convert_json(
-            parse(capsys.readouterr().err, dict[str, object])["results"],
+            from_plain(loads(capsys.readouterr().err), dict[str, object])["results"],
             list[object],
         )[0],
         dict[str, object],
@@ -293,7 +294,7 @@ def test_verify_reports_a_size_gap_on_a_shortened_rewrite(
     assert main(["verify", str(path), "--format", "json"]) == 1
     report = convert_json(
         convert_json(
-            parse(capsys.readouterr().err, dict[str, object])["results"],
+            from_plain(loads(capsys.readouterr().err), dict[str, object])["results"],
             list[object],
         )[0],
         dict[str, object],
@@ -546,7 +547,7 @@ def test_a_multi_file_session_is_joined_then_split_back_byte_for_byte(
     assert result.output_bytes == result.source_bytes
 
     assert main(["verify", str(project), "--format", "json"]) == 0
-    report = parse(capsys.readouterr().err, dict[str, object])
+    report = from_plain(loads(capsys.readouterr().err), dict[str, object])
     assert report["files"] == 1
     assert report["ok"] == 1
 

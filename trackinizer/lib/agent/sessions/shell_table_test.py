@@ -34,7 +34,7 @@ from trackinizer.lib.agent.types.sessions import (
     SessionRecord,
     ToolCall,
 )
-from trackinizer.lib.custom_json import convert, parse
+from trackinizer.lib.codec import from_plain, loads
 
 
 if TYPE_CHECKING:
@@ -280,16 +280,16 @@ def test_editing_a_lifted_path_rewrites_the_replayed_command(
 def _replayed_command(native: str) -> str:
     """Return the Bash command a rewritten claude transcript carries."""
     for line in native.splitlines():
-        record = parse(line, dict[str, object])
-        message = convert(record.get("message"), dict[str, object], default={})
-        for block in convert(
+        record = from_plain(loads(line), dict[str, object])
+        message = from_plain(record.get("message"), dict[str, object], default={})
+        for block in from_plain(
             message.get("content"),
             list[dict[str, object]],
             default=[],
         ):
-            if convert(block.get("name"), str, default="") == "Bash":
-                return convert(
-                    convert(block.get("input"), dict[str, object], default={}).get(
+            if from_plain(block.get("name"), str, default="") == "Bash":
+                return from_plain(
+                    from_plain(block.get("input"), dict[str, object], default={}).get(
                         "command",
                     ),
                     str,

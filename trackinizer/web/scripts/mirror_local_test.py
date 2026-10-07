@@ -14,7 +14,7 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import convert, loads
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.trax.profile import Profile
 from trackinizer.web.scripts.mirror_local import (
     Activity,
@@ -243,7 +243,7 @@ def test_mirror_reads_with_get_only_interleaves_and_reruns_add_nothing() -> None
         beta,
         alpha,
     ]
-    ended = convert(target.rows[alpha]["ended"], datetime)
+    ended = from_plain(target.rows[alpha]["ended"], datetime)
     assert ended == _T0 + timedelta(hours=1)
     copied = {"title", "status", "labels", "description", "idempotency_key"}
     issue = target.rows[target.keys[mirror_key(_ISSUE)]]
@@ -363,13 +363,13 @@ class _Source:
             }
             return _json(200, {"parts": [part]})
         after = int(params["after_idx"])
-        page = [r for r in records if convert(r["idx"], int) > after]
+        page = [r for r in records if from_plain(r["idx"], int) > after]
         page = page[: int(params["limit"])]
         return _json(200, {"part": 0, "records": page})
 
     def _event(self, session: uuid.UUID) -> dict[str, object]:
         row = self.rows[session]
-        rooms = convert(row["rooms"], list[str], default=[])
+        rooms = from_plain(row["rooms"], list[str], default=[])
         return {"session_id": str(session), "cli": row["cli"], "rooms": rooms}
 
 
@@ -460,24 +460,25 @@ class _Target:
     def handle(self, request: httpx2.Request) -> httpx2.Response:
         path = request.url.path
         raw = loads(request.content or b"null")
-        body = {} if raw is None else convert(raw, dict[str, object])
+        body = {} if raw is None else from_plain(raw, dict[str, object])
         if request.method == "GET":
             return self._get(path)
         if path == "/api/sessions/start":
             local = self._create(body, kind="AgentSession", owner=body["actor"])
             return _json(201, {"id": str(local), "seq": 0, "actor": body["actor"]})
         if path == "/api/inquiries/batch":
-            items = convert(body["items"], list[dict[str, object]])
+            items = from_plain(body["items"], list[dict[str, object]])
             ids = [
-                self._create(item, kind=convert(item["kind"], str)) for item in items
+                self._create(item, kind=from_plain(item["kind"], str)) for item in items
             ]
             return _json(200, {"ids": [str(i) for i in ids]})
         if path == "/api/edges/batch":
             self.edge_posts += 1
-            items = convert(body["items"], list[dict[str, object]])
+            items = from_plain(body["items"], list[dict[str, object]])
             for item in items:
                 from_id, to_id, kind = (
-                    convert(item[key], str) for key in ("from_id", "to_id", "edge_kind")
+                    from_plain(item[key], str)
+                    for key in ("from_id", "to_id", "edge_kind")
                 )
                 self.edges.add((from_id, to_id, kind))
             return _json(200, {"ok": True, "items": [{"ok": True}] * len(items)})
@@ -524,18 +525,18 @@ class _Target:
         return _json(200, self.rows[uuid.UUID(raw)])
 
     def _create(self, body: Mapping[str, object], **row: object) -> uuid.UUID:
-        key = uuid.UUID(convert(body["idempotency_key"], str))
+        key = uuid.UUID(from_plain(body["idempotency_key"], str))
         if key not in self.keys:
             self.keys[key] = uuid.uuid4()
             self.rows[self.keys[key]] = {**body, "ended": None, **row}
         return self.keys[key]
 
     def _append(self, session: uuid.UUID, body: Mapping[str, object]) -> object:
-        name = convert(body["name"], str)
+        name = from_plain(body["name"], str)
         written = 0
-        records = convert(body["records"], list[dict[str, object]])
+        records = from_plain(body["records"], list[dict[str, object]])
         for record in records:
-            idx = convert(record["idx"], int)
+            idx = from_plain(record["idx"], int)
             if (session, name, idx) not in self.records:
                 self.records.add((session, name, idx))
                 self.order.append((session, idx))

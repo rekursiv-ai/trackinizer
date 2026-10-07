@@ -23,7 +23,7 @@ from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Req
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import TypeAdapter
 
-from trackinizer.lib.custom_json import convert, loads
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.server.api._deps import get_store, tag_kind, tag_row
 from trackinizer.server.api._regex_guard import regex_failures_as_400
@@ -632,7 +632,7 @@ def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
         ) from err
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="filter must be a JSON object")
-    obj = convert(payload, dict[str, object])
+    obj = from_plain(payload, dict[str, object])
     field = obj.get("field")
     op = obj.get("op")
     # The presence ops carry no operand; default a missing value to "". Gate on
@@ -691,12 +691,12 @@ def _brief_change(change: Change) -> dict[str, object]:
     """Serialize ``change`` with unset snapshot keys dropped and snapshot text cut."""
     # Pydantic's JSON dump is Any; convert narrows the runtime shape below.
     dumped = cast(object, _change_adapter().dump_python(change, mode="json"))
-    row = convert(dumped, dict[str, object])
+    row = from_plain(dumped, dict[str, object])
     text = _snapshot_text_fields()
     for side in ("old", "new"):
         row[side] = {
             key: value[:32] if key in text and isinstance(value, str) else value
-            for key, value in convert(row[side], dict[str, object]).items()
+            for key, value in from_plain(row[side], dict[str, object]).items()
             if value is not None
         }
     return row

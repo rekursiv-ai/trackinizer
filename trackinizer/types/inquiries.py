@@ -101,7 +101,7 @@ from uuid import UUID, uuid4
 import re
 import sys
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.types.columns import (
     ColumnSpec,
     Row,
@@ -481,13 +481,13 @@ class Inquiry:
             "labels": (
                 None
                 if row["labels"] is None
-                else tuple(convert(row["labels"], list[str]))
+                else tuple(from_plain(row["labels"], list[str]))
             ),
             "marginal_cost": Cost.from_row(row),
             "subscribers": (
                 None
                 if row["subscribers"] is None
-                else tuple(convert(row["subscribers"], list[str]))
+                else tuple(from_plain(row["subscribers"], list[str]))
             ),
             "created": row["created"],
             "modified": row["modified"],
@@ -507,7 +507,7 @@ class Inquiry:
             # An array column comes back a list; the frozen dataclass holds a
             # tuple. The spec is the one place an array is declared.
             if value is not None and spec is not None and spec.sql_type.endswith("[]"):
-                value = tuple(convert(value, list[object]))
+                value = tuple(from_plain(value, list[object]))
             kwargs[f.name] = value
         return cast(_InquiryConstructor[Self], cls)(**kwargs)
 

@@ -22,7 +22,7 @@ import re
 
 from trackinizer.lib.agent.sessions import codex
 from trackinizer.lib.agent.sessions.tail import Tail
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 
 
 if TYPE_CHECKING:
@@ -106,7 +106,7 @@ class CodexAdapter:
         # Typeshed types a match group ``str | Any`` -- a group may be optional
         # in general. This one is not: it is unconditional in the pattern, so
         # the match cannot succeed without it.
-        return convert(found["session_id"], str)
+        return from_plain(found["session_id"], str)
 
     def reader(self) -> Tail[TraxRecord]:
         """Return a fresh IR reader for one codex rollout file."""

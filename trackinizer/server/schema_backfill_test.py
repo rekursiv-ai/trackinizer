@@ -18,7 +18,8 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.agent.types.sessions import UncategorizedRecord
-from trackinizer.lib.custom_json import convert, json_freeze, json_unfreeze, to_builtins
+from trackinizer.lib.codec import from_plain, immutable, mutable
+from trackinizer.lib.custom_json import to_builtins
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.session_records import SessionRecordRow
@@ -188,7 +189,7 @@ async def test_the_original_kind_survives_as_provenance(store: Store) -> None:
     await _run_backfill(store)
 
     rows = await store.read_session_records(session_id, part=-1, limit=500)
-    kinds = [convert(row.payload, dict[str, object]).get("kind") for row in rows]
+    kinds = [from_plain(row.payload, dict[str, object]).get("kind") for row in rows]
     assert kinds == [
         "legacy/UserMessage",
         "legacy/AssistantMessage",
@@ -233,7 +234,7 @@ async def test_no_payload_retains_ciphertext(store: Store) -> None:
     for row in rows:
         # ``json_unfreeze`` first: the stored payload is frozen (mappingproxy
         # / tuple), which ``json.dumps`` refuses.
-        rendered = json.dumps(json_unfreeze(row.payload))
+        rendered = json.dumps(mutable(row.payload))
         assert _ENCRYPTED not in rendered
         assert _SIGNATURE not in rendered
 
@@ -308,7 +309,7 @@ async def test_a_mixed_session_keeps_its_parts_separate(store: Store) -> None:
     await store.upsert_session_manifest(
         session_id,
         name="native.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=1,
@@ -321,7 +322,7 @@ async def test_a_mixed_session_keeps_its_parts_separate(store: Store) -> None:
                 part=0,
                 idx=0,
                 kind="UserMessage",
-                payload=json_freeze({"py/object": "x"}),
+                payload=immutable({"py/object": "x"}),
                 text="native turn",
             ),
         ],

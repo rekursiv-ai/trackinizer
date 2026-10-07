@@ -58,19 +58,22 @@ from trackinizer.lib.agent.types.sessions import (
     WebSearchResult,
     WebSearchResults,
 )
+from trackinizer.lib.codec import (
+    MutablePlainTree,
+    PlainTree,
+    ReadError,
+    from_plain,
+    immutable,
+    loads,
+    mutable,
+)
+
+# The field-state helpers stay on custom_json, and they recognise only its
+# ``Invalid``: the codec's has the same shape but is another class.
 from trackinizer.lib.custom_json import (
-    JSON,
     FieldState,
     Invalid,
-    JSONValue,
-    MutableJSONValue,
-    ReadError,
-    convert,
     extract_unmodeled_fields,
-    json_freeze,
-    json_unfreeze,
-    loads,
-    parse,
     read_field_keeping_invalid,
     restore_unmodeled_fields,
 )
@@ -174,7 +177,7 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
     # that shows it: a file whose ``session_meta`` carries an ordinal numbers
     # every line, one whose does not numbers none.
     numbered = "ordinal" in declaration
-    at = convert(declaration.get("line"), int, default=0)
+    at = from_plain(declaration.get("line"), int, default=0)
     # One line held back, never the file (axiom 11): the last line may have to
     # lose its newline, which is knowable only once the stream ends, and a 273
     # MB session buffered whole cost 2.6 GB since one non-ASCII line widens the
@@ -184,22 +187,30 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
     launch = (
         _write_line(
             declaration.get("$launch_timestamp_raw", settings.timestamp),
-            convert(declaration.get("ordinal"), int, default=0) if numbered else None,
+            from_plain(declaration.get("ordinal"), int, default=0)
+            if numbered
+            else None,
             "session_meta",
             # The prompt lives on the opening clear, so the launch payload is
             # rebuilt from it rather than holding a second copy.
             _with_instructions(
-                convert(declaration.get("payload"), dict[str, object], default={}),
+                from_plain(declaration.get("payload"), dict[str, object], default={}),
                 ordered,
             ),
-            template=convert(declaration.get("$outer"), dict[str, object], default={}),
+            template=from_plain(
+                declaration.get("$outer"),
+                dict[str, object],
+                default={},
+            ),
             include_timestamp=bool(declaration.get("$timestamp", True)),
-            payload_at=convert(declaration.get("$payload_at"), int, default=None),
+            payload_at=from_plain(declaration.get("$payload_at"), int, default=None),
         )
         if "payload" in declaration
         else None
     )
-    ordinal = convert(declaration.get("ordinal"), int, default=0) + 1 if numbered else 0
+    ordinal = (
+        from_plain(declaration.get("ordinal"), int, default=0) + 1 if numbered else 0
+    )
     for group in _grouped(ordered):
         item = group[0]
         # The launch line goes back where it sat, which is after any blank
@@ -218,7 +229,7 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
             ordinal += 1
             continue
         line_state, wire_item = _pop_line_state(item)
-        template = convert(line_state.get("outer"), dict[str, object], default={})
+        template = from_plain(line_state.get("outer"), dict[str, object], default={})
         raw_timestamp = template.get("timestamp")
         timestamp = (
             raw_timestamp
@@ -241,7 +252,9 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
                 payload,
                 template=template,
                 include_timestamp=include_timestamp,
-                payload_at=(None if payload_at is None else convert(payload_at, int)),
+                payload_at=(
+                    None if payload_at is None else from_plain(payload_at, int)
+                ),
             )
             written += 1
             ordinal += 1
@@ -286,7 +299,7 @@ def _with_instructions(
     if opening is None or opening.system_prompt is None:
         return dict(payload)
     declared = opening.system_prompt[
-        : convert(dict(opening.extra).get("$declared"), int, default=0)
+        : from_plain(dict(opening.extra).get("$declared"), int, default=0)
     ]
     if isinstance(stencil, Mapping):
         held = cast(Mapping[str, object], stencil)
@@ -352,7 +365,7 @@ def _write_line(
     payload_at: int | None = None,
 ) -> str:
     """Return one rollout line, in the order codex writes its outer keys."""
-    record: dict[str, object] = dict(json_unfreeze(template))
+    record: dict[str, object] = dict(mutable(template))
     if include_timestamp:
         if not template or "timestamp" in record:
             record["timestamp"] = timestamp
@@ -363,11 +376,11 @@ def _write_line(
     if not template or isinstance(record.get("type"), str):
         record["type"] = outer
     if payload_at is None:
-        record["payload"] = json_unfreeze(payload)
+        record["payload"] = mutable(payload)
     else:
         keys = list(record)
         record = {
-            key: json_unfreeze(payload) if key == "payload" else record[key]
+            key: mutable(payload) if key == "payload" else record[key]
             for key in (*keys[:payload_at], "payload", *keys[payload_at:])
         }
     return json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -380,7 +393,7 @@ def _write_line(
 def _codex_residual(
     source: Mapping[str, object],
     consumed: Iterable[str] = (),
-) -> dict[str, JSONValue]:
+) -> dict[str, PlainTree]:
     """Preserve residual fields while escaping provider dollar keys."""
     extra = extract_unmodeled_fields(source, consumed)
     dollar = {key: extra.pop(key) for key in tuple(extra) if key.startswith("$")}
@@ -396,7 +409,7 @@ def _codex_residual(
 # never named, which is how :func:`_ordered` splices.
 def _canonical_order(source: Mapping[str, object]) -> list[str]:
     """Return the key order :data:`_ORDER` reproduces for this payload."""
-    order = payload_orders().get(convert(source.get("type"), str, default=""), ())
+    order = payload_orders().get(from_plain(source.get("type"), str, default=""), ())
     return [key for key in order if key in source] + [
         key for key in source if key not in order
     ]
@@ -406,14 +419,16 @@ def _ordered(kind: str, payload: Mapping[str, object]) -> dict[str, object]:
     """Return one payload in its native or canonical key order."""
     values = dict(payload)
     native_order = (
-        v if (v := values.pop("$native_order", [])) is None else convert(v, list[str])
+        v
+        if (v := values.pop("$native_order", [])) is None
+        else from_plain(v, list[str])
     )
-    wire = convert(values.pop("$wire", {}), dict[str, object])
-    wire_values = convert(wire.get("values"), dict[str, object], default={})
+    wire = from_plain(values.pop("$wire", {}), dict[str, object])
+    wire_values = from_plain(wire.get("values"), dict[str, object], default={})
     values = {key: value for key, value in values.items() if not key.startswith("$")}
     values.update(wire_values)
     if not native_order:
-        native_order = convert(wire.get("order"), list[str], default=[])
+        native_order = from_plain(wire.get("order"), list[str], default=[])
     if native_order:
         return {key: values[key] for key in native_order if key in values} | {
             key: value for key, value in values.items() if key not in native_order
@@ -460,8 +475,8 @@ def _write_record(
     if isinstance(item, ContextState):
         return [("world_state", _ordered("world_state", dict(item.extra)))]
     if isinstance(item, ContextCompaction):
-        extra = json_unfreeze(item.extra)
-        echoes = convert(extra.pop("$echoes", ""), str)
+        extra = mutable(item.extra)
+        echoes = from_plain(extra.pop("$echoes", ""), str)
         if echoes:
             # The bare marker, not the line that carries the summary.
             return [("event_msg", _ordered(echoes, {"type": echoes, **extra}))]
@@ -477,8 +492,8 @@ def _write_record(
         # that caused it -- a launch or a compaction -- already wrote it.
         return []
     if isinstance(item, TokenUsage):
-        stored = json_unfreeze(item.extra)
-        nulls = set(convert(stored.get("$nulls"), list[str], default=[]))
+        stored = mutable(item.extra)
+        nulls = set(from_plain(stored.get("$nulls"), list[str], default=[]))
         values: dict[str, object] = {
             # ``None``, not the empty object the field holds: an object field
             # cannot tell a null apart from an absent one.
@@ -512,7 +527,7 @@ def _write_record(
     if isinstance(item, AgentToAgentMessage):
         return [("response_item", _write_agent_message(item))]
     if isinstance(item, SystemMessage) and "$event" in item.extra:
-        extra = json_unfreeze(item.extra)
+        extra = mutable(item.extra)
         del extra["$event"]
         return [
             (
@@ -539,12 +554,12 @@ def _write_record(
 # reach the wire.
 def _write_compacted(
     item: ContextClear,
-    extra: dict[str, MutableJSONValue],
+    extra: dict[str, MutablePlainTree],
 ) -> dict[str, object]:
     """Return the ``compacted`` line a history replacement came from."""
     # Presence before the pop: an EMPTY history is still a stated one (axiom 2).
     stated = "$history" in extra or bool(item.history)
-    markers = convert(extra.pop("$history", []), list[object])
+    markers = from_plain(extra.pop("$history", []), list[object])
     payload: dict[str, object] = {}
     if (item.summary is not None and "message" in extra) or not stated:
         # ``message`` only where the line stated one. Codex seals the summary
@@ -566,7 +581,7 @@ def _write_compacted(
 
 def _write_context(item: TurnContext) -> dict[str, object]:
     """Return the settings line a turn context came from."""
-    stored = json_unfreeze(item.extra)
+    stored = mutable(item.extra)
     # The word this line used for its effort, when it was not the IR's own.
     spelled = stored.pop("$effort", None)
     values: dict[str, object] = {
@@ -592,7 +607,7 @@ def _write_context(item: TurnContext) -> dict[str, object]:
 
 def _write_agent_message(item: AgentToAgentMessage) -> dict[str, object]:
     """Return the response item a peer message came from."""
-    extra = json_unfreeze(item.extra)
+    extra = mutable(item.extra)
     blocks = _write_content(
         item.content,
         item.attachments,
@@ -616,7 +631,7 @@ def _write_item(
     item: UserMessage | AssistantMessage | SystemMessage | Thinking | ToolCall,
 ) -> dict[str, object]:
     """Return the response item one act of the transcript came from."""
-    extra = json_unfreeze(item.extra)
+    extra = mutable(item.extra)
     if isinstance(item, Thinking):
         # Reasoning has no content list, so its own splits stay here rather
         # than going through the content writer.
@@ -670,20 +685,20 @@ def _write_item(
 
 def _write_call(
     item: ToolCall,
-    extra: dict[str, MutableJSONValue],
+    extra: dict[str, MutablePlainTree],
 ) -> dict[str, object]:
     """Return the response item a tool invocation came from."""
     spaced = bool(extra.pop("$spaced", False))
     present_value = extra.pop("$present", None)
     present = (
-        set(convert(cast(list[object], present_value), list[str]))
+        set(from_plain(present_value, list[str]))
         if isinstance(present_value, list)
         else None
     )
-    kind = convert(extra.get("type"), str, default="function_call")
+    kind = from_plain(extra.get("type"), str, default="function_call")
     if "$id" in extra:
-        id_key = convert(extra.pop("$id"), str)
-        arg_key = convert(extra.pop("$args"), str)
+        id_key = from_plain(extra.pop("$id"), str)
+        arg_key = from_plain(extra.pop("$args"), str)
         search_value = extra.pop("$kind")
         search = search_value if isinstance(search_value, str) else ""
         return _ordered(
@@ -699,10 +714,10 @@ def _write_call(
             # The source string when re-serializing cannot reproduce it, else
             # raw UTF-8 matching the outer line: an em dash inside the nested
             # argument string is written as itself, not escaped.
-            "arguments": convert(extra.pop("$raw"), str)
+            "arguments": from_plain(extra.pop("$raw"), str)
             if "$raw" in extra
             else json.dumps(
-                json_unfreeze(item.arguments),
+                mutable(item.arguments),
                 ensure_ascii=False,
                 separators=None if spaced else (",", ":"),
             ),
@@ -712,7 +727,7 @@ def _write_call(
         payload = {
             "call_id": item.call_id,
             "name": item.name,
-            "input": convert(item.arguments.get("input"), str, default=""),
+            "input": from_plain(item.arguments.get("input"), str, default=""),
         }
     if present is not None:
         defaults = {
@@ -743,8 +758,8 @@ def _write_result(
         for record in (item, *followers)
         if isinstance(record, FileEditResult | FileWriteResult) and record.path
     }
-    extra = json_unfreeze(item.extra)
-    echoes = convert(extra.pop("$echoes", ""), str)
+    extra = mutable(item.extra)
+    echoes = from_plain(extra.pop("$echoes", ""), str)
     if echoes == "item_completed":
         completed = _write_completed(item, extra, by_path)
         return ("event_msg", completed) if completed is not None else None
@@ -788,10 +803,10 @@ def _write_result(
 
 def _write_output(
     item: UncategorizedToolResult,
-    extra: dict[str, MutableJSONValue],
+    extra: dict[str, MutablePlainTree],
 ) -> dict[str, object]:
     """Return the output response item a result came from."""
-    kind = convert(extra.get("type"), str, default="function_call_output")
+    kind = from_plain(extra.get("type"), str, default="function_call_output")
     if extra.pop("$whole", False):
         return _ordered(kind, {"type": kind, "call_id": item.call_id, **extra})
     output_absent = bool(extra.pop("$output_absent", False))
@@ -812,13 +827,13 @@ def _write_output(
 def _write_legacy_end(
     item: ToolResult,
     kind: str,
-    extra: dict[str, MutableJSONValue],
+    extra: dict[str, MutablePlainTree],
     by_path: Mapping[str, FileEditResult | FileWriteResult],
 ) -> dict[str, object]:
     """Return the pre-0.149 ``*_end`` event an observation came from."""
     present_value = extra.pop("$present", None)
     present = (
-        set(convert(cast(list[object], present_value), list[str]))
+        set(from_plain(present_value, list[str]))
         if isinstance(present_value, list)
         else None
     )
@@ -853,7 +868,7 @@ def _write_legacy_end(
         _ = extra.pop("$splice_counts", None)
         changes = _write_changes(
             by_path,
-            convert(extra.get("changes"), dict[str, object], default={}),
+            from_plain(extra.get("changes"), dict[str, object], default={}),
         )
         if changes is not None:
             extra["changes"] = changes
@@ -866,7 +881,7 @@ def _write_legacy_end(
 def _write_changes(
     by_path: Mapping[str, FileEditResult | FileWriteResult],
     stored: Mapping[str, object],
-) -> dict[str, MutableJSONValue] | None:
+) -> dict[str, MutablePlainTree] | None:
     """Return a patch's per-path entries carrying each record's current value."""
     if not stored:
         return None
@@ -878,8 +893,8 @@ def _write_changes(
         path: found
         for path, entry in stored.items()
         if (
-            found := convert(
-                (convert(entry, dict[str, object], default={})).get("$filled"),
+            found := from_plain(
+                (from_plain(entry, dict[str, object], default={})).get("$filled"),
                 str,
                 default="",
             )
@@ -888,9 +903,9 @@ def _write_changes(
     paths = list(filled)
     if not paths:
         return None
-    out: dict[str, MutableJSONValue] = {}
+    out: dict[str, MutablePlainTree] = {}
     for path, entry in stored.items():
-        found = dict(convert(entry, dict[str, object], default={}))
+        found = dict(from_plain(entry, dict[str, object], default={}))
         owner = by_path.get(path)
         if path in filled and owner is not None:
             # Each entry from the record that owns THAT path: an add states the
@@ -905,20 +920,20 @@ def _write_changes(
         # wrote. ``_ordered`` strips ``$`` keys at the payload's top level;
         # this one is nested inside ``changes``.
         found.pop("$filled", None)
-        out[path] = json_unfreeze(found)
+        out[path] = mutable(found)
     return out
 
 
 def _write_completed(
     item: ToolResult,
-    extra: dict[str, MutableJSONValue],
+    extra: dict[str, MutablePlainTree],
     by_path: Mapping[str, FileEditResult | FileWriteResult] = MappingProxyType({}),
 ) -> dict[str, object] | None:
     """Return the ``item_completed`` event an observation came from."""
-    nested = convert(extra.pop("item", {}), dict[str, object])
-    present_value = nested.pop("$present", None)
+    nested = from_plain(extra.pop("item", {}), dict[str, object])
+    present_value: object = nested.pop("$present", None)
     present = (
-        set(convert(cast(list[object], present_value), list[str]))
+        set(from_plain(cast(list[object], present_value), list[str]))
         if isinstance(present_value, list)
         else None
     )
@@ -960,7 +975,7 @@ def _write_completed(
             _ = nested.pop("$splice_counts", None)
             changes = _write_changes(
                 by_path,
-                convert(nested.get("changes"), dict[str, object], default={}),
+                from_plain(nested.get("changes"), dict[str, object], default={}),
             )
             if changes is not None:
                 nested["changes"] = changes
@@ -1001,15 +1016,15 @@ def _write_completed(
 
 def _write_rows(
     item: WebSearchResults,
-    extra: dict[str, MutableJSONValue],
+    extra: dict[str, MutablePlainTree],
 ) -> list[object] | None:
     """Return search results with opaque members in their original positions."""
     if "$rows" not in extra:
         return None
-    templates = convert(extra.pop("$rows", []), list[object])
+    templates = from_plain(extra.pop("$rows", []), list[object])
     row_order = extra.pop("$row_order", [])
     try:
-        order = convert(row_order, list[str])
+        order = from_plain(row_order, list[str])
     except ReadError:
         order = []
     named = [
@@ -1051,25 +1066,25 @@ def _write_rows(
 def _write_content(
     content: str | None,
     attachments: tuple[Attachment, ...],
-    extra: dict[str, MutableJSONValue],
+    extra: dict[str, MutablePlainTree],
     *,
     text_key: str,
 ) -> list[object]:
     """Return content members in native order, then append new semantics."""
     parts_value = extra.pop("$parts", [])
     try:
-        parts = convert(parts_value, list[int])
+        parts = from_plain(parts_value, list[int])
     except ReadError:
         parts = []
     prose = _split(content, parts)
     if "$templates" in extra:
-        templates = convert(extra.pop("$templates"), list[object])
+        templates = from_plain(extra.pop("$templates"), list[object])
     else:
-        templates = convert(extra.pop("$blocks", []), list[object])
+        templates = from_plain(extra.pop("$blocks", []), list[object])
     has_order = "$order" in extra
     order_value = extra.pop("$order", [])
     try:
-        order = convert(order_value, list[str])
+        order = from_plain(order_value, list[str])
     except ReadError:
         order = []
     if not has_order:
@@ -1086,7 +1101,7 @@ def _write_content(
         if kind == "text":
             if text_index >= len(prose):
                 continue
-            block = convert(template, dict[str, object])
+            block = from_plain(template, dict[str, object])
             block.setdefault("type", text_key)
             block["text"] = prose[text_index]
             blocks.append(block)
@@ -1094,7 +1109,7 @@ def _write_content(
         elif kind == "image":
             if image_index >= len(attachments):
                 continue
-            block = convert(template, dict[str, object]) | _write_attachment(
+            block = from_plain(template, dict[str, object]) | _write_attachment(
                 attachments[image_index],
             )
             blocks.append(block)
@@ -1206,7 +1221,7 @@ class _Reader:
         # stream index (axiom 5), which counts records already handed over.
         self._base = 0
         # The launch line's settings, once read: only the first one declares.
-        self._declared: dict[str, JSONValue] | None = None
+        self._declared: dict[str, PlainTree] | None = None
         # The index of the most recent ``turn_context``; every later record
         # names it. The opening context sits at 0, and codex writes one per
         # turn, so this moves as the stream advances.
@@ -1305,12 +1320,12 @@ class _Reader:
         if not isinstance(decoded, dict):
             self._pending.append(IncompleteRecord(text=line))
             return
-        record = convert(decoded, dict[str, object])
+        record = from_plain(decoded, dict[str, object])
         # Every field is narrowed BEFORE anything is committed: a line with one
         # malformed field raised out of ``normalize`` and lost the rest of the
         # file. Kept as its text instead, it still writes back as its bytes.
         try:
-            payload = convert(record["payload"], dict[str, object])
+            payload = from_plain(record["payload"], dict[str, object])
             outer = read_or_default(record.get("type"), str, default="")
             if outer == "session_meta" and self._declared is None:
                 launch = (
@@ -1350,7 +1365,7 @@ class _Reader:
                 context_id=self._context_id,
                 timestamp=timestamp,
                 kind="session_meta/repeat",
-                payload=json_freeze(payload),
+                payload=immutable(payload),
             )
             return [_with_line_state(repeat, record)]
         if outer == "turn_context":
@@ -1365,7 +1380,7 @@ class _Reader:
     # from; both are derived, so neither costs a line on the way back out.
     def _launch(
         self,
-        launch: tuple[dict[str, JSONValue], str | None],
+        launch: tuple[dict[str, PlainTree], str | None],
         payload: Mapping[str, object],
         position: int,
     ) -> None:
@@ -1392,7 +1407,7 @@ class _Reader:
                 raise ValueError("Expected self._base == 0.")
             self._pending[0] = declared
         declared_prompt = _declared_instructions(payload)
-        opens: dict[str, JSONValue] = {"$opens": True}
+        opens: dict[str, PlainTree] = {"$opens": True}
         if declared_prompt is not None:
             self._given.append(declared_prompt)
             # How much of the assembled prompt the LAUNCH LINE owns. The clear
@@ -1455,9 +1470,9 @@ def _read_declaration(
     record: Mapping[str, object],
     payload: Mapping[str, object],
     position: int,
-) -> dict[str, JSONValue]:
+) -> dict[str, PlainTree]:
     """Read the launch line: the settings a rollout opens with."""
-    extra: dict[str, JSONValue] = {}
+    extra: dict[str, PlainTree] = {}
     # The whole payload verbatim, order included: codex writes keys no table
     # anticipated (``dynamic_tools``, ``agent_role``), and a table that misses
     # one misplaces it.
@@ -1477,10 +1492,10 @@ def _read_declaration(
     # the object also carries a ``provenance`` naming the model that wrote the
     # prompt, and no field on the clear holds that.
     if _declared_instructions(payload) is not None:
-        stored = convert(extra["payload"], dict[str, object])
+        stored = from_plain(extra["payload"], dict[str, object])
         held = stored.get("base_instructions")
         extra["payload"] = (
-            json_freeze(
+            immutable(
                 {
                     key: _emptied_instructions(value)
                     if key == "base_instructions"
@@ -1489,7 +1504,7 @@ def _read_declaration(
                 },
             )
             if isinstance(held, Mapping | str)
-            else json_freeze(stored)
+            else immutable(stored)
         )
     # WITHOUT the payload, which ``extra["payload"]`` above already is and
     # ``_write_line`` overwrites from anyway. Keeping it stored the launch
@@ -1497,7 +1512,7 @@ def _read_declaration(
     # whole system prompt was held twice: ~19 KB of a 112 KB captured golden.
     # The rule ``_with_line_state`` states for every other line; this was the
     # one path that skipped it.
-    extra["$outer"] = json_freeze(
+    extra["$outer"] = immutable(
         {key: value for key, value in record.items() if key != "payload"},
     )
     # No ``$launch_timestamp_raw``: a string stamp is what the metadata's own
@@ -1505,7 +1520,7 @@ def _read_declaration(
     # MALFORMED one -- which the field cannot hold -- survives nowhere else.
     raw = record.get("timestamp")
     if raw is not None and not isinstance(raw, str):
-        extra["$launch_timestamp_raw"] = cast(JSONValue, raw)
+        extra["$launch_timestamp_raw"] = cast(PlainTree, raw)
     if "ordinal" in record:
         extra["ordinal"] = read_or_default(record.get("ordinal"), int, default=0)
     return extra
@@ -1526,8 +1541,8 @@ def _with_line_state(item: SessionRecord, outer: Mapping[str, object]) -> Sessio
         if key == "payload":
             continue
         stencil[key] = "" if key == "timestamp" and isinstance(value, str) else value
-    state: dict[str, MutableJSONValue] = {
-        "outer": json_unfreeze(stencil),
+    state: dict[str, MutablePlainTree] = {
+        "outer": mutable(stencil),
     }
     if "payload" in outer:
         # Only WHERE it sat: the payload itself is the record.
@@ -1537,12 +1552,12 @@ def _with_line_state(item: SessionRecord, outer: Mapping[str, object]) -> Sessio
     if isinstance(item, UncategorizedRecord):
         payload = dict(item.payload)
         if "$codex_line" in payload:
-            state["value"] = json_unfreeze(payload["$codex_line"])
+            state["value"] = mutable(payload["$codex_line"])
         payload["$codex_line"] = state
         return replace(item, payload=payload)
     if isinstance(item, IncompleteRecord):
         return item
-    extra = json_unfreeze(item.extra)
+    extra = mutable(item.extra)
     extra["$codex_line"] = state
     return replace(item, extra=extra)
 
@@ -1563,15 +1578,15 @@ def _pop_line_state(
     """Remove and return record-owned Codex line replay state."""
     if isinstance(item, UncategorizedRecord):
         payload = dict(item.payload)
-        state = convert(payload.get("$codex_line"), dict[str, object], default={})
+        state = from_plain(payload.get("$codex_line"), dict[str, object], default={})
         if not isinstance(state.get("outer"), Mapping):
             return {}, item
         payload.pop("$codex_line")
         if "value" in state:
-            payload["$codex_line"] = json_unfreeze(state["value"])
+            payload["$codex_line"] = mutable(state["value"])
         return state, replace(item, payload=payload)
-    extra = json_unfreeze(item.extra)
-    state = convert(extra.get("$codex_line"), dict[str, object], default={})
+    extra = mutable(item.extra)
+    state = from_plain(extra.get("$codex_line"), dict[str, object], default={})
     if not isinstance(state.get("outer"), Mapping):
         return {}, item
     extra.pop("$codex_line")
@@ -1611,7 +1626,7 @@ def _read_context(payload: Mapping[str, object], timestamp: str | None) -> TurnC
         effort=effort,
         summary_kind=summary,
         permission=permission if isinstance(permission, str) else None,
-        extra=json_freeze(extra),
+        extra=immutable(extra),
     )
 
 
@@ -1646,7 +1661,7 @@ def _read_records(
             context_id=context_id,
             timestamp=timestamp,
             kind=f"{outer}/{kind or 'root'}",
-            payload=json_freeze(payload),
+            payload=immutable(payload),
         ),
     ]
 
@@ -1654,13 +1669,13 @@ def _read_records(
 # ``None`` marks the slot the clear's field fills, the way every other stencil in this
 # module does; a sibling key -- ``provenance`` -- survives nowhere else, so the object
 # is kept rather than replaced.
-def _emptied_instructions(value: object) -> JSONValue:
+def _emptied_instructions(value: object) -> PlainTree:
     """Empty the prompt text a launch line declared, keeping its shape."""
     if not isinstance(value, Mapping):
         return None
     declared = cast(Mapping[str, object], value)
     return {
-        key: None if key == "text" else cast(JSONValue, item)
+        key: None if key == "text" else cast(PlainTree, item)
         for key, item in declared.items()
     }
 
@@ -1727,7 +1742,7 @@ def _read_compacted(
     # list rather than inventing one. Axiom 2: an empty list is a value.
     if "replacement_history" in consumed:
         extra["$history"] = [
-            cast(JSONValue, value)
+            cast(PlainTree, value)
             for value in entries
             if (
                 read_or_default(
@@ -1747,7 +1762,7 @@ def _read_compacted(
         ContextCompaction(
             context_id=context_id,
             timestamp=timestamp,
-            extra=json_freeze(extra),
+            extra=immutable(extra),
         ),
         ContextClear(
             context_id=context_id,
@@ -1785,7 +1800,7 @@ def _read_response_item(
         return UncategorizedToolResult(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(payload.get("call_id"), str, default=""),
+            call_id=from_plain(payload.get("call_id"), str, default=""),
             extra=_codex_residual(payload, {"call_id"}) | {"$whole": True},
         )
     if kind == "agent_message":
@@ -1802,13 +1817,13 @@ def _read_response_item(
             attachments=attachments,
             sender=read_or_default(payload.get("author"), str, default=None),
             recipient=read_or_default(payload.get("recipient"), str, default=None),
-            extra=json_freeze(extra),
+            extra=immutable(extra),
         )
     return UncategorizedRecord(
         context_id=context_id,
         timestamp=timestamp,
         kind=f"response_item/{kind}",
-        payload=json_freeze(payload),
+        payload=immutable(payload),
     )
 
 
@@ -1848,7 +1863,7 @@ def _read_message(
             timestamp=timestamp,
             content=content,
             attachments=attachments,
-            extra=json_freeze(extra),
+            extra=immutable(extra),
         )
     if role == "assistant":
         return AssistantMessage(
@@ -1856,7 +1871,7 @@ def _read_message(
             timestamp=timestamp,
             content=content,
             attachments=attachments,
-            extra=json_freeze(extra),
+            extra=immutable(extra),
         )
     # ``developer`` / ``system``: real instructions the model saw, so they
     # belong in the record stream rather than being dropped for having an
@@ -1867,15 +1882,15 @@ def _read_message(
         content=content,
         attachments=attachments,
         subtype=role,
-        extra=json_freeze(extra),
+        extra=immutable(extra),
     )
 
 
-def _block_order(content: object) -> list[JSONValue]:
+def _block_order(content: object) -> list[PlainTree]:
     """Return each content member's semantic kind in wire order."""
-    kinds: list[JSONValue] = []
+    kinds: list[PlainTree] = []
     values = (
-        convert(cast(list[object], content), list[object])
+        from_plain(cast(list[object], content), list[object])
         if isinstance(content, list)
         else []
     )
@@ -1883,7 +1898,7 @@ def _block_order(content: object) -> list[JSONValue]:
         if not isinstance(value, Mapping):
             kinds.append("other")
             continue
-        part = convert(cast(dict[str, object], value), dict[str, object])
+        part = from_plain(cast(dict[str, object], value), dict[str, object])
         if isinstance(part.get("text"), str):
             kinds.append("text")
         elif _read_attachment(part) is not None:
@@ -1898,21 +1913,21 @@ def _block_order(content: object) -> list[JSONValue]:
 # twice, which was 23.2% of all ``extra``.
 def _read_content(
     content: object,
-) -> tuple[tuple[str, ...], tuple[Attachment, ...], list[JSONValue]]:
+) -> tuple[tuple[str, ...], tuple[Attachment, ...], list[PlainTree]]:
     """Split content into semantics and per-member wire templates."""
     parts: list[str] = []
     attachments: list[Attachment] = []
-    templates: list[JSONValue] = []
+    templates: list[PlainTree] = []
     values = (
-        convert(cast(list[object], content), list[object])
+        from_plain(cast(list[object], content), list[object])
         if isinstance(content, list)
         else []
     )
     for value in values:
         if not isinstance(value, Mapping):
-            templates.append(cast(JSONValue, value))
+            templates.append(cast(PlainTree, value))
             continue
-        part = convert(cast(dict[str, object], value), dict[str, object])
+        part = from_plain(cast(dict[str, object], value), dict[str, object])
         if isinstance(part.get("text"), str):
             parts.append(read_or_default(part.get("text"), str, default=""))
             templates.append(_stencil(part, "text"))
@@ -1925,16 +1940,16 @@ def _read_content(
             attachments.append(found)
             templates.append(_stencil(part, "type", "image_url"))
         else:
-            templates.append(cast(JSONValue, value))
+            templates.append(cast(PlainTree, value))
     return tuple(parts), tuple(attachments), templates
 
 
 # ``None`` rather than absent: the writer puts the field's value back, and a key it has
 # to append lands at the end rather than where it was.
-def _stencil(block: Mapping[str, object], *held: str) -> JSONValue:
+def _stencil(block: Mapping[str, object], *held: str) -> PlainTree:
     """Return a block whose held values are emptied but whose keys still sit."""
     return {
-        key: None if key in held else cast(JSONValue, value)
+        key: None if key in held else cast(PlainTree, value)
         for key, value in block.items()
     }
 
@@ -1947,17 +1962,17 @@ def _read_thinking(
     """Read reasoning, whose readable part is a summary codex may split."""
     summary_value = payload.get("summary")
     parts: list[str] = []
-    templates: list[JSONValue] = []
-    order: list[JSONValue] = []
+    templates: list[PlainTree] = []
+    order: list[PlainTree] = []
     for value in read_or_default(payload.get("summary"), list[object], default=[]):
         if isinstance(value, Mapping):
-            block = convert(cast(dict[str, object], value), dict[str, object])
+            block = from_plain(cast(dict[str, object], value), dict[str, object])
             if isinstance(block.get("text"), str):
                 parts.append(read_or_default(block.get("text"), str, default=""))
                 templates.append(_stencil(block, "text"))
                 order.append("text")
                 continue
-        templates.append(cast(JSONValue, value))
+        templates.append(cast(PlainTree, value))
         order.append("other")
     encrypted_text = read_or_default(
         payload.get("encrypted_content"),
@@ -1982,7 +1997,7 @@ def _read_thinking(
         timestamp=timestamp,
         summary="\n".join(parts) if parts else None,
         encrypted=encrypted_text,
-        extra=json_freeze(extra),
+        extra=immutable(extra),
     )
 
 
@@ -2018,7 +2033,7 @@ def _read_tool_call(
                 context_id=context_id,
                 timestamp=timestamp,
                 kind=f"response_item/{kind}",
-                payload=json_freeze(payload),
+                payload=immutable(payload),
             )
         arguments = parsed or {}
         # ``arguments`` is a STRING inside the line, so its own separator
@@ -2034,10 +2049,10 @@ def _read_tool_call(
     return ToolCall(
         context_id=context_id,
         timestamp=timestamp,
-        call_id=convert(payload.get("call_id"), str, default=""),
+        call_id=from_plain(payload.get("call_id"), str, default=""),
         name=read_or_default(payload.get("name"), str, default=""),
-        arguments=json_freeze(convert(arguments, dict[str, object])),
-        extra=json_freeze(extra),
+        arguments=immutable(from_plain(arguments, dict[str, object])),
+        extra=immutable(extra),
     )
 
 
@@ -2046,7 +2061,7 @@ def _read_tool_call(
 def _parse_arguments(text: str) -> dict[str, object] | None:
     """Parse a provider-supplied JSON argument string, or ``None`` if invalid."""
     try:
-        return parse(text, dict[str, object])
+        return from_plain(loads(text), dict[str, object])
     except json.JSONDecodeError:
         return None
 
@@ -2083,10 +2098,10 @@ def _read_tool_result(
     return UncategorizedToolResult(
         context_id=context_id,
         timestamp=timestamp,
-        call_id=convert(payload.get("call_id"), str, default=""),
+        call_id=from_plain(payload.get("call_id"), str, default=""),
         content=content,
         attachments=attachments,
-        extra=json_freeze(extra),
+        extra=immutable(extra),
     )
 
 
@@ -2111,14 +2126,14 @@ def _read_search_call(
     return ToolCall(
         context_id=context_id,
         timestamp=timestamp,
-        call_id=convert(payload.get(id_key), str, default=""),
+        call_id=from_plain(payload.get(id_key), str, default=""),
         name=(read_or_default(payload.get("type"), str, default="")).removesuffix(
             "_call",
         ),
-        arguments=json_freeze(
+        arguments=immutable(
             read_or_default(payload.get(arg_key), dict[str, object], default={}),
         ),
-        extra=json_freeze(
+        extra=immutable(
             _codex_residual(payload, consumed)
             | {
                 "$id": id_key,
@@ -2167,20 +2182,20 @@ def _read_event(
         return TokenUsage(
             context_id=context_id,
             timestamp=timestamp,
-            info=json_freeze(
-                convert(cast(dict[str, object], info), dict[str, object])
+            info=immutable(
+                from_plain(cast(dict[str, object], info), dict[str, object])
                 if isinstance(info, Mapping)
                 else {},
             ),
-            rate_limits=json_freeze(
-                convert(
+            rate_limits=immutable(
+                from_plain(
                     cast(dict[str, object], rate_limits),
                     dict[str, object],
                 )
                 if isinstance(rate_limits, Mapping)
                 else {},
             ),
-            extra=json_freeze(usage_extra),
+            extra=immutable(usage_extra),
         )
     if kind == "error":
         return SystemMessage(
@@ -2208,7 +2223,7 @@ def _read_event(
         return UncategorizedToolResult(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(payload.get("call_id"), str, default=""),
+            call_id=from_plain(payload.get("call_id"), str, default=""),
             extra=_echoing(payload, kind, {"call_id"}),
         )
     # The pre-0.149 spelling of what ``item_completed`` now carries; the act
@@ -2217,7 +2232,7 @@ def _read_event(
         shell = ShellCommandResult(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(payload.get("call_id"), str, default=""),
+            call_id=from_plain(payload.get("call_id"), str, default=""),
             command=_command(payload.get("command")),
             stdout=read_or_default(payload.get("stdout"), str, default=""),
             stderr=read_or_default(payload.get("stderr"), str, default=""),
@@ -2234,27 +2249,27 @@ def _read_event(
             counts,
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(payload.get("call_id"), str, default=""),
+            call_id=from_plain(payload.get("call_id"), str, default=""),
             extra=_stencil_changes(_echoing(payload, kind, {"call_id"}), counts),
         )
     if kind == "web_search_end":
         results_value = payload.get("results")
         values = (
-            convert(cast(list[object], results_value), list[object])
+            from_plain(cast(list[object], results_value), list[object])
             if isinstance(results_value, list)
             else []
         )
         rows: list[dict[str, object]] = []
-        templates: list[JSONValue] = []
-        row_order: list[JSONValue] = []
+        templates: list[PlainTree] = []
+        row_order: list[PlainTree] = []
         for value in values:
             if isinstance(value, Mapping):
-                row = convert(cast(dict[str, object], value), dict[str, object])
+                row = from_plain(cast(dict[str, object], value), dict[str, object])
                 rows.append(row)
-                templates.append(cast(JSONValue, value))
+                templates.append(cast(PlainTree, value))
                 row_order.append("row")
             else:
-                templates.append(cast(JSONValue, value))
+                templates.append(cast(PlainTree, value))
                 row_order.append("other")
         consumed = {"type"}
         for key in ("call_id", "query"):
@@ -2269,14 +2284,14 @@ def _read_event(
         return WebSearchResults(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(payload.get("call_id"), str, default=""),
+            call_id=from_plain(payload.get("call_id"), str, default=""),
             # An empty query is a value: 2 captured searches carry one, and
             # ``None`` would drop the key.
             query=read_or_default(payload.get("query"), str, default="")
             if "query" in payload
             else None,
             content=tuple(_search_rows(rows)),
-            extra=json_freeze(extra),
+            extra=immutable(extra),
         )
     # ``event_msg/agent_message`` and its siblings are the CLI re-rendering a
     # record that also arrives as a ``response_item``. An echo carries nothing
@@ -2286,7 +2301,7 @@ def _read_event(
         context_id=context_id,
         timestamp=timestamp,
         kind=f"event_msg/{kind}",
-        payload=json_freeze(payload),
+        payload=immutable(payload),
     )
 
 
@@ -2296,7 +2311,7 @@ def _read_event(
 # the envelope, so that line keeps it.
 def _is_canonical_usage(
     payload: Mapping[str, object],
-    extra: Mapping[str, JSONValue],
+    extra: Mapping[str, PlainTree],
     states: Sequence[FieldState[object]],
 ) -> bool:
     """Whether a usage line's envelope says only what the writer rebuilds."""
@@ -2315,7 +2330,7 @@ def _mapping_state(payload: Mapping[str, object], key: str) -> FieldState[object
         return state
     if isinstance(state, Mapping):
         return cast(Mapping[str, object], state)
-    return Invalid(raw=cast(JSONValue, state))
+    return Invalid(raw=cast(PlainTree, state))
 
 
 # Codex reports the same act under a pre-0.149 ``*_end`` event and under
@@ -2325,7 +2340,7 @@ def _echoing(
     payload: Mapping[str, object],
     kind: str,
     consumed: Iterable[str],
-) -> dict[str, JSONValue]:
+) -> dict[str, PlainTree]:
     """Return a residual that remembers which event spelling wrote it."""
     return _codex_residual(payload, {"type", *consumed}) | {"$echoes": kind}
 
@@ -2339,14 +2354,14 @@ def _echoing(
 # place that boundary survives: one path may hold SEVERAL hunks, so neither the splices
 # nor the rendered text reveals where a path ends.
 def _stencil_changes(
-    extra: dict[str, JSONValue],
+    extra: dict[str, PlainTree],
     counts: Sequence[int] = (),
-) -> dict[str, JSONValue]:
+) -> dict[str, PlainTree]:
     """Empty each patch entry's diff, which :attr:`edits` now holds."""
     changes = extra.get("changes")
     if not isinstance(changes, dict):
         return extra
-    stencilled: dict[str, JSONValue] = {}
+    stencilled: dict[str, PlainTree] = {}
     for path, entry in changes.items():
         found = entry if isinstance(entry, dict) else None
         # Whichever form this entry used, the record's own field now holds it:
@@ -2375,7 +2390,7 @@ def _stencil_changes(
     return out
 
 
-def _shell_residual(payload: Mapping[str, object], kind: str) -> dict[str, JSONValue]:
+def _shell_residual(payload: Mapping[str, object], kind: str) -> dict[str, PlainTree]:
     """Return a shell result's residual without losing malformed fields."""
     consumed = {"type"}
     command_value = payload.get("command")
@@ -2426,7 +2441,7 @@ def _read_completed(
         shell = ShellCommandResult(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(item.get("id"), str, default=""),
+            call_id=from_plain(item.get("id"), str, default=""),
             command=_command(item.get("command")),
             stdout=read_or_default(item.get("stdout"), str, default=""),
             stderr=read_or_default(item.get("stderr"), str, default=""),
@@ -2448,7 +2463,7 @@ def _read_completed(
             counts,
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(item.get("id"), str, default=""),
+            call_id=from_plain(item.get("id"), str, default=""),
             extra=outer | {"item": _stencil_changes(nested, counts)},
         )
     if item_type == "WebSearch":
@@ -2461,7 +2476,7 @@ def _read_completed(
         return WebSearchResults(
             context_id=context_id,
             timestamp=timestamp,
-            call_id=convert(item.get("id"), str, default=""),
+            call_id=from_plain(item.get("id"), str, default=""),
             query=read_or_default(item.get("query"), str, default=None),
             extra=outer | {"item": nested},
         )
@@ -2471,7 +2486,7 @@ def _read_completed(
         context_id=context_id,
         timestamp=timestamp,
         kind=f"event_msg/item_completed/{item_type}",
-        payload=json_freeze(payload),
+        payload=immutable(payload),
     )
 
 
@@ -2521,7 +2536,7 @@ def _per_path_edits(
     context_id: int | None,
     timestamp: str | None,
     call_id: str,
-    extra: JSON,
+    extra: Mapping[str, PlainTree],
 ) -> list[SessionRecord]:
     """Return one edit record per path the patch changed."""
     paths = [
@@ -2542,8 +2557,8 @@ def _per_path_edits(
         count = counts[index] if index < len(counts) else 0
         found = tuple(edits[at : at + count])
         # Only the first: one line, one residual (axiom 10).
-        own: dict[str, MutableJSONValue] = (
-            cast(dict[str, MutableJSONValue], extra) if index == 0 else {}
+        own: dict[str, MutablePlainTree] = (
+            cast(dict[str, MutablePlainTree], extra) if index == 0 else {}
         )
         # A write ONLY when content is the form the entry used. An entry
         # carrying both keys is an update whose diff the reader took, and
@@ -2581,7 +2596,7 @@ def _per_path_edits(
             context_id=context_id,
             timestamp=timestamp,
             call_id=call_id,
-            extra=json_freeze(extra),
+            extra=immutable(extra),
         ),
     ]
 

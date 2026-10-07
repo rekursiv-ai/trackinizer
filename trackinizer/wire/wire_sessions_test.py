@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 import pytest
 
-from trackinizer.lib.custom_json import json_freeze
+from trackinizer.lib.codec import immutable
 from trackinizer.wire.wire_sessions import (
     FeedCursor,
     FeedEvent,
@@ -130,7 +130,7 @@ class TestFeedEvent:
             seq=0,
             kind="UserMessage",
             created=_NOW,
-            message=json_freeze({"attachments": [{"mime": "image/png"}]}),
+            message=immutable({"attachments": [{"mime": "image/png"}]}),
         )
         assert event.model_dump(mode="json")["message"] == {
             "attachments": [{"mime": "image/png"}],

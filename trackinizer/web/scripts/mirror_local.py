@@ -46,7 +46,7 @@ import uuid
 
 from trackinizer.client.client import Client, server_url
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.trax.profile import load_profile
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.bodies import BATCH_MAX_ITEMS
@@ -64,7 +64,7 @@ from trackinizer.wire.wire_sessions import SessionEnd, SessionStart
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable, Sequence
 
-    from trackinizer.lib.custom_json import JSONValue
+    from trackinizer.lib.codec import PlainTree
     from trackinizer.trax.profile import Profile
 
 
@@ -166,14 +166,16 @@ def tally(events: Iterable[Mapping[str, object]]) -> list[Activity]:
     counts: Counter[UUID] = Counter()
     last: dict[UUID, Mapping[str, object]] = {}
     for event in events:
-        session_id = UUID(convert(event.get("session_id"), str))
+        session_id = UUID(from_plain(event.get("session_id"), str))
         counts[session_id] += 1
         last[session_id] = event
     return [
         Activity(
             session_id=session_id,
-            cli=convert(last[session_id].get("cli"), str, default=""),
-            rooms=tuple(convert(last[session_id].get("rooms"), list[str], default=[])),
+            cli=from_plain(last[session_id].get("cli"), str, default=""),
+            rooms=tuple(
+                from_plain(last[session_id].get("rooms"), list[str], default=[]),
+            ),
             events=count,
         )
         for session_id, count in counts.items()
@@ -356,7 +358,7 @@ class ReadOnlySource:
     def __init__(self, client: Client) -> None:
         self._client = client
 
-    def get(self, path: str, **params: object) -> JSONValue:
+    def get(self, path: str, **params: object) -> PlainTree:
         """Send one GET request."""
         return self._client.get(path, params=params)
 
@@ -521,11 +523,13 @@ def _sample(source: ReadOnlySource, *, now: datetime, hours: float) -> list[Acti
     events: list[dict[str, object]] = []
     for k in range(12):
         since = now - timedelta(hours=hours * (12 - k) / 12)
-        page = convert(
+        page = from_plain(
             source.get("/api/web/feed", since=since.isoformat(), limit=250),
             dict[str, object],
         )
-        events.extend(convert(page.get("events"), list[dict[str, object]], default=[]))
+        events.extend(
+            from_plain(page.get("events"), list[dict[str, object]], default=[]),
+        )
     return tally(events)
 
 
@@ -552,11 +556,11 @@ def _transcript(source: ReadOnlySource, session_id: UUID, *, limit: int) -> Tran
 
 def _read_graph(source: ReadOnlySource) -> tuple[list[SourceNode], list[SourceEdge]]:
     """Read the graph's nodes as whole rows, and its edges."""
-    graph = convert(source.get("/api/web/graph", limit=1000), dict[str, object])
+    graph = from_plain(source.get("/api/web/graph", limit=1000), dict[str, object])
     seqs: dict[str, list[int]] = {}
-    for node in convert(graph.get("nodes"), list[dict[str, object]], default=[]):
-        seqs.setdefault(convert(node.get("kind"), str), []).append(
-            convert(node.get("seq"), int),
+    for node in from_plain(graph.get("nodes"), list[dict[str, object]], default=[]):
+        seqs.setdefault(from_plain(node.get("kind"), str), []).append(
+            from_plain(node.get("seq"), int),
         )
     nodes = [
         _node(row)
@@ -565,12 +569,12 @@ def _read_graph(source: ReadOnlySource) -> tuple[list[SourceNode], list[SourceEd
     ]
     edges = [
         SourceEdge(
-            from_id=UUID(convert(edge.get("from_id"), str)),
-            to_id=UUID(convert(edge.get("to_id"), str)),
-            edge_kind=convert(edge.get("edge_kind"), str),
-            valence=convert(edge["valence"], float) if "valence" in edge else None,
+            from_id=UUID(from_plain(edge.get("from_id"), str)),
+            to_id=UUID(from_plain(edge.get("to_id"), str)),
+            edge_kind=from_plain(edge.get("edge_kind"), str),
+            valence=from_plain(edge["valence"], float) if "valence" in edge else None,
         )
-        for edge in convert(graph.get("edges"), list[dict[str, object]], default=[])
+        for edge in from_plain(graph.get("edges"), list[dict[str, object]], default=[])
     ]
     return nodes, edges
 
@@ -591,7 +595,7 @@ def _rows_by_seq(
             for run in _runs(chunk)
         ]
         rows.extend(
-            convert(
+            from_plain(
                 source.get(
                     "/api/inquiries",
                     kind=kind,
@@ -616,12 +620,12 @@ def _runs(seqs: Sequence[int]) -> list[list[int]]:
 
 
 def _node(row: object) -> SourceNode:
-    fields = convert(row, dict[str, object])
-    created = convert(fields.get("created"), datetime)
+    fields = from_plain(row, dict[str, object])
+    created = from_plain(fields.get("created"), datetime)
     return SourceNode(
-        id=UUID(convert(fields.get("id"), str)),
+        id=UUID(from_plain(fields.get("id"), str)),
         # A kind this server lacks is refused by its submit route, by name.
-        kind=cast(Inquiry.InquiryKind, convert(fields.get("kind"), str)),
+        kind=cast(Inquiry.InquiryKind, from_plain(fields.get("kind"), str)),
         created=created,
         row=fields,
     )
@@ -684,22 +688,26 @@ def _open(target: Client, node: SourceNode) -> tuple[UUID, bool, bool]:
     """Find or open a session; return its local id, whether live, whether new."""
     key = mirror_key(node.id)
     try:
-        change = convert(target.get(f"/api/change_log/{key}"), dict[str, object])
+        change = from_plain(target.get(f"/api/change_log/{key}"), dict[str, object])
     except ClientError as err:
         if err.status_code != 404:
             raise
     else:
-        local = UUID(convert(change.get("subject_id"), str))
-        row = convert(target.get(f"/api/inquiries/{local}"), dict[str, object])
-        return local, convert(row.get("ended"), datetime, default=None) is None, False
+        local = UUID(from_plain(change.get("subject_id"), str))
+        row = from_plain(target.get(f"/api/inquiries/{local}"), dict[str, object])
+        return (
+            local,
+            from_plain(row.get("ended"), datetime, default=None) is None,
+            False,
+        )
     row = node.row
     started = target.session_start(
         SessionStart(
-            cli=convert(row.get("cli"), str),
-            title=convert(row.get("title"), str, default="") or None,
-            started=convert(row.get("started"), datetime, default=None),
-            actor=convert(row.get("owner"), str, default="") or None,
-            rooms=convert(row.get("rooms"), list[str], default=[]) or None,
+            cli=from_plain(row.get("cli"), str),
+            title=from_plain(row.get("title"), str, default="") or None,
+            started=from_plain(row.get("started"), datetime, default=None),
+            actor=from_plain(row.get("owner"), str, default="") or None,
+            rooms=from_plain(row.get("rooms"), list[str], default=[]) or None,
             idempotency_key=key,
         ),
     )
@@ -754,16 +762,20 @@ def _end(
     """End each live local session whose source session ended; return how many."""
     ended = 0
     for node in nodes:
-        when = convert(node.row.get("ended"), datetime, default=None)
+        when = from_plain(node.row.get("ended"), datetime, default=None)
         if node.id not in live or when is None:
             continue
         target.session_end(
             ids[node.id],
             SessionEnd(
                 ended=when,
-                cli_session_id=convert(node.row.get("cli_session_id"), str, default="")
+                cli_session_id=from_plain(
+                    node.row.get("cli_session_id"),
+                    str,
+                    default="",
+                )
                 or None,
-                actor=convert(node.row.get("owner"), str, default="") or None,
+                actor=from_plain(node.row.get("owner"), str, default="") or None,
             ),
         )
         ended += 1
@@ -788,18 +800,18 @@ def _add_edges(
     failures: list[str] = []
     while items:
         chunk, items = items[:BATCH_MAX_ITEMS], items[BATCH_MAX_ITEMS:]
-        response = convert(
+        response = from_plain(
             target.post("/api/edges/batch", body={"items": chunk}),
             dict[str, object],
         )
-        results = convert(response.get("items"), list[dict[str, object]], default=[])
+        results = from_plain(response.get("items"), list[dict[str, object]], default=[])
         done = len(
-            list(itertools.takewhile(lambda r: convert(r.get("ok"), bool), results)),
+            list(itertools.takewhile(lambda r: from_plain(r.get("ok"), bool), results)),
         )
         added += done
         if done < len(chunk):
             failures.append(
-                f"{chunk[done]}: {convert(results[done].get('error'), str)}",
+                f"{chunk[done]}: {from_plain(results[done].get('error'), str)}",
             )
             items = chunk[done + 1 :] + items
     return added, failures
@@ -815,11 +827,11 @@ def _local_edges(
     """Return the target's outbound edges of ``subjects``: ``(from, to, kind)``."""
     local: set[tuple[UUID, UUID, str]] = set()
     for subject in subjects:
-        view = convert(target.get(f"/api/web/get/{subject}"), dict[str, object])
-        for kind, peers in convert(view.get("edges"), dict[str, object]).items():
+        view = from_plain(target.get(f"/api/web/get/{subject}"), dict[str, object])
+        for kind, peers in from_plain(view.get("edges"), dict[str, object]).items():
             local.update(
-                (subject, UUID(convert(peer.get("id"), str)), kind)
-                for peer in convert(peers, list[dict[str, object]])
+                (subject, UUID(from_plain(peer.get("id"), str)), kind)
+                for peer in from_plain(peers, list[dict[str, object]])
             )
     return local
 

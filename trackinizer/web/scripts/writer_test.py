@@ -115,7 +115,7 @@ def test_a_failed_command_answers_with_its_error() -> None:
         "error": "KeyError: 'id'",
     }
     assert str(answer(client, "[1, 2]", clock=clock.clock())["error"]).startswith(
-        "ReadError: Expected `object`, got `array`",
+        "ReadError: cannot read [1, 2] as dict[str, object]",
     )
 
 

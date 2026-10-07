@@ -26,7 +26,7 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedToolResult,
     UserMessage,
 )
-from trackinizer.lib.custom_json import json_freeze
+from trackinizer.lib.codec import immutable
 from trackinizer.server.store import legacy_retype
 from trackinizer.server.store.legacy_retype import (
     LEGACY_KINDS,
@@ -46,7 +46,7 @@ def _legacy(kind: str, payload: dict[str, object]) -> UncategorizedRecord:
         context_id=0,
         timestamp=None,
         kind=kind,
-        payload=json_freeze({"__type__": kind.removeprefix("legacy/"), **payload}),
+        payload=immutable({"__type__": kind.removeprefix("legacy/"), **payload}),
     )
 
 

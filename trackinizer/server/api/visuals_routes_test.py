@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from trackinizer.lib.custom_json import convert, parse
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api.app import app
 from trackinizer.server.visuals.catalog import StaticVisual, Workspace
 
@@ -25,13 +25,13 @@ def test_visual_catalog_has_default_browse_chat_and_context_graph(
     client, _, _ = route_client
     response = client.get("/api/visuals")
     assert response.status_code == 200
-    body = parse(response.content, dict[str, object])
-    assert convert(body["default_visual"], str) == "trax.browse"
+    body = from_plain(loads(response.content), dict[str, object])
+    assert from_plain(body["default_visual"], str) == "trax.browse"
     visuals = [
-        convert(item, dict[str, object])
-        for item in convert(body["visuals"], list[object])
+        from_plain(item, dict[str, object])
+        for item in from_plain(body["visuals"], list[object])
     ]
-    by_type = {convert(visual["type"], str): visual for visual in visuals}
+    by_type = {from_plain(visual["type"], str): visual for visual in visuals}
     assert set(by_type) == {
         "trax.browse",
         "trax.chat",
@@ -45,8 +45,8 @@ def test_visual_catalog_has_default_browse_chat_and_context_graph(
     assert by_type["trax.artifact"]["parameter_schema"] == {}
     assert by_type["trax.subgraph"]["requires"] == ["record"]
     assert by_type["trax.timeline"]["requires"] == ["record"]
-    direction_schema = convert(
-        convert(by_type["trax.timeline"]["parameter_schema"], dict[str, object])[
+    direction_schema = from_plain(
+        from_plain(by_type["trax.timeline"]["parameter_schema"], dict[str, object])[
             "direction_limit"
         ],
         dict[str, object],
@@ -96,11 +96,11 @@ def test_visuals_route_serves_the_deployments_configured_catalog(
         default_visual="x.notes",
     ).make()
     monkeypatch.setattr(app.state, "visual_catalog", configured, raising=False)
-    body = parse(client.get("/api/visuals").content, dict[str, object])
-    assert convert(body["default_visual"], str) == "x.notes"
+    body = from_plain(loads(client.get("/api/visuals").content), dict[str, object])
+    assert from_plain(body["default_visual"], str) == "x.notes"
     assert [
-        convert(item, dict[str, object])["title"]
-        for item in convert(body["visuals"], list[object])
+        from_plain(item, dict[str, object])["title"]
+        for item in from_plain(body["visuals"], list[object])
     ] == ["Notes"]
 
 

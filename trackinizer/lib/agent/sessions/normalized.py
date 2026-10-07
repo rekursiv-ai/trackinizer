@@ -18,7 +18,8 @@ from typing import TYPE_CHECKING, TextIO
 import json
 
 from trackinizer.lib.agent.types.sessions import SessionRecord
-from trackinizer.lib.custom_json import convert, loads, to_builtins
+from trackinizer.lib.codec import from_plain, loads
+from trackinizer.lib.custom_json import to_builtins
 
 
 if TYPE_CHECKING:
@@ -41,7 +42,7 @@ def normalize(stream: TextIO) -> Iterator[SessionRecord]:
     # Each record carries its own ``py/object`` tag, which is what selects the
     # union member -- so the whole list decodes as the annotated type rather
     # than one class named up front.
-    yield from convert(loads(stream.read()), list[SessionRecord])
+    yield from from_plain(loads(stream.read()), list[SessionRecord])
 
 
 def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:

@@ -28,16 +28,15 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedRecord,
     UserMessage,
 )
-from trackinizer.lib.custom_json import (
-    MutableJSON,
-    MutableJSONValue,
+from trackinizer.lib.codec import (
+    MutablePlainTree,
     ReadError,
-    convert,
-    extract_unmodeled_fields,
-    json_freeze,
-    json_unfreeze,
+    from_plain,
+    immutable,
     loads,
+    mutable,
 )
+from trackinizer.lib.custom_json import extract_unmodeled_fields
 
 
 if TYPE_CHECKING:
@@ -104,10 +103,10 @@ def denormalize(
         (record for record in ordered if isinstance(record, TurnContext)),
         TurnContext(),
     )
-    stored = json_unfreeze(declared.extra)
+    stored = mutable(declared.extra)
     compact = bool(stored.pop("$compact", False))
     messages = _write_messages(body)
-    document: dict[str, MutableJSONValue] = {}
+    document: dict[str, MutablePlainTree] = {}
     # Only keys a gemini document itself carries. Another adapter's metadata
     # names its own conventions -- claude states ``ascii_escaped`` and an
     # escape bitmap -- and writing those through put keys on the wire gemini
@@ -138,9 +137,9 @@ def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
     if kind == "user":
         return [
             UserMessage(
-                content=convert(message.get("content"), str, default=""),
+                content=from_plain(message.get("content"), str, default=""),
                 timestamp=read_or_default(message.get("$timestamp"), str, default=None),
-                extra=json_freeze(
+                extra=immutable(
                     extract_unmodeled_fields(
                         message,
                         ("type", "content", "$timestamp"),
@@ -152,10 +151,10 @@ def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
         return [
             UncategorizedRecord(
                 kind=kind,
-                payload=json_freeze(message),
+                payload=immutable(message),
             ),
         ]
-    calls = convert(message.get("toolCalls"), list[object], default=[])
+    calls = from_plain(message.get("toolCalls"), list[object], default=[])
     stamp = read_or_default(message.get("$timestamp"), str, default=None)
     kept = dict(
         extract_unmodeled_fields(
@@ -171,24 +170,24 @@ def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
         kept["$tool_calls_present"] = True
     return [
         AssistantMessage(
-            content=convert(message.get("content"), str, default=""),
+            content=from_plain(message.get("content"), str, default=""),
             timestamp=stamp,
-            extra=json_freeze(kept),
+            extra=immutable(kept),
         ),
         *(
             ToolCall(
-                call_id=convert(call.get("id"), str, default=""),
-                name=convert(call.get("name"), str, default=""),
+                call_id=from_plain(call.get("id"), str, default=""),
+                name=from_plain(call.get("name"), str, default=""),
                 timestamp=stamp,
-                arguments=json_freeze(
-                    convert(call.get("args"), dict[str, object], default={}),
+                arguments=immutable(
+                    from_plain(call.get("args"), dict[str, object], default={}),
                 ),
-                extra=json_freeze(
+                extra=immutable(
                     extract_unmodeled_fields(call, ("id", "name", "args")),
                 ),
             )
             for call in (
-                convert(value, dict[str, object], default={}) for value in calls
+                from_plain(value, dict[str, object], default={}) for value in calls
             )
         ),
     ]
@@ -198,11 +197,11 @@ def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
 # cannot encode the ``mappingproxy`` a one-level copy leaves inside.
 def _write_messages(
     records: Iterable[SessionRecord],
-) -> list[MutableJSONValue]:
+) -> list[MutablePlainTree]:
     """Rebuild the document's message list from the stream's records."""
-    out: list[MutableJSONValue] = []
+    out: list[MutablePlainTree] = []
     # The last message written, when it is a ``gemini`` turn a call can join.
-    open_turn: MutableJSON | None = None
+    open_turn: dict[str, MutablePlainTree] | None = None
     for record in records:
         match record:
             case UserMessage():
@@ -218,12 +217,12 @@ def _write_messages(
                         **(
                             {"$timestamp": record.timestamp} if record.timestamp else {}
                         ),
-                        **json_unfreeze(record.extra),
+                        **mutable(record.extra),
                     },
                 )
                 open_turn = None
             case AssistantMessage():
-                extra = json_unfreeze(record.extra)
+                extra = mutable(record.extra)
                 empty_calls = extra.pop("$tool_calls_present", None) is not None
                 open_turn = {
                     "type": "gemini",
@@ -253,12 +252,12 @@ def _write_messages(
                     {
                         "id": record.call_id,
                         "name": record.name,
-                        "args": json_unfreeze(record.arguments),
-                        **json_unfreeze(record.extra),
+                        "args": mutable(record.arguments),
+                        **mutable(record.extra),
                     },
                 )
             case UncategorizedRecord():
-                payload = json_unfreeze(record.payload)
+                payload = mutable(record.payload)
                 # A message the reader could not type, kept as it was: possibly
                 # no object at all, so it rides under a key of its own.
                 out.append(payload.get("$message", payload))
@@ -277,8 +276,8 @@ def _read(text: str) -> list[SessionRecord]:
     # from. Gemini declares neither a prompt nor an escaping convention, so
     # both state only what the format itself fixes.
     out: list[SessionRecord] = [
-        TurnContext(encoding=json_freeze({"newline_terminated": True})),
-        ContextClear(extra=json_freeze({"$opens": True})),
+        TurnContext(encoding=immutable({"newline_terminated": True})),
+        ContextClear(extra=immutable({"$opens": True})),
     ]
     if not text.strip():
         return out
@@ -291,9 +290,9 @@ def _read(text: str) -> list[SessionRecord]:
     # silently discard whatever the file did hold.
     if not isinstance(decoded, dict) or not decoded:
         return [*out, IncompleteRecord(text=text)]
-    document = convert(decoded, dict[str, object])
+    document = from_plain(decoded, dict[str, object])
     try:
-        messages = convert(document.get("messages"), list[object], default=[])
+        messages = from_plain(document.get("messages"), list[object], default=[])
     except ReadError:
         # No message list, no messages to keep one by one: the document is kept whole.
         return [*out, IncompleteRecord(text=text)]
@@ -307,20 +306,20 @@ def _read(text: str) -> list[SessionRecord]:
         json.dumps(decoded, ensure_ascii=False, separators=(",", ":")) == text
     )
     out[0] = TurnContext(
-        encoding=json_freeze({"newline_terminated": True}),
-        extra=json_freeze(extra),
+        encoding=immutable({"newline_terminated": True}),
+        extra=immutable(extra),
     )
     for message in messages:
         # One message is the unit a malformed field can spoil: it raised out of
         # ``normalize`` and lost the document. Kept whole instead, it is
         # written back exactly as it was read.
         try:
-            out.extend(_read_message(convert(message, dict[str, object])))
+            out.extend(_read_message(from_plain(message, dict[str, object])))
         except ReadError:
             out.append(
                 UncategorizedRecord(
                     kind="",
-                    payload=json_freeze({"$message": message}),
+                    payload=immutable({"$message": message}),
                 ),
             )
     return out

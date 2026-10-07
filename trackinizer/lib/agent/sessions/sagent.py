@@ -49,13 +49,7 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
     WebFetchResult,
 )
-from trackinizer.lib.custom_json import (
-    ReadError,
-    convert,
-    json_freeze,
-    loads,
-    parse,
-)
+from trackinizer.lib.codec import ReadError, from_plain, immutable, loads
 
 
 if TYPE_CHECKING:
@@ -156,7 +150,7 @@ class _Reader:
 
         """
         try:
-            record = parse(line, dict[str, object])
+            record = from_plain(loads(line), dict[str, object])
         except (json.JSONDecodeError, ValueError, TypeError):
             return [IncompleteRecord(text=line)]
         # The WHOLE read is the guarded region, not only the parse: every field
@@ -166,7 +160,7 @@ class _Reader:
         try:
             return self._dispatch(_str(record.get("kind")), record)
         except ReadError:
-            return [UncategorizedRecord(kind="unknown", payload=json_freeze(record))]
+            return [UncategorizedRecord(kind="unknown", payload=immutable(record))]
 
     def _dispatch(self, kind: str, record: dict[str, object]) -> list[SessionRecord]:
         """Return the records one parsed line states, by its family."""
@@ -184,9 +178,9 @@ class _Reader:
         if kind == "message" and "role" in record:
             return self._role(record)
         if kind in {"context_override", "context_splice"}:
-            return [ContextCompaction(extra=json_freeze(_scalars(record)))]
+            return [ContextCompaction(extra=immutable(_scalars(record)))]
         return [
-            UncategorizedRecord(kind=kind or "unknown", payload=json_freeze(record)),
+            UncategorizedRecord(kind=kind or "unknown", payload=immutable(record)),
         ]
 
     def _history(self, record: dict[str, object]) -> list[SessionRecord]:
@@ -234,13 +228,13 @@ class _Reader:
             return [
                 ContextCompaction(
                     timestamp=stamp,
-                    extra=json_freeze(_scalars(record)),
+                    extra=immutable(_scalars(record)),
                 ),
             ]
         return [
             UncategorizedRecord(
                 kind=f"history/{kind}",
-                payload=json_freeze(record),
+                payload=immutable(record),
             ),
         ]
 
@@ -253,7 +247,7 @@ class _Reader:
             out.append(
                 TurnContext(
                     model=model,
-                    extra=json_freeze(
+                    extra=immutable(
                         {
                             k: _str(record.get(k))
                             for k in ("provider", "session_id", "bash_cwd", "name")
@@ -268,7 +262,7 @@ class _Reader:
         cost = total_cost or sum(_float(v) for v in spend.values())
         out.append(
             TokenUsage(
-                info=json_freeze(
+                info=immutable(
                     {
                         "cost_usd": cost,
                         "input_tokens": _int(tokens.get("input_tokens")),
@@ -310,7 +304,7 @@ class _Reader:
                     timestamp=stamp,
                     call_id=call_id,
                     name=name,
-                    arguments=json_freeze(arguments),
+                    arguments=immutable(arguments),
                 ),
             )
         return out
@@ -450,7 +444,7 @@ class _Reader:
         return [
             UncategorizedRecord(
                 kind=f"message/{descriptor}",
-                payload=json_freeze(record),
+                payload=immutable(record),
             ),
         ]
 
@@ -489,7 +483,7 @@ class _Reader:
         return [
             UncategorizedRecord(
                 kind=f"message/{role}",
-                payload=json_freeze(record),
+                payload=immutable(record),
             ),
         ]
 
@@ -549,30 +543,30 @@ def _stamp(value: object) -> str | None:
 # A missing or null field reads as empty; a mistyped one raises, and the per-record guard in
 # ``_Reader.read`` keeps that record whole.
 def _str(value: object) -> str:
-    return convert(value, str, default="")
+    return from_plain(value, str, default="")
 
 
 def _bool(value: object) -> bool:
-    return convert(value, bool, default=False)
+    return from_plain(value, bool, default=False)
 
 
 def _int(value: object) -> int:
-    return convert(value, int, default=0)
+    return from_plain(value, int, default=0)
 
 
 def _float(value: object) -> float:
-    return convert(value, float, default=0.0)
+    return from_plain(value, float, default=0.0)
 
 
 def _dict(value: object) -> dict[str, object]:
-    return convert(value, dict[str, object], default={})
+    return from_plain(value, dict[str, object], default={})
 
 
 def _mappings(value: object) -> list[dict[str, object]]:
     # A part's ``content`` is a string or a list of parts; only the list has any.
     if isinstance(value, str):
         return []
-    return convert(value, list[dict[str, object]], default=[])
+    return from_plain(value, list[dict[str, object]], default=[])
 
 
 def _scalars(record: Mapping[str, object]) -> dict[str, object]:

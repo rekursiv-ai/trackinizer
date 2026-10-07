@@ -26,7 +26,7 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedRecord,
     UserMessage,
 )
-from trackinizer.lib.custom_json import convert, json_freeze
+from trackinizer.lib.codec import from_plain, immutable
 from trackinizer.server.api import session_ir_routes
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
@@ -80,7 +80,7 @@ class TestReadParts:
                     SessionManifest(
                         part=0,
                         name="a.jsonl",
-                        metadata=json_freeze({}),
+                        metadata=immutable({}),
                         ir_id=uuid.uuid4(),
                         format="claude",
                         records=3,
@@ -88,7 +88,7 @@ class TestReadParts:
                     SessionManifest(
                         part=1,
                         name="b.jsonl",
-                        metadata=json_freeze({}),
+                        metadata=immutable({}),
                         ir_id=uuid.uuid4(),
                         format="",
                         records=1,
@@ -100,9 +100,11 @@ class TestReadParts:
         response = client.get(f"/api/sessions/{session_id}/parts")
 
         assert response.status_code == 200, response.text
-        body = convert(response.json(), dict[str, object])
-        parts = convert(body["parts"], list[object])
-        assert [convert(convert(p, dict[str, object])["name"], str) for p in parts] == [
+        body = from_plain(response.json(), dict[str, object])
+        parts = from_plain(body["parts"], list[object])
+        assert [
+            from_plain(from_plain(p, dict[str, object])["name"], str) for p in parts
+        ] == [
             "a.jsonl",
             "b.jsonl",
         ]
@@ -131,7 +133,7 @@ class TestReadParts:
                     SessionManifest(
                         part=0,
                         name="pty",
-                        metadata=json_freeze({}),
+                        metadata=immutable({}),
                         ir_id=uuid.uuid4(),
                         format="",
                         records=2,
@@ -142,9 +144,9 @@ class TestReadParts:
 
         response = client.get(f"/api/sessions/{uuid.uuid4()}/parts")
 
-        body = convert(response.json(), dict[str, object])
-        parts = convert(body["parts"], list[object])
-        assert convert(parts[0], dict[str, object])["format"] == ""
+        body = from_plain(response.json(), dict[str, object])
+        parts = from_plain(body["parts"], list[object])
+        assert from_plain(parts[0], dict[str, object])["format"] == ""
 
     def test_a_non_session_id_is_a_404(
         self,
@@ -181,11 +183,11 @@ class TestReadRecords:
         response = client.get(f"/api/sessions/{uuid.uuid4()}/records?part=0")
 
         assert response.status_code == 200, response.text
-        body = convert(response.json(), dict[str, object])
-        assert convert(body["part"], int) == 0
-        records = convert(body["records"], list[object])
+        body = from_plain(response.json(), dict[str, object])
+        assert from_plain(body["part"], int) == 0
+        records = from_plain(body["records"], list[object])
         assert [
-            convert(convert(r, dict[str, object])["idx"], int) for r in records
+            from_plain(from_plain(r, dict[str, object])["idx"], int) for r in records
         ] == [0, 1]
 
     def test_ciphertext_rides_beside_the_payload(
@@ -215,13 +217,16 @@ class TestReadRecords:
             ),
         )
 
-        body = convert(
+        body = from_plain(
             client.get(f"/api/sessions/{uuid.uuid4()}/records").json(),
             dict[str, object],
         )
-        record = convert(convert(body["records"], list[object])[0], dict[str, object])
+        record = from_plain(
+            from_plain(body["records"], list[object])[0],
+            dict[str, object],
+        )
 
-        assert convert(record["ciphertext"], str) == _CIPHERTEXT
+        assert from_plain(record["ciphertext"], str) == _CIPHERTEXT
         assert _CIPHERTEXT not in str(record["payload"])
 
     def test_plaintext_only_reaches_the_store(
@@ -419,7 +424,7 @@ class TestLegacyPart:
                     SessionManifest(
                         part=-1,
                         name="legacy",
-                        metadata=json_freeze({}),
+                        metadata=immutable({}),
                         ir_id=session_id,
                         format="",
                         records=2,
@@ -427,7 +432,7 @@ class TestLegacyPart:
                     SessionManifest(
                         part=0,
                         name="s.jsonl",
-                        metadata=json_freeze({}),
+                        metadata=immutable({}),
                         ir_id=uuid.uuid4(),
                         format="claude",
                         records=1,
@@ -463,7 +468,7 @@ async def test_a_legacy_transcript_reads_every_listed_part(integ_store: Store) -
     part = await integ_store.upsert_session_manifest(
         session_id,
         name="s.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid.uuid4(),
         format="claude",
         records=1,
@@ -506,20 +511,20 @@ async def test_a_legacy_transcript_reads_every_listed_part(integ_store: Store) -
     ]
     assert [
         (
-            convert(body["part"], int),
-            convert(convert(record, dict[str, object])["idx"], int),
+            from_plain(body["part"], int),
+            from_plain(from_plain(record, dict[str, object])["idx"], int),
         )
-        for body in (convert(page.json(), dict[str, object]) for page in pages)
-        for record in convert(body["records"], list[object])
+        for body in (from_plain(page.json(), dict[str, object]) for page in pages)
+        for record in from_plain(body["records"], list[object])
     ] == [(-1, 0), (-1, 1), (0, 0)]
 
 
 def _listed_parts(response: httpx2.Response) -> list[int]:
     """Return the ``part`` of every entry a ``GET .../parts`` response lists."""
-    body = convert(response.json(), dict[str, object])
+    body = from_plain(response.json(), dict[str, object])
     return [
-        convert(convert(entry, dict[str, object])["part"], int)
-        for entry in convert(body["parts"], list[object])
+        from_plain(from_plain(entry, dict[str, object])["part"], int)
+        for entry in from_plain(body["parts"], list[object])
     ]
 
 

@@ -90,13 +90,13 @@ from trackinizer.lib.agent.types.sessions import (
     ShellCommandResult,
     Splice,
 )
-from trackinizer.lib.custom_json import convert, json_freeze, json_unfreeze
+from trackinizer.lib.codec import from_plain, immutable, mutable
 
 
 if TYPE_CHECKING:
     import bashlex
 
-    from trackinizer.lib.custom_json import MutableJSONValue
+    from trackinizer.lib.codec import MutablePlainTree
 else:
     from wrapt import lazy_import
 
@@ -214,8 +214,8 @@ def lift_shell_result(
         operation.content,
         operation.ranges,
     )
-    extra = dict(json_unfreeze(result.extra))
-    replay: dict[str, MutableJSONValue] = {}
+    extra = dict(mutable(result.extra))
+    replay: dict[str, MutablePlainTree] = {}
     if result.command is not None:
         replay["command"] = list(result.command)
     if kind != "read" and result.stdout:
@@ -225,7 +225,7 @@ def lift_shell_result(
     if result.exit_code is not None:
         replay["exit_code"] = result.exit_code
     extra["$shell"] = replay
-    extra_frozen = json_freeze(extra)
+    extra_frozen = immutable(extra)
     if kind == "read":
         return FileReadResult(
             context_id=result.context_id,
@@ -306,14 +306,16 @@ def shell_result_for_replay(result: FileResult) -> ShellCommandResult | None:
       shell_result: Its source shell execution, or None when it was native.
 
     """
-    extra = dict(json_unfreeze(result.extra))
+    extra = dict(mutable(result.extra))
     replay_value = extra.pop("$shell", None)
     if not isinstance(replay_value, Mapping):
         return None
     replay = cast(Mapping[str, object], replay_value)
     command_value = replay.get("command")
     command = (
-        tuple(convert(command_value, list[str])) if command_value is not None else None
+        tuple(from_plain(command_value, list[str]))
+        if command_value is not None
+        else None
     )
     command = _stencil_command(command, result)
     stdout = (
@@ -331,7 +333,7 @@ def shell_result_for_replay(result: FileResult) -> ShellCommandResult | None:
         stdout=stdout if isinstance(stdout, str) else "",
         stderr=stderr if isinstance(stderr, str) else "",
         exit_code=exit_code if isinstance(exit_code, int) else None,
-        extra=json_freeze(extra),
+        extra=immutable(extra),
     )
 
 

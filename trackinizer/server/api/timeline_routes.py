@@ -9,7 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.visuals_routes import visual_catalog
 from trackinizer.server.auth import require_role
@@ -152,9 +152,9 @@ def _bounded(
 ) -> int:
     """Apply the catalog default and reject a value outside its bounds."""
     schema = schemas[name]
-    value = convert(schema.default if requested is None else requested, int)
-    minimum = convert(schema.minimum, int)
-    maximum = convert(schema.maximum, int)
+    value = from_plain(schema.default if requested is None else requested, int)
+    minimum = from_plain(schema.minimum, int)
+    maximum = from_plain(schema.maximum, int)
     if value < minimum or value > maximum:
         raise HTTPException(
             status_code=422,

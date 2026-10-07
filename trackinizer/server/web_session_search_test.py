@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException, Request
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.server import web
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.server.config import Config
@@ -141,7 +141,7 @@ async def test_fts_arm_returns_hits_with_position_and_title(store: Store) -> Non
     await _record(store, session_id, idx=0, text="advisory lock acquired cleanly")
     await _seed(store)
 
-    body = convert(
+    body = from_plain(
         await web.web_search_sessions(
             _request(store, session_embedder=""),
             q="advisory lock",
@@ -150,9 +150,9 @@ async def test_fts_arm_returns_hits_with_position_and_title(store: Store) -> Non
         ),
         dict[str, object],
     )
-    hits = convert(body["hits"], list[dict[str, object]])
+    hits = from_plain(body["hits"], list[dict[str, object]])
     assert len(hits) == 1
-    hit = convert(hits[0], dict[str, object])
+    hit = from_plain(hits[0], dict[str, object])
     assert hit["session_id"] == str(session_id)
     assert (hit["part"], hit["idx"]) == (0, 0)
     assert hit["title"] == "deploy log"
@@ -172,7 +172,7 @@ async def test_semantic_requested_without_model_degrades_to_fts(store: Store) ->
     await _record(store, session_id, idx=0, text="postgres deadlock trace")
     await _seed(store)
 
-    body = convert(
+    body = from_plain(
         await web.web_search_sessions(
             _request(store, session_embedder=""),
             q="deadlock",
@@ -183,9 +183,9 @@ async def test_semantic_requested_without_model_degrades_to_fts(store: Store) ->
     )
     assert body["degraded"] is True
     assert body["semantic"] is False
-    hits = convert(body["hits"], list[dict[str, object]])
+    hits = from_plain(body["hits"], list[dict[str, object]])
     assert len(hits) == 1
-    assert convert(hits[0], dict[str, object])["source"] == "fts"
+    assert from_plain(hits[0], dict[str, object])["source"] == "fts"
 
 
 @pytest.mark.db_pglite
@@ -197,7 +197,7 @@ async def test_semantic_arm_runs_with_a_configured_embedder(store: Store) -> Non
     await _record(store, session_id, idx=1, text="unrelated chatter about lunch")
     await _seed(store)
 
-    body = convert(
+    body = from_plain(
         await web.web_search_sessions(
             _request(store, session_embedder="stub-1024"),
             q="deploy the release to production",
@@ -208,9 +208,9 @@ async def test_semantic_arm_runs_with_a_configured_embedder(store: Store) -> Non
     )
     assert body["degraded"] is False
     assert body["semantic"] is True
-    hits = convert(body["hits"], list[dict[str, object]])
+    hits = from_plain(body["hits"], list[dict[str, object]])
     assert hits
-    top = convert(hits[0], dict[str, object])
+    top = from_plain(hits[0], dict[str, object])
     assert (top["session_id"], top["idx"]) == (str(session_id), 0)
     assert top["source"] in ("semantic", "both")
 
@@ -223,7 +223,7 @@ async def test_semantic_false_skips_the_model_entirely(store: Store) -> None:
     await _record(store, session_id, idx=0, text="advisory lock token here")
     await _seed(store)
 
-    body = convert(
+    body = from_plain(
         await web.web_search_sessions(
             _request(store, session_embedder="stub-1024"),
             q="advisory lock",
@@ -235,9 +235,10 @@ async def test_semantic_false_skips_the_model_entirely(store: Store) -> None:
     assert body["semantic"] is False
     assert body["degraded"] is False  # Not degraded: the caller opted out.
     assert (
-        convert(convert(body["hits"], list[dict[str, object]])[0], dict[str, object])[
-            "source"
-        ]
+        from_plain(
+            from_plain(body["hits"], list[dict[str, object]])[0],
+            dict[str, object],
+        )["source"]
         == "fts"
     )
 
@@ -268,7 +269,7 @@ async def test_model_override_reuses_one_instance_across_requests(
     monkeypatch.setattr(registry, "build_session_embedder", counting_build)
     request = _request(store, session_embedder="")  # No default; override drives it.
     for _ in range(2):
-        body = convert(
+        body = from_plain(
             await web.web_search_sessions(
                 request,
                 q="deploy the release to production",
@@ -310,7 +311,7 @@ async def test_model_override_caches_two_dims_as_distinct_entries(
     monkeypatch.setattr(registry, "build_session_embedder", counting_build)
     request = _request(store, session_embedder="")
     for override_dim in (512, 256, 512):  # 512 repeats -> its second call is cached.
-        _ = convert(
+        _ = from_plain(
             await web.web_search_sessions(
                 request,
                 q="deploy the release to production",

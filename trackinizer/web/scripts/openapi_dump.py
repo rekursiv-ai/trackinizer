@@ -32,7 +32,7 @@ import sys
 
 import httpx2
 
-from trackinizer.lib.custom_json import parse
+from trackinizer.lib.codec import from_plain, loads
 
 
 if TYPE_CHECKING:
@@ -127,7 +127,7 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
 def _served_schema(url: str) -> Mapping[str, object]:
     response = httpx2.get(f"{url.rstrip('/')}/openapi.json", timeout=30.0)
     _ = response.raise_for_status()
-    return parse(response.text, dict[str, object])
+    return from_plain(loads(response.text), dict[str, object])
 
 
 class _Flags(Protocol):

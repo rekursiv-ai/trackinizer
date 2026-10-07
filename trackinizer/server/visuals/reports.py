@@ -11,7 +11,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import set_client_change_id
 from trackinizer.wire.bodies import SubmitArtifact
@@ -281,7 +281,7 @@ async def publish_artifact_content(
                 raise ValueError("Previous Artifact does not belong to this Issue.")
             report_id = uuid.UUID(str(report["id"]))
         content, content_bytes = await _snapshot_content(conn, body)
-        used_bytes = convert(
+        used_bytes = from_plain(
             await conn.fetchval(
                 "SELECT coalesce(sum(content_bytes), 0)::bigint "
                 "FROM visual_report_revisions WHERE author_id = $1",
@@ -291,7 +291,7 @@ async def publish_artifact_content(
         )
         if used_bytes + content_bytes > 500_000_000:
             raise ValueError("Publisher Artifact storage exceeds 500 MB.")
-        revision = convert(
+        revision = from_plain(
             await conn.fetchval(
                 "SELECT coalesce(max(revision), 0) + 1 "
                 "FROM visual_report_revisions WHERE report_id = $1",
@@ -412,7 +412,7 @@ async def read_artifact_content_on_conn(
         return None
     if include_html:
         return _revision_from_row(cast("Mapping[str, object]", row))
-    content = convert(row["content"], dict[str, object])
+    content = from_plain(row["content"], dict[str, object])
     return _revision_from_row(
         {**dict(row), "content": {**content, "html": None}},
     )
@@ -496,9 +496,9 @@ async def _snapshot_citation(conn: Conn, ref: ArtifactCitationRef) -> ArtifactCi
         raise ValueError("Cited record does not exist.")
     citation = ArtifactCitation(
         record_id=ref.record_id,
-        kind=convert(record["kind"], str),
-        seq=convert(record["seq"], int),
-        title=convert(record["title"], str)[:2_000],
+        kind=from_plain(record["kind"], str),
+        seq=from_plain(record["seq"], int),
+        title=from_plain(record["title"], str)[:2_000],
     )
     if ref.claim_id is None:
         return citation
@@ -524,11 +524,11 @@ async def _snapshot_citation(conn: Conn, ref: ArtifactCitationRef) -> ArtifactCi
         seq=citation.seq,
         title=citation.title,
         claim_id=ref.claim_id,
-        claim_kind=convert(claim["kind"], str),
-        claim_seq=convert(claim["seq"], int),
-        claim_title=convert(claim["title"], str)[:2_000],
+        claim_kind=from_plain(claim["kind"], str),
+        claim_seq=from_plain(claim["seq"], int),
+        claim_title=from_plain(claim["title"], str)[:2_000],
         edge_kind=ref.edge_kind,
-        valence=convert(edge["valence"], float),
+        valence=from_plain(edge["valence"], float),
         note=note,
     )
 

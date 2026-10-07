@@ -9,7 +9,7 @@ import asyncio
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.authority_sweep import (
     authority_sweep_loop,
@@ -79,7 +79,7 @@ async def test_loop_recomputes_on_startup_then_can_be_cancelled(store: Store) ->
                 "SELECT proves_authority FROM inquiries WHERE id = $1",
                 claim,
             )
-        score = convert(raw, float) if raw is not None else None
+        score = from_plain(raw, float) if raw is not None else None
         if score is not None:
             break
     task.cancel()

@@ -39,7 +39,7 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.lib.agent.types.sessions import AssistantMessage, ToolCall, UserMessage
-from trackinizer.lib.custom_json import JSONValue, convert, loads
+from trackinizer.lib.codec import PlainTree, from_plain, loads, mutable
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_metrics import MetricPoint
 from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
@@ -49,7 +49,7 @@ from trackinizer.wire.wire_sessions import SessionStart
 if TYPE_CHECKING:
     from collections.abc import Generator, Sequence
 
-    from trackinizer.lib.custom_json import MutableJSONValue
+    from trackinizer.lib.codec import MutablePlainTree
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -132,7 +132,7 @@ def test_normalising_ignores_random_ids_times_and_the_order_of_timed_rows() -> N
     ]
 
     assert normalised[0] == normalised[1]
-    assert loads(normalised[0]) == [
+    assert json.loads(normalised[0]) == [
         {
             "id": "00000000-0000-4000-9000-000000000001",
             "subject": "00000000-0000-4000-8000-000000000001",
@@ -154,7 +154,7 @@ class _Recorder:
     rows: dict[str, int] = field(default_factory=dict)
     """Each inquiry the graph made, numbered in the order it was made."""
 
-    exchanges: dict[str, dict[str, JSONValue]] = field(default_factory=dict)
+    exchanges: dict[str, dict[str, PlainTree]] = field(default_factory=dict)
 
     def call(
         self,
@@ -163,9 +163,9 @@ class _Recorder:
         path: str,
         *,
         query: Sequence[tuple[str, str]] = (),
-        body: JSONValue = None,
+        body: PlainTree = None,
         keyed: bool = False,
-    ) -> MutableJSONValue:
+    ) -> MutablePlainTree:
         """Send one request and record it as fixture ``name``; return its body.
 
         A keyed request carries an ``Idempotency-Key`` header, as every edit does.
@@ -179,7 +179,7 @@ class _Recorder:
             headers=headers,
         )
         parsed = _parsed(response)
-        request: dict[str, JSONValue] = {"method": method, "path": path}
+        request: dict[str, PlainTree] = {"method": method, "path": path}
         if query:
             request["query"] = [list(pair) for pair in query]
         if headers:
@@ -197,8 +197,8 @@ class _Recorder:
         method: str,
         path: str,
         *,
-        body: JSONValue = None,
-    ) -> MutableJSONValue:
+        body: PlainTree = None,
+    ) -> MutablePlainTree:
         """Send one request that builds the graph; it must succeed."""
         response = self.http.request(method, path, json=body)
         assert response.is_success, (
@@ -234,7 +234,7 @@ class _Normaliser:
     rows: Mapping[str, int]
     others: dict[str, str] = field(default_factory=dict)
 
-    def value(self, raw: JSONValue) -> JSONValue:
+    def value(self, raw: PlainTree) -> PlainTree:
         """Return ``raw`` normalised, walking objects in key order."""
         if isinstance(raw, str):
             return self._text(raw)
@@ -268,7 +268,7 @@ class _Normaliser:
 # ones would still differ between a run where two rows tied and one where they did not.
 # The graph's edges (``from_id``) come in no order at all. Lists of anything else
 # (metric points, transcript records, validation errors) keep the server's order.
-def _ordered(items: Sequence[JSONValue], *, rows: Mapping[str, int]) -> list[JSONValue]:
+def _ordered(items: Sequence[PlainTree], *, rows: Mapping[str, int]) -> list[PlainTree]:
     """Put a list of rows in an order by content, since the server's rests on ids."""
     if not any(
         isinstance(item, Mapping)
@@ -409,7 +409,7 @@ def _add_evidence(
             ],
         },
     )
-    for made in convert(convert(answer, dict[str, object]).get("ids"), list[str]):
+    for made in from_plain(from_plain(answer, dict[str, object]).get("ids"), list[str]):
         _ = rec.row(made)
     with Client(url) as client:
         client.log_metrics(
@@ -539,8 +539,8 @@ def _read_lists(rec: _Recorder) -> None:
         {"field": "status", "op": "is", "value": "active"},
         separators=(",", ":"),
     )
-    kinds = convert(
-        convert(rec.setup("GET", "/api/meta/enums"), dict[str, object]).get(
+    kinds = from_plain(
+        from_plain(rec.setup("GET", "/api/meta/enums"), dict[str, object]).get(
             "inquiry_kind_all",
         ),
         list[str],
@@ -733,8 +733,8 @@ def _account(rec: _Recorder) -> None:
 
 def _admin(rec: _Recorder) -> None:
     """Change the other admin's role and status, edit the allowlist, delete the user."""
-    users = convert(
-        convert(
+    users = from_plain(
+        from_plain(
             rec.call("admin/listUsers", "GET", "/api/admin/users"),
             dict[str, object],
         )["users"],
@@ -777,7 +777,7 @@ def _stream(rec: _Recorder, *, target: str) -> None:
         }
 
 
-def _create(rec: _Recorder, kind: str, **body: JSONValue) -> str:
+def _create(rec: _Recorder, kind: str, **body: PlainTree) -> str:
     """Create one ``kind`` row as setup, labelled ``fixture``; return its id."""
     return rec.row(
         _id(
@@ -791,7 +791,7 @@ def _create(rec: _Recorder, kind: str, **body: JSONValue) -> str:
 
 
 def _id(body: object) -> str:
-    return convert(convert(body, dict[str, object]).get("id"), str)
+    return from_plain(from_plain(body, dict[str, object]).get("id"), str)
 
 
 def _key(name: str) -> str:
@@ -803,14 +803,14 @@ def _uuid_key(name: str) -> uuid.UUID:
     return uuid.uuid5(uuid.NAMESPACE_URL, f"trackinizer-web-app-fixtures/{name}")
 
 
-def _parsed(response: httpx2.Response) -> MutableJSONValue:
+def _parsed(response: httpx2.Response) -> MutablePlainTree:
     """Return the body as JSON when the server says it is, else as text."""
     if "json" in response.headers.get("content-type", ""):
-        return loads(response.text)
+        return mutable(loads(response.text))
     return response.text
 
 
-def _response(response: httpx2.Response, *, body: JSONValue) -> dict[str, JSONValue]:
+def _response(response: httpx2.Response, *, body: PlainTree) -> dict[str, PlainTree]:
     headers = {
         name: response.headers[name]
         for name in ("content-type", "location")
@@ -819,7 +819,7 @@ def _response(response: httpx2.Response, *, body: JSONValue) -> dict[str, JSONVa
     return {"status": response.status_code, "headers": headers, "body": body}
 
 
-def _render(value: JSONValue) -> str:
+def _render(value: PlainTree) -> str:
     return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 

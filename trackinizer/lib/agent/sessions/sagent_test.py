@@ -33,7 +33,7 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
     WebFetchResult,
 )
-from trackinizer.lib.custom_json import json_freeze
+from trackinizer.lib.codec import immutable
 
 
 def _read(*lines: dict[str, object] | str) -> list[SessionRecord]:
@@ -542,7 +542,7 @@ def test_a_malformed_record_degrades_to_an_uncategorized_one(
     # of ``normalize`` and aborted the whole read.
     records = _read(record, _history("user", text="after"))
 
-    assert _only(records, UncategorizedRecord)[0].payload == json_freeze(record)
+    assert _only(records, UncategorizedRecord)[0].payload == immutable(record)
     assert [u.content for u in _only(records, UserMessage)] == ["after"]
 
 

@@ -19,7 +19,7 @@ from trackinizer.lib.agent.types.sessions import (
     TurnContext,
     UserMessage,
 )
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 
 
 if TYPE_CHECKING:
@@ -292,8 +292,8 @@ def _declared_id(part: Sequence[SessionRecord]) -> str:
     """Return the thread id a part's launch settings name."""
     opening = part[0]
     assert isinstance(opening, TurnContext)
-    payload = convert(opening.extra["payload"], dict[str, object])
-    return convert(payload["id"], str)
+    payload = from_plain(opening.extra["payload"], dict[str, object])
+    return from_plain(payload["id"], str)
 
 
 if __name__ == "__main__":

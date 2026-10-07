@@ -10,7 +10,7 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import convert, parse
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.trax import cli, verbs
 from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.grammar import (
@@ -2076,7 +2076,7 @@ def test_whole_collection_views_never_exceed_server_cap(client: FakeClient) -> N
         # Every paged request the helper issued must be within the server cap.
         for call in (c for c in client.calls if c[0] == "list_kind"):
             kwargs = call[-1]
-            assert convert(kwargs["limit"], int) <= MAX_LIST_LIMIT, verb
+            assert from_plain(kwargs["limit"], int) <= MAX_LIST_LIMIT, verb
 
 
 def test_search_dispatches_semantic_by_default(client: FakeClient) -> None:
@@ -2130,7 +2130,7 @@ def test_search_json_output_is_the_raw_body(
 ) -> None:
     run(["search-sessions", "lock", "--format", "json"], client)
     out = capsys.readouterr().out
-    body = parse(out, dict[str, object])
+    body = from_plain(loads(out), dict[str, object])
     assert "hits" in body
     assert body["semantic"] is True
 

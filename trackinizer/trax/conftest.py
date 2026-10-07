@@ -17,7 +17,7 @@ import pytest
 
 from trackinizer.client.client import Client, EdgeWrite
 from trackinizer.lib.absent import Absent
-from trackinizer.lib.custom_json import JSONValue, convert
+from trackinizer.lib.codec import PlainTree, from_plain
 from trackinizer.trax import cli
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import (
@@ -409,7 +409,7 @@ class FakeClient:
         offset: int = 0,
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[Filter] = (),
-    ) -> list[dict[str, JSONValue]]:
+    ) -> list[dict[str, PlainTree]]:
         """List kind."""
         self.calls.append(
             (
@@ -435,7 +435,10 @@ class FakeClient:
                 row
                 for row in rows
                 if any(
-                    _seq_in_interval(convert(row.get("seq"), int, default=0), interval)
+                    _seq_in_interval(
+                        from_plain(row.get("seq"), int, default=0),
+                        interval,
+                    )
                     for interval in seq_ranges
                 )
             ]
@@ -462,7 +465,7 @@ class FakeClient:
         for filt in filters:
             rows = [row for row in rows if bool(match_filter(_storage_view(row), filt))]
         return cast(
-            list[dict[str, JSONValue]],
+            list[dict[str, PlainTree]],
             cast(
                 object,
                 rows[offset : offset + limit],
@@ -476,7 +479,7 @@ class FakeClient:
         status: Inquiry.Status | None = None,
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[Filter] = (),
-    ) -> list[dict[str, JSONValue]]:
+    ) -> list[dict[str, PlainTree]]:
         """Page past the cap, mirroring the real client's whole-collection fetch.
 
         Records a ``list_kind_all`` call, then pages via ``list_kind`` in
@@ -495,7 +498,7 @@ class FakeClient:
                 },
             ),
         )
-        rows: list[dict[str, JSONValue]] = []
+        rows: list[dict[str, PlainTree]] = []
         offset = 0
         while True:
             page = self.list_kind(
@@ -514,7 +517,7 @@ class FakeClient:
     def get_inquiry(
         self,
         ref: Ref,
-    ) -> tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, JSONValue]]:
+    ) -> tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, PlainTree]]:
         """Get inquiry."""
         self.calls.append(("get_inquiry", (ref,), {}))
         if isinstance(ref, UuidRef):
@@ -544,7 +547,7 @@ class FakeClient:
         detail = dict(self.detail)
         detail["self"] = row
         return cast(
-            tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, JSONValue]],
+            tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, PlainTree]],
             cast(
                 object,
                 (
@@ -555,11 +558,11 @@ class FakeClient:
             ),  # -- fake detail payload is JSON-shaped.
         )
 
-    def next_issue(self) -> dict[str, JSONValue] | None:
+    def next_issue(self) -> dict[str, PlainTree] | None:
         """Next issue."""
         self.calls.append(("next_issue", (), {}))
         return cast(
-            dict[str, JSONValue] | None,
+            dict[str, PlainTree] | None,
             self.next_payload,  # -- fake payload is JSON-shaped.
         )
 
@@ -569,7 +572,7 @@ class FakeClient:
         owner: Inquiry.Actor,
         actor: Inquiry.Actor | None = None,
         reason: str = "",
-    ) -> dict[str, JSONValue] | None:
+    ) -> dict[str, PlainTree] | None:
         """Record a claim; the fake hands back its canned next-issue row."""
         self.calls.append(
             (
@@ -579,7 +582,7 @@ class FakeClient:
             ),
         )
         return cast(
-            dict[str, JSONValue] | None,
+            dict[str, PlainTree] | None,
             self.next_payload,  # -- fake payload is JSON-shaped.
         )
 
@@ -621,11 +624,11 @@ class FakeClient:
             ),
         )
 
-    def recent_changes(self, *, limit: int = 50) -> list[dict[str, JSONValue]]:
+    def recent_changes(self, *, limit: int = 50) -> list[dict[str, PlainTree]]:
         """Recent changes."""
         self.calls.append(("recent_changes", (), {"limit": limit}))
         return cast(
-            list[dict[str, JSONValue]],
+            list[dict[str, PlainTree]],
             cast(object, list(self.changes)),  # -- fake changes are JSON-shaped.
         )
 
@@ -635,12 +638,12 @@ class FakeClient:
         *,
         semantic: bool = True,
         limit: int = 20,
-    ) -> dict[str, JSONValue]:
+    ) -> dict[str, PlainTree]:
         """Search sessions."""
         self.calls.append(
             ("search_sessions", (query,), {"semantic": semantic, "limit": limit}),
         )
-        return cast("dict[str, JSONValue]", cast(object, dict(self.session_hits)))
+        return cast("dict[str, PlainTree]", cast(object, dict(self.session_hits)))
 
     def cost_for(self, target_id: uuid.UUID, *, deep: bool = False) -> dict[str, float]:
         """Cost for."""

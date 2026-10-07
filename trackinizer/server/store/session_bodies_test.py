@@ -11,7 +11,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib import zstd_compat
-from trackinizer.lib.custom_json import json_freeze, json_unfreeze
+from trackinizer.lib.codec import immutable, mutable
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.semantic_mapper_footprint import HEAD_CHARS
 from trackinizer.server.store.core import Store
@@ -58,7 +58,7 @@ async def _session(store: Store) -> UUID:
     await store.upsert_session_manifest(
         session_id,
         name="native.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=2,
@@ -71,7 +71,7 @@ async def _session(store: Store) -> UUID:
                 part=0,
                 idx=0,
                 kind="UserMessage",
-                payload=json_freeze({"py/object": "x", "content": "run the tests"}),
+                payload=immutable({"py/object": "x", "content": "run the tests"}),
                 text="run the tests",
             ),
             SessionRecordRow(
@@ -79,7 +79,7 @@ async def _session(store: Store) -> UUID:
                 part=0,
                 idx=1,
                 kind="ShellCommandResult",
-                payload=json_freeze(
+                payload=immutable(
                     {"py/object": "y", "stdout": "exit 1\n" + "spam " * 5_000},
                 ),
                 text="exit 1\n" + "spam " * 5_000,
@@ -140,7 +140,7 @@ async def test_replay_read_is_byte_exact(store: Store) -> None:
     session_id = await _session(store)
     before = await store.read_session_records(session_id, part=0, limit=10)
     original = json.dumps(
-        json_unfreeze(before[1].payload),
+        mutable(before[1].payload),
         separators=(",", ":"),
     )
 
@@ -148,7 +148,7 @@ async def test_replay_read_is_byte_exact(store: Store) -> None:
 
     after = await store.read_session_records(session_id, part=0, limit=10)
     respliced = json.dumps(
-        json_unfreeze(after[1].payload),
+        mutable(after[1].payload),
         separators=(",", ":"),
     )
     assert respliced == original

@@ -14,7 +14,7 @@ from uuid import UUID
 
 import uuid
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
@@ -747,10 +747,10 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     conn,
                     from_id=edge.from_id
                     if edge.from_id is not None
-                    else ids[convert(edge.from_index, int)],
+                    else ids[from_plain(edge.from_index, int)],
                     to_id=edge.to_id
                     if edge.to_id is not None
-                    else ids[convert(edge.to_index, int)],
+                    else ids[from_plain(edge.to_index, int)],
                     edge_kind=edge.edge_kind,
                     priority=edge.priority,
                     note=edge.note,

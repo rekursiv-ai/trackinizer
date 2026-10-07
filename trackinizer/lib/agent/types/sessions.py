@@ -54,10 +54,11 @@ Axioms:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from trackinizer.lib.agent.types.capability import SummaryKind, ThinkingEffort
-from trackinizer.lib.custom_json import JSON, JSONValue
+from trackinizer.lib.codec import PlainTree
 
 
 __all__ = [
@@ -124,8 +125,8 @@ class TurnContext:
     model: str | None = None
     effort: ThinkingEffort | None = None
     summary_kind: SummaryKind | None = None
-    encoding: JSON = field(default_factory=dict[str, JSONValue])
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    encoding: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -144,7 +145,7 @@ class UserMessage:
     timestamp: str | None = None
     content: str | None = None
     attachments: tuple[Attachment, ...] = ()
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -155,7 +156,7 @@ class AssistantMessage:
     timestamp: str | None = None
     content: str | None = None
     attachments: tuple[Attachment, ...] = ()
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -167,7 +168,7 @@ class Thinking:
     content: str | None = None
     encrypted: str | None = None
     summary: str | None = None
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -178,8 +179,8 @@ class ToolCall:
     timestamp: str | None = None
     call_id: str
     name: str
-    arguments: JSON = field(default_factory=dict[str, JSONValue])
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    arguments: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -189,7 +190,7 @@ class ToolResult:
     context_id: int | None = None
     timestamp: str | None = None
     call_id: str
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -372,7 +373,7 @@ class SystemMessage:
     content: str | None = None
     attachments: tuple[Attachment, ...] = ()
     subtype: str | None = None
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -381,9 +382,9 @@ class TokenUsage:
 
     context_id: int | None = None
     timestamp: str | None = None
-    info: JSON = field(default_factory=dict[str, JSONValue])
-    rate_limits: JSON = field(default_factory=dict[str, JSONValue])
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    info: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
+    rate_limits: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -394,7 +395,7 @@ class ContextState:
     timestamp: str | None = None
     kind: str = ""
     content: str | None = None
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -433,7 +434,7 @@ class ContextCompaction:
     context_id: int | None = None
     timestamp: str | None = None
     summary: str | None = None
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -473,7 +474,7 @@ class ContextClear:
     system_prompt: str | None = None
     summary: str | None = None
     history: tuple[SessionRecord, ...] = ()
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -486,7 +487,7 @@ class AgentToAgentMessage:
     attachments: tuple[Attachment, ...] = ()
     sender: str | None = None
     recipient: str | None = None
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -496,7 +497,7 @@ class UncategorizedRecord:
     context_id: int | None = None
     timestamp: str | None = None
     kind: str
-    payload: JSON = field(default_factory=dict[str, JSONValue])
+    payload: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

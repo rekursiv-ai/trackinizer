@@ -15,7 +15,7 @@ import httpx2
 import pytest
 
 from trackinizer.lib import zstd_compat
-from trackinizer.lib.custom_json import convert, parse
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.trax.profile import Profile
 from trackinizer.web.scripts import measure as measurement
 from trackinizer.web.scripts.measure import (
@@ -264,7 +264,7 @@ def test_reads_of_the_newest_issues_are_named_for_the_issues_there_are(
 
     def answer(request: httpx2.Request) -> httpx2.Response:
         if request.url.path == "/api/inquiries":
-            rows = convert(_body("/api/inquiries"), list[object])[:count]
+            rows = from_plain(_body("/api/inquiries"), list[object])[:count]
             return httpx2.Response(200, content=iter([json.dumps(rows).encode()]))
         return _answer(request, [])
 
@@ -290,18 +290,20 @@ def test_moved_flags_a_median_time_or_size_over_2x_either_way() -> None:
         )
         return Row(name=name, samples=(sample,))
 
-    baseline = parse(
-        json.dumps(
-            report(
-                [
-                    row("steady", 1.0, 1000),
-                    row("slower", 1.0, 1000),
-                    row("smaller", 1.0, 3000),
-                    row("gone", 1.0, 1000),
-                ],
-                stream=Stream(seconds=20.0, frames=0, distinct_ids=0, status=200),
-                url="http://server",
-                sha="abc",
+    baseline = from_plain(
+        loads(
+            json.dumps(
+                report(
+                    [
+                        row("steady", 1.0, 1000),
+                        row("slower", 1.0, 1000),
+                        row("smaller", 1.0, 3000),
+                        row("gone", 1.0, 1000),
+                    ],
+                    stream=Stream(seconds=20.0, frames=0, distinct_ids=0, status=200),
+                    url="http://server",
+                    sha="abc",
+                ),
             ),
         ),
         dict[str, object],
@@ -334,7 +336,7 @@ def test_an_error_answer_is_reported_but_never_timed_as_a_read() -> None:
         Row(name="refused", samples=(refused,)),
     ]
     stream = Stream(seconds=1.0, frames=0, distinct_ids=0, status=200)
-    summaries = convert(
+    summaries = from_plain(
         report(rows, stream=stream, url="u", sha="s")["rows"],
         list[dict[str, object]],
     )
@@ -344,13 +346,15 @@ def test_an_error_answer_is_reported_but_never_timed_as_a_read() -> None:
         (None, None),
     ]
     assert summaries[1]["statuses"] == [502]
-    baseline = parse(
-        json.dumps(
-            report(
-                [Row(name="mixed", samples=(ok,))],
-                stream=stream,
-                url="u",
-                sha="s",
+    baseline = from_plain(
+        loads(
+            json.dumps(
+                report(
+                    [Row(name="mixed", samples=(ok,))],
+                    stream=stream,
+                    url="u",
+                    sha="s",
+                ),
             ),
         ),
         dict[str, object],
@@ -363,13 +367,15 @@ def test_a_baseline_row_with_no_successful_answer_is_not_compared() -> None:
     refused = Sample(seconds=0.01, status=502, json_bytes=2, wire_bytes=2)
     ok = Sample(seconds=1.0, status=200, json_bytes=1000, wire_bytes=100)
     stream = Stream(seconds=1.0, frames=0, distinct_ids=0, status=200)
-    baseline = parse(
-        json.dumps(
-            report(
-                [Row(name="r", samples=(refused,))],
-                stream=stream,
-                url="u",
-                sha="s",
+    baseline = from_plain(
+        loads(
+            json.dumps(
+                report(
+                    [Row(name="r", samples=(refused,))],
+                    stream=stream,
+                    url="u",
+                    sha="s",
+                ),
             ),
         ),
         dict[str, object],
@@ -426,7 +432,7 @@ def test_a_refused_stream_is_its_answer_not_a_quiet_stream() -> None:
 
     assert stream == Stream(seconds=0.0, frames=0, distinct_ids=0, status=401)
     document = report([], stream=stream, url="u", sha="s")
-    assert convert(document["stream"], dict[str, object])["frames_per_sec"] is None
+    assert from_plain(document["stream"], dict[str, object])["frames_per_sec"] is None
 
 
 @pytest.mark.parametrize("flag", ["--repeats", "--stream-sec"])
@@ -445,7 +451,8 @@ def test_two_reports_in_one_second_never_overwrite_each_other(tmp_path: Path) ->
 
     assert first != second
     assert [
-        parse(p.read_text(), dict[str, object])["run"] for p in (first, second)
+        from_plain(loads(p.read_text()), dict[str, object])["run"]
+        for p in (first, second)
     ] == [
         1,
         2,

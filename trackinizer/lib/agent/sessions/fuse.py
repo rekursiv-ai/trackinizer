@@ -45,7 +45,7 @@ from trackinizer.lib.agent.types.sessions import (
     TurnContext,
     UserMessage,
 )
-from trackinizer.lib.custom_json import convert, json_freeze
+from trackinizer.lib.codec import from_plain, immutable
 
 
 if TYPE_CHECKING:
@@ -195,7 +195,7 @@ def chain(
     by_id: dict[str, Sequence[SessionRecord]] = {}
     for part in found:
         own_value = _declared(part).get("id")
-        own = None if own_value is None else convert(own_value, str)
+        own = None if own_value is None else from_plain(own_value, str)
         if own:
             by_id[own] = part
     # A LIST per parent: a thread may be resumed more than once, and keeping
@@ -205,7 +205,7 @@ def chain(
     roots: list[Sequence[SessionRecord]] = []
     for part in found:
         parent_value = _declared(part).get(forked_from)
-        parent = None if parent_value is None else convert(parent_value, str)
+        parent = None if parent_value is None else from_plain(parent_value, str)
         if parent and parent in by_id:
             successors.setdefault(parent, []).append(part)
         else:
@@ -225,7 +225,7 @@ def chain(
             seen.add(id(part))
             ordered.append(part)
             own_value = _declared(part).get("id")
-            own = None if own_value is None else convert(own_value, str)
+            own = None if own_value is None else from_plain(own_value, str)
             if own:
                 stack.extend(reversed(successors.get(own, [])))
     # A component whose links form a CYCLE has no root, so the walk above never
@@ -240,7 +240,7 @@ def chain(
 
 def _bare(value: object) -> str:
     """Return a seam's file name, refusing one that names another directory."""
-    name = convert(value, str)
+    name = from_plain(value, str)
     if name != PurePath(name).name or name in {".", ".."}:
         raise ValueError(f"seam names a path, not a file: {name!r}")
     return name
@@ -253,7 +253,7 @@ def _declared(part: Sequence[SessionRecord]) -> dict[str, object]:
     """Return the launch settings a part declared, by its wire key names."""
     for record in part:
         if isinstance(record, TurnContext) and "payload" in record.extra:
-            return convert(record.extra["payload"], dict[str, object], default={})
+            return from_plain(record.extra["payload"], dict[str, object], default={})
     return {}
 
 
@@ -302,7 +302,7 @@ def _unnamed(record: SessionRecord, *, seam: str) -> SessionRecord:
 
 def _restated(record: TurnContext, extra: Mapping[str, object]) -> TurnContext:
     """Return one context with a different residual and nothing else moved."""
-    return replace(record, extra=json_freeze(extra))
+    return replace(record, extra=immutable(extra))
 
 
 # A window opens either way, so the boundary IS a clear -- carrying the summary when one

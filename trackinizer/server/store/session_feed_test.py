@@ -23,7 +23,7 @@ from trackinizer.lib.agent.types.sessions import (
     Attachment,
     UserMessage,
 )
-from trackinizer.lib.custom_json import json_unfreeze
+from trackinizer.lib.codec import mutable
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     BucketGrid,
@@ -642,7 +642,7 @@ async def test_typed_attachment_only_messages_are_conversation(
     await _records(
         integ_store,
         session_id,
-        [(row.kind, _T0, json.dumps(json_unfreeze(row.payload)))],
+        [(row.kind, _T0, json.dumps(mutable(row.payload)))],
     )
     facets = await integ_store.read_feed_facets(
         since=None,

@@ -8,7 +8,7 @@ import hashlib
 import json
 import uuid
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.notify import tx
 from trackinizer.server.visuals.reports import read_artifact_content_on_conn
@@ -192,7 +192,9 @@ async def send_workspace_message(
             )
             if record_row is not None:
                 record_fields = dict(record_row)
-                record_fields["title"] = convert(record_fields.get("title"), str)[:512]
+                record_fields["title"] = from_plain(record_fields.get("title"), str)[
+                    :512
+                ]
                 record = WorkspaceRecordContext.model_validate(record_fields)
         artifact_content = None
         if record_id is not None and (record is None or record.kind == "Artifact"):
@@ -556,7 +558,7 @@ def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
     data = WorkspaceData.model_validate(row["state"])
     return WorkspaceState(
         id=cast(uuid.UUID, row["id"]),
-        revision=convert(row.get("revision"), int),
+        revision=from_plain(row.get("revision"), int),
         connected_session_id=cast(uuid.UUID | None, row["session_id"]),
         visuals=data.visuals,
         focused_instance=data.focused_instance,

@@ -21,7 +21,7 @@ import re
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.custom_json import convert, json_unfreeze
+from trackinizer.lib.codec import from_plain, mutable
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store import legacy_retype_runner
 from trackinizer.server.store.core import Store
@@ -186,7 +186,7 @@ async def test_unknown_message_survives_byte_for_byte(store: Store) -> None:
     unknown_before = next(
         row
         for row in before
-        if convert(row.payload, dict[str, object]).get("kind")
+        if from_plain(row.payload, dict[str, object]).get("kind")
         == "legacy/UnknownMessage"
     )
 
@@ -195,8 +195,8 @@ async def test_unknown_message_survives_byte_for_byte(store: Store) -> None:
 
     after = await store.read_session_records(session_id, part=-1, limit=500)
     unknown_after = next(row for row in after if row.kind == "UncategorizedRecord")
-    assert json.dumps(json_unfreeze(unknown_after.payload)) == json.dumps(
-        json_unfreeze(unknown_before.payload),
+    assert json.dumps(mutable(unknown_after.payload)) == json.dumps(
+        mutable(unknown_before.payload),
     )
     assert unknown_after.text == unknown_before.text
 

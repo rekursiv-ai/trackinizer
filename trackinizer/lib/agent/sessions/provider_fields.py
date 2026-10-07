@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import overload
 
-from trackinizer.lib.custom_json import ReadError, convert
+from trackinizer.lib.codec import ReadError, from_plain
 
 
 __all__ = ["read_or_default"]
@@ -54,6 +54,6 @@ def read_or_default[T](
 
     """
     try:
-        return convert(value, target, default=default)
+        return from_plain(value, target, default=default)
     except ReadError:
         return default

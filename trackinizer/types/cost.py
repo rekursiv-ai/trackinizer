@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Self
 
 import math
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 
 
 if TYPE_CHECKING:
@@ -109,9 +109,9 @@ class Cost:
         agent_col = prefix + "marginal_cost_agent_usd"
         resource_col = prefix + "marginal_cost_resource_usd"
         return cls(
-            agent_usd=convert(row[agent_col], float) if agent_col in row else 0.0,
+            agent_usd=from_plain(row[agent_col], float) if agent_col in row else 0.0,
             resource_usd=(
-                convert(row[resource_col], float) if resource_col in row else 0.0
+                from_plain(row[resource_col], float) if resource_col in row else 0.0
             ),
         )
 

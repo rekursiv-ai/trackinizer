@@ -19,7 +19,7 @@ from trackinizer.conftest import (
     new_uuid,
     queue_field_rows,
 )
-from trackinizer.lib.custom_json import parse
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
@@ -51,7 +51,7 @@ class TestSubmit:
         assert len(engine.notify_calls) == 1
         ch, payload = engine.notify_calls[0]
         assert ch == NOTIFY_CHANNEL
-        decoded = parse(payload, dict[str, object])
+        decoded = from_plain(loads(payload), dict[str, object])
         assert decoded == {"id": str(issue_id)}
 
     @pytest.mark.asyncio

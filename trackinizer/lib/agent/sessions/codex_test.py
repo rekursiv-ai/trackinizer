@@ -43,7 +43,7 @@ from trackinizer.lib.agent.types.sessions import (
     WebSearchResult,
     WebSearchResults,
 )
-from trackinizer.lib.custom_json import MutableJSONValue, convert, parse
+from trackinizer.lib.codec import MutablePlainTree, from_plain, loads
 
 
 if TYPE_CHECKING:
@@ -94,7 +94,7 @@ def test_a_session_declares_its_context_and_identity() -> None:
     # follows. The per-turn settings then supersede it.
     launch = records[0]
     assert isinstance(launch, TurnContext)
-    declaration = convert(launch.extra.get("payload"), dict[str, object])
+    declaration = from_plain(launch.extra.get("payload"), dict[str, object])
     assert declaration["cwd"] == "/workspace"
     assert declaration["session_id"] == "s1"
     assert isinstance(records[1], ContextClear)
@@ -189,8 +189,8 @@ def test_order_table_does_not_create_a_stamp_module_global() -> None:
 
 
 def test_template_precedence_does_not_consume_legacy_blocks() -> None:
-    legacy: list[MutableJSONValue] = [{"type": "future", "value": 1}]
-    extra: dict[str, MutableJSONValue] = {
+    legacy: list[MutablePlainTree] = [{"type": "future", "value": 1}]
+    extra: dict[str, MutablePlainTree] = {
         "$templates": [{"type": "input_text"}],
         "$blocks": legacy,
         "$order": ["text"],
@@ -363,8 +363,8 @@ def test_a_foreign_subtype_is_not_written_as_a_codex_role() -> None:
 
     codex.denormalize([SystemMessage(content="", subtype="turn_duration")], out)
 
-    outer = parse(out.getvalue().splitlines()[0], dict[str, object])
-    payload = convert(outer["payload"], dict[str, object])
+    outer = from_plain(loads(out.getvalue().splitlines()[0]), dict[str, object])
+    payload = from_plain(outer["payload"], dict[str, object])
     assert payload["role"] == "system"
 
 
@@ -917,7 +917,7 @@ def test_the_launch_payload_is_stored_once() -> None:
     assert isinstance(launch, TurnContext)
     extra = dict(launch.extra)
 
-    assert "payload" not in convert(extra.get("$outer"), dict[str, object])
+    assert "payload" not in from_plain(extra.get("$outer"), dict[str, object])
     # The stamp the opening context's own field already carries.
     assert "$launch_timestamp_raw" not in extra
 
@@ -1005,9 +1005,9 @@ def test_a_legacy_patch_diff_is_stored_once() -> None:
     # answer this: the needle holds a real newline and the haystack holds the
     # escaped ``\\n``, so the search misses a diff that is plainly there --
     # which is how this assertion passed against a 100%-duplicated corpus.
-    stored = convert(dict(record.extra).get("changes"), dict[str, object])
+    stored = from_plain(dict(record.extra).get("changes"), dict[str, object])
     assert [
-        convert(entry, dict[str, object]).get("unified_diff")
+        from_plain(entry, dict[str, object]).get("unified_diff")
         for entry in stored.values()
     ] == [None], "the diff is on the record already"
 
@@ -1623,7 +1623,7 @@ def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(index: int) -> N
     The rest of the rollout stays as written, so a line read in context -- a
     result after its call, an item after its turn -- meets its wrong field there.
     """
-    record = parse(FIXTURE[index], dict[str, object])
+    record = from_plain(loads(FIXTURE[index]), dict[str, object])
     failed: list[str] = []
     for path, changed in mistyped(record):
         records = list(codex.normalize(StringIO(_swapped(index, changed))))

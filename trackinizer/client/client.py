@@ -49,7 +49,7 @@ import httpx2
 
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.absent import ABSENT, Absent
-from trackinizer.lib.custom_json import JSONValue
+from trackinizer.lib.codec import PlainTree
 from trackinizer.types.inquiries import Inquiry, Issue
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
 from trackinizer.wire.routes import (
@@ -239,23 +239,23 @@ class Client:
         path: str,
         *,
         params: Mapping[str, object] | None = None,
-    ) -> JSONValue:
+    ) -> PlainTree:
         """Send a GET request."""
         return self._request("GET", path, params=params)
 
-    def post(self, path: str, *, body: object = None) -> JSONValue:
+    def post(self, path: str, *, body: object = None) -> PlainTree:
         """Send a POST request."""
         return self._request("POST", path, body=body)
 
-    def put(self, path: str, *, body: object = None) -> JSONValue:
+    def put(self, path: str, *, body: object = None) -> PlainTree:
         """Send a PUT request."""
         return self._request("PUT", path, body=body)
 
-    def patch(self, path: str, *, body: object = None) -> JSONValue:
+    def patch(self, path: str, *, body: object = None) -> PlainTree:
         """Send a PATCH request."""
         return self._request("PATCH", path, body=body)
 
-    def delete(self, path: str, *, body: object = None) -> JSONValue:
+    def delete(self, path: str, *, body: object = None) -> PlainTree:
         """Send a DELETE request."""
         return self._request("DELETE", path, body=body)
 
@@ -348,7 +348,7 @@ class Client:
         offset: int = 0,
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[Filter] = (),
-    ) -> list[dict[str, JSONValue]]:
+    ) -> list[dict[str, PlainTree]]:
         """Fetch one page of inquiries of a given kind.
 
         Args:
@@ -403,7 +403,7 @@ class Client:
         status: Inquiry.Status | None = None,
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[Filter] = (),
-    ) -> list[dict[str, JSONValue]]:
+    ) -> list[dict[str, PlainTree]]:
         """Fetch EVERY matching row, paging past the server's per-request cap.
 
         ``list_kind`` is bounded by ``MAX_LIST_LIMIT`` (the route rejects a
@@ -436,7 +436,7 @@ class Client:
           rows: All matching inquiry rows as dicts, concatenated from pages.
 
         """
-        rows: list[dict[str, JSONValue]] = []
+        rows: list[dict[str, PlainTree]] = []
         offset = 0
         while True:
             page = self.list_kind(
@@ -455,7 +455,7 @@ class Client:
     def get_inquiry(
         self,
         ref: Ref,
-    ) -> tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, JSONValue]]:
+    ) -> tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, PlainTree]]:
         """Resolve and fetch the SPA detail view (self + edges + changes).
 
         Args:
@@ -469,7 +469,7 @@ class Client:
         where = f"/api/web/get/{target_id}"
         return kind, target_id, dict(_require_mapping(self.get(where), where))
 
-    def next_issue(self) -> dict[str, JSONValue] | None:
+    def next_issue(self) -> dict[str, PlainTree] | None:
         """Next issue.
 
         Returns:
@@ -488,7 +488,7 @@ class Client:
         owner: Inquiry.Actor,
         actor: Inquiry.Actor | None = None,
         reason: str = "",
-    ) -> dict[str, JSONValue] | None:
+    ) -> dict[str, PlainTree] | None:
         """Atomically claim the next available Issue for ``owner``.
 
         ONE request, deliberately -- never :meth:`next_issue` followed by an
@@ -616,7 +616,7 @@ class Client:
             else:
                 return
 
-    def recent_changes(self, *, limit: int = 50) -> list[dict[str, JSONValue]]:
+    def recent_changes(self, *, limit: int = 50) -> list[dict[str, PlainTree]]:
         """Fetch the most recent change rows, newest first.
 
         Args:
@@ -640,7 +640,7 @@ class Client:
         *,
         semantic: bool = True,
         limit: int = 20,
-    ) -> dict[str, JSONValue]:
+    ) -> dict[str, PlainTree]:
         """Search captured sessions: embeddings + full text, RRF-merged.
 
         Args:
@@ -1715,7 +1715,7 @@ class Client:
         change_id: uuid.UUID | None = None,
         retry_attempts: int = 3,
         timeout: float | None = None,
-    ) -> JSONValue:
+    ) -> PlainTree:
         # ``retry_attempts`` is how many tries a mutating request gets after a
         # 5xx or read timeout. Three bounds the worst-case wait (~1s) while
         # covering the common cases: one bad pool socket, one transient 502.
@@ -1816,7 +1816,7 @@ class Client:
         # ``json.JSONDecodeError`` (a ``ValueError``) past the ClientError
         # contract; wrap it so callers see one error type.
         try:
-            return cast(JSONValue, response.json())
+            return cast(PlainTree, response.json())
         except ValueError as err:
             raise ClientError(
                 f"{method} {path}: malformed JSON in server response",
@@ -1883,18 +1883,18 @@ def _truncate(text: str, limit: int = 2_048) -> str:
 
 # A server response of the wrong JSON type would otherwise leak a raw ``TypeError`` when
 # a caller subscripts it, past the ClientError contract.
-def _require_mapping(payload: object, where: str) -> Mapping[str, JSONValue]:
+def _require_mapping(payload: object, where: str) -> Mapping[str, PlainTree]:
     """Return ``payload`` as a mapping, or raise a wrapped ``ClientError``."""
     if not isinstance(payload, Mapping):
         raise ClientError(f"{where} returned a malformed payload: {payload!r}")
-    return cast(Mapping[str, JSONValue], payload)
+    return cast(Mapping[str, PlainTree], payload)
 
 
-def _require_list(payload: object, where: str) -> list[JSONValue]:
+def _require_list(payload: object, where: str) -> list[PlainTree]:
     """Return ``payload`` as a list, or raise a wrapped ``ClientError``."""
     if not isinstance(payload, list):
         raise ClientError(f"{where} returned a malformed payload: {payload!r}")
-    return cast(list[JSONValue], payload)
+    return cast(list[PlainTree], payload)
 
 
 def _require_field(payload: object, field: str, where: str) -> object:

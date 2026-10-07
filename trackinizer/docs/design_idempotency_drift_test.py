@@ -14,7 +14,7 @@ from typing import Final
 
 import re
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.server.store.core import Store
 
 
@@ -45,7 +45,7 @@ def test_design_idempotency_names_real_store_methods() -> None:
     text = (_CWD / "design_idempotency.md").read_text()
     cited = {
         name
-        for name in convert(_METHOD_RE.findall(text), list[str])
+        for name in from_plain(_METHOD_RE.findall(text), list[str])
         if name not in _NOT_STORE_METHODS
         # Only check names that look like Store methods: a leading underscore
         # (private helper) or a known public-method prefix.

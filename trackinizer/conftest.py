@@ -27,7 +27,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib import postgres
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.lib.testing.resource_markers import pytest_collection_modifyitems
 from trackinizer.lib.testing.userdirs_fixture import (
@@ -70,8 +70,8 @@ def make_conn() -> AsyncMock:
 
     async def fetchrow(sql: str, *args: object) -> object:
         if "marginal_cost_agent_usd" in sql and "RETURNING" in sql:
-            agent = convert(args[0], float) if args else 0.0
-            resource = convert(args[1], float) if len(args) > 1 else 0.0
+            agent = from_plain(args[0], float) if args else 0.0
+            resource = from_plain(args[1], float) if len(args) > 1 else 0.0
             old_agent = max(0.0, -agent)
             old_resource = max(0.0, -resource)
             subject_id = args[2] if len(args) > 2 else uuid.uuid4()

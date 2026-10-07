@@ -30,7 +30,7 @@ into the TUI and never written to the log -- so it travels its own way
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import IO, TYPE_CHECKING, Protocol, cast, override
@@ -41,7 +41,7 @@ import sys
 import threading
 import time
 
-from trackinizer.lib.custom_json import JSON, json_freeze
+from trackinizer.lib.codec import PlainTree, immutable
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_session_ir import (
@@ -360,7 +360,7 @@ class FileSink(Sink):
 
     def _write_record(self, adapter_name: str, path: Path, body: RecordBody) -> None:
         record = cast(
-            JSON,
+            Mapping[str, PlainTree],
             {
                 "adapter": adapter_name,
                 # The BASENAME, matching how the server resolves a part: the
@@ -643,12 +643,12 @@ class TrackinizerSink(Sink):
     #
     # A path with no reader yet -- a body replayed into a degraded sink, which carries
     # positions but no reader -- declares nothing, which the empty default already says.
-    def _metadata_for(self, path: Path) -> JSON:
+    def _metadata_for(self, path: Path) -> Mapping[str, PlainTree]:
         r"""How the file SPELLS its bytes, as its own reader has read it so far."""
         reader = self.readers.get(path)
         if reader is None:
-            return json_freeze({})
-        return json_freeze(reader.encoding)
+            return immutable({})
+        return immutable(reader.encoding)
 
     @override
     def close(self) -> None:

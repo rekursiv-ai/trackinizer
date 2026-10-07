@@ -26,7 +26,7 @@ from trackinizer.lib.agent.types.sessions import (
     ToolCall,
     UserMessage,
 )
-from trackinizer.lib.custom_json import json_freeze
+from trackinizer.lib.codec import immutable
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.inquiries import AgentSession
@@ -76,7 +76,7 @@ async def _session_with(
     _ = await store.upsert_session_manifest(
         session_id,
         name="s.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=len(records),
@@ -252,7 +252,7 @@ async def test_record_filters_ignore_stale_tail_after_compaction(store: Store) -
     _ = await store.upsert_session_manifest(
         session_id,
         name="s.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=1,

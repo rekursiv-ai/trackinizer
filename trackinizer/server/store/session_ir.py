@@ -14,6 +14,7 @@ back where it already was instead of appending a second copy.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -21,13 +22,7 @@ from uuid import UUID
 
 import json
 
-from trackinizer.lib.custom_json import (
-    JSON,
-    convert,
-    json_freeze,
-    json_unfreeze,
-    loads,
-)
+from trackinizer.lib.codec import PlainTree, from_plain, immutable, loads, mutable
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.cascade import _CascadeAuditMixin
 from trackinizer.server.store.session_bodies import decode_body, spliced_payload
@@ -91,7 +86,7 @@ class SessionManifest:
     """The file's basename. Not its path -- that differs across machines, and
     the same session resumed elsewhere must resolve to the same part."""
 
-    metadata: JSON
+    metadata: Mapping[str, PlainTree]
     """How the file spells its bytes, as its reader stated it for this part.
 
     The ``TurnContext.encoding`` in force: ``newline_terminated`` plus, for
@@ -525,7 +520,7 @@ class _SessionIRMixin(_CascadeAuditMixin):
         session_id: UUID,
         *,
         name: str,
-        metadata: JSON,
+        metadata: Mapping[str, PlainTree],
         ir_id: UUID,
         format: str,
         records: int,
@@ -659,14 +654,14 @@ class _SessionIRMixin(_CascadeAuditMixin):
 # would round-trip it through a dict whose ordering is no longer the file's.
 # ``separators`` drops the whitespace ``json.dumps`` adds by default -- the text is
 # stored verbatim, so the padding would be too.
-def _encoded_payload(payload: JSON) -> str:
+def _encoded_payload(payload: Mapping[str, PlainTree]) -> str:
     """One record's payload as JSON text, key order intact."""
-    return json.dumps(json_unfreeze(payload), separators=(",", ":"))
+    return json.dumps(mutable(payload), separators=(",", ":"))
 
 
-def _decoded_payload(raw: str) -> JSON:
+def _decoded_payload(raw: str) -> Mapping[str, PlainTree]:
     """Return the stored payload text back as frozen JSON, key order intact."""
-    return json_freeze(convert(loads(raw), dict[str, object]))
+    return immutable(from_plain(loads(raw), dict[str, object]))
 
 
 # Claude writes standard base64 and codex base64url, so one decode/encode pair cannot

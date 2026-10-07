@@ -18,7 +18,7 @@ from pydantic import ValidationError
 import pytest
 
 from trackinizer.conftest import make_store, queue_field_rows
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
@@ -577,7 +577,7 @@ async def test_storage_quota_allows_exactly_500_mb() -> None:
     """Prior bytes plus this revision may reach, but not pass, 500 MB."""
     probe = _Run()
     await probe.publish(_html_body(probe))
-    content_bytes = convert(probe.db.calls[-2][2][6], int)
+    content_bytes = from_plain(probe.db.calls[-2][2][6], int)
     at_limit = _Run()
     at_limit.db.answers[_USED] = [500_000_000 - content_bytes]
     assert (await at_limit.publish(_html_body(at_limit))).revision == 1

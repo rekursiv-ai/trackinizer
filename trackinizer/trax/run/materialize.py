@@ -25,7 +25,7 @@ gone cannot be replayed to the provider (:class:`CiphertextDroppedError`).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,7 +47,7 @@ from trackinizer.lib.agent.types.sessions import (
     Thinking,
     TurnContext,
 )
-from trackinizer.lib.custom_json import JSON, convert, json_freeze, json_unfreeze
+from trackinizer.lib.codec import PlainTree, from_plain, immutable, mutable
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.errors import (
@@ -104,7 +104,7 @@ def materialize(
     *,
     target: str,
     records: Sequence[SessionRecord],
-    encoding: JSON,
+    encoding: Mapping[str, PlainTree],
     sealed: Sequence[str | None] = (),
     session_id: UUID | None = None,
     source: str | None = None,
@@ -173,7 +173,7 @@ def prepared(
     *,
     target: str,
     records: Sequence[SessionRecord],
-    encoding: JSON,
+    encoding: Mapping[str, PlainTree],
     sealed: Sequence[str | None] = (),
     source: str | None = None,
     session_id: UUID,
@@ -324,7 +324,7 @@ def _codex_identified(
         return stamped
     return [
         _codex_declared(
-            TurnContext(encoding=json_freeze({"newline_terminated": True})),
+            TurnContext(encoding=immutable({"newline_terminated": True})),
             session_id,
         ),
         *stamped,
@@ -363,7 +363,7 @@ def _codex_stamped(record: SessionRecord, at: str) -> SessionRecord:
 # rather than about this machine.
 def _codex_declared(record: TurnContext, session_id: UUID) -> TurnContext:
     """Return the launch settings with this machine's declaration in them."""
-    extra = dict(json_unfreeze(record.extra))
+    extra = dict(mutable(record.extra))
     stated = str(session_id)
     # The launch line's own ordinal, which is how codex numbers a rollout it
     # wrote; a session crossed in from another CLI declares none.
@@ -371,8 +371,8 @@ def _codex_declared(record: TurnContext, session_id: UUID) -> TurnContext:
     extra.setdefault("$timestamp", True)
     captured = {
         key: value
-        for key, value in json_unfreeze(
-            convert(extra.get("payload"), dict[str, object], default={}),
+        for key, value in mutable(
+            from_plain(extra.get("payload"), dict[str, object], default={}),
         ).items()
         # The thread this session forked FROM is not being materialized, so
         # naming it would point the CLI at a rollout the machine may not hold.
@@ -401,7 +401,7 @@ def _codex_declared(record: TurnContext, session_id: UUID) -> TurnContext:
     return replace(
         record,
         timestamp=record.timestamp or _stamp(),
-        extra=json_freeze(extra),
+        extra=immutable(extra),
     )
 
 
@@ -482,12 +482,12 @@ def _renamed(record: SessionRecord, session_id: UUID) -> SessionRecord:
     # Not thawed first: the values are re-frozen unchanged, so unfreezing the
     # whole residual only to freeze it again would walk every nested structure
     # twice for one replaced key.
-    residual = convert(getattr(record, "extra", None) or {}, dict[str, object])
+    residual = from_plain(getattr(record, "extra", None) or {}, dict[str, object])
     if "sessionId" not in residual:
         return record
     return replace(
         record,
-        extra=json_freeze({**residual, "sessionId": str(session_id)}),
+        extra=immutable({**residual, "sessionId": str(session_id)}),
     )
 
 

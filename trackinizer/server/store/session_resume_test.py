@@ -23,7 +23,7 @@ from trackinizer.lib.agent.sessions import (
 )
 from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import SessionRecord, Thinking
-from trackinizer.lib.custom_json import convert, json_freeze
+from trackinizer.lib.codec import from_plain, immutable
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.trax.run.errors import CiphertextDroppedError
@@ -80,7 +80,7 @@ async def _captured(store: Store, name: str) -> tuple[UUID, int]:
         # How the file SPELLS its bytes, which is all the manifest carries
         # now: identity is not in the IR, so the capturing client mints the
         # ``ir_id`` rather than reading one off the reader.
-        metadata=json_freeze(reader.encoding),
+        metadata=immutable(reader.encoding),
         ir_id=uuid4(),
         format="codex" if name.startswith("codex") else "claude",
         records=len(records),
@@ -151,14 +151,14 @@ def _without_session_id(records: Sequence[TraxRecord]) -> list[TraxRecord]:
     """Each record with any ``sessionId`` dropped from its residual."""
     out: list[TraxRecord] = []
     for record in records:
-        residual = convert(getattr(record, "extra", None) or {}, dict[str, object])
+        residual = from_plain(getattr(record, "extra", None) or {}, dict[str, object])
         if "sessionId" not in residual:
             out.append(record)
             continue
         out.append(
             replace(
                 record,
-                extra=json_freeze(
+                extra=immutable(
                     {k: v for k, v in residual.items() if k != "sessionId"},
                 ),
             ),

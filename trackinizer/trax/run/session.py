@@ -48,7 +48,7 @@ import time
 import uuid
 
 from trackinizer.client.client import Client
-from trackinizer.lib.custom_json import convert, loads
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.lib.posix.follow import follow_dir, follow_tree
 from trackinizer.lib.posix.host import HostSpec
 from trackinizer.lib.posix.relay import ThreadedRelay
@@ -1093,7 +1093,7 @@ def _envelope_agent_message(text: str) -> str | None:
         return None
     if not isinstance(payload, dict):
         return None
-    message = convert(payload, dict[str, object]).get("agent_message")
+    message = from_plain(payload, dict[str, object]).get("agent_message")
     return message if isinstance(message, str) else None
 
 

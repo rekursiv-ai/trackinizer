@@ -35,7 +35,7 @@ from trackinizer.lib.agent.types.sessions import (
     Thinking,
     TurnContext,
 )
-from trackinizer.lib.custom_json import json_freeze
+from trackinizer.lib.codec import immutable
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.session_records import SessionRecordRow
@@ -99,7 +99,7 @@ async def _ingest(store: Store, path: Path, session_id: UUID) -> int:
     part = await store.upsert_session_manifest(
         session_id,
         name=path.name,
-        metadata=json_freeze(reader.encoding),
+        metadata=immutable(reader.encoding),
         # Identity left the IR, so the client mints one per FILE. It names the
         # stored part, not the transcript: what claude writes into every line
         # rides each record's own residual.

@@ -28,6 +28,7 @@ Two fields of the record do not ride in ``payload``:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import datetime
 from typing import Final, Self, cast, get_type_hints
@@ -58,13 +59,8 @@ from trackinizer.lib.agent.types.sessions import (
     WebFetchResult,
     WebSearchResults,
 )
-from trackinizer.lib.custom_json import (
-    JSON,
-    convert,
-    json_freeze,
-    json_unfreeze,
-    to_builtins,
-)
+from trackinizer.lib.codec import PlainTree, from_plain, immutable, mutable
+from trackinizer.lib.custom_json import to_builtins
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 
 
@@ -143,7 +139,7 @@ class SessionRecordRow:
     """Denormalized from the applying ``TurnContext`` so the console feed need
     not self-join per row. A projection, never read back into a record."""
 
-    payload: JSON
+    payload: Mapping[str, PlainTree]
     """Frozen ``to_builtins`` data, tagged by record type, without ciphertext."""
 
     text: str = ""
@@ -193,7 +189,7 @@ class SessionRecordRow:
             context_id=getattr(record, "context_id", None),
             timestamp=_parsed(raw if isinstance(raw, str) else None),
             model=model,
-            payload=json_freeze(to_builtins(stored)),
+            payload=immutable(to_builtins(stored)),
             text=search_text(record),
             ciphertext=encrypted if isinstance(encrypted, str) and encrypted else None,
         )
@@ -215,7 +211,7 @@ class SessionRecordRow:
           record: Decoded TraxRecord of the appropriate subtype.
 
         """
-        record = convert(json_unfreeze(self.payload), _class_for(self.kind))
+        record = from_plain(mutable(self.payload), _class_for(self.kind))
         return cast("TraxRecord", _frozen_json_fields(record))
 
 
@@ -233,7 +229,7 @@ def _frozen_json_fields(value: object) -> object:
         if field.init:
             member = cast(object, getattr(value, field.name))
             changes[field.name] = (
-                json_freeze(member)
+                immutable(member)
                 if field.name in frozen
                 else _frozen_json_fields(member)
             )
@@ -250,7 +246,10 @@ def _json_field_names(target: type) -> frozenset[str]:
     cached = _JSON_FIELD_NAMES.get(target)
     if cached is None:
         cached = frozenset(
-            name for name, hint in get_type_hints(target).items() if hint is JSON
+            name
+            for name, hint in get_type_hints(target).items()
+            # ``==``, not ``is``: each subscription builds a new alias object.
+            if hint == Mapping[str, PlainTree]
         )
         _JSON_FIELD_NAMES[target] = cached
     return cached

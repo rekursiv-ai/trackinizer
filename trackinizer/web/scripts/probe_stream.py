@@ -43,7 +43,7 @@ import time
 
 import httpx2
 
-from trackinizer.lib.custom_json import convert, parse
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.trax.profile import Profile, load_profile
 
 
@@ -251,13 +251,16 @@ def _frames(frames: list[bytes], *, at_sec: float) -> str:
     parts: list[str] = []
     for frame in frames:
         try:
-            data = parse(frame.removeprefix(b"data: "), dict[str, object])
+            data = from_plain(
+                loads(frame.removeprefix(b"data: ")),
+                dict[str, object],
+            )
         except (json.JSONDecodeError, TypeError):
             parts.append(f"not a probe frame: {frame[:40]!r}")
             continue
-        sent_sec = convert(data["t"], float)
+        sent_sec = from_plain(data["t"], float)
         parts.append(
-            f"seq {convert(data['seq'], int)} sent at +{sent_sec:.3f}s, "
+            f"seq {from_plain(data['seq'], int)} sent at +{sent_sec:.3f}s, "
             f"held {at_sec - sent_sec:.3f}s",
         )
     return "; ".join(parts) or "frames: none complete"

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import json
 import uuid
 
 import pytest
 
-from trackinizer.lib.custom_json import convert, loads, parse
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     TEST_USER_ID,
@@ -89,8 +90,8 @@ async def test_report_key_does_not_reuse_an_unrelated_artifact(
     )
     assert published.status_code == 201, published.text
     artifact_id = uuid.UUID(
-        convert(
-            parse(published.content, dict[str, object])["artifact_id"],
+        from_plain(
+            from_plain(loads(published.content), dict[str, object])["artifact_id"],
             str,
         ),
     )
@@ -117,7 +118,7 @@ async def test_report_key_does_not_reuse_an_unrelated_artifact(
         headers={"Idempotency-Key": str(key)},
     )
     assert replay.status_code == 201
-    assert loads(replay.content) == loads(published.content)
+    assert json.loads(replay.content) == json.loads(published.content)
 
 
 @pytest.mark.db_pglite
@@ -156,13 +157,13 @@ async def test_artifact_user_storage_quota_is_atomic_and_replayable(
         stored = await conn.fetchval(
             "SELECT content_bytes FROM visual_report_revisions WHERE artifact_id = $1",
             uuid.UUID(
-                convert(
-                    parse(first.content, dict[str, object])["artifact_id"],
+                from_plain(
+                    from_plain(loads(first.content), dict[str, object])["artifact_id"],
                     str,
                 ),
             ),
         )
-        assert convert(stored, int) > 0
+        assert from_plain(stored, int) > 0
         await conn.execute(
             "UPDATE visual_report_revisions SET content_bytes = 499999999 "
             "WHERE author_id = $1",
@@ -189,7 +190,7 @@ async def test_artifact_user_storage_quota_is_atomic_and_replayable(
         headers={"Idempotency-Key": key},
     )
     assert replay.status_code == 201
-    assert loads(replay.content) == loads(first.content)
+    assert json.loads(replay.content) == json.loads(first.content)
 
 
 @pytest.mark.db_pglite
@@ -242,8 +243,8 @@ async def test_report_publish_is_atomic_immutable_and_team_readable(
         headers={"Idempotency-Key": key},
     )
     assert first.status_code == 201, first.text
-    published = parse(first.content, dict[str, object])
-    artifact_id = convert(published["artifact_id"], str)
+    published = from_plain(loads(first.content), dict[str, object])
+    artifact_id = from_plain(published["artifact_id"], str)
     assert published["revision"] == 1
     assert published["html"] == first_payload["html"]
 
@@ -253,7 +254,7 @@ async def test_report_publish_is_atomic_immutable_and_team_readable(
         headers={"Idempotency-Key": key},
     )
     assert replay.status_code == 201
-    assert loads(replay.content) == loads(first.content)
+    assert json.loads(replay.content) == json.loads(first.content)
     conflict = await client.post(
         "/api/artifacts/content",
         json={**first_payload, "title": "Changed"},
@@ -282,14 +283,14 @@ async def test_report_publish_is_atomic_immutable_and_team_readable(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert second.status_code == 201, second.text
-    second_revision = parse(second.content, dict[str, object])
+    second_revision = from_plain(loads(second.content), dict[str, object])
     assert second_revision["revision"] == 2
     assert second_revision["artifact_id"] != artifact_id
     latest = await client.get(
         f"/api/artifacts/{second_revision['artifact_id']}/content",
     )
     assert latest.status_code == 200
-    assert parse(latest.content, dict[str, object])["html"] == (
+    assert from_plain(loads(latest.content), dict[str, object])["html"] == (
         "<h1>Atlas revision two</h1>"
     )
 
@@ -303,20 +304,23 @@ async def test_report_publish_is_atomic_immutable_and_team_readable(
     )
     earlier = await client.get(f"/api/artifacts/{artifact_id}/content")
     assert earlier.status_code == 200
-    revision = parse(earlier.content, dict[str, object])
+    revision = from_plain(loads(earlier.content), dict[str, object])
     assert revision["html"] == "<h1>Atlas revision one</h1>"
-    assert convert(revision["revision"], int) == 1
-    assert convert(revision["author"], str) == TEST_USER_EMAIL
+    assert from_plain(revision["revision"], int) == 1
+    assert from_plain(revision["author"], str) == TEST_USER_EMAIL
     async with store.engine.acquire() as conn:
         await conn.execute("DELETE FROM users WHERE id = $1", TEST_USER_ID)
     preserved = await client.get(f"/api/artifacts/{artifact_id}/content")
     assert preserved.status_code == 200
-    assert parse(preserved.content, dict[str, object])["author"] == TEST_USER_EMAIL
+    assert (
+        from_plain(loads(preserved.content), dict[str, object])["author"]
+        == TEST_USER_EMAIL
+    )
     await store.purge(issue_id, actor=TEST_USER_EMAIL)
     await store.purge(uuid.UUID(artifact_id), actor=TEST_USER_EMAIL)
     historical = await client.get(f"/api/artifacts/{artifact_id}/content")
     assert historical.status_code == 200
-    assert parse(historical.content, dict[str, object])["issue_id"] == str(
+    assert from_plain(loads(historical.content), dict[str, object])["issue_id"] == str(
         issue_id,
     )
     denied = await client.post(
@@ -359,7 +363,10 @@ async def test_next_revision_supersedes_the_one_it_updates(
     )
     assert first.status_code == 201, first.text
     first_id = uuid.UUID(
-        convert(parse(first.content, dict[str, object])["artifact_id"], str),
+        from_plain(
+            from_plain(loads(first.content), dict[str, object])["artifact_id"],
+            str,
+        ),
     )
     second_payload = {
         **payload,
@@ -374,7 +381,10 @@ async def test_next_revision_supersedes_the_one_it_updates(
     )
     assert second.status_code == 201, second.text
     second_id = uuid.UUID(
-        convert(parse(second.content, dict[str, object])["artifact_id"], str),
+        from_plain(
+            from_plain(loads(second.content), dict[str, object])["artifact_id"],
+            str,
+        ),
     )
     replay = await client.post(
         "/api/artifacts/content",
@@ -422,8 +432,8 @@ async def test_html_route_serves_the_revision_as_a_sandboxed_page(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert published.status_code == 201, published.text
-    artifact_id = convert(
-        parse(published.content, dict[str, object])["artifact_id"],
+    artifact_id = from_plain(
+        from_plain(loads(published.content), dict[str, object])["artifact_id"],
         str,
     )
 
@@ -538,15 +548,18 @@ async def test_structured_report_freezes_signed_evidence(
         headers={"Idempotency-Key": str(uuid.uuid4())},
     )
     assert published.status_code == 201, published.text
-    revision = parse(published.content, dict[str, object])
-    artifact_id = convert(revision["artifact_id"], str)
-    sections = convert(revision["sections"], list[object])
-    finding = convert(
-        convert(convert(sections[0], dict[str, object])["findings"], list[object])[0],
+    revision = from_plain(loads(published.content), dict[str, object])
+    artifact_id = from_plain(revision["artifact_id"], str)
+    sections = from_plain(revision["sections"], list[object])
+    finding = from_plain(
+        from_plain(
+            from_plain(sections[0], dict[str, object])["findings"],
+            list[object],
+        )[0],
         dict[str, object],
     )
-    citation = convert(
-        convert(finding["citations"], list[object])[0],
+    citation = from_plain(
+        from_plain(finding["citations"], list[object])[0],
         dict[str, object],
     )
     assert citation["title"] == "Measured result"
@@ -567,7 +580,7 @@ async def test_structured_report_freezes_signed_evidence(
     )
     earlier = await client.get(f"/api/artifacts/{artifact_id}/content")
     assert earlier.status_code == 200
-    assert parse(earlier.content, dict[str, object])["sections"] == sections
+    assert from_plain(loads(earlier.content), dict[str, object])["sections"] == sections
     assert (await client.get(f"/api/artifacts/{artifact_id}/html")).status_code == 404
 
     await store.add_edge(

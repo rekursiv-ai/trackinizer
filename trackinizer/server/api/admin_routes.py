@@ -23,7 +23,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api._routes_shared import (
     RoleLiteral,
@@ -103,15 +103,15 @@ async def admin_list_users_route(
         "users": [
             {
                 "id": str(row["id"]),
-                "email": convert(row["email"], str),
-                "name": convert(row["name"], str),
-                "role": cast(Role, convert(row["role"], str)),
-                "status": convert(row["status"], str),
-                "created_at": iso_format(convert(row["created_at"], datetime)),
+                "email": from_plain(row["email"], str),
+                "name": from_plain(row["name"], str),
+                "role": cast(Role, from_plain(row["role"], str)),
+                "status": from_plain(row["status"], str),
+                "created_at": iso_format(from_plain(row["created_at"], datetime)),
                 "last_login": iso_format(
                     None
                     if row["last_login"] is None
-                    else convert(row["last_login"], datetime),
+                    else from_plain(row["last_login"], datetime),
                 ),
             }
             for row in rows

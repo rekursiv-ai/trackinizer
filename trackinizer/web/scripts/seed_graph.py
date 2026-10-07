@@ -32,7 +32,7 @@ import math
 import string
 import uuid
 
-from trackinizer.lib.custom_json import convert, parse
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.wire.bodies import BATCH_MAX_ITEMS
 
 
@@ -349,16 +349,16 @@ def _bodies(
     picked: Showcase,
 ) -> list[dict[str, object]]:
     """Each node's submit body: title, status and owner, a Belief's verdict, the showcase's text."""
-    contents = parse(GRAPH_CONTENTS.read_text(), dict[str, object])
-    written = convert(contents["roots"], list[str])
+    contents = from_plain(loads(GRAPH_CONTENTS.read_text()), dict[str, object])
+    written = from_plain(contents["roots"], list[str])
     named = {root: written[k % len(written)] for k, root in enumerate(found.roots)}
-    kinds = convert(contents.get("kinds"), dict[str, object])
+    kinds = from_plain(contents.get("kinds"), dict[str, object])
     built = {
-        kind: _titles(convert(kinds.get(kind), dict[str, object]))
+        kind: _titles(from_plain(kinds.get(kind), dict[str, object]))
         for kind in {node.kind for node in structure.nodes}
     }
     made = Counter[str]()
-    shown = convert(contents.get("showcase"), dict[str, object])
+    shown = from_plain(contents.get("showcase"), dict[str, object])
     verdicts = _verdicts(structure)
     bodies: list[dict[str, object]] = []
     for n, node in enumerate(structure.nodes):
@@ -386,7 +386,7 @@ def _bodies(
                 0.5,
             )
         if n in {picked.root, picked.belief}:
-            body |= convert(
+            body |= from_plain(
                 shown.get("root" if n == picked.root else "belief"),
                 dict[str, object],
             )
@@ -445,11 +445,11 @@ def _edge(
 def _titles(vocabulary: Mapping[str, object]) -> list[str]:
     """Every title a kind's templates and word lists make, in the order of their hashes."""
     words = [
-        convert(row, list[str])
-        for row in convert(vocabulary.get("words"), list[object], default=[])
+        from_plain(row, list[str])
+        for row in from_plain(vocabulary.get("words"), list[object], default=[])
     ]
     titles: set[str] = set()
-    for template in convert(vocabulary.get("templates"), list[str], default=[]):
+    for template in from_plain(vocabulary.get("templates"), list[str], default=[]):
         slots = sorted(
             {int(f) for _, f, _, _ in string.Formatter().parse(template) if f},
         )

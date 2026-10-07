@@ -46,7 +46,7 @@ import uuid
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import ReadError, convert, parse
+from trackinizer.lib.codec import ReadError, from_plain, loads
 
 
 if TYPE_CHECKING:
@@ -149,7 +149,11 @@ def answer(client: Writes, line: str, *, clock: Clock) -> dict[str, object]:
     # ReadError is a TypeError, so a field of the wrong type answers with the field's
     # own message; a separate arm for it would misreport every field as the line.
     try:
-        return _run(client, parse(line, dict[str, object]), clock=clock)
+        return _run(
+            client,
+            from_plain(loads(line), dict[str, object]),
+            clock=clock,
+        )
     except (ClientError, KeyError, TypeError, ValueError) as error:
         return {"error": f"{type(error).__name__}: {error}"}
 
@@ -197,7 +201,7 @@ def _run(
 def _field[T](command: Mapping[str, object], key: str, target: type[T]) -> T:
     """Return ``command[key]`` as ``target``; a ReadError names ``key``."""
     try:
-        return convert(command[key], target)
+        return from_plain(command[key], target)
     except ReadError as error:
         raise ReadError(f"{key!r}: {error}") from error
 

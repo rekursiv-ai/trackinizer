@@ -11,10 +11,12 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID, uuid4
 
+import json
+
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.custom_json import convert, loads, parse
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.api.export_routes import export_lines
 from trackinizer.server.embedders.stub import StubEmbedder
@@ -186,11 +188,11 @@ async def test_the_header_names_the_applied_migrations(store: Store) -> None:
     async with store.engine.acquire() as conn:
         applied = await conn.fetch("SELECT name FROM applied_migrations")
 
-    header = parse(next(iter(export_lines(graph))), dict[str, object])
+    header = from_plain(loads(next(iter(export_lines(graph)))), dict[str, object])
 
     assert header["format"] == EXPORT_FORMAT
     assert header["version"] == EXPORT_VERSION
-    migrations = convert(header["migrations"], list[object])
+    migrations = from_plain(header["migrations"], list[object])
     assert migrations[0] == "schema.sql"
     assert sorted(map(str, migrations)) == sorted(
         cast(str, row["name"]) for row in applied
@@ -210,7 +212,7 @@ async def test_every_line_is_json_and_an_unchanged_graph_exports_identically(
 
     assert first == second
     lines = first.decode().splitlines()
-    assert all(isinstance(loads(line), dict) for line in lines)
+    assert all(isinstance(json.loads(line), dict) for line in lines)
     assert len(lines) > 1 + len(EXPORT_TABLES)
 
 

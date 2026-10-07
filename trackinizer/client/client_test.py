@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, cast, override
 
 import argparse
 import inspect
+import json
 import logging
 import uuid
 
@@ -19,7 +20,7 @@ from trackinizer.client.client import (
     server_url,
 )
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import JSONValue, convert, loads
+from trackinizer.lib.codec import PlainTree, from_plain
 from trackinizer.trax import cli, profile
 from trackinizer.trax.conftest import FakeClient
 from trackinizer.trax.grammar import parse_kind, parse_ref
@@ -55,11 +56,11 @@ class _ClientSpy(Client):
     def __init__(
         self,
         *,
-        get_results: list[JSONValue] | None = None,
-        post_result: JSONValue | None = None,
+        get_results: list[PlainTree] | None = None,
+        post_result: PlainTree | None = None,
     ) -> None:
         super().__init__("http://server")
-        self.get_results: list[JSONValue] = list(get_results or [])
+        self.get_results: list[PlainTree] = list(get_results or [])
         self.post_result = post_result
         self.get_calls: list[tuple[str, dict[str, object] | None]] = []
         self.post_calls: list[tuple[str, object]] = []
@@ -74,7 +75,7 @@ class _ClientSpy(Client):
         path: str,
         *,
         params: Mapping[str, object] | None = None,
-    ) -> JSONValue:
+    ) -> PlainTree:
         self.get_calls.append((path, None if params is None else dict(params)))
         return self.get_results.pop(0) if self.get_results else None
 
@@ -84,7 +85,7 @@ class _ClientSpy(Client):
         path: str,
         *,
         body: object = None,
-    ) -> JSONValue:
+    ) -> PlainTree:
         self.post_calls.append((path, body))
         self.request_calls.append(("POST", path, body))
         return self.post_result
@@ -100,7 +101,7 @@ class _ClientSpy(Client):
         change_id: uuid.UUID | None = None,
         retry_attempts: int = 3,
         timeout: float | None = None,
-    ) -> JSONValue:
+    ) -> PlainTree:
         del change_id, params, retry_attempts, timeout
         self.request_calls.append((method, path, body))
         # ``submit`` and other write paths route through the HTTP verb
@@ -333,7 +334,7 @@ class TestRequests:
         req = seen["req"]
         assert str(req.url) == "http://server/api/x"
         assert req.method == "POST"
-        assert loads(req.content) == {"a": 1}
+        assert json.loads(req.content) == {"a": 1}
         assert req.headers["Accept"] == "application/json"
         # Mutating requests carry the Idempotency-Key header.
         uuid.UUID(req.headers["Idempotency-Key"])
@@ -438,22 +439,23 @@ class TestRequests:
             for record in caplog.records
             if getattr(record, "event", "") == "trackinizer_transport_failure"
         )
-        fields = convert(record.__dict__, dict[str, object])
-        assert convert(fields.get("method"), str, default="") == "GET"
-        assert convert(fields.get("path"), str, default="") == "/api/version"
-        assert convert(fields.get("server"), str, default="") == "https://server"
-        assert convert(fields.get("client_request_index"), int, default=0) == 1
-        assert convert(fields.get("attempt"), int, default=0) == 1
+        fields = from_plain(record.__dict__, dict[str, object])
+        assert from_plain(fields.get("method"), str, default="") == "GET"
+        assert from_plain(fields.get("path"), str, default="") == "/api/version"
+        assert from_plain(fields.get("server"), str, default="") == "https://server"
+        assert from_plain(fields.get("client_request_index"), int, default=0) == 1
+        assert from_plain(fields.get("attempt"), int, default=0) == 1
         assert (
-            convert(fields.get("failure_class"), str, default="") == "connect_timeout"
+            from_plain(fields.get("failure_class"), str, default="")
+            == "connect_timeout"
         )
         assert (
-            convert(fields.get("failure_detail"), str, default="")
+            from_plain(fields.get("failure_detail"), str, default="")
             == "tls_handshake_timeout"
         )
-        assert convert(fields.get("error_type"), str, default="") == "ConnectTimeout"
-        assert convert(fields.get("client_age_sec"), float, default=-1.0) >= 0
-        assert len(convert(fields.get("client_id"), str, default="")) == 12
+        assert from_plain(fields.get("error_type"), str, default="") == "ConnectTimeout"
+        assert from_plain(fields.get("client_age_sec"), float, default=-1.0) >= 0
+        assert len(from_plain(fields.get("client_id"), str, default="")) == 12
 
     def test_retries_5xx_with_same_change_id(
         self,
@@ -1110,7 +1112,7 @@ class TestClientMethods:
 
         class _FailingSecondPut(_ClientSpy):
             @override
-            def put(self, path: str, *, body: object = None) -> JSONValue:
+            def put(self, path: str, *, body: object = None) -> PlainTree:
                 recorded = super().put(path, body=body)
                 if path.endswith("/note"):
                     raise ClientError("put note failed")
@@ -1176,7 +1178,7 @@ class TestClientMethods:
             valence=0.9,
             labels=["important"],
         )
-        body = convert(client.post_calls[0][1], dict[str, object])
+        body = from_plain(client.post_calls[0][1], dict[str, object])
         assert body["note"] == "load-bearing"
         assert body["valence"] == 0.9
         assert body["labels"] == ["important"]
@@ -1464,8 +1466,8 @@ def test_submit_batch_accepts_matching_or_absent_body_kind() -> None:
             ("Belief", {"title": "b", "kind": "Belief"}),  # Matching body kind.
         ],
     )
-    body = convert(client.request_calls[0][2], dict[str, object])
-    items = convert(body["items"], list[dict[str, object]])
+    body = from_plain(client.request_calls[0][2], dict[str, object])
+    items = from_plain(body["items"], list[dict[str, object]])
     assert items[0]["kind"] == "Issue"
     assert items[1]["kind"] == "Belief"
 
@@ -1516,14 +1518,14 @@ class TestSessionMethods:
 
         def handler(request: httpx2.Request) -> httpx2.Response:
             seen["path"] = request.url.path
-            seen["body"] = loads(request.content)
+            seen["body"] = json.loads(request.content)
             return httpx2.Response(201, json={"id": str(sid), "seq": 3})
 
         client = Client("http://server")
         _install_mock_transport(client, handler)
         resp = client.session_start(SessionStart(cli="codex"))
         assert seen["path"] == "/api/sessions/start"
-        body = convert(seen["body"], dict[str, object])
+        body = from_plain(seen["body"], dict[str, object])
         assert body["cli"] == "codex"
         # A missing idempotency key is minted client-side.
         assert body["idempotency_key"] is not None

@@ -29,7 +29,7 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedRecord,
     UserMessage,
 )
-from trackinizer.lib.custom_json import convert, parse
+from trackinizer.lib.codec import from_plain, loads
 
 
 def _content(record: SessionRecord) -> str:
@@ -143,18 +143,18 @@ def test_a_call_after_a_user_turn_gets_its_own_assistant_turn() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    messages = convert(
-        parse(out.getvalue(), dict[str, object]).get("messages"),
+    messages = from_plain(
+        from_plain(loads(out.getvalue()), dict[str, object]).get("messages"),
         list[object],
     )
     assert [
-        convert(convert(message, dict[str, object]).get("type"), str)
+        from_plain(from_plain(message, dict[str, object]).get("type"), str)
         for message in messages
     ] == [
         "user",
         "gemini",
     ]
-    assert "toolCalls" not in convert(messages[0], dict[str, object])
+    assert "toolCalls" not in from_plain(messages[0], dict[str, object])
 
 
 def test_a_leading_tool_call_writes_a_turn_rather_than_crashing() -> None:
@@ -169,8 +169,8 @@ def test_a_leading_tool_call_writes_a_turn_rather_than_crashing() -> None:
 
     gemini.denormalize([ToolCall(call_id="t1", name="read_file")], out)
 
-    assert convert(
-        parse(out.getvalue(), dict[str, object]).get("messages"),
+    assert from_plain(
+        from_plain(loads(out.getvalue()), dict[str, object]).get("messages"),
         list[object],
     ) == [
         {
@@ -198,12 +198,13 @@ def test_one_incomplete_record_does_not_discard_the_session() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    messages = convert(
-        parse(out.getvalue(), dict[str, object]).get("messages"),
+    messages = from_plain(
+        from_plain(loads(out.getvalue()), dict[str, object]).get("messages"),
         list[object],
     )
     assert [
-        convert(convert(m, dict[str, object]).get("content"), str) for m in messages
+        from_plain(from_plain(m, dict[str, object]).get("content"), str)
+        for m in messages
     ] == [
         "real turn",
         "answer",
@@ -222,8 +223,8 @@ def test_a_crossed_session_declares_an_id_it_can_be_recognized_by() -> None:
     gemini.denormalize([UserMessage(content="hi")], out)
 
     assert detect_format(out.getvalue()) == "gemini"
-    assert convert(
-        parse(out.getvalue(), dict[str, object]).get("sessionId"),
+    assert from_plain(
+        from_plain(loads(out.getvalue()), dict[str, object]).get("sessionId"),
         str,
     )
 
@@ -243,7 +244,7 @@ def test_a_foreign_encoding_key_is_not_written_as_a_document_field() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    assert set(parse(out.getvalue(), dict[str, object])) == {
+    assert set(from_plain(loads(out.getvalue()), dict[str, object])) == {
         "sessionId",
         "messages",
     }
@@ -303,8 +304,8 @@ def test_a_record_gemini_cannot_express_is_dropped_not_written() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    messages = convert(
-        parse(out.getvalue(), dict[str, object]).get("messages"),
+    messages = from_plain(
+        from_plain(loads(out.getvalue()), dict[str, object]).get("messages"),
         list[object],
     )
     assert len(messages) == 1
@@ -326,11 +327,11 @@ def test_a_tool_call_after_a_user_turn_gets_a_timestamped_gemini_turn() -> None:
         out,
     )
 
-    messages = convert(
-        parse(out.getvalue(), dict[str, object]).get("messages"),
+    messages = from_plain(
+        from_plain(loads(out.getvalue()), dict[str, object]).get("messages"),
         list[object],
     )
-    assert convert(messages[1], dict[str, object]) == {
+    assert from_plain(messages[1], dict[str, object]) == {
         "type": "gemini",
         "content": "",
         "$timestamp": "t",
@@ -346,8 +347,8 @@ def test_an_uncategorized_record_is_written_as_its_payload() -> None:
         out,
     )
 
-    assert convert(
-        parse(out.getvalue(), dict[str, object]).get("messages"),
+    assert from_plain(
+        from_plain(loads(out.getvalue()), dict[str, object]).get("messages"),
         list[object],
     ) == [
         {"type": "future", "x": 1},
@@ -357,10 +358,12 @@ def test_an_uncategorized_record_is_written_as_its_payload() -> None:
 def test_nested_tool_arguments_round_trip() -> None:
     # Frozen mappings were copied one level deep, and ``json.dump`` cannot
     # encode the ``mappingproxy`` that remained inside.
-    message = parse(
-        '{"type": "gemini", "content": "", "meta": {"deep": {"k": 1}},'
-        ' "toolCalls": [{"id": "t", "name": "f", "args": {"n": {"x": [1]}},'
-        ' "x": {"y": {}}}]}',
+    message = from_plain(
+        loads(
+            '{"type": "gemini", "content": "", "meta": {"deep": {"k": 1}},'
+            ' "toolCalls": [{"id": "t", "name": "f", "args": {"n": {"x": [1]}},'
+            ' "x": {"y": {}}}]}',
+        ),
         dict[str, object],
     )
     text = _document(message)
@@ -375,7 +378,10 @@ def test_different_foreign_streams_of_one_length_get_different_ids() -> None:
     def session_id(content: str) -> str:
         out = StringIO()
         gemini.denormalize([UserMessage(content=content)], out)
-        return convert(parse(out.getvalue(), dict[str, object])["sessionId"], str)
+        return from_plain(
+            from_plain(loads(out.getvalue()), dict[str, object])["sessionId"],
+            str,
+        )
 
     assert session_id("a") != session_id("b")
     assert session_id("a") == session_id("a")
@@ -461,7 +467,7 @@ def test_a_document_with_nested_fields_round_trips_byte_exact() -> None:
 
 def test_a_mistyped_field_aborts_neither_the_read_nor_the_write() -> None:
     """A document field of the wrong type reads as absent, as a missing one does."""
-    document = parse(_nested(), dict[str, object])
+    document = from_plain(loads(_nested()), dict[str, object])
     failed: list[str] = []
     for path, changed in mistyped(document):
         records = list(gemini.normalize(StringIO(json.dumps(changed))))

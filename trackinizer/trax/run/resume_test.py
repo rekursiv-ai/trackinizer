@@ -22,7 +22,7 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedRecord,
     UserMessage,
 )
-from trackinizer.lib.custom_json import JSON, json_freeze
+from trackinizer.lib.codec import PlainTree, immutable
 from trackinizer.trax.run.errors import (
     CiphertextDroppedError,
     LossyConversionError,
@@ -38,7 +38,7 @@ from trackinizer.wire.wire_session_ir import PartBody, RecordBody
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from trackinizer.types.streams import TraxRecord
 
@@ -52,7 +52,7 @@ _TESTDATA: Final = Path(claude.__file__).resolve().parent / "testdata"
 # Fed a line at a time through :class:`Tail`, which is what capture does: the reader
 # PULLS and the runner PUSHES, so driving the pull side directly would exercise a path
 # the runner never takes.
-def _records(name: str) -> tuple[list[TraxRecord], JSON]:
+def _records(name: str) -> tuple[list[TraxRecord], Mapping[str, PlainTree]]:
     """Return a corpus fixture's records and how its file spells its bytes."""
     reader = Tail((codex if name.startswith("codex") else claude).normalize)
     out: list[TraxRecord] = []
@@ -60,7 +60,7 @@ def _records(name: str) -> tuple[list[TraxRecord], JSON]:
         for line in handle:
             out.extend(reader.feed(line))
     out.extend(reader.close())
-    return out, json_freeze(reader.encoding)
+    return out, immutable(reader.encoding)
 
 
 class _FakeClient:

@@ -18,7 +18,7 @@ import uuid
 
 import asyncpg
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.server.notify import (
     NOTIFICATION_BUFFER,
     Notification,
@@ -202,19 +202,19 @@ async def _apply_change(
         )
     else:
         old_cost = Cost(
-            agent_usd=convert(cost_row["old_agent"], float),
-            resource_usd=convert(cost_row["old_resource"], float),
+            agent_usd=from_plain(cost_row["old_agent"], float),
+            resource_usd=from_plain(cost_row["old_resource"], float),
         )
         new_cost = Cost(
-            agent_usd=convert(cost_row["new_agent"], float),
-            resource_usd=convert(cost_row["new_resource"], float),
+            agent_usd=from_plain(cost_row["new_agent"], float),
+            resource_usd=from_plain(cost_row["new_resource"], float),
         )
         # NULL when the row has never had a subscriber.
         default_subscribers: list[str] = []
         subs = tuple(
             default_subscribers
             if (value := cost_row["current_subscribers"]) is None
-            else convert(value, list[str]),
+            else from_plain(value, list[str]),
         )
     if extra_subscribers:
         # Update ``seen`` in-loop so duplicates *within*
@@ -439,7 +439,7 @@ class _CascadeAuditMixin(_StoreShared):
                     and existing["subject_id"] == subject_id
                     and existing["kind"] == kind
                 ):
-                    snapshot = convert(existing["subscribers_snapshot"], list[str])
+                    snapshot = from_plain(existing["subscribers_snapshot"], list[str])
                     return client_change_id, tuple(snapshot)
                 raise ConflictError(
                     f"idempotency_key {client_change_id} already used "
@@ -717,7 +717,7 @@ def _peer_snapshot(
         edge_note=_optional_str(edge["note"]),
         edge_valence=_optional_float(edge["valence"]),
         edge_labels=tuple(
-            [] if (labels := edge["labels"]) is None else convert(labels, list[str]),
+            [] if (labels := edge["labels"]) is None else from_plain(labels, list[str]),
         ),
     )
 

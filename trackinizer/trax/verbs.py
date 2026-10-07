@@ -16,7 +16,7 @@ import sys
 import uuid
 
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.trax import render
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import cwd, env
@@ -626,8 +626,10 @@ class Kind(Command):
     ) -> list[dict[str, object]]:
         edge_kind, inbound = relation
         bucket = "backlinks" if inbound else "edges"
-        rows = convert(
-            convert(payload.get(bucket), dict[str, object], default={}).get(edge_kind),
+        rows = from_plain(
+            from_plain(payload.get(bucket), dict[str, object], default={}).get(
+                edge_kind,
+            ),
             list[dict[str, object]],
             default=[],
         )
@@ -675,8 +677,8 @@ class Kind(Command):
         relation: tuple[str, bool],
     ) -> dict[str, object]:
         edge_kind, inbound = relation
-        subject = convert(subject_payload["self"], dict[str, object])
-        peer = convert(peer_payload["self"], dict[str, object])
+        subject = from_plain(subject_payload["self"], dict[str, object])
+        peer = from_plain(peer_payload["self"], dict[str, object])
         source, target = (peer, subject) if inbound else (subject, peer)
         # For-vs-against is the sign of valence: a negative-valence citation reads
         # with the dis* spelling, not the plain kind name.
@@ -696,17 +698,17 @@ class Kind(Command):
         target_id = str(target.get("id") or "")
         changes = [
             change
-            for change in convert(
+            for change in from_plain(
                 source_payload.get("changes"),
                 list[dict[str, object]],
                 default=[],
             )
             if any(
-                convert(snapshot.get("peer_edge_kind"), str, default="") == edge_kind
-                and convert(snapshot.get("peer_id"), str, default="") == target_id
+                from_plain(snapshot.get("peer_edge_kind"), str, default="") == edge_kind
+                and from_plain(snapshot.get("peer_id"), str, default="") == target_id
                 for snapshot in (
-                    convert(change.get("old"), dict[str, object], default={}),
-                    convert(change.get("new"), dict[str, object], default={}),
+                    from_plain(change.get("old"), dict[str, object], default={}),
+                    from_plain(change.get("new"), dict[str, object], default={}),
                 )
             )
         ]
@@ -727,7 +729,10 @@ class Kind(Command):
         sort: str,
     ) -> list[dict[str, object]]:
         if sort == "seq":
-            return sorted(rows, key=lambda row: convert(row.get("seq"), int, default=0))
+            return sorted(
+                rows,
+                key=lambda row: from_plain(row.get("seq"), int, default=0),
+            )
         if sort == "recent":
             return sorted(
                 rows,
@@ -739,7 +744,7 @@ class Kind(Command):
         if sort == "valence":
             return sorted(
                 rows,
-                key=lambda row: convert(row.get("valence"), float, default=0.0),
+                key=lambda row: from_plain(row.get("valence"), float, default=0.0),
                 reverse=True,
             )
         return sorted(
@@ -751,8 +756,8 @@ class Kind(Command):
                 # defaults to 20; an explicit 0 is preserved.
                 20
                 if row.get("priority") is None
-                else convert(row.get("priority"), int, default=20),
-                convert(row.get("seq"), int, default=0),
+                else from_plain(row.get("priority"), int, default=20),
+                from_plain(row.get("seq"), int, default=0),
             ),
         )
 
@@ -788,7 +793,7 @@ class Kind(Command):
             _kind, _target_id, payload = client.get_inquiry(
                 UuidRef(uuid=uuid.UUID(str(row["id"]))),
             )
-            self_row = convert(payload["self"], dict[str, object])
+            self_row = from_plain(payload["self"], dict[str, object])
             hydrated.append(dict(self_row, **cls._relation_edge_metadata(row)))
         return hydrated
 
@@ -1641,7 +1646,7 @@ def run_bulk_apply(
     actions = _resolve_stdin_actions(bulk.actions)
     for row in rows:
         row_kind = cast(Inquiry.InquiryKind, row["kind"])
-        ref = SeqRef(kind=row_kind, seq=convert(row["seq"], int))
+        ref = SeqRef(kind=row_kind, seq=from_plain(row["seq"], int))
         run_actions(ref, actions, args, client_factory, kind=row_kind)
 
 
@@ -1691,7 +1696,7 @@ def run_field(
     del args
     client = client_factory()
     _kind, _target_id, payload = client.get_inquiry(ref)
-    row = convert(payload["self"], dict[str, object])
+    row = from_plain(payload["self"], dict[str, object])
     if field not in row:
         raise ClientError(f"field {field!r} not present on {ref}")
     echo(format_field_value(row[field]))
@@ -2185,7 +2190,7 @@ Examples:
             # off-window (status unknown) prerequisite still blocks the row.
             prerequisites = [
                 pid
-                for ref in convert(
+                for ref in from_plain(
                     row.get("requires"),
                     list[dict[str, object]],
                     default=[],
@@ -2273,7 +2278,10 @@ Options:
             for pid in _ref_ids(row.get("requires"))
             if pid in rows_by_id
         }
-        ordered = sorted(rows, key=lambda row: convert(row.get("seq"), int, default=0))
+        ordered = sorted(
+            rows,
+            key=lambda row: from_plain(row.get("seq"), int, default=0),
+        )
         roots = [row for row in ordered if str(row.get("id")) not in depended_on]
         # ``rendered`` spans the whole forest so a node reachable from many
         # roots is expanded once. Without it a layered graph re-renders every
@@ -2773,8 +2781,8 @@ class Workspace(Command):
             _print_workspace(current)
             return
         operation = _workspace_operation(flags)
-        revision = convert(
-            convert(current, dict[str, object]).get("revision"),
+        revision = from_plain(
+            from_plain(current, dict[str, object]).get("revision"),
             int,
             default=0,
         )
@@ -2822,20 +2830,20 @@ def _workspace_operation(args: _WorkspaceArgs) -> dict[str, object]:
 
 def _print_workspace(payload: object) -> None:
     """Print workspace and visual identifiers in a compact readable form."""
-    state = convert(payload, dict[str, object])
-    workspace_id = convert(state.get("id"), str, default="unknown")
-    revision = convert(state.get("revision"), int, default=0)
-    focused = convert(state.get("focused_instance"), str, default="none")
+    state = from_plain(payload, dict[str, object])
+    workspace_id = from_plain(state.get("id"), str, default="unknown")
+    revision = from_plain(state.get("revision"), int, default=0)
+    focused = from_plain(state.get("focused_instance"), str, default="none")
     echo(f"workspace {workspace_id} revision {revision} focused {focused}")
-    visuals = convert(state.get("visuals"), list[dict[str, object]], default=[])
+    visuals = from_plain(state.get("visuals"), list[dict[str, object]], default=[])
     if not visuals:
         echo("  (no visuals)")
         return
     for visual in visuals:
-        instance_id = convert(visual.get("id"), str, default="unknown")
-        visual_type = convert(visual.get("type"), str, default="unknown")
-        placement = convert(visual.get("placement"), str, default="main")
-        record_id = convert(visual.get("record_id"), str, default="")
+        instance_id = from_plain(visual.get("id"), str, default="unknown")
+        visual_type = from_plain(visual.get("type"), str, default="unknown")
+        placement = from_plain(visual.get("placement"), str, default="main")
+        record_id = from_plain(visual.get("record_id"), str, default="")
         target = f" record={record_id}" if record_id else ""
         echo(f"  {visual_type} {instance_id} {placement}{target}")
 
@@ -3053,8 +3061,8 @@ def _apply_create_defaults(kind: Inquiry.InquiryKind, body: dict[str, object]) -
 def _submitted_ref(target_id: uuid.UUID, client: Client) -> Ref:
     """Look up a just-created UUID's user-facing ``Kind#seq`` ref."""
     kind, _target_id, view = client.get_inquiry(UuidRef(uuid=target_id))
-    self_view = convert(view["self"], dict[str, object])
-    return SeqRef(kind=kind, seq=convert(self_view["seq"], int))
+    self_view = from_plain(view["self"], dict[str, object])
+    return SeqRef(kind=kind, seq=from_plain(self_view["seq"], int))
 
 
 def _created_line(ref: Ref, new_id: uuid.UUID) -> str:
@@ -3237,7 +3245,7 @@ def _resolve_set_value(action: SetField, client: Client) -> object:
 
 
 def _arg_str(args: argparse.Namespace, name: str) -> str:
-    return convert(_arg_values(args).get(name), str, default="")
+    return from_plain(_arg_values(args).get(name), str, default="")
 
 
 class _ListMutation(Protocol):
@@ -3255,11 +3263,11 @@ def _arg_values(args: argparse.Namespace) -> Mapping[str, object]:
 
 
 def _arg_int(args: argparse.Namespace, name: str) -> int:
-    return convert(_arg_values(args).get(name), int, default=0)
+    return from_plain(_arg_values(args).get(name), int, default=0)
 
 
 def _arg_text(args: argparse.Namespace) -> list[str]:
-    value = convert(_arg_values(args).get("text"), list[object], default=[])
+    value = from_plain(_arg_values(args).get("text"), list[object], default=[])
     return [str(item) for item in value]
 
 
@@ -3268,7 +3276,7 @@ def _arg_bool(args: argparse.Namespace, name: str) -> bool:
 
 
 def _arg_width(args: argparse.Namespace) -> int | None:
-    return convert(_arg_values(args).get("width"), int, default=None)
+    return from_plain(_arg_values(args).get("width"), int, default=None)
 
 
 def _ref_ids(refs: object) -> list[str]:
@@ -3277,6 +3285,6 @@ def _ref_ids(refs: object) -> list[str]:
         return []
     return [
         pid
-        for ref in convert(refs, list[dict[str, object]])
+        for ref in from_plain(refs, list[dict[str, object]])
         if (pid := str(ref.get("id")))
     ]

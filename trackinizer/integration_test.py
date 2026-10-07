@@ -20,7 +20,7 @@ import pytest
 
 from trackinizer.conftest import new_uuid
 from trackinizer.lib.agent.types.sessions import UserMessage
-from trackinizer.lib.custom_json import convert, json_freeze
+from trackinizer.lib.codec import from_plain, immutable
 from trackinizer.server import web
 from trackinizer.server.api import (
     edit,
@@ -116,7 +116,7 @@ async def _record(store: Store, session_id: UUID, *, idx: int, text: str) -> Non
     _ = await store.upsert_session_manifest(
         session_id,
         name="part0.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid5(NAMESPACE_URL, f"{session_id}:0"),
         format="claude",
         records=idx + 1,
@@ -1085,7 +1085,7 @@ class TestIntegrationEndToEnd:
                 )
                 assert first.status_code == 201, first.text
                 first_body = _json_object(first)
-                assert convert(first_body["actor"], str) == "scientist"
+                assert from_plain(first_body["actor"], str) == "scientist"
                 # A second concurrent start with the same name is suffixed.
                 second = await http.post(
                     "/api/sessions/start",
@@ -1093,7 +1093,7 @@ class TestIntegrationEndToEnd:
                 )
                 assert second.status_code == 201, second.text
                 second_body = _json_object(second)
-                assert convert(second_body["actor"], str) == "scientist#2"
+                assert from_plain(second_body["actor"], str) == "scientist#2"
 
                 # ``rooms`` round-trips: start with membership, read it back
                 # off the stored AgentSession row.
@@ -1102,7 +1102,7 @@ class TestIntegrationEndToEnd:
                     json={"cli": "codex", "actor": "eng", "rooms": ["sear", "lab"]},
                 )
                 assert roomed.status_code == 201, roomed.text
-                sid = UUID(convert(_json_object(roomed)["id"], str))
+                sid = UUID(from_plain(_json_object(roomed)["id"], str))
         finally:
             app.dependency_overrides.pop(current_user, None)
         row = await integ_store.get_inquiry(sid)
@@ -1161,15 +1161,15 @@ class TestIntegrationEndToEnd:
                     f"/api/experiments/{eid}/metrics",
                 )
                 assert metrics_response.status_code == 200, metrics_response.text
-                pts = convert(
+                pts = from_plain(
                     _json_object(metrics_response)["points"],
                     list[object],
                 )
                 assert [
                     (
-                        convert(convert(p, dict[str, object])["key"], str),
-                        convert(convert(p, dict[str, object])["step"], int),
-                        convert(convert(p, dict[str, object])["value"], float),
+                        from_plain(from_plain(p, dict[str, object])["key"], str),
+                        from_plain(from_plain(p, dict[str, object])["step"], int),
+                        from_plain(from_plain(p, dict[str, object])["value"], float),
                     )
                     for p in pts
                 ] == [
@@ -1182,7 +1182,9 @@ class TestIntegrationEndToEnd:
                 detail = await http.get(f"/api/web/get/{eid}")
                 assert detail.status_code == 200, detail.text
                 detail_body = _json_object(detail)
-                assert convert(detail_body["self"], dict[str, object])["config"] == cfg
+                assert (
+                    from_plain(detail_body["self"], dict[str, object])["config"] == cfg
+                )
 
                 # An over-cap batch is a clean 422 at the boundary (not a 500 or
                 # a memory-pinning mega-INSERT), and writes nothing.
@@ -1198,7 +1200,7 @@ class TestIntegrationEndToEnd:
                 assert over_resp.status_code == 422, over_resp.text
                 still = await http.get(f"/api/experiments/{eid}/metrics")
                 assert (
-                    len(convert(_json_object(still)["points"], list[object])) == 3
+                    len(from_plain(_json_object(still)["points"], list[object])) == 3
                 )  # Unchanged.
         finally:
             app.dependency_overrides.pop(current_user, None)
@@ -1241,7 +1243,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "router-eng", "rooms": ["sear"]},
                 )
-                sid = convert(_json_object(start)["id"], str)
+                sid = from_plain(_json_object(start)["id"], str)
 
                 # PUT overwrites the whole membership.
                 put = await http.put(
@@ -1330,7 +1332,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "scientist", "rooms": ["sear"]},
                 )
-                sid = convert(_json_object(start)["id"], str)
+                sid = from_plain(_json_object(start)["id"], str)
                 assert (
                     await http.get(f"/api/sessions/{sid}/inbound")
                 ).status_code == 200
@@ -1341,7 +1343,7 @@ class TestIntegrationEndToEnd:
                     json={"actor": "scientist", "room": "sear", "text": "go"},
                 )
                 assert hit.status_code == 200, hit.text
-                assert convert(_json_object(hit)["delivered"], list[str]) == [
+                assert from_plain(_json_object(hit)["delivered"], list[str]) == [
                     str(sid),
                 ]
 
@@ -1350,21 +1352,22 @@ class TestIntegrationEndToEnd:
                     "/api/messages",
                     json={"actor": "scientist", "room": "other", "text": "go"},
                 )
-                assert convert(_json_object(miss)["delivered"], list[object]) == []
+                assert from_plain(_json_object(miss)["delivered"], list[object]) == []
 
                 # The reaching send landed in the session's inbound queue,
                 # carrying the attested sender and the routed room so the
                 # poller can render the ``[room] sender:`` injection context.
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
-                msgs = convert(_json_object(drain)["messages"], list[object])
+                msgs = from_plain(_json_object(drain)["messages"], list[object])
                 assert [
-                    convert(convert(m, dict[str, object])["text"], str) for m in msgs
+                    from_plain(from_plain(m, dict[str, object])["text"], str)
+                    for m in msgs
                 ] == [
                     "go",
                 ]
-                first_msg = convert(msgs[0], dict[str, object])
-                assert convert(first_msg["source"], str) == "sender@test"
-                assert convert(first_msg["room"], str) == "sear"
+                first_msg = from_plain(msgs[0], dict[str, object])
+                assert from_plain(first_msg["source"], str) == "sender@test"
+                assert from_plain(first_msg["room"], str) == "sear"
         finally:
             app.dependency_overrides.pop(current_user, None)
 
@@ -1400,7 +1403,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "multi", "rooms": ["a", "b"]},
                 )
-                sid = convert(_json_object(started)["id"], str)
+                sid = from_plain(_json_object(started)["id"], str)
                 assert (
                     await http.get(f"/api/sessions/{sid}/inbound")
                 ).status_code == 200
@@ -1410,7 +1413,7 @@ class TestIntegrationEndToEnd:
                     json={"actor": "multi", "text": "go"},
                 )
                 assert bare.status_code == 409, bare.text
-                assert "address one explicitly" in convert(
+                assert "address one explicitly" in from_plain(
                     _json_object(bare)["detail"],
                     str,
                 )
@@ -1421,7 +1424,8 @@ class TestIntegrationEndToEnd:
                 )
                 assert scoped.status_code == 200, scoped.text
                 assert (
-                    len(convert(_json_object(scoped)["delivered"], list[object])) == 1
+                    len(from_plain(_json_object(scoped)["delivered"], list[object]))
+                    == 1
                 )
         finally:
             app.dependency_overrides.pop(current_user, None)
@@ -1459,7 +1463,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "idem", "rooms": ["sear"]},
                 )
-                sid = convert(_json_object(start)["id"], str)
+                sid = from_plain(_json_object(start)["id"], str)
                 assert (
                     await http.get(f"/api/sessions/{sid}/inbound")
                 ).status_code == 200
@@ -1475,13 +1479,13 @@ class TestIntegrationEndToEnd:
                     json=body,
                     headers={"Idempotency-Key": key},
                 )
-                assert convert(_json_object(first)["delivered"], list[str]) == [sid]
+                assert from_plain(_json_object(first)["delivered"], list[str]) == [sid]
                 # Replay returns the same receipt, but does not enqueue again.
-                assert convert(_json_object(replay)["delivered"], list[str]) == [sid]
+                assert from_plain(_json_object(replay)["delivered"], list[str]) == [sid]
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
                 assert [
-                    convert(convert(m, dict[str, object])["text"], str)
-                    for m in convert(_json_object(drain)["messages"], list[object])
+                    from_plain(from_plain(m, dict[str, object])["text"], str)
+                    for m in from_plain(_json_object(drain)["messages"], list[object])
                 ] == ["once"]
         finally:
             app.dependency_overrides.pop(current_user, None)
@@ -1522,7 +1526,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "race", "rooms": ["sear"]},
                 )
-                sid = convert(_json_object(start)["id"], str)
+                sid = from_plain(_json_object(start)["id"], str)
                 assert (
                     await http.get(f"/api/sessions/{sid}/inbound")
                 ).status_code == 200
@@ -1540,13 +1544,13 @@ class TestIntegrationEndToEnd:
                         headers={"Idempotency-Key": key},
                     ),
                 )
-                assert convert(_json_object(first)["delivered"], list[str]) == [sid]
-                assert convert(_json_object(second)["delivered"], list[str]) == [sid]
+                assert from_plain(_json_object(first)["delivered"], list[str]) == [sid]
+                assert from_plain(_json_object(second)["delivered"], list[str]) == [sid]
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
                 # Exactly one copy despite two concurrent same-key sends.
                 assert [
-                    convert(convert(m, dict[str, object])["text"], str)
-                    for m in convert(_json_object(drain)["messages"], list[object])
+                    from_plain(from_plain(m, dict[str, object])["text"], str)
+                    for m in from_plain(_json_object(drain)["messages"], list[object])
                 ] == ["once"]
         finally:
             app.dependency_overrides.pop(current_user, None)
@@ -1586,7 +1590,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "ending", "rooms": ["sear"]},
                 )
-                sid = UUID(convert(_json_object(start)["id"], str))
+                sid = UUID(from_plain(_json_object(start)["id"], str))
                 # Close via ``end_session`` (ended + status=complete together)
                 # so the AgentSession lifecycle CHECK holds.
                 await integ_store.end_session(
@@ -1830,18 +1834,21 @@ class TestIntegrationEndToEnd:
                     json={"text": "check the logs"},
                 )
                 assert enq.status_code == 200, enq.text
-                assert convert(_json_object(enq)["queued"], int) == 1
+                assert from_plain(_json_object(enq)["queued"], int) == 1
 
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
                 assert drain.status_code == 200, drain.text
-                messages = convert(_json_object(drain)["messages"], list[object])
+                messages = from_plain(_json_object(drain)["messages"], list[object])
                 assert [
-                    convert(convert(m, dict[str, object])["text"], str)
+                    from_plain(from_plain(m, dict[str, object])["text"], str)
                     for m in messages
                 ] == ["check the logs"]
                 # Source is the authenticated principal, attested by the route.
                 assert (
-                    convert(convert(messages[0], dict[str, object])["source"], str)
+                    from_plain(
+                        from_plain(messages[0], dict[str, object])["source"],
+                        str,
+                    )
                     == "router@test"
                 )
 
@@ -1909,8 +1916,8 @@ class TestIntegrationEndToEnd:
             ) as http:
                 r = await http.get(f"/api/web/get/{sid}")
                 assert r.status_code == 200, r.text
-                self_view = convert(_json_object(r)["self"], dict[str, object])
-                assert convert(self_view["kind"], str) == "AgentSession"
+                self_view = from_plain(_json_object(r)["self"], dict[str, object])
+                assert from_plain(self_view["kind"], str) == "AgentSession"
                 assert self_view["cli"] == "claude"
                 assert self_view["cli_session_id"] == "sess-9"
                 # A live session has not ended.
@@ -1973,7 +1980,7 @@ class TestIntegrationEndToEnd:
             ) as http:
                 r = await http.post("/api/sessions/start", json={"cli": "codex"})
                 assert r.status_code == 201, r.text
-                session_id = convert(_json_object(r)["id"], str)
+                session_id = from_plain(_json_object(r)["id"], str)
 
                 key = str(uuid.uuid4())
                 # Empty body: the route stamps a fresh ``now()``. The replay
@@ -2051,7 +2058,7 @@ class TestIntegrationEndToEnd:
                 # real change (the cli emit then consumes K).
                 r = await http.post("/api/sessions/start", json={"cli": "codex"})
                 assert r.status_code == 201, r.text
-                session_id = convert(_json_object(r)["id"], str)
+                session_id = from_plain(_json_object(r)["id"], str)
 
                 key = str(uuid.uuid4())
                 body = {"ended": "2026-05-31T16:00:00Z", "cli_session_id": "vendor-9"}
@@ -3178,7 +3185,7 @@ class TestIntegrationEndToEnd:
                 issue_id,
             )
         assert row is not None
-        snapshot = convert(row["subscribers_snapshot"], list[str])
+        snapshot = from_plain(row["subscribers_snapshot"], list[str])
         assert "alice" in snapshot
         assert "bob" in snapshot
 
@@ -4439,7 +4446,7 @@ class TestIntegrationEndToEnd:
                     ],
                 )
                 assert r.status_code == 200, r.text
-                assert [convert(row["id"], str) for row in _json_objects(r)] == [
+                assert [from_plain(row["id"], str) for row in _json_objects(r)] == [
                     str(needle_id),
                 ], r.json()
 
@@ -4455,7 +4462,7 @@ class TestIntegrationEndToEnd:
                     ],
                 )
                 assert r.status_code == 200, r.text
-                assert [convert(row["id"], str) for row in _json_objects(r)] == [
+                assert [from_plain(row["id"], str) for row in _json_objects(r)] == [
                     str(needle_id),
                 ]
 
@@ -4474,7 +4481,7 @@ class TestIntegrationEndToEnd:
                     ],
                 )
                 assert r.status_code == 200, r.text
-                assert [convert(row["id"], str) for row in _json_objects(r)] == [
+                assert [from_plain(row["id"], str) for row in _json_objects(r)] == [
                     str(needle_id),
                 ]
 
@@ -4493,7 +4500,7 @@ class TestIntegrationEndToEnd:
                     ],
                 )
                 assert r.status_code == 200, r.text
-                assert [convert(row["id"], str) for row in _json_objects(r)] == [
+                assert [from_plain(row["id"], str) for row in _json_objects(r)] == [
                     str(needle_id),
                 ]
 
@@ -4506,7 +4513,7 @@ class TestIntegrationEndToEnd:
                     params={"kind": "Issue", "limit": "5"},
                 )
                 assert r.status_code == 200, r.text
-                ids = [convert(row["id"], str) for row in _json_objects(r)]
+                ids = [from_plain(row["id"], str) for row in _json_objects(r)]
                 assert str(needle_id) not in ids, ids
 
                 # 6. disjoint ``seq_range`` union: the needle is seq 1
@@ -4524,7 +4531,7 @@ class TestIntegrationEndToEnd:
                     ],
                 )
                 assert r.status_code == 200, r.text
-                seqs = sorted(convert(row["seq"], int) for row in _json_objects(r))
+                seqs = sorted(from_plain(row["seq"], int) for row in _json_objects(r))
                 assert seqs[0] == 1
                 assert all(s == 1 or s >= 40 for s in seqs)
                 assert 2 not in seqs
@@ -4614,23 +4621,27 @@ class TestIntegrationEndToEnd:
                 assert r.status_code == 200, r.text
                 paper_body = _json_object(r)
                 assert (
-                    convert(
-                        convert(paper_body["self"], dict[str, object])["source"],
+                    from_plain(
+                        from_plain(paper_body["self"], dict[str, object])["source"],
                         str,
                     )
                     == "arXiv:2501.00001"
                 )
-                proves = convert(
-                    convert(paper_body["edges"], dict[str, object])["proves"],
+                proves = from_plain(
+                    from_plain(paper_body["edges"], dict[str, object])["proves"],
                     list[object],
                 )
                 assert [
-                    convert(convert(p, dict[str, object])["id"], str) for p in proves
+                    from_plain(from_plain(p, dict[str, object])["id"], str)
+                    for p in proves
                 ] == [
                     str(belief_id),
                 ]
                 assert (
-                    convert(convert(proves[0], dict[str, object])["judgement"], str)
+                    from_plain(
+                        from_plain(proves[0], dict[str, object])["judgement"],
+                        str,
+                    )
                     == "proven"
                 )
 
@@ -4641,22 +4652,26 @@ class TestIntegrationEndToEnd:
                 assert r.status_code == 200, r.text
                 body = _json_object(r)
                 assert (
-                    convert(convert(body["self"], dict[str, object])["judgement"], str)
+                    from_plain(
+                        from_plain(body["self"], dict[str, object])["judgement"],
+                        str,
+                    )
                     == "proven"
                 )
                 assert (
-                    convert(
-                        convert(body["self"], dict[str, object])["confidence"],
+                    from_plain(
+                        from_plain(body["self"], dict[str, object])["confidence"],
                         float,
                     )
                     == 0.9
                 )
-                backlink = convert(
-                    convert(body["backlinks"], dict[str, object])["proves"],
+                backlink = from_plain(
+                    from_plain(body["backlinks"], dict[str, object])["proves"],
                     list[object],
                 )
                 assert [
-                    convert(convert(b, dict[str, object])["id"], str) for b in backlink
+                    from_plain(from_plain(b, dict[str, object])["id"], str)
+                    for b in backlink
                 ] == [str(paper_id)]
 
                 # /search: cross-kind ILIKE over title/description, the
@@ -4664,7 +4679,7 @@ class TestIntegrationEndToEnd:
                 r = await http.get("/api/web/search", params={"q": "overfits"})
                 assert r.status_code == 200, r.text
                 assert str(belief_id) in [
-                    convert(row["id"], str) for row in _json_objects(r)
+                    from_plain(row["id"], str) for row in _json_objects(r)
                 ]
 
                 # An edit so a kind-specific change row exists, then
@@ -4681,14 +4696,16 @@ class TestIntegrationEndToEnd:
                 assert r.status_code == 200, r.text
                 changes = _json_objects(r)
                 judged = [
-                    c for c in changes if convert(c["kind"], str) == "belief_judgement"
+                    c
+                    for c in changes
+                    if from_plain(c["kind"], str) == "belief_judgement"
                 ]
                 assert judged, "judgement change should appear in recent"
                 # The cross-kind audit feed keys snapshot fields by their
                 # flat storage name, so it's belief_judgement, not bare.
                 assert (
-                    convert(
-                        convert(judged[0]["new"], dict[str, object])[
+                    from_plain(
+                        from_plain(judged[0]["new"], dict[str, object])[
                             "belief_judgement"
                         ],
                         str,
@@ -4733,7 +4750,7 @@ class TestIntegrationEndToEnd:
             ) as http:
                 r = await http.get("/api/web/search", params={"q": "%"})
                 assert r.status_code == 200, r.text
-                ids = [convert(row["id"], str) for row in _json_objects(r)]
+                ids = [from_plain(row["id"], str) for row in _json_objects(r)]
                 # Only the literal-percent row matches; the wildcard does not
                 # leak into a match-all.
                 assert ids == [str(literal_id)]
@@ -5571,13 +5588,14 @@ class _FetchValConnection(Protocol):
 
 def _json_object(response: httpx2.Response) -> dict[str, object]:
     """Narrow an HTTP JSON object at the response boundary."""
-    return convert(response.json(), dict[str, object])
+    return from_plain(response.json(), dict[str, object])
 
 
 def _json_objects(response: httpx2.Response) -> list[dict[str, object]]:
     """Narrow an HTTP JSON array of objects at the response boundary."""
     return [
-        convert(item, dict[str, object]) for item in cast(list[object], response.json())
+        from_plain(item, dict[str, object])
+        for item in cast(list[object], response.json())
     ]
 
 

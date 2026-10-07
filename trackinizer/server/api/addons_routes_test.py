@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 from trackinizer.addons.addon import AddonManifest
 from trackinizer.addons.deployment import Deployment
 from trackinizer.conftest import make_store
-from trackinizer.lib.custom_json import parse
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api import addons_routes, app
 from trackinizer.server.api.addons_routes import attach_deployment, deployment_of
 from trackinizer.server.api.app import _build_app, lifespan
@@ -68,7 +68,7 @@ def test_the_catalog_is_empty_without_a_deployment(
     client, _, _ = route_client
     response = client.get("/api/addons")
     assert response.status_code == 200
-    assert parse(response.content, dict[str, object]) == {"addons": []}
+    assert from_plain(loads(response.content), dict[str, object]) == {"addons": []}
 
 
 def test_the_module_app_always_has_a_visual_catalog() -> None:
@@ -83,7 +83,10 @@ def test_mounted_routes_are_prefixed_listed_and_need_a_viewer() -> None:
     app.dependency_overrides[current_user] = _viewer
     assert client.get("/api/addons/probe/ping").json() == {"pong": True}
     assert client.get("/ping").status_code == 404
-    listed = parse(client.get("/api/addons").content, dict[str, object])
+    listed = from_plain(
+        loads(client.get("/api/addons").content),
+        dict[str, object],
+    )
     assert listed["addons"] == [
         {
             "name": "probe",

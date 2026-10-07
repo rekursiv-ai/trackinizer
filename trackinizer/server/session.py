@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
-from trackinizer.lib.custom_json import ReadError, convert
+from trackinizer.lib.codec import ReadError, from_plain
 
 
 if TYPE_CHECKING:
@@ -160,8 +160,8 @@ def read_session_cookie(
     try:
         # Itsdangerous returns Any; conversion below validates the payload shape.
         loaded = cast(object, serializer.loads(raw, max_age=max_age_seconds))
-        payload = convert(loaded, dict[str, object])
-        return convert(payload.get("user_id"), str, default=None)
+        payload = from_plain(loaded, dict[str, object])
+        return from_plain(payload.get("user_id"), str, default=None)
     except (BadSignature, ReadError):
         return None
 
@@ -241,9 +241,9 @@ def read_oauth_state_cookie(
             object,
             serializer.loads(raw, max_age=OAUTH_STATE_MAX_AGE_SECONDS),
         )
-        payload = convert(loaded, dict[str, object])
-        state = convert(payload.get("state"), str, default=None)
-        next_url = convert(payload.get("next"), str, default=None)
+        payload = from_plain(loaded, dict[str, object])
+        state = from_plain(payload.get("state"), str, default=None)
+        next_url = from_plain(payload.get("next"), str, default=None)
     except (BadSignature, ReadError):
         return None
     if not state or not next_url:

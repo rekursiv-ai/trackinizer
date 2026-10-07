@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import uuid
 
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 
 
 if TYPE_CHECKING:
@@ -42,7 +42,7 @@ class TestMiddleware:
             headers={"Idempotency-Key": "not-a-uuid"},
         )
         assert resp.status_code == 400
-        body = convert(resp.json(), dict[str, object])
+        body = from_plain(resp.json(), dict[str, object])
         detail = body["detail"]
         assert isinstance(detail, str)
         assert "Idempotency-Key" in detail

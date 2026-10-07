@@ -24,7 +24,7 @@ else:
 
     asyncpg = lazy_import("asyncpg")  # ~60 ms; only start_session() needs it.
 
-from trackinizer.lib.custom_json import convert, json_freeze, loads
+from trackinizer.lib.codec import from_plain, immutable, loads
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
@@ -316,7 +316,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             assert isinstance(session_id, UUID)
             # NULL for a session captured from a transcript rather than opened
             # live; resolve_live_sessions reads the column the same way.
-            owner = convert(row.get("owner"), str, default="")
+            owner = from_plain(row.get("owner"), str, default="")
             if row["agentsession_ended"] is not None:
                 # Attribute the audit to the resuming caller, not the original
                 # owner.
@@ -587,7 +587,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         return [
             (
                 _uuid(row["id"]),
-                tuple(convert(row["agentsession_rooms"], list[str])),
+                tuple(from_plain(row["agentsession_rooms"], list[str])),
             )
             for row in rows
         ]
@@ -893,19 +893,19 @@ def _feed_event(row: asyncpg.Record) -> FeedEvent:
     """Build one feed item from a ``session_records`` join row."""
     return FeedEvent(
         session_id=_uuid(row["session_id"]),
-        actor=convert(row.get("owner"), str, default=""),
-        rooms=convert(row.get("agentsession_rooms"), list[str], default=[]),
+        actor=from_plain(row.get("owner"), str, default=""),
+        rooms=from_plain(row.get("agentsession_rooms"), list[str], default=[]),
         cli=_optional_str(row["agentsession_cli"]),
-        part=convert(row["part"], int),
-        seq=convert(row["idx"], int),
-        kind=convert(row["kind"], str),
+        part=from_plain(row["part"], int),
+        seq=from_plain(row["idx"], int),
+        kind=from_plain(row["kind"], str),
         created=_datetime(row["created"]),
         timestamp=_optional_datetime(row["timestamp"]),
         model=_optional_str(row["model"]),
-        message=json_freeze(
-            convert(loads(convert(row["payload"], str)), dict[str, object]),
+        message=immutable(
+            from_plain(loads(from_plain(row["payload"], str)), dict[str, object]),
         ),
-        text=convert(row["text"], str),
+        text=from_plain(row["text"], str),
     )
 
 

@@ -44,7 +44,7 @@ from trackinizer.lib.agent.types.sessions import (
     WebSearchResult,
     WebSearchResults,
 )
-from trackinizer.lib.custom_json import ReadError, convert, parse
+from trackinizer.lib.codec import ReadError, from_plain, loads
 
 
 if TYPE_CHECKING:
@@ -674,9 +674,9 @@ def test_deleting_one_call_does_not_move_another_across_prose() -> None:
 
 def _content_blocks(native: str) -> list[dict[str, object]]:
     """Return the message content blocks of a written line."""
-    record = parse(native.splitlines()[0], dict[str, object])
-    message = convert(record.get("message"), dict[str, object], default={})
-    return list(convert(message.get("content"), list[dict[str, object]], default=[]))
+    record = from_plain(loads(native.splitlines()[0]), dict[str, object])
+    message = from_plain(record.get("message"), dict[str, object], default={})
+    return list(from_plain(message.get("content"), list[dict[str, object]], default=[]))
 
 
 def test_a_malformed_failure_marker_prevents_lifting() -> None:
@@ -896,7 +896,7 @@ def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(
         for at, line in enumerate(lines)
         if at == index or any(f'"{id_}"' in line for id_ in ids)
     ]
-    record = parse(lines[index], dict[str, object])
+    record = from_plain(loads(lines[index]), dict[str, object])
     failed: list[str] = []
     for path, changed in mistyped(record):
         session = _swapped(lines, window, index, changed)
@@ -1690,7 +1690,7 @@ def test_claude_shape_writers_preserve_absent_blocks() -> None:
     }
     assert claude._write_attachment_shape(block, None) == block
     assert (
-        convert(
+        from_plain(
             claude._write_attachment_shape(block, attachment)["source"],
             dict[str, object],
         )["data"]
@@ -1930,7 +1930,7 @@ def test_claude_writer_handles_special_record_shapes(tmp_path: Path) -> None:
         "id": "c",
     }
     assert (
-        convert(
+        from_plain(
             claude._write_attachment(
                 Attachment(mime_descriptor="image/png", data=b"x"),
                 media_first=True,
@@ -1940,7 +1940,7 @@ def test_claude_writer_handles_special_record_shapes(tmp_path: Path) -> None:
         == "image/png"
     )
     assert (
-        convert(
+        from_plain(
             claude._write_attachment(
                 Attachment(mime_descriptor="image/png", data=b"x"),
                 media_first=False,
@@ -1950,7 +1950,7 @@ def test_claude_writer_handles_special_record_shapes(tmp_path: Path) -> None:
         == "eA=="
     )
     assert (
-        convert(
+        from_plain(
             claude._write_user(
                 UserMessage(content="hi", extra={"promptSource": "user"}),
                 TurnContext(permission="ask"),
@@ -2049,7 +2049,7 @@ def test_claude_user_shape_replays_results_and_stencils() -> None:
         7,
         {"type": "text", "text": "new"},
     ]
-    result_line = convert(
+    result_line = from_plain(
         claude._write_result(
             UncategorizedToolResult(
                 call_id="c",
@@ -2060,7 +2060,7 @@ def test_claude_user_shape_replays_results_and_stencils() -> None:
         ),
         dict[str, object],
     )
-    assert convert(result_line["message"], dict[str, object])["content"] == [
+    assert from_plain(result_line["message"], dict[str, object])["content"] == [
         {"type": "other"},
     ]
 

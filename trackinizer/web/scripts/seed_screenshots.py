@@ -47,7 +47,7 @@ from trackinizer.lib.agent.types.sessions import (
     ToolCall,
     UserMessage,
 )
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.web.scripts.graph_structure import GRAPH_STRUCTURE, load
 from trackinizer.web.scripts.seed_graph import seed_graph
@@ -59,7 +59,7 @@ from trackinizer.wire.wire_sessions import SessionStart
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from trackinizer.lib.custom_json import JSONValue
+    from trackinizer.lib.codec import PlainTree
     from trackinizer.types.inquiries import Inquiry
     from trackinizer.web.scripts.graph_structure import Structure
     from trackinizer.wire.wire_sessions import SessionEnd, SessionStartResponse
@@ -160,7 +160,7 @@ class SeedClient(Protocol):
         """End the session ``session_id``."""
         ...
 
-    def post(self, path: str, *, body: object = None) -> JSONValue:
+    def post(self, path: str, *, body: object = None) -> PlainTree:
         """Send one POST request."""
         ...
 
@@ -316,7 +316,7 @@ def _converse(
 
 def _publish(client: SeedClient, *, issue: uuid.UUID, cites: uuid.UUID) -> uuid.UUID:
     """Publish the cache benchmark's HTML report, produced by ``issue``; its Artifact's id."""
-    published = convert(
+    published = from_plain(
         client.post(
             "/api/artifacts/content",
             body={
@@ -374,7 +374,7 @@ aria-label="Throughput in million tokens a second, main against the cache">
         ),
         dict[str, object],
     )
-    return uuid.UUID(convert(published.get("artifact_id"), str))
+    return uuid.UUID(from_plain(published.get("artifact_id"), str))
 
 
 def _ending_at(sessions: Sequence[_Session], end: datetime) -> list[_Session]:

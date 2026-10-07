@@ -22,7 +22,7 @@ import asyncpg
 
 from trackinizer.addons.addon import ServerContext
 from trackinizer.addons.deployment import Deployment, supervise
-from trackinizer.lib.custom_json import convert
+from trackinizer.lib.codec import from_plain
 from trackinizer.server.api import (
     addons_routes,
     admin_routes,
@@ -364,7 +364,7 @@ class _RequestLogSpan:
         if message["type"] == "http.response.start":
             # ASGI's typed message union exposes status as Any here.
             status = cast(object, message["status"])
-            self.status_code = convert(status, int)
+            self.status_code = from_plain(status, int)
             self.response_start_sec = time.perf_counter() - self.started
             headers = list(cast(list[tuple[bytes, bytes]], message.get("headers", [])))
             headers = [

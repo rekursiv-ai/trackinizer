@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from trackinizer.lib.custom_json import convert, parse
+from trackinizer.lib.codec import from_plain, loads
 from trackinizer.wire.bodies import SubmitExperiment, SubmitIssue
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.wire_metrics import MetricPoint, experiment_metrics_path
@@ -217,8 +217,8 @@ async def test_rank_returns_every_cell_up_to_the_cap_and_refuses_more(
         },
     )
     assert ranked.status_code == 200
-    rows = convert(
-        parse(ranked.content, dict[str, object])["rows"],
+    rows = from_plain(
+        from_plain(loads(ranked.content), dict[str, object])["rows"],
         list[object],
     )
     assert len(rows) == 60

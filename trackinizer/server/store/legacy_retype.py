@@ -48,7 +48,7 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedToolResult,
     UserMessage,
 )
-from trackinizer.lib.custom_json import convert, json_freeze
+from trackinizer.lib.codec import from_plain, immutable
 
 
 if TYPE_CHECKING:
@@ -153,7 +153,7 @@ def retype(
     # ``json_freeze`` maps arrays to TUPLES; ``read`` converts the payload
     # whole, so a frozen ``tool_calls`` survives narrowing. Same asymmetry
     # ``SessionRecordRow.record()`` documents.
-    payload = convert(record.payload, dict[str, object])
+    payload = from_plain(record.payload, dict[str, object])
     match record.kind:
         case "legacy/UserMessage":
             return Retyped(
@@ -161,7 +161,7 @@ def retype(
                     UserMessage(
                         context_id=record.context_id,
                         timestamp=timestamp,
-                        content=convert(payload.get("text"), str, default=""),
+                        content=from_plain(payload.get("text"), str, default=""),
                         attachments=_attachments(payload),
                     ),
                 ),
@@ -172,20 +172,20 @@ def retype(
                     AgentToAgentMessage(
                         context_id=record.context_id,
                         timestamp=timestamp,
-                        content=convert(payload.get("text"), str, default=""),
+                        content=from_plain(payload.get("text"), str, default=""),
                         attachments=_attachments(payload),
-                        sender=convert(payload.get("source"), str, default=""),
+                        sender=from_plain(payload.get("source"), str, default=""),
                     ),
                 ),
             )
         case "legacy/SystemMessage":
-            role = convert(payload.get("role"), str, default="")
+            role = from_plain(payload.get("role"), str, default="")
             return Retyped(
                 records=(
                     SystemMessage(
                         context_id=record.context_id,
                         timestamp=timestamp,
-                        content=convert(payload.get("text"), str, default=""),
+                        content=from_plain(payload.get("text"), str, default=""),
                         # The old default ("system") is noise; only a wire
                         # role that differed is provenance (axiom 10).
                         extra={"role": role} if role and role != "system" else {},
@@ -207,8 +207,8 @@ def retype(
                     UncategorizedToolResult(
                         context_id=record.context_id,
                         timestamp=timestamp,
-                        call_id=convert(payload.get("call_id"), str, default=""),
-                        content=convert(payload.get("content"), str, default=""),
+                        call_id=from_plain(payload.get("call_id"), str, default=""),
+                        content=from_plain(payload.get("content"), str, default=""),
                         attachments=_attachments(payload),
                         # Only receipt fields the provider actually set: the
                         # old union's defaults (False, "") are noise a reader
@@ -218,16 +218,19 @@ def retype(
                             for key, value in (
                                 (
                                     "is_error",
-                                    convert(
+                                    from_plain(
                                         payload.get("is_error"),
                                         bool,
                                         default=False,
                                     ),
                                 ),
-                                ("diff", convert(payload.get("diff"), str, default="")),
+                                (
+                                    "diff",
+                                    from_plain(payload.get("diff"), str, default=""),
+                                ),
                                 (
                                     "diff_file_path",
-                                    convert(
+                                    from_plain(
                                         payload.get("diff_file_path"),
                                         str,
                                         default="",
@@ -235,7 +238,7 @@ def retype(
                                 ),
                                 (
                                     "summary",
-                                    convert(payload.get("summary"), str, default=""),
+                                    from_plain(payload.get("summary"), str, default=""),
                                 ),
                             )
                             if value
@@ -249,13 +252,13 @@ def retype(
                     ContextCompaction(
                         context_id=record.context_id,
                         timestamp=timestamp,
-                        summary=convert(payload.get("text"), str, default=""),
+                        summary=from_plain(payload.get("text"), str, default=""),
                         extra={
                             key: value
                             for key, value in (
                                 (
                                     "token_before",
-                                    convert(
+                                    from_plain(
                                         payload.get("token_before"),
                                         int,
                                         default=0,
@@ -263,11 +266,15 @@ def retype(
                                 ),
                                 (
                                     "token_after",
-                                    convert(payload.get("token_after"), int, default=0),
+                                    from_plain(
+                                        payload.get("token_after"),
+                                        int,
+                                        default=0,
+                                    ),
                                 ),
                                 (
                                     "fallback_reason",
-                                    convert(
+                                    from_plain(
                                         payload.get("fallback_reason"),
                                         str,
                                         default="",
@@ -283,8 +290,8 @@ def retype(
             return Retyped(
                 slash=SlashCommandOut(
                     timestamp=timestamp,
-                    command=convert(payload.get("command"), str, default=""),
-                    args=convert(payload.get("args"), str, default=""),
+                    command=from_plain(payload.get("command"), str, default=""),
+                    args=from_plain(payload.get("args"), str, default=""),
                 ),
             )
         case _:
@@ -303,11 +310,11 @@ def _assistant_fan_out(
         AssistantMessage(
             context_id=record.context_id,
             timestamp=timestamp,
-            content=convert(payload.get("text"), str, default=""),
+            content=from_plain(payload.get("text"), str, default=""),
             attachments=_attachments(payload),
         ),
     ]
-    thinking = convert(payload.get("thinking"), str, default="")
+    thinking = from_plain(payload.get("thinking"), str, default="")
     if thinking or ciphertext:
         records.append(
             Thinking(
@@ -321,13 +328,13 @@ def _assistant_fan_out(
         ToolCall(
             context_id=record.context_id,
             timestamp=timestamp,
-            call_id=convert(call.get("id"), str, default=""),
-            name=convert(call.get("name"), str, default=""),
-            arguments=json_freeze(
-                convert(call.get("args"), dict[str, object], default={}),
+            call_id=from_plain(call.get("id"), str, default=""),
+            name=from_plain(call.get("name"), str, default=""),
+            arguments=immutable(
+                from_plain(call.get("args"), dict[str, object], default={}),
             ),
         )
-        for call in convert(
+        for call in from_plain(
             payload.get("tool_calls"),
             list[dict[str, object]],
             default=[],
@@ -335,7 +342,7 @@ def _assistant_fan_out(
     )
     tokens = {
         key: count
-        for key, value in convert(
+        for key, value in from_plain(
             payload.get("tokens"),
             dict[str, object],
             default={},
@@ -347,7 +354,7 @@ def _assistant_fan_out(
             TokenUsage(
                 context_id=record.context_id,
                 timestamp=timestamp,
-                info=json_freeze(tokens),
+                info=immutable(tokens),
             ),
         )
     return tuple(records)
@@ -360,7 +367,7 @@ def _assistant_fan_out(
 # rather than guessing at the union member's codec shape unverified.
 def _attachments(payload: Mapping[str, object]) -> tuple[Attachment, ...]:
     """Rebuild inline attachments; raise on any shape never seen in the wild."""
-    items = convert(payload.get("attachments"), list[dict[str, object]], default=[])
+    items = from_plain(payload.get("attachments"), list[dict[str, object]], default=[])
     if items:
         raise ValueError(
             "legacy attachment encountered; the live corpus carried none and "
