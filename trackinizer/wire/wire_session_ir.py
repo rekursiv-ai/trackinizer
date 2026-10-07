@@ -72,7 +72,10 @@ class RecordBody(BaseModel):
     model: str | None = None
 
     payload: JSON = Field(default_factory=dict)
-    """The record as ``to_builtins`` JSON, with ciphertext removed."""
+    """The record as stored plain data, codec-tagged with JSON fields plain.
+
+    Ciphertext is removed.
+    """
 
     text: str = ""
     """The search projection, computed at ingest."""
