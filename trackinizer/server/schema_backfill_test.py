@@ -252,7 +252,7 @@ async def test_the_ciphertext_moves_to_its_own_table(store: Store) -> None:
     await _run_backfill(store)
 
     rows = await store.read_session_records(session_id, part=-1, limit=500)
-    sealed = list(filter(None, (row.ciphertext for row in rows)))
+    sealed = [blob for row in rows if (blob := row.ciphertext or "")]
     assert sealed == [_ENCRYPTED + _SIGNATURE]
 
 
