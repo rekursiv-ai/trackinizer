@@ -153,7 +153,7 @@ def read_session_cookie(
         unexpired, else ``None``.
 
     """
-    raw = cookies.get(SESSION_COOKIE_NAME)
+    raw = cookies.get(SESSION_COOKIE_NAME, "")
     if not raw:
         return None
     serializer = URLSafeTimedSerializer(secret, salt=_SESSION_SALT)
@@ -231,7 +231,7 @@ def read_oauth_state_cookie(
         ``None`` when missing, expired, tampered, or wrong shape.
 
     """
-    raw = cookies.get(OAUTH_STATE_COOKIE_NAME)
+    raw = cookies.get(OAUTH_STATE_COOKIE_NAME, "")
     if not raw:
         return None
     serializer = URLSafeTimedSerializer(secret, salt=_OAUTH_STATE_SALT)
@@ -242,8 +242,8 @@ def read_oauth_state_cookie(
             serializer.loads(raw, max_age=OAUTH_STATE_MAX_AGE_SECONDS),
         )
         payload = from_plain(loaded, dict[str, object])
-        state = from_plain(payload.get("state"), str, default=None)
-        next_url = from_plain(payload.get("next"), str, default=None)
+        state = from_plain(payload.get("state"), str, default="")
+        next_url = from_plain(payload.get("next"), str, default="")
     except (BadSignature, ReadError):
         return None
     if not state or not next_url:

@@ -380,7 +380,7 @@ def _positive_session_ttl(value: str) -> int:
 
 def _configure_logging(level: str | None) -> int | None:
     """Set the package log level from the flag or ``TRACKINIZER_LOG_LEVEL``."""
-    raw = level or os.environ.get("TRACKINIZER_LOG_LEVEL")
+    raw = level or os.environ.get("TRACKINIZER_LOG_LEVEL", "")
     if not raw:
         return None
     value = getattr(logging, raw.upper(), None)

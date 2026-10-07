@@ -254,11 +254,11 @@ def test_every_request_is_a_get_and_every_baseline_is_measured() -> None:
 
 @pytest.mark.parametrize(
     ("count", "membership"),
-    [(0, None), (5, "membership: 5 ids, three kinds")],
+    [(0, ""), (5, "membership: 5 ids, three kinds")],
 )
 def test_reads_of_the_newest_issues_are_named_for_the_issues_there_are(
     count: int,
-    membership: str | None,
+    membership: str,
 ) -> None:
     """S4: with fewer than 13 Issues no row claims 13, and with none none is taken."""
 

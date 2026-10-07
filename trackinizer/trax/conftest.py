@@ -708,6 +708,7 @@ class FakeClient:
         # carry it on the upsert (the store collapses empty), so it threads the
         # clear through ``annotate_edge`` after the POST. Mirror that here so a
         # test sees the same two-call shape (TRAX-CLI-004).
+        label_tuple = tuple(labels or ())
         self.calls.append(
             (
                 "add_edge",
@@ -717,7 +718,7 @@ class FakeClient:
                     "priority": priority,
                     "note": note,
                     "valence": valence,
-                    "labels": () if labels is None else tuple(labels),
+                    "labels": label_tuple,
                     "reason": reason,
                 },
             ),
@@ -735,8 +736,8 @@ class FakeClient:
             supplied["note"] = note
         if valence is not None:
             supplied["valence"] = valence
-        if labels:
-            supplied["labels"] = tuple(labels)
+        if label_tuple:
+            supplied["labels"] = label_tuple
         created = key not in self._edges
         if created:
             self._edges[key] = supplied

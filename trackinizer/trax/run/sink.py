@@ -557,7 +557,7 @@ class TrackinizerSink(Sink):
         # Adopt the granted routing name: the server may have suffixed it on a
         # collision (``scientist`` -> ``scientist#2``).
         self._granted_actor = resp.actor
-        if resp.actor and resp.actor != self._actor:
+        if resp.actor is not None and resp.actor != self._actor:
             sys.stderr.write(
                 f"[trax run] routing name '{self._actor}' was taken; "
                 f"using '{resp.actor}'\n",

@@ -482,7 +482,7 @@ def _validate_profile_name(name: str) -> None:
 
 def _explicit_profile() -> str | None:
     """Profile name pinned by ``$TRACKINIZER_PROFILE`` or the ``current`` file, if any."""
-    if pinned := env("TRACKINIZER_PROFILE"):
+    if pinned := env("TRACKINIZER_PROFILE") or "":
         return pinned
     try:
         text = (config_dir() / "rekursiv-ai" / "trax" / "current").read_text().strip()

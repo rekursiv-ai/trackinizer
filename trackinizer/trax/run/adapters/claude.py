@@ -61,8 +61,10 @@ class ClaudeAdapter:
         # loaded. ``$CLAUDE_CONFIG_DIR`` is where claude itself keeps its
         # config root -- hermetic launchers point it at a throwaway dir -- so
         # honor it, else ``~/.claude``.
-        root = os.environ.get("CLAUDE_CONFIG_DIR")
-        return (Path(root) if root else Path.home() / ".claude") / "projects"  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
+        root = os.environ.get("CLAUDE_CONFIG_DIR", "")
+        if root:
+            return Path(root) / "projects"
+        return Path.home() / ".claude" / "projects"  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
 
     def session_dirs(self) -> Iterable[Path]:
         """Return the directories this CLI writes sessions under."""

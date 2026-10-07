@@ -209,7 +209,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             actor=actor,
             extras={
                 "issue_kind": canonical_strs(req.issue_kind)
-                if req.issue_kind
+                if req.issue_kind is not None
                 else None,
                 "issue_validation": req.validation,
                 "issue_priority": req.priority,
@@ -398,12 +398,12 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         # fallback -- an absent account is a programming error at a caller that
         # skipped resolution, not a state to paper over with the spoofable
         # audit ``actor``. ``owner`` may be unset; ``account`` may never be.
-        if not req.account:
+        account = req.account or ""
+        if not account:
             raise ValueError(
                 "submit requires a resolved account; the route resolves it from "
                 "the authenticated identity before calling the Store",
             )
-        account = req.account
         try:
             # The optional base columns are nullable: an unset field stores
             # NULL, the single encoding of "absent". An unspecified owner is
@@ -418,10 +418,8 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     "description": req.description,
                     "owner": req.owner,
                     "account": account,
-                    "labels": canonical_strs(req.labels) if req.labels else None,
-                    "subscribers": (
-                        canonical_strs(req.subscribers) if req.subscribers else None
-                    ),
+                    "labels": canonical_strs(req.labels or ()),
+                    "subscribers": canonical_strs(req.subscribers or ()),
                     **(extras or {}),
                 },
             )
@@ -522,9 +520,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             api_key_id=api_key_id,
             actor=actor,
             extras={
-                "experiment_codechanges": (
-                    list(req.codechanges) if req.codechanges else None
-                ),
+                "experiment_codechanges": list(req.codechanges or ()),
                 "experiment_outcome": req.outcome,
                 "experiment_config": req.config,
             },
@@ -547,7 +543,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             actor=actor,
             extras={
                 "paper_abstract": req.abstract,
-                "paper_authors": list(req.authors) if req.authors else None,
+                "paper_authors": list(req.authors or ()),
                 "paper_publication_type": req.publication_type,
                 "paper_venue": req.venue,
                 "paper_subvenue": req.subvenue,
@@ -680,9 +676,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 "agentsession_started": req.started,
                 # No create-time ``ended``: born live. The lifecycle CHECK
                 # ties ``ended`` to ``status = 'complete'``, set only via /end.
-                "agentsession_rooms": (
-                    canonical_strs(req.rooms) if req.rooms else None
-                ),
+                "agentsession_rooms": canonical_strs(req.rooms or ()),
                 # Records who opened the session so the inbound-drain route can
                 # authorize by matching the credential (G1). NULL under
                 # --no-auth, which the drain check treats as a self-match.

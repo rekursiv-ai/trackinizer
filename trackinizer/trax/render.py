@@ -410,7 +410,7 @@ def format_session_hits(body: Mapping[str, object]) -> str:
         requested but unavailable.
 
     """
-    hits = from_plain(body.get("hits"), list[dict[str, object]], default=None)
+    hits = from_plain(body.get("hits"), list[dict[str, object]], default=[])
     lines: list[str] = []
     if body.get("degraded"):
         lines.append("(semantic search unavailable; showing full-text results only)")

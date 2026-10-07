@@ -162,7 +162,7 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
             for record in ordered
             if isinstance(record, TurnContext)
         ),
-        cast(dict[str, object], {}),
+        dict[str, object](),
     )
     encoding: dict[str, object] = dict(encoding_source)
     for record in ordered:
@@ -415,11 +415,7 @@ def _canonical_order(source: Mapping[str, object]) -> list[str]:
 def _ordered(kind: str, payload: Mapping[str, object]) -> dict[str, object]:
     """Return one payload in its native or canonical key order."""
     values = dict(payload)
-    native_order = (
-        v
-        if (v := values.pop("$native_order", [])) is None
-        else from_plain(v, list[str])
-    )
+    native_order = from_plain(values.pop("$native_order", []), list[str], default=[])
     wire = from_plain(values.pop("$wire", {}), dict[str, object])
     wire_values = from_plain(wire.get("values"), dict[str, object], default={})
     values = {key: value for key, value in values.items() if not key.startswith("$")}
@@ -731,7 +727,7 @@ def _write_call(
             "call_id": item.call_id == "",
             "name": item.name == "",
             "arguments": not item.arguments,
-            "input": not item.arguments.get("input"),
+            "input": payload.get("input") == "",
         }
         payload = {
             key: value
@@ -751,9 +747,10 @@ def _write_result(
     if isinstance(item, FileReadResult | FileWriteResult | FileEditResult):
         item = shell_result_for_replay(item) or item
     by_path = {
-        record.path: record
+        path: record
         for record in (item, *followers)
-        if isinstance(record, FileEditResult | FileWriteResult) and record.path
+        if isinstance(record, FileEditResult | FileWriteResult)
+        and (path := record.path or "")
     }
     extra = mutable(item.extra)
     echoes = from_plain(extra.pop("$echoes", ""), str)
@@ -804,7 +801,7 @@ def _write_output(
 ) -> dict[str, object]:
     """Return the output response item a result came from."""
     kind = from_plain(extra.get("type"), str, default="function_call_output")
-    if extra.pop("$whole", False):
+    if extra.pop("$whole", False) is True:
         return _ordered(kind, {"type": kind, "call_id": item.call_id, **extra})
     output_absent = bool(extra.pop("$output_absent", False))
     output: object = item.content or ""
@@ -837,7 +834,7 @@ def _write_legacy_end(
     payload: dict[str, object] = {"type": kind, "call_id": item.call_id}
     if isinstance(item, ShellCommandResult):
         payload |= {
-            "command": list(item.command) if item.command else None,
+            "command": list(item.command or ()) or None,
             "stdout": item.stdout,
             "stderr": item.stderr,
             "exit_code": item.exit_code,
@@ -939,7 +936,7 @@ def _write_completed(
         kind = "CommandExecution"
         inner |= {
             "type": kind,
-            "command": list(item.command) if item.command else None,
+            "command": list(item.command or ()) or None,
             "stdout": item.stdout,
             "stderr": item.stderr,
             "exit_code": item.exit_code,
@@ -956,7 +953,7 @@ def _write_completed(
             # ``--`` first: a file whose name begins with a dash is an OPERAND,
             # and ``cat -n`` runs a flag instead -- the act crossed as a command
             # that reads nothing, and the record lost its type coming back.
-            "command": ["/bin/cat", "--", item.path] if item.path else None,
+            "command": ["/bin/cat", "--", path] if (path := item.path or "") else None,
             "stdout": item.content or "",
             "stderr": "",
             "exit_code": 0,
@@ -1440,8 +1437,8 @@ class _Reader:
         """Fold an opening instruction into the clear, and return the record."""
         if self._opening is None:
             return item
-        if isinstance(item, SystemMessage) and item.content:
-            self._given.append(item.content)
+        if isinstance(item, SystemMessage) and (content := item.content or ""):
+            self._given.append(content)
             at = self._opening - self._base
             opening = self._pending[at]
             assert isinstance(opening, ContextClear)

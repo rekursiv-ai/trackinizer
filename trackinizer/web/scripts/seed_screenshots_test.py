@@ -169,8 +169,9 @@ def test_each_session_is_a_conversation_in_a_room() -> None:
     client, _ = _seeded()
     assert len(client.sessions) >= 3
     for start, records in client.sessions.values():
-        assert start.rooms
-        assert start.actor
+        rooms = start.rooms or []
+        assert rooms
+        assert start.actor is not None
         kinds = [record.kind for record in records]
         assert {"UserMessage", "AssistantMessage"} <= set(kinds)
         assert [record.idx for record in records] == list(range(len(records)))

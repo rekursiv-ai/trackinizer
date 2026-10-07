@@ -100,7 +100,7 @@ class Config:
       web: Mount the web routes: ``/api/web``, the login page and, with
         ``--app-dir``, the web app.
       session_secret: HMAC key for the session and OAuth-state cookies.
-        ``None`` disables session login. Must be stable across processes
+        Empty disables session login. Must be stable across processes
         sharing the cookie -- rotating it logs everyone out.
       session_max_age_seconds: Session cookie TTL; defaults to 30 days.
       auth_disabled: Bypass auth -- every request becomes a synthetic
@@ -138,7 +138,7 @@ class Config:
     # candidates. Env: comma-separated ``TRACKINIZER_SESSION_EMBEDDERS``.
     session_embedders: tuple[str, ...] = ()
     web: bool = False
-    session_secret: str | None = None
+    session_secret: str = ""
     session_max_age_seconds: int = _DEFAULT_SESSION_MAX_AGE_SECONDS
     auth_disabled: bool = False
     assistant: Assistant | None = None
@@ -154,7 +154,7 @@ class Config:
         return cls(
             engine=parse_engine(os.environ.get("TRACKINIZER_ENGINE", "pglite")),
             datadir=Path(env_datadir)
-            if (env_datadir := os.environ.get("TRACKINIZER_DATADIR"))
+            if (env_datadir := os.environ.get("TRACKINIZER_DATADIR", ""))
             else None,
             ephemeral=os.environ.get("TRACKINIZER_EPHEMERAL") == "1",
             pglite_tcp=os.environ.get("TRACKINIZER_PGLITE_TCP") == "1",
@@ -168,7 +168,7 @@ class Config:
                 os.environ.get("TRACKINIZER_SESSION_EMBEDDERS", ""),
             ),
             web=os.environ.get("TRACKINIZER_WEB") == "1",
-            session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET") or None,
+            session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET", ""),
             session_max_age_seconds=session_max_age_from_env(),
             auth_disabled=auth_disabled_from_env(),
             assistant=parse_assistant(os.environ.get("TRACKINIZER_ASSISTANT", "")),
@@ -198,7 +198,7 @@ class Config:
             session_embedders=_parse_session_embedders(flags.session_embedders),
             web=flags.web,
             # Secrets come from the environment only, never CLI flags.
-            session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET") or None,
+            session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET", ""),
             session_max_age_seconds=flags.session_max_age_seconds,
             auth_disabled=not flags.auth,
             assistant=parse_assistant(flags.assistant),

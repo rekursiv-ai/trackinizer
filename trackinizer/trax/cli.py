@@ -290,9 +290,11 @@ def _resolve_target(args: argparse.Namespace) -> Target:
     """Resolve flags, environment, and profile into one connection identity."""
     host = cast(str | None, getattr(args, "host", None))  # -- argparse namespace field.
     port = cast(int | None, getattr(args, "port", None))  # -- argparse namespace field.
-    if name := cast(str | None, getattr(args, "profile", None)):  # -- argparse field.
+    if (
+        name := cast(str | None, getattr(args, "profile", None)) or ""
+    ):  # -- argparse field.
         profile = read_profile(name)
-    elif env_url := env("TRACKINIZER_URL"):
+    elif env_url := env("TRACKINIZER_URL") or "":
         profile = Profile(url=server_url(env_url, "TRACKINIZER_URL"), author="")
     else:
         profile = load_profile()

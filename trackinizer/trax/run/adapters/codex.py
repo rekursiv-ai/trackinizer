@@ -56,8 +56,10 @@ class CodexAdapter:
         # Resolve per call, not at import (see ClaudeAdapter). ``$CODEX_HOME``
         # is where codex itself keeps its config root -- hermetic launchers
         # point it at a throwaway dir -- so honor it, else ``~/.codex``.
-        home = os.environ.get("CODEX_HOME")
-        return (Path(home) if home else Path.home() / ".codex") / "sessions"  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
+        home = os.environ.get("CODEX_HOME", "")
+        if home:
+            return Path(home) / "sessions"
+        return Path.home() / ".codex" / "sessions"  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
 
     def session_dirs(self) -> Iterable[Path]:
         """Return the directories this CLI writes sessions under."""

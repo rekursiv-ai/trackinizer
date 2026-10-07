@@ -268,7 +268,7 @@ class TestFromEnv:
             monkeypatch.setenv(name, value)
         config = Config.from_env()
         assert config.session_secret == values["TRACKINIZER_SESSION_SECRET"]
-        assert replace(config, session_secret=None) == Config(
+        assert replace(config, session_secret="") == Config(
             engine="pg",
             datadir=tmp_path,
             ephemeral=True,

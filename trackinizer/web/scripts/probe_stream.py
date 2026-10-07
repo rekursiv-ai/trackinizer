@@ -100,16 +100,16 @@ class Event:
 
 def client_settings(
     *,
-    via: str | None,
-    url: str | None,
+    via: str,
+    url: str,
     accept_encoding: str,
     profile: Profile,
 ) -> tuple[str, dict[str, str]]:
     """Return the base URL and headers for the server the flags name.
 
     Args:
-      via: Another address for the profile's server, or None.
-      url: Another server, which gets no token, or None.
+      via: Another address for the profile's server, or ``""``.
+      url: Another server, which gets no token, or ``""``.
       accept_encoding: The ``Accept-Encoding`` to send.
       profile: The active trax profile.
 
@@ -181,8 +181,8 @@ def probe(
 class _Flags(Protocol):
     """Parsed command-line flags."""
 
-    via: str | None
-    url: str | None
+    via: str
+    url: str
     first_after: float
     every: float
     for_sec: float
@@ -195,10 +195,12 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     where = parser.add_mutually_exclusive_group()
     where.add_argument(
         "--via",
+        default="",
         help="Another address for the profile's server (a hop), with its token.",
     )
     where.add_argument(
         "--url",
+        default="",
         help="Another server, such as the local preview; no token.",
     )
     parser.add_argument(

@@ -633,7 +633,7 @@ async def _check_record(
     if descriptor is None or operation.record_id is None:
         return
     kind = None
-    if descriptor.record_kinds:
+    if descriptor.record_kinds is not None:
         kind = from_plain(
             await conn.fetchval(
                 "SELECT kind FROM inquiries WHERE id = $1",
@@ -642,7 +642,7 @@ async def _check_record(
             str,
             default=None,
         )
-    if reason := refuse_record(operation, descriptor=descriptor, kind=kind):
+    if reason := refuse_record(operation, descriptor=descriptor, kind=kind) or "":
         raise ValueError(reason)
     if operation.visual_type == "trax.artifact" and (
         await conn.fetchval(

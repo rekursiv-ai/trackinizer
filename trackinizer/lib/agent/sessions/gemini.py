@@ -215,7 +215,9 @@ def _write_messages(
                         # document has none, and adding one would rewrite bytes
                         # gemini itself wrote.
                         **(
-                            {"$timestamp": record.timestamp} if record.timestamp else {}
+                            {"$timestamp": stamp}
+                            if (stamp := record.timestamp or "")
+                            else {}
                         ),
                         **mutable(record.extra),
                     },
@@ -227,7 +229,11 @@ def _write_messages(
                 open_turn = {
                     "type": "gemini",
                     "content": record.content or "",
-                    **({"$timestamp": record.timestamp} if record.timestamp else {}),
+                    **(
+                        {"$timestamp": stamp}
+                        if (stamp := record.timestamp or "")
+                        else {}
+                    ),
                     **extra,
                     **({"toolCalls": []} if empty_calls else {}),
                 }
@@ -243,8 +249,8 @@ def _write_messages(
                 # a turn was already open instead aborted the conversion.
                 if open_turn is None:
                     open_turn = {"type": "gemini", "content": ""}
-                    if record.timestamp:
-                        open_turn["$timestamp"] = record.timestamp
+                    if stamp := record.timestamp or "":
+                        open_turn["$timestamp"] = stamp
                     out.append(open_turn)
                 calls = open_turn.setdefault("toolCalls", [])
                 assert isinstance(calls, list)

@@ -671,7 +671,10 @@ async def test_unresolvable_citation_is_rejected(
     """A citation must name an existing row and signed edge with a short note."""
     run = _Run()
     row = {"kind": "Paper", "seq": 1, "title": "Row"}
-    run.db.answers[_RECORD] = [row if record else None, row if claim else None]
+    run.db.answers[_RECORD] = [
+        row if record is not None else None,
+        row if claim is not None else None,
+    ]
     run.db.answers[_EDGE] = [
         {
             "edge": {"valence": 0.5, "note": None},

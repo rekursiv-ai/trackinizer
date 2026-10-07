@@ -500,7 +500,7 @@ def resume_argv(cli_name: str, cli_session_id: str | None) -> tuple[str, ...]:
         run, and for a CLI with no resume spelling at all.
 
     """
-    if not cli_session_id:
+    if cli_session_id is None:
         return ()
     if cli_name == "codex":
         return ("resume", cli_session_id)
@@ -938,7 +938,7 @@ def _join_with_watchdog(
 def _enqueue_stream_line(queue: deque[bytes], stats: _Stats, raw: bytes) -> None:
     """Queue one framed stream line for the drain thread, overflow VISIBLE."""
     if len(queue) == queue.maxlen:
-        if not stats.counts.get("StreamEventDropped"):
+        if stats.counts.get("StreamEventDropped", 0) == 0:
             _logger.warning(
                 "stream capture queue full (%d); dropping oldest lines until "
                 "the sink drains",
@@ -1046,7 +1046,7 @@ def _routing_env(
 ) -> dict[str, str]:
     """Return the routing identity to export into the wrapped CLI's environment."""
     env: dict[str, str] = {}
-    actor = granted_actor or config.actor
+    actor = granted_actor or config.actor or ""
     if actor:
         env["TRAX_ACTOR"] = actor
     if config.rooms:

@@ -1328,7 +1328,7 @@ class TestLoginPage:
         (google,) = (
             attrs
             for tag, attrs in _login_page_tags()
-            if tag == "a" and (attrs.get("href") or "").startswith("/auth/login")
+            if tag == "a" and attrs.get("href", "").startswith("/auth/login")
         )
         assert "hidden" in google
 
@@ -2116,7 +2116,7 @@ def _edge_ids(graph: web.WebView) -> set[tuple[object, object]]:
     }
 
 
-def _login_page_tags() -> list[tuple[str, dict[str, str | None]]]:
+def _login_page_tags() -> list[tuple[str, dict[str, str]]]:
     """Fetch the shipped login page; return its start tags and their attributes."""
     app = FastAPI()
     web.attach(app)
@@ -2132,11 +2132,11 @@ class _StartTags(HTMLParser):
 
     def __init__(self) -> None:
         super().__init__()
-        self.tags: list[tuple[str, dict[str, str | None]]] = []
+        self.tags: list[tuple[str, dict[str, str]]] = []
 
     @override
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.tags.append((tag, dict(attrs)))
+        self.tags.append((tag, {name: value or "" for name, value in attrs}))
 
 
 if __name__ == "__main__":

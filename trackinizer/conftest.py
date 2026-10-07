@@ -284,11 +284,14 @@ def pg_dsn(request: pytest.FixtureRequest) -> Iterator[str]:
             dbname=postgresql_proc.dbname,
             password=postgresql_proc.password,
         ):
-            password = (
-                f":{postgresql_proc.password}" if postgresql_proc.password else ""
+            password = postgresql_proc.password or ""
+            userinfo = (
+                f"{postgresql_proc.user}:{password}"
+                if password
+                else postgresql_proc.user
             )
             yield (
-                f"postgresql://{postgresql_proc.user}{password}"
+                f"postgresql://{userinfo}"
                 f"@{postgresql_proc.host}:{postgresql_proc.port}/"
                 f"{postgresql_proc.dbname}"
             )

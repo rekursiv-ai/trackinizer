@@ -393,7 +393,7 @@ def _script(command: tuple[str, ...] | None) -> str | None:
 
 def _shell_source(command: tuple[str, ...] | None) -> tuple[str, int | None] | None:
     """Return shell source and its argv index, or direct argv as source."""
-    if not command:
+    if not (argv := command or ()):
         return None
     shells = {
         "bash",
@@ -412,16 +412,16 @@ def _shell_source(command: tuple[str, ...] | None) -> tuple[str, int | None] | N
         "/usr/bin/sh",
         "/usr/bin/zsh",
     }
-    if command[0] not in shells:
-        return (shlex.join(command), None)
-    for index, argument in enumerate(command[1:], 1):
+    if argv[0] not in shells:
+        return (shlex.join(argv), None)
+    for index, argument in enumerate(argv[1:], 1):
         is_command_flag = argument == "-c" or (
             argument.startswith("-")
             and not argument.startswith("--")
             and "c" in argument[1:]
         )
-        if is_command_flag and index + 2 == len(command):
-            return (command[index + 1], index + 1)
+        if is_command_flag and index + 2 == len(argv):
+            return (argv[index + 1], index + 1)
     return None
 
 

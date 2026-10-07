@@ -267,8 +267,7 @@ class InboundQueue:
 
         """
         with self._lock:
-            queue = self._queues.pop(session_id, None)
-            return list(queue) if queue else []
+            return list(self._queues.pop(session_id, ()))
 
     async def await_messages(
         self,
@@ -349,8 +348,7 @@ class InboundQueue:
 
         """
         with self._lock:
-            queue = self._queues.get(session_id)
-            return len(queue) if queue else 0
+            return len(self._queues.get(session_id, ()))
 
     def is_full(self, session_id: UUID) -> bool:
         """Say whether one more message would evict the oldest waiting one.

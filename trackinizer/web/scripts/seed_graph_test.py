@@ -433,7 +433,7 @@ class _FakeClient:
         items: Sequence[tuple[Inquiry.InquiryKind, Mapping[str, object]]],
         *,
         edges: Sequence[Mapping[str, object]] = (),
-        actor: str | None = None,
+        actor: str,
     ) -> list[uuid.UUID]:
         assert actor
         assert 1 <= len(items) <= BATCH_MAX_ITEMS

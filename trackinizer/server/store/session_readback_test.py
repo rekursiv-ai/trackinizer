@@ -244,7 +244,7 @@ async def test_ciphertext_survives_the_round_trip(store: Store) -> None:
     part = await _ingest(store, path, session_id)
 
     rows = await store.read_session_records(session_id, part=part, limit=100_000)
-    sealed = [row for row in rows if row.ciphertext]
+    sealed = [row for row in rows if row.ciphertext is not None]
 
     assert sealed, "the fixture carries no sealed thinking; pick another"
     # Stored stripped, returned whole: both halves of the split are asserted.

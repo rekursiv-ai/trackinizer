@@ -171,7 +171,8 @@ class PublishArtifactContent(BaseModel):
           request: The validated publication request.
 
         """
-        if self.format == "html" and (not self.html or self.sections):
+        html = self.html or ""
+        if self.format == "html" and (not html or self.sections):
             raise ValueError("HTML Artifacts need HTML and no structured sections.")
         if self.format == "structured" and (self.html is not None or not self.sections):
             raise ValueError("Structured Artifacts need sections and no HTML.")

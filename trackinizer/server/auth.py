@@ -1017,7 +1017,7 @@ def _b64decode(encoded: str) -> bytes:
 
 class _ConfigLike(Protocol):
     auth_disabled: bool
-    session_secret: str | None
+    session_secret: str
     session_max_age_seconds: int
 
 

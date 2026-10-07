@@ -331,17 +331,16 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             # Apply any new rooms from the resuming request: ``--resume --room X``
             # must join X. ``_mutate_list_field_on_conn`` is idempotent (a re-add
             # of an existing room is a no-op) and runs on this open tx.
-            if req.rooms:
-                for room in req.rooms:
-                    await self._mutate_list_field_on_conn(
-                        conn,
-                        session_id,
-                        room,
-                        column="agentsession_rooms",
-                        api_key_id=api_key_id,
-                        actor=actor,
-                        include=True,
-                    )
+            for room in req.rooms or ():
+                await self._mutate_list_field_on_conn(
+                    conn,
+                    session_id,
+                    room,
+                    column="agentsession_rooms",
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    include=True,
+                )
             next_seq = await self._next_event_seq(conn, session_id)
             return session_id, owner, next_seq
 

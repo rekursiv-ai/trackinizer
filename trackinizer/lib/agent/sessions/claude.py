@@ -693,7 +693,7 @@ def _write_user(
     extra = dict(mutable(item.extra))
     message: dict[str, object] = {"role": "user"}
     message.update(from_plain(extra.pop("message", {}), dict[str, object]))
-    bare = extra.pop("$bare", False)
+    bare = extra.pop("$bare", False) is True
     parts_value = extra.pop("$parts", 1)
     parts = parts_value if isinstance(parts_value, int) else 1
     media_first = bool(extra.pop("$media_first", False))
@@ -1127,7 +1127,7 @@ def _write_tool_payload(
         # uncategorized. The act's own values ARE the payload here.
         payload = {key: value for key, value in values.items() if value is not None}
     # A ``file`` that is no object is the line's own bytes, replayed as stored.
-    nested = _text_block(payload.get("file"), kind=None)
+    nested = _text_block(payload.get("file"), kind=None) or {}
     if isinstance(item, FileReadResult) and nested:
         payload["file"] = restore_unmodeled_fields(
             nested,

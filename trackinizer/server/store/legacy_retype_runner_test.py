@@ -160,7 +160,7 @@ async def test_ciphertext_rekeys_to_the_thinking_record(store: Store) -> None:
         await retype_session(conn, session_id)
 
     rows = await store.read_session_records(session_id, part=-1, limit=500)
-    sealed = {row.kind: row.ciphertext for row in rows if row.ciphertext}
+    sealed = {row.kind: row.ciphertext for row in rows if row.ciphertext is not None}
     assert sealed == {"Thinking": _ENCRYPTED + _SIGNATURE}
 
 

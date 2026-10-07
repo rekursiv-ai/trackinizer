@@ -325,7 +325,8 @@ def test_convert_reports_unreadable_and_unknown_inputs(tmp_path: Path) -> None:
     unknown = tmp_path / "unknown.jsonl"
     unknown.write_text('{"kind":"other"}\n')
 
-    assert convert_file(tmp_path / "absent.jsonl", "auto", "json", False).error
+    absent = convert_file(tmp_path / "absent.jsonl", "auto", "json", False).error or ""
+    assert absent
     assert (
         convert_file(unknown, "auto", "json", False).error
         == "unrecognized session format"
@@ -341,7 +342,8 @@ def test_convert_reports_a_malformed_normalized_payload(tmp_path: Path) -> None:
         '"context_id":"seven"}]',
     )
 
-    assert convert_file(path, "json", "claude", False).error
+    malformed = convert_file(path, "json", "claude", False).error or ""
+    assert malformed
 
 
 def test_json_report_and_usage_errors(

@@ -232,7 +232,7 @@ class _UnknownClause:
 
     token: str
 
-    bad_filter_op: str | None = None
+    bad_filter_op: str = ""
 
 
 _Clause = _KindClause | _RangeClause | _FilterClause | _MutationClause | _UnknownClause
@@ -1011,11 +1011,7 @@ def _scan_clauses(tokens: Sequence[str]) -> Iterator[_Clause]:
             yield _MutationClause(tokens=tuple(tokens[index : index + span]))
             index += span
         else:
-            bad_op = (
-                op_next
-                if token_text in _ALL_FILTER_FIELDS and op_next_lower is not None
-                else None
-            )
+            bad_op = (op_next or "") if token_text in _ALL_FILTER_FIELDS else ""
             yield _UnknownClause(token=tokens[index], bad_filter_op=bad_op)
             index += 1
 
@@ -1254,7 +1250,7 @@ def _parse_relation_or_edge(
             relation=relation,
             index=value or "",
             against=word in AGAINST_RELATION_SPELLINGS,
-        ), 2 if value else 1
+        ), 2 if value is not None else 1
     edge = EDGE_ALIASES.get(word)
     if edge is None:
         raise ClientError(

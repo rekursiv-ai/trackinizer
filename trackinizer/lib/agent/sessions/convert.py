@@ -1041,14 +1041,12 @@ def _ordered(paths: Iterable[Path]) -> list[Path]:
 # agrees), while by first stamp the parent opened before each of them.
 def _opened(records: Sequence[SessionRecord]) -> str:
     """Return the provider's stamp on a part's first dated record, or ``""``."""
-    return next(
-        (
-            record.timestamp
-            for record in records
-            if not isinstance(record, IncompleteRecord) and record.timestamp
-        ),
-        "",
+    stamps = (
+        record.timestamp or ""
+        for record in records
+        if not isinstance(record, IncompleteRecord)
     )
+    return next((stamp for stamp in stamps if stamp), "")
 
 
 # Measured, not predicted: the converted text is normalized again and its semantic

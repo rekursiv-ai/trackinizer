@@ -316,7 +316,13 @@ def moved(
         changes.extend(
             (row.name, what, then, now)
             for what, then, now in pairs
-            if then and now and max(then / now, now / then) > 2
+            if (
+                then is not None
+                and now is not None
+                and then != 0
+                and now != 0
+                and max(then / now, now / then) > 2
+            )
         )
     return changes
 

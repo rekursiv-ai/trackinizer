@@ -246,7 +246,7 @@ def refuse_record(
         return None
     if descriptor.record_kinds == []:
         return "Visual takes no record target."
-    if descriptor.record_kinds and kind not in descriptor.record_kinds:
+    if descriptor.record_kinds is not None and kind not in descriptor.record_kinds:
         return (
             f"{descriptor.title} shows {' or '.join(descriptor.record_kinds)} "
             f"records, not {kind or 'an unknown record'}."
@@ -285,7 +285,7 @@ def apply_operation(
         if "record" in descriptor.requires and operation.record_id is None:
             raise ValueError("Visual requires a record target.")
         if descriptor.record_kinds == [] and (
-            reason := refuse_record(operation, descriptor=descriptor, kind=None)
+            reason := refuse_record(operation, descriptor=descriptor, kind=None) or ""
         ):
             raise ValueError(reason)
         if set(operation.params) - set(descriptor.parameter_schema):

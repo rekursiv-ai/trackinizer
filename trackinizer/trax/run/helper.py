@@ -119,7 +119,7 @@ class Claude:
           argv: The command.
 
         """
-        resumed = ["--resume", resume] if resume else []
+        resumed = ["--resume", resume] if resume is not None else []
         return [
             "claude",
             "-p",
@@ -186,7 +186,7 @@ class Codex:
           argv: The command.
 
         """
-        if resume:
+        if resume is not None:
             return ["codex", "exec", "resume", "--json", *extra, resume, prompt]
         return ["codex", "exec", "--json", *extra, f"{GUIDE}\n\n{prompt}"]
 
@@ -429,7 +429,7 @@ def _answer(
             ),
         )
         return
-    if turn.cli_session_id:
+    if turn.cli_session_id is not None:
         memory.put(conversation_id, turn.cli_session_id)
     client.post_chat_reply(
         conversation_id,

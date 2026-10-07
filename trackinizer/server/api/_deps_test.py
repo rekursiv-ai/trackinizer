@@ -313,6 +313,7 @@ class TestTagKind:
         # oracle while exercising nothing.
         instance = _populated(Issue)
         assert instance.produces, "edge tuples must carry an element"
+        assert instance.labels is not None
         assert instance.labels, "list-valued columns must carry an element"
 
     @pytest.mark.parametrize("subclass", _KINDS)

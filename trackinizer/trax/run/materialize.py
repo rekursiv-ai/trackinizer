@@ -614,7 +614,8 @@ def _spliced(
             continue
         # Empty marks split ciphertext; None means the record was never sealed.
         # A summary can accompany a seal, so it cannot establish replayability.
-        if record.encrypted == "" and not record.content:
+        content = record.content or ""
+        if record.encrypted == "" and not content:
             raise CiphertextDroppedError(
                 f"record {idx} is sealed reasoning whose ciphertext is no "
                 "longer stored; the provider rejects a transcript with an "

@@ -147,7 +147,9 @@ async def read_preset(
             preset_id,
             user_id,
         )
-    return _preset_from_row(cast("Mapping[str, object]", row)) if row else None
+    return (
+        _preset_from_row(cast("Mapping[str, object]", row)) if row is not None else None
+    )
 
 
 async def create_preset(

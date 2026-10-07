@@ -141,13 +141,15 @@ def server_url(raw: str, source: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise ClientError(f"{source} has invalid URL {raw!r}")
-    if parsed.username or parsed.password:
+    user = parsed.username or ""
+    password = parsed.password or ""
+    if user or password:
         raise ClientError(
             f"{source} URL must not embed credentials; use api_key instead",
         )
     if parsed.query or parsed.fragment:
         raise ClientError(f"{source} URL must not contain query or fragment")
-    if not parsed.hostname:
+    if parsed.hostname is None:
         raise ClientError(f"{source} has invalid URL {raw!r}: missing host")
     # ``parsed.port`` raises ``ValueError`` for a non-numeric or out-of-range
     # port (urllib only validates it on access), so a malformed port would
@@ -918,7 +920,7 @@ class Client:
             body["note"] = note
         if valence is not None:
             body["valence"] = valence
-        if labels:
+        if labels is not None and labels:
             body["labels"] = list(labels)
         if reason:
             body["reason"] = reason
@@ -2092,10 +2094,8 @@ def _clean_params(
     params: Mapping[str, object] | None,
 ) -> tuple[tuple[str, str], ...] | None:
     """Drop ``None`` and empty values, stringifying the rest for httpx2."""
-    if not params:
-        return None
     out: list[tuple[str, str]] = []
-    for key, value in params.items():
+    for key, value in (params or {}).items():
         if value is None or value == "":
             continue
         if isinstance(value, (list, tuple)):

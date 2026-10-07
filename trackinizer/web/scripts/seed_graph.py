@@ -58,7 +58,7 @@ class GraphClient(Protocol):
         items: Sequence[tuple[Inquiry.InquiryKind, Mapping[str, object]]],
         *,
         edges: Sequence[Mapping[str, object]] = (),
-        actor: str | None = None,
+        actor: str,
     ) -> list[uuid.UUID]:
         """Create ``items`` and ``edges`` in one batch; return their ids."""
         ...
@@ -451,7 +451,13 @@ def _titles(vocabulary: Mapping[str, object]) -> list[str]:
     titles: set[str] = set()
     for template in from_plain(vocabulary.get("templates"), list[str], default=[]):
         slots = sorted(
-            {int(f) for _, f, _, _ in string.Formatter().parse(template) if f},
+            {
+                int(f)
+                for f in (
+                    field or "" for _, field, _, _ in string.Formatter().parse(template)
+                )
+                if f
+            },
         )
         for picked in itertools.product(*(words[slot] for slot in slots)):
             parts = dict(zip(slots, picked, strict=True))

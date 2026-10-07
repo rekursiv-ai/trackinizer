@@ -283,7 +283,7 @@ class Kind(Command):
             return run_bulk_apply(bulk, args, client_factory)
         if query := parse_list_query(kind, rest):
             return run_list_query(query, args, client_factory)
-        if subjects := parse_subject_list(rest, default_kind=kind):
+        if (subjects := parse_subject_list(rest, default_kind=kind)) is not None:
             for subject in subjects:
                 run_show(subject, args, client_factory)
             return None
@@ -899,12 +899,10 @@ class Kind(Command):
         # arg". ``None`` threads the clear through ``add_edge`` to the labels
         # route that writes NULL; ``()`` leaves stored labels untouched
         # (TRAX-CLI-004).
-        labels = cast(Sequence[str] | None, metadata.get("labels"))
-        edge_labels: Sequence[str] | None
+        labels = from_plain(metadata.get("labels"), list[str], default=[])
+        edge_labels: Sequence[str] | None = labels
         if "labels" in metadata and not labels:
             edge_labels = None
-        else:
-            edge_labels = labels or ()
         result = client.add_edge(
             src_id,
             tgt_id,
@@ -2654,7 +2652,7 @@ Notes:
             room=room,
         )
         if not delivered:
-            scope = f"@{actor}:{room}" if room else f"@{actor}"
+            scope = f"@{actor}:{room}" if room is not None else f"@{actor}"
             echo(f"undelivered: no live session matches {scope}")
             return
         echo(f"sent to {len(delivered)} session(s)")
@@ -2787,7 +2785,8 @@ class Workspace(Command):
         workspace_id = _workspace_uuid(flags.workspace_id, "workspace")
         client = client_factory()
         if flags.action is None:
-            if flags.subject or flags.record or flags.placement or flags.param:
+            record = flags.record or ""
+            if flags.subject or record or flags.placement is not None or flags.param:
                 raise ClientError("workspace read does not accept operation arguments")
             _print_workspace(client.read_workspace(workspace_id))
             return

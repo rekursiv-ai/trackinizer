@@ -58,10 +58,10 @@ def render_inbound(
         if agent_message is not None:
             return agent_message
     prefix = ""
-    if room:
-        prefix += f"[{room}] "
-    if source:
-        prefix += f"{source}: "
+    if scope := room or "":
+        prefix += f"[{scope}] "
+    if sender := source or "":
+        prefix += f"{sender}: "
     rendered = f"{prefix}{text}"
     if context is not None:
         rendered += (

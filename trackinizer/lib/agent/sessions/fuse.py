@@ -194,8 +194,7 @@ def chain(
     found = list(parts)
     by_id: dict[str, Sequence[SessionRecord]] = {}
     for part in found:
-        own_value = _declared(part).get("id")
-        own = None if own_value is None else from_plain(own_value, str)
+        own = from_plain(_declared(part).get("id"), str, default="")
         if own:
             by_id[own] = part
     # A LIST per parent: a thread may be resumed more than once, and keeping
@@ -204,9 +203,8 @@ def chain(
     successors: dict[str, list[Sequence[SessionRecord]]] = {}
     roots: list[Sequence[SessionRecord]] = []
     for part in found:
-        parent_value = _declared(part).get(forked_from)
-        parent = None if parent_value is None else from_plain(parent_value, str)
-        if parent and parent in by_id:
+        parent = from_plain(_declared(part).get(forked_from), str, default="")
+        if parent in by_id:
             successors.setdefault(parent, []).append(part)
         else:
             roots.append(part)
@@ -224,10 +222,8 @@ def chain(
                 continue
             seen.add(id(part))
             ordered.append(part)
-            own_value = _declared(part).get("id")
-            own = None if own_value is None else from_plain(own_value, str)
-            if own:
-                stack.extend(reversed(successors.get(own, [])))
+            own = from_plain(_declared(part).get("id"), str, default="")
+            stack.extend(reversed(successors.get(own, [])))
     # A component whose links form a CYCLE has no root, so the walk above never
     # started on it -- the ``seen`` guard only stops a re-visit, it cannot reach
     # an unreachable node. Those parts were dropped silently, and a file that
