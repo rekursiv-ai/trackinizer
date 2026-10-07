@@ -18,8 +18,8 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.agent.types.sessions import UncategorizedRecord
+from trackinizer.lib.agent.types.stored import to_stored
 from trackinizer.lib.codec import from_plain, immutable, mutable
-from trackinizer.lib.custom_json import to_builtins
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.session_records import SessionRecordRow
@@ -166,7 +166,7 @@ def test_the_dotted_tag_matches_what_the_codec_emits() -> None:
     No database: the claim is about the MIGRATION TEXT agreeing with what the
     codec emits, which is decidable by reading both.
     """
-    emitted = to_builtins(UncategorizedRecord(kind="x"))
+    emitted = from_plain(to_stored(UncategorizedRecord(kind="x")), dict[str, object])
     assert (
         emitted["py/object"]
         == "trackinizer.lib.agent.types.sessions.UncategorizedRecord"

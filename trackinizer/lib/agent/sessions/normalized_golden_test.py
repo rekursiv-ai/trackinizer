@@ -122,6 +122,33 @@ def test_the_frozen_bytes_still_rebuild_the_provider_file(fixture: Path) -> None
     ],
     ids=fixture_id,
 )
+def test_a_plain_golden_still_rebuilds_the_provider_file(fixture: Path) -> None:
+    # Sessions normalized before records were stored through the codec are plain
+    # JSON -- tuples as arrays, bytes as base64 strings -- and are still archived,
+    # so they must still return to the file they came from.
+    adapter: _Adapter = claude if fixture.name.startswith("claude") else codex
+    plain = fixture.with_suffix(".plain.json").read_text(encoding="utf-8")
+    assert '"py/tuple"' not in plain
+
+    rebuilt = StringIO()
+    adapter.denormalize(normalized.normalize(StringIO(plain)), rebuilt)
+
+    assert rebuilt.getvalue() == fixture.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        pytest.param(
+            path,
+            marks=pytest.mark.compute_large_fixture
+            if path.stem.endswith("_main")
+            else (),
+        )
+        for path in fixtures()
+    ],
+    ids=fixture_id,
+)
 def test_normalizing_twice_produces_the_same_bytes(fixture: Path) -> None:
     # The IR is a mapping from the source, so reading one file twice must give
     # one answer. A session id defaulting to ``uuid4()`` that no adapter

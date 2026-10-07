@@ -106,3 +106,14 @@ test("a run of two or more tool steps between messages is one group, with the re
 test("a file's language is its extension, or its name when it has none", () => {
   expect(["/w/a.PY", "src/x.test.tsx", "Makefile", "dir.d/README", ""].map(languageOf)).toEqual(["py", "tsx", "makefile", "readme", ""]);
 });
+
+test("a tool row reads tagged tuples as it reads plain arrays", () => {
+  const view = (kind: string, payload: { [field: string]: unknown }) => recordView(record(kind, payload));
+  const codex = view("ShellCommandResult", { command: { "py/tuple": ["/bin/bash", "-lc", "date -u"] }, stdout: "now", stderr: "", exit_code: 0 });
+  expect(toolSummary(null, codex)).toMatchObject({ verb: "Ran", target: "date -u", outcome: "1 line" });
+  const splice = { before: "a\nb\n", after: "c\n", lead: null, trail: null, start: null, count: null };
+  const edit = view("FileEditResult", { path: "src/b.ts", edits: { "py/tuple": [splice] } });
+  expect(toolSummary(null, edit)).toMatchObject({ tool: "edit", verb: "Edited", target: "src/b.ts", outcome: "+1 −2", language: "ts" });
+  const found = { "py/tuple": [{ url: "https://a.b/", title: "A", snippet: "" }] };
+  expect(toolSummary(null, view("WebSearchResults", { query: "pglite", content: found }))).toMatchObject({ verb: "Searched the web", target: "pglite", outcome: "1 result" });
+});

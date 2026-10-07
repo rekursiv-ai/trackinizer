@@ -28,6 +28,7 @@ from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     BucketGrid,
     FeedScope,
+    _room_facets,
 )
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_sessions import (
@@ -54,6 +55,11 @@ _BLANK = '{"content": " \\n", "attachments": [], "extra": {}}'
 _ATTACHED = (
     '{"content": null, "attachments": [{"mime_descriptor": "image/png"}], "extra": {}}'
 )
+# The same message as a codec-tagged row: its attachments tuple is a ``py/tuple``.
+_ATTACHED_TAGGED = (
+    '{"content": null, "attachments": {"py/tuple": [{"mime_descriptor": "image/png"}]},'
+    ' "extra": {}}'
+)
 _QUEUED = (
     '{"kind": "queued_command", "content": null,'
     ' "extra": {"attachment": {"origin": {"kind": "%s"}}}}'
@@ -76,6 +82,35 @@ _TASK_NOTICE = (
 
 
 # ---- The bucket grid --------------------------------------------------------
+
+
+def test_room_facets_total_each_room_largest_first() -> None:
+    """A room counts every session of each actor in it; ties order by name."""
+    seen = datetime(2026, 10, 7, tzinfo=UTC)
+    actors = [
+        FeedActorFacet(
+            actor=actor,
+            session_id=uuid4(),
+            cli=None,
+            rooms=list(rooms),
+            count=count,
+            conversation=0,
+            last=seen,
+            ended=None,
+        )
+        for actor, rooms, count in (
+            ("b", ("r1", "r2"), 2),
+            ("a", ("r2",), 3),
+            ("c", ("r3",), 2),
+            ("d", ("r2",), 1),
+        )
+    ]
+
+    assert _room_facets(actors) == [
+        FeedRoomFacet(room="r2", count=6, actors=["a", "b", "d"]),
+        FeedRoomFacet(room="r1", count=2, actors=["b"]),
+        FeedRoomFacet(room="r3", count=2, actors=["c"]),
+    ]
 
 
 def test_the_grid_is_the_finest_that_fits_on_multiples_of_its_width() -> None:
@@ -386,6 +421,7 @@ async def test_the_conversation_feed_keeps_what_the_facets_count(
         ("AgentToAgentMessage", _PEER % ("FINAL_ANSWER", "Implemented.")),
         ("UserMessage", _CODEX_CONTEXT),
         ("UserMessage", _TASK_NOTICE),
+        ("AgentToAgentMessage", _ATTACHED_TAGGED),
     )
     await _records(
         integ_store,
@@ -410,8 +446,9 @@ async def test_the_conversation_feed_keeps_what_the_facets_count(
         (4, "AgentToAgentMessage"),
         (5, "ContextState"),
         (9, "AgentToAgentMessage"),
+        (12, "AgentToAgentMessage"),
     ]
-    assert [event.seq for event in newest] == [5, 9]
+    assert [event.seq for event in newest] == [9, 12]
     assert [actor.conversation for actor in facets.actors] == [len(said)]
     assert len(await integ_store.read_feed(scope=talker)) == len(turns)
 

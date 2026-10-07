@@ -80,10 +80,11 @@ const BOOKKEEPING: readonly string[] = ["SystemMessage", "TokenUsage", "TurnCont
 
 type Fields = { readonly [field: string]: unknown };
 
-/** A message is conversation when it says something: text, or an attachment (a codec tuple). */
+/** A message is conversation when it says something: text, or an attachment (a plain array or a tagged tuple). */
 function said(payload: Fields): Level {
   const text = typeof payload.content === "string" ? payload.content.trim() : "";
-  return text || (Array.isArray(payload.attachments) && payload.attachments.length) ? 1 : 4;
+  const attachments = isFields(payload.attachments) ? payload.attachments["py/tuple"] : payload.attachments;
+  return text || (Array.isArray(attachments) && attachments.length) ? 1 : 4;
 }
 
 function isFields(value: unknown): value is Fields {

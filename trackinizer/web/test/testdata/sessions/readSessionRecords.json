@@ -32,7 +32,9 @@
           "kind": "UserMessage",
           "model": null,
           "payload": {
-            "attachments": [],
+            "attachments": {
+              "py/tuple": []
+            },
             "content": "What does **Issue#1** ask for?",
             "context_id": null,
             "extra": {},
@@ -69,7 +71,9 @@
           "kind": "AssistantMessage",
           "model": null,
           "payload": {
-            "attachments": [],
+            "attachments": {
+              "py/tuple": []
+            },
             "content": "Fixtures for the web app.",
             "context_id": null,
             "extra": {},

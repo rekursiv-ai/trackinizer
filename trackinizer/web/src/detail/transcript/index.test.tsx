@@ -1248,3 +1248,27 @@ test("a draft survives a live refetch, and the composer goes once the session en
   expect(await screen.findByText("The session has ended, so it takes no messages.")).toBeTruthy();
   expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
 });
+
+test("tagged rows render as plain rows do: a shell command, a web search and attachments", async () => {
+  const result = (url: string, title: string) => ({ "py/object": "trackinizer.lib.agent.types.sessions.WebSearchResult", url, title, snippet: "Snip." });
+  const png = { "py/object": "trackinizer.lib.agent.types.sessions.Attachment", mime_descriptor: "image/png", data: { "py/b64": "A".repeat(2868) } };
+  const shell = await renderRecords([
+    captured(0, "ShellCommandResult", { call_id: "t1", extra: {}, command: { "py/tuple": ["bash", "-lc", "ls -la"] }, stdout: "a.py\n", stderr: "", exit_code: 0 }),
+  ]);
+  expect(shell.querySelector(".tool-arg")!.textContent).toBe("ls -la");
+  cleanup();
+  const search = await renderRecords([
+    captured(0, "WebSearchResults", {
+      call_id: "t5",
+      extra: {},
+      query: "monotonic",
+      duration_sec: 1.2,
+      content: { "py/tuple": [result("https://docs.python.org/3/", "Docs"), result("javascript:alert(1)", "Not a page")] },
+    }),
+  ]);
+  expect(search.querySelector(".tr-outcome")!.textContent).toBe("2 results");
+  cleanup();
+  const message = await renderRecords([captured(0, "UserMessage", { content: "See:", attachments: { "py/tuple": [png, png] } }, "See:")]);
+  expect(message.querySelector(".tr-chip")!.textContent).toBe("2 attachments (image/png, 2.1 KB; image/png, 2.1 KB)");
+  expect(document.querySelector("img")).toBeNull();
+});

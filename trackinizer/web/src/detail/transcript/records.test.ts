@@ -529,3 +529,45 @@ test("a preview's lines leave the newline that ends the text out of the count", 
   expect(clipLines("a\nb\nc\nd\n", 3, 0)).toEqual({ head: "a\nb\nc", hidden: 1, tail: "" });
   expect(clipLines("a\nb\n", 3, 0)).toEqual({ head: "a\nb\n", hidden: 0, tail: "" });
 });
+
+test("tagged tuples and sets read as the plain arrays they stand for", () => {
+  const argv = { command: { "py/tuple": ["bash", "-lc", "ls -la"] }, workdir: "/w" };
+  expect(recordView(record("ToolCall", { name: "shell", arguments: argv }))).toMatchObject({ primary: "ls -la", args: [["workdir", "/w"]] });
+  const opaque = { channel: "#eng", blocks: { "py/tuple": [{ type: "section" }] } };
+  expect(recordView(record("ToolCall", { name: "mcp__slack__post", arguments: opaque }))).toEqual(
+    recordView(record("ToolCall", { name: "mcp__slack__post", arguments: { channel: "#eng", blocks: [{ type: "section" }] } })),
+  );
+  const command = { "py/tuple": ["echo", "it's", "a b", "--x=1"] };
+  expect(recordView(record("ShellCommandResult", { command, stdout: "it's\n", stderr: "", exit_code: 0 }))).toEqual(
+    recordView(record("ShellCommandResult", { command: ["echo", "it's", "a b", "--x=1"], stdout: "it's\n", stderr: "", exit_code: 0 })),
+  );
+  expect(recordView(record("ShellCommandResult", { command: { "py/tuple": ["/bin/bash", "-lc", "cd /w && date -u"] }, stdout: "", stderr: "", exit_code: 0 }))).toMatchObject({
+    command: "cd /w && date -u",
+  });
+  const splice = (extra: object) => ({ before: "old\n", after: "new\n", lead: "@@ -3,3 +3,3 @@\n ctx a\n", trail: " ctx b\n", start: 4, count: 1, ...extra });
+  const tagged = { "py/tuple": [splice({ bare: { "py/set": [] } }), { ...splice({ bare: { "py/set": [] } }), before: "x\n", after: "", lead: null, trail: null, start: 10 }] };
+  const plainEdits = [splice({ bare: [] }), { ...splice({ bare: [] }), before: "x\n", after: "", lead: null, trail: null, start: 10 }];
+  const view = recordView(record("FileEditResult", { path: "a.py", edits: tagged }));
+  expect(view).toMatchObject({ shape: "edit", label: "File edit", source: "a.py" });
+  expect(view).toEqual(recordView(record("FileEditResult", { path: "a.py", edits: plainEdits })));
+  expect(view.shape === "edit" && view.lines.length).toBeGreaterThan(0);
+});
+
+test("a tag is unwrapped only when it is the object's only key, and py/object is still dropped", () => {
+  const view = recordView(record("ToolCall", { name: "mcp__x__y", arguments: { nested: { "py/object": "a.B", "py/tuple": [1], other: 2 } } }));
+  expect(JSON.stringify(view)).toContain("other");
+  expect(JSON.stringify(view)).not.toContain("py/object");
+});
+
+test("an attachment chip sizes its data as a base64 string or as py/b64", () => {
+  const png = (data: unknown) => ({ "py/object": "trackinizer.lib.agent.types.sessions.Attachment", mime_descriptor: "image/png", data });
+  const b64 = "A".repeat(2868);
+  const chip = (attachments: unknown) => {
+    const view = recordView(record("UserMessage", { content: "x", attachments }));
+    return view.shape === "message" ? view.attachments : null;
+  };
+  const plain = chip([png(b64)]);
+  expect(plain).toMatch(/^1 attachment \(image\/png, 2\.\d KB\)$/);
+  expect(chip({ "py/tuple": [png({ "py/b64": b64 })] })).toBe(plain);
+  expect(chip({ "py/tuple": [png({ "py/b64": `${"A".repeat(683)}=` })] })).toBe(chip([png(`${"A".repeat(683)}=`)]));
+});

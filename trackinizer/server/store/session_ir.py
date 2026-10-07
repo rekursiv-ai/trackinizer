@@ -22,7 +22,7 @@ from uuid import UUID
 
 import json
 
-from trackinizer.lib.codec import PlainTree, from_plain, immutable, loads, mutable
+from trackinizer.lib.codec import PlainTree, immutable, loads, mutable
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.cascade import _CascadeAuditMixin
 from trackinizer.server.store.session_bodies import decode_body, spliced_payload
@@ -659,9 +659,15 @@ def _encoded_payload(payload: Mapping[str, PlainTree]) -> str:
     return json.dumps(mutable(payload), separators=(",", ":"))
 
 
+# Parsed, never decoded: ``from_plain`` lets a codec tag decide even under ``object``,
+# which turns a ``{"py/b64": ...}`` into bytes no JSON tree can hold. The tags stay
+# the plain objects they are stored as, for the record decoder and the web client.
 def _decoded_payload(raw: str) -> Mapping[str, PlainTree]:
     """Return the stored payload text back as frozen JSON, key order intact."""
-    return immutable(from_plain(loads(raw), dict[str, object]))
+    payload = loads(raw)
+    if not isinstance(payload, dict):
+        raise TypeError(f"stored payload is not a JSON object: {raw[:80]!r}")
+    return immutable(payload)
 
 
 # Claude writes standard base64 and codex base64url, so one decode/encode pair cannot

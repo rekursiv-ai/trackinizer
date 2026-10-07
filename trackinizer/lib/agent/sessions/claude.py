@@ -39,6 +39,12 @@ from trackinizer.lib.agent.sessions.shell_results import (
     rewrite_shell_source,
     shell_result_for_replay,
 )
+from trackinizer.lib.agent.sessions.unmodeled import (
+    extract_unmodeled_fields,
+    read_field_keeping_invalid,
+    restore_unmodeled_fields,
+    same_json_value,
+)
 from trackinizer.lib.agent.types.capability import ThinkingEffort
 from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,
@@ -76,12 +82,6 @@ from trackinizer.lib.codec import (
     immutable,
     loads,
     mutable,
-)
-from trackinizer.lib.custom_json import (
-    extract_unmodeled_fields,
-    read_field_keeping_invalid,
-    restore_unmodeled_fields,
-    same_json_value,
 )
 
 

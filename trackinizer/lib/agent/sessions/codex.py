@@ -28,6 +28,12 @@ from trackinizer.lib.agent.sessions.shell_results import (
     shell_result_for_replay,
 )
 from trackinizer.lib.agent.sessions.udiff import parse_udiff, render_udiff
+from trackinizer.lib.agent.sessions.unmodeled import (
+    FieldState,
+    extract_unmodeled_fields,
+    read_field_keeping_invalid,
+    restore_unmodeled_fields,
+)
 from trackinizer.lib.agent.types.capability import SummaryKind, ThinkingEffort
 from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,
@@ -59,6 +65,7 @@ from trackinizer.lib.agent.types.sessions import (
     WebSearchResults,
 )
 from trackinizer.lib.codec import (
+    Invalid,
     MutablePlainTree,
     PlainTree,
     ReadError,
@@ -66,16 +73,6 @@ from trackinizer.lib.codec import (
     immutable,
     loads,
     mutable,
-)
-
-# The field-state helpers stay on custom_json, and they recognise only its
-# ``Invalid``: the codec's has the same shape but is another class.
-from trackinizer.lib.custom_json import (
-    FieldState,
-    Invalid,
-    extract_unmodeled_fields,
-    read_field_keeping_invalid,
-    restore_unmodeled_fields,
 )
 
 

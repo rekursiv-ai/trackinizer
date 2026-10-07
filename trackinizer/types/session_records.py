@@ -29,12 +29,10 @@ Two fields of the record do not ride in ``payload``:
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, fields, is_dataclass, replace
+from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Final, Self, cast, get_type_hints
+from typing import Final, Self
 from uuid import UUID
-
-import weakref
 
 from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,
@@ -59,8 +57,8 @@ from trackinizer.lib.agent.types.sessions import (
     WebFetchResult,
     WebSearchResults,
 )
-from trackinizer.lib.codec import PlainTree, from_plain, immutable, mutable
-from trackinizer.lib.custom_json import to_builtins
+from trackinizer.lib.agent.types.stored import from_stored, to_stored
+from trackinizer.lib.codec import PlainTree, immutable, mutable
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 
 
@@ -140,7 +138,7 @@ class SessionRecordRow:
     not self-join per row. A projection, never read back into a record."""
 
     payload: Mapping[str, PlainTree]
-    """Frozen ``to_builtins`` data, tagged by record type, without ciphertext."""
+    """Frozen :func:`to_stored` data, tagged by record type, without ciphertext."""
 
     text: str = ""
     """The search projection; see :func:`search_text`."""
@@ -189,7 +187,7 @@ class SessionRecordRow:
             context_id=getattr(record, "context_id", None),
             timestamp=_parsed(raw if isinstance(raw, str) else None),
             model=model,
-            payload=immutable(to_builtins(stored)),
+            payload=immutable(to_stored(stored)),
             text=search_text(record),
             ciphertext=encrypted if isinstance(encrypted, str) and encrypted else None,
         )
@@ -197,11 +195,9 @@ class SessionRecordRow:
     def record(self) -> TraxRecord:
         """Rebuild the record this row stores.
 
-        Unfrozen to the plain shape ``to_builtins`` wrote, decoded, then each
-        ``JSON`` field frozen as the provider readers build it. msgspec decodes
-        those fields as plain lists, so without the freeze a stored record
-        differs from the record its source file normalizes to. A row stored in
-        the old tagged format was already unwrapped when the store read it.
+        Read by :func:`from_stored`, which takes both the tagged shape and the
+        plain one rows were written in before, and freezes each ``JSON`` field
+        as the provider readers build it.
 
         Ciphertext is NOT spliced here: this type holds one row, and the bytes
         live in another table. A reader that fetched them calls
@@ -211,48 +207,7 @@ class SessionRecordRow:
           record: Decoded TraxRecord of the appropriate subtype.
 
         """
-        record = from_plain(mutable(self.payload), _class_for(self.kind))
-        return cast("TraxRecord", _frozen_json_fields(record))
-
-
-def _frozen_json_fields(value: object) -> object:
-    """Return ``value`` with the ``JSON`` fields of every record in it frozen."""
-    if isinstance(value, tuple):
-        return tuple(
-            _frozen_json_fields(item) for item in cast(tuple[object, ...], value)
-        )
-    if not is_dataclass(value) or isinstance(value, type):
-        return value
-    frozen = _json_field_names(type(value))
-    changes: dict[str, object] = {}
-    for field in fields(value):
-        if field.init:
-            member = cast(object, getattr(value, field.name))
-            changes[field.name] = (
-                immutable(member)
-                if field.name in frozen
-                else _frozen_json_fields(member)
-            )
-    return replace(value, **changes)
-
-
-_JSON_FIELD_NAMES: Final[weakref.WeakKeyDictionary[type, frozenset[str]]] = (
-    weakref.WeakKeyDictionary()
-)
-
-
-def _json_field_names(target: type) -> frozenset[str]:
-    """Return the names of ``target``'s fields annotated ``JSON``."""
-    cached = _JSON_FIELD_NAMES.get(target)
-    if cached is None:
-        cached = frozenset(
-            name
-            for name, hint in get_type_hints(target).items()
-            # ``==``, not ``is``: each subscription builds a new alias object.
-            if hint == Mapping[str, PlainTree]
-        )
-        _JSON_FIELD_NAMES[target] = cached
-    return cached
+        return from_stored(mutable(self.payload), _class_for(self.kind))
 
 
 def _parts(record: object) -> tuple[str, ...]:

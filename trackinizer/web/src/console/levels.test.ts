@@ -85,3 +85,12 @@ test("each level counts what it shows: the agents' conversation, then each kind 
   // 82 of the 110 records of conversation kinds are conversation; the other 28 count with the bookkeeping.
   expect(levelCounts({ conversation: 82, count: 1000, kinds })).toEqual([82, 282, 532, 1000]);
 });
+
+test("a message's attachments count whether plain or a tagged tuple", () => {
+  const plain = { "py/object": "trackinizer.lib.agent.types.sessions.Attachment", mime_descriptor: "image/png", data: "AA==" };
+  const tagged = { ...plain, data: { "py/b64": "AA==" } };
+  expect(levelOf(record("UserMessage", { content: "", attachments: [plain] }))).toBe(1);
+  expect(levelOf(record("UserMessage", { content: "", attachments: { "py/tuple": [tagged] } }))).toBe(1);
+  expect(levelOf(record("UserMessage", { content: "", attachments: [] }))).toBe(4);
+  expect(levelOf(record("UserMessage", { content: "", attachments: { "py/tuple": [] } }))).toBe(4);
+});

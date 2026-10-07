@@ -18,6 +18,7 @@ from uuid import NAMESPACE_DNS, UUID, uuid5
 import json
 
 from trackinizer.lib.agent.sessions.provider_fields import read_or_default
+from trackinizer.lib.agent.sessions.unmodeled import extract_unmodeled_fields
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
     ContextClear,
@@ -36,7 +37,6 @@ from trackinizer.lib.codec import (
     loads,
     mutable,
 )
-from trackinizer.lib.custom_json import extract_unmodeled_fields
 
 
 if TYPE_CHECKING:

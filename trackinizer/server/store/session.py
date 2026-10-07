@@ -24,7 +24,7 @@ else:
 
     asyncpg = lazy_import("asyncpg")  # ~60 ms; only start_session() needs it.
 
-from trackinizer.lib.codec import from_plain, immutable, loads
+from trackinizer.lib.codec import from_plain
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
@@ -36,6 +36,7 @@ from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     FeedScope,
 )
+from trackinizer.server.store.session_ir import _decoded_payload
 from trackinizer.server.store.submit import _SubmitMixin
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Snapshot
@@ -902,9 +903,7 @@ def _feed_event(row: asyncpg.Record) -> FeedEvent:
         created=_datetime(row["created"]),
         timestamp=_optional_datetime(row["timestamp"]),
         model=_optional_str(row["model"]),
-        message=immutable(
-            from_plain(loads(from_plain(row["payload"], str)), dict[str, object]),
-        ),
+        message=_decoded_payload(from_plain(row["payload"], str)),
         text=from_plain(row["text"], str),
     )
 

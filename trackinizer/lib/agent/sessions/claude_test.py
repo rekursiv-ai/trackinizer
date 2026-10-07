@@ -1883,6 +1883,18 @@ def test_a_system_line_reads_its_own_fields() -> None:
     assert claude._numbered("a\nb") == "1\ta\n2\tb"
 
 
+def test_a_system_line_reads_a_mistyped_field_as_absent() -> None:
+    message = claude._read_system(
+        {"type": "system", "timestamp": 5, "content": 7, "subtype": ["s"]},
+    )
+
+    assert (message.timestamp, message.content, message.subtype) == (None, None, None)
+    assert (message.extra["$content_value"], message.extra["$subtype_value"]) == (
+        7,
+        ("s",),
+    )
+
+
 def test_claude_writer_handles_special_record_shapes(tmp_path: Path) -> None:
     assert claude._rename_calls({"message": 7}, {}) is None
     assert claude._rename_calls({"message": {"content": {}}}, {}) is None

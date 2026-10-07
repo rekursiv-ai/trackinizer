@@ -1,11 +1,10 @@
 """Recursive JSON aliases for pydantic models and FastAPI routes.
 
-``trackinizer.lib.custom_json`` stops its runtime JSON aliases one level down, because
-msgspec cannot type a self-referencing alias. pydantic can, and needs to: with
-the flat alias it passes a nested frozen mapping or tuple through unvalidated
+pydantic can type a self-referencing alias, and needs to: with a flat alias
+one level deep it passes a nested frozen mapping or tuple through unvalidated
 and then cannot dump it, and the published OpenAPI schema stops describing
-anything below the first level. These carry the same names, so every schema
-component keeps its name.
+anything below the first level. These aliases recurse, and keep the names
+``JSON`` and ``JSONValue`` so every schema component keeps its name.
 """
 
 from __future__ import annotations
