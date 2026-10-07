@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { editableFields } from "../api/fields";
 import { stubFetch } from "../api/testing";
+import { HighlightStore } from "../app/highlights";
 import { CommandRegistry } from "../commands/registry";
 import { stubLayout } from "../editors/testing";
 import { openedAt } from "./queries";
@@ -461,6 +462,36 @@ test("a child's priority glyph is its edge priority under this parent (COLD-17)"
   expect(within(parent).queryByRole("img", { name: /^P\d/ })).toBeNull();
   expect(within(parent).getByText("p30")).toBeTruthy();
   expect(within(prop("Priority")).getByRole("img", { name: "P1 High" })).toBeTruthy();
+});
+
+test("a peer the assistant points at is marked in the rail, and the record itself when its own id is pointed at", async () => {
+  const highlights = new HighlightStore();
+  serveDetails([
+    detail(row("Issue", 1), {
+      backlinks: { narrows: [peer("Issue", 2), peer("Issue", 3)] },
+      edges: { narrows: [peer("Issue", 8)] },
+    }),
+  ]);
+  renderDetail({ kind: "Issue", seq: 1 }, undefined, { highlights });
+  await screen.findByRole("heading", { level: 1 });
+  const marked = () => [...document.querySelectorAll(".rail-peer.is-highlighted .rail-title")].map((title) => title.textContent);
+  expect(marked()).toEqual([]);
+  expect(document.querySelector(".d-head.is-highlighted")).toBeNull();
+  act(() => highlights.set([uuid(3), uuid(8)]));
+  expect(marked()).toEqual(["Issue number 8 Issue#8", "Issue number 3 Issue#3"]);
+  expect(section("Parents").querySelectorAll(".is-highlighted")).toHaveLength(1);
+  act(() => highlights.set([uuid(1)]));
+  expect(marked()).toEqual([]);
+  expect(document.querySelector(".d-head.is-highlighted")).not.toBeNull();
+  act(() => highlights.set([]));
+  expect(document.querySelector(".is-highlighted")).toBeNull();
+});
+
+test("outside a canvas the record page marks nothing", async () => {
+  serveDetails([detail(row("Issue", 1), { backlinks: { narrows: [peer("Issue", 2)] } })]);
+  renderDetail({ kind: "Issue", seq: 1 });
+  await screen.findByRole("heading", { level: 1 });
+  expect(document.querySelector(".is-highlighted")).toBeNull();
 });
 
 test("cost names its scope, keeps sub-cent values, and reads none recorded at zero", async () => {

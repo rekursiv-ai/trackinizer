@@ -2,12 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
 import { getEvidenceTimeline, type TimelineExperiment, type TimelineRecord } from "../api/timeline";
 import { formatRoute } from "../router/route";
+import { useVisualMark } from "./marks";
 import type { RendererProps } from "./registry";
-import { useWorkspaceActions } from "./workspaceActions";
 import "./Timeline.css";
 
 /** Render a bounded chronology with visible dates and citations. */
-export function Timeline({ instance }: RendererProps) {
+export function Timeline({ instance, workspace }: RendererProps) {
   const recordId = instance.record_id;
   const directionLimit = bounded(instance.params?.direction_limit, 8, 12);
   const resultsPerDirection = bounded(instance.params?.results_per_direction, 3, 5);
@@ -19,6 +19,7 @@ export function Timeline({ instance }: RendererProps) {
     enabled: !!recordId,
     retry: false,
   });
+  useVisualMark(instance, workspace, "data", query.isSuccess);
   if (!recordId) return <div className="visual-unsupported">Choose a record to show its evidence timeline.</div>;
   if (query.isPending) return <div className="visual-loading" aria-busy="true">Loading evidence timeline…</div>;
   if (query.isError) {
@@ -101,17 +102,7 @@ function evidenceClass(valence: number | null): string {
 }
 
 function RecordLink({ record }: { readonly record: TimelineRecord }) {
-  const actions = useWorkspaceActions();
-  const href = formatRoute({ name: "lookup", id: record.id });
-  return <a href={href} aria-disabled={actions?.busy ?? false} tabIndex={actions?.busy ? -1 : undefined}
-    onClick={(event) => {
-      if (!actions || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      event.preventDefault();
-      if (actions.busy) return;
-      void actions.revealRecord(record.id).then((revealed) => {
-        if (revealed) window.location.hash = href;
-      });
-    }}>{record.kind}#{record.seq} {record.title}</a>;
+  return <a href={formatRoute({ name: "lookup", id: record.id })}>{record.kind}#{record.seq} {record.title}</a>;
 }
 
 function date(value: string): string {

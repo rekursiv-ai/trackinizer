@@ -8,18 +8,20 @@
       "description": "Browse trax records by kind and query.",
       "requires": [],
       "default_size": "wide",
-      "parameter_schema": {}
+      "parameter_schema": {},
+      "record_kinds": []
     },
     {
       "type": "trax.chat",
       "version": 1,
       "title": "Chat",
-      "description": "Talk with a connected trax run session.",
+      "description": "Talk with the assistant or a trax run session.",
       "requires": [
         "session"
       ],
       "default_size": "compact",
-      "parameter_schema": {}
+      "parameter_schema": {},
+      "record_kinds": null
     },
     {
       "type": "trax.subgraph",
@@ -30,7 +32,8 @@
         "record"
       ],
       "default_size": "wide",
-      "parameter_schema": {}
+      "parameter_schema": {},
+      "record_kinds": null
     },
     {
       "type": "trax.timeline",
@@ -42,7 +45,8 @@
       "parameter_schema": {
         "direction_limit": {"type": "integer", "default": 8, "minimum": 1, "maximum": 12, "max_length": null},
         "results_per_direction": {"type": "integer", "default": 3, "minimum": 1, "maximum": 5, "max_length": null}
-      }
+      },
+      "record_kinds": ["Issue", "Experiment"]
     },
     {
       "type": "trax.artifact",
@@ -51,7 +55,8 @@
       "description": "Read immutable shared Artifact content.",
       "requires": ["record"],
       "default_size": "wide",
-      "parameter_schema": {}
+      "parameter_schema": {},
+      "record_kinds": ["Artifact"]
     }
   ]
 }

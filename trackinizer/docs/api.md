@@ -498,48 +498,149 @@ any read. Read-only; nothing imports it yet. Line shape: section 3.24.
 GET  /api/visuals
 POST /api/workspaces
 GET  /api/workspaces/<uuid>
-GET  /api/workspaces/sessions/connectable
-PUT  /api/workspaces/<uuid>/connection
 POST /api/workspaces/<uuid>/operations
 ```
 
 `GET /api/visuals` returns safe descriptors and the default visual type. It
 does not fetch graph data or start a session. Each descriptor has a stable
-`type`, `version`, title, description, requirements, default size, and bounded
-parameter schema.
+`type`, `version`, title, description, requirements, default size, bounded
+parameter schema, and `record_kinds`: the kinds of record a show may name
+(`null` for any, an empty list for none). `trax.browse` is the page itself: it
+takes no record and no parameter, and it cannot be hidden. `trax.timeline`
+shows an Issue or an Experiment, `trax.artifact` an Artifact, `trax.subgraph`
+any record.
 
 `PUT /api/me/visual-workspace` sets the signed-in user's canvas opt-in from
 an interactive browser session. API keys cannot change that choice.
-`GET /api/me/profile` includes `visual_workspace_enabled`; its default is
-false. Canvas routes return 403 while it is false.
+`GET /api/me/profile` includes `visual_workspace_enabled`; it defaults to true.
 
-`POST /api/workspaces` creates or reopens the signed-in user's default canvas.
-The response has `id`, `revision`, `visuals`, `focused_instance`, and
-`connected_session_id`.
-`GET /api/workspaces/<uuid>` returns that state only to its owner.
+`POST /api/workspaces` creates or reopens the signed-in user's default canvas,
+which starts with `trax.browse` in the main pane and `trax.chat` at the side.
+The response has `id`, `revision`, `visuals`, `focused_instance`, `assistant`,
+and `partner`.
+`GET /api/workspaces/<uuid>` returns that state to its owner, and to an
+assistant's key (below).
 
-The browser pairs a live AgentSession with `PUT /connection`, supplying the
-current `revision` and `session_id`. Null disconnects. The session must have
-been opened by an unrevoked API key owned by that account. API keys cannot
-change the pairing. A stale revision returns 409 with the current workspace.
-`GET /api/workspaces/sessions/connectable` lists at most 100 such live
-sessions for the interactive browser's picker; API keys cannot call it.
+**The assistant and the partner.** The server's `--assistant ACTOR=EMAIL`, or
+`$TRACKINIZER_ASSISTANT`, names one assistant. A live AgentSession is the
+assistant's when its granted actor is `ACTOR` (or `ACTOR#N`, the suffix the
+server adds once a name has been used) and the API key that opened it belongs to
+the account `EMAIL`, compared lowercase. Every canvas talks to the assistant's
+newest live session. `assistant` in the state is its actor, or null when none is
+configured. `partner` is computed on every read and never stored: `session_id`,
+`actor`, the configured name, `cli`, and `status`, `live` or `unavailable`.
+
+Any session can be the assistant. `trax helper claude` (or `codex`) `--as
+ACTOR`, run with a key of the account `EMAIL`, opens one and answers each Chat
+message by a turn of that CLI, resuming the conversation's own CLI conversation.
+Its session takes messages only from Chat: a direct or routed send to it is 403.
+
+The assistant's key may read and operate a canvas while that canvas's partner
+is the assistant session the key opened, and the canvas's owner has a
+conversation on that canvas with it. Any other canvas is 404, so a user who
+never talked to the assistant gives it nothing; the owner's own key, which only
+the assistant may stand in for, is 403. Only the key that opened an assistant
+session may drain its inbound queue, whatever the role.
 
 An operation body has `revision` and one `operation`: `show`, `hide`, `focus`,
-or `place`. The caller supplies a UUID `Idempotency-Key` header. The server
-locks the workspace, checks the revision, validates the visual type and
-parameters, and returns the new state. Retrying a recent body with the same
-key returns the original state. The latest 64 receipts are retained; an older
-retry receives a stale-revision 409 after its receipt expires. Reusing a
-retained key for another body returns 409.
-Both that conflict and a stale revision include `current` with the live
-workspace. An API key can operate only while its own live session is paired;
-that check also runs before replaying an idempotency receipt.
-The current browser polls the workspace every two seconds; workspace events
-are planned for a later slice.
+`place`, `navigate`, or `highlight`. The caller supplies a UUID `Idempotency-Key`
+header. The
+server locks the workspace, checks the revision, validates the visual type,
+parameters and record kind, and returns the new state. Retrying a recent body
+with the same key returns the original state and publishes nothing. The latest 64
+receipts are retained; an older retry receives a stale-revision 409 after its
+receipt expires. Reusing a retained key for another body returns 409. Both that
+conflict and a stale revision include `current` with the live workspace. An API
+key can operate only as the assistant above; that check also runs before
+replaying an idempotency receipt.
+
+`navigate` is `{"kind": "navigate", "route": "#/..."}` with a route of at most
+512 characters and no space or control character. Only an agent key may send it.
+It changes no visual and no revision: the server pushes a `navigate` frame, and
+the browser goes there when it accepts the route. A navigation made while no tab
+listens is not replayed.
+
+`highlight` is `{"kind": "highlight", "ids": [uuid, ...]}` with at most 50 ids;
+an empty list clears. It is an event as `navigate` is: only an agent key may
+send it, it changes no visual and no revision, and the server pushes a
+`highlight` frame, which the browser marks the inquiries from. It is never
+stored and not replayed.
 
 Viewer access is enough to change one's own canvas. Workspace operations do
 not edit trax records or add entries to `change_log`.
+
+### 1.25 Chat conversations and canvas events
+
+```
+POST   /api/workspaces/<uuid>/messages
+GET    /api/workspaces/<uuid>/events
+GET    /api/chats
+GET    /api/chats/awaiting
+GET    /api/chats/<uuid>?after_seq=<n>
+DELETE /api/chats/<uuid>
+POST   /api/chats/<uuid>/messages
+```
+
+`POST /api/workspaces/<uuid>/messages` (browser only, with an `Idempotency-Key`)
+sends the user's text, which must hold a non-space character and at most 16,384
+characters, to the canvas's partner. Its optional `conversation_id` continues
+one of the user's conversations on that canvas; none starts one, titled with the
+message's first 80 characters. The server stores the message with the key and a
+hash of the request, commits, publishes it, then queues it with
+`context.conversation_id`. The receipt has `session_id`, `conversation_id`, and
+the stored `message`. A retry of the same request returns the original receipt,
+queues nothing, and answers even when the partner has since gone away; the same
+key for another request is 409. Two concurrent sends with one key store one
+message. An unknown or foreign conversation is 404; no live partner is 409. A
+partner whose queue of unread messages is full is 409 `partner busy`, and nothing
+is stored: a message is refused, never dropped.
+
+`GET /api/chats` lists the user's conversations, newest change first, at most
+50. `GET /api/chats/<uuid>` returns the conversation and its messages: the
+newest 500 without `after_seq`, with `earlier` true when older ones exist, or up
+to 500 numbered above `after_seq`. The owner's browser reads it, and so does the
+agent key that opened the conversation's live partner session, which is how an
+assistant that lost its memory of a thread reseeds it; any other key is 403, and
+a conversation the browser's user does not own is 404. `DELETE` takes no body,
+removes the conversation and its messages, answers 204, and pushes a `deleted`
+frame. It and the list are browser only: an API key gets 403.
+
+`POST /api/chats/<uuid>/messages` is for agent keys only. The body is `text` and
+`kind`, `answer` or `status`, and `text` of at most 65,536 characters must hold a
+non-space character, except that an empty status clears. Only the key that opened
+the conversation's live partner session may call it, otherwise 403. An answer is
+stored as the partner's message and returned; it clears the status, and is 404 if
+the conversation is gone. The records an answer names as `Kind#seq` that exist (at
+most 50, once each, in its order) are then pushed as a `highlight` frame. A status
+is pushed, kept in memory as the conversation's current one, never stored, and
+answers null.
+
+`GET /api/chats/awaiting` is for the agent key of a partner session. It lists, as
+`{conversation_id, workspace_id, seq}`, the conversations whose partner is a live
+session that key opened and whose last line is the user's, `seq` being that line:
+the answers the partner owes, which an assistant that restarted calls once at
+startup for lines it drained but never answered. It is `[]` for any other key, for
+a revoked key and for an ended session, and 403 for a browser.
+
+When a session ends with Chat messages it never drained, each affected
+conversation gets a status saying they were not delivered and to send again, and
+any other conversation the session was working on loses its status.
+
+`GET /api/workspaces/<uuid>/events` streams the owner's canvas as server-sent
+events (browser only), and is the tab's one stream. Each frame is `data: <json>`
+with `t`, the server's epoch milliseconds: `{type: "workspace", state}` on open,
+after every applied operation, and when the partner changes (a
+session starts or ends, or its poller lease lapses); `{type: "navigate",
+route}`; `{type: "highlight", ids}`; `{type: "message", conversation_id,
+message}`; `{type: "status",
+conversation_id, text}`; `{type: "delivered", conversation_id, seq}` when the
+partner drains the conversation's messages through `seq`; `{type: "deleted",
+conversation_id}`; and `{type: "changed", id}` for each inquiry id
+`/api/web/subscribe` relays. After the `workspace` frame come each conversation's
+current status and delivered `seq`. A comment goes out on open and after 25 s
+without a frame, and on each the server checks the user is still active and ends
+the stream if not. A subscriber more than 256 frames behind is dropped and
+reconnects from the `workspace` frame.
 
 ## 2. Glossary
 

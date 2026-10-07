@@ -81,6 +81,8 @@ class VisualDescription(BaseModel):
     requires: list[Literal["record", "session"]]
     default_size: Literal["compact", "wide"]
     parameter_schema: dict[str, ParameterDescription]
+    record_kinds: list[str] | None = None
+    """Kinds of record a show may target: none means any kind, empty means no record."""
 
 
 class VisualCatalogBody(BaseModel):
@@ -122,6 +124,9 @@ class StaticVisual:
         default_size: Literal["compact", "wide"] = "wide"
         """Pane shape used when a show operation names no placement."""
 
+        record_kinds: list[str] | None = None
+        """Kinds of record a show may target; none means any, empty means no record."""
+
     def __init__(self, config: Config) -> None:
         """Keep the configured entry until projection."""
         self.config = config
@@ -141,6 +146,7 @@ class StaticVisual:
             requires=self.config.requires,
             default_size=self.config.default_size,
             parameter_schema={},
+            record_kinds=self.config.record_kinds,
         )
 
 
@@ -181,6 +187,7 @@ class TimelineVisual:
             description="Follow dated directions, results, and signed evidence.",
             requires=["record"],
             default_size="wide",
+            record_kinds=["Issue", "Experiment"],
             parameter_schema={
                 "direction_limit": ParameterDescription(
                     type="integer",
@@ -208,11 +215,12 @@ class Workspace:
                     type="trax.browse",
                     title="Browse",
                     description="Browse trax records by kind and query.",
+                    record_kinds=[],
                 ),
                 StaticVisual.Config(
                     type="trax.chat",
                     title="Chat",
-                    description="Talk with a connected trax run session.",
+                    description="Talk with the assistant or a trax run session.",
                     requires=["session"],
                     default_size="compact",
                 ),
@@ -228,6 +236,7 @@ class Workspace:
                     title="Artifact",
                     description="Read immutable shared Artifact content.",
                     requires=["record"],
+                    record_kinds=["Artifact"],
                 ),
             ],
         )

@@ -348,6 +348,8 @@ trax workspace WORKSPACE_UUID show trax.timeline --record RECORD_UUID --placemen
 trax workspace WORKSPACE_UUID focus INSTANCE_UUID
 trax workspace WORKSPACE_UUID place INSTANCE_UUID floating
 trax workspace WORKSPACE_UUID hide INSTANCE_UUID
+trax workspace WORKSPACE_UUID highlight RECORD_UUID,RECORD_UUID
+trax workspace WORKSPACE_UUID highlight ""
 ```
 
 The catalog registers `trax.browse`, `trax.chat`, `trax.subgraph`, and
@@ -357,6 +359,11 @@ follows the selected record's Issue lineage and highlights it.
 Each write reads
 the current revision and prints the resulting state. If another change wins the
 race and the server returns 409, read the workspace again before retrying.
+`highlight` points at what you are talking about: it marks up to 50 records, by
+UUID, wherever the user's page draws them (graph nodes, list rows, a record's
+relations), and an empty list clears the marks. Like `navigate` it is an event:
+it changes no visual and no revision, a newer highlight replaces the last, and
+it is not replayed to a tab that was not listening.
 Pairing and disconnecting remain browser actions.
 
 ## Decomposing a large task

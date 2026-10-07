@@ -51,9 +51,8 @@ class Inbound:
 
     context: WorkspaceMessageContext | None = None
 
-
-class InboundReplayConflictError(Exception):
-    """An idempotency key was reused for a different scoped message."""
+    seq: int | None = None
+    """The Chat message's number in its conversation, for the delivered frame."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -61,8 +60,6 @@ class _SendReceipt:
     """Original send result retained for retry-safe responses."""
 
     delivered: tuple[UUID, ...]
-    fingerprint: str | None = None
-    queued: int | None = None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -207,10 +204,6 @@ class InboundQueue:
             if key is not None:
                 seen = self._seen_sends.get(key)
                 if seen is not None:
-                    if seen.fingerprint is not None:
-                        raise InboundReplayConflictError(
-                            "Idempotency-Key already used for a workspace message",
-                        )
                     return list(seen.delivered)
             delivered: list[UUID] = []
             for session_id, message in targets:
@@ -219,56 +212,11 @@ class InboundQueue:
             if key is not None and delivered:
                 self._remember(
                     key,
-                    _SendReceipt(delivered=tuple(delivered)),
+                    receipt=_SendReceipt(delivered=tuple(delivered)),
                 )
             return delivered
 
-    def send_scoped_once(
-        self,
-        key: UUID,
-        session_id: UUID,
-        message: Inbound,
-        *,
-        fingerprint: str,
-    ) -> int:
-        """Queue once and replay the original depth for one scoped message.
-
-        Args:
-          key: Idempotency key.
-          session_id: Paired live session.
-          message: Text and server-derived canvas context.
-          fingerprint: Hash of the attested request and target.
-
-        Returns:
-          queued: Pending depth when the original send completed.
-
-        Raises:
-          InboundReplayConflictError: Key already names another send.
-
-        """
-        with self._lock:
-            seen = self._seen_sends.get(key)
-            if seen is not None:
-                if seen.fingerprint != fingerprint:
-                    raise InboundReplayConflictError(
-                        "Idempotency-Key already used for another message",
-                    )
-                if seen.queued is None:
-                    raise RuntimeError("Scoped send receipt has no queue depth")
-                return seen.queued
-            self._append_capped(session_id, message)
-            queued = len(self._queues[session_id])
-            self._remember(
-                key,
-                _SendReceipt(
-                    delivered=(session_id,),
-                    fingerprint=fingerprint,
-                    queued=queued,
-                ),
-            )
-            return queued
-
-    def _remember(self, key: UUID, receipt: _SendReceipt) -> None:
+    def _remember(self, key: UUID, *, receipt: _SendReceipt) -> None:
         """Retain a bounded receipt under the caller's queue lock."""
         self._seen_sends[key] = receipt
         while len(self._seen_sends) > self.max_seen_keys:
@@ -403,3 +351,15 @@ class InboundQueue:
         with self._lock:
             queue = self._queues.get(session_id)
             return len(queue) if queue else 0
+
+    def is_full(self, session_id: UUID) -> bool:
+        """Say whether one more message would evict the oldest waiting one.
+
+        Args:
+          session_id: Session id.
+
+        Returns:
+          full: Whether the session's queue is at its cap.
+
+        """
+        return self.pending(session_id) >= self.max_per_session

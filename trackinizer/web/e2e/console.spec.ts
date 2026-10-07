@@ -1,5 +1,5 @@
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, failedResource, test } from "./fixtures";
+import { expect, failedResource, test, streamOpened } from "./fixtures";
 
 // The console (#/console): every session's captured records as one live feed,
 // narrowed by a view that saves itself, and a line that messages agents. The test
@@ -43,7 +43,7 @@ async function drain(request: APIRequestContext, id: string): Promise<string[]> 
 
 /** Open the console once the live stream is connected. */
 async function openConsole(page: Page) {
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   await page.goto("/app/#/console");
   await subscribed;
 }

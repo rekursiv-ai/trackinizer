@@ -82,8 +82,8 @@ type Shape =
 export type SearchResult = { readonly url: string; readonly title: string; readonly snippet: string };
 
 /**
- * What the canvas appends to a message it sends (`_render_inbound` in
- * `trax/run/session.py`), and the record it names, when it names one.
+ * What the canvas appends to a message it sends (`render_inbound` in
+ * `trax/run/inbound.py`), and the record it names, when it names one.
  */
 export type CanvasContext = { readonly text: string; readonly recordId: string; readonly title: string };
 

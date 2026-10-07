@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from functools import partial
 from typing import TYPE_CHECKING, cast
 
 import hashlib
@@ -13,7 +14,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from trackinizer.lib.codec import from_plain
 from trackinizer.server.notify import tx
+from trackinizer.server.visuals.partners import attach_partner
 from trackinizer.server.visuals.workspace_store import (
+    AppliedOperation,
     ReplayConflictError,
     RevisionConflictError,
     WorkspaceDisabledError,
@@ -30,6 +33,8 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
+    from trackinizer.server.config import Assistant
+    from trackinizer.server.inbound import InboundQueue
 
 
 class PresetRequest(BaseModel):
@@ -147,9 +152,12 @@ async def read_preset(
 
 async def create_preset(
     engine: DatabaseEngine,
+    *,
     user_id: uuid.UUID,
     body: CreatePreset,
     key: uuid.UUID,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
 ) -> WorkspacePreset | None:
     """Snapshot a stable source revision, rects, and reusable guidance atomically.
 
@@ -158,6 +166,8 @@ async def create_preset(
       user_id: Signed-in account.
       body: Expected source revision and durable workflow fields.
       key: Idempotency key retained with the source workspace.
+      inbound: In-process poller leases, for a conflict's partner.
+      assistant: The configured assistant, if any.
 
     Returns:
       preset: Created snapshot or None for a foreign workspace.
@@ -171,7 +181,7 @@ async def create_preset(
         if not enabled:
             raise WorkspaceDisabledError("Visual workspace is disabled")
         row = await conn.fetchrow(
-            "SELECT id, revision, state, session_id FROM visual_workspaces "
+            "SELECT id, revision, state FROM visual_workspaces "
             "WHERE id = $1 AND user_id = $2 FOR UPDATE",
             body.workspace_id,
             user_id,
@@ -179,6 +189,12 @@ async def create_preset(
         if row is None:
             return None
         source = state_from_row(cast("Mapping[str, object]", row))
+        with_partner = partial(
+            attach_partner,
+            conn,
+            inbound=inbound,
+            assistant=assistant,
+        )
         request_hash = _request_hash("create", body)
         receipt = await conn.fetchrow(
             "SELECT request_hash, response FROM visual_workspace_operations "
@@ -188,10 +204,10 @@ async def create_preset(
         )
         if receipt is not None:
             if receipt["request_hash"] != request_hash:
-                raise ReplayConflictError(source)
+                raise ReplayConflictError(await with_partner(state=source))
             return WorkspacePreset.model_validate(receipt["response"])
         if source.revision != body.revision:
-            raise RevisionConflictError(source)
+            raise RevisionConflictError(await with_partner(state=source))
         count = from_plain(
             await conn.fetchval(
                 "SELECT count(*) FROM visual_workspace_presets WHERE user_id = $1",
@@ -249,11 +265,14 @@ async def create_preset(
 
 async def open_preset(
     engine: DatabaseEngine,
+    *,
     user_id: uuid.UUID,
     preset_id: uuid.UUID,
     body: OpenPreset,
     key: uuid.UUID,
-) -> WorkspaceState | None:
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+) -> AppliedOperation | None:
     """Restore a visual snapshot and disconnect any previous session atomically.
 
     Args:
@@ -262,9 +281,12 @@ async def open_preset(
       preset_id: Snapshot to restore.
       body: Owned target workspace and expected revision.
       key: Idempotency key retained with the target workspace.
+      inbound: In-process poller leases, for the returned partner.
+      assistant: The configured assistant, if any.
 
     Returns:
-      state: Restored workspace or None for a foreign resource.
+      applied: The restored workspace with its partner, and whether this call only
+        replayed it; None for a foreign resource.
 
     """
     async with engine.acquire() as conn, tx(conn):
@@ -274,7 +296,7 @@ async def open_preset(
         ):
             raise WorkspaceDisabledError("Visual workspace is disabled")
         row = await conn.fetchrow(
-            "SELECT id, revision, state, session_id FROM visual_workspaces "
+            "SELECT id, revision, state FROM visual_workspaces "
             "WHERE id = $1 AND user_id = $2 FOR UPDATE",
             body.workspace_id,
             user_id,
@@ -282,6 +304,12 @@ async def open_preset(
         if row is None:
             return None
         current = state_from_row(cast("Mapping[str, object]", row))
+        with_partner = partial(
+            attach_partner,
+            conn,
+            inbound=inbound,
+            assistant=assistant,
+        )
         request_hash = _request_hash("open", body, preset_id=preset_id)
         receipt = await conn.fetchrow(
             "SELECT request_hash, response FROM visual_workspace_operations "
@@ -291,8 +319,13 @@ async def open_preset(
         )
         if receipt is not None:
             if receipt["request_hash"] != request_hash:
-                raise ReplayConflictError(current)
-            return WorkspaceState.model_validate(receipt["response"])
+                raise ReplayConflictError(await with_partner(state=current))
+            return AppliedOperation(
+                state=await with_partner(
+                    state=WorkspaceState.model_validate(receipt["response"]),
+                ),
+                replayed=True,
+            )
         preset = await conn.fetchrow(
             "SELECT state FROM visual_workspace_presets WHERE id = $1 AND user_id = $2",
             preset_id,
@@ -301,7 +334,7 @@ async def open_preset(
         if preset is None:
             return None
         if current.revision != body.revision:
-            raise RevisionConflictError(current)
+            raise RevisionConflictError(await with_partner(state=current))
         data = WorkspaceData.model_validate(preset["state"])
         revision = current.revision + 1
         await conn.execute(
@@ -314,7 +347,6 @@ async def open_preset(
         state = WorkspaceState(
             id=body.workspace_id,
             revision=revision,
-            connected_session_id=None,
             visuals=data.visuals,
             focused_instance=data.focused_instance,
             agent_instructions=data.agent_instructions,
@@ -329,7 +361,7 @@ async def open_preset(
             state.model_dump(mode="json"),
         )
         await _trim_receipts(conn, body.workspace_id)
-        return state
+        return AppliedOperation(state=await with_partner(state=state), replayed=False)
 
 
 async def update_preset(

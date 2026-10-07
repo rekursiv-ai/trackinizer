@@ -47,6 +47,27 @@ def test_static_visual_is_configured_by_data() -> None:
     assert described.parameter_schema == {}
 
 
+def test_browse_is_the_page_and_takes_no_record_or_parameter() -> None:
+    """Browse draws the page: no record, no parameters, version unchanged."""
+    browse = default_workspace().visual("trax.browse")
+    assert browse is not None
+    assert browse.version == 1
+    assert browse.record_kinds == []
+    assert browse.parameter_schema == {}
+
+
+def test_record_visuals_name_the_kinds_they_accept() -> None:
+    """The catalog says what each visual can draw, so a show can be refused early."""
+    kinds = {visual.type: visual.record_kinds for visual in default_catalog().visuals}
+    assert kinds == {
+        "trax.browse": [],
+        "trax.chat": None,
+        "trax.subgraph": None,
+        "trax.timeline": ["Issue", "Experiment"],
+        "trax.artifact": ["Artifact"],
+    }
+
+
 def test_default_visual_requiring_a_record_is_rejected() -> None:
     """A new canvas cannot open on a tile that has no record to render."""
     with pytest.raises(ValueError, match="record"):

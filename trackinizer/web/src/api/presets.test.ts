@@ -39,7 +39,7 @@ test("creates a named workflow with its current snapshot and continuation detail
 });
 
 test("opens a saved view against the current revision and returns the disconnected canvas", async () => {
-  const state = { id: "workspace-id", revision: 8, connected_session_id: null, visuals: [], focused_instance: null };
+  const state = { id: "workspace-id", revision: 8, visuals: [], focused_instance: null };
   vi.stubGlobal("fetch", async (request: Request) => {
     expect(new URL(request.url).pathname).toBe("/api/workspace-presets/preset-id/open");
     expect(request.method).toBe("POST");

@@ -1,10 +1,11 @@
 import { createContext, useContext } from "react";
+import type { WorkspaceOperation } from "../api/workspaces";
 
 type WorkspaceActions = {
   readonly busy: boolean;
   readonly writeError: string | null;
-  readonly revealRecord: (recordId: string) => Promise<boolean>;
-  readonly connectSession: (sessionId: string | null) => void;
+  /** Apply one canvas operation. Links never need it: they only set the address. */
+  readonly operate: (operation: WorkspaceOperation) => void;
 };
 
 const WorkspaceActionsContext = createContext<WorkspaceActions | null>(null);

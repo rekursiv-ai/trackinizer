@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, test, streamOpened } from "./fixtures";
 import { post } from "./listViews";
 
 // The panels that collapse (src/ui/panel.tsx): the app's sidebar, Peek, the
@@ -21,7 +21,7 @@ async function seed(request: APIRequestContext): Promise<{ root: number; child: 
 
 /** Open `hash` once the live stream is connected. */
 async function open(page: Page, hash: string) {
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   await page.goto(`/app/${hash}`);
   await subscribed;
 }
@@ -157,6 +157,8 @@ test("on a phone, a collapsed sidebar is still the drawer, whole, with no collap
   await open(page, "#/graph");
   const sidebar = page.getByRole("navigation", { name: "Sidebar" });
   await expect(sidebar).toBeHidden();
+  // The stream answers before the app has drawn, so wait for the page itself.
+  await expect(page.locator(".main")).toBeVisible();
   expect((await page.locator(".main").boundingBox())!.width).toBe(390);
   await page.getByRole("button", { name: "Open navigation" }).first().click();
   await expect(sidebar.getByRole("link", { name: "Console" }).locator(".label")).toBeVisible();

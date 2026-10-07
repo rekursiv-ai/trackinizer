@@ -9,8 +9,10 @@ import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from trackinizer.server.api._routes_shared import engine_of
+from trackinizer.server.api._deps import get_assistant, get_hub, get_inbound
+from trackinizer.server.api._routes_shared import engine_of, require_browser
 from trackinizer.server.auth import AuthIdentity, require_role
+from trackinizer.server.chat_hub import WorkspaceFrame
 from trackinizer.server.visuals.presets import (
     CreatePreset,
     OpenPreset,
@@ -40,7 +42,7 @@ async def list_presets_route(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> list[WorkspacePreset]:
     """List named views for the signed-in account."""
-    _browser(identity)
+    require_browser(identity)
     try:
         return await list_presets(engine_of(request), identity.user_id)
     except WorkspaceDisabledError as error:
@@ -70,9 +72,16 @@ async def create_preset_route(
       preset: Saved snapshot or revision/key conflict.
 
     """
-    _browser(identity)
+    require_browser(identity)
     try:
-        preset = await create_preset(engine_of(request), identity.user_id, body, key)
+        preset = await create_preset(
+            engine_of(request),
+            user_id=identity.user_id,
+            body=body,
+            key=key,
+            inbound=get_inbound(request),
+            assistant=get_assistant(request),
+        )
     except (RevisionConflictError, ReplayConflictError) as error:
         return JSONResponse(
             status_code=409,
@@ -107,7 +116,7 @@ async def read_preset_route(
       preset: The owned snapshot.
 
     """
-    _browser(identity)
+    require_browser(identity)
     try:
         preset = await read_preset(engine_of(request), identity.user_id, preset_id)
     except WorkspaceDisabledError as error:
@@ -142,14 +151,16 @@ async def open_preset_route(
       state: Restored canvas or revision/key conflict.
 
     """
-    _browser(identity)
+    require_browser(identity)
     try:
-        state = await open_preset(
+        applied = await open_preset(
             engine_of(request),
-            identity.user_id,
-            preset_id,
-            body,
-            key,
+            user_id=identity.user_id,
+            preset_id=preset_id,
+            body=body,
+            key=key,
+            inbound=get_inbound(request),
+            assistant=get_assistant(request),
         )
     except (RevisionConflictError, ReplayConflictError) as error:
         return JSONResponse(
@@ -161,9 +172,14 @@ async def open_preset_route(
         )
     except WorkspaceDisabledError as error:
         raise _disabled(error) from error
-    if state is None:
+    if applied is None:
         raise HTTPException(status_code=404, detail="Preset or workspace not found")
-    return state
+    if not applied.replayed:
+        get_hub(request).publish(
+            applied.state.id,
+            frame=WorkspaceFrame(state=applied.state),
+        )
+    return applied.state
 
 
 @router.put("/api/workspace-presets/{preset_id}", response_model=WorkspacePreset)
@@ -185,7 +201,7 @@ async def update_preset_route(
       preset: Updated snapshot.
 
     """
-    _browser(identity)
+    require_browser(identity)
     try:
         preset = await update_preset(
             engine_of(request),
@@ -214,19 +230,13 @@ async def delete_preset_route(
       identity: Signed-in account.
 
     """
-    _browser(identity)
+    require_browser(identity)
     try:
         removed = await delete_preset(engine_of(request), identity.user_id, preset_id)
     except WorkspaceDisabledError as error:
         raise _disabled(error) from error
     if not removed:
         raise HTTPException(status_code=404, detail="Preset not found")
-
-
-def _browser(identity: AuthIdentity) -> None:
-    """Require a signed-in browser principal for durable preset changes."""
-    if identity.api_key_id is not None:
-        raise HTTPException(status_code=403, detail="Browser session required")
 
 
 def _disabled(error: WorkspaceDisabledError) -> HTTPException:

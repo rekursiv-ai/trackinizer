@@ -47,14 +47,11 @@ that answers 404 for `/api/visuals`. A deployed server reads the route.
 
 ## Change a canvas
 
-First enable the canvas in Settings, then `POST /api/workspaces` with the
+The canvas is on by default (Settings turns it off). `POST /api/workspaces` with the
 user's browser session. It returns the default workspace id and revision.
-The browser connects a live `trax run` AgentSession through
-`PUT /api/workspaces/<workspace-id>/connection` with the current revision and
-the session UUID. That session must have been opened by an unrevoked API key
-owned by the user. API keys cannot create or change the connection. Once
-paired, only that session's key can show a visual through the same operation
-the Configure panel uses:
+Besides the browser, only the server's Chat assistant may change a canvas, and
+only one whose owner has talked to it there. Its key shows a visual through the
+same operation the Configure panel uses:
 
 ```http
 POST /api/workspaces/<workspace-id>/operations
@@ -75,12 +72,12 @@ including idempotent replay. `hide`, `focus`, and `place` take an `instance_id` 
 the workspace response. A `show` can also include `record_id` and bounded
 `params`. Showing an existing visual type focuses and updates that instance.
 
-## Chat with a paired session
+## Chat with the assistant
 
-The browser reads `GET /api/workspaces/<workspace-id>/connection` to check
-the stored pairing. Use this direct status for the composer: the session picker
-lists only the 100 most recent sessions and cannot prove that an older pairing
-ended. A disconnected, ended, or unavailable pairing disables the composer.
+Chat talks to the canvas's partner, the server's assistant, which
+`WorkspaceState.partner` names on every read and the events stream pushes when
+it changes. A partner that is not `live` disables the composer. A server with
+no assistant of its own can run `trax helper claude --as ACTOR` as one.
 
 `Chat about this` shows `trax.chat` with the record UUID in `record_id`. To
 send, the browser calls `POST /api/workspaces/<workspace-id>/messages` with
@@ -90,7 +87,7 @@ the persisted Chat instance UUID and a fresh `Idempotency-Key`:
 {"text":"What led to this experiment?","chat_instance_id":"<chat-instance-id>","expected_record_id":"<record-id>"}
 ```
 
-The server checks the signed-in workspace owner, live pairing, and Chat
+The server checks the signed-in workspace owner, a live assistant, and the Chat
 instance, and that its record still matches `expected_record_id`. A changed
 record returns 409 before queueing. The server adds the persisted record UUID,
 workspace UUID, and visible visual identities to a typed inbound context.
@@ -98,14 +95,14 @@ When the record exists in this server's graph, the context also includes its
 kind, sequence, and bounded title. A record resolved through a separate read
 profile carries its UUID without invented metadata. The agent receives the
 context beside the message and reads the cited graph rows through trax.
-The `queued` count is a queue receipt; it does not claim the agent answered.
-Retry the same draft with the same key. When the canvas has no persisted
-visuals, send null for both `chat_instance_id` and `expected_record_id`; Chat
-remains the fallback view.
+The receipt names the partner session, the conversation and the stored
+message; it does not claim the agent answered. Retry the same draft with the
+same key. When the canvas has no persisted visuals, send null for both
+`chat_instance_id` and `expected_record_id`; Chat remains the fallback view.
 
-Chat previews captured turns from the first browser message in its recent
-window. It hides transport context and collapses long turns. The full
-transcript remains available on the session record page. Subgraph, timeline,
+Chat shows the conversation's stored lines, the user's and the partner's, and
+receives new ones on the canvas's event stream. History lists the user's
+conversations; New chat and Clear start and delete one. Subgraph, timeline,
 and Artifact visuals use the same catalog and operation path.
 
 ## Save and reopen a workflow
@@ -122,9 +119,8 @@ continue on another device, open the default canvas and call
 `POST /api/workspace-presets/<preset-id>/open` with that canvas UUID, revision,
 and an `Idempotency-Key` UUID. Reuse the key when retrying the same open.
 Opening restores visuals, placement, floating rectangles, and the
-workflow context at a new revision. It clears the old session connection; the
-user pairs a live session before sending another message. The next message
-carries saved guidance and the continuation record in its typed context.
+workflow context at a new revision. The next message carries saved guidance
+and the continuation record in its typed context.
 Presets never store session credentials. Existing browser-only saved inquiry
 queries remain a separate feature.
 

@@ -15,14 +15,15 @@ import {
   applyWorkspaceOperation,
   createDefaultWorkspace,
   getWorkspace,
-  setWorkspaceConnection,
   type WorkspaceOperation,
   type WorkspaceState,
 } from "../api/workspaces";
+import { acceptWorkspace as cacheWorkspace, newerWorkspace } from "../app/canvasStream";
+import { CrashBoundary } from "../app/CrashBoundary";
 import { parseHash } from "../router/route";
 import { type PanelSpec, usePanel } from "../ui/panel";
 import { orderVisuals } from "./layout";
-import { RENDERERS, VisualPane } from "./registry";
+import { preloadRenderers, RENDERERS, VisualPane } from "./registry";
 import { WorkspaceActionsProvider } from "./workspaceActions";
 import "./canvas.css";
 
@@ -42,19 +43,17 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     retry: false,
   });
   const workspaceId = created.data?.id;
+  // The canvas is what the shell's stream last said (its opening frame is the
+  // first state) and what this canvas's own writes returned. This query holds
+  // that cache entry and reads only when asked to, after a refused write.
   const remote = useQuery({
     queryKey: ["workspace", workspaceId],
     queryFn: async ({ signal }) => {
       const incoming = await getWorkspace(workspaceId!, { signal });
       return newerWorkspace(queryClient.getQueryData<WorkspaceState>(["workspace", workspaceId]), incoming);
     },
-    enabled: !!workspaceId,
-    // Besides this user's own tabs, only a paired agent session changes the
-    // canvas (the server refuses an agent's write without one), and the stream
-    // carries no canvas changes. So it is read again every 2 s only while a
-    // session is paired, and when the tab comes back, for another tab's change.
-    refetchInterval: (query) => (query.state.data?.connected_session_id ? 2_000 : false),
-    refetchOnWindowFocus: true,
+    enabled: false,
+    staleTime: Infinity,
     retry: false,
   });
   const workspace = remote.data ? newerWorkspace(created.data, remote.data) : created.data;
@@ -78,7 +77,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   const [expandedMobileFloat, setExpandedMobileFloat] = useState<string | null>(null);
   const [floatingPositions, setFloatingPositions] = useState<Record<string, { readonly left: number; readonly top: number }>>({});
   const stageRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{ readonly id: string; readonly pointerId: number; readonly x: number; readonly y: number; readonly left: number; readonly top: number } | null>(null);
+  const dragRef = useRef<FloatingDrag | null>(null);
   const [writeError, setWriteError] = useState<string | null>(null);
   const presets = useQuery({
     queryKey: ["workspace-presets", workspaceId],
@@ -92,7 +91,9 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     id: type,
     type,
     version: catalog.data?.visuals.find((visual) => visual.type === type)?.version ?? 1,
-    placement: catalog.data?.visuals.find((visual) => visual.type === type)?.default_size === "wide" ? "main" : "side",
+    // The page stands in the strip of main visuals from the first render, before
+    // the catalog or the canvas has arrived, so it never moves from the side.
+    placement: type === "trax.browse" || catalog.data?.visuals.find((visual) => visual.type === type)?.default_size === "wide" ? "main" : "side",
     record_id: null,
     params: {},
   }));
@@ -112,9 +113,8 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     staleTime: Infinity,
     retry: false,
   });
-  const browseRecordId = workspace?.visuals.find((visual) => visual.type === "trax.browse" && visual.record_id)?.record_id;
-  const currentRecordId = route.name === "lookup" ? route.id
-    : refKind ? refId.data ?? null : browseRecordId ?? null;
+  // The record the page shows, from the address alone: the page is the route.
+  const currentRecordId = route.name === "lookup" ? route.id : refKind ? refId.data ?? null : null;
   const focusedVisual = workspace?.visuals.find((visual) => visual.id === workspace.focused_instance);
   const chatRecordId = focusedVisual?.type === "trax.artifact" && focusedVisual.record_id
     ? focusedVisual.record_id : currentRecordId;
@@ -140,25 +140,26 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
 
   function acceptWorkspace(state: WorkspaceState) {
     latestWorkspace.current = newerWorkspace(latestWorkspace.current, state);
-    queryClient.setQueryData<WorkspaceState>(["workspace", "default"], (previous) => newerWorkspace(previous, state));
-    queryClient.setQueryData<WorkspaceState>(["workspace", state.id], (previous) => newerWorkspace(previous, state));
+    cacheWorkspace(queryClient, state);
   }
+
+  useEffect(() => {
+    if (!workspaceId) return;
+    const timer = setTimeout(preloadRenderers, 0);
+    return () => clearTimeout(timer);
+  }, [workspaceId]);
 
   const change = useMutation({
     scope: { id: `workspace:${workspaceId ?? "default"}` },
-    mutationFn: async (write: WorkspaceWrite) => {
+    mutationFn: async (operation: WorkspaceOperation) => {
       const current = latestWorkspace.current;
       if (!current) throw new Error("The workspace is not ready.");
-      return write.kind === "connection"
-        ? setWorkspaceConnection(current.id, current.revision, write.sessionId)
-        : applyWorkspaceOperation(current.id, current.revision, write.operation, newUuid());
+      return applyWorkspaceOperation(current.id, current.revision, operation, newUuid());
     },
     onMutate: () => setWriteError(null),
     onSuccess: acceptWorkspace,
-    onError: (_error, write) => {
-      setWriteError(write.kind === "connection"
-        ? "Could not change the Chat session. The canvas may have changed; try again."
-        : "Could not update the canvas. Its revision may have changed; try again.");
+    onError: () => {
+      setWriteError("Could not update the canvas. Its revision may have changed; try again.");
       void remote.refetch();
     },
   });
@@ -198,7 +199,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
 
   const openPreset = useMutation({
     scope: { id: `workspace:${workspaceId ?? "default"}` },
-    mutationFn: async ({ preset, connected }: { readonly preset: WorkspacePreset; readonly connected: boolean }) => {
+    mutationFn: async (preset: WorkspacePreset) => {
       const current = latestWorkspace.current;
       if (!current) throw new Error("The workspace is not ready.");
       const previous = openAttempt.current;
@@ -206,13 +207,13 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         ? previous
         : { presetId: preset.id, workspaceId: current.id, revision: current.revision, key: newUuid() };
       openAttempt.current = attempt;
-      return { state: await openWorkspacePreset(preset.id, attempt.workspaceId, attempt.revision, attempt.key), preset, connected };
+      return { state: await openWorkspacePreset(preset.id, attempt.workspaceId, attempt.revision, attempt.key), preset };
     },
     onMutate: () => {
       setPresetError(null);
       setPresetStatus(null);
     },
-    onSuccess: ({ state, preset, connected }) => {
+    onSuccess: ({ state, preset }) => {
       openAttempt.current = null;
       instructionsDirty.current = false;
       recordIdDirty.current = false;
@@ -220,9 +221,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       setPresetInstructions(state.agent_instructions ?? "");
       setContinuationRecordId(state.continuation_record_id ?? "");
       setFloatingPositions({});
-      setPresetStatus(connected
-        ? `Opened “${preset.name}”. Previous Chat session disconnected.`
-        : `Opened “${preset.name}”.`);
+      setPresetStatus(`Opened “${preset.name}”.`);
     },
     onError: (error) => {
       if (error instanceof ApiError && error.status === 409) openAttempt.current = null;
@@ -231,10 +230,10 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     },
   });
 
-  async function write(writeRequest: WorkspaceWrite, expandRecordId?: string): Promise<boolean> {
+  async function write(operation: WorkspaceOperation, expandRecordId?: string): Promise<boolean> {
     if (!latestWorkspace.current) return false;
     try {
-      const state = await change.mutateAsync(writeRequest);
+      const state = await change.mutateAsync(operation);
       if (expandRecordId) {
         const chatPane = state.visuals.find((visual) =>
           visual.type === "trax.chat" && visual.record_id === expandRecordId && visual.placement === "floating");
@@ -247,9 +246,15 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   }
 
   function chatAbout(recordId: string) {
-    void write({ kind: "operation", operation: {
-      kind: "show", visual_type: "trax.chat", placement: "floating", record_id: recordId,
-    } }, recordId);
+    void write({ kind: "show", visual_type: "trax.chat", placement: "floating", record_id: recordId }, recordId);
+  }
+
+  /** Show Chat as a floating window over the page, or focus it when it is already shown. */
+  function showChat() {
+    const existing = workspace?.visuals.find((visual) => visual.type === "trax.chat");
+    operate(existing
+      ? { kind: "focus", instance_id: existing.id }
+      : { kind: "show", visual_type: "trax.chat", placement: "floating" });
   }
 
   function openArtifact(event: FormEvent<HTMLFormElement>) {
@@ -266,10 +271,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       return;
     }
     setArtifactLinkError(null);
-    void write({ kind: "operation", operation: {
-      kind: "show", visual_type: "trax.artifact", placement: "main",
-      record_id: parsed.id,
-    } });
+    void write({ kind: "show", visual_type: "trax.artifact", placement: "main", record_id: parsed.id });
   }
 
   function moveFloatingPane(paneId: string, left: number, top: number) {
@@ -297,21 +299,39 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       left: tileRect.left - stageRect.left,
       top: tileRect.top - stageRect.top,
     };
+    // The bounds are measured once: read on every move, they lay the page out
+    // again each time.
     dragRef.current = {
       id: paneId, pointerId: event.pointerId, x: event.clientX, y: event.clientY,
-      left: position.left, top: position.top,
+      left: position.left, top: position.top, tile,
+      maxLeft: Math.max(0, stage.clientWidth - tile.offsetWidth),
+      maxTop: Math.max(0, stage.clientHeight - tile.offsetHeight),
+      dx: 0, dy: 0,
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
+  /**
+   * Each move only transforms the tile: rendering the canvas per move redrew
+   * every visual in it, Chat's whole conversation included (6 ms a move with
+   * 120 lines, against 3.3 ms so). The canvas takes the place once, on release.
+   */
   function updateFloatingDrag(event: PointerEvent<HTMLButtonElement>) {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    moveFloatingPane(drag.id, drag.left + event.clientX - drag.x, drag.top + event.clientY - drag.y);
+    drag.dx = Math.min(drag.maxLeft, Math.max(0, drag.left + event.clientX - drag.x)) - drag.left;
+    drag.dy = Math.min(drag.maxTop, Math.max(0, drag.top + event.clientY - drag.y)) - drag.top;
+    drag.tile.style.transform = `translate(${drag.dx}px, ${drag.dy}px)`;
   }
 
   function stopFloatingDrag(event: PointerEvent<HTMLButtonElement>) {
-    if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
+    const drag = dragRef.current;
+    if (drag?.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    const place = { left: drag.left + drag.dx, top: drag.top + drag.dy };
+    // Placed before the transform goes, so no frame shows the tile back where it started.
+    Object.assign(drag.tile.style, { left: `${place.left}px`, top: `${place.top}px`, right: "auto", transform: "" });
+    setFloatingPositions((previous) => ({ ...previous, [drag.id]: place }));
   }
 
   function moveWithKeyboard(event: KeyboardEvent<HTMLButtonElement>, paneId: string) {
@@ -329,18 +349,8 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     moveFloatingPane(paneId, position.left + direction[0] * step, position.top + direction[1] * step);
   }
 
-  function revealRecord(recordId: string): Promise<boolean> {
-    return write({ kind: "operation", operation: {
-      kind: "show", visual_type: "trax.browse", placement: "main", record_id: recordId,
-    } });
-  }
-
-  function connectSession(sessionId: string | null) {
-    void write({ kind: "connection", sessionId });
-  }
-
   function operate(operation: WorkspaceOperation) {
-    void write({ kind: "operation", operation });
+    void write(operation);
   }
 
   function saveCurrentCanvas(event: FormEvent<HTMLFormElement>) {
@@ -349,8 +359,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   }
 
   function openSavedPreset(preset: WorkspacePreset) {
-    const connected = !!latestWorkspace.current?.connected_session_id;
-    openPreset.mutate({ preset, connected });
+    openPreset.mutate(preset);
   }
 
   function toggle(type: string) {
@@ -373,17 +382,67 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     }
   }
 
+  const renderTile = (pane: (typeof panes)[number], index: number) => (
+    // Browse is keyed by its type, which a canvas has once: its id is the
+    // type until the server's canvas arrives, then a UUID, and a new key
+    // would remount the view inside it, which reads its data again.
+    <div className={`visual-tile visual-tile-${pane.placement ?? "main"}${pane.type === "trax.browse" ? " visual-tile-browse" : ""}${workspace?.focused_instance === pane.id ? " visual-tile-focused" : ""}${expandedMobileFloat === pane.id ? " visual-tile-mobile-expanded" : ""}`}
+      key={pane.type === "trax.browse" ? pane.type : pane.id}
+      data-visual-instance={pane.id}
+      style={pane.placement === "floating" ? {
+        top: `${floatingPositions[pane.id]?.top ?? pane.floating_rect?.top ?? 54 + index * 24}px`,
+        ...(floatingPositions[pane.id] || pane.floating_rect ? {
+          left: `${floatingPositions[pane.id]?.left ?? pane.floating_rect?.left ?? 0}px`, right: "auto",
+        } : {}),
+        ...(pane.floating_rect ? {
+          width: `${pane.floating_rect.width}px`, height: `${pane.floating_rect.height}px`,
+        } : {}),
+        zIndex: 10 + index,
+      } : undefined}>
+      {workspace && (panes.length > 1 || pane.placement === "floating") && <div className="visual-tile-toolbar">
+        {pane.placement === "floating" && <button className="visual-tile-drag-handle" type="button"
+          aria-label={`Move ${catalog.data?.visuals.find((visual) => visual.type === pane.type)?.title ?? pane.type}`}
+          title="Drag to move; use arrow keys to move"
+          onPointerDown={(event) => startFloatingDrag(event, pane.id)}
+          onPointerMove={updateFloatingDrag} onPointerUp={stopFloatingDrag} onPointerCancel={stopFloatingDrag}
+          onKeyDown={(event) => moveWithKeyboard(event, pane.id)}>⠿</button>}
+        <span>{catalog.data?.visuals.find((visual) => visual.type === pane.type)?.title ?? pane.type}</span>
+        {pane.placement === "floating" && <button className="visual-mobile-tab-toggle" type="button"
+          aria-expanded={expandedMobileFloat === pane.id}
+          onClick={() => setExpandedMobileFloat(expandedMobileFloat === pane.id ? null : pane.id)}>
+          {expandedMobileFloat === pane.id ? "Collapse" : "Expand"}
+        </button>}
+        <button type="button" title="Focus visual" disabled={change.isPending}
+          onClick={() => operate({ kind: "focus", instance_id: pane.id })}>Focus</button>
+        <select aria-label={`Place ${pane.type}`} value={pane.placement ?? "main"} disabled={change.isPending}
+          onChange={(event) => operate({ kind: "place", instance_id: pane.id, placement: event.target.value as "main" | "side" | "floating" })}>
+          <option value="main">Main</option><option value="side">Side</option><option value="floating">Float</option>
+        </select>
+        {pane.type !== "trax.browse" && <button type="button" title="Dismiss visual" disabled={change.isPending}
+          onClick={() => operate({ kind: "hide", instance_id: pane.id })}>×</button>}
+      </div>}
+      <VisualPane instance={pane} workspace={workspace ?? null} onWorkspaceChanged={acceptWorkspace}
+        focused={workspace?.focused_instance === pane.id}>
+        {/* A crash in the page is the app's crash screen, here, and clears when the page moves. */}
+        {pane.type === "trax.browse"
+          ? <CrashBoundary reload={() => window.location.reload()} resetKey={window.location.hash}
+            frame={(crash) => <div className="view">{crash}</div>}>{children}</CrashBoundary>
+          : null}
+      </VisualPane>
+    </div>
+  );
+
   return (
     <WorkspaceActionsProvider value={workspace ? {
       busy: change.isPending,
       writeError,
-      revealRecord,
-      connectSession,
+      operate,
     } : null}>
     <div className="visual-canvas">
       <div className="visual-toolbar">
         <span className="visual-toolbar-label">Canvas</span>
         <div className="visual-toolbar-actions" role="toolbar" aria-label="Canvas controls">
+          <button className="btn ghost" type="button" disabled={!workspace || change.isPending} onClick={showChat}>Chat</button>
           <button className="btn ghost" type="button"
             disabled={!workspace || !chatRecordId || change.isPending}
             onClick={() => {
@@ -402,7 +461,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
           {created.isError && !legacyPreview && <p role="alert">Could not open your canvas. <button className="btn" type="button" onClick={() => void created.refetch()}>Retry</button></p>}
           {catalog.data?.visuals.map((visual) => (
             <VisualOption key={visual.type} visual={visual} checked={active.includes(visual.type)}
-              disabled={(!workspace && !legacyPreview) || change.isPending
+              disabled={(!workspace && !legacyPreview) || change.isPending || visual.type === "trax.browse"
                 || (!active.includes(visual.type) && visual.requires.includes("record") && !currentRecordId)}
               missingRecord={visual.requires.includes("record") && !currentRecordId}
               onToggle={() => toggle(visual.type)} />
@@ -452,61 +511,22 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         </aside>
       )}
       <div ref={stageRef} className={`visual-stage${panes.length > 1 ? " visual-stage-split" : ""}`}>
-        {panes.map((pane, index) => (
-          // Browse is keyed by its type, which a canvas has once: its id is the
-          // type until the server's canvas arrives, then a UUID, and a new key
-          // would remount the view inside it, which reads its data again.
-          <div className={`visual-tile visual-tile-${pane.placement ?? "main"}${pane.type === "trax.browse" ? " visual-tile-browse" : ""}${workspace?.focused_instance === pane.id ? " visual-tile-focused" : ""}${expandedMobileFloat === pane.id ? " visual-tile-mobile-expanded" : ""}`}
-            key={pane.type === "trax.browse" ? pane.type : pane.id}
-            data-visual-instance={pane.id}
-            style={pane.placement === "floating" ? {
-              top: `${floatingPositions[pane.id]?.top ?? pane.floating_rect?.top ?? 54 + index * 24}px`,
-              ...(floatingPositions[pane.id] || pane.floating_rect ? {
-                left: `${floatingPositions[pane.id]?.left ?? pane.floating_rect?.left ?? 0}px`, right: "auto",
-              } : {}),
-              ...(pane.floating_rect ? {
-                width: `${pane.floating_rect.width}px`, height: `${pane.floating_rect.height}px`,
-              } : {}),
-              zIndex: 10 + index,
-            } : undefined}>
-            {workspace && (panes.length > 1 || pane.placement === "floating") && <div className="visual-tile-toolbar">
-              {pane.placement === "floating" && <button className="visual-tile-drag-handle" type="button"
-                aria-label={`Move ${catalog.data?.visuals.find((visual) => visual.type === pane.type)?.title ?? pane.type}`}
-                title="Drag to move; use arrow keys to move"
-                onPointerDown={(event) => startFloatingDrag(event, pane.id)}
-                onPointerMove={updateFloatingDrag} onPointerUp={stopFloatingDrag} onPointerCancel={stopFloatingDrag}
-                onKeyDown={(event) => moveWithKeyboard(event, pane.id)}>⠿</button>}
-              <span>{catalog.data?.visuals.find((visual) => visual.type === pane.type)?.title ?? pane.type}</span>
-              {pane.placement === "floating" && <button className="visual-mobile-tab-toggle" type="button"
-                aria-expanded={expandedMobileFloat === pane.id}
-                onClick={() => setExpandedMobileFloat(expandedMobileFloat === pane.id ? null : pane.id)}>
-                {expandedMobileFloat === pane.id ? "Collapse" : "Expand"}
-              </button>}
-              <button type="button" title="Focus visual" disabled={change.isPending}
-                onClick={() => operate({ kind: "focus", instance_id: pane.id })}>Focus</button>
-              <select aria-label={`Place ${pane.type}`} value={pane.placement ?? "main"} disabled={change.isPending}
-                onChange={(event) => operate({ kind: "place", instance_id: pane.id, placement: event.target.value as "main" | "side" | "floating" })}>
-                <option value="main">Main</option><option value="side">Side</option><option value="floating">Float</option>
-              </select>
-              <button type="button" title="Dismiss visual" disabled={change.isPending}
-                onClick={() => operate({ kind: "hide", instance_id: pane.id })}>×</button>
-            </div>}
-            <VisualPane instance={pane} workspace={workspace ?? null} onWorkspaceChanged={acceptWorkspace}
-              focused={workspace?.focused_instance === pane.id}>
-              {pane.type === "trax.browse" ? children : null}
-            </VisualPane>
+        {/* The page and the other main visuals share a strip that scrolls inside itself when they outgrow it; the side visuals stand in one column beside it, so Chat's header never leaves the screen; floating ones lie over both. */}
+        {panes.some((pane) => (pane.placement ?? "main") === "main") && (
+          <div className="visual-main-strip">
+            {panes.map((pane, index) => (pane.placement ?? "main") === "main" ? renderTile(pane, index) : null)}
           </div>
-        ))}
+        )}
+        {panes.some((pane) => pane.placement === "side") && (
+          <div className="visual-side-column">
+            {panes.map((pane, index) => pane.placement === "side" ? renderTile(pane, index) : null)}
+          </div>
+        )}
+        {panes.map((pane, index) => pane.placement === "floating" ? renderTile(pane, index) : null)}
       </div>
     </div>
     </WorkspaceActionsProvider>
   );
-}
-
-/** Keep a slower read or replay from replacing a newer canvas revision. */
-export function newerWorkspace(previous: WorkspaceState | undefined, incoming: WorkspaceState): WorkspaceState {
-  if (!previous) return incoming;
-  return incoming.revision >= previous.revision ? incoming : previous;
 }
 
 function VisualOption({ visual, checked, disabled, missingRecord, onToggle }: {
@@ -552,9 +572,24 @@ function errorText(error: unknown): string {
   return error instanceof ApiError ? error.detail : error instanceof Error ? error.message : "Please try again.";
 }
 
-type WorkspaceWrite =
-  | { readonly kind: "operation"; readonly operation: WorkspaceOperation }
-  | { readonly kind: "connection"; readonly sessionId: string | null };
+/**
+ * A floating visual being dragged: the pointer's start, the tile's place then
+ * and how far it may go, and how far it has moved (`dx`, `dy`), applied as a
+ * transform until release.
+ */
+type FloatingDrag = {
+  readonly id: string;
+  readonly pointerId: number;
+  readonly x: number;
+  readonly y: number;
+  readonly left: number;
+  readonly top: number;
+  readonly tile: HTMLElement;
+  readonly maxLeft: number;
+  readonly maxTop: number;
+  dx: number;
+  dy: number;
+};
 
 /**
  * The Configure visuals panel: opened on demand by the toolbar's Configure,

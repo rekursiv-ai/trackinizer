@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast, override
+from urllib.parse import parse_qsl
 
 import argparse
 import inspect
@@ -20,7 +22,7 @@ from trackinizer.client.client import (
     server_url,
 )
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.codec import PlainTree, from_plain
+from trackinizer.lib.codec import PlainTree, from_plain, loads
 from trackinizer.trax import cli, profile
 from trackinizer.trax.conftest import FakeClient
 from trackinizer.trax.grammar import parse_kind, parse_ref
@@ -30,6 +32,11 @@ from trackinizer.wire.refs import SeqRef, UuidRef
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
 from trackinizer.wire.wire_export import EXPORT_API_PATH
+from trackinizer.wire.wire_session_ir import (
+    ManifestBody,
+    RecordBody,
+    SlashCommandBody,
+)
 from trackinizer.wire.wire_sessions import SessionStart
 
 
@@ -1212,6 +1219,9 @@ _FAKE_EXEMPT: frozenset[str] = frozenset(
 
 
 def _public_methods(cls: type) -> set[str]:
+    # The mutation hook wraps every method of a mutated class in trampolines named
+    # ``xǁClassǁname__mutmut_N``. No FakeClient can have them, so without this filter
+    # the surface test fails whenever mutmut touches ``client.py``.
     return {
         name
         for name, member in inspect.getmembers(cls, callable)
@@ -1223,11 +1233,32 @@ def _public_methods(cls: type) -> set[str]:
     } - _FAKE_EXEMPT
 
 
+def _missing_methods(real: type, *, fake: type) -> set[str]:
+    return _public_methods(real) - _public_methods(fake)
+
+
+def test_the_surface_test_ignores_mutmut_names_but_not_a_missing_method() -> None:
+    class Complete:
+        def kept(self) -> None: ...
+
+    class Missing:
+        pass
+
+    # A class as mutmut leaves it: its real method plus a mangled trampoline.
+    mutated = type(
+        "Mutated",
+        (),
+        {"kept": Complete.kept, "xǁMutatedǁkept__mutmut_1": Complete.kept},
+    )
+
+    assert _public_methods(mutated) == {"kept"}
+    assert _missing_methods(mutated, fake=Complete) == set()
+    assert _missing_methods(mutated, fake=Missing) == {"kept"}
+
+
 def test_fake_client_covers_real_client_surface() -> None:
     """Every public ``Client`` method must exist on ``FakeClient``."""
-    real = _public_methods(Client)
-    fake = _public_methods(FakeClient)
-    missing = real - fake
+    missing = _missing_methods(Client, fake=FakeClient)
     assert not missing, (
         f"FakeClient is missing the following Client methods: {sorted(missing)}. "
         "Add them to conftest.py:FakeClient or tests will silently take wrong "
@@ -1338,6 +1369,354 @@ def test_request_wraps_malformed_json_on_2xx() -> None:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError, match="malformed JSON"):
             client.get("/x")
+
+
+def test_a_stale_workspace_operation_is_retried_once_on_the_live_revision() -> None:
+    """A 409 re-reads the revision and resends with a fresh ``Idempotency-Key``."""
+    workspace = uuid.uuid4()
+    revisions = iter([3, 5])
+    sent: list[tuple[int, str]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "GET":
+            return httpx2.Response(
+                200,
+                json={"id": str(workspace), "revision": next(revisions)},
+            )
+        revision = from_plain(
+            from_plain(loads(request.content), dict[str, object])["revision"],
+            int,
+        )
+        sent.append((revision, request.headers["Idempotency-Key"]))
+        if revision == 3:
+            return httpx2.Response(409, json={"detail": "stale workspace revision"})
+        return httpx2.Response(200, json={"id": str(workspace), "revision": 6})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        state = client.apply_workspace_operation(workspace, operation={"kind": "hide"})
+
+    assert state["revision"] == 6
+    assert [revision for revision, _ in sent] == [3, 5]
+    assert sent[0][1] != sent[1][1]
+
+
+def test_a_workspace_operation_refused_for_another_reason_is_not_retried() -> None:
+    workspace = uuid.uuid4()
+    posts: list[int] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "GET":
+            return httpx2.Response(200, json={"id": str(workspace), "revision": 3})
+        posts.append(1)
+        return httpx2.Response(422, json={"detail": "Visual instance not found."})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        with pytest.raises(ClientError, match="422"):
+            _ = client.apply_workspace_operation(workspace, operation={"kind": "hide"})
+
+    assert posts == [1]
+
+
+def test_a_navigation_reads_no_revision_and_names_the_route() -> None:
+    workspace = uuid.uuid4()
+    seen: list[tuple[str, str, dict[str, object]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(
+            (
+                request.method,
+                request.url.path,
+                from_plain(loads(request.content), dict[str, object]),
+            ),
+        )
+        return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        state = client.navigate(workspace, route="#/lookup/abc")
+
+    assert state["revision"] == 4
+    assert seen == [
+        (
+            "POST",
+            f"/api/workspaces/{workspace}/operations",
+            {"revision": 0, "operation": {"kind": "navigate", "route": "#/lookup/abc"}},
+        ),
+    ]
+
+
+def test_a_highlight_reads_no_revision_and_names_the_ids() -> None:
+    workspace = uuid.uuid4()
+    ids = [uuid.uuid4(), uuid.uuid4()]
+    seen: list[tuple[str, str, dict[str, object]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(
+            (
+                request.method,
+                request.url.path,
+                from_plain(loads(request.content), dict[str, object]),
+            ),
+        )
+        return httpx2.Response(200, json={"id": str(workspace), "revision": 4})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        state = client.highlight(workspace, ids=ids)
+
+    assert state["revision"] == 4
+    assert seen == [
+        (
+            "POST",
+            f"/api/workspaces/{workspace}/operations",
+            {
+                "revision": 0,
+                "operation": {"kind": "highlight", "ids": [str(i) for i in ids]},
+            },
+        ),
+    ]
+
+
+def test_a_chat_is_read_as_the_wire_describes_it() -> None:
+    conversation = uuid.uuid4()
+    message = {
+        "id": str(uuid.uuid4()),
+        "seq": 1,
+        "role": "user",
+        "author": "ada@example.com",
+        "text": "hi",
+        "created": "2026-10-03T10:00:00Z",
+    }
+    reads: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        reads.append(request.url.path)
+        return httpx2.Response(
+            200,
+            json={
+                "id": str(conversation),
+                "title": "hi",
+                "partner_actor": "scout",
+                "partner_session_id": None,
+                "earlier": False,
+                "messages": [message],
+            },
+        )
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        thread = client.read_chat(conversation)
+
+    assert reads == [f"/api/chats/{conversation}"]
+    assert [(each.seq, each.role, each.text) for each in thread.messages] == [
+        (1, "user", "hi"),
+    ]
+
+
+def test_the_conversations_owed_a_reply_are_listed_as_awaiting_chats() -> None:
+    conversation = uuid.uuid4()
+    workspace = uuid.uuid4()
+    reads: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        reads.append(request.url.path)
+        return httpx2.Response(
+            200,
+            json=[
+                {
+                    "conversation_id": str(conversation),
+                    "workspace_id": str(workspace),
+                    "seq": 3,
+                },
+            ],
+        )
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        owed = client.awaiting_chats()
+
+    assert reads == ["/api/chats/awaiting"]
+    assert [(each.conversation_id, each.workspace_id, each.seq) for each in owed] == [
+        (conversation, workspace, 3),
+    ]
+
+
+def _answering(payload: PlainTree) -> Client:
+    """Return a client whose server answers every request with ``payload``."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(200, json=payload)
+
+    client = Client("http://server")
+    _install_mock_transport(client, handler)
+    return client
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({}, r"/api/inquiries/Issue/3 returned a malformed payload: missing 'id'"),
+        (
+            {"id": "not-a-uuid"},
+            r"/api/inquiries/Issue/3 returned a malformed id 'not-a-uuid'",
+        ),
+    ],
+)
+def test_resolve_id_names_the_route_when_a_seq_lookup_is_malformed(
+    payload: PlainTree,
+    message: str,
+) -> None:
+    with _answering(payload) as client, pytest.raises(ClientError, match=message):
+        _ = client.resolve_id(SeqRef(kind="Issue", seq=3))
+
+
+def test_resolve_id_names_the_route_when_a_uuid_lookup_has_no_kind() -> None:
+    row = uuid.uuid4()
+
+    with (
+        _answering({}) as client,
+        pytest.raises(
+            ClientError,
+            match=rf"/api/web/lookup/{row} returned a malformed payload: missing 'kind'",
+        ),
+    ):
+        _ = client.resolve_id(UuidRef(uuid=row))
+
+
+def test_resolve_id_accepts_the_expected_kind_and_refuses_another() -> None:
+    row = uuid.uuid4()
+
+    with _answering({"kind": "Belief"}) as client:
+        assert client.resolve_id(UuidRef(uuid=row, expected_kind="Belief")) == (
+            "Belief",
+            row,
+        )
+        with pytest.raises(ClientError, match="resolves to a Belief row"):
+            _ = client.resolve_id(UuidRef(uuid=row, expected_kind="Issue"))
+
+
+def test_append_records_with_no_arguments_sends_a_bare_slash_command_free_body() -> (
+    None
+):
+    sent: list[dict[str, object]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(from_plain(loads(request.content), dict[str, object]))
+        return httpx2.Response(200, json={"part": None, "written": 0, "skipped": 0})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        _ = client.append_records(uuid.uuid4())
+
+    assert sent == [
+        {
+            "name": "",
+            "manifest": None,
+            "restart": False,
+            "records": [],
+            "slash_commands": [],
+        },
+    ]
+
+
+def test_append_records_posts_the_file_its_manifest_records_and_flags() -> None:
+    session = uuid.uuid4()
+    sent: list[tuple[str, str, dict[str, object]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(
+            (
+                request.method,
+                request.url.path,
+                from_plain(loads(request.content), dict[str, object]),
+            ),
+        )
+        return httpx2.Response(200, json={"part": 2, "written": 1, "skipped": 0})
+
+    manifest = ManifestBody(name="a.jsonl", ir_id=uuid.uuid4(), records=1)
+    when = datetime(2026, 10, 3, tzinfo=UTC)
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        response = client.append_records(
+            session,
+            name="a.jsonl",
+            manifest=manifest,
+            records=[RecordBody(idx=0, kind="UserMessage")],
+            restart=True,
+            slash_commands=[SlashCommandBody(timestamp=when, command="exit")],
+        )
+
+    assert (response.part, response.written, response.skipped) == (2, 1, 0)
+    [(method, path, body)] = sent
+    assert (method, path) == ("POST", f"/api/sessions/{session}/records")
+    assert body["name"] == "a.jsonl"
+    assert body["restart"] is True
+    assert from_plain(body["manifest"], dict[str, object])["name"] == "a.jsonl"
+    assert [
+        row["idx"] for row in from_plain(body["records"], list[dict[str, object]])
+    ] == [0]
+    assert [
+        row["command"]
+        for row in from_plain(body["slash_commands"], list[dict[str, object]])
+    ] == [
+        "exit",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "payload", "message"),
+    [
+        (422, {"detail": "no"}, r"POST /api/sessions/[0-9a-f-]+/records -> 422"),
+        (200, {"written": "many"}, r"/api/sessions/[0-9a-f-]+/records returned a mal"),
+    ],
+)
+def test_append_records_names_the_verb_and_route_when_the_server_refuses_or_garbles(
+    status: int,
+    payload: PlainTree,
+    message: str,
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(status, json=payload)
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        with pytest.raises(ClientError, match=message):
+            _ = client.append_records(uuid.uuid4())
+
+
+def test_list_kind_sends_its_defaults_under_the_servers_parameter_names() -> None:
+    seen: list[dict[str, str]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(dict(parse_qsl(request.url.query.decode())))
+        return httpx2.Response(200, json=[{"id": "a"}])
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        rows = client.list_kind("Issue", status="active", limit=7)
+
+    assert rows == [{"id": "a"}]
+    assert seen == [
+        {"kind": "Issue", "status": "active", "limit": "7", "offset": "0"},
+    ]
+
+
+@pytest.mark.parametrize("payload", [{"rows": []}, [1]])
+def test_list_kind_names_the_route_when_the_reply_is_malformed(
+    payload: PlainTree,
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(200, json=payload)
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        with pytest.raises(ClientError, match=r"/api/inquiries returned a malformed"):
+            _ = client.list_kind("Issue")
 
 
 def _edge_post(
@@ -1602,6 +1981,7 @@ class TestSessionMethods:
             },
             "artifact_content": None,
             "visible_visuals": [{"id": str(visual_id), "type": "trax.chat"}],
+            "conversation_id": None,
         }
 
 

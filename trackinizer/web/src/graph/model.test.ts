@@ -157,6 +157,26 @@ test("the focus and the selection get the strong halo, search matches the match 
   expect(model.nodes.map((drawn) => drawn.look.halo)).toEqual(["halo", null, null, "match", null]);
 });
 
+test("a highlighted node gets the highlight halo, under the strong halo and over the match one", () => {
+  const model = new GraphModel(PALETTE);
+  model.apply(CHAIN);
+  model.show(PALETTE, {
+    ...LENS,
+    strong: new Set([uuid(1)]),
+    matches: new Set([uuid(1), uuid(2), uuid(4)]),
+    highlighted: new Set([uuid(1), uuid(2), uuid(3)]),
+  });
+  expect(model.nodes.map((drawn) => drawn.look.halo)).toEqual(["halo", "highlight", "highlight", "match", null]);
+});
+
+test("a highlight alone neither dims nor hides anything", () => {
+  const model = new GraphModel(PALETTE);
+  model.apply(CHAIN);
+  model.show(PALETTE, { ...LENS, highlighted: new Set([uuid(2)]) });
+  expect(model.nodes.map((drawn) => drawn.hidden)).toEqual([false, false, false, false, false]);
+  expect(ringAlphas(model)).toEqual([1, 1, 1, 1, 1]);
+});
+
 test("the nodes the lens labels carry their titles as labels; the rest none", () => {
   const model = new GraphModel(PALETTE);
   model.apply({ nodes: [node(1), node(2, { title: "" })], edges: [] });

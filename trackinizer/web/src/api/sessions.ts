@@ -14,19 +14,6 @@ export type SessionPart = components["schemas"]["PartBody"];
  * dataclass codec wrote it; `text` is its search projection.
  */
 export type SessionRecord = components["schemas"]["RecordBody-Output"];
-export type RecentSessionTurn = components["schemas"]["RecentTurnBody"];
-
-/** Read the newest conversational turns without transferring intervening tools. */
-export async function readRecentSessionTurns(
-  sessionId: string,
-  { signal }: CallOptions = {},
-): Promise<RecentSessionTurn[]> {
-  const body = await send(TIMEOUT_MS.read, signal, (signal) =>
-    client.GET("/api/sessions/{session_id}/turns", {
-      params: { path: { session_id: sessionId }, query: { limit: 20 } }, signal,
-    }));
-  return body.turns ?? [];
-}
 
 /** Where a page of a part starts, and how long it is. */
 export type RecordsPage = {

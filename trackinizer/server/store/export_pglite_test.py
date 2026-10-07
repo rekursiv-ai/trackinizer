@@ -44,6 +44,8 @@ _LEFT_OUT: Final = frozenset(
     {
         "allowlist",
         "api_keys",
+        "chat_conversations",
+        "chat_messages",
         "applied_migrations",
         "inquiry_embeddings",
         "session_bodies",

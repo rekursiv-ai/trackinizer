@@ -1,5 +1,5 @@
 import type { APIRequestContext, Page, Request } from "@playwright/test";
-import { expect, failedResource, test } from "./fixtures";
+import { expect, failedResource, test, streamOpened } from "./fixtures";
 
 // Editing relations against the e2e server: add through the picker, annotate,
 // remove, and supersede with a new inquiry. Each test makes its own rows, with
@@ -18,7 +18,7 @@ async function openDetail(page: Page, id: string): Promise<Request[]> {
   page.on("request", (request) => {
     if (request.method() !== "GET" && request.url().includes("/api/")) writes.push(request);
   });
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   await page.goto(`/app/#/lookup/${id}`);
   await subscribed;
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();

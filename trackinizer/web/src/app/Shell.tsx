@@ -19,11 +19,21 @@ import { useMeta, useProfile, useWriteMode } from "./boot";
 import { SIDEBAR, Sidebar } from "./Sidebar";
 
 /**
- * The agent canvas around lists and details, for users who opted in
- * (`visual_workspace_enabled`, off by default): a chunk of its own, so that a
- * first load without it does not carry it.
+ * The agent canvas around the views, for users who have not opted out
+ * (`visual_workspace_enabled`, on by default): a chunk of its own, so that a
+ * first load without it does not carry it, loaded only for a user who has it on,
+ * with the first renderer it shows.
  */
-const Canvas = lazyView(() => import("../visuals/Canvas"), (module) => module.Canvas);
+const Canvas = lazyView(
+  async () => {
+    // With the renderer it shows first, so its first render suspends on nothing.
+    // The registry chunk loads in parallel with the canvas chunk, not after it.
+    const [module, registry] = await Promise.all([import("../visuals/Canvas"), import("../visuals/registry")]);
+    await registry.preloadFirstRenderers();
+    return module;
+  },
+  (module) => module.Canvas,
+);
 
 /** A route that shows a view; a new inquiry shows its form over one. */
 type ViewRoute = Exclude<Route, { name: "new" }>;
@@ -107,6 +117,7 @@ export function Shell() {
               <PausedBar />
               {/* A view whose chunk is still loading (src/router/views.ts) holds an empty, busy frame. */}
               <Suspense fallback={<div className="view" aria-busy="true" />}>
+                {/* A canvas route holds the shell's busy frame until the canvas's chunk is in, then mounts its view once, inside it. */}
                 {isCanvasRoute(view ?? background) && visualWorkspaceEnabled ? (
                   canvasLoaded ? (
                     <Canvas><RouteView route={view ?? background} /></Canvas>
@@ -131,8 +142,9 @@ export function Shell() {
   );
 }
 
+/** The canvas wraps every route but Settings and Admin, so Chat stays while an agent moves the page. */
 function isCanvasRoute(route: ViewRoute): boolean {
-  return route.name === "list" || route.name === "ref" || route.name === "lookup";
+  return route.name !== "settings" && route.name !== "admin";
 }
 
 function RouteView({ route }: { route: ViewRoute }) {

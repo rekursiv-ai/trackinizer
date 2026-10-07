@@ -2,7 +2,7 @@
   min-height: 0;
   overflow: auto;
   padding: 18px 22px 28px;
-  color: var(--ink);
+  color: var(--text);
 }
 
 .artifact-header {
@@ -86,7 +86,7 @@
 }
 
 .artifact-outcome {
-  color: var(--ink);
+  color: var(--text);
 }
 
 .artifact-uncertainty,

@@ -4,7 +4,7 @@ import { VisualPane } from "./registry";
 
 // Each test waits for the failed import inside act: outside it, React keeps a
 // suspended tile's fallback on screen for 300 ms before the error replaces it.
-vi.mock("./ChatConnect", () => { throw new Error("Chat chunk unavailable"); });
+vi.mock("./Chat", () => { throw new Error("Chat chunk unavailable"); });
 vi.mock("./Timeline", () => { throw new Error("Timeline chunk unavailable"); });
 
 afterEach(() => { cleanup(); });
@@ -33,4 +33,24 @@ test("timeline is a separate lazy renderer whose import failure stays in its til
   await act(() => vi.dynamicImportSettled());
   expect(screen.getByRole("alert")).toHaveProperty("textContent", "Could not load trax.timeline. Reload to try again.");
   expect(screen.getByRole("button", { name: "Browse records" })).toBeTruthy();
+});
+
+test("a pane marks its paint for the revision that changed it, once, and not again for a later revision", async () => {
+  const { recentTimings, recordFrame, resetTimings } = await import("../debug/timings");
+  resetTimings();
+  vi.useFakeTimers({ toFake: ["setTimeout", "requestAnimationFrame"] });
+  recordFrame(4, 1);
+  recordFrame(5, 2);
+  const instance = { id: "browse", type: "trax.browse", version: 1, placement: "main" as const, record_id: null, params: {} };
+  const show = (revision: number) => <VisualPane instance={instance} focused={false} onWorkspaceChanged={vi.fn()}
+    workspace={{ id: "w", revision, visuals: [instance], focused_instance: null, partner: null }}>
+    <p>Browse records</p></VisualPane>;
+  const view = render(show(4));
+  vi.advanceTimersToNextFrame();
+  vi.advanceTimersByTime(1);
+  view.rerender(show(5));
+  vi.advanceTimersToNextFrame();
+  vi.advanceTimersByTime(1);
+  vi.useRealTimers();
+  expect(recentTimings().map((frame) => frame.marks.map((mark) => `${mark.type}:${mark.kind}`))).toEqual([["trax.browse:paint"], []]);
 });

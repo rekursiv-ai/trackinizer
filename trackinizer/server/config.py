@@ -23,11 +23,13 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "Assistant",
     "Config",
     "ConfigError",
     "ConfigFlags",
     "build_embedder",
     "build_engine",
+    "parse_assistant",
     "parse_engine",
 ]
 
@@ -48,6 +50,18 @@ _DEFAULT_SESSION_MAX_AGE_SECONDS: int = (
 )  # house-ignore[globals] -- Shared default; threading would duplicate across the Config field default and the env-parse fallback.
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Assistant:
+    """An account whose live sessions every signed-in user may talk to.
+
+    An actor handle is first come, first served, so a session is the assistant's
+    only when the API key that opened it also belongs to ``email``.
+    """
+
+    actor: str
+    email: str
+
+
 class ConfigFlags(Protocol):
     """The parsed CLI flags :meth:`Config.from_args` reads."""
 
@@ -63,6 +77,7 @@ class ConfigFlags(Protocol):
     web: bool
     session_max_age_seconds: int
     auth: bool
+    assistant: str
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -90,6 +105,7 @@ class Config:
       session_max_age_seconds: Session cookie TTL; defaults to 30 days.
       auth_disabled: Bypass auth -- every request becomes a synthetic
         admin. Local demos only; never in production.
+      assistant: The Chat partner of every canvas; none when unset.
 
     """
 
@@ -125,6 +141,7 @@ class Config:
     session_secret: str | None = None
     session_max_age_seconds: int = _DEFAULT_SESSION_MAX_AGE_SECONDS
     auth_disabled: bool = False
+    assistant: Assistant | None = None
 
     @classmethod
     def from_env(cls) -> Self:
@@ -154,6 +171,7 @@ class Config:
             session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET") or None,
             session_max_age_seconds=session_max_age_from_env(),
             auth_disabled=auth_disabled_from_env(),
+            assistant=parse_assistant(os.environ.get("TRACKINIZER_ASSISTANT", "")),
         )
 
     @classmethod
@@ -183,6 +201,7 @@ class Config:
             session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET") or None,
             session_max_age_seconds=flags.session_max_age_seconds,
             auth_disabled=not flags.auth,
+            assistant=parse_assistant(flags.assistant),
         )
 
     def maintained_embedders(self) -> tuple[str, ...]:
@@ -236,6 +255,28 @@ def session_max_age_from_env() -> int:
 def auth_disabled_from_env() -> bool:
     """Whether ``TRACKINIZER_NO_AUTH=1`` asks for single-user local mode."""
     return os.environ.get("TRACKINIZER_NO_AUTH") == "1"
+
+
+def parse_assistant(value: str) -> Assistant | None:
+    """Parse ``--assistant`` / ``$TRACKINIZER_ASSISTANT``, ``ACTOR=EMAIL``.
+
+    Args:
+      value: The flag or variable; blank means no assistant.
+
+    Returns:
+      assistant: The assistant, or None when blank.
+
+    Raises:
+      ConfigError: The value is not ``ACTOR=EMAIL``.
+
+    """
+    if not value.strip():
+        return None
+    actor, _, email = value.partition("=")
+    if not actor.strip() or not email.strip():
+        raise ConfigError(f"--assistant must be ACTOR=EMAIL, got {value!r}")
+    # users.email is stored lowercase, so only a lowercase one can match it.
+    return Assistant(actor=actor.strip(), email=email.strip().lower())
 
 
 def parse_engine(value: str) -> Literal["pglite", "pg"]:

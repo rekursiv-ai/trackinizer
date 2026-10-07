@@ -1,5 +1,5 @@
 import type { APIRequestContext, Page, Request } from "@playwright/test";
-import { expect, failedResource, test } from "./fixtures";
+import { expect, failedResource, test, streamOpened } from "./fixtures";
 
 // Purge from the detail's ⋯ menu against the e2e server. The row is this
 // test's own, so no other spec file's rows are touched.
@@ -12,7 +12,7 @@ async function createIssue(request: APIRequestContext, fields: object): Promise<
 
 /** Open `hash` once the live stream is connected. */
 async function openLive(page: Page, hash: string): Promise<void> {
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   await page.goto(`/app/${hash}`);
   await subscribed;
 }

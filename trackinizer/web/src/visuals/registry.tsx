@@ -1,5 +1,8 @@
-import { Component, lazy, Suspense, type ComponentType, type ReactNode } from "react";
+import { Component, Suspense, type ComponentType, type ReactNode } from "react";
 import type { WorkspaceState } from "../api/workspaces";
+import { lazyView } from "../router/lazy";
+import { DetailView } from "../router/views";
+import { useVisualMark } from "./marks";
 import rendererVersions from "./renderer-versions.json";
 
 export type RendererProps = {
@@ -11,15 +14,36 @@ export type RendererProps = {
 };
 type Renderer = { readonly version: number; readonly Component: ComponentType<RendererProps> };
 
-const ChatConnect = lazy(() => import("./ChatConnect").then((module) => ({ default: module.ChatConnect })));
-const Subgraph = lazy(() => import("./Subgraph").then((module) => ({ default: module.Subgraph })));
-const Timeline = lazy(() => import("./Timeline").then((module) => ({ default: module.Timeline })));
-const Artifact = lazy(() => import("./Artifact").then((module) => ({ default: module.Artifact })));
+const Chat = lazyView(() => import("./Chat"), (module) => module.Chat);
+const Subgraph = lazyView(() => import("./Subgraph"), (module) => module.Subgraph);
+const Timeline = lazyView(() => import("./Timeline"), (module) => module.Timeline);
+const Artifact = lazyView(() => import("./Artifact"), (module) => module.Artifact);
+
+/**
+ * Load every renderer's chunk, and the record view an agent's navigation opens.
+ * The canvas calls it once it is up: a first render that suspends holds its
+ * fallback on screen for React's 300 ms throttle (measured, 305 to 335 ms for
+ * the first show of every visual type), which a loaded chunk skips. The chunks
+ * stay out of the first load.
+ */
+export function preloadRenderers(): void {
+  for (const view of [Chat, Subgraph, Timeline, Artifact, DetailView]) void view.preload().catch(() => {});
+}
+
+/**
+ * Load the renderer a new canvas shows first, Chat. The shell awaits it with the
+ * canvas's own chunk, so the canvas's first render holds no lazy renderer that
+ * suspends: a suspended one shows its fallback for React's 300 ms throttle, which
+ * made a cold first load of a page 250 to 300 ms slower inside the canvas.
+ */
+export function preloadFirstRenderers(): Promise<void> {
+  return Chat.preload().catch(() => {});
+}
 
 /** Frontend counterparts of the backend's inert visual descriptions. */
 export const RENDERERS: Readonly<Record<string, Renderer>> = {
   "trax.browse": { version: rendererVersions["trax.browse"], Component: ({ children }) => <>{children}</> },
-  "trax.chat": { version: rendererVersions["trax.chat"], Component: ChatConnect },
+  "trax.chat": { version: rendererVersions["trax.chat"], Component: Chat },
   "trax.subgraph": { version: rendererVersions["trax.subgraph"], Component: Subgraph },
   "trax.timeline": { version: rendererVersions["trax.timeline"], Component: Timeline },
   "trax.artifact": { version: rendererVersions["trax.artifact"], Component: Artifact },
@@ -37,9 +61,19 @@ export function VisualPane(props: RendererProps) {
     <VisualErrorBoundary key={`${instance.type}:${instance.version}`} visualType={instance.type}>
       <Suspense fallback={<div className="visual-loading" aria-busy="true">Loading visual…</div>}>
         <Component {...props} />
+        <PaintMark instance={instance} workspace={props.workspace} />
       </Suspense>
     </VisualErrorBoundary>
   );
+}
+
+/**
+ * Marks when the pane's content painted. It sits in the pane's Suspense
+ * boundary, so a lazy renderer's mark waits for the renderer, not its fallback.
+ */
+function PaintMark({ instance, workspace }: Pick<RendererProps, "instance" | "workspace">) {
+  useVisualMark(instance, workspace, "paint");
+  return null;
 }
 
 class VisualErrorBoundary extends Component<{

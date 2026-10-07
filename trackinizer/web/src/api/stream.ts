@@ -32,18 +32,43 @@ export type StreamOptions = {
   readonly retryDelaysMs?: readonly number[];
 };
 
+/** What `openEvents` tells its listener, besides each frame's data. */
+export type EventsListener = Pick<StreamListener, "open" | "drop" | "refuse"> & {
+  /** One frame's `data`, as the server wrote it. */
+  readonly data: (data: unknown) => void;
+};
+
 /**
  * Listen to `GET /api/web/subscribe`: one frame per `change_log` row, each
  * `data: {"id": "<subject uuid>"}` with no event name or resume, plus comment
  * lines (on open and every 25 s idle) that `EventSource` drops before
  * `onmessage`. Returns a function that closes the stream for good.
+ */
+export function openStream(listener: StreamListener, options: StreamOptions = {}): () => void {
+  return openEvents(SUBSCRIBE_PATH, {
+    open: listener.open,
+    drop: listener.drop,
+    refuse: listener.refuse,
+    data: (data) => {
+      const id = subjectId(data);
+      // Logged, not thrown: one bad frame must not stop the stream, but a silent
+      // skip would hide the server's frame shape drifting from this parser.
+      if (id === null) console.warn("Ignored a live-stream frame without an id.", data);
+      else listener.change(id);
+    },
+  }, options);
+}
+
+/**
+ * Listen to one server-sent-events route at `path` and keep it open.
  *
  * `EventSource` reconnects by itself after a dropped connection, so an error
  * never closes the stream here: the old UI closed it on every error and never
  * recovered. Only when the browser gives up (the server answered with anything
- * but a stream) does the wrapper open a new one, after a delay.
+ * but a stream) does the wrapper open a new one, after a delay. Returns a
+ * function that closes the stream for good.
  */
-export function openStream(listener: StreamListener, options: StreamOptions = {}): () => void {
+export function openEvents(path: string, listener: EventsListener, options: StreamOptions = {}): () => void {
   const connect = options.connect ?? ((url: string) => new EventSource(url));
   const delays = options.retryDelaysMs ?? RETRY_DELAYS_MS;
   let source: EventSourceLike | null = null;
@@ -53,19 +78,13 @@ export function openStream(listener: StreamListener, options: StreamOptions = {}
   const start = () => {
     timer = null;
     if (closed) return;
-    const opened = connect(new URL(SUBSCRIBE_PATH, globalThis.location.origin).href);
+    const opened = connect(new URL(path, globalThis.location.origin).href);
     source = opened;
     opened.onopen = () => {
       refusals = 0;
       listener.open();
     };
-    opened.onmessage = (event) => {
-      const id = subjectId(event.data);
-      // Logged, not thrown: one bad frame must not stop the stream, but a silent
-      // skip would hide the server's frame shape drifting from this parser.
-      if (id === null) console.warn("Ignored a live-stream frame without an id.", event.data);
-      else listener.change(id);
-    };
+    opened.onmessage = (event) => listener.data(event.data);
     opened.onerror = () => {
       if (closed) return;
       listener.drop();

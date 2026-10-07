@@ -8,12 +8,15 @@ import dataclasses
 import datetime
 import uuid
 
+from trackinizer.server.chat_hub import ChatHub
+from trackinizer.server.config import Config
 from trackinizer.wire.json_types import MutableJSON
 
 
 if TYPE_CHECKING:
-    from fastapi import Request
+    from fastapi import FastAPI, Request
 
+    from trackinizer.server.config import Assistant
     from trackinizer.server.inbound import InboundQueue
     from trackinizer.server.store.core import Store
     from trackinizer.types.inquiries import Inquiry
@@ -50,6 +53,40 @@ def get_inbound(request: Request) -> InboundQueue:
     """
     app = cast(_App, request.app)
     return app.state.inbound
+
+
+def get_hub(request: Request) -> ChatHub:
+    """Return the Chat event hub held on the app state, made on first use.
+
+    An app built by hand, as a test harness does, has no lifespan to make one, so
+    the first request that needs the hub makes it.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The ChatHub.
+
+    """
+    app = cast("FastAPI", request.app)
+    hub: object = getattr(app.state, "hub", None)
+    if not isinstance(hub, ChatHub):
+        hub = app.state.hub = ChatHub()
+    return hub
+
+
+def get_assistant(request: Request) -> Assistant | None:
+    """Return the configured assistant; none without a Config.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The configured assistant, if any.
+
+    """
+    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
+    return config.assistant if isinstance(config, Config) else None
 
 
 def tag_row(inquiry: Inquiry) -> MutableJSON:

@@ -1,6 +1,6 @@
 // The suite's `test` and `expect`. Every spec imports them from here, not from
 // @playwright/test, so every test runs under the error guard below.
-import { test as base, expect } from "@playwright/test";
+import { type Page, test as base, expect } from "@playwright/test";
 
 export { expect };
 
@@ -16,7 +16,22 @@ export { expect };
  * comment saying why. The guard watches the test's browser context, so a second
  * page it opens counts too; a context the test makes itself does not.
  */
-export const test = base.extend<{ allowErrors: (pattern: RegExp) => void }>({
+export const test = base.extend<{ allowErrors: (pattern: RegExp) => void; canvas: boolean; canvasPreference: undefined }>({
+  // Whether the suite's one user has the agent canvas on for the test. It is on
+  // by default for every user, and a spec of the default path (stream.spec,
+  // session-chat.spec, the canvas specs) asks for it with `test.use({ canvas: true })`.
+  // The view specs measure the page's own geometry and the keys it takes, which
+  // a Chat pane beside it changes, so they run with it off, and the one spec of
+  // that path is canvas-optout.spec.ts.
+  canvas: [false, { option: true }],
+  canvasPreference: [
+    async ({ request, canvas }, use) => {
+      const put = await request.put("/api/me/visual-workspace", { data: { enabled: canvas } });
+      if (!put.ok()) throw new Error(`Could not set the canvas preference: ${put.status()}`);
+      await use(undefined);
+    },
+    { auto: true },
+  ],
   allowErrors: [
     async ({ context }, use) => {
       const allowed: RegExp[] = [];
@@ -41,4 +56,30 @@ export const test = base.extend<{ allowErrors: (pattern: RegExp) => void }>({
 export function failedResource(path: string, status: number | string): RegExp {
   const why = typeof status === "number" ? `the server responded with a status of ${status} \\(` : `net::${status} `;
   return new RegExp(`^console\\.error: Failed to load resource: ${why}.*\\(https?://[^/]+${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+}
+
+/**
+ * The tab's live stream, whichever the app uses: the canvas's events stream
+ * (`/api/workspaces/{id}/events`, which carries the inquiry ids) for a user with
+ * the canvas on, the default, and `/api/web/subscribe` for one who opted out.
+ */
+export const STREAM_URL = /\/api\/(?:web\/subscribe(?:$|\?(?!probe))|workspaces\/[^/]+\/events)/;
+
+/** Resolves when the page's live stream has answered. */
+export function streamOpened(page: Page, ok = false) {
+  return page.waitForResponse((response) => STREAM_URL.test(response.url()) && (!ok || response.status() === 200));
+}
+
+/** The globs `page.route` matches the live stream by, either of the two. */
+export const STREAM_ROUTES = ["**/api/web/subscribe", "**/api/workspaces/*/events"] as const;
+
+/** Refuse the page's live stream connections, whichever stream it uses, until `page.unroute`. */
+export async function abortStream(page: Page) {
+  for (const route of STREAM_ROUTES) await page.route(route, (request) => request.abort());
+}
+
+/** Allow the browser's error line for each stream route a test refused. */
+export function allowStreamErrors(allowErrors: (pattern: RegExp) => void, status: number | string = "ERR_FAILED") {
+  allowErrors(failedResource("/api/web/subscribe", status));
+  allowErrors(failedResource("/api/workspaces/", status));
 }

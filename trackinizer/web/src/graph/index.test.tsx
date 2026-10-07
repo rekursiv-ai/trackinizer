@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ALL_NODES, type Graph } from "../api/graph";
 import { type Sent, stubFetch } from "../api/testing";
 import { MetaContext } from "../app/boot";
+import { HighlightContext, HighlightStore } from "../app/highlights";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
 import { LiveContext } from "../live";
 import { LiveHub } from "../live/hub";
@@ -43,6 +44,7 @@ vi.mock("../ui/Peek", async (importOriginal) => {
 
 let client: QueryClient;
 let renderer: FakeRenderer;
+let highlights: HighlightStore;
 let sent: Sent[];
 /** What the server answers for each limit. */
 let answers: Map<number, Graph | Promise<Response>>;
@@ -55,11 +57,13 @@ const GRAPH: Graph = {
 beforeEach(() => {
   client = testClient();
   renderer = new FakeRenderer();
+  highlights = new HighlightStore();
   answers = new Map([[1000, GRAPH]]);
   history.replaceState(null, "", "#/graph?group=none");
   // The halos' colours, named for what they mark; jsdom has no stylesheet.
   document.documentElement.style.setProperty("--text", "halo");
   document.documentElement.style.setProperty("--accent-hover", "match");
+  document.documentElement.style.setProperty("--amber", "highlight");
   // jsdom has none; the roots list scrolls its marked row into view.
   Element.prototype.scrollIntoView = () => {};
   sent = stubFetch(async (request) => {
@@ -88,7 +92,9 @@ function show({ hub = null }: { hub?: LiveHub | null } = {}) {
           <LiveContext value={hub}>
             <CommandRegistryContext value={new CommandRegistry()}>
               <Shortcuts />
-              <GraphView createRenderer={renderer.create} />
+              <HighlightContext value={highlights}>
+                <GraphView createRenderer={renderer.create} />
+              </HighlightContext>
             </CommandRegistryContext>
           </LiveContext>
         </RouterProvider>
@@ -226,6 +232,7 @@ test("the tools' Key button hides and shows the key, pressed while it shows; whi
   expect(toggle().getAttribute("aria-pressed")).toBe("false");
   cleanup();
   renderer = new FakeRenderer();
+  highlights = new HighlightStore();
   const again = await shown();
   expect(key()).toBeNull();
   expect(toggle().getAttribute("aria-pressed")).toBe("false");
@@ -261,6 +268,7 @@ test("Filter hides statuses too; what it hides is kept for the tab, and a chip's
   expect(renderer.shown()).toEqual(["Issue 1", "Issue 2", "A paper"]);
   cleanup();
   renderer = new FakeRenderer();
+  highlights = new HighlightStore();
   sessionStorage.setItem("trackinizer.v2.graph", JSON.stringify({ ...JSON.parse(sessionStorage.getItem("trackinizer.v2.graph")!), hiddenKinds: ["Paper"] }));
   const again = await shown("2 of 4 nodes");
   expect([...document.querySelectorAll(".fchip")].map((chip) => chip.textContent)).toEqual(["Kind is not Papers", "Status is not Invalid"]);
@@ -619,6 +627,19 @@ test("search finds no node a filter hides, so a pick never centres on empty spac
   }
 });
 
+test("what the assistant points at takes the highlight halo, under the selection's and over a match's; an empty list clears it", async () => {
+  const { user } = await shown();
+  expect(halos()).toEqual([]);
+  act(() => highlights.set([uuid(1), uuid(3)]));
+  expect(halos()).toEqual(["Issue 1: highlight", "A paper: highlight"]);
+  expect(dimmed()).toEqual([]);
+  await user.click(search());
+  fireEvent.change(search(), { target: { value: "issue" } });
+  expect(halos()).toEqual(["Issue 1: highlight", "Issue 2: match", "A paper: highlight"]);
+  act(() => highlights.set([]));
+  expect(halos()).toEqual(["Issue 1: match", "Issue 2: match"]);
+});
+
 test("with a focus, search groups its matches within the focus's hops and elsewhere", async () => {
   history.replaceState(null, "", "#/graph?focus=Issue/1&hops=1");
   answers.set(1000, { ...GRAPH, nodes: [...GRAPH.nodes, node(4)] });
@@ -974,6 +995,7 @@ test("while grouped, the Roots list button, or [, hides the roots list and frame
   expect(renderer.groups?.get("Issue 4")).toBe(uuid(3));
   cleanup();
   renderer = new FakeRenderer();
+  highlights = new HighlightStore();
   const again = await shown("6 nodes");
   expect(panel()).toBeNull();
   // user-event spells the [ key "[[".
@@ -1009,6 +1031,7 @@ test("Peek's button, or ], collapses it and frames the canvas again; the selecti
   await user.keyboard("]");
   cleanup();
   renderer = new FakeRenderer();
+  highlights = new HighlightStore();
   const again = await shown();
   act(() => renderer.events!.click(renderer.node("Issue 1")));
   expect(collapsed()).toBe("true");

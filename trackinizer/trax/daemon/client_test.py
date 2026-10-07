@@ -85,6 +85,10 @@ class TestShouldDelegate:
         """``trax run`` owns a PTY and the terminal; it cannot run remotely."""
         assert not should_delegate(["run", "claude"])
 
+    def test_refuses_trax_helper(self) -> None:
+        """``trax helper`` serves until stopped, spawning a CLI per turn, in this process."""
+        assert not should_delegate(["helper", "claude"])
+
     def test_refuses_a_stdin_sentinel(self) -> None:
         """``field to -`` reads this process's stdin, which the daemon lacks."""
         assert not should_delegate(["issue", "7", "description", "to", "-"])

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import AxeBuilder from "@axe-core/playwright";
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, failedResource, test } from "./fixtures";
+import { expect, failedResource, test, streamOpened } from "./fixtures";
 import { openView, post } from "./listViews";
 
 // axe's WCAG 2.0 and 2.1 A and AA rules on each main view, in both themes. Each
@@ -44,7 +44,7 @@ for (const theme of ["dark", "light"] as const) {
           { from_index: 2, to_index: 3, edge_kind: "proves" },
         ],
       );
-      const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+      const subscribed = streamOpened(page);
       await page.goto("/app/#/graph");
       await subscribed;
       await expect(page.locator(".graph-count")).toHaveText(/\d nodes?$/);
@@ -60,7 +60,7 @@ for (const theme of ["dark", "light"] as const) {
     test("the console", async ({ page, request }) => {
       const actors = agentsOnEveryColour(tag);
       await Promise.all(actors.map((actor) => session(request, `A11y console ${tag}`, { actor, rooms: [`a11y-${tag}`] })));
-      const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+      const subscribed = streamOpened(page);
       await page.goto("/app/#/console");
       await subscribed;
       for (const actor of actors) await expect(page.locator(".console-actor", { hasText: actor }).first()).toBeVisible();

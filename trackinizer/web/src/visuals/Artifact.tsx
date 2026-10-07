@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
 import { getArtifactContentRevision } from "../api/artifacts";
 import { formatRoute, UUID } from "../router/route";
+import { useVisualMark } from "./marks";
 import type { RendererProps } from "./registry";
 import "./Artifact.css";
 
@@ -57,22 +58,28 @@ export type ArtifactContentRevision = {
 );
 
 /** Render the revision selected by a canvas operation. */
-export function Artifact({ instance }: RendererProps) {
+export function Artifact({ instance, workspace }: RendererProps) {
   const id = instance.record_id;
   if (typeof id !== "string" || !UUID.test(id)) {
     return <p className="visual-unsupported">Open an Artifact or ask the agent to select one.</p>;
   }
-  return <ArtifactPage id={id} />;
+  return <ArtifactPage id={id} shown={{ instance, workspace }} />;
 }
 
 /** Read one exact revision; the link stays valid after later publications. */
-export function ArtifactPage({ id, optional = false }: { readonly id: string; readonly optional?: boolean }) {
+export function ArtifactPage({ id, optional = false, shown }: {
+  readonly id: string;
+  readonly optional?: boolean;
+  /** The canvas visual this page is, so its data's paint is marked (`trackinizer.timings()`). */
+  readonly shown?: Pick<RendererProps, "instance" | "workspace">;
+}) {
   const query = useQuery({
     queryKey: ["artifact-content", id],
     queryFn: ({ signal }) => getArtifactContentRevision(id, { signal }),
     staleTime: Infinity,
     retry: false,
   });
+  useVisualMark(shown?.instance, shown?.workspace ?? null, "data", query.isSuccess);
   if (query.isPending) return <div className="visual-loading" aria-busy="true">Loading Artifact…</div>;
   if (optional && query.error instanceof ApiError && query.error.status === 404) return null;
   if (query.isError) return <div className="visual-unsupported" role="alert">Could not load this Artifact revision. <button className="btn ghost" type="button" onClick={() => void query.refetch()}>Retry</button></div>;

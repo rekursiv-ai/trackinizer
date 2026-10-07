@@ -3,8 +3,8 @@ import { Background, Controls, MarkerType, Position, ReactFlow, type Edge, type 
 import { useCallback } from "react";
 import { getDetail, type Detail, type DetailRow, type Peer } from "../api/detail";
 import { formatRoute } from "../router/route";
+import { useVisualMark } from "./marks";
 import type { RendererProps } from "./registry";
-import { useWorkspaceActions } from "./workspaceActions";
 import "@xyflow/react/dist/style.css";
 
 type GraphRow = Pick<DetailRow, "id" | "kind" | "seq" | "title">;
@@ -16,25 +16,19 @@ export type SubgraphData = {
 };
 
 /** Show a bounded lineage of Issue ancestors around the selected record. */
-export function Subgraph({ instance }: RendererProps) {
+export function Subgraph({ instance, workspace }: RendererProps) {
   const recordId = instance.record_id;
-  const actions = useWorkspaceActions();
   const query = useQuery({
     queryKey: ["visual", "subgraph", recordId],
     queryFn: ({ signal }) => loadSubgraph(recordId!, signal),
     enabled: !!recordId,
     retry: false,
   });
+  useVisualMark(instance, workspace, "data", query.isSuccess);
+  // Opening a node only moves the page, which writes nothing to the canvas.
   const openNode = useCallback((_event: React.MouseEvent, node: Node) => {
-    const href = formatRoute({ name: "lookup", id: node.id });
-    if (actions) {
-      void actions.revealRecord(node.id).then((revealed) => {
-        if (revealed) window.location.hash = href;
-      });
-    } else {
-      window.location.hash = href;
-    }
-  }, [actions]);
+    window.location.hash = formatRoute({ name: "lookup", id: node.id });
+  }, []);
 
   if (!recordId) return <div className="visual-unsupported">Choose a record to show its context graph.</div>;
   if (query.isPending) return <div className="visual-loading" aria-busy="true">Loading context graph…</div>;
@@ -56,7 +50,7 @@ export function Subgraph({ instance }: RendererProps) {
         textAlign: "left",
         whiteSpace: "normal",
         overflowWrap: "anywhere",
-        color: "var(--ink)",
+        color: "var(--text)",
         background: selected ? "var(--surface-overlay)" : "var(--surface-raised)",
         border: selected ? "2px solid var(--accent)" : "1px solid var(--line-strong)",
         borderRadius: 8,
@@ -74,9 +68,10 @@ export function Subgraph({ instance }: RendererProps) {
     markerEnd: { type: MarkerType.ArrowClosed, color: "var(--muted)" },
     style: { stroke: "var(--muted)" },
     labelStyle: { fill: "var(--muted)", fontSize: 10 },
+    labelBgStyle: { fill: "var(--surface-raised)" },
   }));
 
-  return <section aria-label="Context graph" style={{ display: "flex", flex: 1, flexDirection: "column", minHeight: 0 }}>
+  return <section aria-label="Context graph" style={{ display: "flex", flex: 1, flexDirection: "column", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
     <p style={{ padding: "8px 12px", color: "var(--muted)", fontSize: 12 }}>
       Issue lineage · {nodes.length} records · select a node to open it
     </p>

@@ -75,8 +75,9 @@ Left out on purpose, and why:
 * ``users``, ``api_keys``, ``allowlist`` -- credentials and access control,
   not the graph.
 * ``visual_workspaces``, ``visual_workspace_operations``,
-  ``visual_workspace_presets`` -- per-user canvas state, saved workflows, and
-  operation receipts, not account-agnostic graph records.
+  ``visual_workspace_presets``, ``chat_conversations``, ``chat_messages`` --
+  per-user canvas state, saved workflows, operation receipts, and Chat history,
+  not account-agnostic graph records.
 * ``visual_reports``, ``visual_report_revisions`` -- shared report presentation
   and author identity; the linked Artifact and graph citations export above.
 * ``session_liveness`` -- when each live session was last heard from, which

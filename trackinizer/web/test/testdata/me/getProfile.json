@@ -10,7 +10,7 @@
       "name": "no-auth",
       "role": "admin",
       "user_id": "00000000-0000-4000-9000-000000000001",
-      "visual_workspace_enabled": false
+      "visual_workspace_enabled": true
     },
     "headers": {
       "content-type": "application/json"

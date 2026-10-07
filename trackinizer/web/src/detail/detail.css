@@ -36,6 +36,7 @@
 .detail .d-cost { white-space: nowrap; }
 .detail .d-cost::before { content: "·"; margin-right: 6px; }
 .detail .d-head { display: flex; flex-direction: column; gap: 10px; }
+.detail .d-head.is-highlighted { padding-left: 12px; box-shadow: inset 3px 0 0 var(--amber); border-radius: 2px; }
 .detail .d-title {
   font-size: 24px; line-height: 1.3; font-weight: 600; letter-spacing: -0.4px;
   text-wrap: balance; overflow-wrap: anywhere;
@@ -139,6 +140,7 @@ details.cfg pre { margin: 0; padding: 0 14px 12px; font: 12.5px/1.6 var(--mono);
 .rail-add:disabled { opacity: .45; cursor: default; }
 .rail-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .rail-peer { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 8px 6px 4px 10px; min-width: 0; }
+.rail-peer.is-highlighted { border-color: var(--amber); background: color-mix(in srgb, var(--amber) 10%, var(--surface)); box-shadow: inset 3px 0 0 var(--amber); }
 .rail-link { display: flex; align-items: flex-start; gap: 8px; color: var(--text); font-size: 13px; line-height: 1.35; }
 .rail-link > .ic { flex-shrink: 0; margin-top: 2px; }
 .rail-link:hover .rail-title { color: var(--accent-hover); }

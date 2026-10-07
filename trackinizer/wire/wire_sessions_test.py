@@ -20,6 +20,7 @@ from trackinizer.wire.wire_sessions import (
     SessionEnd,
     SessionStart,
     session_end_path,
+    session_inbound_path,
     session_records_path,
 )
 
@@ -46,7 +47,10 @@ class TestSessionStart:
         # ``min_length=1`` alone admits "   "; a whitespace CLI is a client
         # bug (no CLI is named "   "). Mirror the rooms blank-rejection rule.
         for bad in ("   ", "\t", "\n"):
-            with pytest.raises(ValidationError):
+            with pytest.raises(
+                ValidationError,
+                match=r"Value error, value must be non-empty \[type=value_error",
+            ):
                 SessionStart(cli=bad)
 
     def test_rejects_whitespace_only_cli_session_id(self) -> None:
@@ -229,7 +233,8 @@ class TestPaths:
         sid = uuid.uuid4()
         assert str(sid) in session_records_path(sid)
         assert session_records_path(sid).endswith("/records")
-        assert session_end_path(sid).endswith("/end")
+        assert session_end_path(sid) == f"/api/sessions/{sid}/end"
+        assert session_inbound_path(sid) == f"/api/sessions/{sid}/inbound"
 
 
 if __name__ == "__main__":

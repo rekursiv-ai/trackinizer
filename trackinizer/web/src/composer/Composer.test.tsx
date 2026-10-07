@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { Composer } from "./Composer";
 
@@ -94,4 +94,52 @@ test("a draft its check refuses says why, sends nothing and offers no retry; edi
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
   await screen.findByRole("status");
   expect(send).toHaveBeenCalledWith("@codex fix it", expect.any(String));
+});
+
+test("an editable box stays open to typing while a draft sends, and what is typed meanwhile stays", async () => {
+  let finish: (receipt: string) => void = () => {};
+  const send = vi.fn(() => new Promise<string>((resolve) => { finish = resolve; }));
+  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  const view = (editable: boolean) => <QueryClientProvider client={client}>
+    <Composer send={send} target="t" enabled placeholder="Write" failure={() => "failed"} editable={editable} />
+  </QueryClientProvider>;
+  const { rerender } = render(view(false));
+  const box = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  fireEvent.change(box, { target: { value: "first" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(box.disabled).toBe(true));
+  finish("Sent");
+  await screen.findByText("Sent");
+  rerender(view(true));
+  fireEvent.change(box, { target: { value: "second" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(send).toHaveBeenCalledTimes(2));
+  expect(box.disabled).toBe(false);
+  fireEvent.change(box, { target: { value: "third, typed meanwhile" } });
+  await act(async () => finish("Sent"));
+  expect(box.value).toBe("third, typed meanwhile");
+});
+
+test("Retry shows only for a failure that a resend can mend", async () => {
+  const send = vi.fn<(text: string, key: string) => Promise<string>>().mockRejectedValue(new Error("refused"));
+  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  const view = (retryable: (error: Error) => boolean) => <QueryClientProvider client={client}>
+    <Composer send={send} target="t" enabled placeholder="Write" failure={(error) => `Not sent: ${error.message}`} retryable={retryable} />
+  </QueryClientProvider>;
+  const { rerender } = render(view(() => false));
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "hi" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  expect((await screen.findByRole("alert")).textContent).toBe("Not sent: refused");
+  expect(screen.queryByRole("button", { name: "Retry message" })).toBeNull();
+  rerender(view(() => true));
+  expect(screen.getByRole("button", { name: "Retry message" })).toBeTruthy();
+});
+
+test("a send that resolves with nothing shows no receipt, and still empties the box", async () => {
+  const send = vi.fn<(text: string, key: string) => Promise<string>>().mockResolvedValue("");
+  const { box } = show(send);
+  fireEvent.change(box, { target: { value: "hi" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(box).toHaveProperty("value", ""));
+  expect(screen.queryByRole("status")).toBeNull();
 });

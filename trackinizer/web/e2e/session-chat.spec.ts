@@ -1,5 +1,8 @@
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
-import { expect, failedResource, test } from "./fixtures";
+import { expect, failedResource, test, streamOpened } from "./fixtures";
+
+// The default path: the canvas is on, so the tab's stream is the canvas's.
+test.use({ canvas: true });
 
 // Messaging a live AgentSession from the foot of its transcript. The test stands
 // in for the session's `trax run`: a drain that returns at once (`GET
@@ -41,7 +44,7 @@ async function drain(request: APIRequestContext, id: string): Promise<{ text: st
 
 /** Open the session's detail once the live stream is connected; its transcript section. */
 async function openSession(page: Page, seq: number): Promise<Locator> {
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   await page.goto(`/app/#/ref/AgentSession/${seq}`);
   await subscribed;
   return page.locator('[data-section="transcript"]');

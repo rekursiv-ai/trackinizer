@@ -30,6 +30,7 @@ from trackinizer.wire.routes import (
     MAX_LIST_LIMIT,
 )
 from trackinizer.wire.row_filter import match_filter
+from trackinizer.wire.wire_chats import ChatThread
 from trackinizer.wire.wire_metrics import (
     LogMetricsResponse,
     MetricPoint,
@@ -51,11 +52,12 @@ from trackinizer.wire.wire_sessions import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
     from pathlib import Path
     from types import TracebackType
 
     from trackinizer.wire.seq_ranges import SeqRange
+    from trackinizer.wire.wire_chats import AwaitingChat, ChatReply
     from trackinizer.wire.wire_metrics_query import (
         MetricMaskClause,
         MetricRankRow,
@@ -988,6 +990,73 @@ class FakeClient:
         """Send message."""
         self.calls.append(("send_message", (actor, text), {"room": room}))
         return [self.target_id]
+
+    def post_chat_reply(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        reply: ChatReply,
+    ) -> None:
+        """Post chat reply."""
+        self.calls.append(("post_chat_reply", (conversation_id,), {"reply": reply}))
+
+    def read_workspace(self, workspace_id: uuid.UUID) -> dict[str, PlainTree]:
+        """Read workspace."""
+        self.calls.append(("read_workspace", (workspace_id,), {}))
+        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+
+    def apply_workspace_operation(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        operation: Mapping[str, object],
+    ) -> dict[str, PlainTree]:
+        """Apply workspace operation."""
+        self.calls.append(
+            (
+                "apply_workspace_operation",
+                (workspace_id,),
+                {"operation": dict(operation)},
+            ),
+        )
+        return {"id": str(workspace_id), "revision": 1, "visuals": []}
+
+    def navigate(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        route: str,
+    ) -> dict[str, PlainTree]:
+        """Navigate."""
+        self.calls.append(("navigate", (workspace_id,), {"route": route}))
+        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+
+    def highlight(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        ids: Sequence[uuid.UUID],
+    ) -> dict[str, PlainTree]:
+        """Highlight."""
+        self.calls.append(("highlight", (workspace_id,), {"ids": list(ids)}))
+        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+
+    def read_chat(self, conversation_id: uuid.UUID) -> ChatThread:
+        """Read chat."""
+        self.calls.append(("read_chat", (conversation_id,), {}))
+        return ChatThread(
+            id=conversation_id,
+            title="",
+            partner_actor=None,
+            partner_session_id=None,
+            earlier=False,
+            messages=[],
+        )
+
+    def awaiting_chats(self) -> list[AwaitingChat]:
+        """Awaiting chats."""
+        self.calls.append(("awaiting_chats", (), {}))
+        return []
 
     def add_subscriber(
         self,

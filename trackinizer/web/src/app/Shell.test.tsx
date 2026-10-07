@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -8,11 +8,24 @@ import { App } from "./App";
 
 // Counts the times the canvas's code is loaded: a module's factory runs once,
 // when the module is first imported.
-const loaded = vi.hoisted(() => ({ canvas: 0 }));
-vi.mock("../visuals/Canvas", () => {
+// Its chunk arrives when a test releases `gate`.
+const loaded = vi.hoisted(() => {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  return { canvas: 0, preloaded: 0, gate, release };
+});
+vi.mock("../visuals/Canvas", async () => {
   loaded.canvas += 1;
+  await loaded.gate;
   return { Canvas: ({ children }: { children: ReactNode }) => <section aria-label="Canvas">{children}</section> };
 });
+// The renderer the canvas shows first, which the shell loads with it.
+vi.mock("../visuals/registry", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../visuals/registry")>()),
+  preloadFirstRenderers: async () => {
+    loaded.preloaded += 1;
+  },
+}));
 
 /** Serve boot for a user whose canvas is `enabled`, and an empty list. */
 function serve(enabled: boolean) {
@@ -38,7 +51,7 @@ afterEach(() => {
 });
 
 // In this order: once loaded, the canvas's module stays loaded for the file.
-test("a user who has not opted in gets no canvas, and its code never loads", async () => {
+test("a user who opted out gets no canvas, and its code never loads", async () => {
   serve(false);
   render(<App assign={vi.fn()} />);
   expect((await screen.findByRole("heading", { level: 1 })).textContent).toBe("Issues");
@@ -46,12 +59,37 @@ test("a user who has not opted in gets no canvas, and its code never loads", asy
   expect(loaded.canvas).toBe(0);
 });
 
-test("a user who opted in sees the list inside the canvas", async () => {
+test("while the canvas's chunk loads the shell holds its busy frame, and the view then mounts once, inside the canvas", async () => {
+  serve(true);
+  render(<App assign={vi.fn()} />);
+  await waitFor(() => expect(loaded.canvas).toBe(1));
+  expect(document.querySelector(".view[aria-busy=true]")).not.toBeNull();
+  expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
+  expect(screen.queryByRole("region", { name: "Canvas" })).toBeNull();
+  await act(async () => loaded.release());
+  const canvas = await screen.findByRole("region", { name: "Canvas" });
+  expect(canvas.querySelector("h1")?.textContent).toBe("Issues");
+  expect(document.querySelector(".view[aria-busy=true]")).toBeNull();
+  // The canvas came with its first renderer, so its first render suspends on nothing.
+  expect(loaded.preloaded).toBe(1);
+});
+
+test("a user with the canvas on sees the list inside the canvas", async () => {
   serve(true);
   render(<App assign={vi.fn()} />);
   const canvas = await screen.findByRole("region", { name: "Canvas" });
   expect(canvas.querySelector("h1")?.textContent).toBe("Issues");
   expect(loaded.canvas).toBe(1);
+});
+
+test("the canvas wraps a list, not Settings, and wraps it again on the way back", async () => {
+  serve(true);
+  render(<App assign={vi.fn()} />);
+  await screen.findByRole("region", { name: "Canvas" });
+  act(() => { window.location.hash = "#/settings"; });
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Canvas" })).toBeNull(), { interval: 1 });
+  act(() => { window.location.hash = "#/list/Issue"; });
+  await screen.findByRole("region", { name: "Canvas" });
 });
 
 test("the sidebar's button, or ⌘B / Ctrl+B, collapses it to a rail of its entries, named, titled and in order, and expands it again", async () => {

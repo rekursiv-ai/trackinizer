@@ -24,6 +24,8 @@ export type Palette = {
   readonly halo: string;
   /** The ring around a search match: the app's link accent. */
   readonly match: string;
+  /** The ring around what an agent pointed at: the app's amber. */
+  readonly highlight: string;
 };
 
 /** How one node is drawn: a disc of `fill`, maybe washed, ringed, maybe dotted. */
@@ -51,8 +53,8 @@ export type Standing = {
   readonly dimmed?: boolean;
   /** Two or more hops from the focus. */
   readonly far?: boolean;
-  /** `strong` for the focus and the selection, `match` for a search match. */
-  readonly halo?: "strong" | "match" | null;
+  /** `strong` for the focus and the selection, `highlight` for what an agent pointed at, `match` for a search match. */
+  readonly halo?: "strong" | "highlight" | "match" | null;
   /** Text to draw under it. */
   readonly label?: string | null;
 };
@@ -84,7 +86,8 @@ export type NodeShape = {
  * Where it stands changes it too. A node `dimmed` outside a focus recedes
  * further than retired work, so that the two never look alike, and one `far`
  * from the focus fades a little. A `halo` rings the focus or the selection in
- * the text colour, and a search match in the accent. A `label` shows under it,
+ * the text colour, what an agent pointed at in amber, and a search match in the
+ * accent. A `label` shows under it,
  * at most 40 characters.
  */
 export function nodeLook(
@@ -109,7 +112,7 @@ export function nodeLook(
     ring: judgement === "disproven" ? fill : (palette.status[shape.status] ?? palette.fallback),
     ringAlpha: alpha,
     dot: judgement === "proven" && !retired && !dimmed ? (palette.status.complete ?? palette.fallback) : null,
-    halo: halo === "strong" ? palette.halo : halo === "match" ? palette.match : null,
+    halo: halo === "strong" ? palette.halo : halo === "highlight" ? palette.highlight : halo === "match" ? palette.match : null,
     label: label === null ? null : { text: label.length > LABEL_CHARS ? `${label.slice(0, LABEL_CHARS - 1)}…` : label, color: palette.halo, outline: palette.background },
   };
 }
@@ -142,7 +145,7 @@ export function linkLook(
  * `kinds`, `edgeKinds` and `statuses`: `--g-kind-<Kind>`, `--g-edge-<kind>` and
  * `--g-status-<status>`, each `--g-fallback` when unset; valence takes the
  * app's `--l-evidence` and `--l-against`, edges outside a focus `--g-faint`,
- * and the halos the app's `--text` and `--accent-hover`.
+ * and the halos the app's `--text`, `--amber` and `--accent-hover`.
  */
 export function readPalette(
   element: Element,
@@ -164,6 +167,7 @@ export function readPalette(
     faint: token("--g-faint"),
     halo: token("--text"),
     match: token("--accent-hover"),
+    highlight: token("--amber"),
   };
 }
 

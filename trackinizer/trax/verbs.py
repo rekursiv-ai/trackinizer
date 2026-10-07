@@ -2735,12 +2735,24 @@ class Workspace(Command):
 
     names = ("workspace",)
     help = HelpPage(
-        usage="trax workspace WORKSPACE_UUID [show TYPE | hide UUID | focus UUID | place UUID PLACEMENT]",
-        summary="Read a workspace or change its visible modules.",
-        options=(("--record UUID", "Record target for a shown visual."),),
+        usage="trax workspace WORKSPACE_UUID [show TYPE | navigate ROUTE | highlight UUID[,UUID...] | hide UUID | focus UUID | place UUID PLACEMENT]",
+        summary="Read a workspace, change its visible modules, move its page, or mark records.",
+        options=(
+            ("--record UUID", "Record target for a shown visual."),
+            (
+                "--param KEY=VALUE",
+                (
+                    "Parameter of a shown visual, repeatable; its value is read as "
+                    "the type the visual catalog gives that parameter."
+                ),
+            ),
+        ),
         examples=(
             "trax workspace 11111111-1111-1111-1111-111111111111",
-            "trax workspace UUID show trax.chat --record RECORD_UUID --placement side",
+            "trax workspace UUID show trax.subgraph --record RECORD_UUID --placement side",
+            "trax workspace UUID show trax.timeline --record RECORD_UUID --param direction_limit=5",
+            "trax workspace UUID navigate '#/list/Issue'",
+            "trax workspace UUID highlight RECORD_UUID,RECORD_UUID",
             "trax workspace UUID hide INSTANCE_UUID",
         ),
         notes=("Mutations fetch the current revision before applying one operation.",),
@@ -2754,11 +2766,12 @@ class Workspace(Command):
         parser.add_argument(
             "action",
             nargs="?",
-            choices=("show", "hide", "focus", "place"),
+            choices=("show", "navigate", "highlight", "hide", "focus", "place"),
         )
         parser.add_argument("subject", nargs="*")
         parser.add_argument("--record")
         parser.add_argument("--placement", choices=("main", "side", "floating"))
+        parser.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
         return parser
 
     @classmethod
@@ -2772,39 +2785,58 @@ class Workspace(Command):
         del verb
         flags = cast(_WorkspaceArgs, args)
         workspace_id = _workspace_uuid(flags.workspace_id, "workspace")
-        path = f"/api/workspaces/{workspace_id}"
         client = client_factory()
-        current = client.get(path)
         if flags.action is None:
-            if flags.subject or flags.record or flags.placement:
+            if flags.subject or flags.record or flags.placement or flags.param:
                 raise ClientError("workspace read does not accept operation arguments")
-            _print_workspace(current)
+            _print_workspace(client.read_workspace(workspace_id))
             return
-        operation = _workspace_operation(flags)
-        revision = from_plain(
-            from_plain(current, dict[str, object]).get("revision"),
-            int,
-            default=0,
+        if flags.action == "highlight":
+            updated = client.highlight(workspace_id, ids=_highlight_ids(flags))
+            _print_workspace(updated)
+            return
+        parameters = (
+            _visual_parameters(client, visual_type=flags.subject[0])
+            if flags.action == "show" and flags.param and len(flags.subject) == 1
+            else {}
         )
-        updated = client.post(
-            f"{path}/operations",
-            body={"revision": revision, "operation": operation},
-        )
+        operation = _workspace_operation(flags, parameters=parameters)
+        if operation["kind"] == "navigate":
+            updated = client.navigate(workspace_id, route=str(operation["route"]))
+        else:
+            updated = client.apply_workspace_operation(
+                workspace_id,
+                operation=operation,
+            )
         _print_workspace(updated)
 
 
-def _workspace_operation(args: _WorkspaceArgs) -> dict[str, object]:
+def _workspace_operation(
+    args: _WorkspaceArgs,
+    *,
+    parameters: Mapping[str, str],
+) -> dict[str, object]:
     """Build one validated workspace operation from CLI arguments."""
     subject = list(args.subject)
     operation: dict[str, object]
+    if args.param and args.action != "show":
+        raise ClientError("--param is accepted only with show")
     if args.action == "show":
         if len(subject) != 1:
             raise ClientError("show requires one visual type")
-        operation = {"kind": "show", "visual_type": subject[0], "params": {}}
+        operation = {
+            "kind": "show",
+            "visual_type": subject[0],
+            "params": _workspace_params(args.param, parameters=parameters),
+        }
         if args.placement is not None:
             operation["placement"] = args.placement
         if args.record is not None:
             operation["record_id"] = str(_workspace_uuid(args.record, "record"))
+    elif args.action == "navigate":
+        if len(subject) != 1 or args.record is not None or args.placement is not None:
+            raise ClientError("navigate requires one route")
+        operation = {"kind": "navigate", "route": subject[0]}
     elif args.action in {"hide", "focus"}:
         if len(subject) != 1 or args.record is not None or args.placement is not None:
             raise ClientError(f"{args.action} requires one instance UUID")
@@ -2826,6 +2858,70 @@ def _workspace_operation(args: _WorkspaceArgs) -> dict[str, object]:
             "placement": subject[1],
         }
     return operation
+
+
+def _highlight_ids(args: _WorkspaceArgs) -> list[uuid.UUID]:
+    """Read ``highlight``'s one comma-separated UUID list; an empty one clears."""
+    if len(args.subject) != 1 or args.record is not None or args.placement is not None:
+        raise ClientError("highlight requires UUID[,UUID...] ('' clears)")
+    return [
+        _workspace_uuid(item, "record") for item in args.subject[0].split(",") if item
+    ]
+
+
+def _workspace_params(
+    pairs: list[str],
+    *,
+    parameters: Mapping[str, str],
+) -> dict[str, str | int | bool]:
+    """Read ``KEY=VALUE`` pairs, each value as the type the catalog gives its key."""
+    params: dict[str, str | int | bool] = {}
+    for pair in pairs:
+        key, equals, value = pair.partition("=")
+        if not equals or not key.isidentifier():
+            raise ClientError(
+                f"--param needs KEY=VALUE with a plain name, got {pair!r}",
+            )
+        if key in params:
+            raise ClientError(f"--param {key} was given more than once")
+        if key not in parameters:
+            raise ClientError(
+                f"--param {key} is not a parameter of this visual; it takes: "
+                f"{', '.join(parameters) or 'none'}",
+            )
+        params[key] = _workspace_param_value(key=key, value=value, kind=parameters[key])
+    return params
+
+
+def _workspace_param_value(*, key: str, value: str, kind: str) -> str | int | bool:
+    """Read ``value`` as a catalog parameter ``kind``: string, integer or boolean."""
+    if kind == "integer":
+        if not (value.isascii() and value.removeprefix("-").isdecimal()):
+            raise ClientError(f"--param {key} needs an integer, got {value!r}")
+        return int(value)
+    if kind == "boolean":
+        if value not in {"true", "false"}:
+            raise ClientError(f"--param {key} needs true or false, got {value!r}")
+        return value == "true"
+    return value
+
+
+def _visual_parameters(client: Client, *, visual_type: str) -> dict[str, str]:
+    """Return the parameters a visual takes, by name, with their catalog types."""
+    catalog = from_plain(client.get("/api/visuals"), dict[str, object])
+    visuals = from_plain(catalog.get("visuals"), list[dict[str, object]], default=[])
+    for visual in visuals:
+        if visual.get("type") == visual_type:
+            schemas = from_plain(
+                visual.get("parameter_schema"),
+                dict[str, dict[str, object]],
+                default={},
+            )
+            return {
+                name: from_plain(schema.get("type"), str, default="")
+                for name, schema in schemas.items()
+            }
+    raise ClientError(f"{visual_type!r} is not a visual in the catalog")
 
 
 def _print_workspace(payload: object) -> None:
@@ -2862,6 +2958,7 @@ class _WorkspaceArgs(Protocol):
     subject: list[str]
     record: str | None
     placement: str | None
+    param: list[str]
 
 
 # The leading ``@`` is optional; a single ``:`` separates an optional room.

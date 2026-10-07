@@ -77,15 +77,14 @@ const timeline: EvidenceTimeline = {
 
 test("renders dated directions, outcomes, linked signed evidence, and closed details", async () => {
   vi.mocked(getEvidenceTimeline).mockResolvedValue(timeline);
-  const revealRecord = vi.fn().mockResolvedValue(true);
+  const operate = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const instance = {
     id: "timeline-instance", type: "trax.timeline", version: 1, placement: "main" as const,
     record_id: "root-id", params: { direction_limit: 6, results_per_direction: 2 },
   };
   render(<QueryClientProvider client={client}>
-    <WorkspaceActionsProvider value={{ busy: false, writeError: null, revealRecord,
-      connectSession: vi.fn() }}>
+    <WorkspaceActionsProvider value={{ busy: false, writeError: null, operate }}>
       <Timeline instance={instance} workspace={null} onWorkspaceChanged={vi.fn()} focused />
     </WorkspaceActionsProvider>
   </QueryClientProvider>);
@@ -107,8 +106,11 @@ test("renders dated directions, outcomes, linked signed evidence, and closed det
   expect(screen.getByText("favors · argues against (-0.5)")).toBeTruthy();
   expect(screen.getByText("favors · neutral (0)")).toBeTruthy();
   expect(screen.getByText("favors · valence not recorded")).toBeTruthy();
-  expect(screen.getByRole("link", { name: "Belief#467 Feature adds no lift" }).getAttribute("href"))
-    .toBe("#/lookup/belief-positive");
+  const link = screen.getByRole("link", { name: "Belief#467 Feature adds no lift" });
+  expect(link.getAttribute("href")).toBe("#/lookup/belief-positive");
+  // A record link is a plain link: it only moves the page and writes nothing to the canvas.
+  expect(fireEvent.click(link)).toBe(true);
+  expect(operate).not.toHaveBeenCalled();
 });
 
 test("does not request timeline data until the visual has a record target", () => {

@@ -477,6 +477,46 @@ async def test_migration_031_matches_the_baseline_metric_checks(
     assert migrated == baseline
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_033_gives_an_old_canvas_chat_once_on_postgres(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """The migration's JSON surgery works on Postgres, and is safe to run again."""
+    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
+    user, workspace = uuid.uuid4(), uuid.uuid4()
+    browse = {
+        "id": str(uuid.uuid4()),
+        "type": "trax.browse",
+        "version": 1,
+        "placement": "main",
+    }
+    async with scratch_engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES ($1, 'old-canvas@example.com', 'O', 'writer', 'active')",
+            user,
+        )
+        await conn.execute(
+            "INSERT INTO visual_workspaces (id, user_id, revision, state) "
+            "VALUES ($1, $2, 5, $3)",
+            workspace,
+            user,
+            {"visuals": [browse]},
+        )
+        for expected_revision in (6, 6):
+            await conn.execute(load_sql("schema.033"))
+            row = await conn.fetchrow(
+                "SELECT revision, (SELECT array_agg(v ->> 'type' || ':' || (v ->> 'placement')) "
+                "FROM jsonb_array_elements(state -> 'visuals') AS v) AS visuals "
+                "FROM visual_workspaces WHERE id = $1",
+                workspace,
+            )
+            assert row is not None
+            assert row["revision"] == expected_revision
+            assert row["visuals"] == ["trax.browse:main", "trax.chat:floating"]
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 

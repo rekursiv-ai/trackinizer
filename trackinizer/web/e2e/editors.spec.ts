@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { APIRequestContext, Page, Request } from "@playwright/test";
-import { expect, failedResource, test } from "./fixtures";
+import { expect, failedResource, test, streamOpened, abortStream, allowStreamErrors } from "./fixtures";
 
 // The detail's editors against the e2e server, with the Python client as a
 // second user. Each test makes its own Issue, so rows other spec files create
@@ -39,7 +39,7 @@ async function openDetail(page: Page, id: string): Promise<Request[]> {
   page.on("request", (request) => {
     if (request.method() !== "GET" && request.url().includes("/api/")) writes.push(request);
   });
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   await page.goto(`/app/#/lookup/${id}`);
   await subscribed;
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
@@ -58,9 +58,9 @@ test("a status change after the Python client's gets the conflict dialog, then l
   const id = await createIssue(request, { title: "D2 status conflict" });
   // With the stream on, the other change could show before the click; acting on
   // what the page showed before it did is the case compare-and-set exists for.
-  await page.route("**/api/web/subscribe", (route) => route.abort());
+  await abortStream(page);
   // The stream this turns off, and the compare-and-set 409 the other change causes.
-  allowErrors(failedResource("/api/web/subscribe", "ERR_FAILED"));
+  allowStreamErrors(allowErrors);
   allowErrors(failedResource(`/api/inquiries/${id}/status`, 409));
   await page.goto(`/app/#/lookup/${id}`);
   await expect(propButton(page, "status")).toHaveText("Active");
@@ -223,9 +223,9 @@ test("an Issue's last type goes with a DELETE checked at save, so a type the Pyt
 }) => {
   const id = await createIssue(request, { title: "R2 last type", issue_kind: ["bug"] });
   // Without the stream the page keeps showing one type: the case an unchecked whole-field DELETE got wrong.
-  await page.route("**/api/web/subscribe", (route) => route.abort());
+  await abortStream(page);
   // The stream this turns off.
-  allowErrors(failedResource("/api/web/subscribe", "ERR_FAILED"));
+  allowStreamErrors(allowErrors);
   const writes: Request[] = [];
   page.on("request", (sent) => {
     if (sent.method() !== "GET" && sent.url().includes("/api/")) writes.push(sent);

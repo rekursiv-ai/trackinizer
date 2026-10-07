@@ -143,3 +143,29 @@ test("white text on a primary button meets WCAG AA's 4.5:1 in both themes, at re
     }
   }
 });
+
+/** Every file under `dir` whose name ends with one of `endings`, but test files. */
+function sources(dir: string, endings: readonly string[]): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return entry.name === "generated" ? [] : sources(path, endings);
+    return endings.some((ending) => entry.name.endsWith(ending)) && !/\.test\.tsx?$/.test(entry.name) ? [path] : [];
+  });
+}
+
+test("every var(--token) a stylesheet or a component uses is a token some stylesheet defines, or one with a fallback", () => {
+  const files = sources(import.meta.dirname, [".css", ".tsx", ".ts"]);
+  const defined = new Set(
+    sources(import.meta.dirname, [".css"]).flatMap((file) => [...readFileSync(file, "utf8").matchAll(/(--[\w-]+)\s*:/g)].map((match) => match[1]!)),
+  );
+  // Custom properties a component sets inline, as `style={{ "--name": … }}`, count as defined.
+  for (const file of files.filter((name) => /\.tsx?$/.test(name))) {
+    for (const match of readFileSync(file, "utf8").matchAll(/["'](--[\w-]+)["']\s*:/g)) defined.add(match[1]!);
+  }
+  const undefinedUses = files.flatMap((file) =>
+    [...readFileSync(file, "utf8").matchAll(/var\((--[\w-]+)\s*([,)])/g)]
+      .filter(([, name, end]) => end === ")" && !defined.has(name!))
+      .map(([, name]) => `${file.slice(import.meta.dirname.length + 1)}: ${name}`),
+  );
+  expect([...new Set(undefinedUses)]).toEqual([]);
+});

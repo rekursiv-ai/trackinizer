@@ -6,6 +6,7 @@ import type { Change, Detail, DetailRow, Peer } from "../api/detail";
 import type { Profile } from "../api/me";
 import { type Sent, stubFetch } from "../api/testing";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
+import { HighlightContext, HighlightStore } from "../app/highlights";
 import { Session, SessionContext } from "../app/session";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
 import { LiveContext } from "../live";
@@ -176,7 +177,7 @@ export function serveDetails(details: readonly Detail[], confidence = 0.5): Sent
  * bound; `queryClient` is its cache, `profile` the signed-in user, `session`
  * the one a 401 would end, `commands` the registry the palette would list,
  * `hub` the live stream's, if it is to keep the detail current, and `onCommit`
- * is told of each commit of the detail's tree.
+ * is told of each commit of the detail's tree; `highlights` is the canvas's marks, none by default.
  */
 export function renderDetail(
   target: DetailTarget,
@@ -187,7 +188,8 @@ export function renderDetail(
     commands = new CommandRegistry(),
     hub = null,
     onCommit = () => {},
-  }: { profile?: Profile; session?: Session; commands?: CommandRegistry; hub?: LiveHub | null; onCommit?: () => void } = {},
+    highlights = new HighlightStore(),
+  }: { profile?: Profile; session?: Session; commands?: CommandRegistry; hub?: LiveHub | null; onCommit?: () => void; highlights?: HighlightStore } = {},
 ) {
   return render(
     <QueryClientProvider client={queryClient}>
@@ -200,7 +202,9 @@ export function renderDetail(
                   <LiveContext value={hub}>
                     <Shortcuts />
                     <Profiler id="detail" onRender={onCommit}>
-                      <DetailView target={target} />
+                      <HighlightContext value={highlights}>
+                        <DetailView target={target} />
+                      </HighlightContext>
                     </Profiler>
                   </LiveContext>
                 </RouterProvider>

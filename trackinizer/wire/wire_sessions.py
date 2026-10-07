@@ -422,6 +422,8 @@ class WorkspaceMessageContext(BaseModel):
     visible_visuals: list[WorkspaceVisibleVisual]
     agent_instructions: str | None = Field(default=None, max_length=8_192)
     continuation_record_id: uuid.UUID | None = None
+    conversation_id: uuid.UUID | None = None
+    """The Chat conversation the message belongs to; an assistant answers there."""
 
 
 class InboundDrainItem(BaseModel):

@@ -2,39 +2,47 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Annotated
 
 import uuid
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from trackinizer.server.api._deps import get_inbound
-from trackinizer.server.api._routes_shared import engine_of
+from trackinizer.server.api._deps import get_assistant, get_hub, get_inbound
+from trackinizer.server.api._routes_shared import engine_of, require_browser
 from trackinizer.server.api.visuals_routes import visual_catalog
 from trackinizer.server.auth import AuthIdentity, require_role
-from trackinizer.server.inbound import InboundReplayConflictError
+from trackinizer.server.chat_hub import (
+    HighlightFrame,
+    NavigateFrame,
+    WorkspaceFrame,
+    iter_workspace_events,
+)
+from trackinizer.server.notify import iter_changed_ids
+from trackinizer.server.visuals.chats import (
+    ChatConversationNotFoundError,
+    ChatRequestConflictError,
+    conversations_of,
+)
 from trackinizer.server.visuals.workspace_store import (
+    PartnerBusyError,
     ReplayConflictError,
     RevisionConflictError,
     WorkspaceContextChangedError,
-    WorkspaceDisabledError,
-    WorkspacePairingError,
+    WorkspaceKeyRefusedError,
     WorkspaceSessionUnavailableError,
     apply_workspace_operation,
     create_default_workspace,
-    list_connectable_sessions,
     read_workspace,
     send_workspace_message,
-    set_workspace_connection,
-    workspace_connection_status,
 )
 from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
-    ConnectableSession,
+    Highlight,
+    Navigate,
     WorkspaceConflict,
-    WorkspaceConnection,
-    WorkspaceConnectionStatus,
     WorkspaceMessageReceipt,
     WorkspaceMessageRequest,
     WorkspaceState,
@@ -44,40 +52,59 @@ from trackinizer.server.visuals.workspaces import (
 router = APIRouter()
 
 
-@router.get(
-    "/api/workspaces/{workspace_id}/connection",
-    response_model=WorkspaceConnectionStatus,
-)
-async def workspace_connection_status_route(
+@router.get("/api/workspaces/{workspace_id}/events")
+async def workspace_events_route(
     workspace_id: uuid.UUID,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
-) -> WorkspaceConnectionStatus:
-    """Report the stored pairing's current status to its browser owner.
+) -> StreamingResponse:
+    """Stream a canvas's changes to its owner's browser as server-sent events.
+
+    Each frame is ``data: <json>`` with ``t``, the server's epoch milliseconds:
+    ``workspace`` carries the whole canvas on open, after every change by a
+    browser or an agent, and when its partner changes; ``navigate`` an agent's
+    move of the page; ``highlight`` the inquiries it points at; ``message`` a stored
+    Chat line; ``status`` an assistant's status; ``delivered`` how far the partner
+    has read a conversation; and ``changed`` an inquiry id, as
+    ``/api/web/subscribe`` relays it, so a tab needs
+    this one stream. After the ``workspace`` frame come each conversation's
+    current status and delivered ``seq``. The stream opens with a comment and
+    sends another after 25 s without a frame. A subscriber more than 256 frames
+    behind is dropped; it reconnects from the ``workspace`` frame.
 
     Args:
-      workspace_id: Canvas whose pairing is checked.
-      request: Request carrying the database engine.
-      identity: Authenticated browser account.
+      workspace_id: Canvas to follow.
+      request: Request carrying the database engine and the event hub.
+      identity: Authenticated browser account, which must own the canvas.
 
     Returns:
-      status: Direct live, ended, or unavailable status.
+      stream: Server-sent frames.
 
     """
-    if identity.api_key_id is not None:
-        raise HTTPException(status_code=403, detail="Browser session required")
-    try:
-        result = await workspace_connection_status(
-            engine_of(request),
-            identity.user_id,
-            workspace_id,
-            inbound=get_inbound(request),
-        )
-    except WorkspaceDisabledError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
-    if result is None:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    return result
+    require_browser(identity)
+    read_state = partial(
+        _current_state,
+        request,
+        user_id=identity.user_id,
+        workspace_id=workspace_id,
+    )
+    await read_state()
+    return StreamingResponse(
+        iter_workspace_events(
+            get_hub(request),
+            workspace_id=workspace_id,
+            read_state=read_state,
+            read_conversations=partial(
+                conversations_of,
+                engine_of(request),
+                user_id=identity.user_id,
+                workspace_id=workspace_id,
+            ),
+            is_active=partial(_owner_is_active, request, user_id=identity.user_id),
+            changes=iter_changed_ids(engine_of(request)),
+        ),
+        media_type="text/event-stream",
+    )
 
 
 @router.post(
@@ -91,124 +118,51 @@ async def workspace_message_route(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     key: Annotated[uuid.UUID, Header(alias="Idempotency-Key")],
 ) -> WorkspaceMessageReceipt:
-    """Queue a viewer's message for the live session paired with this canvas.
+    """Store a viewer's message, publish it, and queue it for this canvas's partner.
+
+    The partner is the assistant's newest live session.
+    A retry with the same key and request returns the original receipt without
+    queueing again; the same key for a different request is 409.
 
     Args:
-      workspace_id: Canvas carrying the paired session.
-      body: Text and optional chat visual identity.
+      workspace_id: Canvas carrying the partner.
+      body: Text, optional conversation and chat visual identity.
       request: Request carrying the database engine and inbound queue.
       identity: Authenticated browser sender.
       key: Required retry-safe idempotency key.
 
     Returns:
-      receipt: Paired session and pending queue depth.
+      receipt: Partner session, conversation and the stored message.
 
     """
-    if identity.api_key_id is not None:
-        raise HTTPException(status_code=403, detail="Browser session required")
+    require_browser(identity)
     try:
         result = await send_workspace_message(
             engine_of(request),
-            identity.user_id,
-            workspace_id,
-            body,
-            key,
+            user_id=identity.user_id,
+            workspace_id=workspace_id,
+            body=body,
+            key=key,
             source=identity.email,
             inbound=get_inbound(request),
+            assistant=get_assistant(request),
+            hub=get_hub(request),
         )
-    except WorkspaceDisabledError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
+    except ChatConversationNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
     except WorkspaceSessionUnavailableError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except PartnerBusyError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except WorkspaceContextChangedError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    except InboundReplayConflictError as error:
+    except ChatRequestConflictError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     if result is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return result
-
-
-@router.get(
-    "/api/workspaces/sessions/connectable",
-    response_model=list[ConnectableSession],
-)
-async def connectable_sessions_route(
-    request: Request,
-    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
-) -> list[ConnectableSession]:
-    """List live sessions the interactive browser may connect.
-
-    Args:
-      request: Request carrying the database engine.
-      identity: Authenticated browser account.
-
-    Returns:
-      sessions: Pairable live sessions owned by this account.
-
-    """
-    if identity.api_key_id is not None:
-        raise HTTPException(status_code=403, detail="Browser session required")
-    try:
-        return await list_connectable_sessions(
-            engine_of(request),
-            identity.user_id,
-            inbound=get_inbound(request),
-        )
-    except WorkspaceDisabledError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
-
-
-@router.put(
-    "/api/workspaces/{workspace_id}/connection",
-    response_model=WorkspaceState,
-    responses={409: {"model": WorkspaceConflict}},
-)
-async def workspace_connection_route(
-    workspace_id: uuid.UUID,
-    body: WorkspaceConnection,
-    request: Request,
-    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
-) -> WorkspaceState | JSONResponse:
-    """Let the signed-in browser pair or disconnect a live agent session.
-
-    Args:
-      workspace_id: Canvas to connect.
-      body: Requested session and expected revision.
-      request: Request carrying the database engine.
-      identity: Authenticated browser account.
-
-    Returns:
-      state: Updated canvas, or a stale-revision conflict.
-
-    """
-    if identity.api_key_id is not None:
-        raise HTTPException(status_code=403, detail="Browser session required")
-    try:
-        state = await set_workspace_connection(
-            engine_of(request),
-            identity.user_id,
-            workspace_id,
-            body,
-            inbound=get_inbound(request),
-        )
-    except RevisionConflictError as error:
-        return JSONResponse(
-            status_code=409,
-            content=WorkspaceConflict(
-                detail="stale workspace revision",
-                current=error.current,
-            ).model_dump(mode="json"),
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-    except WorkspaceDisabledError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
-    if state is None:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    return state
 
 
 @router.post("/api/workspaces", response_model=WorkspaceState)
@@ -226,16 +180,14 @@ async def create_workspace_route(
       state: The principal's default workspace.
 
     """
-    if identity.api_key_id is not None:
-        raise HTTPException(status_code=403, detail="Browser session required")
-    try:
-        return await create_default_workspace(
-            engine_of(request),
-            user_id=identity.user_id,
-            catalog=visual_catalog(request).catalog(),
-        )
-    except WorkspaceDisabledError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
+    require_browser(identity)
+    return await create_default_workspace(
+        engine_of(request),
+        user_id=identity.user_id,
+        catalog=visual_catalog(request).catalog(),
+        inbound=get_inbound(request),
+        assistant=get_assistant(request),
+    )
 
 
 @router.get("/api/workspaces/{workspace_id}", response_model=WorkspaceState)
@@ -244,28 +196,27 @@ async def read_workspace_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> WorkspaceState:
-    """Read only the principal's own workspace.
+    """Read the principal's own workspace, or an assistant's partner canvas.
 
     Args:
       workspace_id: Requested canvas.
       request: FastAPI request with a database engine.
-      identity: Authenticated workspace owner.
+      identity: Authenticated workspace owner, or the assistant's agent key.
 
     Returns:
-      state: The owned canvas and its current revision.
+      state: The canvas and its current revision.
 
     """
     try:
         state = await read_workspace(
             engine_of(request),
-            identity.user_id,
-            workspace_id,
+            user_id=identity.user_id,
+            workspace_id=workspace_id,
             inbound=get_inbound(request),
+            assistant=get_assistant(request),
             agent_api_key_id=identity.api_key_id,
         )
-    except WorkspaceDisabledError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
-    except WorkspacePairingError as error:
+    except WorkspaceKeyRefusedError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
     if state is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -286,6 +237,11 @@ async def workspace_operation_route(
 ) -> WorkspaceState | JSONResponse:
     """Apply one revisioned operation and return the updated canvas.
 
+    A ``navigate`` or ``highlight`` operation, which only an agent key may send,
+    changes neither a visual nor the revision: it pushes a ``navigate`` or
+    ``highlight`` frame. A replay of an applied key returns the original state and
+    publishes nothing.
+
     Args:
       workspace_id: Canvas to change.
       body: Expected revision and visual operation.
@@ -298,14 +254,15 @@ async def workspace_operation_route(
 
     """
     try:
-        state = await apply_workspace_operation(
+        applied = await apply_workspace_operation(
             engine_of(request),
-            identity.user_id,
-            workspace_id,
-            key,
-            body,
+            user_id=identity.user_id,
+            workspace_id=workspace_id,
+            key=key,
+            body=body,
             catalog=visual_catalog(request).catalog(),
             inbound=get_inbound(request),
+            assistant=get_assistant(request),
             agent_api_key_id=identity.api_key_id,
         )
     except RevisionConflictError as error:
@@ -326,10 +283,45 @@ async def workspace_operation_route(
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    except WorkspaceDisabledError as error:
+    except WorkspaceKeyRefusedError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
-    except WorkspacePairingError as error:
-        raise HTTPException(status_code=403, detail=str(error)) from error
+    if applied is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if not applied.replayed:
+        hub = get_hub(request)
+        if isinstance(body.operation, Navigate):
+            hub.publish(workspace_id, frame=NavigateFrame(route=body.operation.route))
+        elif isinstance(body.operation, Highlight):
+            hub.publish(workspace_id, frame=HighlightFrame(ids=body.operation.ids))
+        else:
+            hub.publish(workspace_id, frame=WorkspaceFrame(state=applied.state))
+    return applied.state
+
+
+async def _current_state(
+    request: Request,
+    *,
+    user_id: uuid.UUID,
+    workspace_id: uuid.UUID,
+) -> WorkspaceState:
+    """Read the owner's canvas with its partner, or 404."""
+    state = await read_workspace(
+        engine_of(request),
+        user_id=user_id,
+        workspace_id=workspace_id,
+        inbound=get_inbound(request),
+        assistant=get_assistant(request),
+    )
     if state is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return state
+
+
+async def _owner_is_active(request: Request, *, user_id: uuid.UUID) -> bool:
+    """Say whether the canvas's owner is still an active user."""
+    async with engine_of(request).acquire() as conn:
+        active = await conn.fetchval(
+            "SELECT 1 FROM users WHERE id = $1 AND status = 'active'",
+            user_id,
+        )
+    return active is not None

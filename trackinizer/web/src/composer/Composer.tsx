@@ -31,6 +31,12 @@ export type FieldProps = {
  * no longer apply. `field` draws the textarea from the props the composer gives
  * it, and may change the draft with `edit` as typing does (the console's adds
  * its @ suggestions); by default it is the plain textarea.
+ *
+ * By default the box is locked while a draft is sending. `editable` keeps it
+ * open to typing (a draft typed meanwhile stays, as a send's success keeps it),
+ * and Retry shows only for a failure `retryable` says a resend can mend (all of
+ * them by default), since a refusal sent again is refused again. A send that
+ * resolves with `""` shows no receipt, for a caller that shows its own.
  */
 export function Composer({
   send,
@@ -40,6 +46,8 @@ export function Composer({
   failure,
   check = () => "",
   field = plainField,
+  editable = false,
+  retryable = () => true,
 }: {
   send: (text: string, key: string) => Promise<string>;
   target: string;
@@ -48,6 +56,8 @@ export function Composer({
   failure: (error: Error) => string;
   check?: (text: string) => string;
   field?: (props: FieldProps, edit: (text: string) => void) => ReactNode;
+  editable?: boolean;
+  retryable?: (error: Error) => boolean;
 }) {
   const id = useId();
   const [draft, setDraft] = useState("");
@@ -98,7 +108,7 @@ export function Composer({
           id,
           value: draft,
           placeholder,
-          disabled: !enabled || sending.isPending,
+          disabled: !enabled || (sending.isPending && !editable),
           rows: 3,
           onChange: (event) => edit(event.currentTarget.value),
           onKeyDown: (event) => {
@@ -113,7 +123,7 @@ export function Composer({
         <button className="btn" type="submit" disabled={!enabled || !draft.trim() || sending.isPending}>
           Send message
         </button>
-        {failed ? (
+        {failed && sending.error && retryable(sending.error) ? (
           <button
             className="btn ghost"
             type="button"
@@ -128,7 +138,7 @@ export function Composer({
       </div>
       {failed && sending.error ? <p role="alert">{failure(sending.error)}</p> : null}
       {refused?.draft === draft ? <p role="alert">{refused.problem}</p> : null}
-      {receipt?.target === target ? (
+      {receipt?.target === target && receipt.text ? (
         <p className="composer-receipt" role="status">
           {receipt.text}
         </p>

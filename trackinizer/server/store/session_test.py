@@ -365,7 +365,10 @@ class TestEndSession:
         conn = make_conn()
         set_field_row(conn, {**self._live_row(), "kind": "Issue"})
         store, _engine = make_store(conn)
-        with pytest.raises(ConflictError, match="only an AgentSession can be ended"):
+        with pytest.raises(
+            ConflictError,
+            match=r"is a Issue; only an AgentSession can be ended$",
+        ):
             await store.end_session(
                 new_uuid(),
                 ended=datetime(2026, 1, 1, tzinfo=UTC),
@@ -452,6 +455,19 @@ class TestEndSessionOnADatabase:
         set_client_change_id(uuid4())
         with pytest.raises(ConflictError, match="already ended"):
             _ = await db_store.end_session(session_id, ended=first, actor="closer")
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_live_session_in_no_room_resolves_with_none(db_store: Store) -> None:
+    session_id = await _open(db_store)
+    async with db_store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE inquiries SET agentsession_rooms = NULL WHERE id = $1",
+            session_id,
+        )
+
+    assert await db_store.resolve_live_sessions("agent") == [(session_id, ())]
 
 
 async def _open(store: Store) -> UUID:

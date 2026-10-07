@@ -97,6 +97,19 @@ class TestInboundQueue:
         (msg,) = q.drain(sid)
         assert (msg.text, msg.source, msg.room) == ("hi", "alice@x", "sear")
 
+    def test_a_queue_is_full_exactly_at_its_cap_and_drains_to_room(self) -> None:
+        queue = InboundQueue(max_per_session=2)
+        session = uuid.uuid4()
+
+        assert not queue.is_full(session)
+        _ = queue.enqueue(session, Inbound(text="one"))
+        assert not queue.is_full(session)
+        _ = queue.enqueue(session, Inbound(text="two"))
+        assert queue.is_full(session)
+        assert not queue.is_full(uuid.uuid4())
+        _ = queue.drain(session)
+        assert not queue.is_full(session)
+
 
 class TestAwaitMessages:
     """Waiting for a message rather than asking for one repeatedly.

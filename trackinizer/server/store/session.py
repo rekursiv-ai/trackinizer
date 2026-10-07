@@ -588,7 +588,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         return [
             (
                 _uuid(row["id"]),
-                tuple(from_plain(row["agentsession_rooms"], list[str])),
+                tuple(from_plain(row["agentsession_rooms"], list[str], default=[])),
             )
             for row in rows
         ]

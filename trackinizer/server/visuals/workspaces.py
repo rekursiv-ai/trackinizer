@@ -8,9 +8,14 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from trackinizer.wire.wire_chats import ChatMessage
+
 
 if TYPE_CHECKING:
-    from trackinizer.server.visuals.catalog import VisualCatalogBody
+    from trackinizer.server.visuals.catalog import (
+        VisualCatalogBody,
+        VisualDescription,
+    )
 
 
 type Placement = Literal["main", "side", "floating"]
@@ -48,30 +53,30 @@ class WorkspaceData(BaseModel):
     continuation_record_id: uuid.UUID | None = None
 
 
+class WorkspacePartner(BaseModel):
+    """Who a canvas's Chat talks to now, computed on every read and never stored.
+
+    The partner is the assistant's newest live session. An assistant with no live
+    session is still named, as unavailable.
+    """
+
+    session_id: uuid.UUID | None
+    actor: str | None
+    """The configured name of the assistant."""
+
+    cli: str | None
+    status: Literal["live", "unavailable"]
+
+
 class WorkspaceState(WorkspaceData):
     """A revisioned canvas state returned to browser and agent clients."""
 
     id: uuid.UUID
     revision: int = Field(ge=0)
-    connected_session_id: uuid.UUID | None = None
+    assistant: str | None = None
+    """The configured assistant's actor, or None when the server has none."""
 
-
-class WorkspaceConnection(BaseModel):
-    """Browser request to connect or disconnect a live agent session."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    revision: int = Field(ge=0)
-    session_id: uuid.UUID | None
-
-
-class ConnectableSession(BaseModel):
-    """One live trax session the signed-in user may pair with a canvas."""
-
-    id: uuid.UUID
-    title: str
-    actor: str
-    cli: str | None = None
+    partner: WorkspacePartner | None = None
 
 
 class WorkspaceMessageRequest(BaseModel):
@@ -79,28 +84,25 @@ class WorkspaceMessageRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    text: str = Field(min_length=1, max_length=16_384)
+    text: str = Field(pattern=r"\S", max_length=16_384)
     chat_instance_id: uuid.UUID | None = None
     expected_record_id: uuid.UUID | None = None
+    conversation_id: uuid.UUID | None = None
+    """The conversation to continue; none starts one."""
 
 
 class WorkspaceMessageReceipt(BaseModel):
-    """The paired session and queue depth recorded by the original send.
+    """The partner session and conversation of the original send.
 
-    An idempotent replay returns that original depth, even after a drain.
+    An idempotent replay returns the original receipt.
     """
 
-    session_id: uuid.UUID
-    queued: int
+    session_id: uuid.UUID | None
+    """None when the partner session record was deleted since."""
 
-
-class WorkspaceConnectionStatus(BaseModel):
-    """Direct status of a canvas's stored session pairing."""
-
-    status: Literal["live", "ended", "unavailable"]
-    session_id: uuid.UUID | None = None
-    actor: str | None = None
-    cli: str | None = None
+    conversation_id: uuid.UUID
+    message: ChatMessage
+    """The user's line as stored."""
 
 
 class OperationModel(BaseModel):
@@ -141,8 +143,24 @@ class PlaceVisual(OperationModel):
     placement: Placement
 
 
+class Navigate(OperationModel):
+    """Move the browser's page. An event: no visual and no revision changes."""
+
+    kind: Literal["navigate"]
+    route: str = Field(max_length=512, pattern=r"^#/[^\s\x00-\x1f\x7f]*$")
+    """A `#/...` hash with no space or control character."""
+
+
+class Highlight(OperationModel):
+    """Mark inquiries on the browser's page. An event, as navigate is."""
+
+    kind: Literal["highlight"]
+    ids: list[uuid.UUID] = Field(max_length=50)
+    """The inquiries to mark; the newest event wins and an empty list clears."""
+
+
 type Operation = Annotated[
-    ShowVisual | HideVisual | FocusVisual | PlaceVisual,
+    ShowVisual | HideVisual | FocusVisual | PlaceVisual | Navigate | Highlight,
     Field(discriminator="kind"),
 ]
 
@@ -162,7 +180,7 @@ class WorkspaceConflict(BaseModel):
 
 
 def initial_data(catalog: VisualCatalogBody) -> WorkspaceData:
-    """Start a new canvas with the backend's configured default visual.
+    """Start a new canvas with the default visual, and Chat floating over it if offered.
 
     Args:
       catalog: Trusted visual definitions and initial selection.
@@ -174,13 +192,66 @@ def initial_data(catalog: VisualCatalogBody) -> WorkspaceData:
     default = next(
         visual for visual in catalog.visuals if visual.type == catalog.default_visual
     )
-    instance = VisualInstance(
-        id=uuid.uuid4(),
-        type=default.type,
-        version=default.version,
-        placement="main",
+    chat = next(
+        (
+            visual
+            for visual in catalog.visuals
+            if visual.type == "trax.chat" and visual is not default
+        ),
+        None,
     )
-    return WorkspaceData(visuals=[instance])
+    visuals = [
+        VisualInstance(
+            id=uuid.uuid4(),
+            type=default.type,
+            version=default.version,
+            placement="main",
+        ),
+    ]
+    if chat is not None:
+        visuals.append(
+            VisualInstance(
+                id=uuid.uuid4(),
+                type=chat.type,
+                version=chat.version,
+                placement="floating",
+            ),
+        )
+    return WorkspaceData(visuals=visuals)
+
+
+def refuse_record(
+    operation: ShowVisual,
+    *,
+    descriptor: VisualDescription,
+    kind: str | None,
+) -> str | None:
+    """Say why a visual cannot show the record a show names, or None if it can.
+
+    One rule for every caller, the server and a stand-in for it alike: a visual
+    whose catalog takes no record refuses any, and one that lists kinds refuses a
+    record of another kind, or one that does not exist.
+
+    Args:
+      operation: The show being applied.
+      descriptor: The catalog entry of the visual it names.
+      kind: The record's kind, or None when it does not exist. Not read for a
+        visual that takes no record or any kind.
+
+    Returns:
+      reason: A sentence for the refused caller, or None.
+
+    """
+    if operation.record_id is None:
+        return None
+    if descriptor.record_kinds == []:
+        return "Visual takes no record target."
+    if descriptor.record_kinds and kind not in descriptor.record_kinds:
+        return (
+            f"{descriptor.title} shows {' or '.join(descriptor.record_kinds)} "
+            f"records, not {kind or 'an unknown record'}."
+        )
+    return None
 
 
 def apply_operation(
@@ -213,6 +284,10 @@ def apply_operation(
             raise ValueError(f"Unknown visual type {operation.visual_type!r}.")
         if "record" in descriptor.requires and operation.record_id is None:
             raise ValueError("Visual requires a record target.")
+        if descriptor.record_kinds == [] and (
+            reason := refuse_record(operation, descriptor=descriptor, kind=None)
+        ):
+            raise ValueError(reason)
         if set(operation.params) - set(descriptor.parameter_schema):
             raise ValueError("Visual parameters do not match the catalog schema.")
         params = {
@@ -264,9 +339,16 @@ def apply_operation(
         )
         updated.visuals.append(instance)
         updated.focused_instance = instance.id
+    elif isinstance(operation, Navigate | Highlight):
+        pass
     elif isinstance(operation, HideVisual):
         if not any(visual.id == operation.instance_id for visual in updated.visuals):
             raise ValueError("Visual instance not found.")
+        if any(
+            visual.id == operation.instance_id and visual.type == catalog.default_visual
+            for visual in updated.visuals
+        ):
+            raise ValueError("The default visual is the page and cannot be hidden.")
         updated.visuals = [
             visual for visual in updated.visuals if visual.id != operation.instance_id
         ]

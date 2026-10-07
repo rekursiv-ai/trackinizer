@@ -35,7 +35,6 @@ import argparse
 import asyncio
 import contextlib
 import hashlib
-import json
 import logging
 import os
 import re
@@ -48,7 +47,6 @@ import time
 import uuid
 
 from trackinizer.client.client import Client
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.lib.posix.follow import follow_dir, follow_tree
 from trackinizer.lib.posix.host import HostSpec
 from trackinizer.lib.posix.relay import ThreadedRelay
@@ -60,6 +58,7 @@ from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.custom_types import Adapter, StreamAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter, LineCapture
+from trackinizer.trax.run.inbound import render_inbound
 from trackinizer.trax.run.sink import (
     FileSink,
     LockedSink,
@@ -957,7 +956,7 @@ def _enqueue_stream_line(queue: deque[bytes], stats: _Stats, raw: bytes) -> None
 # ``poll_interval`` is no longer the delivery latency -- only the gap before re-arming
 # after a FAILURE, and the wait for a session id that has not been minted yet (it
 # appears on the first captured event). ``stream`` says what kind of child consumes the
-# submissions (see :func:`_render_inbound`'s envelope shaping).
+# submissions (see ``render_inbound``'s envelope shaping).
 #
 # Server errors are swallowed: a flaky back-channel must not crash the run or corrupt
 # the terminal, exactly like the capture sink's resilience.
@@ -1021,7 +1020,7 @@ def _deliver_one(
     """Submit one inbound message; a failure is logged, not propagated."""
     try:
         relay.submit(
-            _render_inbound(text, source, room, context=context, stream=stream),
+            render_inbound(text, source, room, context=context, stream=stream),
         )
     except Exception:
         _logger.warning(
@@ -1029,72 +1028,6 @@ def _deliver_one(
             "continuing with the rest of the batch",
             exc_info=True,
         )
-
-
-# A single PTY interleaves every room's messages into one input stream, so the agent
-# needs the room and sender to know who is steering it. Renders ``[room] sender: text``
-# (dropping whichever of room/sender is absent), so a direct session-id enqueue with no
-# attested sender injects the bare text.
-#
-# Change envelopes are shaped per consumer HERE, at the client -- the server pushes one
-# uniform JSON envelope to every session. A model-CLI session (``stream=False``)
-# receives only the envelope's ``agent_message`` line: the remaining fields would spend
-# the model's context on metadata it can fetch on demand (the line itself names the
-# ``trax`` command). An IO-stream session (``stream=True``) receives the whole envelope
-# to parse itself -- behind the same room/sender prefix as any other message, since a
-# line-reading child needs to know who sent it just as much. Only the route-attested
-# ``trackinizer`` sender unwraps -- ``source`` is stamped server-side from the
-# principal, so another sender's JSON-looking text renders as a plain message.
-def _render_inbound(
-    text: str,
-    source: str | None,
-    room: str | None,
-    *,
-    context: WorkspaceMessageContext | None = None,
-    stream: bool = False,
-) -> str:
-    """Decorate an inbound message with its routing context for injection."""
-    if context is None and source == "trackinizer" and not stream:
-        agent_message = _envelope_agent_message(text)
-        if agent_message is not None:
-            return agent_message
-    prefix = ""
-    if room:
-        prefix += f"[{room}] "
-    if source:
-        prefix += f"{source}: "
-    rendered = f"{prefix}{text}"
-    if context is not None:
-        rendered += (
-            f"\nTrackinizer context (verify with trax): {context.model_dump_json()}"
-        )
-        rendered += f"\nCanvas commands: trax workspace {context.workspace_id}"
-        if context.artifact_content is not None:
-            rendered += (
-                f"; Artifact: trax artifact {context.artifact_content.artifact_id}; "
-                "full content: GET /api/artifacts/"
-                f"{context.artifact_content.artifact_id}/content"
-            )
-        if context.record_id is not None:
-            rendered += (
-                "; to show the context graph for this record, run "
-                f"trax workspace {context.workspace_id} "
-                "show trax.subgraph "
-                f"--record {context.record_id} --placement side"
-            )
-    return rendered
-
-
-def _envelope_agent_message(text: str) -> str | None:
-    """Return the ``agent_message`` line of a change envelope, or None if not one."""
-    try:
-        payload = loads(text)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    message = from_plain(payload, dict[str, object]).get("agent_message")
-    return message if isinstance(message, str) else None
 
 
 # ``TRAX_ACTOR`` is the session's granted routing handle and ``TRAX_ROOMS`` its comma-

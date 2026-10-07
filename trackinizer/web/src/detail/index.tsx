@@ -1,8 +1,10 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { lazy, Suspense, type ReactNode, startTransition, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, type ReactNode, startTransition, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { markPageDrawn } from "../debug/timings";
 import { ApiError } from "../api/client";
 import type { Detail, DetailRow } from "../api/detail";
 import { useMeta, useWriteMode } from "../app/boot";
+import { useIsHighlighted } from "../app/highlights";
 import { PurgeDialog } from "../bulk/Purge";
 import { useCommands } from "../commands/registry";
 import { CopyDetails } from "../debug/CopyDetails";
@@ -88,6 +90,11 @@ function DetailById({ id, kind, name }: { id: string; kind: string | null; name:
   }, [ready, shown]);
   // A row purged while open answers 404 on refetch: say so rather than show it stale.
   const gone = query.error instanceof ApiError && query.error.status === 404;
+  const drawn = !!query.data && !gone && shown;
+  // After an agent's navigation here, the page drawn with its data is what its timing mark waits for.
+  useLayoutEffect(() => {
+    if (drawn) markPageDrawn(window.location.hash);
+  }, [drawn, id]);
   if (query.data && !gone && shown) {
     return (
       <Page
@@ -263,8 +270,9 @@ const RAIL: PanelSpec = { id: "detail.rail", name: "parents, children and proper
 function Head({ detail, now, cost }: { detail: Detail; now: number; cost: number }) {
   const row = detail.self;
   const one = kindLook(row.kind).one;
+  const highlighted = useIsHighlighted(row.id);
   return (
-    <div className="d-head">
+    <div className={highlighted ? "d-head is-highlighted" : "d-head"}>
       <div className="eyebrow">
         <KindIcon kind={row.kind} size={13} />
         {capitalize(one)}

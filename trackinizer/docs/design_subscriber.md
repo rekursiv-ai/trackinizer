@@ -29,7 +29,7 @@ Load-bearing code:
 - [`server/store/read.py`](../server/store/read.py) --
   `what_changed_for_anyone` (cursor query; LEFT JOIN resolves the
   subject's short seq).
-- [`trax/run/session.py`](../trax/run/session.py) -- `_render_inbound`
+- [`trax/run/inbound.py`](../trax/run/inbound.py) -- `render_inbound`
   (client-side shaping: what actually reaches the child).
 - [`examples/subscriber_demo.sh`](../examples/subscriber_demo.sh) -- the
   executable spec, end to end against a real server.
@@ -69,7 +69,7 @@ the server route (`GET /api/change_log/<uuid>`) is already there.
 ## Client-side shaping
 
 The server pushes the **same envelope to every session**; the `trax run`
-poller (`_render_inbound`) decides what reaches the child's stdin, because
+poller (`render_inbound`) decides what reaches the child's stdin, because
 only the client knows what is attached:
 
 | session child | receives |

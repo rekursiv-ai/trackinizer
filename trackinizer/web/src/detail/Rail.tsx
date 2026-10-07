@@ -1,6 +1,7 @@
 import { useDeferredValue, useId, useState } from "react";
 import type { Detail } from "../api/detail";
 import { useMeta, useWriteMode } from "../app/boot";
+import { useIsHighlighted } from "../app/highlights";
 import { useRelationActions } from "../relations/flows";
 import { RelationRow } from "../relations/RelationRow";
 import { formatRoute } from "../router/route";
@@ -81,8 +82,9 @@ function Section({ detail, title, add, peers }: { detail: Detail; title: string;
 function PeerRow({ detail, rail: { peer, edges }, mode }: { detail: Detail; rail: RailPeer; mode: WriteMode }) {
   const ref = `${peer.kind}#${peer.seq}`;
   const href = formatRoute({ name: "ref", kind: peer.kind, seq: peer.seq });
+  const highlighted = useIsHighlighted(peer.id);
   return (
-    <li className="rail-peer">
+    <li className={highlighted ? "rail-peer is-highlighted" : "rail-peer"}>
       <a className="rail-link" href={href}>
         <StateGlyphs status={peer.status} judgement={peer.judgement} />
         <span className="rail-title">

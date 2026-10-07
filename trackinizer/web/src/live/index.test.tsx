@@ -17,6 +17,7 @@ import { RouterProvider } from "../router/router";
 import { PausedBar } from "../ui/bars";
 import { ToastProvider } from "../ui/toast";
 import { LiveProvider, useLiveDetail } from ".";
+import { openEarlyStream } from "./earlyStream";
 import { answerRows, change, FakeEventSource, issue, listParams, serveChanges, serveRows, uuid } from "./testing";
 
 const KINDS = ["Issue"];
@@ -400,4 +401,18 @@ test("Activity's live updates that keep failing say so with Retry (CR-R3-B4)", a
   // The retry asks as soon as the 2 s between asks allow.
   await act(() => vi.advanceTimersByTimeAsync(2_000));
   await until(() => expect(screen.queryByRole("status")).toBeNull());
+});
+
+test("with the canvas on, the live layer opens no /api/web/subscribe stream of its own, and closes the early one", () => {
+  const closed = vi.fn();
+  vi.spyOn(FakeEventSource.prototype, "close").mockImplementation(closed);
+  openEarlyStream();
+  expect(FakeEventSource.made).toHaveLength(1);
+  const client = createQueryClient(() => {});
+  render(<QueryClientProvider client={client}><LiveProvider canvas><p>app</p></LiveProvider></QueryClientProvider>);
+  expect(closed).toHaveBeenCalledOnce();
+  expect(FakeEventSource.made).toHaveLength(1);
+  cleanup();
+  render(<QueryClientProvider client={client}><LiveProvider><p>app</p></LiveProvider></QueryClientProvider>);
+  expect(FakeEventSource.made).toHaveLength(2);
 });

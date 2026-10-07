@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { listSessionParts, readFeed, readFeedFacets, readRecentSessionTurns, readSessionRecords, sendRoutedMessage, sendSessionMessage } from "./sessions";
+import { listSessionParts, readFeed, readFeedFacets, readSessionRecords, sendRoutedMessage, sendSessionMessage } from "./sessions";
 import { stubFetch } from "./testing";
 
 afterEach(() => {
@@ -27,15 +27,6 @@ test("a page of records names its part, the idx it follows, and asks for plainte
   expect(sent.map((request) => [request.method, request.path, Object.fromEntries(new URLSearchParams(request.query))])).toEqual([
     ["GET", `/api/sessions/${ID}/records`, { part: "-1", after_idx: "199", limit: "200", plaintext_only: "true" }],
   ]);
-});
-
-test("recent turns read only the bounded conversational endpoint", async () => {
-  const turns = [{ part: 1, idx: 351, kind: "AssistantMessage", content: "After the tools." }];
-  const sent = stubFetch(() => Response.json({ turns }));
-
-  expect(await readRecentSessionTurns(ID)).toEqual(turns);
-  expect(sent.map((request) => [request.method, request.path, Object.fromEntries(new URLSearchParams(request.query))]))
-    .toEqual([["GET", `/api/sessions/${ID}/turns`, { limit: "20" }]]);
 });
 
 test("a session that is gone fails with the server's message", async () => {

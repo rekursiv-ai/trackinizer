@@ -61,8 +61,9 @@ _VALUE_OPERATORS: Final[frozenset[str]] = frozenset({"to"})
 
 # Verbs that must run in the calling process. ``run`` spawns a CLI on a PTY
 # whose master fd it holds and mirrors the terminal both ways, so it cannot
-# execute in a daemon that owns neither.
-_LOCAL_ONLY_VERBS: Final[frozenset[str]] = frozenset({"run"})
+# execute in a daemon that owns neither; ``helper`` serves until the user stops
+# it, and a daemon request would hold it and its CLIs hostage.
+_LOCAL_ONLY_VERBS: Final[frozenset[str]] = frozenset({"run", "helper"})
 
 # Global flags that take a separate value token, so the scan for the verb
 # knows to skip past it. Mirrors ``cli._VALUE_FLAGS``.

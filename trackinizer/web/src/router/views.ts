@@ -14,7 +14,6 @@ export const SettingsView = lazyView(() => import("../settings"), (module) => mo
 export const AdminView = lazyView(() => import("../admin"), (module) => module.AdminView);
 export const SearchView = lazyView(() => import("../search"), (module) => module.SearchView);
 export const GraphView = lazyView(() => import("../graph"), (module) => module.GraphView);
-
 /**
  * Load the view `hash` opens, so that its chunk downloads beside the boot reads
  * rather than after them. Settles once the chunk has loaded or failed; a load

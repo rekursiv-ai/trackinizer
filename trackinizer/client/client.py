@@ -71,12 +71,14 @@ if TYPE_CHECKING:
     import pydantic
 
     from trackinizer.wire import (
+        wire_chats,
         wire_metrics,
         wire_metrics_query,
         wire_session_ir,
         wire_sessions,
     )
     from trackinizer.wire.filters import Filter
+    from trackinizer.wire.wire_chats import AwaitingChat, ChatReply, ChatThread
     from trackinizer.wire.wire_metrics import (
         LogMetricsResponse,
         MetricPoint,
@@ -107,6 +109,8 @@ else:
     # session. Bind it as a lazy module proxy so the import fires on first
     # attribute access -- inside the session methods below, never on cold start.
     wire_sessions = lazy_import("trackinizer.wire.wire_sessions")
+    # Only an assistant posting a chat reply touches it.
+    wire_chats = lazy_import("trackinizer.wire.wire_chats")
     # Same lazy-bind for the IR bodies: only ``append_records`` touches them,
     # so their pydantic-model build stays off the cold-start path.
     wire_session_ir = lazy_import("trackinizer.wire.wire_session_ir")
@@ -462,7 +466,7 @@ class Client:
           ref: Ref.
 
         Returns:
-          result: The tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, JSONValue]].
+          result: The tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, PlainTree]].
 
         """
         kind, target_id = self.resolve_id(ref)
@@ -473,7 +477,7 @@ class Client:
         """Next issue.
 
         Returns:
-          result: The dict[str, JSONValue] | None.
+          result: The dict[str, PlainTree] | None.
 
         """
         where = "/api/inquiries/next_issue"
@@ -1689,6 +1693,159 @@ class Client:
             response,
             wire_sessions.SEND_MESSAGE_PATH,
         ).delivered
+
+    def post_chat_reply(
+        self,
+        conversation_id: uuid.UUID,
+        *,
+        reply: ChatReply,
+    ) -> None:
+        """Post an assistant's answer or status to a canvas Chat conversation.
+
+        Args:
+          conversation_id: The conversation the reply is for.
+          reply: The answer to store, or the status to show; an empty status clears.
+
+        """
+        self.post(
+            wire_chats.CHAT_MESSAGES_PATH.format(conversation_id=conversation_id),
+            body=reply.model_dump(mode="json"),
+        )
+
+    def read_workspace(self, workspace_id: uuid.UUID) -> dict[str, PlainTree]:
+        """Read a canvas: its revision, visuals and focus.
+
+        Args:
+          workspace_id: The canvas.
+
+        Returns:
+          state: The workspace state as the server returns it.
+
+        """
+        where = f"/api/workspaces/{workspace_id}"
+        return dict(_require_mapping(self.get(where), where))
+
+    def apply_workspace_operation(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        operation: Mapping[str, object],
+    ) -> dict[str, PlainTree]:
+        """Apply one canvas operation to the live revision, once more if it moved.
+
+        Args:
+          workspace_id: The canvas.
+          operation: A ``show``, ``hide``, ``focus`` or ``place`` operation.
+
+        Returns:
+          state: The updated workspace state.
+
+        """
+        where = f"/api/workspaces/{workspace_id}/operations"
+        try:
+            applied = self.post(
+                where,
+                body={
+                    "revision": self._revision_of(workspace_id),
+                    "operation": operation,
+                },
+            )
+        except ClientError as error:
+            if error.status_code != 409:
+                raise
+            # The 409 body names the live state, but the error text cuts it short.
+            applied = self.post(
+                where,
+                body={
+                    "revision": self._revision_of(workspace_id),
+                    "operation": operation,
+                },
+            )
+        return dict(_require_mapping(applied, where))
+
+    def navigate(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        route: str,
+    ) -> dict[str, PlainTree]:
+        """Move a canvas's page to ``route``; it is an event, so no revision is read.
+
+        Args:
+          workspace_id: The canvas.
+          route: A ``#/...`` hash.
+
+        Returns:
+          state: The workspace state, which a navigation does not change.
+
+        """
+        where = f"/api/workspaces/{workspace_id}/operations"
+        moved = self.post(
+            where,
+            body={"revision": 0, "operation": {"kind": "navigate", "route": route}},
+        )
+        return dict(_require_mapping(moved, where))
+
+    def highlight(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        ids: Sequence[uuid.UUID],
+    ) -> dict[str, PlainTree]:
+        """Mark inquiries on a canvas's page; an event, so no revision is read.
+
+        Args:
+          workspace_id: The canvas.
+          ids: The inquiries to mark, at most 50; empty clears the marks.
+
+        Returns:
+          state: The workspace state, which a highlight does not change.
+
+        """
+        where = f"/api/workspaces/{workspace_id}/operations"
+        marked = self.post(
+            where,
+            body={
+                "revision": 0,
+                "operation": {"kind": "highlight", "ids": [str(i) for i in ids]},
+            },
+        )
+        return dict(_require_mapping(marked, where))
+
+    def read_chat(self, conversation_id: uuid.UUID) -> ChatThread:
+        """Read a Chat conversation's newest messages.
+
+        Args:
+          conversation_id: The conversation.
+
+        Returns:
+          thread: Its title, partner and messages, oldest first.
+
+        """
+        where = wire_chats.CHAT_PATH.format(conversation_id=conversation_id)
+        return _validate_model(wire_chats.ChatThread, self.get(where), where)
+
+    def awaiting_chats(self) -> list[AwaitingChat]:
+        """List the Chat conversations whose partner is this session and owes a reply.
+
+        Returns:
+          chats: Each conversation whose partner is the caller's live session and
+            whose last message is the user's.
+
+        """
+        where = f"{wire_chats.CHATS_PATH}/awaiting"
+        return [
+            _validate_model(wire_chats.AwaitingChat, row, where)
+            for row in _require_list(self.get(where), where)
+        ]
+
+    def _revision_of(self, workspace_id: uuid.UUID) -> int:
+        """Return the canvas's live revision."""
+        where = f"/api/workspaces/{workspace_id}"
+        revision = _require_field(self.read_workspace(workspace_id), "revision", where)
+        if not isinstance(revision, int):
+            raise ClientError(f"{where} returned a malformed revision {revision!r}")
+        return revision
 
     def _patch_field(
         self,

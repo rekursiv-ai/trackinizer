@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { expect, type Page } from "@playwright/test";
+import { STREAM_URL, streamOpened } from "../fixtures";
 
 const ROOT = fileURLToPath(new URL("../../../../..", import.meta.url));
 const WEB = fileURLToPath(new URL("../..", import.meta.url));
@@ -340,7 +341,7 @@ export type Sent = {
 export function requests(probe: Probed): Sent[] {
   return probe.fetches.flatMap(({ url, start, end }) => {
     const parsed = new URL(url, "http://page");
-    if (!parsed.pathname.startsWith("/api/") || parsed.pathname === "/api/web/subscribe") return [];
+    if (!parsed.pathname.startsWith("/api/") || STREAM_URL.test(parsed.pathname)) return [];
     return [{ ...classify(parsed), start, end: end ?? probe.now }];
   });
 }
@@ -412,7 +413,7 @@ export async function timeToShow(
 
 /** Open the Issue list, filtered to `label` through the Filter menu, once the stream is connected. */
 export async function openList(page: Page, url: string, label: string): Promise<void> {
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   await page.goto(`${url}/app/#/list/Issue`);
   await subscribed;
   await filterTo(page, label);
@@ -422,7 +423,7 @@ export async function openList(page: Page, url: string, label: string): Promise<
 export async function filterTo(page: Page, label: string): Promise<void> {
   await page.getByRole("button", { name: /^Filter$/ }).click();
   await page.getByRole("option", { name: "Label", exact: true }).click();
-  await page.getByRole("combobox").fill(label);
+  await page.getByRole("combobox", { name: /^Label/ }).fill(label);
   await page.keyboard.press("Enter");
   await page.keyboard.press("Escape");
   await expect(page.getByTitle("The same query from the CLI")).toContainText(`labels is ${label}`);
@@ -430,7 +431,7 @@ export async function filterTo(page: Page, label: string): Promise<void> {
 
 /** Open the detail of inquiry `id`, once the stream is connected and the detail has loaded. */
 export async function openDetail(page: Page, url: string, id: string): Promise<void> {
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   await page.goto(`${url}/app/#/lookup/${id}`);
   await subscribed;
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();

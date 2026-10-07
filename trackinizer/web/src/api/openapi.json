@@ -639,6 +639,33 @@
         "title": "ArtifactSectionDraft",
         "type": "object"
       },
+      "AwaitingChat": {
+        "description": "A conversation whose last line is the user's, waiting on its partner.",
+        "properties": {
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "seq": {
+            "minimum": 1.0,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "workspace_id",
+          "seq"
+        ],
+        "title": "AwaitingChat",
+        "type": "object"
+      },
       "BatchEdge": {
         "description": "One edge in a :class:`SubmitBatch`.\n\nEach endpoint is named EITHER by batch item index (``from_index`` /\n``to_index``, 0-based into ``items``) for a row created in this batch,\nOR by an existing row's ``from_id`` / ``to_id`` UUID. Exactly one of\nindex/id must be set per endpoint. Index references are the only way to\nlink two brand-new rows -- inline-created targets have no id until the\nbatch commits. Annotations mirror :class:`CreateEdge`.",
         "properties": {
@@ -831,6 +858,185 @@
         "title": "Change",
         "type": "object"
       },
+      "ChatMessage": {
+        "description": "One stored line of a conversation, numbered from 1 in the order stored.",
+        "properties": {
+          "author": {
+            "title": "Author",
+            "type": "string"
+          },
+          "created": {
+            "format": "date-time",
+            "title": "Created",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "seq": {
+            "minimum": 1.0,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "role",
+          "author",
+          "text",
+          "created"
+        ],
+        "title": "ChatMessage",
+        "type": "object"
+      },
+      "ChatReply": {
+        "additionalProperties": false,
+        "description": "An assistant's line for one conversation: an answer, or its status.\n\nAn answer is stored and shown as the partner's message. A status is shown\nunder the conversation until the next status or answer and is never stored;\nan empty status clears it.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "answer",
+              "status"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 65536,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "kind"
+        ],
+        "title": "ChatReply",
+        "type": "object"
+      },
+      "ChatSummary": {
+        "description": "One conversation in its owner's history.",
+        "properties": {
+          "created": {
+            "format": "date-time",
+            "title": "Created",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "modified": {
+            "format": "date-time",
+            "title": "Modified",
+            "type": "string"
+          },
+          "partner_actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partner Actor"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "partner_actor",
+          "workspace_id",
+          "created",
+          "modified"
+        ],
+        "title": "ChatSummary",
+        "type": "object"
+      },
+      "ChatThread": {
+        "description": "A conversation and its messages: the newest 500, or up to 500 after a ``seq``.",
+        "properties": {
+          "earlier": {
+            "title": "Earlier",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "partner_actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partner Actor"
+          },
+          "partner_session_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partner Session Id"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "partner_actor",
+          "partner_session_id",
+          "earlier",
+          "messages"
+        ],
+        "title": "ChatThread",
+        "type": "object"
+      },
       "Citation": {
         "description": "One inline citation on a :class:`SubmitBelief`: which artifact, how strong.\n\nThe signed ``valence`` is bounded to the same ``[-1, 1]`` the edges column\nenforces, so a malformed-weight citation is rejected at the wire boundary\nrather than surfacing as a mid-transaction CHECK violation. The polarity is\nalready resolved here (the trax ``dis*`` aliases negate before the wire), so\nthis is the final stored sign.",
         "properties": {
@@ -886,42 +1092,6 @@
           "owner"
         ],
         "title": "ClaimNextIssue",
-        "type": "object"
-      },
-      "ConnectableSession": {
-        "description": "One live trax session the signed-in user may pair with a canvas.",
-        "properties": {
-          "actor": {
-            "title": "Actor",
-            "type": "string"
-          },
-          "cli": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cli"
-          },
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "title",
-          "actor"
-        ],
-        "title": "ConnectableSession",
         "type": "object"
       },
       "Cost": {
@@ -2859,6 +3029,32 @@
         "title": "HideVisual",
         "type": "object"
       },
+      "Highlight": {
+        "additionalProperties": false,
+        "description": "Mark inquiries on the browser's page. An event, as navigate is.",
+        "properties": {
+          "ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Ids",
+            "type": "array"
+          },
+          "kind": {
+            "const": "highlight",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "ids"
+        ],
+        "title": "Highlight",
+        "type": "object"
+      },
       "InboundDrainItem": {
         "description": "One message drained for a session, with its attested sender.\n\nThe drain **response** item: unlike the enqueue request, it carries\n``source`` -- the producer's attested ``--as`` / principal -- so the\npoller can render the ``[room] sender:`` injection context. Inbound-only\nand transient: it is **not** an ``agent_session_events`` row; when the\nagent consumes it, the capture path logs it as a normal turn.",
         "properties": {
@@ -3426,6 +3622,29 @@
           }
         ]
       },
+      "Navigate": {
+        "additionalProperties": false,
+        "description": "Move the browser's page. An event: no visual and no revision changes.",
+        "properties": {
+          "kind": {
+            "const": "navigate",
+            "title": "Kind",
+            "type": "string"
+          },
+          "route": {
+            "maxLength": 512,
+            "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
+            "title": "Route",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "route"
+        ],
+        "title": "Navigate",
+        "type": "object"
+      },
       "OpenPreset": {
         "additionalProperties": false,
         "description": "Restore a snapshot only against the caller's expected canvas revision.",
@@ -3453,6 +3672,8 @@
           "mapping": {
             "focus": "#/components/schemas/FocusVisual",
             "hide": "#/components/schemas/HideVisual",
+            "highlight": "#/components/schemas/Highlight",
+            "navigate": "#/components/schemas/Navigate",
             "place": "#/components/schemas/PlaceVisual",
             "show": "#/components/schemas/ShowVisual"
           },
@@ -3470,6 +3691,12 @@
           },
           {
             "$ref": "#/components/schemas/PlaceVisual"
+          },
+          {
+            "$ref": "#/components/schemas/Navigate"
+          },
+          {
+            "$ref": "#/components/schemas/Highlight"
           }
         ]
       },
@@ -6636,6 +6863,20 @@
             "title": "Parameter Schema",
             "type": "object"
           },
+          "record_kinds": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Record Kinds"
+          },
           "requires": {
             "items": {
               "enum": [
@@ -7060,88 +7301,6 @@
         "title": "WorkspaceConflict",
         "type": "object"
       },
-      "WorkspaceConnection": {
-        "additionalProperties": false,
-        "description": "Browser request to connect or disconnect a live agent session.",
-        "properties": {
-          "revision": {
-            "minimum": 0.0,
-            "title": "Revision",
-            "type": "integer"
-          },
-          "session_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Session Id"
-          }
-        },
-        "required": [
-          "revision",
-          "session_id"
-        ],
-        "title": "WorkspaceConnection",
-        "type": "object"
-      },
-      "WorkspaceConnectionStatus": {
-        "description": "Direct status of a canvas's stored session pairing.",
-        "properties": {
-          "actor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Actor"
-          },
-          "cli": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cli"
-          },
-          "session_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Session Id"
-          },
-          "status": {
-            "enum": [
-              "live",
-              "ended",
-              "unavailable"
-            ],
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "title": "WorkspaceConnectionStatus",
-        "type": "object"
-      },
       "WorkspaceData": {
         "description": "The portion of workspace state stored as one JSONB value.",
         "properties": {
@@ -7232,6 +7391,18 @@
             ],
             "title": "Continuation Record Id"
           },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
           "record": {
             "anyOf": [
               {
@@ -7275,21 +7446,33 @@
         "type": "object"
       },
       "WorkspaceMessageReceipt": {
-        "description": "The paired session and queue depth recorded by the original send.\n\nAn idempotent replay returns that original depth, even after a drain.",
+        "description": "The partner session and conversation of the original send.\n\nAn idempotent replay returns the original receipt.",
         "properties": {
-          "queued": {
-            "title": "Queued",
-            "type": "integer"
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "message": {
+            "$ref": "#/components/schemas/ChatMessage"
           },
           "session_id": {
-            "format": "uuid",
-            "title": "Session Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
           }
         },
         "required": [
           "session_id",
-          "queued"
+          "conversation_id",
+          "message"
         ],
         "title": "WorkspaceMessageReceipt",
         "type": "object"
@@ -7310,6 +7493,18 @@
             ],
             "title": "Chat Instance Id"
           },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
           "expected_record_id": {
             "anyOf": [
               {
@@ -7324,7 +7519,7 @@
           },
           "text": {
             "maxLength": 16384,
-            "minLength": 1,
+            "pattern": "\\S",
             "title": "Text",
             "type": "string"
           }
@@ -7333,6 +7528,61 @@
           "text"
         ],
         "title": "WorkspaceMessageRequest",
+        "type": "object"
+      },
+      "WorkspacePartner": {
+        "description": "Who a canvas's Chat talks to now, computed on every read and never stored.\n\nThe partner is the assistant's newest live session. An assistant with no live\nsession is still named, as unavailable.",
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "cli": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cli"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "status": {
+            "enum": [
+              "live",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "actor",
+          "cli",
+          "status"
+        ],
+        "title": "WorkspacePartner",
         "type": "object"
       },
       "WorkspacePreset": {
@@ -7442,17 +7692,16 @@
             ],
             "title": "Agent Instructions"
           },
-          "connected_session_id": {
+          "assistant": {
             "anyOf": [
               {
-                "format": "uuid",
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Connected Session Id"
+            "title": "Assistant"
           },
           "continuation_record_id": {
             "anyOf": [
@@ -7482,6 +7731,16 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "partner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspacePartner"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "revision": {
             "minimum": 0.0,
@@ -8966,6 +9225,201 @@
           }
         },
         "summary": "Get Change Route"
+      }
+    },
+    "/api/chats": {
+      "get": {
+        "description": "List the signed-in user's conversations, newest change first, at most 50.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  chats: The user's conversations.",
+        "operationId": "list_chats_route_api_chats_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ChatSummary"
+                  },
+                  "title": "Response List Chats Route Api Chats Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Chats Route"
+      }
+    },
+    "/api/chats/awaiting": {
+      "get": {
+        "description": "List the conversations the caller's live session has yet to answer.\n\nFor the agent key of a partner session. After a restart it names the user\nlines the partner drained but never answered: conversations whose partner is a\nlive session the key opened and whose last line is the user's.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: The partner session's agent key.\n\nReturns:\n  awaiting: Each conversation with its workspace and the user's last seq.",
+        "operationId": "awaiting_chats_route_api_chats_awaiting_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AwaitingChat"
+                  },
+                  "title": "Response Awaiting Chats Route Api Chats Awaiting Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Awaiting Chats Route"
+      }
+    },
+    "/api/chats/{conversation_id}": {
+      "delete": {
+        "description": "Delete one of the user's conversations and its lines.\n\nThe canvas's stream is told with a ``deleted`` frame.\n\nArgs:\n  conversation_id: Conversation to delete.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the conversation.",
+        "operationId": "delete_chat_route_api_chats__conversation_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Chat Route"
+      },
+      "get": {
+        "description": "Read one conversation: its newest 500 lines, or those after a number.\n\nThe owner's browser reads it, and so does the agent key of its live partner\nsession, which is how an assistant that lost its memory of the thread reseeds\nitself. No one else may.\n\nArgs:\n  conversation_id: Conversation to read.\n  request: Request carrying the database engine.\n  identity: The owner's browser, or the partner session's agent key.\n  after_seq: Return up to 500 lines numbered above this; without it, the newest 500.\n\nReturns:\n  thread: The conversation and its lines.",
+        "operationId": "read_chat_route_api_chats__conversation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after_seq",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After Seq"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatThread"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Read Chat Route"
+      }
+    },
+    "/api/chats/{conversation_id}/messages": {
+      "post": {
+        "description": "Post an assistant's answer or status to a conversation.\n\nOnly the API key that opened the conversation's live partner session may\ncall this. An answer is stored as the partner's line and pushed; a status is\npushed and never stored, and an empty one clears it.\n\nArgs:\n  conversation_id: Conversation the reply is for.\n  body: The text and whether it is an answer or a status.\n  request: Request carrying the database engine and the event hub.\n  identity: Authenticated agent key.\n\nReturns:\n  message: The stored answer; null for a status.",
+        "operationId": "reply_to_chat_route_api_chats__conversation_id__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatReply"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ChatMessage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Reply To Chat Route Api Chats  Conversation Id  Messages Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reply To Chat Route"
       }
     },
     "/api/codechange/{target_id}/sha": {
@@ -16013,32 +16467,9 @@
         "summary": "Create Workspace Route"
       }
     },
-    "/api/workspaces/sessions/connectable": {
-      "get": {
-        "description": "List live sessions the interactive browser may connect.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  sessions: Pairable live sessions owned by this account.",
-        "operationId": "connectable_sessions_route_api_workspaces_sessions_connectable_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/ConnectableSession"
-                  },
-                  "title": "Response Connectable Sessions Route Api Workspaces Sessions Connectable Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Connectable Sessions Route"
-      }
-    },
     "/api/workspaces/{workspace_id}": {
       "get": {
-        "description": "Read only the principal's own workspace.\n\nArgs:\n  workspace_id: Requested canvas.\n  request: FastAPI request with a database engine.\n  identity: Authenticated workspace owner.\n\nReturns:\n  state: The owned canvas and its current revision.",
+        "description": "Read the principal's own workspace, or an assistant's partner canvas.\n\nArgs:\n  workspace_id: Requested canvas.\n  request: FastAPI request with a database engine.\n  identity: Authenticated workspace owner, or the assistant's agent key.\n\nReturns:\n  state: The canvas and its current revision.",
         "operationId": "read_workspace_route_api_workspaces__workspace_id__get",
         "parameters": [
           {
@@ -16077,10 +16508,10 @@
         "summary": "Read Workspace Route"
       }
     },
-    "/api/workspaces/{workspace_id}/connection": {
+    "/api/workspaces/{workspace_id}/events": {
       "get": {
-        "description": "Report the stored pairing's current status to its browser owner.\n\nArgs:\n  workspace_id: Canvas whose pairing is checked.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  status: Direct live, ended, or unavailable status.",
-        "operationId": "workspace_connection_status_route_api_workspaces__workspace_id__connection_get",
+        "description": "Stream a canvas's changes to its owner's browser as server-sent events.\n\nEach frame is ``data: <json>`` with ``t``, the server's epoch milliseconds:\n``workspace`` carries the whole canvas on open, after every change by a\nbrowser or an agent, and when its partner changes; ``navigate`` an agent's\nmove of the page; ``highlight`` the inquiries it points at; ``message`` a stored\nChat line; ``status`` an assistant's status; ``delivered`` how far the partner\nhas read a conversation; and ``changed`` an inquiry id, as\n``/api/web/subscribe`` relays it, so a tab needs\nthis one stream. After the ``workspace`` frame come each conversation's\ncurrent status and delivered ``seq``. The stream opens with a comment and\nsends another after 25 s without a frame. A subscriber more than 256 frames\nbehind is dropped; it reconnects from the ``workspace`` frame.\n\nArgs:\n  workspace_id: Canvas to follow.\n  request: Request carrying the database engine and the event hub.\n  identity: Authenticated browser account, which must own the canvas.\n\nReturns:\n  stream: Server-sent frames.",
+        "operationId": "workspace_events_route_api_workspaces__workspace_id__events_get",
         "parameters": [
           {
             "in": "path",
@@ -16097,9 +16528,7 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkspaceConnectionStatus"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response"
@@ -16115,71 +16544,12 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Workspace Connection Status Route"
-      },
-      "put": {
-        "description": "Let the signed-in browser pair or disconnect a live agent session.\n\nArgs:\n  workspace_id: Canvas to connect.\n  body: Requested session and expected revision.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  state: Updated canvas, or a stale-revision conflict.",
-        "operationId": "workspace_connection_route_api_workspaces__workspace_id__connection_put",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "workspace_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Workspace Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WorkspaceConnection"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkspaceState"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "409": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkspaceConflict"
-                }
-              }
-            },
-            "description": "Conflict"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Workspace Connection Route"
+        "summary": "Workspace Events Route"
       }
     },
     "/api/workspaces/{workspace_id}/messages": {
       "post": {
-        "description": "Queue a viewer's message for the live session paired with this canvas.\n\nArgs:\n  workspace_id: Canvas carrying the paired session.\n  body: Text and optional chat visual identity.\n  request: Request carrying the database engine and inbound queue.\n  identity: Authenticated browser sender.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  receipt: Paired session and pending queue depth.",
+        "description": "Store a viewer's message, publish it, and queue it for this canvas's partner.\n\nThe partner is the assistant's newest live session.\nA retry with the same key and request returns the original receipt without\nqueueing again; the same key for a different request is 409.\n\nArgs:\n  workspace_id: Canvas carrying the partner.\n  body: Text, optional conversation and chat visual identity.\n  request: Request carrying the database engine and inbound queue.\n  identity: Authenticated browser sender.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  receipt: Partner session, conversation and the stored message.",
         "operationId": "workspace_message_route_api_workspaces__workspace_id__messages_post",
         "parameters": [
           {
@@ -16240,7 +16610,7 @@
     },
     "/api/workspaces/{workspace_id}/operations": {
       "post": {
-        "description": "Apply one revisioned operation and return the updated canvas.\n\nArgs:\n  workspace_id: Canvas to change.\n  body: Expected revision and visual operation.\n  request: Request carrying the database engine.\n  identity: Authenticated workspace owner.\n  key: Retry-safe idempotency key.\n\nReturns:\n  state: Updated canvas, or a conflict with the current revision.",
+        "description": "Apply one revisioned operation and return the updated canvas.\n\nA ``navigate`` or ``highlight`` operation, which only an agent key may send,\nchanges neither a visual nor the revision: it pushes a ``navigate`` or\n``highlight`` frame. A replay of an applied key returns the original state and\npublishes nothing.\n\nArgs:\n  workspace_id: Canvas to change.\n  body: Expected revision and visual operation.\n  request: Request carrying the database engine.\n  identity: Authenticated workspace owner.\n  key: Retry-safe idempotency key.\n\nReturns:\n  state: Updated canvas, or a conflict with the current revision.",
         "operationId": "workspace_operation_route_api_workspaces__workspace_id__operations_post",
         "parameters": [
           {

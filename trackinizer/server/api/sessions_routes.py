@@ -18,17 +18,29 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from trackinizer.server.api._deps import get_inbound, get_store
+from trackinizer.server.api._deps import (
+    get_assistant,
+    get_hub,
+    get_inbound,
+    get_store,
+)
 from trackinizer.server.api.session_access import require_session_write_access
 from trackinizer.server.auth import (
     AuthIdentity,
     assert_account_active,
     require_role,
 )
-from trackinizer.server.inbound import Inbound, InboundReplayConflictError
+from trackinizer.server.chat_hub import DeliveredFrame
+from trackinizer.server.inbound import Inbound
 from trackinizer.server.session_reaper import revive_if_reaped
+from trackinizer.server.visuals.chats import release_session
+from trackinizer.server.visuals.partners import (
+    is_assistant_session,
+    opener_email,
+)
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.bodies import SubmitAgentSession
+from trackinizer.wire.wire_chats import CHAT_HELPER_CLI
 from trackinizer.wire.wire_sessions import (
     DrainInboundResponse,
     InboundDrainItem,
@@ -111,6 +123,7 @@ async def session_start_route(
     )
     row = await _require_session(store, session_id)
     require_session_write_access(identity, row)
+    get_hub(request).nudge()
     return SessionStartResponse(
         id=session_id,
         # The event log's continuation seq: 0 for a fresh session, ``max(seq)+1``
@@ -150,6 +163,7 @@ async def session_inbound_enqueue_route(
 
     """
     session = await _require_session(get_store(request), session_id)
+    _refuse_a_chat_helper(session)
     if session.ended is not None:
         raise HTTPException(
             status_code=409,
@@ -162,13 +176,10 @@ async def session_inbound_enqueue_route(
     # ``/api/messages`` send) so a retry reusing the ``Idempotency-Key`` is a
     # no-op instead of a double-injection. The receipt reports the current
     # queue depth -- unchanged on a replay because nothing was re-enqueued.
-    try:
-        inbound.send_once(
-            _idempotency_key(request),
-            [(session_id, Inbound(text=body.text, source=identity.email))],
-        )
-    except InboundReplayConflictError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+    inbound.send_once(
+        _idempotency_key(request),
+        [(session_id, Inbound(text=body.text, source=identity.email))],
+    )
     return InboundEnqueueResponse(queued=inbound.pending(session_id))
 
 
@@ -243,6 +254,7 @@ async def send_message_route(
             or not inbound.has_poller(session_id)
         ):
             continue
+        _refuse_a_chat_helper(cast(AgentSession, session))
         scoped_room = body.room or (rooms[0] if rooms else None)
         targets.append(
             (
@@ -256,11 +268,7 @@ async def send_message_route(
     # dedup check and double-enqueue. A replay returns the original receipt;
     # an empty non-replayed delivery is not recorded (the retry stays a real
     # send once a session comes live).
-    try:
-        delivered = inbound.send_once(idempotency_key, targets)
-    except InboundReplayConflictError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    return SendMessageResponse(delivered=delivered)
+    return SendMessageResponse(delivered=inbound.send_once(idempotency_key, targets))
 
 
 @router.get(
@@ -303,6 +311,15 @@ async def session_inbound_drain_route(
     """
     store = get_store(request)
     session = await _require_session(store, session_id)
+    # Its queue holds every user's Chat, so no one but its opening key reads it.
+    if identity.api_key_id != session.opened_by_api_key_id and await _is_the_assistants(
+        request,
+        session,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="The assistant's session is drained by its opening key",
+        )
     if identity.role == "viewer":
         async with store.engine.acquire() as conn:
             owned = await conn.fetchval(
@@ -327,6 +344,8 @@ async def session_inbound_drain_route(
         session = await _require_session(store, session_id)
     polling = session.status == "active" and session.ended is None
     if polling:
+        if not inbound.has_poller(session_id):
+            get_hub(request).nudge()
         inbound.mark_poller(session_id)
         await store.record_session_seen(
             session_id,
@@ -348,6 +367,26 @@ async def session_inbound_drain_route(
         if held
         else inbound.drain(session_id)
     )
+    # Tell each browser how far its conversation reached the partner.
+    reached: dict[tuple[UUID, UUID], int] = {}
+    for message in drained:
+        if (
+            message.context is not None
+            and message.context.conversation_id is not None
+            and message.seq is not None
+        ):
+            conversation = (
+                message.context.conversation_id,
+                message.context.workspace_id,
+            )
+            reached[conversation] = message.seq
+    hub = get_hub(request)
+    for (conversation_id, workspace_id), seq in reached.items():
+        hub.set_delivered(conversation_id, seq=seq)
+        hub.publish(
+            workspace_id,
+            frame=DeliveredFrame(conversation_id=conversation_id, seq=seq),
+        )
     return DrainInboundResponse(
         messages=[
             InboundDrainItem(
@@ -411,7 +450,20 @@ async def session_end_route(
     # a clean close, so a failed end doesn't discard undelivered messages.
     inbound = get_inbound(request)
     inbound.forget_poller(session_id)
-    inbound.drain(session_id)
+    unread = inbound.drain(session_id)
+    hub = get_hub(request)
+    await release_session(
+        store.engine,
+        session_id=session_id,
+        undelivered=[
+            (message.context.conversation_id, message.context.workspace_id)
+            for message in unread
+            if message.context is not None
+            and message.context.conversation_id is not None
+        ],
+        hub=hub,
+    )
+    hub.nudge()
     return SessionEndResponse(id=session_id, ended=committed_ended)
 
 
@@ -426,6 +478,34 @@ async def _require_session(store: Store, session_id: UUID) -> AgentSession:
     if not isinstance(row, AgentSession):
         raise HTTPException(status_code=404, detail=f"unknown session {session_id}")
     return row
+
+
+async def _is_the_assistants(request: Request, session: AgentSession) -> bool:
+    """Say whether ``session`` is the configured assistant's."""
+    assistant = get_assistant(request)
+    if assistant is None:
+        return False
+    async with get_store(request).engine.acquire() as conn:
+        opener = await opener_email(conn, api_key_id=session.opened_by_api_key_id)
+    return is_assistant_session(
+        assistant,
+        actor=session.owner or "",
+        email=opener or "",
+    )
+
+
+# A `trax helper` answers each message into the conversation it carries and has no
+# transcript: a line without one, from the Console or a direct send, would be
+# drained and never answered. An assistant run any other way answers those in its
+# transcript, so the refusal is the helper's alone.
+def _refuse_a_chat_helper(session: AgentSession) -> None:
+    """Refuse a send to a `trax helper` session that does not come from Chat."""
+    if session.cli == CHAT_HELPER_CLI:
+        raise HTTPException(
+            status_code=403,
+            detail=f"@{session.owner} is a Chat helper: it takes messages only "
+            "through Chat",
+        )
 
 
 # ``ChangeIdMiddleware`` parses the header once (rejecting a malformed key with 400) and

@@ -58,6 +58,8 @@ export type Lens = {
   readonly only: boolean;
   /** The focus and the selection. */
   readonly strong: ReadonlySet<string>;
+  /** What an agent pointed at: its halo shows under the focus's and over a match's, and nothing dims or hides for it. */
+  readonly highlighted: ReadonlySet<string>;
   /** Search matches. */
   readonly matches: ReadonlySet<string>;
   /** Nodes whose titles show under them: the roots, while grouped. */
@@ -73,6 +75,7 @@ export const PLAIN_LENS: Lens = {
   only: false,
   strong: new Set(),
   matches: new Set(),
+  highlighted: new Set(),
   labelled: new Set(),
 };
 
@@ -165,11 +168,11 @@ export class GraphModel {
   }
 
   #restyle(): void {
-    const { hiddenKinds, hiddenStatuses, lit, skipEdges, only, strong, matches, labelled } = this.#lens;
+    const { hiddenKinds, hiddenStatuses, lit, skipEdges, only, strong, highlighted, matches, labelled } = this.#lens;
     for (const drawn of this.nodes) {
       const far = lit?.get(drawn.id);
       const dimmed = lit !== null && far === undefined;
-      const halo = strong.has(drawn.id) ? "strong" : matches.has(drawn.id) ? "match" : null;
+      const halo = strong.has(drawn.id) ? "strong" : highlighted.has(drawn.id) ? "highlight" : matches.has(drawn.id) ? "match" : null;
       const label = labelled.has(drawn.id) ? drawn.title || "(untitled)" : null;
       drawn.look = nodeLook(drawn, this.#palette, { dimmed, far: far !== undefined && far >= 2, halo, label });
       drawn.hidden = hiddenKinds.has(drawn.kind) || hiddenStatuses.has(drawn.status) || (only && dimmed);
