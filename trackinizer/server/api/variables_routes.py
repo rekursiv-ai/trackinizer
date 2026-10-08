@@ -7,7 +7,6 @@ returns it; its row keeps only the name and who set it.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, cast
 
 import asyncio
@@ -71,22 +70,7 @@ async def list_variables_route(
             "SELECT layer, owner, name, secret, value, updated_by, updated "
             "FROM variables WHERE layer = 'org' AND owner = '' ORDER BY name",
         )
-    return VariableList(
-        variables=[
-            Variable.model_validate(
-                {
-                    "layer": from_plain(row["layer"], str),
-                    "owner": from_plain(row["owner"], str),
-                    "name": from_plain(row["name"], str),
-                    "secret": from_plain(row["secret"], bool),
-                    "value": from_plain(row["value"], str | None),
-                    "updated_by": from_plain(row["updated_by"], str),
-                    "updated": from_plain(row["updated"], datetime),
-                },
-            )
-            for row in rows
-        ],
-    )
+    return VariableList(variables=[Variable.model_validate(dict(row)) for row in rows])
 
 
 # ``{name:path}``, not ``{name}``: a name holding a slash must reach the pattern
@@ -129,8 +113,6 @@ async def put_variable_route(
     ref = SecretRef(layer="org", owner="", name=name)
     async with engine_of(request).acquire() as conn, tx(conn):
         await _lock(conn, ref=ref)
-        if backend is not None:
-            await asyncio.to_thread(backend.put, ref, body.value)
         # A secret row's value is NULL, so the plain upsert may only touch a row
         # that is not already secret.
         stored = await conn.fetchval(
@@ -148,6 +130,10 @@ async def put_variable_route(
             None if body.secret else body.value,
             identity.email,
         )
+        # After the statement, so a failed statement leaves the backend unchanged; a
+        # failed write rolls the row back.
+        if backend is not None:
+            await asyncio.to_thread(backend.put, ref, body.value)
     if stored is None:
         raise ConflictError(f"{name} is a secret; delete it first")
     return Response(status_code=204)
@@ -159,7 +145,7 @@ async def delete_variable_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("admin"))],
 ) -> Response:
-    """Delete one org-layer variable; a secret's value goes first.
+    """Delete one org-layer variable and, for a secret, its stored value.
 
     Args:
       name: The environment-variable name.
@@ -189,14 +175,17 @@ async def delete_variable_route(
         )
         if secret is None:
             raise NotFoundError(f"{name} is not set")
-        if secret:
-            await asyncio.to_thread(_backend(request).delete, ref)
+        backend = _backend(request) if secret else None
         await conn.execute(
             "DELETE FROM variables WHERE layer = $1 AND owner = $2 AND name = $3",
             ref.layer,
             ref.owner,
             ref.name,
         )
+        # After the statement, so a failed statement leaves the backend unchanged; a
+        # failed delete rolls the row back.
+        if backend is not None:
+            await asyncio.to_thread(backend.delete, ref)
     return Response(status_code=204)
 
 
@@ -205,8 +194,10 @@ async def delete_variable_route(
 # whatever path prefix the app is served under.
 def _require_exact_name(request: Request, *, name: str) -> None:
     """Refuse a URL whose last segment is not the name the route matched."""
-    # ``request.url`` is re-parsed, which drops the newline; the scope holds it.
-    if cast(str, request.scope["path"]).rsplit("/", maxsplit=1)[-1] != name:
+    # ``request.url`` is re-parsed, which drops the newline; the scope holds it. The
+    # scope is an untyped dict, so the path is read as ``object`` and checked.
+    path = from_plain(cast(object, request.scope["path"]), str)
+    if path.rsplit("/", maxsplit=1)[-1] != name:
         raise ValidationError("variable name is not a valid name")
 
 
@@ -219,7 +210,11 @@ def _backend(request: Request) -> SecretBackend:
 
 
 # A secret's value and its row are two writes; without the lock a delete and a put on
-# one name interleave them and leave a row with no value, or a value with no row.
+# one name interleave them and leave a row with no value, or a value with no row. The
+# lock does not make them atomic: the backend write runs before COMMIT, so a COMMIT
+# that fails after it leaves the new value beside the old row, or a deleted value
+# beside its row. Repeating the request converges, as a delete of a missing value is
+# a no-op.
 async def _lock(conn: Conn, *, ref: SecretRef) -> None:
     """Serialise writers of one variable until the transaction ends."""
     await conn.execute(

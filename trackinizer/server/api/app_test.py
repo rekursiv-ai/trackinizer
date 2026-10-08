@@ -613,6 +613,20 @@ def test_lifespan_resolves_a_scheme_the_deployment_attached(
     assert held is backend
 
 
+def test_lifespan_refuses_secret_schemes_that_are_not_a_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fastapi_app = FastAPI()
+    fastapi_app.state.secret_schemes = ["vault"]
+
+    with pytest.raises(ConfigError, match=r"state\.secret_schemes"):
+        _ = _lifespan_secrets(
+            monkeypatch,
+            spec="vault:anything",
+            fastapi_app=fastapi_app,
+        )
+
+
 async def _record_warm(embedder: object, sink: list[str]) -> None:
     """Stand-in warm coroutine: records that it ran, embeds nothing."""
     del embedder

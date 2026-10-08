@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -56,6 +57,7 @@ from trackinizer.server.auth import seed_no_auth_user
 from trackinizer.server.authority_sweep import authority_sweep_loop
 from trackinizer.server.config import (
     Config,
+    ConfigError,
     build_embedder,
     build_engine,
 )
@@ -157,10 +159,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         )
     # Parsed before the engine opens, so a mistyped backend stops the boot early.
     # A deployment that ships further backends sets ``state.secret_schemes``.
-    app.state.secrets = parse_secrets(
-        config.secrets,
-        schemes=cast("SecretSchemes", getattr(app.state, "secret_schemes", {})),
-    )
+    attached: object = getattr(app.state, "secret_schemes", None)
+    if attached is None:
+        app.state.secrets = parse_secrets(config.secrets)
+    elif isinstance(attached, Mapping):
+        app.state.secrets = parse_secrets(
+            config.secrets,
+            schemes=cast("SecretSchemes", attached),
+        )
+    else:
+        raise ConfigError("state.secret_schemes must map a scheme name to a factory")
     async with build_engine(config) as engine:
         app.state.engine = engine
         app.state.store = Store(engine, embed=build_embedder(config.embedder))

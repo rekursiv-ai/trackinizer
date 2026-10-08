@@ -157,8 +157,6 @@ class Variables(Command):
                 "never the command line",
             )
         value = _read_value(source, secret=secret)
-        if not value:
-            raise ClientError("empty value")
         if len(value.encode()) > wire_variables.MAX_VALUE_BYTES:
             raise ClientError(f"value exceeds {wire_variables.MAX_VALUE_BYTES} bytes")
         try:
@@ -172,7 +170,7 @@ class Variables(Command):
 
     @classmethod
     def run_del(cls, client_factory: Callable[[], Client], name: str) -> None:
-        """Delete ``name``; a 404 means it was not set.
+        """Delete ``name``; one that is already gone counts as deleted.
 
         Args:
           client_factory: Callable returning an authenticated trax Client.
@@ -183,10 +181,14 @@ class Variables(Command):
         try:
             client_factory().delete_variable(name)
         except ClientError as err:
-            if err.status_code == 404:
-                refusal = ClientError(f"variable {name!r} not found")
-            else:
-                refusal = _refusal(err, role="admin")
+            # The client retries a DELETE after a read timeout, and the first attempt
+            # may have won: the retry then answers 404 and the user would see a
+            # failure for a variable that is gone. A route a server lacks answers 404
+            # with no ``code``, which stays an error.
+            if err.status_code == 404 and err.code == "not_found":
+                echo(f"not set: {ENV_WORD} {name}")
+                return
+            refusal = _refusal(err, role="admin")
         else:
             echo(f"deleted: {ENV_WORD} {name}")
             return

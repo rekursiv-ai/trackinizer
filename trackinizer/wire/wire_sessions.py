@@ -591,3 +591,19 @@ def session_end_path(session_id: uuid.UUID) -> str:
 def session_inbound_path(session_id: uuid.UUID) -> str:
     """Return the inbound-message path for one session (POST enqueue, GET drain)."""
     return SESSION_INBOUND_PATH.format(session_id=session_id)
+
+
+def inbound_read_timeout(wait_sec: float) -> float | None:
+    """Return the read timeout a drain that holds ``wait_sec`` needs.
+
+    Args:
+      wait_sec: How long the server may hold the drain request open.
+
+    Returns:
+      timeout: Seconds the client may wait to read the response, or ``None``
+        to keep the transport's own timeout when the drain does not wait.
+
+    """
+    # The server returns an empty drain AT ``wait_sec``, so a read deadline equal to
+    # it races that response and turns a normal empty result into a transport error.
+    return wait_sec + 10.0 if wait_sec else None

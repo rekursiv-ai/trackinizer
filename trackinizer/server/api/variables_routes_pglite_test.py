@@ -14,7 +14,6 @@ import asyncio
 import logging
 import stat
 import threading
-import time
 
 import pytest
 
@@ -39,7 +38,6 @@ from trackinizer.wire.wire_variables import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
     from pathlib import Path
 
     import httpx2
@@ -51,6 +49,10 @@ if TYPE_CHECKING:
 
 _HIDDEN: Final = "s3cr3t-value-7f3a"
 _ORG: Final[Layer] = "org"
+_LOOP_TURNS: Final = 50
+"""Event-loop turns that carry a started request up to its first blocking wait."""
+_RELEASE_TIMEOUT_SEC: Final = 5.0
+"""Bound on a held delete, so a broken test fails instead of hanging."""
 
 pytestmark = [
     pytest.mark.db_pglite,
@@ -59,20 +61,17 @@ pytestmark = [
 
 
 @pytest.fixture
-def vault(tmp_path: Path) -> Iterator[FileSecrets]:
+def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FileSecrets:
     """Serve the app's secrets from a temporary directory."""
     backend = FileSecrets(tmp_path / "vault")
-    app.state.secrets = backend
-    yield backend
-    del app.state.secrets
+    monkeypatch.setattr(app.state, "secrets", backend, raising=False)
+    return backend
 
 
 @pytest.fixture
-def no_vault() -> Iterator[None]:
+def no_vault(monkeypatch: pytest.MonkeyPatch) -> None:
     """Serve the app with secret storage disabled."""
-    app.state.secrets = None
-    yield
-    del app.state.secrets
+    monkeypatch.setattr(app.state, "secrets", None, raising=False)
 
 
 @pytest.mark.usefixtures("vault")
@@ -266,11 +265,12 @@ async def test_deleting_an_absent_variable_is_not_found(
 async def test_deleting_a_secret_without_a_backend_keeps_the_row(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
     vault: FileSecrets,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, _ = pglite_route_client
     _as("admin")
     await client.put(_path("TOKEN"), json={"value": _HIDDEN, "secret": True})
-    app.state.secrets = None
+    monkeypatch.setattr(app.state, "secrets", None, raising=False)
 
     response = await client.delete(_path("TOKEN"))
 
@@ -282,26 +282,28 @@ async def test_deleting_a_secret_without_a_backend_keeps_the_row(
 async def test_a_secret_put_racing_a_delete_leaves_the_row_and_its_value_together(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, _ = pglite_route_client
-    slow = _SlowDelete(tmp_path / "vault")
-    app.state.secrets = slow
-    try:
-        _as("admin")
-        await client.put(_path("TOKEN"), json={"value": "old", "secret": True})
+    slow = _SlowDelete(tmp_path / "vault", loop=asyncio.get_running_loop())
+    monkeypatch.setattr(app.state, "secrets", slow, raising=False)
+    _as("admin")
+    await client.put(_path("TOKEN"), json={"value": "old", "secret": True})
 
-        deleting = asyncio.create_task(client.delete(_path("TOKEN")))
-        assert await asyncio.to_thread(slow.entered.wait, timeout=5)
-        putting = asyncio.create_task(
-            client.put(_path("TOKEN"), json={"value": _HIDDEN, "secret": True}),
-        )
-        responses = await asyncio.gather(deleting, putting)
+    deleting = asyncio.create_task(client.delete(_path("TOKEN")))
+    await slow.entered.wait()
+    putting = asyncio.create_task(
+        client.put(_path("TOKEN"), json={"value": _HIDDEN, "secret": True}),
+    )
+    # Let the put run until it blocks behind the delete, then let the delete end.
+    for _ in range(_LOOP_TURNS):
+        await asyncio.sleep(0)
+    slow.release.set()
+    responses = await asyncio.gather(deleting, putting)
 
-        assert [r.status_code for r in responses] == [204, 204]
-        assert [v.name for v in (await _listed(client)).variables] == ["TOKEN"]
-        assert slow.get(SecretRef(layer=_ORG, owner="", name="TOKEN")) == _HIDDEN
-    finally:
-        del app.state.secrets
+    assert [r.status_code for r in responses] == [204, 204]
+    assert [v.name for v in (await _listed(client)).variables] == ["TOKEN"]
+    assert slow.get(SecretRef(layer=_ORG, owner="", name="TOKEN")) == _HIDDEN
 
 
 @pytest.mark.parametrize("name", ["../x", "a/b", "1A", "", "A" * 129, "a b"])
@@ -400,16 +402,19 @@ async def test_a_secret_appears_in_no_log_record(
 
 
 class _SlowDelete(FileSecrets):
-    """A backend whose delete lingers, so a request can arrive while it runs."""
+    """A backend whose delete waits for ``release``, so a request can arrive meanwhile."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, loop: asyncio.AbstractEventLoop) -> None:
         super().__init__(root)
-        self.entered = threading.Event()
+        self.entered = asyncio.Event()
+        self.release = threading.Event()
+        self._loop = loop
 
     @override
     def delete(self, ref: SecretRef) -> None:
-        self.entered.set()
-        time.sleep(0.3)
+        # Runs on a worker thread, where an ``asyncio.Event`` may not be set directly.
+        self._loop.call_soon_threadsafe(self.entered.set)
+        assert self.release.wait(timeout=_RELEASE_TIMEOUT_SEC)
         super().delete(ref)
 
 

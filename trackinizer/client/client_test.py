@@ -72,6 +72,12 @@ def _install_mock_transport(
     )
 
 
+def _read_timeout(request: httpx2.Request) -> float | None:
+    """Return the read timeout the client attached to ``request``."""
+    timeouts = from_plain(request.extensions["timeout"], dict[str, float | None])
+    return timeouts["read"]
+
+
 class _ClientSpy(Client):
     def __init__(
         self,
@@ -95,7 +101,9 @@ class _ClientSpy(Client):
         path: str,
         *,
         params: Mapping[str, object] | None = None,
+        timeout: float | None = None,
     ) -> PlainTree:
+        del timeout
         self.get_calls.append((path, None if params is None else dict(params)))
         return self.get_results.pop(0) if self.get_results else None
 
@@ -2147,6 +2155,37 @@ class TestSessionMethods:
             "page": None,
             "trail": [],
         }
+
+    @pytest.mark.parametrize("wait_sec", [0.0, 30.0])
+    def test_inbound_drain_read_timeout_outlasts_the_hold(
+        self,
+        wait_sec: float,
+    ) -> None:
+        reads: list[float | None] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            reads.append(_read_timeout(request))
+            return httpx2.Response(200, json={"messages": []})
+
+        with Client("http://server", timeout_sec=5.0) as client:
+            _install_mock_transport(client, handler)
+            assert client.drain_inbound(uuid.uuid4(), wait_sec=wait_sec) == []
+
+        [read] = reads
+        assert (read is not None and read > wait_sec) if wait_sec else read == 5.0
+
+    def test_get_sends_the_timeout_it_is_given(self) -> None:
+        reads: list[float | None] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            reads.append(_read_timeout(request))
+            return httpx2.Response(200, json={})
+
+        with Client("http://server") as client:
+            _install_mock_transport(client, handler)
+            _ = client.get("/api/x", timeout=42.0)
+
+        assert reads == [42.0]
 
 
 class TestExport:

@@ -3,6 +3,42 @@
 All notable trackinizer changes are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- Variables: an org stores launch variables in a `variables` table, served by
+  `/api/variables`. Secret values live in a backend chosen by
+  `TRACKINIZER_SECRETS` (a file store or AWS Secrets Manager); the table keeps
+  only the name and who set it.
+- `trax env` lists, sets and deletes the org's variables, and `Client` gains
+  `list_variables`, `put_variable` and `delete_variable`.
+- `trax run` masks the values named in `TRAX_REDACT_NAMES` in every sink it
+  writes, including multi-line and cut-off forms and base64 attachment bytes
+  of uploaded records. It exits when a named value is missing or shorter than
+  `MIN_SECRET_LENGTH`.
+- `trax machine` registers machines and their roles, labels and facts.
+  Matching `Client` methods and `/api/machines` routes cover list, get, put,
+  label changes and delete.
+- Machine credentials: an admin enrolls a machine for a one-use, 15-minute
+  token; the host joins once, heartbeats, and reads online until 180 s of
+  silence. A revoked credential answers 410, an unknown one 401.
+- `trax` takes its server and key from `TRACKINIZER_URL` and
+  `TRACKINIZER_TOKEN`. A malformed token is refused, and a lone token is
+  ignored.
+- Queued inbound messages carry `InboundDrainItem.source_role` and Chat
+  messages carry `ChatMessage.author_role`, the sender's attested role.
+- `Client.get` accepts a per-request `timeout`.
+
+### Changed
+
+- `trax env NAME del` reports success when the variable is already gone.
+  Variable rows are written before secret values.
+- `trax run` no longer masks a bare PEM armour fragment; full armour lines of
+  a configured PEM value are still masked.
+- **Breaking:** `Redactor.redact_json` and `redact_mapping` take `PlainTree`;
+  `redact_mapping` returns `Mapping[str, PlainTree]`.
+
 ## 0.1.6 - 2026-10-07
 
 ### Added

@@ -15,8 +15,18 @@ remain. A line ends at a newline or a carriage return, and a ``... (truncated)``
 marker that follows the cut counts as the end of the line. A value escaped twice
 is not recognised.
 
+The armour of a PEM block (``-----BEGIN KEY-----``) is masked where a whole line of
+the value is, but a cut that stops inside it, such as a markdown rule ``-----``,
+holds no secret and is kept.
+
 Occurrences that overlap are redacted as one block, so no tail of a longer
 secret survives next to the placeholder of a shorter one that sits inside it.
+
+Session records carry bytes, such as an attachment, as ``{"py/b64": ...}``. That
+mapping is decoded and its bytes are redacted as text, byte for byte where no
+value occurs, so a secret inside an attachment does not leave as base64. Only
+UTF-8 text is searched: a value that an attachment holds in another encoding, or
+in a compressed or re-encoded form, is not recognised.
 """
 
 from __future__ import annotations
@@ -24,6 +34,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Final
 
+import base64
+import binascii
 import json
 import re
 
@@ -31,20 +43,24 @@ import re
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from trackinizer.wire.json_types import JSON, JSONValue
+    from trackinizer.lib.codec import PlainTree
     from trackinizer.wire.wire_session_ir import RecordBody
 
 
-__all__ = ["Redactor", "redact_body", "redactor_from_environ"]
+__all__ = ["MIN_SECRET_LENGTH", "Redactor", "redact_body", "redactor_from_environ"]
 
 
 # What ``LineCapture`` appends to a line it cut at its byte cap.
 _TRUNCATED: Final = "... (truncated)"
 # A value shorter than this matches ordinary text, and a launch refuses it.
-_MIN_SECRET_LENGTH: Final = 8
+MIN_SECRET_LENGTH: Final = 8
 # A line of a multi-line value matches by itself from this length on.
 _MIN_LINE_LENGTH: Final = 4
 _LINE_END: Final = re.compile(r"[\r\n]")
+# A line that opens or closes a PEM block matches this.
+_ARMOUR: Final = re.compile(r"-----(?:BEGIN|END) [A-Z0-9 ]+-----")
+# The codec tags bytes in a stored record with this key.
+_BYTES_TAG: Final = "py/b64"
 
 
 class Redactor:
@@ -111,11 +127,12 @@ class Redactor:
         pieces.append(text[reach:])
         return "".join(pieces)
 
-    def redact_json(self, value: JSONValue) -> JSONValue:
+    def redact_json(self, value: PlainTree) -> PlainTree:
         """Return ``value`` with every string in it redacted, keys included.
 
         Args:
-          value: JSON data: scalars, lists and mappings, nested.
+          value: Plain data: scalars, lists and mappings, nested. A mapping of
+            the one key ``py/b64`` holds bytes, which are redacted as text.
 
         Returns:
           redacted: A copy of the same shape; a number that is a secret becomes
@@ -134,9 +151,28 @@ class Redactor:
             return value if redacted == text else redacted
         return value
 
-    def redact_mapping(self, value: JSON) -> JSON:
+    def redact_mapping(self, value: Mapping[str, PlainTree]) -> Mapping[str, PlainTree]:
         """Return a JSON object with every key and string value redacted."""
+        encoded = value.get(_BYTES_TAG)
+        if len(value) == 1 and isinstance(encoded, str):
+            return {_BYTES_TAG: self._redact_encoded_bytes(encoded)}
         return {self.redact(key): self.redact_json(item) for key, item in value.items()}
+
+    def _redact_encoded_bytes(self, encoded: str) -> str:
+        """Return base64 ``encoded`` with every value in the bytes it holds replaced."""
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return self.redact(encoded)
+        # Undecodable bytes survive as lone surrogates, so a binary file keeps every
+        # byte that is not part of a value.
+        text = data.decode(errors="surrogateescape")
+        redacted = self.redact(text)
+        if redacted == text:
+            # A plain JSON field is not escaped, so this mapping may be user data
+            # whose base64-valid string is itself a secret.
+            return self.redact(encoded)
+        return base64.b64encode(redacted.encode(errors="surrogateescape")).decode()
 
 
 # ``TRAX_REDACT_NAMES`` lists the delivered secrets' names. A name the environment lacks
@@ -167,11 +203,11 @@ def redactor_from_environ(environ: Mapping[str, str]) -> Redactor | None:
             f"TRAX_REDACT_NAMES names {', '.join(missing)}, "
             "which the environment lacks",
         )
-    short = [name for name in names if len(environ[name]) < _MIN_SECRET_LENGTH]
+    short = [name for name in names if len(environ[name]) < MIN_SECRET_LENGTH]
     if short:
         raise SystemExit(
             f"TRAX_REDACT_NAMES names {', '.join(short)}, whose values are shorter "
-            f"than {_MIN_SECRET_LENGTH} characters",
+            f"than {MIN_SECRET_LENGTH} characters",
         )
     return Redactor({name: environ[name] for name in names}) if names else None
 
@@ -244,13 +280,16 @@ def _cut_prefixes(
 ) -> Iterator[tuple[int, int]]:
     """Yield the span of each proper prefix of ``needle`` that ends a line."""
     head = needle[:min_length]
+    armour = _ARMOUR.match(needle)
+    # A prefix that stops inside a PEM block's opening line holds no secret.
+    framing = armour.end() if armour else 0
     for line_start, cut in cuts:
         # A proper prefix is shorter than the needle, so it starts within
         # ``len(needle) - 1`` characters of the cut; searching only there keeps the
         # work per line bounded however often ``head`` repeats.
         start = text.find(head, max(line_start, cut - len(needle) + 1), cut)
         while start >= 0:
-            if needle.startswith(text[start:cut]):
+            if cut - start > framing and needle.startswith(text[start:cut]):
                 yield start, cut
             start = text.find(head, start + 1, cut)
 

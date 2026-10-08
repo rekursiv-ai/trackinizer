@@ -19,6 +19,7 @@ from trackinizer.wire.wire_sessions import (
     SendMessage,
     SessionEnd,
     SessionStart,
+    inbound_read_timeout,
     session_end_path,
     session_inbound_path,
     session_records_path,
@@ -240,6 +241,21 @@ class TestPaths:
         assert session_records_path(sid).endswith("/records")
         assert session_end_path(sid) == f"/api/sessions/{sid}/end"
         assert session_inbound_path(sid) == f"/api/sessions/{sid}/inbound"
+
+
+class TestInboundReadTimeout:
+    @pytest.mark.parametrize("wait_sec", [0.5, 5.0, 30.0, 120.0])
+    def test_a_drain_that_waits_gets_a_read_timeout_beyond_the_hold(
+        self,
+        wait_sec: float,
+    ) -> None:
+        timeout = inbound_read_timeout(wait_sec)
+
+        assert timeout is not None
+        assert timeout > wait_sec
+
+    def test_a_drain_that_does_not_wait_keeps_the_transport_timeout(self) -> None:
+        assert inbound_read_timeout(0.0) is None
 
 
 if __name__ == "__main__":

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from uuid import UUID
 
+import base64
 import json
 import time
 
 import pytest
 
-from trackinizer.lib.agent.types.sessions import UserMessage
+from trackinizer.lib.agent.types.sessions import Attachment, UserMessage
+from trackinizer.lib.agent.types.stored import from_stored
 from trackinizer.trax.run.redact import (
     Redactor,
     redact_body,
@@ -273,12 +275,112 @@ def test_a_body_without_a_redactor_is_kept() -> None:
     assert redact_body(body, redactor=None) == body
 
 
+def test_a_secret_in_a_text_attachment_is_redacted_in_its_stored_bytes() -> None:
+    canary = "sk-live-12345678"
+    message = UserMessage(
+        content="see the file",
+        attachments=(
+            Attachment(mime_descriptor="text/plain", data=f"key={canary}\n".encode()),
+            Attachment(mime_descriptor="text/plain", data=b"nothing here"),
+        ),
+    )
+    body = _body_of(message)
+    assert canary not in body.model_dump_json()
+    out = redact_body(body, redactor=Redactor({"API_KEY": canary}))
+    assert from_stored(out.payload, UserMessage) == UserMessage(
+        content="see the file",
+        attachments=(
+            Attachment(mime_descriptor="text/plain", data=b"key=[redacted:API_KEY]\n"),
+            Attachment(mime_descriptor="text/plain", data=b"nothing here"),
+        ),
+    )
+
+
+def test_a_secret_in_binary_attachment_bytes_is_replaced_and_the_rest_kept() -> None:
+    canary = "sk-live-12345678"
+    message = UserMessage(
+        attachments=(
+            Attachment(
+                mime_descriptor="image/png",
+                data=b"\x89PNG\xff\x00" + canary.encode() + b"\xfe\x80end",
+            ),
+        ),
+    )
+    out = redact_body(_body_of(message), redactor=Redactor({"API_KEY": canary}))
+    assert from_stored(out.payload, UserMessage) == UserMessage(
+        attachments=(
+            Attachment(
+                mime_descriptor="image/png",
+                data=b"\x89PNG\xff\x00[redacted:API_KEY]\xfe\x80end",
+            ),
+        ),
+    )
+
+
+def test_attachment_bytes_without_a_secret_are_kept_as_they_are() -> None:
+    message = UserMessage(
+        attachments=(Attachment(mime_descriptor="image/png", data=b"\x00\xff\x80"),),
+    )
+    out = redact_body(_body_of(message), redactor=Redactor({"K": "sk-live-12345678"}))
+    assert from_stored(out.payload, UserMessage) == message
+
+
+def test_a_bytes_tag_that_is_not_base64_is_redacted_as_text() -> None:
+    redactor = Redactor({"TOKEN": "tok-abcdefgh"})
+    assert redactor.redact_json({"py/b64": "tok-abcdefghi!"}) == {
+        "py/b64": "[redacted:TOKEN]i!",
+    }
+
+
+def test_a_bytes_tag_with_stray_characters_is_not_decoded_leniently() -> None:
+    redactor = Redactor({"TOKEN": "tok-abcdefgh"})
+    blob = base64.b64encode(b"tok-abcdefgh").decode() + "!"
+    assert redactor.redact_json({"py/b64": blob}) == {"py/b64": blob}
+
+
+def test_a_value_that_is_valid_base64_under_a_bytes_tag_is_redacted_as_text() -> None:
+    value = "Zm9vYmFyYmF6cXV4"
+    assert base64.b64decode(value, validate=True)
+    redactor = Redactor({"TOKEN": value})
+    assert redactor.redact_json({"arguments": {"py/b64": value}}) == {
+        "arguments": {"py/b64": "[redacted:TOKEN]"},
+    }
+
+
+def test_a_bytes_tag_beside_other_keys_is_an_ordinary_mapping() -> None:
+    redactor = Redactor({"TOKEN": "tok-abcdefgh"})
+    blob = base64.b64encode(b"tok-abcdefgh").decode()
+    assert redactor.redact_json({"py/b64": blob, "note": "tok-abcdefgh"}) == {
+        "py/b64": blob,
+        "note": "[redacted:TOKEN]",
+    }
+
+
+def test_a_cut_inside_the_armour_of_a_pem_value_is_kept() -> None:
+    pem = "-----BEGIN KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END KEY-----"
+    redactor = Redactor({"PEM": pem})
+    text = "-----\nrule -----\n-----BEGIN KEY\n-----END"
+    assert redactor.redact(text) == text
+    assert redactor.redact(f"x {pem} y") == "x [redacted:PEM] y"
+    assert redactor.redact("-----BEGIN KEY-----\n") == "[redacted:PEM]\n"
+
+
+def test_a_pem_cut_after_its_armour_is_redacted() -> None:
+    redactor = Redactor({"PEM": "-----BEGIN KEY-----\nMIIEvQIBADANBgkqhkiG9w0B"})
+    assert redactor.redact("raw -----BEGIN KEY-----\\nMIIE") == "raw [redacted:PEM]"
+    assert redactor.redact("raw -----BEGIN KE") == "raw -----BEGIN KE"
+
+
 def _body(content: str) -> RecordBody:
+    return _body_of(UserMessage(content=content))
+
+
+def _body_of(record: UserMessage) -> RecordBody:
     row = SessionRecordRow.of(
         session_id=UUID(int=0),
         part=0,
         idx=3,
-        record=UserMessage(content=content),
+        record=record,
     )
     return RecordBody.of(row)
 

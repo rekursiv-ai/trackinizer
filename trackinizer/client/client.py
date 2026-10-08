@@ -260,9 +260,10 @@ class Client:
         path: str,
         *,
         params: Mapping[str, object] | None = None,
+        timeout: float | None = None,
     ) -> PlainTree:
-        """Send a GET request."""
-        return self._request("GET", path, params=params)
+        """Send a GET request; ``timeout`` replaces the read timeout for it."""
+        return self._request("GET", path, params=params, timeout=timeout)
 
     def post(self, path: str, *, body: object = None) -> PlainTree:
         """Send a POST request."""
@@ -1672,10 +1673,7 @@ class Client:
             "GET",
             where,
             params={"wait_sec": wait_sec} if wait_sec else None,
-            # Margin over the requested hold: the server returns empty AT the
-            # timeout, so a read deadline equal to it races that response and
-            # turns a normal empty result into a transport error.
-            timeout=wait_sec + 10.0 if wait_sec else None,
+            timeout=wire_sessions.inbound_read_timeout(wait_sec),
         )
         drained = _validate_model(wire_sessions.DrainInboundResponse, response, where)
         return [(m.text, m.source, m.room, m.context) for m in drained.messages]

@@ -15754,7 +15754,7 @@
     },
     "/api/variables/{name}": {
       "delete": {
-        "description": "Delete one org-layer variable; a secret's value goes first.\n\nArgs:\n  name: The environment-variable name.\n  request: Request carrying the database engine and secret backend.\n  identity: Admin principal.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  ValidationError: The URL's last segment is not the name.\n  NotFoundError: No such variable.\n  HTTPException: 503 when it is a secret and no secret store is configured.",
+        "description": "Delete one org-layer variable and, for a secret, its stored value.\n\nArgs:\n  name: The environment-variable name.\n  request: Request carrying the database engine and secret backend.\n  identity: Admin principal.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  ValidationError: The URL's last segment is not the name.\n  NotFoundError: No such variable.\n  HTTPException: 503 when it is a secret and no secret store is configured.",
         "operationId": "delete_variable_route_api_variables__name__delete",
         "parameters": [
           {

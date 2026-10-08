@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
-from unittest.mock import Mock
 
 import io
+import sys
+import time
 import traceback
 
 import httpx2
 import pytest
 
+from trackinizer.client import client as client_module
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli
@@ -20,7 +23,7 @@ from trackinizer.wire.wire_variables import MAX_VALUE_BYTES, Variable
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Generator, Sequence
     from pathlib import Path
 
 
@@ -69,13 +72,21 @@ class _StubClient:
             raise self.error
 
 
-def _run(argv: Sequence[str], client: _StubClient) -> None:
+@pytest.fixture
+def fake_time(monkeypatch: pytest.MonkeyPatch) -> _FakeTime:
+    """Keep the client's retry back-off from sleeping, and record it."""
+    fake = _FakeTime()
+    monkeypatch.setattr(client_module, "time", fake)
+    return fake
+
+
+def _run(argv: Sequence[str], client: Client | _StubClient) -> None:
     cli.parse_and_run([ENV_WORD, *argv], client_factory=lambda: cast(Client, client))
 
 
 def _stdin_bytes(monkeypatch: pytest.MonkeyPatch, data: bytes) -> io.TextIOWrapper:
     stdin = io.TextIOWrapper(io.BytesIO(data), encoding="utf-8")
-    monkeypatch.setattr("sys.stdin", stdin)
+    monkeypatch.setattr(sys, "stdin", stdin)
     return stdin
 
 
@@ -83,7 +94,7 @@ def _stdin(monkeypatch: pytest.MonkeyPatch, text: str) -> None:
     _stdin_bytes(monkeypatch, data=text.encode())
 
 
-def _refusal(argv: Sequence[str], client: _StubClient) -> ClientError:
+def _refusal(argv: Sequence[str], client: Client | _StubClient) -> ClientError:
     with pytest.raises(ClientError) as err:
         _run(argv, client=client)
     return err.value
@@ -244,24 +255,30 @@ def test_the_maximum_name_length_is_accepted() -> None:
 
 
 @pytest.mark.parametrize("text", ["", "\n", "\r\n"])
-def test_empty_stdin_value_is_refused(
+def test_empty_stdin_value_is_refused_by_the_client(
     monkeypatch: pytest.MonkeyPatch,
     text: str,
 ) -> None:
-    client = _StubClient()
+    server = _Server()
     _stdin(monkeypatch, text=text)
-    err = _refusal(["secret", "API_TOKEN", "to", "-"], client=client)
-    assert "empty value" in str(err)
-    assert client.calls == []
+    with _connected(server) as client:
+        err = _refusal(["secret", "API_TOKEN", "to", "-"], client=client)
+    assert str(err) == "variable 'API_TOKEN' needs a non-empty value"
+    assert server.requests == []
 
 
-def test_empty_literal_and_empty_file_are_refused(tmp_path: Path) -> None:
+def test_empty_literal_and_empty_file_are_refused_by_the_client(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "empty"
     source.write_text("")
-    client = _StubClient()
-    assert "empty value" in str(_refusal(["REGION", "to", ""], client=client))
-    assert "empty value" in str(_refusal(["REGION", "to", f"@{source}"], client=client))
-    assert client.calls == []
+    server = _Server()
+    with _connected(server) as client:
+        literal = _refusal(["REGION", "to", ""], client=client)
+        from_file = _refusal(["REGION", "to", f"@{source}"], client=client)
+    assert str(literal) == str(from_file)
+    assert str(literal) == "variable 'REGION' needs a non-empty value"
+    assert server.requests == []
 
 
 @pytest.mark.parametrize(
@@ -334,11 +351,37 @@ def test_delete_removes_the_variable(capsys: pytest.CaptureFixture[str]) -> None
     assert capsys.readouterr().out == "deleted: env REGION\n"
 
 
-def test_delete_of_an_absent_variable_names_it() -> None:
-    client = _StubClient(error=ClientError("DELETE ... -> 404", status_code=404))
-    assert (
-        str(_refusal(["REGION", "del"], client=client)) == "variable 'REGION' not found"
+def test_delete_of_an_absent_variable_reports_it_as_not_set(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gone = ClientError("DELETE ... -> 404", status_code=404, code="not_found")
+    _run(["REGION", "del"], client=_StubClient(error=gone))
+    assert capsys.readouterr().out == "not set: env REGION\n"
+
+
+def test_a_404_that_is_not_the_variables_answer_is_an_error() -> None:
+    """A server without the route answers 404 with no ``code``."""
+    missing = ClientError("DELETE /x -> 404: Not Found", status_code=404)
+    err = _refusal(["REGION", "del"], client=_StubClient(error=missing))
+    assert str(err) == "DELETE /x -> 404: Not Found"
+
+
+def test_a_delete_retried_after_a_timeout_succeeds_when_the_first_one_won(
+    fake_time: _FakeTime,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The first attempt deleted the row but its reply was lost; the retry sees 404."""
+    server = _Server(
+        httpx2.ReadTimeout("timed out"),
+        httpx2.Response(404, json={"detail": "REGION is not set", "code": "not_found"}),
     )
+    with _connected(server) as client:
+        _run(["REGION", "del"], client=client)
+    assert [(r.method, r.url.path) for r in server.requests] == [
+        ("DELETE", "/api/variables/REGION"),
+    ] * 2
+    assert len(fake_time.sleeps) == 1
+    assert capsys.readouterr().out == "not set: env REGION\n"
 
 
 def test_a_variable_named_secret_is_still_addressable(
@@ -450,32 +493,24 @@ def test_a_failure_that_may_echo_the_body_names_only_its_status(
 @pytest.mark.parametrize("status", [409, 503])
 def test_a_secret_is_not_leaked_by_an_escaped_or_truncated_echo(
     monkeypatch: pytest.MonkeyPatch,
+    fake_time: _FakeTime,
     status: int,
     secret: str,
 ) -> None:
     """The real client JSON-escapes and truncates what a server echoes back."""
-    monkeypatch.setattr("time.sleep", Mock())
     _stdin(monkeypatch, text=secret + "\n")
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        del request
-        return httpx2.Response(status, json={"detail": f"conflict storing {secret}"})
-
-    with Client("https://server") as client:
-        client._http.close()
-        client._http = httpx2.Client(
-            base_url=client.base_url,
-            transport=httpx2.MockTransport(handler),
-        )
-        with pytest.raises(ClientError) as err:
-            cli.parse_and_run(
-                [ENV_WORD, "secret", "API_TOKEN", "to", "-"],
-                client_factory=lambda: client,
-            )
-    text = "".join(traceback.format_exception(err.value))
-    assert str(err.value) == f"server refused the request (HTTP {status})"
+    # A 503 is retried, so the same answer must come back each time.
+    answers = [
+        httpx2.Response(status, json={"detail": f"conflict storing {secret}"})
+        for _ in range(3)
+    ]
+    with _connected(_Server(*answers)) as client:
+        err = _refusal(["secret", "API_TOKEN", "to", "-"], client=client)
+    text = "".join(traceback.format_exception(err))
+    assert str(err) == f"server refused the request (HTTP {status})"
     assert secret[:8] not in text
-    assert err.value.__context__ is None
+    assert err.__context__ is None
+    assert len(fake_time.sleeps) == (2 if status == 503 else 0)
 
 
 def test_a_transport_failure_passes_through() -> None:
@@ -523,6 +558,46 @@ def test_a_trailing_help_word_shows_help_instead_of_setting_it(
 def test_top_level_help_names_the_verb(capsys: pytest.CaptureFixture[str]) -> None:
     cli.parse_and_run(["help", ENV_WORD])
     assert f"Usage: trax {ENV_WORD}" in capsys.readouterr().out
+
+
+class _FakeTime:
+    """Stands in for the client's ``time`` module and records its sleeps."""
+
+    def __init__(self) -> None:
+        self.sleeps: list[float] = []
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+
+    def monotonic(self) -> float:
+        return time.monotonic()
+
+
+class _Server:
+    """A mock transport that records requests and plays back its answers in order."""
+
+    def __init__(self, *answers: httpx2.Response | httpx2.TransportError) -> None:
+        self.answers = list(answers)
+        self.requests: list[httpx2.Request] = []
+
+    def __call__(self, request: httpx2.Request) -> httpx2.Response:
+        self.requests.append(request)
+        answer = self.answers.pop(0)
+        if isinstance(answer, httpx2.TransportError):
+            raise answer
+        return answer
+
+
+@contextmanager
+def _connected(server: _Server) -> Generator[Client]:
+    """Yield a real ``Client`` whose requests go to ``server``."""
+    with Client("https://server") as client:
+        client._http.close()
+        client._http = httpx2.Client(
+            base_url=client.base_url,
+            transport=httpx2.MockTransport(server),
+        )
+        yield client
 
 
 if __name__ == "__main__":
