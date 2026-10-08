@@ -4,6 +4,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { getEvidenceTimeline, type EvidenceTimeline } from "../api/timeline";
 import { Timeline } from "./Timeline";
 import { WorkspaceActionsProvider } from "./workspaceActions";
+import { canvasActions } from "./testing";
 
 vi.mock("../api/timeline", () => ({ getEvidenceTimeline: vi.fn() }));
 
@@ -84,7 +85,7 @@ test("renders dated directions, outcomes, linked signed evidence, and closed det
     record_id: "root-id", params: { direction_limit: 6, results_per_direction: 2 },
   };
   render(<QueryClientProvider client={client}>
-    <WorkspaceActionsProvider value={{ busy: false, writeError: null, operate }}>
+    <WorkspaceActionsProvider value={canvasActions({ operate })}>
       <Timeline instance={instance} workspace={null} onWorkspaceChanged={vi.fn()} focused />
     </WorkspaceActionsProvider>
   </QueryClientProvider>);

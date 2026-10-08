@@ -58,6 +58,32 @@ def test_show_reuses_visual_type_and_updates_its_context() -> None:
     assert reopened.focused_instance == chat_id
 
 
+def test_recentring_the_context_graph_keeps_its_reach_and_highlight() -> None:
+    """A show naming only a new record moves the window; its params stay."""
+    catalog = default_catalog()
+    first, second = uuid.uuid4(), uuid.uuid4()
+    shown = apply_operation(
+        initial_data(catalog),
+        ShowVisual(
+            kind="show",
+            visual_type="trax.subgraph",
+            record_id=first,
+            params={"hops": 3, "highlight": str(second)},
+        ),
+        catalog,
+    )
+    moved = apply_operation(
+        shown,
+        ShowVisual(kind="show", visual_type="trax.subgraph", record_id=second),
+        catalog,
+    )
+    [graph] = [visual for visual in moved.visuals if visual.type == "trax.subgraph"]
+    assert (graph.record_id, graph.params) == (
+        second,
+        {"hops": 3, "highlight": str(second)},
+    )
+
+
 def test_show_uses_bounded_catalog_defaults_and_requires_record() -> None:
     """A contributed module can be enabled with its safe default parameters."""
     catalog = VisualCatalogBody(

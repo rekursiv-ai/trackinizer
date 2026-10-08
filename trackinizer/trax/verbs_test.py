@@ -63,14 +63,30 @@ def _batch_edges(client: FakeClient) -> list[dict[str, object]]:
     return [dict(e) for e in edges]
 
 
-def test_resolve_actor_uses_windows_username_env(
+@pytest.mark.parametrize(
+    ("author", "login", "expected"),
+    [
+        ("profile-ada", {"USER": "login-bea", "USERNAME": "windows-cy"}, "profile-ada"),
+        ("", {"USER": "login-bea"}, "login-bea"),
+        ("", {"USERNAME": "windows-cy"}, "windows-cy"),
+        ("", {}, "user"),
+    ],
+)
+def test_resolve_actor_falls_back_from_flag_to_profile_to_login_to_user(
     client: FakeClient,
     monkeypatch: pytest.MonkeyPatch,
+    author: str,
+    login: dict[str, str],
+    expected: str,
 ) -> None:
-    client.author = ""
-    monkeypatch.delenv("USER", raising=False)
-    monkeypatch.setenv("USERNAME", "alice")
-    assert resolve_actor("", cast(Client, client)) == "alice"
+    """`--as` wins; then the profile's author, `$USER`, `$USERNAME`, else user."""
+    client.author = author
+    for name in ("USER", "USERNAME"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in login.items():
+        monkeypatch.setenv(name, value)
+    assert resolve_actor("", cast(Client, client)) == expected
+    assert resolve_actor("flag-di", cast(Client, client)) == "flag-di"
 
 
 def test_kind_verb_no_ref_lists(client: FakeClient) -> None:
@@ -3676,7 +3692,6 @@ def test_workspace_show_sends_one_operation_through_the_clients_one_path(
             "visual_type": "trax.subgraph",
             "placement": "side",
             "record_id": str(record),
-            "params": {},
         },
         {"kind": "hide", "instance_id": str(instance)},
         {"kind": "focus", "instance_id": str(instance)},
@@ -3898,6 +3913,138 @@ def test_actor_resolution_precedence_and_default(
     assert [call for call in client.calls if call[0] == "edit"][-1][2][
         "actor"
     ] == "user"
+
+
+def test_a_cost_field_prints_the_axis_of_its_row_to_six_places(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Print the axis of the resolved row, with no deep walk."""
+    ref = SeqRef(kind="Issue", seq=7)
+    client.cost_payload = {"agent_usd": 1.25, "resource_usd": 2.5}
+
+    verbs.run_cost_field(
+        ref,
+        field="resource-cost",
+        args=argparse.Namespace(),
+        client_factory=lambda: cast(Client, client),
+    )
+
+    assert capsys.readouterr().out == "2.500000\n"
+    assert ("resolve_id", (ref,), {}) in client.calls
+    assert ("cost_for", (client.target_id,), {"deep": False}) in client.calls
+
+
+def test_a_cost_field_the_row_lacks_prints_zero(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Print zero for an axis the row lacks."""
+    client.cost_payload = {}
+
+    verbs.run_cost_field(
+        SeqRef(kind="Issue", seq=7),
+        field="agent-cost",
+        args=argparse.Namespace(),
+        client_factory=lambda: cast(Client, client),
+    )
+
+    assert capsys.readouterr().out == "0.000000\n"
+
+
+def test_an_added_cost_without_an_actor_flag_takes_the_profiles_author(
+    client: FakeClient,
+) -> None:
+    """Fall back to the profile's author when no actor flag is given."""
+    client.author = "profile-ada"
+
+    verbs.run_add_cost(
+        SeqRef(kind="Issue", seq=7),
+        field="agent-cost",
+        value=0.5,
+        args=argparse.Namespace(),
+        client_factory=lambda: cast(Client, client),
+    )
+
+    [(_, _, keywords)] = [call for call in client.calls if call[0] == "add_cost"]
+    assert keywords == {"actor": "profile-ada", "reason": ""}
+
+
+def test_an_added_cost_carries_its_actor_and_reason(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Land the signed delta on the resolved row, by the named actor and why."""
+    ref = SeqRef(kind="Issue", seq=7)
+
+    verbs.run_add_cost(
+        ref,
+        field="agent-cost",
+        value=-0.5,
+        args=argparse.Namespace(actor="ada", reason="refund"),
+        client_factory=lambda: cast(Client, client),
+    )
+
+    assert (
+        "add_cost",
+        (client.target_id, "marginal_cost_agent_usd", -0.5),
+        {"actor": "ada", "reason": "refund"},
+    ) in client.calls
+    assert ("resolve_id", (ref,), {}) in client.calls
+    assert capsys.readouterr().out == "added: Issue#7 agent-cost -0.500000\n"
+
+
+def test_workspace_rejects_a_malformed_id_by_name_and_value() -> None:
+    """A mistyped workspace id is named in the error, not swallowed."""
+    with pytest.raises(
+        ClientError,
+        match=r"^workspace is not a valid UUID: 'not-a-uuid'$",
+    ):
+        cli.parse_and_run(
+            ["workspace", "not-a-uuid"],
+            client_factory=lambda: cast(Client, _RecordingWorkspace(uuid.uuid4())),
+        )
+
+
+def test_workspace_param_is_refused_off_show() -> None:
+    """Only a shown visual takes params."""
+    workspace_id = uuid.uuid4()
+    client = _RecordingWorkspace(workspace_id)
+    with pytest.raises(ClientError, match="only with show"):
+        cli.parse_and_run(
+            [
+                "workspace",
+                str(workspace_id),
+                "hide",
+                str(uuid.uuid4()),
+                "--param",
+                "hops=3",
+            ],
+            client_factory=lambda: cast(Client, client),
+        )
+    assert client.operations == []
+
+
+class _RecordingWorkspace:
+    """A workspace at revision 8 that keeps each operation posted to it."""
+
+    def __init__(self, workspace_id: uuid.UUID) -> None:
+        self.state: dict[str, object] = {
+            "id": str(workspace_id),
+            "revision": 8,
+            "visuals": [],
+            "focused_instance": None,
+        }
+        self.operations: list[object] = []
+
+    def get(self, path: str) -> dict[str, object]:
+        del path
+        return self.state
+
+    def post(self, path: str, *, body: object) -> dict[str, object]:
+        del path
+        self.operations.append(from_plain(body, dict[str, object])["operation"])
+        return self.state
 
 
 if __name__ == "__main__":

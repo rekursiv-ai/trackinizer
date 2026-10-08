@@ -7,6 +7,7 @@ from pydantic import ValidationError
 import pytest
 
 from trackinizer.server.visuals.catalog import (
+    ContextGraphVisual,
     ParameterDescription,
     StaticVisual,
     TimelineVisual,
@@ -72,6 +73,37 @@ def test_default_visual_requiring_a_record_is_rejected() -> None:
     """A new canvas cannot open on a tile that has no record to render."""
     with pytest.raises(ValueError, match="record"):
         Workspace.Config(default_visual="trax.subgraph").make()
+
+
+def test_context_graph_bounds_its_reach_and_its_highlight() -> None:
+    """The window lights 1 to 3 hops, 2 unless asked, and marks ids it lists."""
+    described = ContextGraphVisual.Config().make().describe()
+    assert (described.type, described.requires, described.default_size) == (
+        "trax.subgraph",
+        ["record"],
+        "wide",
+    )
+    hops = described.parameter_schema["hops"]
+    assert (hops.type, hops.default, hops.minimum, hops.maximum) == (
+        "integer",
+        2,
+        1,
+        3,
+    )
+    highlight = described.parameter_schema["highlight"]
+    assert (highlight.type, highlight.default, highlight.max_length) == (
+        "string",
+        "",
+        512,
+    )
+
+
+def test_context_graph_default_reach_past_three_hops_is_a_config_error() -> None:
+    """The neighbourhood read walks at most 3 hops, so no default may ask more."""
+    config = ContextGraphVisual.Config()
+    config.default_hops = 4
+    with pytest.raises(ValueError, match="outside its bounds"):
+        config.make().describe()
 
 
 def test_timeline_config_raises_the_descriptor_bound_instead_of_failing() -> None:

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { ApiError } from "../api/client";
 import { findRef } from "../api/detail";
 import { newUuid } from "../api/idempotency";
@@ -98,6 +98,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     params: {},
   }));
   const chat = catalog.data?.visuals.find((visual) => visual.type === "trax.chat");
+  const visualTypes = useMemo(() => new Set(catalog.data?.visuals.map((visual) => visual.type)), [catalog.data]);
   const panes = orderVisuals(visible.length ? visible : [{
     id: "chat-disconnected", type: "trax.chat", version: chat?.version ?? 1,
     placement: "main" as const, record_id: null, params: {},
@@ -376,7 +377,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
           kind: "show", visual_type: type,
           ...(descriptor?.requires.includes("record") && currentRecordId ? { record_id: currentRecordId } : {}),
         };
-      operate(operation);
+      void operate(operation);
     } else if (legacyPreview) {
       setPreviewSelected(active.includes(type) ? active.filter((item) => item !== type) : [...active, type]);
     }
@@ -437,6 +438,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       busy: change.isPending,
       writeError,
       operate,
+      visualTypes,
     } : null}>
     <div className="visual-canvas">
       <div className="visual-toolbar">

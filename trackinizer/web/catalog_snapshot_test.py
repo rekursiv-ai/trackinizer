@@ -44,6 +44,9 @@ def test_subgraph_is_a_record_scoped_catalog_option() -> None:
     assert subgraph.version == 1
     assert subgraph.requires == ["record"]
     assert subgraph.default_size == "wide"
+    # The window reads with `/api/web/graph?focus=`, which walks at most 3 hops.
+    assert sorted(subgraph.parameter_schema) == ["highlight", "hops"]
+    assert subgraph.parameter_schema["hops"].maximum == 3
 
 
 def test_timeline_is_bounded_and_record_scoped() -> None:

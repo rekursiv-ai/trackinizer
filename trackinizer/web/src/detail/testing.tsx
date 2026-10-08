@@ -13,6 +13,7 @@ import { LiveContext } from "../live";
 import type { LiveHub } from "../live/hub";
 import { RouterProvider } from "../router/router";
 import { ToastProvider } from "../ui/toast";
+import { type WorkspaceActions, WorkspaceActionsProvider } from "../visuals/workspaceActions";
 import { DetailView, type DetailTarget } from ".";
 
 const ALL_KINDS = ["Issue", "Artifact", "Experiment", "Paper", "Belief", "CodeChange", "WebResult", "WebSearch", "AgentSession"];
@@ -176,8 +177,9 @@ export function serveDetails(details: readonly Detail[], confidence = 0.5): Sent
  * Render the detail for `target` with the app's providers, and its shortcuts
  * bound; `queryClient` is its cache, `profile` the signed-in user, `session`
  * the one a 401 would end, `commands` the registry the palette would list,
- * `hub` the live stream's, if it is to keep the detail current, and `onCommit`
- * is told of each commit of the detail's tree; `highlights` is the canvas's marks, none by default.
+ * `hub` the live stream's, if it is to keep the detail current, `onCommit` is
+ * told of each commit of the detail's tree, `highlights` is the canvas's marks,
+ * none by default, and `workspace` is the canvas the detail shows inside, if any.
  */
 export function renderDetail(
   target: DetailTarget,
@@ -189,7 +191,16 @@ export function renderDetail(
     hub = null,
     onCommit = () => {},
     highlights = new HighlightStore(),
-  }: { profile?: Profile; session?: Session; commands?: CommandRegistry; hub?: LiveHub | null; onCommit?: () => void; highlights?: HighlightStore } = {},
+    workspace = null,
+  }: {
+    profile?: Profile;
+    session?: Session;
+    commands?: CommandRegistry;
+    hub?: LiveHub | null;
+    onCommit?: () => void;
+    highlights?: HighlightStore;
+    workspace?: WorkspaceActions | null;
+  } = {},
 ) {
   return render(
     <QueryClientProvider client={queryClient}>
@@ -201,11 +212,13 @@ export function renderDetail(
                 <RouterProvider kinds={META.kinds}>
                   <LiveContext value={hub}>
                     <Shortcuts />
-                    <Profiler id="detail" onRender={onCommit}>
-                      <HighlightContext value={highlights}>
-                        <DetailView target={target} />
-                      </HighlightContext>
-                    </Profiler>
+                    <WorkspaceActionsProvider value={workspace}>
+                      <Profiler id="detail" onRender={onCommit}>
+                        <HighlightContext value={highlights}>
+                          <DetailView target={target} />
+                        </HighlightContext>
+                      </Profiler>
+                    </WorkspaceActionsProvider>
                   </LiveContext>
                 </RouterProvider>
               </ProfileContext>

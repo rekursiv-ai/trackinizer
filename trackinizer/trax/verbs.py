@@ -2823,15 +2823,13 @@ def _workspace_operation(
     if args.action == "show":
         if len(subject) != 1:
             raise ClientError("show requires one visual type")
-        operation = {
-            "kind": "show",
-            "visual_type": subject[0],
-            "params": _workspace_params(args.param, parameters=parameters),
-        }
+        operation = {"kind": "show", "visual_type": subject[0]}
         if args.placement is not None:
             operation["placement"] = args.placement
         if args.record is not None:
             operation["record_id"] = str(_workspace_uuid(args.record, "record"))
+        if args.param:
+            operation["params"] = _workspace_params(args.param, parameters=parameters)
     elif args.action == "navigate":
         if len(subject) != 1 or args.record is not None or args.placement is not None:
             raise ClientError("navigate requires one route")

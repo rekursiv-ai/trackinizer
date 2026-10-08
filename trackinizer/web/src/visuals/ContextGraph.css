@@ -1,0 +1,8 @@
+.context-graph { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.context-graph-h { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+/* A line of its own: beside the count and the controls, a window half the page wide left the title no room. */
+.context-graph-ttl { display: flex; flex: 1 0 100%; align-items: baseline; gap: 8px; min-width: 0; }
+.context-graph-ttl .mono { flex-shrink: 0; }
+.context-graph-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-muted); }
+.context-graph-count { margin-right: auto; }
+.context-graph .graph-stage { flex: 1; min-height: 240px; }

@@ -27,12 +27,15 @@
       "type": "trax.subgraph",
       "version": 1,
       "title": "Context graph",
-      "description": "Explore a selected record and its issue lineage.",
+      "description": "See a record in context: what lies near it, in the graph.",
       "requires": [
         "record"
       ],
       "default_size": "wide",
-      "parameter_schema": {},
+      "parameter_schema": {
+        "hops": {"type": "integer", "default": 2, "minimum": 1, "maximum": 3, "max_length": null},
+        "highlight": {"type": "string", "default": "", "minimum": null, "maximum": null, "max_length": 512}
+      },
       "record_kinds": null
     },
     {

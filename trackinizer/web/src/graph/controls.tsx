@@ -1,6 +1,6 @@
 // The graph's controls, built from the lists' parts: the toolbar's menus
 // (`Menu`, `.btn.ghost`), the filter chips (`.fchips`), the segmented toggles
-// (`.view-seg`), and the key and zoom buttons over the canvas.
+// (`.view-seg`), and the key, zoom buttons and tooltip over the canvas.
 import { useState } from "react";
 import { ALL_NODES, type GraphNode } from "../api/graph";
 import type { Meta } from "../app/boot";
@@ -12,6 +12,7 @@ import { Icon } from "../ui/icons";
 import { KindIcon, kindLook } from "../ui/kinds";
 import { EmptyState } from "../ui/view";
 import { linkLook, type Palette } from "./encode";
+import type { DrawNode } from "./model";
 import { hopsName } from "./search";
 
 /** The kinds and statuses the Filter hides. */
@@ -400,6 +401,26 @@ export function Key({
   );
 }
 
+/**
+ * What a hovered node is, by it, as text, since a canvas has none: its kind
+ * and status as the app draws them, its ref and, under a focus, its hops from
+ * it (`far`); its title; and `hint`, what a click does where it is drawn.
+ */
+export function Tooltip({ node, x, y, far, hint }: { node: DrawNode; x: number; y: number; far: number | undefined; hint: string }) {
+  return (
+    <div className="graph-tip" role="tooltip" style={{ left: x + TIP_OFFSET_PX, top: y + TIP_OFFSET_PX }}>
+      <div className="graph-tip-ref">
+        <KindIcon kind={node.kind} size={12} />
+        <StatusGlyph status={node.status} size={12} />
+        {node.kind}#{node.seq}
+        {far ? ` · ${hopsName(far)}` : null}
+      </div>
+      <div>{node.title || "(untitled)"}</div>
+      <div className="graph-tip-hint">{hint}</div>
+    </div>
+  );
+}
+
 /** Zoom in and out by `ZOOM_STEP`, and frame every node shown, at the canvas's foot. */
 export function ZoomButtons({ onZoom, onFit }: { onZoom: (factor: number) => void; onFit: () => void }) {
   return (
@@ -470,3 +491,4 @@ const SPEEDS = [0.25, 0.5, 1, 2, 4, 10];
 /** Stop's value among the speeds; no speed is spelled so. */
 const STOP = "stop";
 const ZOOM_STEP = 1.5;
+const TIP_OFFSET_PX = 12;

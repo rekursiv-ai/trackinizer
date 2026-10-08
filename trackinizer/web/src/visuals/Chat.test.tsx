@@ -9,6 +9,7 @@ import { META } from "../detail/testing";
 import { appendLines } from "./chatCache";
 import { ChatFeed, ChatFeedContext } from "./chatFeed";
 import { Chat } from "./Chat";
+import { canvasActions } from "./testing";
 import { WorkspaceActionsProvider } from "./workspaceActions";
 
 vi.mock("../api/chats", () => ({ listChats: vi.fn(), getChat: vi.fn() }));
@@ -59,7 +60,7 @@ function shell(
 ) {
   const feed = new ChatFeed();
   const client = new QueryClient({ defaultOptions: { queries } });
-  const value = { busy: false, writeError: null, operate: vi.fn(), ...actions };
+  const value = canvasActions(actions);
   const ui = (next: WorkspaceState) => <QueryClientProvider client={client}><MetaContext value={META}>
     <ChatFeedContext value={feed}><WorkspaceActionsProvider value={value}>
       <Chat instance={next.visuals[0]!} focused={false} workspace={next} onWorkspaceChanged={vi.fn()} />

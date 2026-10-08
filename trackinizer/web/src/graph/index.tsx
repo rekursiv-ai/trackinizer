@@ -21,13 +21,23 @@ import { LiveFailureBar } from "../live";
 import { type FocusRef, type Hops, parseHash, type Route } from "../router/route";
 import { useRouter } from "../router/router";
 import { ReadFailure } from "../ui/failure";
-import { StatusGlyph } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
-import { KindIcon } from "../ui/kinds";
 import { panelCommand, usePanel } from "../ui/panel";
 import { PEEK, Peek } from "../ui/Peek";
 import { EmptyState, ViewHeader } from "../ui/view";
-import { ASK_ABOVE, AskToDraw, FilterChips, FilterMenu, FocusRow, type Hidden, Key, LimitMenu, ReplayMenu, ZoomButtons } from "./controls";
+import {
+  ASK_ABOVE,
+  AskToDraw,
+  FilterChips,
+  FilterMenu,
+  FocusRow,
+  type Hidden,
+  Key,
+  LimitMenu,
+  ReplayMenu,
+  Tooltip,
+  ZoomButtons,
+} from "./controls";
 import "./graph.css";
 import { hopCounts, isWithin, reach } from "./hops";
 import { graphQuery, useLiveGraph } from "./live";
@@ -444,7 +454,9 @@ export function GraphView({ createRenderer = forceGraphRenderer }: { createRende
             />
           ) : null}
           <ZoomButtons onZoom={(factor) => renderer?.zoomBy(factor)} onFit={() => renderer?.fit()} />
-          {hovered ? <Tooltip {...hovered} far={focus ? reached?.get(hovered.node.id) : undefined} /> : null}
+          {hovered ? (
+            <Tooltip {...hovered} far={focus ? reached?.get(hovered.node.id) : undefined} hint="Click opens Peek · double-click focuses here" />
+          ) : null}
           {selected ? (
             // Its own box, so the capture sees Peek's links before they navigate; Peek places itself.
             <div className="graph-peek" onClickCapture={followLink}>
@@ -573,26 +585,6 @@ function useReplay(model: GraphModel, renderer: Renderer | null, onStart: () => 
 }
 
 /**
- * What a hovered node is, by it, as text (COLD-12): its kind and status as the
- * app draws them, its ref and, under a focus, its hops from it; its title; and
- * what a click and a double-click do.
- */
-function Tooltip({ node, x, y, far }: { node: DrawNode; x: number; y: number; far: number | undefined }) {
-  return (
-    <div className="graph-tip" role="tooltip" style={{ left: x + TIP_OFFSET_PX, top: y + TIP_OFFSET_PX }}>
-      <div className="graph-tip-ref">
-        <KindIcon kind={node.kind} size={12} />
-        <StatusGlyph status={node.status} size={12} />
-        {node.kind}#{node.seq}
-        {far ? ` · ${hopsName(far)}` : null}
-      </div>
-      <div>{node.title || "(untitled)"}</div>
-      <div className="graph-tip-hint">Click opens Peek · double-click focuses here</div>
-    </div>
-  );
-}
-
-/**
  * `trackinizer.graph()` in the console, while the view is open: what is drawn,
  * each node with where it is in the window, what is selected and what is
  * focused, for checks that cannot read a canvas.
@@ -682,7 +674,6 @@ function readViewState(saved: unknown): ViewState | null {
 }
 
 const STATE_KEY = "trackinizer.v2.graph";
-const TIP_OFFSET_PX = 12;
 const NO_NODES: readonly GraphNode[] = [];
 const NO_STRINGS: ReadonlySet<string> = new Set();
 const NO_COUNTS = { 1: 0, 2: 0, 3: 0, all: 0 } as const;

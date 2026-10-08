@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 __all__ = [
+    "ContextGraphVisual",
     "ParameterDescription",
     "StaticVisual",
     "TimelineVisual",
@@ -205,6 +206,53 @@ class TimelineVisual:
         )
 
 
+class ContextGraphVisual:
+    """A record in its graph: what lies near it lit, the ring past that dimmed."""
+
+    class Config(Fig["ContextGraphVisual"]):
+        title: str = "Context graph"
+        """Name shown in the Configure panel."""
+
+        default_hops: int = 2
+        """Edges out from the record lit when the request names no reach."""
+
+    def __init__(self, config: Config) -> None:
+        """Keep the configured title and reach until projection."""
+        self.config = config
+
+    def describe(self) -> VisualDescription:
+        """Describe the window and the reach and highlight a caller may set.
+
+        Returns:
+          description: Inert catalog entry carrying the window's bounds.
+
+        """
+        return VisualDescription(
+            type="trax.subgraph",
+            version=1,
+            title=self.config.title,
+            description="See a record in context: what lies near it, in the graph.",
+            requires=["record"],
+            default_size="wide",
+            parameter_schema={
+                # The window reads its ring through `/api/web/graph?focus=`,
+                # which walks at most 3 hops.
+                "hops": ParameterDescription(
+                    type="integer",
+                    default=self.config.default_hops,
+                    minimum=1,
+                    maximum=3,
+                ),
+                # Inquiry ids, comma-separated: 512 holds 13.
+                "highlight": ParameterDescription(
+                    type="string",
+                    default="",
+                    max_length=512,
+                ),
+            },
+        )
+
+
 class Workspace:
     """The trusted composition of visual configs and its initial selection."""
 
@@ -224,12 +272,7 @@ class Workspace:
                     requires=["session"],
                     default_size="compact",
                 ),
-                StaticVisual.Config(
-                    type="trax.subgraph",
-                    title="Context graph",
-                    description="Explore a selected record and its issue lineage.",
-                    requires=["record"],
-                ),
+                ContextGraphVisual.Config(),
                 TimelineVisual.Config(),
                 StaticVisual.Config(
                     type="trax.artifact",

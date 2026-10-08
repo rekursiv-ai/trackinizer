@@ -343,7 +343,8 @@ that workspace. Read the state before choosing an instance ID:
 ```bash
 trax workspace WORKSPACE_UUID
 trax workspace WORKSPACE_UUID show trax.chat --record RECORD_UUID --placement side
-trax workspace WORKSPACE_UUID show trax.subgraph --record RECORD_UUID --placement side
+trax workspace WORKSPACE_UUID show trax.subgraph --record RECORD_UUID \
+  --param hops=2 --param highlight=UUID,UUID
 trax workspace WORKSPACE_UUID show trax.timeline --record RECORD_UUID --placement side
 trax workspace WORKSPACE_UUID focus INSTANCE_UUID
 trax workspace WORKSPACE_UUID place INSTANCE_UUID floating
@@ -355,8 +356,11 @@ trax workspace WORKSPACE_UUID highlight ""
 The catalog registers `trax.browse`, `trax.chat`, `trax.subgraph`, and
 `trax.timeline`. The timeline accepts Issue and Experiment records and shows
 bounded dated directions, results, and signed evidence. The context graph
-follows the selected record's Issue lineage and highlights it.
-Each write reads
+shows the record in the graph: what lies within `hops` of it (1 to 3, default
+2) lit, the ring past that dimmed, and the record and the inquiries `highlight`
+lists (comma-separated ids) haloed. Showing it again with only a new
+`--record` moves it there and keeps its hops and highlight; any `--param`
+sets them anew, each one it leaves out back to its default. Each write reads
 the current revision and prints the resulting state. If another change wins the
 race and the server returns 409, read the workspace again before retrying.
 `highlight` points at what you are talking about: it marks up to 50 records, by
