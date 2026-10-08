@@ -3,6 +3,65 @@
 All notable trackinizer changes are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.1.6 - 2026-10-07
+
+### Added
+
+- `Store.submit` accepts any concrete inquiry submission body, using the
+  same typed dispatcher for single submissions and mixed-kind batches.
+
+### Changed
+
+- **Breaking:** Python JSON types move from `trackinizer.lib.custom_json` to
+  `trackinizer.lib.codec`: client return annotations use `PlainTree`, and
+  session-record JSON fields use `Mapping[str, PlainTree]`. Wire-model JSON
+  aliases now live in `trackinizer.wire.json_types`.
+- Session payloads use the shared codec's record tags, while provider JSON
+  fields such as `extra` and tool arguments stay plain objects and arrays.
+  Reads still accept older plain records; the web transcript and conversation
+  feed accept both plain and tagged attachment arrays.
+- Structured Artifact snapshots no longer have a second 30 MB check after
+  citations are frozen. Publication requests remain capped at 30 MB, HTML
+  remains capped at 30 MB, and each publisher's storage remains 500 MB.
+
+### Fixed
+
+- `trax agentsession SEQ run claude|codex` writes the resumed transcript
+  before stamping its new CLI session id on the server, and stamps it before
+  starting the runner. A failed file write or missing reasoning ciphertext
+  leaves the server's session id unchanged.
+- Resume checks the records the target will actually write, including when
+  resuming in the same format, so dropped acts require `--lossy`. Native
+  runner arguments after `--` pass through unchanged.
+- `trax run` ends its session before waiting for the inbound poller to stop.
+  Ending a session releases held inbound requests immediately, instead of
+  making exit wait out the poll; queued messages are not drained to an
+  exiting runner.
+- Session search checks for locally cached weights before constructing an
+  embedder, including `model=` overrides, and falls back to full text when
+  weights are absent. Override instances are reused by resolved model name;
+  `dim` without `model` answers 400.
+- Session readers preserve malformed provider fields instead of aborting the
+  rest of a Claude, Codex or sagent transcript. Claude replay also handles
+  untyped foreign tool results and avoids duplicate calls when a result
+  precedes its call.
+- `trax` treats `run` and `metric` as literal field values unless they follow
+  a complete command subject or clause. Adding an already-present edge now
+  prints `exists:` instead of silently succeeding.
+- `GET /api/web/feed` rejects invalid time windows, and feed histograms choose
+  their starting point from records matching the requested filters.
+- Graph mirroring checks existing edges through their source inquiries,
+  instead of the newest-node graph window, so older edges are not reported
+  as newly added. Live graph replay rejects `--seed` with `--traverse` or
+  `--limit`.
+- Malformed signed session and OAuth-state cookie payloads are ignored
+  instead of raising a server error.
+
+### Removed
+
+- **Breaking:** `trackinizer.trax.run.materialize.materialize_claude`; use
+  `materialize(target="claude", ...)` instead.
+
 ## 0.1.5 - 2026-10-03
 
 ### Added
