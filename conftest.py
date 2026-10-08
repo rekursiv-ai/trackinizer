@@ -13,11 +13,20 @@ load libpq. Its entry-point autoload is off (``-p no:pytest_postgresql`` in
 without libpq it aborted collection before any conftest ran, taking the
 PGlite-only tier down with it. Without libpq the real-Postgres tests skip at
 ``pg_dsn`` instead.
+
+The math-thread caps run here, at the root, because this conftest loads before
+any test or package conftest imports NumPy or torch. In the monorepo the
+repo-root conftest applies them; the public tree has no such root.
 """
 
 from typing import Final
 
 import importlib
+
+from trackinizer.lib.testing.threads import cap_math_threads
+
+
+cap_math_threads()
 
 
 def _postgres_plugins() -> tuple[str, ...]:

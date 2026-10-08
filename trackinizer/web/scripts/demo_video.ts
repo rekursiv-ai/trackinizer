@@ -55,7 +55,9 @@ try {
   const agent = standIn(served.origin, served.seeded.session);
   const frames: Frame[] = [];
   const parts: Part[] = [];
-  const browser = await chromium.launch();
+  // No launch deadline of our own: Playwright still fails at once if the browser
+  // exits, and a cold first launch took up to 35 s on a CI runner, past its 30 s default.
+  const browser = await chromium.launch({ timeout: 0 });
   try {
     await record(browser, served, { frames, parts });
   } finally {

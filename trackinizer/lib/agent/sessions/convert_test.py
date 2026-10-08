@@ -598,14 +598,22 @@ def test_killing_the_run_takes_its_workers_with_it(tmp_path: Path) -> None:
     # the obvious pattern left 11 orphans holding 14 GB. The kernel has to be
     # the one that reaps them.
     for index in range(6):
-        _ = _session(tmp_path / f"s{index}" / "s.jsonl", _claude_session() * 40)
+        _ = _session(tmp_path / "in" / f"s{index}" / "s.jsonl", _claude_session() * 40)
+    # A session no one ever writes: the worker that opens it blocks, so the run
+    # is still alive when it is killed. Without it the run could END before the
+    # loop below saw it: measured, the pool converted all six in 0.36 s and
+    # exited 90 ms after its first output, and a poll whose /proc scan took
+    # 62 ms on a host holding 4,000 pids missed that window 10 times in 10.
+    held = tmp_path / "held.jsonl"
+    os.mkfifo(held)
     started = subprocess.Popen(  # noqa: S603 -- fixed argv, tmp_path input.
         [
             sys.executable,
             "-m",
             "trackinizer.lib.agent.sessions",
             "convert",
-            str(tmp_path),
+            str(tmp_path / "in"),
+            str(held),
             "--to",
             "json",
             "--out-dir",
@@ -618,7 +626,7 @@ def test_killing_the_run_takes_its_workers_with_it(tmp_path: Path) -> None:
     )
     children: list[psutil.Process] = []
     deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
+    while time.monotonic() < deadline and started.poll() is None:
         children = cast(  # pyright: ignore[reportUnnecessaryCast] -- ty needs it; pyright resolves the stub.
             "list[psutil.Process]",
             psutil.Process(started.pid).children(recursive=True),
@@ -630,6 +638,7 @@ def test_killing_the_run_takes_its_workers_with_it(tmp_path: Path) -> None:
         if len(children) >= 2 and list((tmp_path / "out").glob("*.json")):
             break
         time.sleep(0.1)
+    assert started.poll() is None, "the run ended before it could be killed"
     assert children, "the pool never started"
     assert list((tmp_path / "out").glob("*.json")), "the pool never did any work"
 

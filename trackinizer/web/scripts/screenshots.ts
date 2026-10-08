@@ -36,7 +36,9 @@ requireTool("cwebp", ["-version"], "libwebp (`brew install webp`, `apt install w
 const served = await serveSeeded(8812);
 try {
   mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch();
+  // No launch deadline of our own: Playwright still fails at once if the browser
+  // exits, and a cold first launch took up to 35 s on a CI runner, past its 30 s default.
+  const browser = await chromium.launch({ timeout: 0 });
   try {
     for (const shot of shots(served.seeded)) console.log(await capture(browser, shot, served));
   } finally {
