@@ -453,7 +453,7 @@ async def test_html_route_serves_the_revision_as_a_sandboxed_page(
     )
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["referrer-policy"] == "no-referrer"
-    assert response.headers["cache-control"] == "private"
+    assert response.headers["cache-control"] == "private, no-transform"
 
     missing = await client.get(f"/api/artifacts/{uuid.uuid4()}/html")
     assert missing.status_code == 404

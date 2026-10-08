@@ -121,6 +121,10 @@ async def read_artifact_html_route(
     # Claude Sites works here. ``connect-src 'none'`` keeps ``fetch`` from
     # reaching anything, and ``frame-ancestors 'self'`` lets only Trackinizer
     # embed it. ``private``: no shared cache may keep team content.
+    # ``no-transform``: without it Cloudflare rewrites email-shaped text such as
+    # ``user:%s@github.com`` into "[email protected]" and injects decoder and
+    # bot-detection scripts this policy blocks, so viewers see and copy broken
+    # text. Compression survives: caddy compresses before Cloudflare.
     return HTMLResponse(
         artifact.html,
         headers={
@@ -150,6 +154,6 @@ async def read_artifact_html_route(
             ),
             "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer",
-            "Cache-Control": "private",
+            "Cache-Control": "private, no-transform",
         },
     )
