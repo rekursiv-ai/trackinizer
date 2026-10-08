@@ -37,6 +37,27 @@ def test_a_new_canvas_has_chat_floating_over_its_default_visual() -> None:
     assert data.focused_instance is None
 
 
+def test_timeline_is_off_in_a_new_canvas_and_recentres_when_shown_again() -> None:
+    """The merged view opens only on request; a second show moves it, not duplicates."""
+    catalog = default_catalog()
+    fresh = initial_data(catalog)
+    assert [visual.type for visual in fresh.visuals] == ["trax.browse", "trax.chat"]
+    first, second = uuid.uuid4(), uuid.uuid4()
+    opened = apply_operation(
+        fresh,
+        ShowVisual(kind="show", visual_type="trax.timeline", record_id=first),
+        catalog,
+    )
+    moved = apply_operation(
+        opened,
+        ShowVisual(kind="show", visual_type="trax.timeline", record_id=second),
+        catalog,
+    )
+    timelines = [visual for visual in moved.visuals if visual.type == "trax.timeline"]
+    assert [visual.record_id for visual in timelines] == [second]
+    assert timelines[0].id == opened.visuals[-1].id
+
+
 def test_show_reuses_visual_type_and_updates_its_context() -> None:
     """Reopening Chat updates its target without orphaning a duplicate tile."""
     catalog = default_catalog()
@@ -342,9 +363,8 @@ def _entry(visual: str) -> VisualDescription:
     ("visual", "kind", "refused"),
     [
         ("trax.timeline", "Issue", False),
-        ("trax.timeline", "Experiment", False),
-        ("trax.timeline", "Belief", True),
-        ("trax.timeline", None, True),
+        ("trax.timeline", "Belief", False),
+        ("trax.timeline", None, False),
         ("trax.artifact", "Artifact", False),
         ("trax.artifact", "Issue", True),
         ("trax.subgraph", "Paper", False),
@@ -371,14 +391,25 @@ def test_refuse_record_applies_the_catalogs_kinds(
 def test_refuse_record_names_the_kinds_and_what_it_found() -> None:
     """The sentence a refused caller reads says what the visual shows."""
     reason = refuse_record(
-        _show("trax.timeline", record=uuid.uuid4()),
-        descriptor=_entry("trax.timeline"),
+        _show("trax.artifact", record=uuid.uuid4()),
+        descriptor=_entry("trax.artifact"),
         kind="Belief",
     )
-    assert reason == "Evidence timeline shows Issue or Experiment records, not Belief."
+    assert reason == "Artifact shows Artifact records, not Belief."
+    two = _entry("trax.artifact").model_copy(
+        update={"record_kinds": ["Paper", "Issue"]},
+    )
+    assert (
+        refuse_record(
+            _show("trax.artifact", record=uuid.uuid4()),
+            descriptor=two,
+            kind="Belief",
+        )
+        == "Artifact shows Paper or Issue records, not Belief."
+    )
     unknown = refuse_record(
-        _show("trax.timeline", record=uuid.uuid4()),
-        descriptor=_entry("trax.timeline"),
+        _show("trax.artifact", record=uuid.uuid4()),
+        descriptor=_entry("trax.artifact"),
         kind=None,
     )
     assert unknown is not None

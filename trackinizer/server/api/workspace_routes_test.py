@@ -313,7 +313,7 @@ async def test_the_owners_own_key_cannot_create_read_or_operate_a_canvas(
     )
     for refused in (read, operated):
         assert refused.status_code == 403, refused.text
-        assert "Only the canvas's Chat assistant" in refused.text
+        assert "Only the canvas's Chat partner" in refused.text
     act_as_other_agent()
     assert (await client.get(f"/api/workspaces/{workspace_id}")).status_code == 404
 
@@ -443,6 +443,7 @@ async def test_browser_chat_reaches_the_assistant_with_persisted_canvas_context(
         "actor": KB_ACTOR,
         "cli": "codex",
         "status": "live",
+        "kind": "shared",
     }
     async with store.engine.acquire() as conn:
         await conn.execute(
@@ -1151,6 +1152,7 @@ async def test_a_canvas_talks_to_the_assistant_however_its_session_is_named(
         "actor": KB_ACTOR,
         "cli": "codex",
         "status": "live",
+        "kind": "shared",
     }
     sent = await send_chat(
         client,
@@ -1170,6 +1172,148 @@ async def test_a_canvas_talks_to_the_assistant_however_its_session_is_named(
     )
     assert from_plain(messages[0], dict[str, object])["text"] == "hello scout"
     assert squatter != kb
+
+
+async def _seed_screen_records(store: Store) -> tuple[uuid.UUID, uuid.UUID]:
+    """Insert an Experiment and an Issue; return their ids."""
+    experiment_id, issue_id = uuid.uuid4(), uuid.uuid4()
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title) VALUES "
+            "($1, 'Experiment', 987654, 'active', 'test-user@example.com', "
+            "'Measured tails'), "
+            "($2, 'Issue', 11, 'active', 'test-user@example.com', $3)",
+            experiment_id,
+            issue_id,
+            "t" * 20_000,
+        )
+    return experiment_id, issue_id
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_message_carries_the_records_of_the_page_trail_and_visuals(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A send resolves each route and visual to its record; a miss keeps its route."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    act_as_assistant()
+    session_id = await start_session(client, actor=KB_ACTOR)
+    experiment_id, issue_id = await _seed_screen_records(store)
+    missing = uuid.uuid4()
+    workspace_id = await open_workspace(client)
+    chat_id = await show_chat(client, workspace_id=workspace_id)
+    shown = await client.post(
+        f"/api/workspaces/{workspace_id}/operations",
+        json={
+            "revision": await revision_of(client, workspace_id=workspace_id),
+            "operation": {
+                "kind": "show",
+                "visual_type": "trax.subgraph",
+                "record_id": str(experiment_id),
+            },
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert shown.status_code == 200
+    trail = [
+        f"#/lookup/{issue_id}",
+        "#/list/Issue",
+        f"#/inquiry/{missing}",
+        "#/graph?focus=issue/11&hops=2",
+        "#/ref/Issue/12",
+    ]
+
+    sent = await client.post(
+        f"/api/workspaces/{workspace_id}/messages",
+        json={
+            "text": "what about this experiment in context?",
+            "chat_instance_id": str(chat_id),
+            "expected_record_id": None,
+            "page": "#/ref/Experiment/987654",
+            "trail": trail,
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+
+    assert sent.status_code == 200
+    act_as_assistant()
+    drained = from_plain(
+        loads((await drain(client, session_id=session_id)).content),
+        dict[str, object],
+    )
+    message = from_plain(
+        from_plain(drained["messages"], list[object])[0],
+        dict[str, object],
+    )
+    context = from_plain(message["context"], dict[str, object])
+    experiment = {
+        "id": str(experiment_id),
+        "kind": "Experiment",
+        "seq": 987_654,
+        "title": "Measured tails",
+    }
+    issue = {
+        "id": str(issue_id),
+        "kind": "Issue",
+        "seq": 11,
+        "title": "t" * 512,
+    }
+    assert context["page"] == {"route": "#/ref/Experiment/987654", "record": experiment}
+    assert context["trail"] == [
+        {"route": trail[0], "record": issue},
+        {"route": trail[1], "record": None},
+        {"route": trail[2], "record": None},
+        {"route": trail[3], "record": issue},
+        {"route": trail[4], "record": None},
+    ]
+    visuals = {
+        from_plain(from_plain(item, dict[str, object])["type"], str): from_plain(
+            item,
+            dict[str, object],
+        ).get("record")
+        for item in from_plain(context["visible_visuals"], list[object])
+    }
+    assert (visuals["trax.chat"], visuals["trax.subgraph"]) == (None, experiment)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    "screen",
+    [
+        {"page": "not a route"},
+        {"page": "#/lookup/with space"},
+        {"trail": ["#/graph", "bad"]},
+        {"trail": ["#/graph"] * 9},
+    ],
+)
+async def test_a_message_with_a_bad_route_or_a_long_trail_is_refused(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    screen: dict[str, object],
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    act_as_assistant()
+    _ = await start_session(client, actor=KB_ACTOR)
+    workspace_id = await open_workspace(client)
+    chat_id = await show_chat(client, workspace_id=workspace_id)
+
+    refused = await client.post(
+        f"/api/workspaces/{workspace_id}/messages",
+        json={
+            "text": "hi",
+            "chat_instance_id": str(chat_id),
+            "expected_record_id": None,
+            **screen,
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+
+    assert refused.status_code == 422
 
 
 @pytest.mark.usefixtures("assistant_served")
@@ -1505,7 +1649,7 @@ async def test_a_replayed_operation_publishes_nothing(
 async def test_a_show_names_a_record_its_visual_can_draw(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
-    """The catalog's kinds are enforced: browse takes none, timeline Issue or Experiment."""
+    """The catalog's kinds are enforced: browse takes none, artifact only Artifacts."""
     client, store = pglite_route_client
     await seed_accounts(store)
     workspace_id = await open_workspace(client)
@@ -1537,9 +1681,8 @@ async def test_a_show_names_a_record_its_visual_can_draw(
 
     assert await show("trax.timeline", record=kinds["Issue"]) == 200
     assert await show("trax.timeline", record=kinds["Experiment"]) == 200
-    assert await show("trax.timeline", record=kinds["Paper"]) == 422
-    assert await show("trax.timeline", record=kinds["Belief"]) == 422
-    assert await show("trax.timeline", record=uuid.uuid4()) == 422
+    assert await show("trax.timeline", record=kinds["Paper"]) == 200
+    assert await show("trax.timeline", record=kinds["Belief"]) == 200
     assert await show("trax.artifact", record=kinds["Issue"]) == 422
     assert await show("trax.subgraph", record=kinds["Paper"]) == 200
     assert await show("trax.browse", record=kinds["Issue"]) == 422

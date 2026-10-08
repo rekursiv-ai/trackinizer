@@ -1,4 +1,4 @@
-"""Read a bounded Issue evidence timeline for the timeline visual."""
+"""Read a bounded lineage and timeline of any record for the timeline visual."""
 
 from __future__ import annotations
 
@@ -13,10 +13,8 @@ from trackinizer.lib.codec import from_plain
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.visuals_routes import visual_catalog
 from trackinizer.server.auth import require_role
-from trackinizer.server.visuals.timeline import (
-    UnsupportedTimelineTargetError,
-    load_timeline,
-)
+from trackinizer.server.visuals.timeline import load_timeline
+from trackinizer.types.inquiries import Inquiry
 
 
 if TYPE_CHECKING:
@@ -32,7 +30,7 @@ class TimelineRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: UUID
-    kind: Literal["Issue", "Experiment", "Belief"]
+    kind: Inquiry.InquiryKind
     seq: int
     title: str = Field(max_length=2_000)
     status: str
@@ -80,6 +78,7 @@ class EvidenceTimelineResponse(BaseModel):
 
     target: TimelineRecord
     issue: TimelineRecord | None
+    leads: list[TimelineRecord]
     selected_result: TimelineExperiment | None
     root_results: list[TimelineExperiment]
     root_results_truncated: bool
@@ -98,10 +97,16 @@ async def evidence_timeline_route(
     direction_limit: Annotated[int | None, Query()] = None,
     results_per_direction: Annotated[int | None, Query()] = None,
 ) -> EvidenceTimelineResponse:
-    """Return an Issue or Experiment timeline with hard bounded SQL limits.
+    """Return the lineage and timeline of a record of any kind, with hard bounded SQL.
+
+    The anchor Issue supplies `leads` (its `narrows` ancestors, at most three,
+    farthest first), results, and directions. An Issue is its own anchor; an
+    Experiment is anchored on the Issue that produced it; any other kind stays
+    the record and takes the nearest `produced_by` Issue, with the anchor itself
+    as its nearest lead. A record with no anchor is returned alone.
 
     Args:
-      record_id: Selected Issue or Experiment UUID.
+      record_id: Selected record UUID, of any kind.
       request: Request with the shared Store.
       direction_limit: Direct child Issues to return; the catalog sets the default
         and maximum.
@@ -127,21 +132,15 @@ async def evidence_timeline_route(
         schemas=schema,
     )
     store = get_store(request)
-    try:
-        async with store.engine.acquire() as conn:
-            result = await load_timeline(
-                conn,
-                record_id,
-                direction_limit=direction_count,
-                results_per_direction=result_count,
-            )
-    except UnsupportedTimelineTargetError as error:
-        raise HTTPException(
-            status_code=422,
-            detail="Evidence timeline supports Issue and Experiment records only.",
-        ) from error
+    async with store.engine.acquire() as conn:
+        result = await load_timeline(
+            conn,
+            record_id,
+            direction_limit=direction_count,
+            results_per_direction=result_count,
+        )
     if result is None:
-        raise HTTPException(status_code=404, detail="Issue or Experiment not found")
+        raise HTTPException(status_code=404, detail="Record not found")
     return EvidenceTimelineResponse.model_validate(result)
 
 

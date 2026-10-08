@@ -34,10 +34,18 @@ const connect = (url: string) => new FakeEventSource(url);
 test("a message goes under its key with its conversation, and the receipt carries the stored message", async () => {
   const receipt = { session_id: "s", conversation_id: "c1", message };
   const sent = stubFetch(() => Response.json(receipt));
-  await expect(sendWorkspaceMessage("w/1", { text: "hi", chatInstanceId: "chat", expectedRecordId: "rec", conversationId: null }, "key-1"))
+  await expect(sendWorkspaceMessage("w/1", { text: "hi", chatInstanceId: "chat", expectedRecordId: "rec", conversationId: null,
+    page: "#/ref/Issue/9", trail: ["#/graph", "#/lookup/x"] }, "key-1"))
     .resolves.toEqual(receipt);
   expect(sent).toMatchObject([{ method: "POST", path: "/api/workspaces/w%2F1/messages", headers: { "idempotency-key": "key-1" },
-    body: { text: "hi", chat_instance_id: "chat", expected_record_id: "rec", conversation_id: null } }]);
+    body: { text: "hi", chat_instance_id: "chat", expected_record_id: "rec", conversation_id: null,
+      page: "#/ref/Issue/9", trail: ["#/graph", "#/lookup/x"] } }]);
+});
+
+test("a message sent from no page carries a null page and an empty trail", async () => {
+  const sent = stubFetch(() => Response.json({ session_id: "s", conversation_id: "c1", message }));
+  await sendWorkspaceMessage("w", { text: "hi", chatInstanceId: null, expectedRecordId: null, conversationId: null, page: null, trail: [] }, "key-2");
+  expect(sent).toMatchObject([{ body: { page: null, trail: [] } }]);
 });
 
 test("the events stream opens on the workspace's route and passes on each kind of frame", () => {

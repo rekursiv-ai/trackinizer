@@ -354,8 +354,9 @@ trax workspace WORKSPACE_UUID highlight ""
 ```
 
 The catalog registers `trax.browse`, `trax.chat`, `trax.subgraph`, and
-`trax.timeline`. The timeline accepts Issue and Experiment records and shows
-bounded dated directions, results, and signed evidence. The context graph
+`trax.timeline`. `trax.timeline` (Lineage and timeline) takes a record of any
+kind and shows its lead issues, bounded dated directions, results, and signed
+evidence; it is off in a new canvas. The context graph
 shows the record in the graph: what lies within `hops` of it (1 to 3, default
 2) lit, the ring past that dimmed, and the record and the inquiries `highlight`
 lists (comma-separated ids) haloed. Showing it again with only a new

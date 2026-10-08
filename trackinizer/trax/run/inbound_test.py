@@ -90,6 +90,31 @@ class TestRenderInbound:
             " navigate '#/lookup/RECORD_UUID'\n"
         ) in rendered
 
+    def test_a_canvas_without_a_pinned_record_uses_the_record_on_screen(self) -> None:
+        context = WorkspaceMessageContext.model_validate(
+            {
+                "workspace_id": "c5286865-67b6-4bd8-ab51-e06e10c326c5",
+                "visible_visuals": [],
+                "page": {
+                    "route": "#/ref/Experiment/407",
+                    "record": {
+                        "id": "889ffcb2-cf44-43e7-9806-eb08428c6203",
+                        "kind": "Experiment",
+                        "seq": 407,
+                        "title": "Measured tails",
+                    },
+                },
+            },
+        )
+
+        rendered = render_inbound("Hi", source=None, room=None, context=context)
+
+        assert (
+            "  Show a record: trax workspace c5286865-67b6-4bd8-ab51-e06e10c326c5"
+            " navigate '#/lookup/889ffcb2-cf44-43e7-9806-eb08428c6203'\n"
+        ) in rendered
+        assert "RECORD_UUID" not in rendered
+
     def test_artifact_chat_points_to_full_immutable_content(self) -> None:
         context = WorkspaceMessageContext.model_validate(
             {

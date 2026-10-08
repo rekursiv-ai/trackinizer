@@ -510,6 +510,18 @@ takes no record and no parameter, and it cannot be hidden. `trax.timeline`
 shows an Issue or an Experiment, `trax.artifact` an Artifact, `trax.subgraph`
 any record.
 
+`GET /api/visuals/timeline/<record-uuid>` is the one bounded read behind the
+`trax.timeline` visual (Lineage and timeline). The record may be of any kind;
+an Experiment is shown on the Issue that produced it, and any other kind
+stays the record and takes the nearest `produced_by` Issue as its anchor
+(none: the record is returned alone). The response carries `target`, the
+anchor `issue`, `leads` (the anchor's `narrows` ancestors, at most three,
+farthest first; for a non-Issue record the anchor is itself the nearest lead),
+the record's `root_results` with signed evidence, and up to `direction_limit`
+directions with `results_per_direction` results each. The two limits come from
+the catalog descriptor; an out-of-range value returns 422, a missing record
+404.
+
 `PUT /api/me/visual-workspace` sets the signed-in user's canvas opt-in from
 an interactive browser session. API keys cannot change that choice.
 `GET /api/me/profile` includes `visual_workspace_enabled`; it defaults to true.
@@ -528,22 +540,35 @@ server adds once a name has been used) and the API key that opened it belongs to
 the account `EMAIL`, compared lowercase. Every canvas talks to the assistant's
 newest live session. `assistant` in the state is its actor, or null when none is
 configured. `partner` is computed on every read and never stored: `session_id`,
-`actor`, the configured name, `cli`, and `status`, `live` or `unavailable`.
+`actor`, the configured name, `cli`, `status`, `live` or `unavailable`, and
+`kind`, `shared` or `local`.
+
+**The local choice.** A canvas starts `shared`. Its owner's browser can send the
+operation `{"kind": "partner", "choice": "local"}` (or `"shared"`), which is
+stored as `partner_choice` in the canvas state and bumps the revision as any
+operation does; an API key sending it is 422. With `local`, the partner is the
+owner's newest live `trax helper` session (CLI `trax-helper`) that an unrevoked
+key of the owner's own account opened and that is polling its inbound queue, and
+`actor` is that session's granted actor. Another user's helper never qualifies,
+and the shared assistant never stands in. With none running the partner is `kind`
+`local`, `unavailable`, with a null `session_id`, `actor` and `cli`, and a Chat
+send is 409. The owner needs no `--assistant`: a server with none can still serve
+`local` canvases. Opening a preset keeps the canvas's choice.
 
 Any session can be the assistant. `trax helper claude` (or `codex`) `--as
 ACTOR`, run with a key of the account `EMAIL`, opens one and answers each Chat
 message by a turn of that CLI, resuming the conversation's own CLI conversation.
 Its session takes messages only from Chat: a direct or routed send to it is 403.
 
-The assistant's key may read and operate a canvas while that canvas's partner
-is the assistant session the key opened, and the canvas's owner has a
+The partner's key may read and operate a canvas while that canvas's partner
+is the session the key opened, and the canvas's owner has a
 conversation on that canvas with it. Any other canvas is 404, so a user who
-never talked to the assistant gives it nothing; the owner's own key, which only
-the assistant may stand in for, is 403. Only the key that opened an assistant
-session may drain its inbound queue, whatever the role.
+never talked to the partner gives it nothing; the owner's own key is 403 unless
+the partner is the owner's local helper, which that key opened. Only the key
+that opened a partner session may drain its inbound queue, whatever the role.
 
 An operation body has `revision` and one `operation`: `show`, `hide`, `focus`,
-`place`, `navigate`, or `highlight`. The caller supplies a UUID `Idempotency-Key`
+`place`, `partner`, `navigate`, or `highlight`. The caller supplies a UUID `Idempotency-Key`
 header. The
 server locks the workspace, checks the revision, validates the visual type,
 parameters and record kind, and returns the new state. Retrying a recent body
@@ -551,7 +576,7 @@ with the same key returns the original state and publishes nothing. The latest 6
 receipts are retained; an older retry receives a stale-revision 409 after its
 receipt expires. Reusing a retained key for another body returns 409. Both that
 conflict and a stale revision include `current` with the live workspace. An API
-key can operate only as the assistant above; that check also runs before
+key can operate only as the partner above; that check also runs before
 replaying an idempotency receipt.
 
 `navigate` is `{"kind": "navigate", "route": "#/..."}` with a route of at most

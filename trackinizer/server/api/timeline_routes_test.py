@@ -263,24 +263,215 @@ async def test_orphan_experiment_has_no_issue_but_keeps_its_selected_result(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_timeline_explains_unsupported_record_kind(
+async def test_leads_are_the_narrows_ancestors_farthest_first_and_bounded(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
-    """An existing non-Issue/Experiment target gets an actionable response."""
+    """Leads climb `narrows` at most three levels and end at the nearest parent."""
     client, store = pglite_route_client
-    belief_id = uuid.uuid4()
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+    chain = [uuid.uuid4() for _ in range(5)]
+    async with store.engine.acquire() as conn:
+        for index, record_id in enumerate(chain):
+            await _insert_row(
+                conn,
+                record_id=record_id,
+                kind="Issue",
+                seq=index + 1,
+                title=f"Level {index}",
+                created=started + timedelta(days=index),
+            )
+            if index:
+                await _insert_edge(
+                    conn,
+                    from_id=record_id,
+                    from_kind="Issue",
+                    to_id=chain[index - 1],
+                    to_kind="Issue",
+                    edge_kind="narrows",
+                )
+
+    deep = await client.get(f"/api/visuals/timeline/{chain[4]}")
+    assert deep.status_code == 200, deep.text
+    assert _titles(deep.content, field="leads") == ["Level 1", "Level 2", "Level 3"]
+    top = await client.get(f"/api/visuals/timeline/{chain[0]}")
+    assert _titles(top.content, field="leads") == []
+    middle = await client.get(f"/api/visuals/timeline/{chain[2]}")
+    assert _titles(middle.content, field="leads") == ["Level 0", "Level 1"]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_leads_stop_at_a_narrows_cycle(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A cyclic `narrows` chain lists each Issue once, never the record itself."""
+    client, store = pglite_route_client
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+    first, second = uuid.uuid4(), uuid.uuid4()
+    async with store.engine.acquire() as conn:
+        for index, record_id in enumerate((first, second)):
+            await _insert_row(
+                conn,
+                record_id=record_id,
+                kind="Issue",
+                seq=index + 1,
+                title=f"Cycle {index}",
+                created=started + timedelta(days=index),
+            )
+        for child, parent in ((first, second), (second, first)):
+            await _insert_edge(
+                conn,
+                from_id=child,
+                from_kind="Issue",
+                to_id=parent,
+                to_kind="Issue",
+                edge_kind="narrows",
+            )
+
+    response = await client.get(f"/api/visuals/timeline/{first}")
+    assert response.status_code == 200, response.text
+    assert _titles(response.content, field="leads") == ["Cycle 1"]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_experiment_centres_on_its_producer_with_the_producers_leads(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """An Experiment keeps today's centre and gains the producer's leads."""
+    client, store = pglite_route_client
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+    lead, producer, experiment = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    async with store.engine.acquire() as conn:
+        for seq, (record_id, kind, title) in enumerate(
+            (
+                (lead, "Issue", "Lead"),
+                (producer, "Issue", "Producer"),
+                (experiment, "Experiment", "Run"),
+            ),
+            start=1,
+        ):
+            await _insert_row(
+                conn,
+                record_id=record_id,
+                kind=kind,
+                seq=seq,
+                title=title,
+                created=started + timedelta(days=seq),
+            )
+        await _insert_edge(
+            conn,
+            from_id=producer,
+            from_kind="Issue",
+            to_id=lead,
+            to_kind="Issue",
+            edge_kind="narrows",
+        )
+        await _insert_edge(
+            conn,
+            from_id=experiment,
+            from_kind="Experiment",
+            to_id=producer,
+            to_kind="Issue",
+            edge_kind="produced_by",
+        )
+
+    response = await client.get(f"/api/visuals/timeline/{experiment}")
+    assert response.status_code == 200, response.text
+    body = from_plain(loads(response.content), dict[str, object])
+    assert from_plain(body["target"], dict[str, object])["title"] == "Run"
+    assert from_plain(body["issue"], dict[str, object])["title"] == "Producer"
+    assert _titles(response.content, field="leads") == ["Lead"]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_other_kinds_centre_on_themselves_with_the_linked_issues_context(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A Belief stays the record row; its produced_by Issue supplies the rest."""
+    client, store = pglite_route_client
+    started = datetime(2026, 1, 1, tzinfo=UTC)
+    lead, anchor, direction, belief = (uuid.uuid4() for _ in range(4))
+    async with store.engine.acquire() as conn:
+        for seq, (record_id, kind, title) in enumerate(
+            (
+                (lead, "Issue", "Lead"),
+                (anchor, "Issue", "Anchor"),
+                (direction, "Issue", "Direction"),
+                (belief, "Belief", "Claim"),
+            ),
+            start=1,
+        ):
+            await _insert_row(
+                conn,
+                record_id=record_id,
+                kind=kind,
+                seq=seq,
+                title=title,
+                created=started + timedelta(days=seq),
+            )
+        await _insert_edge(
+            conn,
+            from_id=anchor,
+            from_kind="Issue",
+            to_id=lead,
+            to_kind="Issue",
+            edge_kind="narrows",
+        )
+        await _insert_edge(
+            conn,
+            from_id=direction,
+            from_kind="Issue",
+            to_id=anchor,
+            to_kind="Issue",
+            edge_kind="narrows",
+        )
+        await _insert_edge(
+            conn,
+            from_id=belief,
+            from_kind="Belief",
+            to_id=anchor,
+            to_kind="Issue",
+            edge_kind="produced_by",
+        )
+
+    response = await client.get(f"/api/visuals/timeline/{belief}")
+    assert response.status_code == 200, response.text
+    body = from_plain(loads(response.content), dict[str, object])
+    assert from_plain(body["target"], dict[str, object])["title"] == "Claim"
+    assert from_plain(body["issue"], dict[str, object])["title"] == "Anchor"
+    assert body["selected_result"] is None
+    assert body["root_results"] == []
+    assert _titles(response.content, field="leads") == ["Lead", "Anchor"]
+    assert _direction_titles(response.content) == ["Direction"]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_unlinked_record_of_any_kind_is_shown_alone(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A Paper with no Issue link has no leads and no directions."""
+    client, store = pglite_route_client
+    paper_id = uuid.uuid4()
     async with store.engine.acquire() as conn:
         await _insert_row(
             conn,
-            record_id=belief_id,
-            kind="Belief",
+            record_id=paper_id,
+            kind="Paper",
             seq=1,
-            title="A belief",
+            title="A paper",
             created=datetime(2026, 1, 1, tzinfo=UTC),
         )
-    response = await client.get(f"/api/visuals/timeline/{belief_id}")
-    assert response.status_code == 422
-    assert "Issue and Experiment" in response.text
+    response = await client.get(f"/api/visuals/timeline/{paper_id}")
+    assert response.status_code == 200, response.text
+    body = from_plain(loads(response.content), dict[str, object])
+    assert from_plain(body["target"], dict[str, object])["kind"] == "Paper"
+    assert body["issue"] is None
+    assert body["leads"] == []
+    assert body["directions"] == []
+    assert body["root_results"] == []
 
 
 @pytest.mark.db_pglite
@@ -415,6 +606,17 @@ async def _insert_edge(
         valence,
         note,
     )
+
+
+def _titles(content: bytes, *, field: str) -> list[object]:
+    """Return the titles of a timeline response's list of records, in order."""
+    return [
+        item["title"]
+        for item in from_plain(
+            from_plain(loads(content), dict[str, object])[field],
+            list[dict[str, object]],
+        )
+    ]
 
 
 def _direction_titles(content: bytes) -> list[object]:

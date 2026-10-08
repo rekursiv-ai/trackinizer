@@ -64,7 +64,7 @@ def test_record_visuals_name_the_kinds_they_accept() -> None:
         "trax.browse": [],
         "trax.chat": None,
         "trax.subgraph": None,
-        "trax.timeline": ["Issue", "Experiment"],
+        "trax.timeline": None,
         "trax.artifact": ["Artifact"],
     }
 

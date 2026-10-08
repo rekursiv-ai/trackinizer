@@ -1980,8 +1980,12 @@ class TestSessionMethods:
                 "title": "ARC3 effort",
             },
             "artifact_content": None,
-            "visible_visuals": [{"id": str(visual_id), "type": "trax.chat"}],
+            "visible_visuals": [
+                {"id": str(visual_id), "type": "trax.chat", "record": None},
+            ],
             "conversation_id": None,
+            "page": None,
+            "trail": [],
         }
 
 

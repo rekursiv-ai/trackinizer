@@ -40,6 +40,7 @@ from trackinizer.server.chat_hub import (
     WorkspaceFrame,
 )
 from trackinizer.server.inbound import InboundQueue
+from trackinizer.wire.wire_chats import CHAT_HELPER_CLI
 
 
 if TYPE_CHECKING:
@@ -738,6 +739,168 @@ async def test_only_a_live_partner_key_is_told_of_owed_answers(
     assert await _awaiting(client) == []
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_local_choice_makes_the_owners_helper_the_partner(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The owner's `trax helper` answers Chat through its own key, end to end."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    act_as_assistant()
+    scout = await start_session(client, actor=KB_ACTOR)
+    act_as_user_agent()
+    helper = await start_session(client, actor="helper", cli=CHAT_HELPER_CLI)
+    workspace_id = await open_workspace(client)
+    chat_id = await show_chat(client, workspace_id=workspace_id)
+    shared = await _state(client, workspace_id=workspace_id)
+    assert shared["partner_choice"] == "shared"
+    assert _partner(shared)["session_id"] == str(scout)
+    assert _partner(shared)["kind"] == "shared"
+
+    chosen = await _choose(client, workspace_id=workspace_id, choice="local")
+    assert chosen.status_code == 200
+    assert _partner(from_plain(loads(chosen.content), dict[str, object])) == {
+        "session_id": str(helper),
+        "actor": "helper",
+        "cli": CHAT_HELPER_CLI,
+        "status": "live",
+        "kind": "local",
+    }
+    reread = await _state(client, workspace_id=workspace_id)
+    assert reread["partner_choice"] == "local"
+
+    sent = await send_chat(
+        client,
+        workspace_id=workspace_id,
+        chat_id=chat_id,
+        text="hello",
+    )
+    conversation_id = conversation_of(sent)
+    receipt = from_plain(loads(sent.content), dict[str, object])
+    assert receipt["session_id"] == str(helper)
+
+    act_as_user_agent()
+    assert _drained(await drain(client, session_id=helper)) == ["hello"]
+    assert [row["conversation_id"] for row in await _awaiting(client)] == [
+        str(conversation_id),
+    ]
+    assert _texts(await _thread(client, conversation_id=conversation_id)) == ["hello"]
+    answer = {"text": "Here is Issue#1.", "kind": "answer"}
+    path = f"/api/chats/{conversation_id}/messages"
+    assert (await client.post(path, json=answer)).status_code == 200
+    assert await _awaiting(client) == []
+    assert (await client.get(f"/api/workspaces/{workspace_id}")).status_code == 200
+
+    act_as_assistant()
+    assert (await client.get(f"/api/workspaces/{workspace_id}")).status_code == 404
+    browser()
+    assert _texts(await _thread(client, conversation_id=conversation_id)) == [
+        "hello",
+        "Here is Issue#1.",
+    ]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_local_choice_with_no_helper_running_refuses_a_send(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The shared assistant never fills in for a missing helper."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    act_as_assistant()
+    await start_session(client, actor=KB_ACTOR)
+    workspace_id = await open_workspace(client)
+    chat_id = await show_chat(client, workspace_id=workspace_id)
+
+    chosen = await _choose(client, workspace_id=workspace_id, choice="local")
+    assert chosen.status_code == 200
+    assert _partner(from_plain(loads(chosen.content), dict[str, object])) == {
+        "session_id": None,
+        "actor": None,
+        "cli": None,
+        "status": "unavailable",
+        "kind": "local",
+    }
+    refused = await send_chat(
+        client,
+        workspace_id=workspace_id,
+        chat_id=chat_id,
+        text="anyone?",
+    )
+    assert refused.status_code == 409
+    assert "local helper" in refused.text
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_another_users_helper_never_becomes_this_owners_partner(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A helper is its opener's own: the owner's Chat reaches nobody else's."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    act_as_assistant()
+    scout = await start_session(client, actor=KB_ACTOR)
+    act_as_other_agent()
+    foreign = await start_session(client, actor="helper", cli=CHAT_HELPER_CLI)
+    workspace_id = await open_workspace(client)
+    chat_id = await show_chat(client, workspace_id=workspace_id)
+    await _choose(client, workspace_id=workspace_id, choice="local")
+    state = await _state(client, workspace_id=workspace_id)
+    assert state["partner_choice"] == "local"
+    assert _partner(state)["kind"] == "local"
+    assert _partner(state)["status"] == "unavailable"
+    assert _partner(state)["session_id"] is None
+
+    refused = await send_chat(
+        client,
+        workspace_id=workspace_id,
+        chat_id=chat_id,
+        text="hello",
+    )
+    assert refused.status_code == 409
+    act_as_other_agent()
+    assert _drained(await drain(client, session_id=foreign)) == []
+    act_as_assistant()
+    assert _drained(await drain(client, session_id=scout)) == []
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_shared_canvas_still_refuses_its_owners_own_key(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The owner's helper key does not pass while the partner is the assistant."""
+    client, store = pglite_route_client
+    _, workspace_id, _, _ = await _talk(client, store=store)
+    act_as_user_agent()
+    await start_session(client, actor="helper", cli=CHAT_HELPER_CLI)
+    refused = await client.get(f"/api/workspaces/{workspace_id}")
+    assert refused.status_code == 403
+    assert "Chat partner" in refused.text
+    act_as_assistant()
+    assert (await client.get(f"/api/workspaces/{workspace_id}")).status_code == 200
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_only_the_owners_browser_chooses_the_partner(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A partner's key may use the canvas, but may not switch who its partner is."""
+    client, store = pglite_route_client
+    _, workspace_id, _, _ = await _talk(client, store=store)
+    act_as_assistant()
+    refused = await _choose(client, workspace_id=workspace_id, choice="local")
+    assert refused.status_code == 422
+    browser()
+    assert (await _state(client, workspace_id=workspace_id))[
+        "partner_choice"
+    ] == "shared"
+
+
 async def _thread(
     client: httpx2.AsyncClient,
     *,
@@ -805,6 +968,37 @@ async def _thread_workspace(
         if from_plain(item, dict[str, object])["id"] == str(conversation_id)
     )
     return uuid.UUID(from_plain(row["workspace_id"], str))
+
+
+async def _state(
+    client: httpx2.AsyncClient,
+    *,
+    workspace_id: uuid.UUID,
+) -> dict[str, object]:
+    response = await client.get(f"/api/workspaces/{workspace_id}")
+    assert response.status_code == 200
+    return from_plain(loads(response.content), dict[str, object])
+
+
+def _partner(state: dict[str, object]) -> dict[str, object]:
+    return from_plain(state["partner"], dict[str, object])
+
+
+async def _choose(
+    client: httpx2.AsyncClient,
+    *,
+    workspace_id: uuid.UUID,
+    choice: str,
+) -> httpx2.Response:
+    """Send the choose-partner operation as the installed identity."""
+    return await client.post(
+        f"/api/workspaces/{workspace_id}/operations",
+        json={
+            "revision": await revision_of(client, workspace_id=workspace_id),
+            "operation": {"kind": "partner", "choice": choice},
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
 
 
 async def _awaiting(client: httpx2.AsyncClient) -> list[dict[str, object]]:

@@ -7,7 +7,7 @@ test("loads an evidence timeline with validated browser-selected bounds", async 
   const timeline = {
     target: { id: "record-id", kind: "Issue", seq: 21706, title: "Root", status: "active", created: "2026-09-29T00:00:00Z", modified: "2026-09-29T00:00:00Z", description: null, outcome: null },
     issue: { id: "record-id", kind: "Issue", seq: 21706, title: "Root", status: "active", created: "2026-09-29T00:00:00Z", modified: "2026-09-29T00:00:00Z", description: null, outcome: null },
-    selected_result: null, root_results: [], root_results_truncated: false,
+    leads: [], selected_result: null, root_results: [], root_results_truncated: false,
     directions: [], directions_truncated: false,
     unresolved_questions: [],
   };
@@ -21,6 +21,18 @@ test("loads an evidence timeline with validated browser-selected bounds", async 
   await expect(getEvidenceTimeline("record-id", {
     directionLimit: 6, resultsPerDirection: 2,
   })).resolves.toEqual(timeline);
+});
+
+test("accepts a record of any kind and rejects more than three leads", async () => {
+  const paper = { id: "p", kind: "Paper", seq: 4, title: "A paper", status: "active", created: "2026-09-29T00:00:00Z", modified: "2026-09-29T00:00:00Z", description: null, outcome: null };
+  const alone = {
+    target: paper, issue: null, leads: [], selected_result: null, root_results: [],
+    root_results_truncated: false, directions: [], directions_truncated: false, unresolved_questions: [],
+  };
+  vi.stubGlobal("fetch", async () => Response.json(alone));
+  await expect(getEvidenceTimeline("p")).resolves.toEqual(alone);
+  vi.stubGlobal("fetch", async () => Response.json({ ...alone, leads: [paper, paper, paper, paper] }));
+  await expect(getEvidenceTimeline("p")).rejects.toThrow("Invalid evidence timeline");
 });
 
 test("rejects a malformed timeline instead of rendering unbounded data", async () => {

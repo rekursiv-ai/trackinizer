@@ -1,4 +1,4 @@
-"""Bounded SQL projection for a dated Issue evidence timeline."""
+"""Bounded SQL projection for a record's lineage and dated evidence timeline."""
 
 from __future__ import annotations
 
@@ -14,6 +14,14 @@ if TYPE_CHECKING:
 _EVIDENCE_LIMIT: Final = 6
 """Signed citations shown per Experiment; one extra row sets the truncation flag."""
 
+# A fixed ceiling rather than a catalog parameter: a lead is context pinned beside the
+# axis, so a deeper chain adds rows without adding information.
+_LEAD_LEVELS: Final = 3
+"""Most lead Issues returned: `narrows` ancestors climbed above the anchor."""
+
+_ANCHORED: Final = frozenset({"Issue", "Experiment"})
+"""Kinds whose own row is the anchor Issue's: they show its results."""
+
 
 async def load_timeline(
     conn: Conn,
@@ -22,11 +30,18 @@ async def load_timeline(
     direction_limit: int,
     results_per_direction: int,
 ) -> dict[str, object] | None:
-    """Load one Issue/Experiment timeline with SQL-level row bounds.
+    """Load one record's lineage and timeline with SQL-level row bounds.
+
+    The record shown is the target for every kind except an Experiment, whose
+    row is the Issue that produced it. The Issue supplying leads, results and
+    directions is the *anchor*: an Issue is its own anchor, an Experiment's is
+    its `produced_by` Issue, and any other kind takes the nearest Issue it was
+    `produced_by` (oldest first). `narrows` is Issue-to-Issue only, so no other
+    kind can reach an Issue by it. A record with no anchor is shown alone.
 
     Args:
       conn: Database connection.
-      target_id: Issue or Experiment selected in the canvas.
+      target_id: Record of any kind selected in the canvas.
       direction_limit: Direct directions to return. One extra row is fetched
         internally to set `directions_truncated`.
       results_per_direction: Results to return per Issue. One extra row is
@@ -35,44 +50,54 @@ async def load_timeline(
     Returns:
       timeline: Bounded timeline payload, or None when the record is missing.
 
-    Raises:
-      UnsupportedTimelineTargetError: When the record is neither an Issue nor
-        an Experiment.
-
     """
     target = await conn.fetchrow(_record_query(), target_id)
     if target is None:
         return None
-    if target["kind"] not in ("Issue", "Experiment"):
-        raise UnsupportedTimelineTargetError
     target_json = _record(target)
-    issue_id = target_id
-    if target["kind"] == "Experiment":
+    kind = target["kind"]
+    if kind == "Issue":
+        issue_id: UUID | None = target_id
+    else:
         producer = await conn.fetchrow(
             "SELECT i.id FROM edges e JOIN inquiries i ON i.id = e.to_id "
-            "WHERE e.from_id = $1 AND e.from_kind = 'Experiment' "
-            "AND e.edge_kind = 'produced_by' AND e.to_kind = 'Issue' "
-            "ORDER BY i.created, i.id LIMIT 1",
+            "WHERE e.from_id = $1 AND e.edge_kind = 'produced_by' "
+            "AND e.to_kind = 'Issue' ORDER BY i.created, i.id LIMIT 1",
             target_id,
         )
-        issue_id = _as_uuid(producer["id"]) if producer is not None else target_id
+        issue_id = _as_uuid(producer["id"]) if producer is not None else None
 
-    issue_row = await conn.fetchrow(_record_query(), issue_id)
-    issue = (
-        _record(issue_row)
-        if issue_row is not None and issue_row["kind"] == "Issue"
-        else None
-    )
-    root_results, root_truncated = await _load_results(
-        conn,
-        issue_id,
-        results_per_direction,
-    )
     selected_result = (
-        await _load_experiment(conn, target_id)
-        if target["kind"] == "Experiment"
-        else None
+        await _load_experiment(conn, target_id) if kind == "Experiment" else None
     )
+    if issue_id is None:
+        return {
+            "target": target_json,
+            "issue": None,
+            "leads": [],
+            "selected_result": selected_result,
+            "root_results": [],
+            "root_results_truncated": False,
+            "directions": [],
+            "directions_truncated": False,
+            "unresolved_questions": [],
+        }
+    issue_row = await conn.fetchrow(_record_query(), issue_id)
+    issue = _record(issue_row) if issue_row is not None else None
+    # Only an Issue or an Experiment is a row of the anchor's own results.
+    leads = await _load_leads(
+        conn,
+        issue_id=issue_id,
+        include_anchor=kind not in _ANCHORED,
+    )
+    if kind in _ANCHORED:
+        root_results, root_truncated = await _load_results(
+            conn,
+            issue_id,
+            results_per_direction,
+        )
+    else:
+        root_results, root_truncated = [], False
 
     direction_rows = await conn.fetch(
         "SELECT i.id, i.kind, i.seq, LEFT(i.title, 2000) AS title, i.status, "
@@ -113,6 +138,7 @@ async def load_timeline(
     return {
         "target": target_json,
         "issue": issue,
+        "leads": leads,
         "selected_result": selected_result,
         "root_results": root_results,
         "root_results_truncated": root_truncated,
@@ -120,10 +146,6 @@ async def load_timeline(
         "directions_truncated": directions_truncated,
         "unresolved_questions": unresolved,
     }
-
-
-class UnsupportedTimelineTargetError(Exception):
-    """A present record has a kind the timeline cannot display."""
 
 
 def _record_query() -> str:
@@ -153,6 +175,44 @@ def _record(row: object) -> dict[str, object]:
 def _as_uuid(value: object) -> UUID:
     """Narrow a database identifier to the domain UUID type."""
     return UUID(str(value))
+
+
+# One indexed lookup a level keeps the read bounded however deep a lineage runs. The
+# oldest parent is the one an Issue was first filed under, and a repeated Issue means a
+# `narrows` cycle, which would otherwise fill every level with the same rows. A record
+# that is not an Issue shows its anchor as its nearest lead, so the anchor takes a level.
+async def _load_leads(
+    conn: Conn,
+    *,
+    issue_id: UUID,
+    include_anchor: bool,
+) -> list[dict[str, object]]:
+    """Climb `narrows` from the anchor Issue, farthest lead first."""
+    seen = {issue_id}
+    ancestors: list[dict[str, object]] = []
+    current = issue_id
+    for _ in range(_LEAD_LEVELS - (1 if include_anchor else 0)):
+        parent = await conn.fetchrow(
+            "SELECT i.id, i.kind, i.seq, LEFT(i.title, 2000) AS title, i.status, "
+            "i.created, i.modified, LEFT(i.description, 2000) AS description "
+            "FROM edges e JOIN inquiries i ON i.id=e.to_id WHERE e.from_id=$1 "
+            "AND e.edge_kind='narrows' AND e.from_kind='Issue' "
+            "AND e.to_kind='Issue' ORDER BY i.created, i.id LIMIT 1",
+            current,
+        )
+        if parent is None:
+            break
+        current = _as_uuid(parent["id"])
+        if current in seen:
+            break
+        seen.add(current)
+        ancestors.append(_record(parent))
+    ancestors.reverse()
+    if include_anchor:
+        anchor = await conn.fetchrow(_record_query(), issue_id)
+        if anchor is not None:
+            ancestors.append(_record(anchor))
+    return ancestors
 
 
 async def _load_results(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Final, Literal
 
 import uuid
 
@@ -19,6 +19,14 @@ if TYPE_CHECKING:
 
 
 type Placement = Literal["main", "side", "floating"]
+
+
+type PartnerChoice = Literal["shared", "local"]
+"""Chat's partner: the server's shared assistant, or the owner's own helper."""
+
+
+_ROUTE: Final = r"^#/[^\s\x00-\x1f\x7f]*$"
+"""A `#/...` hash with no space or control character."""
 
 
 class FloatingRect(BaseModel):
@@ -51,21 +59,26 @@ class WorkspaceData(BaseModel):
     focused_instance: uuid.UUID | None = None
     agent_instructions: str | None = Field(default=None, max_length=8_192)
     continuation_record_id: uuid.UUID | None = None
+    partner_choice: PartnerChoice = "shared"
+    """Whose session Chat talks to: the shared assistant or the owner's helper."""
 
 
 class WorkspacePartner(BaseModel):
     """Who a canvas's Chat talks to now, computed on every read and never stored.
 
-    The partner is the assistant's newest live session. An assistant with no live
-    session is still named, as unavailable.
+    With the shared choice, the partner is the assistant's newest live session; an
+    assistant with no live session is still named, as unavailable. With the local
+    choice, it is the owner's newest live `trax helper` session, or unavailable.
     """
 
     session_id: uuid.UUID | None
     actor: str | None
-    """The configured name of the assistant."""
+    """The configured name of the assistant, or the local helper's actor."""
 
     cli: str | None
     status: Literal["live", "unavailable"]
+    kind: PartnerChoice = "shared"
+    """Which choice it answers for."""
 
 
 class WorkspaceState(WorkspaceData):
@@ -89,6 +102,15 @@ class WorkspaceMessageRequest(BaseModel):
     expected_record_id: uuid.UUID | None = None
     conversation_id: uuid.UUID | None = None
     """The conversation to continue; none starts one."""
+
+    page: str | None = Field(default=None, max_length=512, pattern=_ROUTE)
+    """The `#/...` address the sender is on as they send."""
+
+    trail: list[Annotated[str, Field(max_length=512, pattern=_ROUTE)]] = Field(
+        default_factory=list,
+        max_length=8,
+    )
+    """The addresses the sender came through before it, oldest first."""
 
 
 class WorkspaceMessageReceipt(BaseModel):
@@ -159,8 +181,21 @@ class Highlight(OperationModel):
     """The inquiries to mark; the newest event wins and an empty list clears."""
 
 
+class ChoosePartner(OperationModel):
+    """Choose whose session the canvas's Chat talks to."""
+
+    kind: Literal["partner"]
+    choice: PartnerChoice
+
+
 type Operation = Annotated[
-    ShowVisual | HideVisual | FocusVisual | PlaceVisual | Navigate | Highlight,
+    ShowVisual
+    | HideVisual
+    | FocusVisual
+    | PlaceVisual
+    | Navigate
+    | Highlight
+    | ChoosePartner,
     Field(discriminator="kind"),
 ]
 
@@ -341,6 +376,8 @@ def apply_operation(
         updated.focused_instance = instance.id
     elif isinstance(operation, Navigate | Highlight):
         pass
+    elif isinstance(operation, ChoosePartner):
+        updated.partner_choice = operation.choice
     elif isinstance(operation, HideVisual):
         if not any(visual.id == operation.instance_id for visual in updated.visuals):
             raise ValueError("Visual instance not found.")

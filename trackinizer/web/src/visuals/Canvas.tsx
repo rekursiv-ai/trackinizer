@@ -246,16 +246,23 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     }
   }
 
-  function chatAbout(recordId: string) {
-    void write({ kind: "show", visual_type: "trax.chat", placement: "floating", record_id: recordId }, recordId);
-  }
-
-  /** Show Chat as a floating window over the page, or focus it when it is already shown. */
+  /**
+   * Show Chat floating over the page, about the record the page shows if any.
+   *
+   * A Chat already about that record, or about none on a page without one, is
+   * only focused; one about another record moves to this page's.
+   */
   function showChat() {
     const existing = workspace?.visuals.find((visual) => visual.type === "trax.chat");
-    operate(existing
-      ? { kind: "focus", instance_id: existing.id }
-      : { kind: "show", visual_type: "trax.chat", placement: "floating" });
+    if (existing && (existing.record_id ?? null) === chatRecordId) {
+      operate({ kind: "focus", instance_id: existing.id });
+    } else if (chatRecordId) {
+      void write({ kind: "show", visual_type: "trax.chat", placement: "floating", record_id: chatRecordId }, chatRecordId);
+    } else {
+      operate(existing
+        ? { kind: "show", visual_type: "trax.chat", record_id: null }
+        : { kind: "show", visual_type: "trax.chat", placement: "floating" });
+    }
   }
 
   function openArtifact(event: FormEvent<HTMLFormElement>) {
@@ -444,12 +451,8 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       <div className="visual-toolbar">
         <span className="visual-toolbar-label">Canvas</span>
         <div className="visual-toolbar-actions" role="toolbar" aria-label="Canvas controls">
-          <button className="btn ghost" type="button" disabled={!workspace || change.isPending} onClick={showChat}>Chat</button>
-          <button className="btn ghost" type="button"
-            disabled={!workspace || !chatRecordId || change.isPending}
-            onClick={() => {
-              if (chatRecordId) chatAbout(chatRecordId);
-            }}>Chat about this</button>
+          <button className="btn ghost" type="button" disabled={!workspace || change.isPending} onClick={showChat}
+            title={chatRecordId ? "Chat about this record" : "Chat"}>Chat</button>
           <button className="btn ghost" type="button" aria-expanded={!configure.collapsed} aria-controls="visual-configure"
             onClick={configure.toggle}>Configure</button>
         </div>
@@ -470,7 +473,6 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
           ))}
           {catalog.data?.visuals.some((visual) => visual.type === "trax.artifact") &&
             <form className="visual-artifact-select" onSubmit={openArtifact}>
-              <label htmlFor="visual-artifact-link">Artifact link</label>
               <input id="visual-artifact-link" aria-label="Artifact link" value={artifactLink}
                 placeholder="Paste an Artifact link"
                 onChange={(event) => { setArtifactLink(event.target.value); setArtifactLinkError(null); }} />

@@ -7,6 +7,7 @@ import { onTestFinished } from "vitest";
 import type { AllowlistEntry, User } from "../api/admin";
 import type { Profile, Role, Token } from "../api/me";
 import { type Sent, stubFetch } from "../api/testing";
+import type { WorkspaceOperation, WorkspaceState } from "../api/workspaces";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { Session, SessionContext } from "../app/session";
 import { ToastProvider } from "../ui/toast";
@@ -122,10 +123,16 @@ export function user(id: string, email: string, fields: Partial<User> = {}): Use
  * the words of the server's unique-violation handler), a blank one (422), and a
  * missing or revoked token (404). `answers` take the next writes over; `hold`
  * holds the next write until released; reads of a path in `failing` answer
- * 503; `rows` are what the owner-names list request returns.
+ * 503; `rows` are what the owner-names list request returns. `workspace` is
+ * the user's default canvas, which an operation of a stale revision is refused
+ * for (409) and a `partner` operation changes.
  */
-export function serveAccount(caller: Profile, seed: { tokens?: Token[]; users?: User[]; allowlist?: AllowlistEntry[] } = {}) {
+export function serveAccount(
+  caller: Profile,
+  seed: { tokens?: Token[]; users?: User[]; allowlist?: AllowlistEntry[]; workspace?: Partial<WorkspaceState> } = {},
+) {
   const server = {
+    workspace: { id: "w-ada", revision: 4, visuals: [], partner: null, assistant: "scout", partner_choice: "shared", ...seed.workspace } as WorkspaceState,
     tokens: seed.tokens ?? [],
     users: seed.users ?? [],
     allowlist: seed.allowlist ?? [],
@@ -136,7 +143,7 @@ export function serveAccount(caller: Profile, seed: { tokens?: Token[]; users?: 
     sent: [] as Sent[],
     /** The writes sent, as `METHOD path` with the body. */
     writes: () =>
-      server.sent.filter((request) => request.method !== "GET").map(({ method, path, body }) => ({ call: `${method} ${path}`, body })),
+      server.sent.filter((request) => request.method !== "GET" && request.path !== CANVAS).map(({ method, path, body }) => ({ call: `${method} ${path}`, body })),
     reads: (path: string) => server.sent.filter((request) => request.method === "GET" && request.path === path).length,
     /** Hold the next write, then answer it as usual once the returned function is called. */
     hold: () => {
@@ -148,21 +155,26 @@ export function serveAccount(caller: Profile, seed: { tokens?: Token[]; users?: 
   server.sent = stubFetch(async (request) => {
     const path = decodeURIComponent(new URL(request.url).pathname);
     if (request.method === "GET" && server.failing.has(path)) return refuse(503, "database unavailable");
-    if (request.method !== "GET") {
+    // Opening the default canvas is a POST that changes nothing: neither a write to hold or script, nor one to count.
+    if (request.method !== "GET" && path !== CANVAS) {
       await server.held.shift();
       const scripted = server.answers.shift();
       if (scripted) return scripted(request);
     }
     const text = await request.clone().text();
-    const body = (text ? JSON.parse(text) : {}) as { name?: string; role?: Role; email_or_pattern?: string; enabled?: boolean };
+    const body = (text ? JSON.parse(text) : {}) as AccountBody;
     return answer(server, caller, `${request.method} ${path}`, body);
   });
   return server;
 }
 
+const CANVAS = "/api/workspaces";
+
 type Server = ReturnType<typeof serveAccount>;
 
-function answer(server: Server, caller: Profile, call: string, body: { name?: string; role?: Role; email_or_pattern?: string; enabled?: boolean }): Response {
+type AccountBody = { name?: string; role?: Role; email_or_pattern?: string; enabled?: boolean; revision?: number; operation?: WorkspaceOperation };
+
+function answer(server: Server, caller: Profile, call: string, body: AccountBody): Response {
   const [method, path] = call.split(" ") as [string, string];
   const parts = path.split("/").slice(1);
   if (call === "GET /api/me/profile") return Response.json(caller);
@@ -170,6 +182,8 @@ function answer(server: Server, caller: Profile, call: string, body: { name?: st
     caller.visual_workspace_enabled = body.enabled ?? false;
     return Response.json({ enabled: caller.visual_workspace_enabled });
   }
+  if (call === `POST ${CANVAS}` || call === `GET ${CANVAS}/${server.workspace.id}`) return Response.json(server.workspace);
+  if (call === `POST /api/workspaces/${server.workspace.id}/operations`) return operate(server, body);
   if (call === "GET /api/me/tokens") return Response.json({ tokens: server.tokens });
   if (call === "GET /api/admin/users") return Response.json({ users: server.users });
   if (call === "GET /api/admin/allowlist") return Response.json({ entries: server.allowlist });
@@ -213,6 +227,16 @@ function answer(server: Server, caller: Profile, call: string, body: { name?: st
     return Response.json(method === "DELETE" ? { ok: true } : { ok: true, role: body.role });
   }
   return refuse(404, `no route ${call}`);
+}
+
+function operate(server: Server, { revision, operation }: AccountBody): Response {
+  if (revision !== server.workspace.revision) return refuse(409, "revision conflict");
+  if (operation?.kind !== "partner") return refuse(422, "unsupported operation");
+  const partner = operation.choice === "local"
+    ? { kind: "local", session_id: null, actor: null, cli: null, status: "unavailable" } as const
+    : null;
+  server.workspace = { ...server.workspace, revision: revision + 1, partner_choice: operation.choice, partner };
+  return Response.json(server.workspace);
 }
 
 function userWrite(server: Server, caller: Profile, method: string, id: string, action: string | undefined, role: Role | undefined): Response {

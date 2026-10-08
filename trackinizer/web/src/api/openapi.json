@@ -1037,6 +1037,26 @@
         "title": "ChatThread",
         "type": "object"
       },
+      "ChoosePartner": {
+        "additionalProperties": false,
+        "description": "Choose whose session the canvas's Chat talks to.",
+        "properties": {
+          "choice": {
+            "$ref": "#/components/schemas/PartnerChoice"
+          },
+          "kind": {
+            "const": "partner",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "choice"
+        ],
+        "title": "ChoosePartner",
+        "type": "object"
+      },
       "Citation": {
         "description": "One inline citation on a :class:`SubmitBelief`: which artifact, how strong.\n\nThe signed ``valence`` is bounded to the same ``[-1, 1]`` the edges column\nenforces, so a malformed-weight citation is rejected at the wire boundary\nrather than surfacing as a mid-transaction CHECK violation. The polarity is\nalready resolved here (the trax ``dis*`` aliases negate before the wire), so\nthis is the final stored sign.",
         "properties": {
@@ -1416,6 +1436,13 @@
               }
             ]
           },
+          "leads": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineRecord"
+            },
+            "title": "Leads",
+            "type": "array"
+          },
           "root_results": {
             "items": {
               "$ref": "#/components/schemas/TimelineExperiment"
@@ -1451,6 +1478,7 @@
         "required": [
           "target",
           "issue",
+          "leads",
           "selected_result",
           "root_results",
           "root_results_truncated",
@@ -3674,6 +3702,7 @@
             "hide": "#/components/schemas/HideVisual",
             "highlight": "#/components/schemas/Highlight",
             "navigate": "#/components/schemas/Navigate",
+            "partner": "#/components/schemas/ChoosePartner",
             "place": "#/components/schemas/PlaceVisual",
             "show": "#/components/schemas/ShowVisual"
           },
@@ -3697,6 +3726,9 @@
           },
           {
             "$ref": "#/components/schemas/Highlight"
+          },
+          {
+            "$ref": "#/components/schemas/ChoosePartner"
           }
         ]
       },
@@ -3814,6 +3846,13 @@
         ],
         "title": "PartBody",
         "type": "object"
+      },
+      "PartnerChoice": {
+        "enum": [
+          "shared",
+          "local"
+        ],
+        "type": "string"
       },
       "PlaceVisual": {
         "additionalProperties": false,
@@ -6661,13 +6700,7 @@
             "type": "string"
           },
           "kind": {
-            "enum": [
-              "Issue",
-              "Experiment",
-              "Belief"
-            ],
-            "title": "Kind",
-            "type": "string"
+            "$ref": "#/components/schemas/InquiryKind"
           },
           "modified": {
             "format": "date-time",
@@ -7340,6 +7373,10 @@
             ],
             "title": "Focused Instance"
           },
+          "partner_choice": {
+            "$ref": "#/components/schemas/PartnerChoice",
+            "default": "shared"
+          },
           "visuals": {
             "items": {
               "$ref": "#/components/schemas/VisualInstance"
@@ -7403,6 +7440,16 @@
             ],
             "title": "Conversation Id"
           },
+          "page": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspacePage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "record": {
             "anyOf": [
               {
@@ -7424,6 +7471,13 @@
               }
             ],
             "title": "Record Id"
+          },
+          "trail": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspacePage"
+            },
+            "title": "Trail",
+            "type": "array"
           },
           "visible_visuals": {
             "items": {
@@ -7517,11 +7571,34 @@
             ],
             "title": "Expected Record Id"
           },
+          "page": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
           "text": {
             "maxLength": 16384,
             "pattern": "\\S",
             "title": "Text",
             "type": "string"
+          },
+          "trail": {
+            "items": {
+              "maxLength": 512,
+              "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Trail",
+            "type": "array"
           }
         },
         "required": [
@@ -7530,8 +7607,32 @@
         "title": "WorkspaceMessageRequest",
         "type": "object"
       },
+      "WorkspacePage": {
+        "description": "A page the sender was on, with the record it shows when it names one.",
+        "properties": {
+          "record": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceRecordContext"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "route": {
+            "title": "Route",
+            "type": "string"
+          }
+        },
+        "required": [
+          "route"
+        ],
+        "title": "WorkspacePage",
+        "type": "object"
+      },
       "WorkspacePartner": {
-        "description": "Who a canvas's Chat talks to now, computed on every read and never stored.\n\nThe partner is the assistant's newest live session. An assistant with no live\nsession is still named, as unavailable.",
+        "description": "Who a canvas's Chat talks to now, computed on every read and never stored.\n\nWith the shared choice, the partner is the assistant's newest live session; an\nassistant with no live session is still named, as unavailable. With the local\nchoice, it is the owner's newest live `trax helper` session, or unavailable.",
         "properties": {
           "actor": {
             "anyOf": [
@@ -7554,6 +7655,10 @@
               }
             ],
             "title": "Cli"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PartnerChoice",
+            "default": "shared"
           },
           "session_id": {
             "anyOf": [
@@ -7742,6 +7847,10 @@
               }
             ]
           },
+          "partner_choice": {
+            "$ref": "#/components/schemas/PartnerChoice",
+            "default": "shared"
+          },
           "revision": {
             "minimum": 0.0,
             "title": "Revision",
@@ -7770,6 +7879,16 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "record": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceRecordContext"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "type": {
             "title": "Type",
@@ -14804,7 +14923,7 @@
     },
     "/api/visuals/timeline/{record_id}": {
       "get": {
-        "description": "Return an Issue or Experiment timeline with hard bounded SQL limits.\n\nArgs:\n  record_id: Selected Issue or Experiment UUID.\n  request: Request with the shared Store.\n  direction_limit: Direct child Issues to return; the catalog sets the default\n    and maximum.\n  results_per_direction: Experiments per Issue; the catalog sets the default\n    and maximum.\n\nReturns:\n  timeline: Bounded record, result, and signed evidence projection.",
+        "description": "Return the lineage and timeline of a record of any kind, with hard bounded SQL.\n\nThe anchor Issue supplies `leads` (its `narrows` ancestors, at most three,\nfarthest first), results, and directions. An Issue is its own anchor; an\nExperiment is anchored on the Issue that produced it; any other kind stays\nthe record and takes the nearest `produced_by` Issue, with the anchor itself\nas its nearest lead. A record with no anchor is returned alone.\n\nArgs:\n  record_id: Selected record UUID, of any kind.\n  request: Request with the shared Store.\n  direction_limit: Direct child Issues to return; the catalog sets the default\n    and maximum.\n  results_per_direction: Experiments per Issue; the catalog sets the default\n    and maximum.\n\nReturns:\n  timeline: Bounded record, result, and signed evidence projection.",
         "operationId": "evidence_timeline_route_api_visuals_timeline__record_id__get",
         "parameters": [
           {

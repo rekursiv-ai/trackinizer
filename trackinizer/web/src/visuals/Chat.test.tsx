@@ -2,10 +2,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { ApiError } from "../api/client";
+import { findRef } from "../api/detail";
 import { type ChatMessage, getChat, listChats } from "../api/chats";
 import { sendWorkspaceMessage, type WorkspaceState } from "../api/workspaces";
 import { MetaContext } from "../app/boot";
 import { META } from "../detail/testing";
+import { startTrail } from "../router/trail";
 import { appendLines } from "./chatCache";
 import { ChatFeed, ChatFeedContext } from "./chatFeed";
 import { Chat } from "./Chat";
@@ -14,23 +16,28 @@ import { WorkspaceActionsProvider } from "./workspaceActions";
 
 vi.mock("../api/chats", () => ({ listChats: vi.fn(), getChat: vi.fn() }));
 vi.mock("../api/detail", () => ({
-  getDetail: vi.fn().mockResolvedValue({
-    self: { id: "record", kind: "Issue", seq: 42, title: "A useful issue" },
+  getDetail: vi.fn(async (id: string) => ({
+    self: id === "record" ? { id, kind: "Issue", seq: 42, title: "A useful issue" } : { id, kind: "Experiment", seq: 407, title: `Run of ${id}` },
     edges: {}, backlinks: {}, changes: [],
-  }),
+  })),
+  findRef: vi.fn(async () => "found"),
 }));
 vi.mock("../api/workspaces", () => ({ sendWorkspaceMessage: vi.fn() }));
 
 const WORKSPACE_ID = "c5286865-67b6-4bd8-ab51-e06e10c326c5";
 const STORED = `trackinizer.v2.chat.${WORKSPACE_ID}`;
-const SCOUT = { session_id: "kb-session", actor: "scout", cli: "sagent", status: "live" } as const;
+const SCOUT = { kind: "shared", session_id: "kb-session", actor: "scout", cli: "sagent", status: "live" } as const;
+const NO_HELPER = { kind: "local", session_id: null, actor: null, cli: null, status: "unavailable" } as const;
 const workspace: WorkspaceState = {
-  id: WORKSPACE_ID, revision: 3, focused_instance: null, partner: SCOUT, assistant: "scout",
+  id: WORKSPACE_ID, revision: 3, focused_instance: null, partner: SCOUT, assistant: "scout", partner_choice: "shared",
   visuals: [{ id: "889ffcb2-cf44-43e7-9806-eb08428c6203", type: "trax.chat", version: 1,
     placement: "main", record_id: null, params: {} }],
 };
 
+let stopTrail = () => {};
 afterEach(() => {
+  stopTrail();
+  stopTrail = () => {};
   cleanup();
   vi.restoreAllMocks();
   for (const mock of [getChat, listChats, sendWorkspaceMessage]) vi.mocked(mock).mockReset();
@@ -90,12 +97,13 @@ test("a message shows pending, then stored, then delivered by its seq, with the 
   vi.mocked(getChat).mockResolvedValue(thread("c1", [message(1, "user", "Show me Issue#12")]));
   const { feed, client } = shell();
 
+  history.replaceState(null, "", "#/graph");
   await type("Show me Issue#12");
   expect(await screen.findByText("Show me Issue#12")).toBeTruthy();
   expect(screen.getByText("Sending…")).toBeTruthy();
   const [id, sent, key] = vi.mocked(sendWorkspaceMessage).mock.calls[0]!;
   expect([id, sent, typeof key]).toEqual([WORKSPACE_ID, { text: "Show me Issue#12", chatInstanceId: workspace.visuals[0]!.id,
-    expectedRecordId: null, conversationId: null }, "string"]);
+    expectedRecordId: null, conversationId: null, page: "#/graph", trail: [] }, "string"]);
 
   await act(async () => finish(receipt("c1", message(1, "user", "Show me Issue#12"))));
   await waitFor(() => expect(screen.queryByText("Sending…")).toBeNull(), { interval: 1 });
@@ -412,18 +420,60 @@ test("a trax helper and scout give the same panel, differing in the partner's na
     .map((selector) => document.querySelector(`.chat-panel ${selector}`)!.outerHTML.replaceAll(/scout|ada-run/g, "NAME").replaceAll(/_r_\w+_/g, "ID"));
   const scout = panel();
   cleanup();
-  shell({ ...workspace, partner: { session_id: "s", actor: "ada-run", cli: "trax-helper", status: "live" } });
+  shell({ ...workspace, partner: { kind: "shared", session_id: "s", actor: "ada-run", cli: "trax-helper", status: "live" } });
   await screen.findByText("there");
   expect(panel()).toEqual(scout);
 });
 
-test("an unavailable partner leaves the composer disabled with the reason", () => {
-  shell({ ...workspace, partner: { ...SCOUT, status: "unavailable" } });
+const SHARED_LINE = "Ask your admin to set up a shared Chat assistant, or set up a local one:";
+const SETUP = `uv tool install trackinizer && trax profile url to ${location.origin} && trax profile token to <TOKEN>`;
+const emptyPanel = () => document.querySelector(".chat-panel")!.textContent!;
+
+test.each([
+  ["no assistant is set up", { ...workspace, partner: null, assistant: null }],
+  ["the assistant has no live session", { ...workspace, partner: { ...SCOUT, status: "unavailable" as const } }],
+])("when %s, Chat says to ask an admin or set up a local helper, once, with Settings and both commands", (_, state) => {
+  shell(state);
+  expect(screen.getAllByText(SHARED_LINE)).toHaveLength(1);
+  expect(screen.getByRole("link", { name: "Use a local helper in Settings" }).getAttribute("href")).toBe("#/settings");
+  expect(screen.getByText(SETUP)).toBeTruthy();
+  expect(screen.getByText("trax helper claude")).toBeTruthy();
+  expect(screen.getAllByRole("button", { name: "Copy" })).toHaveLength(2);
+  expect(screen.getByRole("link", { name: "Settings → API tokens" }).getAttribute("href")).toBe("#/settings");
+  expect(emptyPanel()).not.toMatch(/No partner is available|This partner is unavailable|No assistant is set up/);
   expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", true);
-  expect(screen.getByRole("textbox", { name: "Message" }).getAttribute("placeholder")).toContain("unavailable");
+  expect(screen.getByRole("textbox", { name: "Message" }).getAttribute("placeholder")).toBe("Chat is off");
+});
+
+test("when the local helper is chosen but not running, Chat says to start it, with no Settings link", () => {
+  shell({ ...workspace, partner: NO_HELPER, partner_choice: "local" });
+  expect(screen.getAllByText("Start your local helper:")).toHaveLength(1);
+  expect(screen.queryByText(SHARED_LINE)).toBeNull();
+  expect(screen.queryByRole("link", { name: "Use a local helper in Settings" })).toBeNull();
+  expect(screen.getByText(SETUP)).toBeTruthy();
+  expect(screen.getByText("trax helper claude")).toBeTruthy();
+  expect(within(screen.getByLabelText("Chat partner")).getByText("your local helper")).toBeTruthy();
+});
+
+test("the commands copy with their own origin", async () => {
+  const written: string[] = [];
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (text: string) => void written.push(text) } });
+  shell({ ...workspace, partner: null, assistant: null });
+  fireEvent.click(screen.getAllByRole("button", { name: "Copy" })[1]!);
+  await waitFor(() => expect(written).toEqual(["trax helper claude"]));
+  await screen.findByText("Copied");
+  Reflect.deleteProperty(navigator, "clipboard");
+});
+
+test("a live partner shows none of the setup, and a live local helper is named as such", () => {
+  shell();
+  expect(emptyPanel()).not.toMatch(/Ask your admin|Start your local helper|trax helper|uv tool install/);
+  expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
   cleanup();
-  shell({ ...workspace, partner: null });
-  expect(screen.getByText("No partner is available")).toBeTruthy();
+  shell({ ...workspace, partner_choice: "local", partner: { kind: "local", session_id: "s", actor: "ada-run", cli: "claude", status: "live" } });
+  expect(within(screen.getByLabelText("Chat partner")).getByText("your local helper (ada-run)")).toBeTruthy();
+  expect(screen.getByText("Say something to ada-run.")).toBeTruthy();
+  expect(emptyPanel()).not.toMatch(/Ask your admin|Start your local helper|trax helper|uv tool install/);
 });
 
 test("a record link in an answer is a plain link that only sets the address, and writes nothing", async () => {
@@ -447,6 +497,75 @@ test("a Chat about a record links to it and has a control that clears the contex
   fireEvent.click(screen.getByRole("button", { name: "Clear context" }));
   expect(value.operate).toHaveBeenCalledWith({ kind: "show", visual_type: "trax.chat", record_id: null });
   expect(sendWorkspaceMessage).not.toHaveBeenCalled();
+});
+
+const LOOKED_UP = "0b6f7c1e-2f7a-4c55-9d7e-1f0e6b1d2a33";
+
+/** Move the page as the router's links do: the hash changes and the window says so. */
+function go(hash: string) {
+  act(() => {
+    history.replaceState(null, "", hash);
+    dispatchEvent(new HashChangeEvent("hashchange"));
+  });
+}
+
+async function sentFrom(hashes: readonly string[]) {
+  history.replaceState(null, "", hashes[0]);
+  stopTrail = startTrail();
+  shell();
+  for (const hash of hashes.slice(1)) go(hash);
+  vi.mocked(sendWorkspaceMessage).mockResolvedValue(receipt("c1", message(1, "user", "where am I")));
+  await type("where am I");
+  await waitFor(() => expect(sendWorkspaceMessage).toHaveBeenCalledTimes(1), { interval: 1 });
+  const { page, trail } = vi.mocked(sendWorkspaceMessage).mock.calls[0]![1];
+  return { page, trail };
+}
+
+test("a message carries the page it is sent from and the pages the user came through, oldest first", async () => {
+  expect(await sentFrom(["#/list/Issue", "#/activity", "#/console"]))
+    .toEqual({ page: "#/console", trail: ["#/list/Issue", "#/activity"] });
+});
+
+test("the trail a message carries holds at most 8 pages and never the current one", async () => {
+  const hashes = Array.from({ length: 12 }, (_, index) => `#/ref/Issue/${index + 1}`);
+  const { page, trail } = await sentFrom(hashes);
+  expect(page).toBe("#/ref/Issue/12");
+  expect(trail).toEqual(hashes.slice(3, 11));
+});
+
+test("a page the server would refuse is sent as null, with the pages before it as the trail", async () => {
+  expect(await sentFrom(["#/graph", "#/settings", "#top"])).toEqual({ page: null, trail: ["#/graph", "#/settings"] });
+});
+
+test("with no Chat context pinned, Chat names the record on screen and follows the page", async () => {
+  history.replaceState(null, "", "#/activity");
+  shell();
+  const chip = () => screen.queryByLabelText("Screen context");
+  expect(chip()).toBeNull();
+
+  go(`#/lookup/${LOOKED_UP}`);
+  await waitFor(() => expect(chip()?.textContent).toBe(`On screen: Experiment#407 Run of ${LOOKED_UP}`));
+
+  go("#/ref/Experiment/407");
+  await waitFor(() => expect(chip()?.textContent).toBe("On screen: Experiment#407 Run of found"));
+  expect(findRef).toHaveBeenCalledWith("Experiment", 407, expect.anything());
+
+  go(`#/inquiry/${LOOKED_UP}`);
+  await waitFor(() => expect(chip()?.textContent).toBe(`On screen: Experiment#407 Run of ${LOOKED_UP}`));
+
+  go("#/activity");
+  expect(chip()).toBeNull();
+});
+
+test("the record on screen never replaces the record Chat is pinned to", async () => {
+  history.replaceState(null, "", `#/lookup/${LOOKED_UP}`);
+  const about = { ...workspace, visuals: [{ ...workspace.visuals[0]!, placement: "floating" as const, record_id: "record" }] };
+  shell(about);
+  expect(await screen.findByRole("link", { name: "Issue#42 A useful issue" })).toBeTruthy();
+  expect(screen.queryByLabelText("Screen context")).toBeNull();
+  go("#/ref/Experiment/407");
+  expect(screen.queryByLabelText("Screen context")).toBeNull();
+  expect(screen.getByLabelText("Record context")).toBeTruthy();
 });
 
 test("after the stream opens again Chat reads what was stored while it was down", async () => {

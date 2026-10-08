@@ -54,6 +54,7 @@ def test_timeline_is_bounded_and_record_scoped() -> None:
     timeline = {visual.type: visual for visual in default_catalog().visuals}[
         "trax.timeline"
     ]
+    assert timeline.title == "Lineage and timeline"
     assert timeline.version == 1
     assert timeline.requires == ["record"]
     assert timeline.default_size == "wide"

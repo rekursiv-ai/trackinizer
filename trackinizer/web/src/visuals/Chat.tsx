@@ -9,7 +9,9 @@ import { detailQueries } from "../detail/queries";
 import { relativeTime, useMinuteClock } from "../detail/time";
 import { useLiveDetail } from "../live";
 import { Markdown } from "../markdown/Markdown";
-import { formatRoute } from "../router/route";
+import { formatRoute, parseHash } from "../router/route";
+import { useHash, validHash, visited } from "../router/trail";
+import { HelperCommands } from "../settings/ChatPartner";
 import { appendLines, type ChatLines, chatKey, lastSeq, readLines } from "./chatCache";
 import { useChatFeed } from "./chatFeed";
 import { type Line, type PendingLine, transcript } from "./chatLines";
@@ -18,6 +20,9 @@ import { useWorkspaceActions } from "./workspaceActions";
 
 /** The most characters one message may have, as the server holds it. */
 const MAX_TEXT = 16_384;
+
+/** The most earlier pages one message carries. */
+const MAX_TRAIL = 8;
 
 /**
  * Talk with the canvas's partner: the default assistant, or a live
@@ -113,6 +118,8 @@ export function Chat({ instance, workspace }: RendererProps) {
   // another conversation, not when a first message gives a new one its id.
   const target = JSON.stringify([workspaceId, partner?.session_id ?? null, chatInstanceId, expectedRecordId, epochState]);
   const live = !!workspace && partner?.status === "live";
+  const hash = useHash();
+  const screen = parseHash(hash, kinds);
 
   function startConversation(id: string | null) {
     if (workspaceId) feed.setOpen(workspaceId, id);
@@ -128,7 +135,8 @@ export function Chat({ instance, workspace }: RendererProps) {
     const sentEpoch = epoch.current;
     setPending((held) => [...held.filter((line) => line.key !== key), { key, text, conversationId: sentTo }]);
     try {
-      const sent = await sendWorkspaceMessage(workspace!.id, { text, chatInstanceId, expectedRecordId, conversationId: sentTo }, key);
+      const { page, trail } = whereFrom(location.hash);
+      const sent = await sendWorkspaceMessage(workspace!.id, { text, chatInstanceId, expectedRecordId, conversationId: sentTo, page, trail }, key);
       appendLines(queryClient, sent.conversation_id, [sent.message]);
       if (epoch.current === sentEpoch) feed.setOpen(workspace!.id, sent.conversation_id);
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
@@ -155,10 +163,10 @@ export function Chat({ instance, workspace }: RendererProps) {
     <section className="chat-panel" aria-label="Chat" onKeyDown={closeOnEscape}>
       <header className="chat-head">
         <div className="chat-partner" aria-label="Chat partner">
-          {partner ? <>
-            <strong>{partner.actor ?? "assistant"}</strong>
+          {partner && <>
+            <strong>{partnerName(partner)}</strong>
             <span className="chat-partner-note">{partnerNote(partner)}</span>
-          </> : <span className="chat-partner-note">No partner is available</span>}
+          </>}
         </div>
         <div className="chat-head-actions" role="toolbar" aria-label="Chat controls">
           <button className="btn ghost" type="button" aria-haspopup="menu" aria-expanded={menu === "history"}
@@ -170,6 +178,8 @@ export function Chat({ instance, workspace }: RendererProps) {
       </header>
       {menu === "history" && <History current={conversationId} onOpen={startConversation} />}
       {instance.record_id && <ChatRecordContext recordId={instance.record_id} />}
+      {!instance.record_id && screen.name === "lookup" && <ChatScreenContext id={screen.id} label={screen.id} />}
+      {!instance.record_id && screen.name === "ref" && <ChatScreenRef kind={screen.kind} seq={screen.seq} />}
       <div className="chat-lines" ref={stage} role="log" aria-label="Messages" aria-live="polite"
         onScroll={(event) => {
           const element = event.currentTarget;
@@ -180,15 +190,16 @@ export function Chat({ instance, workspace }: RendererProps) {
         {thread.isError && !gone && <p role="alert" className="chat-error">Could not load the conversation.{" "}
           <button className="btn ghost" type="button" onClick={() => void thread.refetch()}>Retry</button></p>}
         {thread.data?.earlier && <p className="chat-note">Earlier messages not shown.</p>}
-        {lines.length === 0 && !loading && !notice && <p className="chat-note">
-          {partner ? `Say something to ${partner.actor ?? "your partner"}.` : "No assistant is set up on this server."}</p>}
+        {lines.length === 0 && !loading && !notice && live && <p className="chat-note">
+          Say something to {partner?.actor ?? "your partner"}.</p>}
         {lines.map((line) => <ChatLine key={line.key} role={line.role} text={line.text} pending={line.seq === null} kinds={kinds} />)}
         {receipt && <p className="chat-receipt">{receipt}</p>}
         {/* Every partner works the same way: a neutral indicator once delivered, its own status in place of it, nothing once cleared or answered. */}
         {statusText && <p className="chat-status" role="status">{statusText}</p>}
+        {workspace && !live && !loading && <ChatOff local={workspace.partner_choice === "local"} />}
       </div>
       <Composer send={send} target={target} enabled={live} editable
-        placeholder={live ? `Message ${partner?.actor ?? "your partner"}…` : unavailable(partner?.status)}
+        placeholder={live ? `Message ${partner?.actor ?? "your partner"}…` : "Chat is off"}
         check={checkText} retryable={resendable}
         failure={(error) => error instanceof ApiError && error.status >= 400 && error.status < 500 && error.detail
           ? error.detail : "Could not send this message. Retry to send the same draft safely."} />
@@ -197,6 +208,13 @@ export function Chat({ instance, workspace }: RendererProps) {
 }
 
 const NONE: readonly never[] = [];
+
+/** The page a message is sent from and the up to 8 pages before it, oldest first. */
+function whereFrom(hash: string): { readonly page: string | null; readonly trail: readonly string[] } {
+  const page = validHash(hash) ? hash : null;
+  const before = visited();
+  return { page, trail: (before.at(-1) === page ? before.slice(0, -1) : before).slice(-MAX_TRAIL) };
+}
 
 /** A send that got no answer or a server fault may be sent again; a refusal would be refused again. */
 function resendable(error: Error): boolean {
@@ -208,6 +226,12 @@ function checkText(text: string): string {
   return text.length > MAX_TEXT ? `A message holds at most ${MAX_TEXT.toLocaleString("en")} characters; this one has ${text.length.toLocaleString("en")}.` : "";
 }
 
+/** The name a partner goes by in the header: a local helper is the user's own, named once it runs. */
+function partnerName(partner: WorkspacePartner): string {
+  if (partner.kind === "shared") return partner.actor ?? "assistant";
+  return partner.actor ? `your local helper (${partner.actor})` : "your local helper";
+}
+
 function partnerNote(partner: WorkspacePartner): string {
   const state = partner.status === "live" ? "" : ` · ${partner.status}`;
   return `${partner.cli ?? "agent"}${state}`;
@@ -217,8 +241,15 @@ function partnerGone(partner: WorkspacePartner): string {
   return `${partner.actor ?? "The partner"} is unavailable.`;
 }
 
-function unavailable(status: string | undefined): string {
-  return status === "unavailable" ? "This partner is unavailable" : "No partner is available";
+/** What to do when no partner is live: two lines, then the commands that start a local helper. */
+function ChatOff({ local }: { readonly local: boolean }) {
+  return <div className="chat-off">
+    <p className="chat-note">{local
+      ? "Start your local helper:"
+      : "Ask your admin to set up a shared Chat assistant, or set up a local one:"}</p>
+    {!local && <p className="chat-note"><a href="#/settings">Use a local helper in Settings</a></p>}
+    <HelperCommands tokens="link" />
+  </div>;
 }
 
 /**
@@ -274,4 +305,25 @@ function ChatRecordContext({ recordId }: { readonly recordId: string }) {
       </button>
     </p>
   );
+}
+
+/** The record the page names by `Kind#seq`, once its id is found. */
+function ChatScreenRef({ kind, seq }: { readonly kind: string; readonly seq: number }) {
+  const id = useQuery(detailQueries.ref(kind, seq));
+  return <ChatScreenContext id={id.data ?? null} label={`${kind}#${seq}`} />;
+}
+
+/** What is on screen when Chat is pinned to no record: the record the page shows, as it changes. */
+function ChatScreenContext({ id, label }: { readonly id: string | null; readonly label: string }) {
+  return (
+    <p className="chat-record-context" aria-label="Screen context">
+      On screen: {id ? <ChatScreenTitle id={id} label={label} /> : label}
+    </p>
+  );
+}
+
+function ChatScreenTitle({ id, label }: { readonly id: string; readonly label: string }) {
+  const record = useQuery(detailQueries.detail(id));
+  useLiveDetail(id);
+  return record.data ? `${record.data.self.kind}#${record.data.self.seq} ${record.data.self.title}` : label;
 }

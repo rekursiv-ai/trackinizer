@@ -41,15 +41,15 @@
     {
       "type": "trax.timeline",
       "version": 1,
-      "title": "Evidence timeline",
-      "description": "Follow dated directions, results, and signed evidence.",
+      "title": "Lineage and timeline",
+      "description": "Any record by date, under its lead issues, over its directions, results, and signed evidence.",
       "requires": ["record"],
       "default_size": "wide",
       "parameter_schema": {
         "direction_limit": {"type": "integer", "default": 8, "minimum": 1, "maximum": 12, "max_length": null},
         "results_per_direction": {"type": "integer", "default": 3, "minimum": 1, "maximum": 5, "max_length": null}
       },
-      "record_kinds": ["Issue", "Experiment"]
+      "record_kinds": null
     },
     {
       "type": "trax.artifact",

@@ -285,7 +285,7 @@ with one response shape, so the fixtures take one per verb.
 - The page is `trax.browse`: it has no record or parameters, it cannot be
   dismissed (no ×, and Configure's box is fixed), and a crash in it shows the
   app's crash screen (Copy details, Reload) inside the canvas, which clears when
-  the page moves. The record the canvas's Chat about this means is the one the
+  the page moves. The record the canvas's Chat button means is the one the
   address names (`#/lookup/<id>`, or `#/ref/<Kind>/<seq>` resolved), never a
   visual's.
 - Navigation is an event. An agent's `navigate` frame moves the page when
@@ -311,6 +311,12 @@ with one response shape, so the fixtures take one per verb.
   conversation is held by the shell (`ChatFeed`), so Chat mounting again keeps
   it, and in `localStorage` under `trackinizer.v2.chat.<workspace id>`, so a
   reload reopens it; with storage refused it lasts until the page does.
+- Chat sends the page it is on: each message carries `page`, the `#/...` hash
+  as it is sent, and `trail`, the up to 8 hashes before it, oldest first
+  (routes only; the server resolves their records). `src/router/trail.ts`
+  records them from `main.tsx` on, so pages visited before Chat opened count.
+  With no record pinned, Chat shows `On screen: Kind#seq title` for the record
+  a `#/lookup/<id>` or `#/ref/<Kind>/<seq>` page shows, and follows the page.
 - A conversation's lines are one cache entry, `["chat", id]`: the thread read
   (the newest 500, "Earlier messages not shown." when the server holds older
   ones), then every `message` frame and send receipt appended to it, once by

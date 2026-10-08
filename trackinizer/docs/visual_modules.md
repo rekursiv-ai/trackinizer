@@ -74,12 +74,15 @@ the workspace response. A `show` can also include `record_id` and bounded
 
 ## Chat with the assistant
 
-Chat talks to the canvas's partner, the server's assistant, which
-`WorkspaceState.partner` names on every read and the events stream pushes when
-it changes. A partner that is not `live` disables the composer. A server with
+Chat talks to the canvas's partner, which `WorkspaceState.partner` names on
+every read and the events stream pushes when it changes. By default it is the
+server's shared assistant; `WorkspaceState.partner_choice` can instead be
+`local`, the owner's own `trax helper` session, which the `partner`
+operation sets. A partner that is not `live` disables the composer. A server with
 no assistant of its own can run `trax helper claude --as ACTOR` as one.
 
-`Chat about this` shows `trax.chat` with the record UUID in `record_id`. To
+The canvas's one `Chat` button shows `trax.chat`; on a record's page it puts
+the record UUID in `record_id`, and elsewhere it clears it. To
 send, the browser calls `POST /api/workspaces/<workspace-id>/messages` with
 the persisted Chat instance UUID and a fresh `Idempotency-Key`:
 
@@ -93,7 +96,15 @@ record returns 409 before queueing. The server adds the persisted record UUID,
 workspace UUID, and visible visual identities to a typed inbound context.
 When the record exists in this server's graph, the context also includes its
 kind, sequence, and bounded title. A record resolved through a separate read
-profile carries its UUID without invented metadata. The agent receives the
+profile carries its UUID without invented metadata. The browser also sends
+`page`, the `#/...` address it is on, and `trail`, the addresses before it,
+oldest first and at most 8; a malformed address, or a longer trail, returns
+422. The server resolves them: `#/lookup/<id>`, `#/inquiry/<id>`,
+`#/ref/<Kind>/<seq>` and `#/graph?focus=<ref>` name a record, and the context
+carries each as a page with its route and, when it exists, that record.
+Any other address, or a record that does not exist, keeps its route and has
+no record. Each visible visual carries the record it shows the same way, so
+"this" means what the sender sees. The agent receives the
 context beside the message and reads the cited graph rows through trax.
 The receipt names the partner session, the conversation and the stored
 message; it does not claim the agent answered. Retry the same draft with the
@@ -104,6 +115,26 @@ Chat shows the conversation's stored lines, the user's and the partner's, and
 receives new ones on the canvas's event stream. History lists the user's
 conversations; New chat and Clear start and delete one. Subgraph, timeline,
 and Artifact visuals use the same catalog and operation path.
+
+## Lineage and timeline
+
+`trax.timeline` is one view, off in a new canvas; Configure shows or hides it
+and `trax workspace W show trax.timeline --record R` or the Chat assistant
+opens it. Time runs across; lineage runs down: up to three lead issues pinned
+at the axis's left edge with their own dates, the record, then its directions
+as rows. Each row's results sit on it by date, and their signed evidence is
+marked for or against by the sign of its valence. A card or square moves the
+page to that record and re-centres the window on it (`show` on the same
+instance with the clicked record).
+
+It makes one read, `GET /api/visuals/timeline/<id>`, for a record of any kind.
+An Issue is the record and its own anchor. An Experiment is shown on the Issue
+that produced it, itself marked among that Issue's results. Any other kind is the
+record row, with leads and directions taken from the nearest Issue it was
+`produced_by` (the oldest if several; `narrows` runs between Issues only), and
+that Issue becomes its nearest lead; with no such Issue it is shown alone.
+Leads are the anchor's `narrows` ancestors, at most three (`_LEAD_LEVELS` in
+`server/visuals/timeline.py`), one indexed lookup per level.
 
 ## Save and reopen a workflow
 
@@ -173,7 +204,7 @@ Any signed-in teammate can read the exact revision at
 `/app/#/lookup/<artifact-id>` or through
 `GET /api/artifacts/<artifact-id>/content`. An agent can show it on a canvas
 with `visual_type: "trax.artifact"` and `record_id` set to the Artifact ID.
-The renderer loads only when shown. `Chat about this` uses the same `record_id`;
+The renderer loads only when shown. `Chat` on its page uses the same `record_id`;
 the agent receives frozen citations and a link to the full content. Custom HTML
 runs in an opaque-origin iframe with a restrictive content security policy;
 it cannot read the app's session.

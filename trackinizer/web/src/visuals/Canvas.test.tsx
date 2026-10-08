@@ -466,7 +466,7 @@ test("a delayed read cannot undo an operation's newer canvas revision", async ()
   expect((screen.getByRole("checkbox", { name: /Chat/ }) as HTMLInputElement).checked).toBe(true);
 });
 
-test("Chat about this shows a floating Chat pane with the record context", async () => {
+test("on a record's page, Chat shows a floating Chat pane with the record context", async () => {
   const recordId = "61d3a095-c7f1-4d27-a4c4-a5b1c218a31e";
   history.replaceState(null, "", `#/lookup/${recordId}`);
   vi.mocked(getVisualCatalog).mockResolvedValue({
@@ -495,7 +495,7 @@ test("Chat about this shows a floating Chat pane with the record context", async
 
   const controls = screen.getByRole("toolbar", { name: "Canvas controls" });
   expect(within(controls).getByRole("button", { name: "Configure" })).toBeTruthy();
-  const chatButton = within(controls).getByRole("button", { name: "Chat about this" });
+  const chatButton = within(controls).getByRole("button", { name: "Chat" });
   expect(screen.queryByRole("button", { name: "Show context graph" })).toBeNull();
   await waitFor(() => expect((chatButton as HTMLButtonElement).disabled).toBe(false), { interval: 1 });
   fireEvent.click(chatButton);
@@ -510,7 +510,7 @@ test("Chat about this shows a floating Chat pane with the record context", async
     .toBe("chat-instance"));
 });
 
-test("Chat about this opens the floating Chat body at a narrow viewport", async () => {
+test("Chat opens the floating Chat body at a narrow viewport", async () => {
   window.innerWidth = 800;
   const recordId = "61d3a095-c7f1-4d27-a4c4-a5b1c218a31e";
   history.replaceState(null, "", `#/lookup/${recordId}`);
@@ -538,7 +538,7 @@ test("Chat about this opens the floating Chat body at a narrow viewport", async 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Record detail</div></Canvas></QueryClientProvider>);
 
-  const chatButton = screen.getByRole("button", { name: "Chat about this" });
+  const chatButton = screen.getByRole("button", { name: "Chat" });
   await waitFor(() => expect((chatButton as HTMLButtonElement).disabled).toBe(false), { interval: 1 });
   fireEvent.click(chatButton);
 
@@ -579,10 +579,44 @@ test("the record Chat is about comes from the address alone, never from a visual
   const withRecord: WorkspaceState = { ...workspace, visuals: [{ ...workspace.visuals[0]!, record_id: "stale-record" }] };
   vi.mocked(createDefaultWorkspace).mockResolvedValue(withRecord);
   vi.mocked(getWorkspace).mockResolvedValue(withRecord);
+  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...withRecord, revision: 4 });
   render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>List</div></Canvas></QueryClientProvider>);
-  await screen.findByRole("button", { name: "Configure" });
   await waitFor(() => expect(document.querySelector("[data-visual-instance]")).not.toBeNull(), { interval: 1 });
-  expect((screen.getByRole("button", { name: "Chat about this" }) as HTMLButtonElement).disabled).toBe(true);
+  const button = screen.getByRole("button", { name: "Chat" }) as HTMLButtonElement;
+  await waitFor(() => expect(button.disabled).toBe(false), { interval: 1 });
+  fireEvent.click(button);
+  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+    withRecord.id, withRecord.revision, { kind: "show", visual_type: "trax.chat", placement: "floating" },
+    expect.any(String)), { interval: 1 });
+});
+
+test("on a page with no record, Chat drops the record an earlier page gave it", async () => {
+  history.replaceState(null, "", "#/list/Issue");
+  const chat: WorkspaceState["visuals"][number] = {
+    id: "chat-instance", type: "trax.chat", version: 1, placement: "side",
+    record_id: "earlier-record", params: {},
+  };
+  const state = { ...workspace, visuals: [...workspace.visuals, chat] };
+  vi.mocked(getVisualCatalog).mockResolvedValue({
+    default_visual: "trax.browse",
+    visuals: [
+      { type: "trax.browse", version: 1, title: "Browse", description: "Browse records",
+        default_size: "wide", requires: [], parameter_schema: {} },
+      { type: "trax.chat", version: 1, title: "Chat", description: "Chat about the page",
+        default_size: "compact", requires: [], parameter_schema: {} },
+    ],
+  });
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(state);
+  vi.mocked(getWorkspace).mockResolvedValue(state);
+  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...state, revision: 4 });
+  render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>List</div></Canvas></QueryClientProvider>);
+
+  const button = screen.getByRole("button", { name: "Chat" }) as HTMLButtonElement;
+  await waitFor(() => expect(button.disabled).toBe(false), { interval: 1 });
+  fireEvent.click(button);
+  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+    state.id, state.revision, { kind: "show", visual_type: "trax.chat", record_id: null },
+    expect.any(String)), { interval: 1 });
 });
 
 test("a canvas write waits for a pending one and uses its new revision", async () => {
@@ -593,7 +627,10 @@ test("a canvas write waits for a pending one and uses its new revision", async (
     record_id: null, params: {},
   };
   const initial = { ...workspace, visuals: [...workspace.visuals, chat] };
-  const afterOperation: WorkspaceState = { ...initial, revision: 4 };
+  const afterOperation: WorkspaceState = {
+    ...initial, revision: 4,
+    visuals: [...workspace.visuals, { ...chat, placement: "floating", record_id: recordId }],
+  };
   vi.mocked(getVisualCatalog).mockResolvedValue({
     default_visual: "trax.browse",
     visuals: [
@@ -611,7 +648,7 @@ test("a canvas write waits for a pending one and uses its new revision", async (
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Record detail</div></Canvas></QueryClientProvider>);
 
-  const chatButton = screen.getByRole("button", { name: "Chat about this" });
+  const chatButton = screen.getByRole("button", { name: "Chat" });
   await waitFor(() => expect((chatButton as HTMLButtonElement).disabled).toBe(false), { interval: 1 });
   fireEvent.click(chatButton);
   // A mock's call changes nothing on screen, so only the interval checks again.
@@ -641,7 +678,7 @@ test("a rejected canvas write reports how to recover", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Record detail</div></Canvas></QueryClientProvider>);
 
-  const chatButton = screen.getByRole("button", { name: "Chat about this" });
+  const chatButton = screen.getByRole("button", { name: "Chat" });
   await waitFor(() => expect((chatButton as HTMLButtonElement).disabled).toBe(false), { interval: 1 });
   fireEvent.click(chatButton);
 
@@ -695,7 +732,7 @@ test("a shared Artifact route can open Chat about its exact revision", async () 
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Artifact page</div></Canvas></QueryClientProvider>);
 
-  const button = await screen.findByRole("button", { name: "Chat about this" });
+  const button = await screen.findByRole("button", { name: "Chat" });
   await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false), { interval: 1 });
   fireEvent.click(button);
   await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
@@ -732,7 +769,7 @@ test("Chat targets the focused Artifact visual when another record is in the URL
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Record page</div></Canvas></QueryClientProvider>);
 
-  const button = await screen.findByRole("button", { name: "Chat about this" });
+  const button = await screen.findByRole("button", { name: "Chat" });
   await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false), { interval: 1 });
   fireEvent.click(button);
   await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(

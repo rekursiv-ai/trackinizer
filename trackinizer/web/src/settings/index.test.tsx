@@ -34,6 +34,7 @@ test("the page shows the profile, refetched on open, and every section", async (
     "Names that mean you",
     "Appearance",
     "Agent workspace",
+    "Chat partner",
     "API tokens",
     "This browser",
     "Session",

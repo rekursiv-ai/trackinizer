@@ -60,7 +60,7 @@ def test_visual_catalog_has_default_browse_chat_and_context_graph(
     }
     assert by_type["trax.browse"]["parameter_schema"] == {}
     assert by_type["trax.browse"]["record_kinds"] == []
-    assert by_type["trax.timeline"]["record_kinds"] == ["Issue", "Experiment"]
+    assert by_type["trax.timeline"]["record_kinds"] is None
     assert by_type["trax.artifact"]["record_kinds"] == ["Artifact"]
     assert by_type["trax.subgraph"]["record_kinds"] is None
 

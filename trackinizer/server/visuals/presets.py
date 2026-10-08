@@ -194,6 +194,7 @@ async def create_preset(
         with_partner = partial(
             attach_partner,
             conn,
+            owner_id=user_id,
             inbound=inbound,
             assistant=assistant,
         )
@@ -309,6 +310,7 @@ async def open_preset(
         with_partner = partial(
             attach_partner,
             conn,
+            owner_id=user_id,
             inbound=inbound,
             assistant=assistant,
         )
@@ -337,7 +339,10 @@ async def open_preset(
             return None
         if current.revision != body.revision:
             raise RevisionConflictError(await with_partner(state=current))
-        data = WorkspaceData.model_validate(preset["state"])
+        # A preset is a layout; whose Chat the canvas talks to is the owner's setting.
+        data = WorkspaceData.model_validate(preset["state"]).model_copy(
+            update={"partner_choice": current.partner_choice},
+        )
         revision = current.revision + 1
         await conn.execute(
             "UPDATE visual_workspaces SET revision = $2, state = $3, "
@@ -353,6 +358,7 @@ async def open_preset(
             focused_instance=data.focused_instance,
             agent_instructions=data.agent_instructions,
             continuation_record_id=data.continuation_record_id,
+            partner_choice=data.partner_choice,
         )
         await conn.execute(
             "INSERT INTO visual_workspace_operations "

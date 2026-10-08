@@ -152,10 +152,10 @@ class StaticVisual:
 
 
 class TimelineVisual:
-    """A bounded chronology of an Issue's directions and evidence."""
+    """A bounded lineage and chronology of any record: leads, directions, evidence."""
 
     class Config(Fig["TimelineVisual"]):
-        title: str = "Evidence timeline"
+        title: str = "Lineage and timeline"
         """Name shown in the Configure panel."""
 
         direction_limit: int = 12
@@ -185,10 +185,12 @@ class TimelineVisual:
             type="trax.timeline",
             version=1,
             title=self.config.title,
-            description="Follow dated directions, results, and signed evidence.",
+            description=(
+                "Any record by date, under its lead issues, over its directions, "
+                "results, and signed evidence."
+            ),
             requires=["record"],
             default_size="wide",
-            record_kinds=["Issue", "Experiment"],
             parameter_schema={
                 "direction_limit": ParameterDescription(
                     type="integer",

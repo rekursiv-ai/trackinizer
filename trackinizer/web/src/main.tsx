@@ -4,11 +4,14 @@ import { restoreReturnHash } from "./app/session";
 import { installDebug, logRenderError } from "./debug/install";
 import { openEarlyStream } from "./live/earlyStream";
 import { chunk, reloadOnChunkError } from "./router/lazy";
+import { startTrail } from "./router/trail";
 import { installTheme } from "./theme";
 
 installDebug();
 installTheme();
 restoreReturnHash();
+// After the return hash is restored, so that the first page it records is the one shown.
+startTrail();
 reloadOnChunkError();
 // Before the first reads, so that it is open by the time the views mount and
 // read: their reads then miss no change, and none has to read again.

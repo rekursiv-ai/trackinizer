@@ -18,6 +18,10 @@ export type WorkspaceMessage = {
   readonly expectedRecordId: string | null;
   /** The conversation it continues; null starts one. */
   readonly conversationId: string | null;
+  /** The `#/...` hash the sender is on, or null when it is not one the server takes. */
+  readonly page: string | null;
+  /** The hashes the sender came through before `page`, oldest first. */
+  readonly trail: readonly string[];
 };
 
 /**
@@ -34,6 +38,7 @@ export async function sendWorkspaceMessage(
     body: {
       text: message.text, chat_instance_id: message.chatInstanceId,
       expected_record_id: message.expectedRecordId, conversation_id: message.conversationId,
+      page: message.page, trail: [...message.trail],
     }, signal,
   }));
 }

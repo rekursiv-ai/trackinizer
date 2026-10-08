@@ -12,6 +12,7 @@ import { chooseTheme, type ThemePreference, useTheme } from "../theme";
 import { KeyValue, ReadError, Section } from "./account";
 import { AliasesSection } from "./Aliases";
 import { BrowserDataSection } from "./BrowserData";
+import { ChatPartnerSection } from "./ChatPartner";
 import { TokensSection } from "./Tokens";
 import "../editors/editors.css";
 import "../writes/writes.css";
@@ -47,6 +48,7 @@ export function SettingsView({ assign = (url: string) => location.assign(url) }:
           <AliasesSection />
           <ThemeSection />
           <VisualWorkspaceSection />
+          <ChatPartnerSection />
           <TokensSection />
           <BrowserDataSection />
           {profile.email === NO_AUTH_EMAIL ? null : <SessionSection assign={assign} />}

@@ -408,6 +408,17 @@ class WorkspaceVisibleVisual(BaseModel):
 
     id: uuid.UUID
     type: str
+    record: WorkspaceRecordContext | None = None
+    """The record the visual shows, when it shows one that exists."""
+
+
+class WorkspacePage(BaseModel):
+    """A page the sender was on, with the record it shows when it names one."""
+
+    route: str
+    """The `#/...` address."""
+
+    record: WorkspaceRecordContext | None = None
 
 
 class WorkspaceMessageContext(BaseModel):
@@ -424,6 +435,12 @@ class WorkspaceMessageContext(BaseModel):
     continuation_record_id: uuid.UUID | None = None
     conversation_id: uuid.UUID | None = None
     """The Chat conversation the message belongs to; an assistant answers there."""
+
+    page: WorkspacePage | None = None
+    """The page the sender is on as they send: what "this" means to them."""
+
+    trail: list[WorkspacePage] = Field(default_factory=list)
+    """The pages they came through before it, oldest first."""
 
 
 class InboundDrainItem(BaseModel):

@@ -27,8 +27,10 @@ from trackinizer.server.visuals.partners import (
     resolve_partner,
 )
 from trackinizer.server.visuals.reports import read_artifact_content_on_conn
+from trackinizer.server.visuals.screens import read_screen
 from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
+    ChoosePartner,
     Highlight,
     Navigate,
     ShowVisual,
@@ -44,7 +46,6 @@ from trackinizer.wire.wire_sessions import (
     WorkspaceArtifactContent,
     WorkspaceMessageContext,
     WorkspaceRecordContext,
-    WorkspaceVisibleVisual,
 )
 
 
@@ -78,7 +79,7 @@ class WorkspaceDisabledError(Exception):
 
 
 class WorkspaceKeyRefusedError(Exception):
-    """The API key is not the canvas's Chat assistant, which alone may use it."""
+    """The API key is not the canvas's Chat partner, which alone may use it."""
 
 
 class WorkspaceSessionUnavailableError(Exception):
@@ -244,6 +245,7 @@ async def create_default_workspace(
         return await attach_partner(
             conn,
             state=state_from_row(cast("Mapping[str, object]", row)),
+            owner_id=user_id,
             inbound=inbound,
             assistant=assistant,
         )
@@ -274,7 +276,7 @@ async def read_workspace(
 
     """
     async with engine.acquire() as conn:
-        state = await _workspace_for_principal(
+        found = await _workspace_for_principal(
             conn,
             workspace_id=workspace_id,
             user_id=user_id,
@@ -282,11 +284,13 @@ async def read_workspace(
             inbound=inbound,
             assistant=assistant,
         )
-        if state is None:
+        if found is None:
             return None
+        state, owner_id = found
         return await attach_partner(
             conn,
             state=state,
+            owner_id=owner_id,
             inbound=inbound,
             assistant=assistant,
         )
@@ -335,7 +339,7 @@ async def apply_workspace_operation(
     )
     request_hash = hashlib.sha256(canonical.encode()).hexdigest()
     async with engine.acquire() as conn, tx(conn):
-        current = await _workspace_for_principal(
+        found = await _workspace_for_principal(
             conn,
             workspace_id=workspace_id,
             user_id=user_id,
@@ -344,11 +348,13 @@ async def apply_workspace_operation(
             assistant=assistant,
             for_update=True,
         )
-        if current is None:
+        if found is None:
             return None
+        current, owner_id = found
         with_partner = partial(
             attach_partner,
             conn,
+            owner_id=owner_id,
             inbound=inbound,
             assistant=assistant,
         )
@@ -361,10 +367,14 @@ async def apply_workspace_operation(
         if receipt is not None:
             if receipt["request_hash"] != request_hash:
                 raise ReplayConflictError(await with_partner(state=current))
+            # The receipt keeps the choice it was applied under; the partner is
+            # computed from the choice now.
             replay = (
                 current
                 if isinstance(body.operation, Navigate | Highlight)
-                else WorkspaceState.model_validate(receipt["response"])
+                else WorkspaceState.model_validate(receipt["response"]).model_copy(
+                    update={"partner_choice": current.partner_choice},
+                )
             )
             return AppliedOperation(
                 state=await with_partner(state=replay),
@@ -386,6 +396,8 @@ async def apply_workspace_operation(
                 state=await with_partner(state=current),
                 replayed=False,
             )
+        if isinstance(body.operation, ChoosePartner) and agent_api_key_id is not None:
+            raise ValueError("Only the canvas's owner chooses its Chat partner.")
         if body.revision != current.revision:
             raise RevisionConflictError(await with_partner(state=current))
         if isinstance(body.operation, ShowVisual):
@@ -396,6 +408,7 @@ async def apply_workspace_operation(
                 focused_instance=current.focused_instance,
                 agent_instructions=current.agent_instructions,
                 continuation_record_id=current.continuation_record_id,
+                partner_choice=current.partner_choice,
             ),
             body.operation,
             catalog,
@@ -407,6 +420,7 @@ async def apply_workspace_operation(
             focused_instance=updated_data.focused_instance,
             agent_instructions=updated_data.agent_instructions,
             continuation_record_id=updated_data.continuation_record_id,
+            partner_choice=updated_data.partner_choice,
         )
         await conn.execute(
             "UPDATE visual_workspaces SET revision = $2, state = $3, "
@@ -464,6 +478,7 @@ def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
         focused_instance=data.focused_instance,
         agent_instructions=data.agent_instructions,
         continuation_record_id=data.continuation_record_id,
+        partner_choice=data.partner_choice,
     )
 
 
@@ -489,9 +504,19 @@ async def _store_send(
     if row is None:
         return None
     state = state_from_row(cast("Mapping[str, object]", row))
-    partner = await resolve_partner(conn, inbound=inbound, assistant=assistant)
+    partner = await resolve_partner(
+        conn,
+        inbound=inbound,
+        assistant=assistant,
+        choice=state.partner_choice,
+        owner_id=user_id,
+    )
     if partner is None or partner.session_id is None or partner.status != "live":
-        raise WorkspaceSessionUnavailableError("The assistant is not running")
+        raise WorkspaceSessionUnavailableError(
+            "Your local helper is not running; start it with `trax helper claude`"
+            if state.partner_choice == "local"
+            else "The assistant is not running",
+        )
     if inbound.is_full(partner.session_id):
         raise PartnerBusyError("Partner busy: too many unread messages; try again.")
     record_id, record, artifact_content = await _chat_target(
@@ -519,18 +544,23 @@ async def _store_send(
     )
     if message is None:
         raise DuplicateSendError
+    screen = await read_screen(
+        conn,
+        page=body.page,
+        trail=body.trail,
+        visuals=state.visuals,
+    )
     context = WorkspaceMessageContext(
         workspace_id=workspace_id,
         record_id=record_id,
         record=record,
         artifact_content=artifact_content,
-        visible_visuals=[
-            WorkspaceVisibleVisual(id=visual.id, type=visual.type)
-            for visual in state.visuals
-        ],
+        visible_visuals=screen.visuals,
         agent_instructions=state.agent_instructions,
         continuation_record_id=state.continuation_record_id,
         conversation_id=conversation_id,
+        page=screen.page,
+        trail=screen.trail,
     )
     return (
         SentMessage(
@@ -655,9 +685,10 @@ async def _check_record(
 
 
 # A browser sees only its own canvas. An agent key may use a canvas only as its Chat
-# assistant: the key opened the assistant's live session and the owner has a
-# conversation on this canvas with that session. The owner's own key is refused by
-# name, so a terminal `trax workspace` learns why; any other is told nothing.
+# partner: the key opened the partner's live session and the owner has a
+# conversation on this canvas with that session. With a local partner that is the
+# owner's own key; with the shared assistant, the owner's own key is refused by
+# name, so a terminal `trax workspace` learns why. Any other is told nothing.
 async def _workspace_for_principal(
     conn: Conn,
     *,
@@ -667,8 +698,8 @@ async def _workspace_for_principal(
     inbound: InboundQueue,
     assistant: Assistant | None,
     for_update: bool = False,
-) -> WorkspaceState | None:
-    """Find a canvas the principal may read and operate."""
+) -> tuple[WorkspaceState, uuid.UUID] | None:
+    """Find a canvas the principal may read and operate, with its owner."""
     row = await conn.fetchrow(
         "SELECT id, user_id, revision, state FROM visual_workspaces "
         "WHERE id = $1 AND ($3::boolean OR user_id = $2) FOR UPDATE"
@@ -684,8 +715,14 @@ async def _workspace_for_principal(
     owner_id = cast(uuid.UUID, row["user_id"])
     state = state_from_row(cast("Mapping[str, object]", row))
     if agent_api_key_id is None:
-        return state
-    partner = await resolve_partner(conn, inbound=inbound, assistant=assistant)
+        return state, owner_id
+    partner = await resolve_partner(
+        conn,
+        inbound=inbound,
+        assistant=assistant,
+        choice=state.partner_choice,
+        owner_id=owner_id,
+    )
     if await assistant_key_may_use(
         conn,
         owner_id=owner_id,
@@ -693,9 +730,9 @@ async def _workspace_for_principal(
         partner=partner,
         api_key_id=agent_api_key_id,
     ):
-        return state
+        return state, owner_id
     if owner_id == user_id:
         raise WorkspaceKeyRefusedError(
-            "Only the canvas's Chat assistant may use it with an API key",
+            "Only the canvas's Chat partner may use it with an API key",
         )
     return None

@@ -68,7 +68,8 @@ def render_inbound(
             f"\nTrackinizer context (verify with trax): {context.model_dump_json()}"
         )
         workspace = f"trax workspace {context.workspace_id}"
-        record = context.record_id or "RECORD_UUID"
+        on_screen = None if context.page is None else context.page.record
+        record = context.record_id or (on_screen.id if on_screen else "RECORD_UUID")
         rendered += (
             "\nCanvas: run these commands; describing them does nothing."
             f"\n  Show a record: {workspace} navigate '#/lookup/{record}'"
