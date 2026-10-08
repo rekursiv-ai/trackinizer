@@ -545,6 +545,44 @@ async def test_the_partner_sessions_key_reads_its_conversation_and_no_other_key_
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_a_user_line_reads_with_its_authors_current_role(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The role is looked up at read time; an unknown or disabled author has none."""
+    client, store = pglite_route_client
+    _, _, _, conversation_id = await _talk(client, store=store)
+    act_as_assistant()
+    answered = await client.post(
+        f"/api/chats/{conversation_id}/messages",
+        json={"text": "answer", "kind": "answer"},
+    )
+    assert answered.status_code == 200
+
+    # The partner's own answer has no author role: it is not a signed-in user.
+    assert await _author_roles(client, conversation_id=conversation_id) == [
+        "writer",
+        None,
+    ]
+    for role in ("viewer", "admin"):
+        await _set_user(store, role=role)
+        assert await _author_roles(client, conversation_id=conversation_id) == [
+            role,
+            None,
+        ]
+    await _set_user(store, status="disabled")
+    assert await _author_roles(client, conversation_id=conversation_id) == [None, None]
+    await _set_user(store, status="active")
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE chat_messages SET author = 'nobody@example.com' "
+            "WHERE conversation_id = $1 AND role = 'user'",
+            conversation_id,
+        )
+    assert await _author_roles(client, conversation_id=conversation_id) == [None, None]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_a_revoked_partner_key_can_no_longer_read_the_conversation(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
@@ -913,6 +951,36 @@ async def _thread(
     )
     assert response.status_code == 200
     return from_plain(loads(response.content), dict[str, object])
+
+
+async def _author_roles(
+    client: httpx2.AsyncClient,
+    *,
+    conversation_id: uuid.UUID,
+) -> list[object]:
+    """Read a conversation as its partner and return each line's author role."""
+    act_as_assistant()
+    thread = await _thread(client, conversation_id=conversation_id)
+    return [
+        from_plain(message, dict[str, object]).get("author_role")
+        for message in from_plain(thread["messages"], list[object])
+    ]
+
+
+async def _set_user(
+    store: Store,
+    *,
+    role: str = "writer",
+    status: str = "active",
+) -> None:
+    """Give the browser user a role and status."""
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET role = $2, status = $3 WHERE id = $1",
+            TEST_USER_ID,
+            role,
+            status,
+        )
 
 
 def _texts(thread: dict[str, object]) -> list[str]:

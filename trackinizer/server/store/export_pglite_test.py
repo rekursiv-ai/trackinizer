@@ -48,12 +48,16 @@ _LEFT_OUT: Final = frozenset(
         "chat_messages",
         "applied_migrations",
         "inquiry_embeddings",
+        "machine_credentials",
+        "machine_enrollments",
+        "machines",
         "session_bodies",
         "session_ciphertext",
         "session_embeddings",
         "session_index_state",
         "session_liveness",
         "users",
+        "variables",
         "visual_report_revisions",
         "visual_reports",
         "visual_workspace_operations",
@@ -61,7 +65,15 @@ _LEFT_OUT: Final = frozenset(
         "visual_workspaces",
     },
 )
-"""Tables the export omits on purpose; ``wire_export.EXPORT_TABLES`` says why."""
+"""Tables the export omits on purpose; ``wire_export.EXPORT_TABLES`` says why.
+
+``variables`` is also left out: its secret rows name values that live outside
+the database, so a restored export could not carry them, and its plain values
+are launch configuration, not graph records. ``machines`` is the same: it names
+where campaigns may run, which belongs to the deployment, not the graph.
+``machine_enrollments`` and ``machine_credentials`` hold hashes of the secrets a
+host joins with, which is access control, as ``api_keys`` is.
+"""
 
 
 @pytest_asyncio.fixture(loop_scope="session")

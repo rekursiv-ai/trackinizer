@@ -31,17 +31,21 @@ from trackinizer.server.api.app import (
     unique_violation_handler,
     validation_handler,
 )
-from trackinizer.server.config import Config
+from trackinizer.server.config import Config, ConfigError
 from trackinizer.server.embedders import qwen3_4b, registry
 from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.secrets import FileSecrets, SecretRef
 from trackinizer.types.errors import (
     ConflictError,
     NotFoundError,
     ValidationError,
 )
+from trackinizer.wire.wire_machine_host import JOIN_PATH
 
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from starlette.types import Receive, Scope, Send
 
     from trackinizer.server.store.core import Store
@@ -505,10 +509,136 @@ async def test_lifespan_joins_tasks_after_startup_or_background_failure(
     assert engine.exited
 
 
+def test_a_validation_error_outside_variables_keeps_its_input(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    """Only the variables family drops the rejected input from its 422."""
+    client, _, _ = route_client
+
+    response = client.post("/api/inquiries/lookup", json=["not-a-uuid"])
+
+    assert response.status_code == 422
+    detail = from_plain(response.json(), dict[str, list[dict[str, object]]])["detail"]
+    assert detail[0]["input"] == "not-a-uuid"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"instance": None},
+        {"instance": "not-a-uuid"},
+        {"host_version": 3},
+        {"facts": {"Bad Key": "x"}},
+        {"token": "SECRETMARKER" * 12},
+        {"unexpected": "x"},
+    ],
+    ids=["missing", "uuid", "type", "facts", "long", "extra"],
+)
+def test_join_422_does_not_echo_the_token(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    overrides: dict[str, object],
+) -> None:
+    """A rejected join body names each error's type, location and message only."""
+    client, _, _ = route_client
+    token = "enr_" + "0" * 32 + "_" + "SECRETMARKER" * 3 + "x" * 7
+    body: dict[str, object] = {
+        "name": "dev-1",
+        "token": token,
+        "instance": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "host_version": "0.1",
+        "facts": {},
+        **overrides,
+    }
+    body = {key: value for key, value in body.items() if value is not None}
+
+    response = client.post(JOIN_PATH, json=body)
+
+    assert response.status_code == 422
+    assert "SECRETMARKER" not in response.text
+    detail = from_plain(response.json(), dict[str, list[dict[str, object]]])["detail"]
+    assert detail
+    assert all(set(error) == {"type", "loc", "msg"} for error in detail)
+
+
+def test_lifespan_holds_the_file_secret_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The app keeps the backend ``Config.secrets`` names on ``app.state``."""
+    held = _lifespan_secrets(monkeypatch, f"file:{tmp_path}")
+
+    assert isinstance(held, FileSecrets)
+    held.put(SecretRef(layer="org", owner="", name="TOKEN"), "value")
+    assert (tmp_path / "org" / "_" / "TOKEN").read_text() == "value"
+
+
+def test_lifespan_holds_no_secret_backend_when_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _lifespan_secrets(monkeypatch, "none") is None
+
+
+def test_lifespan_refuses_an_unknown_secret_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, engine = make_store()
+    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
+    monkeypatch.setattr(app, "Store", Mock(return_value=store))
+    fastapi_app = FastAPI()
+    fastapi_app.state.config = Config(secrets="vault")
+
+    async def _drive() -> None:
+        async with lifespan(fastapi_app):
+            pass
+
+    with pytest.raises(ConfigError, match="vault"):
+        asyncio.run(_drive())
+
+
+def test_lifespan_resolves_a_scheme_the_deployment_attached(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    backend = FileSecrets(tmp_path)
+
+    def vault(rest: str) -> FileSecrets:
+        del rest
+        return backend
+
+    fastapi_app = FastAPI()
+    fastapi_app.state.secret_schemes = {"vault": vault}
+
+    held = _lifespan_secrets(monkeypatch, "vault:anything", fastapi_app=fastapi_app)
+
+    assert held is backend
+
+
 async def _record_warm(embedder: object, sink: list[str]) -> None:
     """Stand-in warm coroutine: records that it ran, embeds nothing."""
     del embedder
     sink.append("warmed")
+
+
+def _lifespan_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+    spec: str,
+    *,
+    fastapi_app: FastAPI | None = None,
+) -> object:
+    """Drive the real ``lifespan`` with a stubbed engine; return ``state.secrets``."""
+    store, engine = make_store()
+    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
+    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
+    monkeypatch.setattr(app, "Store", Mock(return_value=store))
+    monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
+    fastapi_app = fastapi_app or FastAPI()
+    fastapi_app.state.config = Config(secrets=spec)
+
+    async def _drive() -> object:
+        async with lifespan(fastapi_app):
+            return cast(object, fastapi_app.state.secrets)
+
+    return asyncio.run(_drive())
 
 
 if __name__ == "__main__":

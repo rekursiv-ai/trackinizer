@@ -16,6 +16,7 @@ import time
 
 from trackinizer.trax.daemon.protocol import (
     FORWARDED_ENV,
+    KEY_ENV,
     PROTOCOL_VERSION,
     Request,
     Response,
@@ -65,6 +66,9 @@ _VALUE_OPERATORS: Final[frozenset[str]] = frozenset({"to"})
 # it, and a daemon request would hold it and its CLIs hostage.
 _LOCAL_ONLY_VERBS: Final[frozenset[str]] = frozenset({"run", "helper"})
 
+# The verbs after ``machine NAME`` that must run in the calling process.
+_MACHINE_HOST_VERBS: Final[frozenset[str]] = frozenset({"enroll", "connect"})
+
 # Global flags that take a separate value token, so the scan for the verb
 # knows to skip past it. Mirrors ``cli._VALUE_FLAGS``.
 _VALUE_FLAGS: Final[frozenset[str]] = frozenset({"--profile", "--host", "--port"})
@@ -84,9 +88,12 @@ def should_delegate(argv: Sequence[str]) -> bool:
     """Whether ``argv`` may run in the daemon rather than this process.
 
     Refuses the daemon's own serve flag, anything that SPAWNS a CLI on a PTY,
-    and any command whose value is the ``-`` stdin sentinel. Each is judged by
-    POSITION rather than by presence, so a row whose title happens to be "run"
-    still gets the daemon.
+    any command whose value is the ``-`` stdin sentinel, and ``machine NAME
+    enroll`` / ``machine NAME connect``. Each is judged by POSITION rather than
+    by presence, so a row whose title happens to be "run" still gets the
+    daemon. An invocation with both ``TRACKINIZER_TOKEN`` and
+    ``TRACKINIZER_URL`` non-empty runs in this process: the key must not cross
+    the socket.
 
     Args:
       argv: Command-line arguments.
@@ -97,7 +104,12 @@ def should_delegate(argv: Sequence[str]) -> bool:
     """
     if SERVE_FLAG in argv:
         return False
-    if _spawns_a_terminal(argv):
+    # ``cli._resolve_target`` reads the key only beside a URL, and ops shells export a
+    # lone token, so refusing on the token alone would forfeit the daemon on every
+    # call there for nothing.
+    if os.getenv(KEY_ENV, default="") and os.getenv("TRACKINIZER_URL", default=""):
+        return False
+    if _spawns_a_terminal(argv) or _hosts_a_machine(argv):
         return False
     return not any(
         token == _STDIN_SENTINEL and argv[index - 1].lower() in _VALUE_OPERATORS
@@ -183,17 +195,33 @@ def _spawns_a_terminal(argv: Sequence[str]) -> bool:
     )
 
 
+# ``machine NAME enroll`` prints a secret on stdout and ``machine NAME connect`` is a
+# long-running loop, so neither belongs in a daemon request. The verbs are the third
+# token, so ``machine NAME role to connect`` still delegates.
+def _hosts_a_machine(argv: Sequence[str]) -> bool:
+    """Whether ``argv`` is ``machine NAME enroll`` or ``machine NAME connect``."""
+    start = _verb_index(argv)
+    tail = [token.lower() for token in argv[start : start + 3]]
+    return len(tail) == 3 and tail[0] == "machine" and tail[2] in _MACHINE_HOST_VERBS
+
+
 def _verb(argv: Sequence[str]) -> str:
     """Return the verb token: the first argument past the global-flag prefix."""
+    index = _verb_index(argv)
+    return argv[index].lower() if index < len(argv) else ""
+
+
+def _verb_index(argv: Sequence[str]) -> int:
+    """Return the index of the first argument past the global-flag prefix."""
     index = 0
     while index < len(argv):
         token = argv[index]
         if not token.startswith("--"):
-            return token.lower()
+            return index
         if "=" not in token and token in _VALUE_FLAGS:
             index += 1
         index += 1
-    return ""
+    return len(argv)
 
 
 # Returns ``None`` only while nothing has been delivered. Once the request is on the

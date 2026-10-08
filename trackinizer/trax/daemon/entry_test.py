@@ -9,6 +9,8 @@ import subprocess
 import threading
 import time
 
+import pytest
+
 from trackinizer.trax import cli
 from trackinizer.trax.daemon import entry
 from trackinizer.trax.daemon.client import _accepts
@@ -19,7 +21,14 @@ from trackinizer.trax.daemon.server import _Server
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    import pytest
+
+@pytest.fixture(autouse=True)
+def no_ambient_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Scrub an exported ``TRACKINIZER_TOKEN``.
+
+    With ``TRACKINIZER_URL`` it forces every call in-process; alone it does not.
+    """
+    monkeypatch.delenv("TRACKINIZER_TOKEN", raising=False)
 
 
 def test_an_edit_while_the_daemon_starts_restarts_it(

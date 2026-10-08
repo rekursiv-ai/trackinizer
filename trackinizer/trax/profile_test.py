@@ -270,6 +270,14 @@ def test_profile_file_is_mode_0600() -> None:
     assert path.stat().st_mode & 0o777 == 0o600
 
 
+def test_current_profile_pointer_is_mode_0600() -> None:
+    profile.save_profile("prod", Profile(url="http://x:1"))
+    profile.switch_profile("prod")
+    path = config_dir() / "rekursiv-ai" / "trax" / "current"
+    assert path.read_text() == "prod\n"
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
 def test_list_and_del_profiles() -> None:
     assert profile.list_profiles() == []
     profile.save_profile("dev", Profile(url="http://dev:1"))
@@ -536,6 +544,16 @@ def test_write_atomic_uses_unique_temp_per_write(
         p.name for p in tmp_path.iterdir() if p.name not in ("p", "rekursiv-ai")
     ]
     assert leftovers == [], f"temp file leaked: {leftovers}"
+
+
+def test_profile_repr_and_str_hold_no_key_text() -> None:
+    """A traceback or log line that shows a ``Profile`` must not print its key."""
+    key = "tok-SENTINEL-7b41d9"
+    shown = Profile(url="http://prod:9000", author="alice", api_key=key)
+
+    assert key not in repr(shown)
+    assert key not in str(shown)
+    assert shown != Profile(url="http://prod:9000", author="alice", api_key="other")
 
 
 if __name__ == "__main__":

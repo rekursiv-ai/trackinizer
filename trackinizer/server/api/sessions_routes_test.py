@@ -66,7 +66,7 @@ if TYPE_CHECKING:
 
     from trackinizer.conftest import FakeEngine
     from trackinizer.lib.postgres import PGliteEngine
-    from trackinizer.server.auth import AuthIdentity
+    from trackinizer.server.auth import AuthIdentity, Role
     from trackinizer.server.chat_hub import Frame
 
 
@@ -358,6 +358,66 @@ class TestInboundEnqueueRejectsSource:
         # The stored sender is the route principal, never a body value.
         (msg,) = inbound.drain(session_id)
         assert msg.source == "test-user@example.com"
+
+    @pytest.mark.parametrize("role", ["viewer", "writer", "admin"])
+    def test_enqueue_attests_the_principals_role(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+        role: Role,
+    ) -> None:
+        client, store, _engine = route_client
+        inbound = InboundQueue()
+        app.state.inbound = inbound
+        session_id = uuid.uuid4()
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
+        )
+        inbound.mark_poller(session_id)
+        install_identity(make_test_identity(role=role))
+        r = client.post(
+            f"/api/sessions/{session_id}/inbound",
+            json={"text": "check the logs"},
+        )
+        # A viewer may not enqueue; the others are queued with their own role.
+        assert r.status_code == (403 if role == "viewer" else 200), r.text
+        assert [m.source_role for m in inbound.drain(session_id)] == (
+            [] if role == "viewer" else [role]
+        )
+
+    @pytest.mark.parametrize("role", ["writer", "admin"])
+    def test_a_routed_send_attests_the_principals_role(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+        role: Role,
+    ) -> None:
+        client, store, _engine = route_client
+        inbound = InboundQueue()
+        app.state.inbound = inbound
+        session_id = uuid.uuid4()
+        monkeypatch.setattr(
+            store,
+            "resolve_live_sessions",
+            AsyncMock(return_value=[(session_id, ("sear",))]),
+        )
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(return_value=_live_session()),
+        )
+        inbound.mark_poller(session_id)
+        install_identity(make_test_identity(role=role))
+        r = client.post(
+            "/api/messages",
+            json={"actor": "scientist", "text": "hello", "room": "sear"},
+        )
+        assert r.status_code == 200, r.text
+        assert [(m.source, m.source_role) for m in inbound.drain(session_id)] == [
+            (TEST_USER_EMAIL, role),
+        ]
 
     def test_enqueue_same_idempotency_key_is_deduped(
         self,
@@ -906,6 +966,39 @@ async def test_draining_reports_how_far_each_conversation_was_read(
         (first, 3),
     ]
     assert assistant_served.delivered_of(first) == 3
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_drained_chat_message_carries_its_senders_role(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The partner reads the role of whoever sent each line, as the server saw it."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    act_as_assistant()
+    kb = await start_session(client, actor=KB_ACTOR)
+    workspace_id = await open_workspace(client)
+    chat_id = await show_chat(client, workspace_id=workspace_id)
+    for role in ("viewer", "writer", "admin"):
+        install_identity(make_test_identity(api_key_id=None, role=role))
+        sent = await send_chat(
+            client,
+            workspace_id=workspace_id,
+            chat_id=chat_id,
+            text=f"as {role}",
+        )
+        assert sent.status_code == 200
+    act_as_assistant()
+    drained = from_plain(
+        loads((await drain(client, session_id=kb)).content),
+        dict[str, object],
+    )
+    assert [
+        (from_plain(m["text"], str), from_plain(m["source_role"], str))
+        for m in from_plain(drained["messages"], list[dict[str, object]])
+    ] == [("as viewer", "viewer"), ("as writer", "writer"), ("as admin", "admin")]
 
 
 @pytest.mark.db_pglite

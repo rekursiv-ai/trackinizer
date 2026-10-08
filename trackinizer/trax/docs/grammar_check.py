@@ -121,6 +121,18 @@ CORPUS: tuple[Case, ...] = (
     Case(label="verb cost + ref", tokens="cost issue 7 --deep"),
     Case(label="verb profile bare", tokens="profile"),
     Case(label="verb profile field set", tokens="profile work url to https://x"),
+    Case(label="verb env bare", tokens="env"),
+    Case(label="verb env set", tokens="env REGION to eu-west"),
+    Case(label="verb env secret from stdin", tokens="env secret API_TOKEN to -"),
+    Case(label="verb env delete", tokens="env REGION del"),
+    Case(label="verb machine bare", tokens="machine"),
+    Case(label="verb machine show", tokens="machine gpu-box"),
+    Case(label="verb machine field", tokens="machine gpu-box role"),
+    Case(label="verb machine set", tokens="machine gpu-box role to dev"),
+    Case(label="verb machine how from file", tokens="machine gpu-box how to @how.txt"),
+    Case(label="verb machine label add", tokens="machine gpu-box label add gpu"),
+    Case(label="verb machine label del", tokens="machine gpu-box label del gpu"),
+    Case(label="verb machine delete", tokens="machine gpu-box del"),
     # == row commands: a leading KIND, then the row grammar ===================
     # -- bare kind + list queries (no mutation) -----------------------------
     Case(label="bare kind (list all)", tokens="issue"),

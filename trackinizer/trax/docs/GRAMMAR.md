@@ -54,6 +54,15 @@ Top-level flags precede the verb or row-command:
   ``deleted:``) and the row-detail ``id:`` block. UUIDs are hidden
   by default; users reference rows by ``Kind#seq``.
 
+The server and key come from, highest first: `--profile NAME`; `$TRACKINIZER_URL`
+with `$TRACKINIZER_TOKEN` (the key); `$TRACKINIZER_URL` alone, which sends no
+key; `$TRACKINIZER_PROFILE`, the `current` profile, then `default`. A
+`$TRACKINIZER_TOKEN` is ignored under `--profile` and without
+`$TRACKINIZER_URL` (the profile's own key is used, and the token is sent
+nowhere); with a URL it must be printable ASCII with no whitespace. A command
+run with the token and `$TRACKINIZER_URL` both set never uses the daemon, so
+the key stays in the calling process.
+
 **Write flags** are accepted on any row write (create/edit/edge), parsed by
 argparse so they may appear anywhere in the command:
 
@@ -432,7 +441,7 @@ These are the non-row top-level verbs. Each parses its own argv with
 flags documented here.
 
 ```
-verb_name   ::= "help" | "profile" | "next" | "recent"
+verb_name   ::= "help" | "profile" | "env" | "machine" | "next" | "recent"
              |  "cost" | "confidence" | "authority" | "blocked" | "board"
              |  "graph" | "id" | "version" | "export" | "send" | "run"
              |  "search-sessions"
@@ -446,6 +455,10 @@ kinds resolve first, so a field can never shadow a command.
   anywhere is **only** accepted as a leading or trailing token; never
   in a value position.
 - `trax profile [name] (action)` -- profile management; see section 8.
+- `trax env [secret] [NAME (action)]` -- the org's environment variables;
+  see section 8a.
+- `trax machine [NAME (action)]` -- the registry of machines campaigns may
+  run on; see section 8b.
 - `trax id <uuid> [--format table|json] [--changes]` -- show one row by its
   global id, with no leading kind (the UUID is unique, so the kind is
   redundant). Unlike `trax <kind> <uuid>` it applies no kind typo-guard.
@@ -509,6 +522,75 @@ A profile field-set uses the same `field "to" value` action as a row
 scalar edit (§4): `profile [name] url to URL`. A bare `profile_field`
 (no `to`) projects the field's current value. One field per command --
 the read/set grammar matches rows exactly. Examples in section 10.
+
+## 8a. Env command
+
+```
+env_command ::= "env" env_tail?
+env_tail    ::= "secret"? var_name "to" env_value
+             |  var_name "del"
+env_value   ::= "-" | "@" path | literal
+var_name    ::= [A-Za-z_][A-Za-z0-9_]{0,127}
+```
+
+Bare `trax env` **lists the org's variables**, one line per variable: the
+name, then the value. A secret shows `(secret)` and never its value; no
+route returns one. `env NAME to VALUE` sets a plain value and
+`env NAME del` deletes one; both need the admin role.
+
+A value is a literal, `-` (read stdin) or `@FILE` (read that file, relative
+to the caller's directory). From stdin or a file, exactly one trailing
+newline is stripped (`\r\n` counts as one); nothing else is. An empty value
+is refused, as is one over 65,536 bytes. A literal value of `help`, `-h` or
+`--help` as the last word shows help instead of setting anything, as it does
+for every verb; set such a value with `@FILE`. A file or stdin value must be
+valid UTF-8.
+
+`secret` stores the value write-only. Its value must come from stdin or a
+file, so it never appears on a command line, in shell history or in a
+process listing: `env secret NAME to VALUE` with a literal is refused
+before any request (E010). A name outside `var_name` is refused before any
+request (E011). `secret` is a keyword only in front of `NAME to VALUE`;
+`env secret to x` sets a variable named `secret`. Examples in section 10.
+
+## 8b. Machine command
+
+```
+machine_command ::= "machine" machine_tail?
+machine_tail    ::= machine_name machine_action?
+machine_action  ::= "del"
+                 |  machine_field ( "to" value )?
+                 |  "label" ( "add" | "del" ) label
+machine_field   ::= "role" | "how"
+machine_name    ::= [a-z0-9][a-z0-9-]{0,62}
+value           ::= "-" | "@" path | literal
+label           ::= literal
+```
+
+The registry records where campaigns may run: a name, a `role`, one `how`
+line telling an agent how to use the machine, and labels. It only records
+machines; nothing here reaches one, and `del` unregisters a machine without
+touching it.
+
+Bare `trax machine` **lists the machines**, one line each: name, role,
+labels, and `how` cut to one line (`-` stands for an empty field).
+`machine NAME` shows one machine in full, and a bare `machine_field`
+(`machine NAME role`) prints that field's value as stored, for scripts.
+Listing and showing need the writer role; every other form needs the admin
+role.
+
+`machine NAME role to ROLE` sets one field and creates the machine when it
+is new; a field left out keeps its value, and `to ''` clears one. A `value`
+is a literal, `-` (read stdin) or `@FILE` (read that file, relative to the
+caller's directory), as in section 8a: one trailing newline is stripped
+from stdin and file values, and an empty one is refused rather than
+clearing the field. A role is `[a-z][a-z0-9-]{0,31}`, a `how` line is at
+most 2,000 characters, and a label is any non-blank text. `label add` and
+`label del` change one label and are no-ops when it is already so.
+
+A name outside `machine_name`, or one of `enroll join init import check
+connect leave top`, is refused before any request (E012, E013). Examples in
+section 10.
 
 ## 9. Token tables
 
@@ -970,6 +1052,37 @@ trax profile staging url to https://staging.trackinizer.example
 trax profile staging del
 ```
 
+### Env
+
+Env commands read and write the server's variable store, so these examples
+are not run against the test fake:
+
+```
+trax env
+trax env REGION to eu-west
+trax env NOTES to @notes.txt
+printf '%s' "$TOKEN" | trax env secret API_TOKEN to -
+trax env secret API_TOKEN to @token.txt
+trax env REGION del
+```
+
+### Machine
+
+Machine commands read and write the server's machine registry, so these
+examples are not run against the test fake:
+
+```
+trax machine
+trax machine gpu-box
+trax machine gpu-box role
+trax machine gpu-box role to dev
+trax machine gpu-box how to "ssh gpu-box; cd /work"
+trax machine gpu-box how to @how.txt
+trax machine gpu-box label add gpu
+trax machine gpu-box label del gpu
+trax machine gpu-box del
+```
+
 ## 11. Counterexamples
 
 Every fenced `trax!` block must be rejected with the named error code.
@@ -1027,6 +1140,60 @@ Reason: `status` is a NOT-NULL column, so `isnull` / `notnull` is
 always-empty / always-all -- a silent wrong answer. A `null_op` is
 rejected on any NOT-NULL column.
 
+```trax! E010
+trax env secret API_TOKEN to hunter2
+```
+
+Reason: a secret's value comes from stdin (`-`) or a file (`@FILE`), never
+the command line, so it stays out of shell history and process listings.
+
+```trax! E011
+trax env 1bad to eu-west
+```
+
+Reason: a variable name is `[A-Za-z_][A-Za-z0-9_]{0,127}`, the form an
+environment accepts; the name is checked before any request.
+
+```trax! E012
+trax machine enroll role to dev
+```
+
+Reason: `enroll` and the other reserved words are, or will be, route segments
+and CLI words, so no machine may take one; the name is checked before any
+request.
+
+```trax! E013
+trax machine GPU_Box role to dev
+```
+
+Reason: a machine name is `[a-z0-9][a-z0-9-]{0,62}`, the form the server
+accepts as a path segment.
+
+```trax! E014
+trax machine gpu-box role dev
+```
+
+Reason: a machine field-set uses the `field "to" value` action, like a row
+edit. Bare adjacency is not a production.
+
+```trax! E015
+trax machine gpu-box colour to red
+```
+
+Reason: `role` and `how` are the only machine fields.
+
+```trax! E016
+trax machine gpu-box label set gpu
+```
+
+Reason: a label action is `add` or `del`, with exactly one label.
+
+```trax! E003
+trax machine gpu-box del now
+```
+
+Reason: `del` is terminal; nothing may follow it.
+
 ```trax! E007
 trax profile prod url https://trackinizer.example
 ```
@@ -1058,6 +1225,13 @@ write is rejected up front so `status` does not commit while
 | E007 | profile set without 'to'      | profile_action             |
 | E008 | field not valid on kind       | run_actions / run_create   |
 | E009 | null_op on a NOT-NULL column  | list_query / bulk_apply    |
+| E010 | literal secret value          | env_value                  |
+| E011 | invalid variable name         | var_name                   |
+| E012 | reserved machine name         | machine_name               |
+| E013 | invalid machine name          | machine_name               |
+| E014 | machine set without 'to'      | machine_action             |
+| E015 | unknown machine field         | machine_field              |
+| E016 | label action not add/del      | machine_action             |
 | ...  | (extend as needed)            |                            |
 
 These codes are documentation labels for the rejection, not distinct

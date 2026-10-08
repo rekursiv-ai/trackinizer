@@ -43,6 +43,7 @@ import time
 
 from trackinizer.lib.codec import PlainTree, immutable
 from trackinizer.trax.run.custom_types import Event
+from trackinizer.trax.run.redact import redact_body
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_session_ir import (
     MAX_RECORD_BATCH,
@@ -59,6 +60,7 @@ if TYPE_CHECKING:
     from trackinizer.client.client import Client
     from trackinizer.lib.agent.sessions.tail import Tail
     from trackinizer.trax.run.adapters.custom_types import Adapter
+    from trackinizer.trax.run.redact import Redactor
     from trackinizer.trax.run.slash import SlashCommand
     from trackinizer.types.streams import TraxRecord
 
@@ -270,10 +272,18 @@ class Sink(Protocol):
 
 
 class FileSink(Sink):
-    """Write one JSON line per record to a local JSONL file."""
+    """Write one JSON line per record to a local JSONL file.
 
-    def __init__(self, handle: IO[str]) -> None:
+    Args:
+      handle: The open file.
+      redactor: Masks secret values in every record and command written; ``None``
+        keeps them.
+
+    """
+
+    def __init__(self, handle: IO[str], *, redactor: Redactor | None = None) -> None:
         self._handle = handle
+        self._redactor = redactor
         self._closed = False
         # Positions per FILE, not per run: a session spans several files and
         # each is stored as its own part, numbered from zero.
@@ -303,7 +313,11 @@ class FileSink(Sink):
     def emit(self, adapter_name: str, event: Event) -> None:
         idx = self._next_idx.get(event.path, 0)
         self._next_idx[event.path] = idx + 1
-        self._write_record(adapter_name, event.path, _record_body(idx, event))
+        self._write_record(
+            adapter_name,
+            event.path,
+            _record_body(idx, event, redactor=self._redactor),
+        )
 
     @override
     def emit_slash_command(self, command: SlashCommand, at: datetime) -> None:
@@ -314,8 +328,8 @@ class FileSink(Sink):
                 {
                     "slash_command": {
                         "timestamp": at.isoformat(),
-                        "command": command.command,
-                        "args": command.args,
+                        "command": _redacted(command.command, redactor=self._redactor),
+                        "args": _redacted(command.args, redactor=self._redactor),
                     },
                 },
             )
@@ -405,6 +419,10 @@ class TrackinizerSink(Sink):
     Without the time trigger a short session would withhold every event until
     ``close`` (Ctrl-D), so the live viewer saw nothing stream; the interval
     flush is what makes a 3-turn run appear within ~1s of each turn.
+
+    ``redactor`` masks secret values in every record and command before it is
+    buffered, so neither a send, a retry nor the degrade seam's :meth:`pending`
+    can carry one; ``None`` keeps them.
     """
 
     def __init__(
@@ -414,12 +432,14 @@ class TrackinizerSink(Sink):
         *,
         actor: str | None = None,
         rooms: tuple[str, ...] = (),
+        redactor: Redactor | None = None,
         batch_size: int = 50,
         flush_interval_sec: float = 1.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._client = client
         self._cli = cli
+        self._redactor = redactor
         self._actor = actor
         self._rooms = rooms
         self._batch_size = batch_size
@@ -474,7 +494,9 @@ class TrackinizerSink(Sink):
         self._next_idx[event.path] = idx + 1
         if not self._buffer:
             self._oldest_buffered_at = self._clock()
-        self._buffer.append((event.path, _record_body(idx, event)))
+        self._buffer.append(
+            (event.path, _record_body(idx, event, redactor=self._redactor)),
+        )
         if len(self._buffer) >= self._batch_size:
             self._flush()
 
@@ -494,7 +516,11 @@ class TrackinizerSink(Sink):
         if not self._buffer and not self._slash:
             self._oldest_buffered_at = self._clock()
         self._slash.append(
-            SlashCommandBody(timestamp=at, command=command.command, args=command.args),
+            SlashCommandBody(
+                timestamp=at,
+                command=_redacted(command.command, redactor=self._redactor),
+                args=_redacted(command.args, redactor=self._redactor),
+            ),
         )
 
     @override
@@ -680,7 +706,7 @@ class TrackinizerSink(Sink):
 # Built through :class:`SessionRecordRow` rather than field by field, so the ciphertext
 # split and the search projection are computed in ONE place and the stored row cannot
 # disagree with what the wire carried.
-def _record_body(idx: int, event: Event) -> RecordBody:
+def _record_body(idx: int, event: Event, *, redactor: Redactor | None) -> RecordBody:
     """Return the wire body for one captured record at position ``idx``."""
     # ``session_id`` is the server's to assign; the row type needs one, and
     # only its projections are read here.
@@ -690,7 +716,12 @@ def _record_body(idx: int, event: Event) -> RecordBody:
         idx=idx,
         record=event.record,
     )
-    return RecordBody.of(row)
+    return redact_body(RecordBody.of(row), redactor=redactor)
+
+
+def _redacted(text: str, *, redactor: Redactor | None) -> str:
+    """Return ``text`` with secret values masked; unchanged without a redactor."""
+    return text if redactor is None else redactor.redact(text)
 
 
 class ResilientSink(Sink):
@@ -709,6 +740,8 @@ class ResilientSink(Sink):
     Args:
       primary: The sink that reaches the server.
       fallback_path: Where the local copy goes.
+      redactor: Masks secret values in what the local copy records itself; what
+        the primary hands over is already masked.
       retry_sec: How long to wait after failing to reach the server before
         trying again.
       clock: Monotonic seconds, for the retry schedule.
@@ -720,11 +753,13 @@ class ResilientSink(Sink):
         primary: Sink,
         *,
         fallback_path: Path,
+        redactor: Redactor | None = None,
         retry_sec: float = 30.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._primary = primary
         self._fallback_path = fallback_path
+        self._redactor = redactor
         self._fallback: FileSink | None = None
         self._held: deque[_Held] = deque()
         self._retry_sec = retry_sec
@@ -913,7 +948,7 @@ class ResilientSink(Sink):
             handle = path.open("a", encoding="utf-8")  # pragma: no mutate
             # Line by line, so a run killed before ``close`` keeps what it wrote.
             handle.reconfigure(line_buffering=True)
-            self._fallback = FileSink(handle)
+            self._fallback = FileSink(handle, redactor=self._redactor)
         return self._fallback
 
 

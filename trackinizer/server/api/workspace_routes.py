@@ -144,6 +144,7 @@ async def workspace_message_route(
             body=body,
             key=key,
             source=identity.email,
+            source_role=identity.role,
             inbound=get_inbound(request),
             assistant=get_assistant(request),
             hub=get_hub(request),

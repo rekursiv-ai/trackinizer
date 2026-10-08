@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, override
 
 import contextlib
 import functools
 import inspect
+import io
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -19,6 +21,7 @@ import pytest
 
 from trackinizer.trax.daemon.client import (
     DaemonRequestLostError,
+    _request,
     delegate,
     should_delegate,
 )
@@ -34,6 +37,24 @@ from trackinizer.trax.daemon.protocol import (
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+
+
+class _Terminal(io.StringIO):
+    """A stdout that reports itself a terminal."""
+
+    @override
+    def isatty(self) -> bool:
+        return True
+
+
+@pytest.fixture(autouse=True)
+def no_ambient_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Scrub an exported ``TRACKINIZER_TOKEN``.
+
+    A test that sets ``TRACKINIZER_URL`` would pair with it, and the pair turns
+    delegation off.
+    """
+    monkeypatch.delenv("TRACKINIZER_TOKEN", raising=False)
 
 
 @contextlib.contextmanager
@@ -141,6 +162,109 @@ class TestShouldDelegate:
         assert should_delegate(["agentsession", "title", "re", "run"])
 
 
+class TestTokenNeverCrossesTheSocket:
+    """``TRACKINIZER_TOKEN`` is a key: in-process with a URL, never forwarded.
+
+    ``_resolve_target`` reads it only beside ``TRACKINIZER_URL``, so that pair
+    is the one case that cannot use the daemon.
+    """
+
+    @pytest.fixture(autouse=True)
+    def token_in_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRACKINIZER_TOKEN", "tok-SENTINEL-93f1c7")
+
+    def test_runs_in_process_when_the_token_comes_with_a_url(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_URL", "https://trackinizer.example")
+
+        assert not should_delegate(["issue", "status", "is", "active"])
+
+    def test_delegates_a_token_without_a_url(self) -> None:
+        """A lone token is never read, so it must not cost the daemon.
+
+        Ops shells export the token with no URL; refusing on it alone made every
+        call there skip the daemon for nothing.
+        """
+        assert should_delegate(["issue", "status", "is", "active"])
+
+    def test_delegates_a_url_without_a_token(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("TRACKINIZER_TOKEN")
+        monkeypatch.setenv("TRACKINIZER_URL", "https://trackinizer.example")
+
+        assert should_delegate(["issue"])
+
+    @pytest.mark.parametrize(
+        ("token", "url"),
+        [
+            pytest.param("", "https://trackinizer.example", id="empty-token"),
+            pytest.param("tok-SENTINEL-93f1c7", "", id="empty-url"),
+        ],
+    )
+    def test_an_empty_value_is_unset(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        token: str,
+        url: str,
+    ) -> None:
+        """``_resolve_target`` treats an empty value as absent, so must delegation.
+
+        The other variable is set in each case: with both absent the daemon is
+        allowed anyway, and the test would prove nothing.
+        """
+        monkeypatch.setenv("TRACKINIZER_TOKEN", token)
+        monkeypatch.setenv("TRACKINIZER_URL", url)
+
+        assert should_delegate(["issue"])
+
+    def test_forwards_no_token_value(self, tmp_path: Path) -> None:
+        sock = tmp_path / "traxd.sock"
+        with serving(sock) as seen:
+            delegate(["issue"], socket_override=sock, source_version="v1")
+
+        assert "TRACKINIZER_TOKEN" not in seen[0].env
+        assert b"tok-SENTINEL-93f1c7" not in seen[0].to_json()
+
+
+class TestMachineHostCommands:
+    """``machine NAME enroll`` and ``machine NAME connect`` run in-process."""
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["machine", "gpu-box", "enroll"],
+            ["machine", "gpu-box", "connect"],
+            ["machine", "gpu-box", "CONNECT"],
+            ["--profile", "origin", "machine", "gpu-box", "connect"],
+            ["--port=9", "machine", "gpu-box", "enroll", "--ttl", "1h"],
+        ],
+    )
+    def test_refuses_the_host_verbs(self, argv: list[str]) -> None:
+        assert not should_delegate(argv)
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["machine"],
+            ["machine", "gpu-box"],
+            ["machine", "gpu-box", "role", "to", "connect"],
+            ["machine", "gpu-box", "how", "to", "enroll"],
+            ["machine", "gpu-box", "label", "add", "connect"],
+            ["issue", "7", "title", "to", "connect"],
+            ["issue", "gpu-box", "enroll"],
+        ],
+    )
+    def test_delegates_the_registry_commands_and_values(
+        self,
+        argv: list[str],
+    ) -> None:
+        assert should_delegate(argv)
+
+
 class TestDelegate:
     def test_returns_the_daemon_response(self, tmp_path: Path) -> None:
         sock = tmp_path / "traxd.sock"
@@ -164,6 +288,61 @@ class TestDelegate:
 
         assert seen[0].isatty in (True, False)
         assert seen[0].columns >= 0
+
+    def test_a_piped_stdout_sends_no_width(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(sys, "stdout", io.StringIO())
+        sock = tmp_path / "traxd.sock"
+        with serving(sock) as seen:
+            delegate(["issue"], socket_override=sock, source_version="v1")
+
+        assert seen[0].isatty is False
+        assert seen[0].columns == 0
+
+    def test_a_closed_stdout_is_not_a_terminal(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        closed = io.StringIO()
+        closed.close()
+        monkeypatch.setattr(sys, "stdout", closed)
+
+        request = _request(["issue"], "v1")
+
+        assert request.isatty is False
+        assert request.columns == 0
+
+    def test_a_stdout_without_isatty_is_not_a_terminal(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(sys, "stdout", object())
+
+        assert _request(["issue"], "v1").isatty is False
+
+    def test_a_terminal_sends_its_width(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fallbacks: list[tuple[int, int]] = []
+
+        def terminal_size(fallback: tuple[int, int]) -> os.terminal_size:
+            fallbacks.append(fallback)
+            return os.terminal_size((77, 9))
+
+        monkeypatch.setattr(sys, "stdout", _Terminal())
+        monkeypatch.setattr(shutil, "get_terminal_size", terminal_size)
+        sock = tmp_path / "traxd.sock"
+        with serving(sock) as seen:
+            delegate(["issue"], socket_override=sock, source_version="v1")
+
+        assert seen[0].isatty is True
+        assert seen[0].columns == 77
+        assert fallbacks == [(120, 24)]
 
     def test_sends_ambient_environment(self, tmp_path: Path) -> None:
         """The daemon must not resolve identity from its OWN environment."""

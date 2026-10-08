@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
+    from trackinizer.server.auth import Role
     from trackinizer.server.chat_hub import ChatHub
     from trackinizer.server.config import Assistant
     from trackinizer.server.visuals.catalog import VisualCatalogBody
@@ -115,6 +116,7 @@ async def send_workspace_message(
     body: WorkspaceMessageRequest,
     key: uuid.UUID,
     source: str,
+    source_role: Role,
     inbound: InboundQueue,
     assistant: Assistant | None,
     hub: ChatHub,
@@ -137,6 +139,7 @@ async def send_workspace_message(
       body: Browser message, optional conversation and chat visual identity.
       key: Required idempotency key.
       source: Attested browser principal email.
+      source_role: That principal's role.
       inbound: Session message queue.
       assistant: The configured assistant, if any.
       hub: Where the committed line is published.
@@ -177,6 +180,7 @@ async def send_workspace_message(
                 key=key,
                 request_hash=request_hash,
                 source=source,
+                source_role=source_role,
                 inbound=inbound,
                 assistant=assistant,
             )
@@ -491,6 +495,7 @@ async def _store_send(
     key: uuid.UUID,
     request_hash: str,
     source: str,
+    source_role: Role,
     inbound: InboundQueue,
     assistant: Assistant | None,
 ) -> tuple[SentMessage, uuid.UUID, Inbound] | None:
@@ -569,7 +574,13 @@ async def _store_send(
             message=message,
         ),
         partner.session_id,
-        Inbound(text=body.text, source=source, context=context, seq=message.seq),
+        Inbound(
+            text=body.text,
+            source=source,
+            source_role=source_role,
+            context=context,
+            seq=message.seq,
+        ),
     )
 
 

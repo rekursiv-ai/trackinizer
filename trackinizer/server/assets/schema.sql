@@ -907,6 +907,66 @@ CREATE TABLE IF NOT EXISTS session_liveness (
     reaped      BOOLEAN NOT NULL DEFAULT FALSE
 );
 
+-- The environment variables an agent launch exports, by layer (org, machine,
+-- user). A secret's value is never stored here: ``value`` is NULL and the
+-- server's secret backend holds it. Added in 034.
+CREATE TABLE IF NOT EXISTS variables (
+    layer       TEXT NOT NULL CHECK (layer IN ('org', 'machine', 'user')),
+    owner       TEXT NOT NULL DEFAULT '',
+    name        TEXT NOT NULL CHECK (name ~ '^[A-Za-z_][A-Za-z0-9_]{0,127}$'),
+    secret      BOOLEAN NOT NULL,
+    value       TEXT,
+    updated_by  TEXT NOT NULL,
+    updated     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (layer, owner, name),
+    CHECK (secret = (value IS NULL))
+);
+
+-- The machines a campaign may run on: a name, a role, one line telling an agent
+-- how to use the machine, and labels. Added in 035.
+CREATE TABLE IF NOT EXISTS machines (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        TEXT NOT NULL UNIQUE CHECK (name ~ '^[a-z0-9][a-z0-9-]{0,62}$'),
+    role        TEXT NOT NULL DEFAULT ''
+                CHECK (role = '' OR role ~ '^[a-z][a-z0-9-]{0,31}$'),
+    how         TEXT NOT NULL DEFAULT '' CHECK (char_length(how) <= 2000),
+    labels      TEXT[] NOT NULL DEFAULT '{}',
+    created     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by  TEXT NOT NULL,
+    updated     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_heartbeat TIMESTAMPTZ,
+    host_instance  UUID,
+    host_version   TEXT NOT NULL DEFAULT '' CHECK (char_length(host_version) <= 64),
+    facts          JSONB NOT NULL DEFAULT '{}'
+                   CHECK (jsonb_typeof(facts) = 'object' AND octet_length(facts::text) <= 8192)
+);
+
+-- One-use tokens that let a host join as a machine, and the credentials it joins
+-- with. A revoked credential row is kept so the server answers it 410, not 401.
+-- Added in 036.
+CREATE TABLE IF NOT EXISTS machine_enrollments (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    machine_id    UUID NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+    secret_sha256 BYTEA NOT NULL CHECK (octet_length(secret_sha256) = 32),
+    created_by    TEXT NOT NULL,
+    created       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at    TIMESTAMPTZ NOT NULL,
+    used_at       TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_machine_enrollments_open
+    ON machine_enrollments (machine_id) WHERE used_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS machine_credentials (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    machine_id    UUID NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+    secret_sha256 BYTEA NOT NULL CHECK (octet_length(secret_sha256) = 32),
+    created       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used     TIMESTAMPTZ,
+    revoked_at    TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_machine_credentials_live
+    ON machine_credentials (machine_id) WHERE revoked_at IS NULL;
+
 -- Per-user canvas state. The companion receipt table makes retried operations
 -- return the original result without applying them twice. Added in 026.
 CREATE TABLE IF NOT EXISTS visual_workspaces (

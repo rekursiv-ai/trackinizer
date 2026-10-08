@@ -2,7 +2,7 @@
 name: trax
 description: >
   ALWAYS invoke this skill for Trackinizer/trax work tracking, inquiry records, and visual workspaces: issues, beliefs, papers, experiments, codechanges, web results/searches, sessions, costs, board, workspace. Do not hand-write trax records directly -- invoke this skill first.
-argument-hint: "[help|next|blocked|board|graph|search|recent|cost|profile|workspace|<kind>] ..."
+argument-hint: "[help|next|blocked|board|graph|search|recent|cost|profile|env|machine|workspace|<kind>] ..."
 user-invocable: true
 tools: Bash, Read, Write, Edit, Glob, Grep
 ---
@@ -407,6 +407,22 @@ trax issue title to "Step 1" \
 When a tree is too large or its node seqs must be referenced later, split across
 commands instead -- capture each new seq from the output, then attach its
 children by ref.
+
+## Environment variables
+
+`trax env` lists the org's variables; `trax env NAME to VALUE` sets one and
+`trax env NAME del` deletes one (admin role). A secret is write-only: pipe it
+with `trax env secret NAME to -` or point at a file with `to @FILE`. A literal
+secret on the command line is refused, and a listing shows `(secret)`, never a
+value. Never echo a secret into a command, a row or your own output.
+
+## Machines
+
+`trax machine` lists the machines campaigns may run on and `trax machine NAME`
+shows one, with its role, labels and `how` line (writer role). `trax machine
+NAME role to ROLE` and `how to TEXT` set a field and create the machine;
+`label add|del LABEL` and `del` change or unregister it (admin role). The
+registry only records machines; read `how` before using one.
 
 ## Recovery
 

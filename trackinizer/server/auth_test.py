@@ -117,6 +117,27 @@ class TestHashSecret:
         secret2, _ = generate_token()
         assert secret != secret2
 
+    def test_no_api_key_starts_with_machine_prefix(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        draws = iter(("machine_" + "A" * 35, "machine_" + "B" * 35, "C" * 43))
+
+        def token_urlsafe(nbytes: int) -> str:
+            del nbytes
+            return next(draws)
+
+        monkeypatch.setattr(
+            auth,
+            "secrets",
+            SimpleNamespace(token_urlsafe=token_urlsafe),
+        )
+
+        secret, prefix = generate_token()
+
+        assert secret == "trax_" + "C" * 43
+        assert prefix == secret[:TOKEN_PREFIX_LEN]
+
 
 # ---- current_user tests ---------------------------------------------------
 
@@ -184,6 +205,29 @@ def _request_with(
 
 class TestCurrentUser:
     """Bearer-token middleware behaviour."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bearer",
+        [
+            "trax_machine_" + "0" * 32 + "_" + "A" * 43,
+            "enr_" + "0" * 32 + "_" + "A" * 43,
+        ],
+        ids=["credential", "enrollment"],
+    )
+    async def test_a_machine_secret_is_401_before_any_lookup(
+        self,
+        bearer: str,
+    ) -> None:
+        engine = FakeEngine()
+        engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(bearer))]
+
+        with pytest.raises(HTTPException) as exc:
+            await current_user(_request_with(engine, f"Bearer {bearer}"))
+
+        assert exc.value.status_code == 401
+        engine.conn.fetch.assert_not_called()
+        engine.conn.execute.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_valid_token_returns_identity(self) -> None:

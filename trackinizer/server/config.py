@@ -102,6 +102,9 @@ class Config:
       session_secret: HMAC key for the session and OAuth-state cookies.
         Empty disables session login. Must be stable across processes
         sharing the cookie -- rotating it logs everyone out.
+      secrets: Secret-variable backend: ``file`` (under the user data
+        directory), ``file:/abs/path``, or ``none`` to refuse secret
+        variables. Environment only (``TRACKINIZER_SECRETS``).
       session_max_age_seconds: Session cookie TTL; defaults to 30 days.
       auth_disabled: Bypass auth -- every request becomes a synthetic
         admin. Local demos only; never in production.
@@ -139,6 +142,7 @@ class Config:
     session_embedders: tuple[str, ...] = ()
     web: bool = False
     session_secret: str = ""
+    secrets: str = "file"
     session_max_age_seconds: int = _DEFAULT_SESSION_MAX_AGE_SECONDS
     auth_disabled: bool = False
     assistant: Assistant | None = None
@@ -169,6 +173,7 @@ class Config:
             ),
             web=os.environ.get("TRACKINIZER_WEB") == "1",
             session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET", ""),
+            secrets=secrets_from_env(),
             session_max_age_seconds=session_max_age_from_env(),
             auth_disabled=auth_disabled_from_env(),
             assistant=parse_assistant(os.environ.get("TRACKINIZER_ASSISTANT", "")),
@@ -199,6 +204,7 @@ class Config:
             web=flags.web,
             # Secrets come from the environment only, never CLI flags.
             session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET", ""),
+            secrets=secrets_from_env(),
             session_max_age_seconds=flags.session_max_age_seconds,
             auth_disabled=not flags.auth,
             assistant=parse_assistant(flags.assistant),
@@ -250,6 +256,11 @@ def session_max_age_from_env() -> int:
             f"TRACKINIZER_SESSION_MAX_AGE_SECONDS must be >= 1, got {seconds}",
         )
     return seconds
+
+
+def secrets_from_env() -> str:
+    """Read ``TRACKINIZER_SECRETS``; unset keeps the :class:`Config` default."""
+    return os.environ.get("TRACKINIZER_SECRETS", Config().secrets)
 
 
 def auth_disabled_from_env() -> bool:

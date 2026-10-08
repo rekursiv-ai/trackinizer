@@ -144,8 +144,12 @@ class TestPureFunctions:
             build_engine()
 
     def test_parse_engine_unknown_raises_config_error(self) -> None:
-        with pytest.raises(ConfigError):
+        with pytest.raises(ConfigError, match="bogus"):
             parse_engine("bogus")
+
+    @pytest.mark.parametrize("name", ["pglite", "pg"])
+    def test_parse_engine_accepts_each_engine(self, name: str) -> None:
+        assert parse_engine(name) == name
 
 
 class TestSessionMaxAge:
@@ -376,6 +380,31 @@ class TestAssistant:
         monkeypatch.setenv("TRACKINIZER_ASSISTANT", "scout")
         with pytest.raises(ConfigError, match="ACTOR=EMAIL"):
             Config.from_env()
+
+
+class TestSecrets:
+    """``secrets`` names the secret backend and comes from the environment only."""
+
+    def test_the_default_is_the_file_backend(self) -> None:
+        assert Config().secrets == "file"
+
+    def test_from_env_reads_the_backend(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRACKINIZER_SECRETS", "none")
+        assert Config.from_env().secrets == "none"
+
+    def test_from_env_absent_is_the_default(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("TRACKINIZER_SECRETS", raising=False)
+        assert Config.from_env().secrets == "file"
+
+    def test_from_args_reads_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_SECRETS", "file:/srv/secrets")
+        assert Config.from_args(_server_args()).secrets == "file:/srv/secrets"
 
 
 def _patch_data_dir(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:

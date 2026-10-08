@@ -449,6 +449,11 @@ GET    /api/sessions/<uuid>/inbound
 POST   /api/messages
 ```
 
+Each drained message carries the sender the server attested as `source` and,
+beside it, `source_role`, that sender's effective role (`viewer`, `writer` or
+`admin`) as the server saw it when the message was sent. Neither is taken from
+the request, and a message the server generates has no `source_role`.
+
 Inbound messages whose attested `source` is `trackinizer` are subscriber
 push envelopes -- JSON metadata for a committed change, generated
 server-side (no HTTP surface produces them). Shape and client-side
@@ -623,12 +628,15 @@ is stored: a message is refused, never dropped.
 `GET /api/chats` lists the user's conversations, newest change first, at most
 50. `GET /api/chats/<uuid>` returns the conversation and its messages: the
 newest 500 without `after_seq`, with `earlier` true when older ones exist, or up
-to 500 numbered above `after_seq`. The owner's browser reads it, and so does the
-agent key that opened the conversation's live partner session, which is how an
-assistant that lost its memory of a thread reseeds it; any other key is 403, and
-a conversation the browser's user does not own is 404. `DELETE` takes no body,
-removes the conversation and its messages, answers 204, and pushes a `deleted`
-frame. It and the list are browser only: an API key gets 403.
+to 500 numbered above `after_seq`. A user's message carries `author_role`, the
+role the author's active account has when the thread is read, and `null` when no
+active account has that email; the partner's messages carry `null`. The owner's
+browser reads it, and so does the agent key that opened the conversation's live
+partner session, which is how an assistant that lost its memory of a thread
+reseeds it; any other key is 403, and a conversation the browser's user does not
+own is 404. `DELETE` takes no body, removes the conversation and its messages,
+answers 204, and pushes a `deleted` frame. It and the list are browser only: an
+API key gets 403.
 
 `POST /api/chats/<uuid>/messages` is for agent keys only. The body is `text` and
 `kind`, `answer` or `status`, and `text` of at most 65,536 characters must hold a
@@ -666,6 +674,93 @@ current status and delivered `seq`. A comment goes out on open and after 25 s
 without a frame, and on each the server checks the user is still active and ends
 the stream if not. A subscriber more than 256 frames behind is dropped and
 reconnects from the `workspace` frame.
+
+### 1.26 Variables
+
+```
+GET    /api/variables
+PUT    /api/variables/<name>
+DELETE /api/variables/<name>
+```
+
+The environment variables an agent launch exports, plain and secret. Only the
+org layer has routes; the store also keys machine and user layers. `GET` is
+writer role and `PUT` / `DELETE` are admin role. Bodies: section 3.25.
+
+A plain value is stored and listed. A secret's value goes to the server's
+secret backend, which `TRACKINIZER_SECRETS` selects (`file`, `file:/abs/path`,
+or `none`); no route returns it, so a listed secret has `value: null`. A name
+stored as a secret stays secret: a plain `PUT` on it answers 409 until the
+variable is deleted. Without a secret backend, a secret `PUT` and the `DELETE`
+of a secret answer 503. A name must match `^[A-Za-z_][A-Za-z0-9_]{0,127}$`
+and a value is 1 to 65536 bytes of UTF-8 with no NUL; anything else answers
+422, and a 422 under `/api/variables` never echoes the rejected input, not
+even as a body key. The same holds behind a path prefix.
+
+### 1.26 Machines
+
+```
+GET    /api/machines
+GET    /api/machines/<name>
+PUT    /api/machines/<name>
+PATCH  /api/machines/<name>/labels
+DELETE /api/machines/<name>
+POST   /api/machines/enroll
+POST   /api/machines/join
+POST   /api/machines/<uuid>/heartbeat
+POST   /api/machines/<name>/revoke
+```
+
+The registry of machines a campaign may run on: a name, a role, a `how`
+line telling an agent how to use the machine, and labels. It never reaches a
+machine, so `DELETE` only unregisters. Both `GET`s are writer role; `PUT`,
+`PATCH`, `DELETE`, `enroll` and `revoke` are admin role. `join` and
+`heartbeat` take no role: the secret they carry is the credential. Bodies:
+section 3.26.
+
+`PUT` creates the machine when the name is new. A field the body leaves out
+keeps its value (a new machine starts with it empty) and `""` clears it.
+`PATCH` adds the `add` labels, then removes the `remove` labels; adding a
+label already present and removing one that is absent are no-ops. Labels are
+stripped and deduplicated, as an Issue's are, and a blank label answers 422.
+`PATCH` and `DELETE` answer 404 for an unregistered name, as does `GET`.
+
+A name must match `^[a-z0-9][a-z0-9-]{0,62}$` and must not be `enroll`, `join`,
+`init`, `import`, `check`, `connect`, `leave` or `top`, which are, or will be,
+route segments and CLI words. A role is empty or matches
+`^[a-z][a-z0-9-]{0,31}$`; `how` is at most 2000 characters with no NUL.
+Anything else, on any of the five registry routes, answers 422.
+
+A machine that runs a host connects in three steps. An admin calls `enroll`
+with the machine's name, which registers the machine if it is new and returns a
+one-use enrollment token (`enr_...`) valid for 15 minutes; a new `enroll`
+supersedes any open token. The host calls `join` with the token, once, and
+receives the machine's id and its machine credential (`trax_machine_...`).
+A token that is malformed, unknown, used, expired, issued for another name, or
+issued by an account that is no longer an active admin answers 401 with one
+body. Joining a machine that already has a live credential revokes that
+credential first. Both responses are `Cache-Control: no-store`, and a 422 on
+`join` never echoes the token, not even as a body key.
+
+The host then calls `heartbeat` with the credential as its bearer token, about
+every 15 seconds, naming its `instance` (its own id, kept across restarts). One
+instance holds a machine at a time: a different instance answers 409 until the
+first has been silent for 180 seconds, and then takes over. A heartbeat whose
+credential was revoked while it was in flight answers 410 and writes nothing.
+A machine's `status` is derived, never stored: `online` within 180 seconds of
+its last heartbeat, `offline` after, `never` before the first, and `revoked`
+once every credential it had was revoked. `GET /api/machines/<name>` adds
+`last_heartbeat`, `host_version` and `facts`.
+
+A machine credential is checked by its own dependency, not by the user roles. It
+never authenticates any other route (those answer 401), and an API key never
+authenticates `heartbeat` (401). A credential for machine A on machine B's path
+answers 404. `revoke` keeps the credential's row and closes any unused token; the
+host's next request then answers 410 `machine_revoked`, while an unknown
+credential answers 401, so only a holder of a once-valid secret learns of the
+revoke. Revoking a revoked machine, or one that never joined, is a no-op.
+`DELETE` answers 409 `machine_in_service` while the machine holds a live
+credential; revoke it first.
 
 ## 2. Glossary
 
@@ -1160,6 +1255,53 @@ Not exported: `inquiry_embeddings` (derived), `session_ciphertext`
 (encrypted, retention-managed), and `users` / `api_keys` / `allowlist`
 (credentials and access control).
 
+### 3.25 Variables
+
+```
+PUT /api/variables/<name>   {"value": "<text>", "secret": false}
+GET /api/variables          {"variables": [{"layer": "org", "owner": "", "name": "<name>", "secret": false, "value": "<text>", "updated_by": "<email>", "updated": "<timestamp>"}, ...]}
+```
+
+`secret` defaults to false. The list is sorted by name. A secret's `value` is
+`null`. `PUT` and `DELETE` answer `204` with no body, so a secret is never
+echoed. `updated_by` is the email of the principal who last set the variable.
+
+### 3.26 Machines
+
+```
+PUT   /api/machines/<name>          {"role": "<role>", "how": "<text>"}
+PATCH /api/machines/<name>/labels   {"add": ["<label>"], "remove": ["<label>"]}
+GET   /api/machines                 {"machines": [{"name": "<name>", "role": "<role>", "how": "<text>", "labels": ["<label>"], "updated_by": "<email>", "updated": "<timestamp>"}, ...]}
+GET   /api/machines/<name>          {"name": "<name>", "role": "<role>", "how": "<text>", "labels": ["<label>"], "updated_by": "<email>", "updated": "<timestamp>"}
+```
+
+Every `PUT` field is optional; `add` and `remove` default to empty. The list
+is sorted by name in byte order and labels keep the order they were added in.
+`PUT`, `PATCH` and `DELETE` answer `204` with no body. `updated_by` is the
+email of the principal who last changed the machine. Each listed machine also
+carries `"status": "never|online|offline|revoked"` and `"last_heartbeat":
+"<timestamp>"` (`null` before the first); `GET /api/machines/<name>` adds
+`"host_version": "<text>"` and `"facts": {"<key>": <value>, ...}`.
+
+```
+POST /api/machines/enroll             {"name": "<name>"}
+                                      -> 201 {"token": "enr_...", "expires_at": "<timestamp>"}
+POST /api/machines/join               {"name": "<name>", "token": "enr_...", "instance": "<uuid>",
+                                       "host_version": "<text>", "facts": {"<key>": <value>}}
+                                      -> 201 {"machine_id": "<uuid>", "credential": "trax_machine_..."}
+POST /api/machines/<uuid>/heartbeat   {"instance": "<uuid>", "host_version": "<text>",
+                                       "facts": {"<key>": <value>}}
+                                      -> 200 {"server_time": "<timestamp>"}
+POST /api/machines/<name>/revoke      -> 204 with no body
+```
+
+`facts` is optional on `join` (default empty) and on `heartbeat`, where leaving
+it out keeps the stored facts and sending it replaces them. A key matches
+`^[a-z][a-z0-9_]{0,31}$`; a value is a string of at most 256 characters with no
+NUL, an integer within 64 bits, a boolean, or a list of such strings; at most 64
+keys and 4096 bytes as compact JSON. `host_version` is at most 64 characters
+with no NUL. Anything else answers 422.
+
 ## 4. Other details
 
 ### 4.1 HTTP status codes
@@ -1169,13 +1311,18 @@ Not exported: `inquiry_embeddings` (derived), `session_ciphertext`
 201  create success
 302  auth redirect
 400  invalid body, invalid field for kind, invalid projected edge mutation
-401  missing or invalid auth
+401  missing or invalid auth; an unusable enrollment token or machine credential
 403  role too low
 404  row not found
-409  idempotency conflict, expected mismatch, immutable field, edge cycle, citation kind mismatch
+409  idempotency conflict, expected mismatch, immutable field, edge cycle, citation kind mismatch, plain value for a secret variable, machine in service, another host connected
+410  machine credential revoked
 422  well-formed body rejected by domain validation (e.g. self-loop edge, priority on a non-priority edge kind)
 500  server fault
+503  secret variable requested and no secret backend is configured
 ```
+
+Variable and machine `PUT`, `PATCH` and `DELETE`, and machine `revoke`, return `204`
+with no body.
 
 Inquiry and edge mutations -- including `DELETE` (field unset, inquiry
 purge, edge remove) -- return `200` with a body carrying the `change_id`
@@ -1185,11 +1332,16 @@ Workspace mutations return canvas state; they do not produce a graph change.
 ### 4.2 Roles
 
 ```
-viewer  GET /api/**, GET /api/web/**, GET /api/me/**, GET /app/**,
+viewer  GET /api/** except GET /api/variables and GET /api/machines/**, GET /api/web/**, GET /api/me/**, GET /app/**,
         PUT /api/me/visual-workspace,
         POST /api/workspaces, POST /api/workspaces/<uuid>/operations
-writer  viewer + inquiry/edge create/mutate/delete
-admin   writer + /api/admin/**
+writer  viewer + inquiry/edge create/mutate/delete, GET /api/variables,
+        GET /api/machines/**
+admin   writer + /api/admin/**, PUT/DELETE /api/variables/<name>,
+        PUT/PATCH/DELETE /api/machines/**, POST /api/machines/enroll,
+        POST /api/machines/<name>/revoke
+none    POST /api/machines/join, POST /api/machines/<uuid>/heartbeat (the
+        enrollment token or machine credential in the request is the credential)
 ```
 
 ### 4.3 Filters and pagination

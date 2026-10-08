@@ -54,6 +54,11 @@ class ChatMessage(BaseModel):
     author: str
     """The user's email, or the partner session's actor."""
 
+    author_role: str | None = None
+    """A user line's author's role now (``viewer``, ``writer`` or ``admin``), read when
+    the thread is; ``None`` for the partner's lines, an author with no active account,
+    and a line published as it was stored."""
+
     text: str
     created: datetime
 

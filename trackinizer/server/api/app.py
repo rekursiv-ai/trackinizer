@@ -15,7 +15,10 @@ import os
 import time
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from starlette.types import Send
 
 import asyncpg
@@ -32,6 +35,8 @@ from trackinizer.server.api import (
     edit,
     export_routes,
     logout_routes,
+    machine_host_routes,
+    machines_routes,
     meta_routes,
     metrics_routes,
     preset_routes,
@@ -41,6 +46,7 @@ from trackinizer.server.api import (
     sessions_routes,
     submit,
     timeline_routes,
+    variables_routes,
     visuals_routes,
     workspace_routes,
 )
@@ -55,6 +61,7 @@ from trackinizer.server.config import (
 )
 from trackinizer.server.embedders import registry
 from trackinizer.server.inbound import InboundQueue
+from trackinizer.server.secrets import parse_secrets
 from trackinizer.server.session_reaper import session_reaper_loop
 from trackinizer.server.store.core import Store
 from trackinizer.server.subscriber import push_changes_to_live_subscribers
@@ -64,6 +71,8 @@ from trackinizer.types.errors import (
     NotFoundError,
     ValidationError,
 )
+from trackinizer.wire.wire_machine_host import JOIN_PATH
+from trackinizer.wire.wire_variables import VARIABLES_PATH
 
 
 if TYPE_CHECKING:
@@ -71,6 +80,7 @@ if TYPE_CHECKING:
 
     from starlette.types import ASGIApp, Message, Receive, Scope
 
+    from trackinizer.server.secrets import SecretSchemes
     from trackinizer.types.embedder import QueryEmbedder
 
 
@@ -86,6 +96,7 @@ __all__ = [
     "fk_violation_handler",
     "lifespan",
     "not_found_handler",
+    "request_validation_handler",
     "unique_violation_handler",
     "validation_handler",
 ]
@@ -144,6 +155,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             "This is for local demos only -- never expose this server to an "
             "untrusted network.",
         )
+    # Parsed before the engine opens, so a mistyped backend stops the boot early.
+    # A deployment that ships further backends sets ``state.secret_schemes``.
+    app.state.secrets = parse_secrets(
+        config.secrets,
+        schemes=cast("SecretSchemes", getattr(app.state, "secret_schemes", {})),
+    )
     async with build_engine(config) as engine:
         app.state.engine = engine
         app.state.store = Store(engine, embed=build_embedder(config.embedder))
@@ -294,6 +311,8 @@ ROUTERS: Final = (
     edit.router,
     export_routes.router,
     logout_routes.router,
+    machine_host_routes.router,
+    machines_routes.router,
     meta_routes.router,
     metrics_routes.router,
     preset_routes.router,
@@ -303,6 +322,7 @@ ROUTERS: Final = (
     sessions_routes.router,
     submit.router,
     timeline_routes.router,
+    variables_routes.router,
     visuals_routes.router,
     workspace_routes.router,
 )
@@ -466,6 +486,50 @@ async def validation_handler(request: Request, exc: ValidationError) -> JSONResp
     )
 
 
+@app.exception_handler(RequestValidationError)
+async def request_validation_handler(
+    request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    """Answer 422 for a body or parameter that fails its model.
+
+    FastAPI's default answer echoes the rejected input in each error. Under
+    ``/api/variables`` that input can be a secret's value, and on the machine join
+    route it is an enrollment token, so the answer there names only each error's
+    type, location and message. An unexpected body key is also the rejected input,
+    so its location names the field as ``extra``. The route is the matched one, not
+    the URL, which a path prefix changes.
+
+    Args:
+      request: FastAPI Request object.
+      exc: The validation failure, with the rejected input in each error.
+
+    Returns:
+      response: JSON response with 422 status and the errors.
+
+    """
+    route = request.scope.get("route")
+    if not (
+        isinstance(route, APIRoute)
+        and (route.path.startswith(VARIABLES_PATH) or route.path == JOIN_PATH)
+    ):
+        return await request_validation_exception_handler(request, exc)
+    errors = from_plain(exc.errors(), list[dict[str, object]])
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": [
+                {
+                    "type": error["type"],
+                    "loc": _redacted_location(error),
+                    "msg": error["msg"],
+                }
+                for error in errors
+            ],
+        },
+    )
+
+
 @app.exception_handler(NotFoundError)
 async def not_found_handler(request: Request, exc: NotFoundError) -> JSONResponse:
     """Translate a ``NotFoundError`` into HTTP 404.
@@ -569,3 +633,11 @@ async def unique_violation_handler(
         status_code=409,
         content={"detail": "unique constraint violated"},
     )
+
+
+def _redacted_location(error: dict[str, object]) -> list[str | int]:
+    """Return an error's location, without the client's key for an extra field."""
+    location = from_plain(error["loc"], list[str | int])
+    if error["type"] == "extra_forbidden":
+        return [*location[:-1], "extra"]
+    return location

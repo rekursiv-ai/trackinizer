@@ -31,6 +31,7 @@ import logging
 import threading
 import time
 
+from trackinizer.server.auth import Role
 from trackinizer.wire.wire_sessions import WorkspaceMessageContext
 
 
@@ -44,6 +45,10 @@ class Inbound:
     text: str
 
     source: str | None = None
+
+    source_role: Role | None = None
+    """The sender's role as the server saw it, beside the attested ``source``; ``None``
+    for a message the server itself generates."""
 
     room: str | None = None
     """The room a routed send was scoped to; threads into the ``[room]

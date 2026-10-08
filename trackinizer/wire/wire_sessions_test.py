@@ -205,6 +205,11 @@ class TestRoomValidation:
         assert InboundDrainItem(text="hi", room="lab").room == "lab"
         assert InboundDrainItem(text="hi").room is None
 
+    def test_drain_item_carries_the_senders_role_or_none(self) -> None:
+        assert InboundDrainItem(text="hi").source_role is None
+        item = InboundDrainItem(text="hi", source="a@x", source_role="writer")
+        assert InboundDrainItem.model_validate_json(item.model_dump_json()) == item
+
     def test_session_start_rejects_comma_in_room(self) -> None:
         # A room name carrying ',' is ambiguous once serialized: ``trax run``
         # exports rooms comma-joined into ``TRAX_ROOMS`` (session.py), so a

@@ -21,8 +21,9 @@ from trackinizer.lib.agent.types.sessions import AssistantMessage, ToolCall, Use
 from trackinizer.lib.codec import from_plain, loads
 from trackinizer.lib.posix.follow import follow_tree
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
-from trackinizer.trax.run.adapters.iostream import IOStreamAdapter
+from trackinizer.trax.run.adapters.iostream import IOStreamAdapter, LineCapture
 from trackinizer.trax.run.custom_types import Event
+from trackinizer.trax.run.redact import Redactor
 from trackinizer.trax.run.sink import (
     FileSink,
     LockedSink,
@@ -1523,9 +1524,18 @@ class TestWrappedSinksSendEachFilesEncoding:
         assert [manifest.metadata for manifest in wrapped_client.manifests] == declared
 
 
-def _instant_sink(client: _FakeClient) -> TrackinizerSink:
+def _instant_sink(
+    client: _FakeClient,
+    *,
+    redactor: Redactor | None = None,
+) -> TrackinizerSink:
     """Return a server sink that sends each record as soon as it is flushed."""
-    return TrackinizerSink(cast(Client, client), cli="claude", flush_interval_sec=0.0)
+    return TrackinizerSink(
+        cast(Client, client),
+        cli="claude",
+        flush_interval_sec=0.0,
+        redactor=redactor,
+    )
 
 
 class TestLockedSink:
@@ -1908,6 +1918,155 @@ def test_replacement_overwrites_every_reused_position(batch_size: int) -> None:
         for reader in sink.readers.values():
             reader.close()
         sink.close()
+
+
+# Its raw form holds a quote and a newline, so its JSON-escaped form differs from it.
+_VALUE = 'sec"ret\nvalue1'
+_VALUE_ESCAPED = json.dumps(_VALUE)[1:-1]
+_REDACTOR = Redactor({"K": _VALUE})
+
+
+class TestRedaction:
+    """A delivered secret reaches no sink, whichever way the record travels."""
+
+    def test_the_out_file_holds_no_value(self) -> None:
+        buf = io.StringIO()
+        sink = FileSink(buf, redactor=_REDACTOR)
+        sink.emit("claude", _event(_carrying_the_secret()))
+        sink.emit_slash_command(
+            SlashCommand(command=_VALUE, args=_carrying_the_secret()),
+            _AT,
+        )
+        _assert_redacted(buf.getvalue())
+
+    def test_the_server_gets_no_value(self) -> None:
+        client = _FakeClient()
+        sink = _instant_sink(client, redactor=_REDACTOR)
+        sink.emit("claude", _event(_carrying_the_secret()))
+        sink.emit_slash_command(
+            SlashCommand(command=_VALUE, args=_carrying_the_secret()),
+            _AT,
+        )
+        sink.close()
+        _assert_redacted(_stored_by(client))
+
+    def test_the_fallback_file_holds_no_value(self, tmp_path: Path) -> None:
+        fallback_path = tmp_path / "fallback.jsonl"
+        sink = ResilientSink(
+            _ExplodingSink(),
+            fallback_path=fallback_path,
+            redactor=_REDACTOR,
+        )
+        sink.emit("claude", _event(_carrying_the_secret()))
+        sink.emit_slash_command(
+            SlashCommand(command=_VALUE, args=_carrying_the_secret()),
+            _AT,
+        )
+        sink.close()
+        _assert_redacted(fallback_path.read_text(encoding="utf-8"))
+
+    def test_records_the_server_never_got_reach_the_fallback_redacted(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        client = _FlakyFlushClient()
+        fallback_path = tmp_path / "fallback.jsonl"
+        sink = ResilientSink(
+            TrackinizerSink(cast(Client, client), "claude", redactor=_REDACTOR),
+            fallback_path=fallback_path,
+            redactor=_REDACTOR,
+        )
+        sink.emit("claude", _event(_carrying_the_secret()))
+        sink.flush()
+        sink.close()
+        _assert_redacted(fallback_path.read_text(encoding="utf-8"))
+
+    @pytest.mark.parametrize("server", [False, True])
+    def test_a_fed_chunk_through_lockedsink_is_redacted(
+        self,
+        tmp_path: Path,
+        *,
+        server: bool,
+    ) -> None:
+        buf = io.StringIO()
+        client = _FakeClient()
+        sink = LockedSink(
+            _instant_sink(client, redactor=_REDACTOR)
+            if server
+            else FileSink(buf, redactor=_REDACTOR),
+        )
+        raw = (_carrying_the_secret().replace("\n", " ") + "\n").encode()
+        raw += _VALUE.encode() + b"\n"
+        _ = sink.feed(IOStreamAdapter(), tmp_path / "a.jsonl", raw)
+        for reader in sink.readers.values():
+            reader.close()
+        sink.flush()
+        _assert_redacted(_stored_by(client) if server else buf.getvalue())
+        sink.close()
+
+    @pytest.mark.parametrize("server", [False, True])
+    def test_a_multi_line_value_framed_into_lines_is_redacted(
+        self,
+        tmp_path: Path,
+        *,
+        server: bool,
+    ) -> None:
+        # The pump hands the sink one framed line per call, each ending ``\r\n``
+        # as a pty writes it, so no call holds the whole value.
+        pem = (
+            "-----BEGIN KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n"
+            "AmFrZXNlY3JldGJvZHk=\n-----END KEY-----"
+        )
+        buf = io.StringIO()
+        client = _FakeClient()
+        redactor = Redactor({"K": pem})
+        sink = LockedSink(
+            _instant_sink(client, redactor=redactor)
+            if server
+            else FileSink(buf, redactor=redactor),
+        )
+        path = tmp_path / "a.jsonl"
+
+        def feed_line(raw: bytes) -> None:
+            _ = sink.feed(IOStreamAdapter(), path=path, raw=raw)
+
+        capture = LineCapture(feed_line)
+        capture.feed(pem.replace("\n", "\r\n").encode() + b"\r\n")
+        capture.close()
+        for reader in sink.readers.values():
+            reader.close()
+        sink.flush()
+        stored = _stored_by(client) if server else buf.getvalue()
+        sink.close()
+        assert "[redacted:K]" in stored
+        for line in pem.split("\n"):
+            assert line not in stored
+
+    def test_a_sink_without_a_redactor_keeps_the_value(self) -> None:
+        buf = io.StringIO()
+        sink = FileSink(buf)
+        sink.emit("claude", _event(_carrying_the_secret()))
+        assert _VALUE_ESCAPED in buf.getvalue()
+
+
+def _carrying_the_secret() -> str:
+    return f"raw {_VALUE} escaped {_VALUE_ESCAPED}"
+
+
+def _assert_redacted(stored: str) -> None:
+    """Fail unless ``stored`` holds the placeholder and no form of the secret."""
+    assert "[redacted:K]" in stored
+    assert _VALUE not in stored
+    assert _VALUE_ESCAPED not in stored
+    assert json.dumps(_VALUE) not in stored
+
+
+def _stored_by(client: _FakeClient) -> str:
+    """Return everything ``client`` was sent, as JSON text."""
+    bodies = [body for _, _, batch, _ in client.appended for body in batch]
+    return "".join(body.model_dump_json() for body in bodies) + "".join(
+        body.model_dump_json() for body in client.slash
+    )
 
 
 def _row(line: str) -> dict[str, object]:

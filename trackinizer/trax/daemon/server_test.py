@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from argparse import Namespace
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
@@ -12,7 +13,9 @@ import threading
 import time
 
 from trackinizer.client.errors import ClientError
+from trackinizer.trax import cli
 from trackinizer.trax.cli import parse_and_run
+from trackinizer.trax.client_cache import Target
 from trackinizer.trax.context import cwd, env
 from trackinizer.trax.daemon.client import STALE_EXIT_CODE
 from trackinizer.trax.daemon.protocol import (
@@ -246,6 +249,54 @@ class TestForwardedEnvironment:
         )
 
         assert seen == ["/home/somebody"]
+
+
+class TestTokenIsNeverTheDaemons:
+    """The daemon's own ``TRACKINIZER_TOKEN`` must not authenticate a caller.
+
+    The caller's token never crosses the socket, so a name the overlay does not
+    claim would fall through to the shell that spawned the daemon and send
+    that key to whichever server the caller named.
+    """
+
+    def test_daemon_reads_token_as_absent(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_TOKEN", "daemon-shell-token")
+        seen: list[str | None] = []
+        handle(
+            make_request(["x"], env={"TRACKINIZER_URL": "http://caller:1"}),
+            run=lambda _argv: seen.append(env("TRACKINIZER_TOKEN")),
+        )
+
+        assert seen == [None]
+
+    def test_a_request_cannot_carry_the_token(self) -> None:
+        """Only ``FORWARDED_ENV`` names bind, so a foreign client cannot send a key."""
+        seen: list[str | None] = []
+        handle(
+            make_request(
+                ["x"],
+                env={"TRACKINIZER_URL": "http://caller:1", "TRACKINIZER_TOKEN": "k"},
+            ),
+            run=lambda _argv: seen.append(env("TRACKINIZER_TOKEN")),
+        )
+
+        assert seen == [None]
+
+    def test_a_caller_url_resolves_with_no_key(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_TOKEN", "daemon-shell-token")
+        targets: list[Target] = []
+        handle(
+            make_request(["x"], env={"TRACKINIZER_URL": "http://caller:1"}),
+            run=lambda _argv: targets.append(cli._resolve_target(Namespace())),
+        )
+
+        assert targets == [Target(url="http://caller:1", author="", api_key="")]
 
 
 class TestConcurrentRequests:

@@ -639,8 +639,11 @@ async def _thread(
         rows = list(
             reversed(
                 await conn.fetch(
-                    "SELECT id, seq, role, author, text, created_at "
-                    "FROM chat_messages WHERE conversation_id = $1 "
+                    "SELECT id, seq, role, author, text, created_at, "
+                    "(SELECT users.role FROM users WHERE users.email = message.author "
+                    "AND users.status = 'active' AND message.role = 'user') "
+                    "AS author_role "
+                    "FROM chat_messages AS message WHERE conversation_id = $1 "
                     "ORDER BY seq DESC LIMIT $2",
                     conversation_id,
                     MAX_THREAD_MESSAGES,
@@ -649,7 +652,10 @@ async def _thread(
         )
     else:
         rows = await conn.fetch(
-            "SELECT id, seq, role, author, text, created_at FROM chat_messages "
+            "SELECT id, seq, role, author, text, created_at, "
+            "(SELECT users.role FROM users WHERE users.email = message.author "
+            "AND users.status = 'active' AND message.role = 'user') AS author_role "
+            "FROM chat_messages AS message "
             "WHERE conversation_id = $1 AND seq > $2 ORDER BY seq LIMIT $3",
             conversation_id,
             after_seq,

@@ -92,7 +92,12 @@ async def test_history_asks_for_the_users_newest_fifty_and_maps_the_rows() -> No
     assert (user_id, limit) == (_USER, 50)
 
 
-_LINES_SQL: Final = "SELECT id, seq, role, author, text, created_at FROM chat_messages "
+_LINES_SQL: Final = (
+    "SELECT id, seq, role, author, text, created_at, "
+    "(SELECT users.role FROM users WHERE users.email = message.author "
+    "AND users.status = 'active' AND message.role = 'user') AS author_role "
+    "FROM chat_messages AS message "
+)
 
 
 def _args(mock: AsyncMock) -> tuple[object, ...]:

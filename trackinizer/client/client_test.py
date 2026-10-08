@@ -29,19 +29,32 @@ from trackinizer.trax.grammar import parse_kind, parse_ref
 from trackinizer.trax.profile import Profile
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import SeqRef, UuidRef
-from trackinizer.wire.routes import MAX_LIST_LIMIT
+from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
 from trackinizer.wire.wire_export import EXPORT_API_PATH
+from trackinizer.wire.wire_machine_host import (
+    ENROLL_PATH,
+    HEARTBEAT_PATH,
+    JOIN_PATH,
+)
+from trackinizer.wire.wire_machines import (
+    MACHINE_PATH,
+    MACHINES_PATH,
+    MAX_HOW_CHARS,
+)
 from trackinizer.wire.wire_session_ir import (
     ManifestBody,
     RecordBody,
     SlashCommandBody,
 )
 from trackinizer.wire.wire_sessions import SessionStart
+from trackinizer.wire.wire_variables import VARIABLES_PATH
 
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from trackinizer.wire.wire_machines import Facts
 
 
 # ``handler`` receives an ``httpx2.Request`` and returns an ``httpx2.Response``. The
@@ -665,6 +678,47 @@ class TestClientErrorContract:
             with pytest.raises(ClientError, match="malformed"):
                 client.resolve_id(UuidRef(uuid=uuid.uuid4()))
 
+    def test_resolve_id_errors_name_the_route_they_read(self) -> None:
+        """A malformed id or kind is reported against its own lookup path."""
+        target = uuid.uuid4()
+        body: dict[str, object] = {}
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(200, json=body)
+
+        with Client("http://server") as client:
+            _install_mock_transport(client, handler=handler)
+            with pytest.raises(ClientError) as missing_id:
+                client.resolve_id(SeqRef(kind="Issue", seq=4))
+            body["id"] = "not-a-uuid"
+            with pytest.raises(ClientError) as bad_id:
+                client.resolve_id(SeqRef(kind="Issue", seq=4))
+            with pytest.raises(ClientError) as missing_kind:
+                client.resolve_id(UuidRef(uuid=target))
+
+        assert str(missing_id.value).startswith("/api/inquiries/Issue/4 returned")
+        assert str(bad_id.value).startswith("/api/inquiries/Issue/4 returned")
+        assert str(missing_kind.value).startswith(f"/api/web/lookup/{target} returned")
+
+    def test_resolve_id_rejects_a_uuid_ref_of_the_wrong_kind(self) -> None:
+        target = uuid.uuid4()
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(200, json={"kind": "Issue"})
+
+        with Client("http://server") as client:
+            _install_mock_transport(client, handler=handler)
+            with pytest.raises(ClientError) as err:
+                client.resolve_id(UuidRef(uuid=target, expected_kind="Belief"))
+            assert client.resolve_id(UuidRef(uuid=target, expected_kind="Issue")) == (
+                "Issue",
+                target,
+            )
+
+        assert str(err.value) == f"ref Belief {target} resolves to a Issue row"
+
     def test_resolve_ids_missing_found_raises_client_error(self) -> None:
         """``resolve_ids`` reads ``response['found']``; absence must wrap."""
 
@@ -828,6 +882,47 @@ class TestClientMethods:
             '{"field":"title","op":"re","value":"needle:with:colons"}',
             '{"field":"priority","op":"gt","value":"5"}',
         ]
+
+    def test_list_kind_sends_the_page_window_and_status(self) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json=[])
+
+        client = Client("http://server")
+        _install_mock_transport(client, handler)
+        client.list_kind("Issue")
+        client.list_kind("Belief", status="active", limit=7, offset=3)
+        keys = ("kind", "status", "limit", "offset")
+        assert [{k: r.url.params.get_list(k) for k in keys} for r in seen] == [
+            {
+                "kind": ["Issue"],
+                "status": [],
+                "limit": [str(DEFAULT_LIST_LIMIT)],
+                "offset": ["0"],
+            },
+            {
+                "kind": ["Belief"],
+                "status": ["active"],
+                "limit": ["7"],
+                "offset": ["3"],
+            },
+        ]
+
+    @pytest.mark.parametrize("payload", [{"rows": []}, [1]])
+    def test_list_kind_names_the_route_for_a_malformed_payload(
+        self,
+        payload: PlainTree,
+    ) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(200, json=payload)
+
+        client = Client("http://server")
+        _install_mock_transport(client, handler)
+        with pytest.raises(ClientError, match="/api/inquiries returned a malformed"):
+            client.list_kind("Issue")
 
     def test_list_kind_serializes_seq_ranges_as_repeated_query_params(self) -> None:
         """Each interval rides the wire as a discrete ``seq_range`` param.
@@ -1212,9 +1307,15 @@ class TestClientMethods:
 # Members on ``Client`` that the fake intentionally does not implement:
 # argparse-flag registration, the connection-resolution factory, and the
 # raw HTTP verbs. The fake bypasses HTTP entirely, so these would be dead
-# on the fake.
+# on the fake. The variable and machine methods are driven through stub clients in
+# ``trax/variables_test.py`` and ``trax/machines_test.py``, so the shared fake does
+# not carry them.
 _FAKE_EXEMPT: frozenset[str] = frozenset(
-    {"flags", "from_args", "get", "post", "put", "patch", "delete"},
+    {"flags", "from_args", "get", "post", "put", "patch", "delete"}
+    | {"list_variables", "put_variable", "delete_variable"}
+    | {"list_machines", "get_machine", "put_machine"}
+    | {"change_machine_labels", "delete_machine"}
+    | {"enroll_machine", "join_machine", "heartbeat_machine", "revoke_machine"},
 )
 
 
@@ -1911,6 +2012,65 @@ class TestSessionMethods:
         assert resp.id == sid
         assert resp.seq == 3
 
+    def test_append_records_posts_the_batch_and_parses_the_answer(self) -> None:
+        sid = uuid.uuid4()
+        ir_id = uuid.uuid4()
+        client = _ClientSpy(
+            post_result={"part": 2, "written": 1, "skipped": 4, "slash_commands": 1},
+        )
+        resp = client.append_records(
+            sid,
+            name="a.jsonl",
+            manifest=ManifestBody(name="a.jsonl", ir_id=ir_id, records=1),
+            records=[RecordBody(idx=0, kind="Turn")],
+            restart=True,
+            slash_commands=[
+                SlashCommandBody(
+                    timestamp=datetime(2026, 10, 6, tzinfo=UTC),
+                    command="model",
+                ),
+            ],
+        )
+        [(method, path, raw)] = client.request_calls
+        assert (method, path) == ("POST", f"/api/sessions/{sid}/records")
+        body = from_plain(raw, dict[str, PlainTree])
+        assert body["name"] == "a.jsonl"
+        assert body["restart"] is True
+        assert from_plain(body["manifest"], dict[str, PlainTree])["ir_id"] == str(ir_id)
+        records = from_plain(body["records"], list[dict[str, PlainTree]])
+        assert [r["idx"] for r in records] == [0]
+        commands = from_plain(body["slash_commands"], list[dict[str, PlainTree]])
+        assert [c["command"] for c in commands] == ["model"]
+        assert (resp.part, resp.written, resp.skipped, resp.slash_commands) == (
+            2,
+            1,
+            4,
+            1,
+        )
+
+    def test_append_records_defaults_to_a_non_restarting_empty_batch(self) -> None:
+        client = _ClientSpy(post_result={"written": 0, "skipped": 0})
+        client.append_records(uuid.uuid4())
+        [(_, _, raw)] = client.request_calls
+        body = from_plain(raw, dict[str, PlainTree])
+        assert (body["restart"], body["records"], body["slash_commands"]) == (
+            False,
+            [],
+            [],
+        )
+
+    def test_append_records_names_the_route_for_a_malformed_answer(self) -> None:
+        sid = uuid.uuid4()
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(200, json={"part": 1})
+
+        client = Client("http://server")
+        _install_mock_transport(client, handler)
+        with pytest.raises(ClientError, match=f"/api/sessions/{sid}/records returned"):
+            client.append_records(sid)
+
     def test_session_end_posts(self) -> None:
         sid = uuid.uuid4()
         seen: dict[str, object] = {}
@@ -2030,6 +2190,475 @@ class TestExport:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="refused"):
                 list(client.export())
+
+
+class TestVariableMethods:
+    """The variable methods build the right requests and parse the listing."""
+
+    def test_list_variables_parses_plain_and_secret(self) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            row = {
+                "layer": "org",
+                "owner": "",
+                "updated_by": "alice",
+                "updated": "2026-10-06T12:00:00Z",
+            }
+            return httpx2.Response(
+                200,
+                json={
+                    "variables": [
+                        {**row, "name": "REGION", "secret": False, "value": "eu"},
+                        {**row, "name": "TOKEN", "secret": True, "value": None},
+                    ],
+                },
+            )
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            variables = client.list_variables()
+
+        assert [(r.method, r.url.path) for r in seen] == [("GET", VARIABLES_PATH)]
+        assert [(v.name, v.secret, v.value) for v in variables] == [
+            ("REGION", False, "eu"),
+            ("TOKEN", True, None),
+        ]
+
+    def test_list_variables_wraps_a_malformed_payload(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(200, json={"variables": [{"name": "X"}]})
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError, match="malformed payload"):
+                client.list_variables()
+
+    def test_put_variable_puts_the_body_and_accepts_no_content(self) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(204)
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            assert client.put_variable("TOKEN", value="s3", secret=True) is None
+
+        [request] = seen
+        assert (request.method, request.url.path) == ("PUT", "/api/variables/TOKEN")
+        assert loads(request.content) == {"value": "s3", "secret": True}
+
+    def test_put_variable_escapes_the_name_in_the_path(self) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(204)
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            client.put_variable("a/b", value="v", secret=False)
+
+        assert str(seen[0].url).endswith("/api/variables/a%2Fb")
+
+    def test_put_variable_wraps_an_empty_value_without_echoing_it(self) -> None:
+        with Client("https://server") as client, pytest.raises(ClientError) as err:
+            client.put_variable("TOKEN", value="", secret=True)
+        assert "TOKEN" in str(err.value)
+        assert err.value.status_code is None
+
+    def test_delete_variable_deletes_and_reports_absence(self) -> None:
+        statuses = iter((204, 404))
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(next(statuses), json={"detail": "no such variable"})
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            assert client.delete_variable("REGION") is None
+            with pytest.raises(ClientError) as err:
+                client.delete_variable("REGION")
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("DELETE", "/api/variables/REGION"),
+        ] * 2
+        assert err.value.status_code == 404
+
+
+_MACHINE_ROW = {
+    "name": "gpu-box",
+    "role": "dev",
+    "how": "ssh gpu-box",
+    "labels": ["gpu", "a100"],
+    "updated_by": "alice",
+    "updated": "2026-10-06T12:00:00Z",
+}
+
+
+class TestMachineMethods:
+    """The machine methods build the right requests and parse the answers."""
+
+    def test_list_machines_parses_the_listing(self) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json={"machines": [_MACHINE_ROW]})
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            machines = client.list_machines()
+
+        assert [(r.method, r.url.path) for r in seen] == [("GET", MACHINES_PATH)]
+        assert [(m.name, m.role, m.labels) for m in machines] == [
+            ("gpu-box", "dev", ["gpu", "a100"]),
+        ]
+
+    def test_list_machines_wraps_a_malformed_payload(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(200, json={"machines": [{"name": "x"}]})
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError, match="malformed payload"):
+                client.list_machines()
+
+    def test_get_machine_reads_one_and_reports_absence(self) -> None:
+        answers = iter(
+            (
+                httpx2.Response(200, json=_MACHINE_ROW),
+                httpx2.Response(404, json={"detail": "no such machine"}),
+            ),
+        )
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return next(answers)
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            machine = client.get_machine("gpu-box")
+            with pytest.raises(ClientError) as err:
+                client.get_machine("gpu-box")
+
+        assert (machine.name, machine.how) == ("gpu-box", "ssh gpu-box")
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("GET", MACHINE_PATH.format(name="gpu-box")),
+        ] * 2
+        assert err.value.status_code == 404
+
+    def test_put_machine_sends_only_the_fields_it_names(self) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(204)
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            assert client.put_machine("gpu-box", role="dev") is None
+            client.put_machine("gpu-box", how="")
+            client.put_machine("gpu-box", role="", how="ssh gpu-box")
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("PUT", "/api/machines/gpu-box"),
+        ] * 3
+        assert [loads(r.content) for r in seen] == [
+            {"role": "dev"},
+            {"how": ""},
+            {"role": "", "how": "ssh gpu-box"},
+        ]
+
+    def test_put_machine_escapes_the_name_in_the_path(self) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(204)
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            client.put_machine("a/b", role="dev")
+
+        assert str(seen[0].url).endswith("/api/machines/a%2Fb")
+
+    @pytest.mark.parametrize(
+        ("role", "how", "expected"),
+        [
+            ("Dev", None, "role"),
+            (None, "x" * (MAX_HOW_CHARS + 1), "how"),
+            (None, "a\x00b", "how"),
+        ],
+        ids=["role-pattern", "how-too-long", "how-nul"],
+    )
+    def test_put_machine_refuses_a_bad_field_before_any_request(
+        self,
+        role: str | None,
+        how: str | None,
+        expected: str,
+    ) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(204)
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError, match=f"^machine 'gpu-box' {expected}: "):
+                client.put_machine("gpu-box", role=role, how=how)
+
+        assert seen == []
+
+    def test_change_machine_labels_patches_both_lists(self) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(204)
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            assert client.change_machine_labels("gpu-box", add=["gpu"]) is None
+            client.change_machine_labels("gpu-box", remove=("a100",))
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("PATCH", "/api/machines/gpu-box/labels"),
+        ] * 2
+        assert [loads(r.content) for r in seen] == [
+            {"add": ["gpu"], "remove": []},
+            {"add": [], "remove": ["a100"]},
+        ]
+
+    def test_delete_machine_deletes_and_reports_absence(self) -> None:
+        statuses = iter((204, 404))
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(next(statuses), json={"detail": "no such machine"})
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            assert client.delete_machine("gpu-box") is None
+            with pytest.raises(ClientError) as err:
+                client.delete_machine("gpu-box")
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("DELETE", "/api/machines/gpu-box"),
+        ] * 2
+        assert err.value.status_code == 404
+
+
+_INSTANCE = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+_MACHINE_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
+_ENROLLMENT_TOKEN = "enr_" + "0" * 32 + "_" + "S" * 43
+_CREDENTIAL = "trax_machine_" + "1" * 32 + "_" + "C" * 43
+
+
+class TestMachineHostMethods:
+    """Enroll, join, heartbeat and revoke build the right requests."""
+
+    def test_enroll_machine_posts_the_name_and_parses_the_token(self) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(
+                201,
+                json={"token": _ENROLLMENT_TOKEN, "expires_at": "2026-10-07T12:15:00Z"},
+            )
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            enrolled = client.enroll_machine("gpu-box")
+
+        assert [(r.method, r.url.path) for r in seen] == [("POST", ENROLL_PATH)]
+        assert loads(seen[0].content) == {"name": "gpu-box"}
+        assert enrolled.token == _ENROLLMENT_TOKEN
+
+    def test_join_machine_sends_once_and_parses_the_credential(self) -> None:
+        seen: list[httpx2.Request] = []
+        statuses = iter((503, 201))
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            status = next(statuses)
+            return httpx2.Response(
+                status,
+                json={"machine_id": str(_MACHINE_ID), "credential": _CREDENTIAL},
+            )
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError) as err:
+                client.join_machine(
+                    "gpu-box",
+                    token=_ENROLLMENT_TOKEN,
+                    instance=_INSTANCE,
+                    host_version="0.1",
+                    facts={"os": "linux", "cpus": 8},
+                )
+
+        # A retry after a lost answer would find the one-use token spent.
+        assert len(seen) == 1
+        assert err.value.status_code == 503
+        assert [(r.method, r.url.path) for r in seen] == [("POST", JOIN_PATH)]
+        assert loads(seen[0].content) == {
+            "name": "gpu-box",
+            "token": _ENROLLMENT_TOKEN,
+            "instance": str(_INSTANCE),
+            "host_version": "0.1",
+            "facts": {"os": "linux", "cpus": 8},
+        }
+
+    def test_join_machine_parses_the_machine_id_and_credential(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(
+                201,
+                json={"machine_id": str(_MACHINE_ID), "credential": _CREDENTIAL},
+            )
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            joined = client.join_machine(
+                "gpu-box",
+                token=_ENROLLMENT_TOKEN,
+                instance=_INSTANCE,
+                host_version="0.1",
+                facts={},
+            )
+
+        assert (joined.machine_id, joined.credential) == (_MACHINE_ID, _CREDENTIAL)
+
+    def test_join_machine_refuses_a_bad_field_without_quoting_the_token(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            raise AssertionError(f"no request expected, got {request.url}")
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError, match="facts") as err:
+                client.join_machine(
+                    "gpu-box",
+                    token=_ENROLLMENT_TOKEN,
+                    instance=_INSTANCE,
+                    host_version="0.1",
+                    facts={"Bad Key": "x"},
+                )
+
+        assert _ENROLLMENT_TOKEN not in str(err.value)
+        assert "S" * 43 not in repr(err.value.__cause__)
+
+    def test_join_machine_never_quotes_a_malformed_answer(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(
+                201,
+                json={"machine_id": "x", "credential": _CREDENTIAL},
+            )
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError, match="malformed payload") as err:
+                client.join_machine(
+                    "gpu-box",
+                    token=_ENROLLMENT_TOKEN,
+                    instance=_INSTANCE,
+                    host_version="0.1",
+                    facts={},
+                )
+
+        assert "C" * 43 not in str(err.value)
+
+    def test_heartbeat_machine_posts_to_the_machines_path_with_the_credential(
+        self,
+    ) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json={"server_time": "2026-10-07T12:00:00Z"})
+
+        with Client("https://server", api_key=_CREDENTIAL) as client:
+            _install_mock_transport(client, handler)
+            beat = client.heartbeat_machine(
+                _MACHINE_ID,
+                instance=_INSTANCE,
+                host_version="0.1",
+            )
+            client.heartbeat_machine(
+                _MACHINE_ID,
+                instance=_INSTANCE,
+                host_version="0.1",
+                facts={"cpus": 4},
+            )
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("POST", HEARTBEAT_PATH.format(machine_id=_MACHINE_ID)),
+        ] * 2
+        assert seen[0].headers["Authorization"] == f"Bearer {_CREDENTIAL}"
+        assert [loads(r.content) for r in seen] == [
+            {"instance": str(_INSTANCE), "host_version": "0.1"},
+            {"instance": str(_INSTANCE), "host_version": "0.1", "facts": {"cpus": 4}},
+        ]
+        assert beat.server_time.year == 2026
+
+    def test_heartbeat_machine_surfaces_a_revoked_credential_as_410(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(410, json={"detail": "machine_revoked"})
+
+        with Client("https://server", api_key=_CREDENTIAL) as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError) as err:
+                client.heartbeat_machine(
+                    _MACHINE_ID,
+                    instance=_INSTANCE,
+                    host_version="0.1",
+                )
+
+        assert err.value.status_code == 410
+
+    def test_heartbeat_machine_refuses_bad_facts_before_any_request(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            raise AssertionError(f"no request expected, got {request.url}")
+
+        with Client("https://server", api_key=_CREDENTIAL) as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError, match="facts"):
+                client.heartbeat_machine(
+                    _MACHINE_ID,
+                    instance=_INSTANCE,
+                    host_version="0.1",
+                    facts=cast("Facts", cast("object", {"a": 1.5})),
+                )
+
+    def test_revoke_machine_posts_to_the_name_and_reports_absence(self) -> None:
+        statuses = iter((204, 404))
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(next(statuses), json={"detail": "no such machine"})
+
+        with Client("https://server") as client:
+            _install_mock_transport(client, handler)
+            assert client.revoke_machine("gpu-box") is None
+            with pytest.raises(ClientError) as err:
+                client.revoke_machine("gpu-box")
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("POST", "/api/machines/gpu-box/revoke"),
+        ] * 2
+        assert err.value.status_code == 404
 
 
 if __name__ == "__main__":

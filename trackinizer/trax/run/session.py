@@ -59,6 +59,7 @@ from trackinizer.trax.run.adapters.custom_types import Adapter, StreamAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter, LineCapture
 from trackinizer.trax.run.inbound import render_inbound
+from trackinizer.trax.run.redact import Redactor, redactor_from_environ
 from trackinizer.trax.run.sink import (
     FileSink,
     LockedSink,
@@ -607,13 +608,25 @@ def _run_flags(
 # The sink is wrapped in a :class:`ResilientSink`: a server failure must not crash the
 # drain thread or corrupt the wrapped CLI's terminal, so the run degrades to a local
 # JSONL file instead.
-def _open_trackinizer_sink(config: RunConfig, adapter: Adapter) -> Sink:
+def _open_trackinizer_sink(
+    config: RunConfig,
+    adapter: Adapter,
+    *,
+    redactor: Redactor | None,
+) -> Sink:
     """Build a fault-tolerant :class:`TrackinizerSink` for ``sync`` runs."""
     client = config.client or Client(base_url=LOCALHOST_FALLBACK_URL)
     sys.stderr.write(f"[trax run] syncing events to {client.base_url}\n")
     return ResilientSink(
-        TrackinizerSink(client, adapter.name, actor=config.actor, rooms=config.rooms),
+        TrackinizerSink(
+            client,
+            adapter.name,
+            actor=config.actor,
+            rooms=config.rooms,
+            redactor=redactor,
+        ),
         fallback_path=_default_out_path(adapter.name),
+        redactor=redactor,
     )
 
 
@@ -639,15 +652,20 @@ def _open_sink(config: RunConfig, adapter: Adapter) -> Sink:
     # so wrap it in a LockedSink to serialize their access (R2R-024). The
     # dry-run / local-file paths run single-threaded today, but the lock keeps
     # the sink boundary uniformly thread-safe and is effectively free there.
+    # Built before any file opens, so a named secret the environment lacks stops the
+    # run before it records anything. Redaction is in the sinks, not in
+    # ``LockedSink``: ``LockedSink.feed`` calls the inner sink's ``feed``, so a mask
+    # there would miss every fed chunk.
+    redactor = redactor_from_environ(os.environ)
     if config.syncing:
-        return LockedSink(_open_trackinizer_sink(config, adapter))
+        return LockedSink(_open_trackinizer_sink(config, adapter, redactor=redactor))
     out_path = config.out_path or _default_out_path(adapter.name)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     # Line-buffered so an interrupted run still leaves parseable lines.
     handle = out_path.open("a", buffering=1, encoding="utf-8")
     if config.out_path is None:
         sys.stderr.write(f"[trax run] capturing events to {out_path}\n")
-    return LockedSink(FileSink(handle))
+    return LockedSink(FileSink(handle, redactor=redactor))
 
 
 # The CLI runs on a pseudo-terminal the wrapper owns (the relay), so the server can

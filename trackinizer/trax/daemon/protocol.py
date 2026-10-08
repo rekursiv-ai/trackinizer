@@ -64,6 +64,12 @@ FORWARDED_ENV: Final[tuple[str, ...]] = (
     "TRACKINIZER_URL",
 )
 
+KEY_ENV: Final = "TRACKINIZER_TOKEN"
+"""The key variable. Deliberately absent from ``FORWARDED_ENV``: a secret must not
+cross the socket, so the client runs in-process only when it is set with
+``TRACKINIZER_URL``, the one case that reads it, and the daemon claims the name
+without a value."""
+
 
 class Request:
     """One CLI invocation, with the ambient state the daemon cannot observe.

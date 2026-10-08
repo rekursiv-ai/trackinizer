@@ -63,6 +63,7 @@ from trackinizer.trax.run.session import (
     _emit_slash_commands,
     _existing_session_files,
     _inbound_poll_loop,
+    _open_sink,
     _process_chunk,
     _routing_env,
     _session_owner,
@@ -77,9 +78,15 @@ from trackinizer.trax.run.sink import (
     TrackinizerSink,
 )
 from trackinizer.trax.run.slash import SlashCommand
-from trackinizer.wire.wire_session_ir import AppendRecordsResponse
+from trackinizer.wire.wire_session_ir import (
+    AppendRecordsResponse,
+    RecordBody,
+    SlashCommandBody,
+)
 from trackinizer.wire.wire_sessions import (
+    SessionEnd,
     SessionEndResponse,
+    SessionStart,
     SessionStartResponse,
     WorkspaceMessageContext,
 )
@@ -88,8 +95,6 @@ from trackinizer.wire.wire_sessions import (
 if TYPE_CHECKING:
     from trackinizer.trax.run.adapters.custom_types import Adapter
     from trackinizer.types.streams import TraxRecord
-    from trackinizer.wire.wire_session_ir import RecordBody
-    from trackinizer.wire.wire_sessions import SessionEnd, SessionStart
 
 
 @pytest.fixture(autouse=True)
@@ -3314,6 +3319,114 @@ class TestResumeArgv:
         """A fresh run names no session, so it gets no resume tokens."""
         assert resume_argv("claude", None) == ()
         assert resume_argv("codex", None) == ()
+
+
+class _UploadsClient:
+    """A server that takes every upload, keeping each body it was sent as JSON."""
+
+    base_url = "http://uploads.test"
+
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    def session_start(self, body: SessionStart) -> SessionStartResponse:
+        return SessionStartResponse(id=uuid.uuid4(), seq=0, actor=body.actor)
+
+    def append_records(
+        self,
+        session_id: uuid.UUID,
+        **fields: object,
+    ) -> AppendRecordsResponse:
+        del session_id
+        records = cast(list[RecordBody], fields["records"])
+        self.sent.extend(body.model_dump_json() for body in records)
+        slash = cast(list[SlashCommandBody], fields["slash_commands"])
+        self.sent.extend(body.model_dump_json() for body in slash)
+        return AppendRecordsResponse(part=0, written=len(records), skipped=0)
+
+    def session_end(
+        self,
+        session_id: uuid.UUID,
+        body: SessionEnd | None = None,
+    ) -> SessionEndResponse:
+        del body
+        return SessionEndResponse(id=session_id)
+
+
+class _DownClient(_UploadsClient):
+    """A server that refuses the session, so the run captures to its local file."""
+
+    @override
+    def session_start(self, body: SessionStart) -> SessionStartResponse:
+        raise RuntimeError("server down")
+
+
+class TestOpenSinkRedactsDeliveredSecrets:
+    """Every sink ``_open_sink`` builds masks the values ``TRAX_REDACT_NAMES`` names."""
+
+    @pytest.fixture(autouse=True)
+    def _delivered_secret(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRAX_REDACT_NAMES", "K")
+        monkeypatch.setenv("K", "secretvalue1")
+
+    def test_the_out_file_holds_the_placeholder_only(self, tmp_path: Path) -> None:
+        out = tmp_path / "out.jsonl"
+        config = RunConfig(cli_name="sh", out_path=out)
+        self._capture(_open_sink(config, IOStreamAdapter()), tmp_path / "a.log")
+        stored = out.read_text(encoding="utf-8")
+        assert "[redacted:K]" in stored
+        assert "secretvalue1" not in stored
+
+    def test_the_server_and_its_fallback_file_hold_the_placeholder_only(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fallback = tmp_path / "fallback.jsonl"
+
+        def default_out_path(adapter_name: str) -> Path:
+            del adapter_name
+            return fallback
+
+        monkeypatch.setattr(session, "_default_out_path", default_out_path)
+        up = _UploadsClient()
+        config = RunConfig(cli_name="sh", client=cast(Client, up))
+        self._capture(_open_sink(config, IOStreamAdapter()), tmp_path / "a.log")
+        assert not fallback.exists()
+        assert up.sent
+        assert "secretvalue1" not in "".join(up.sent)
+        assert "[redacted:K]" in "".join(up.sent)
+
+        down = RunConfig(cli_name="sh", client=cast(Client, _DownClient()))
+        self._capture(_open_sink(down, IOStreamAdapter()), tmp_path / "b.log")
+        stored = fallback.read_text(encoding="utf-8")
+        assert "[redacted:K]" in stored
+        assert "secretvalue1" not in stored
+
+    def test_a_named_variable_the_environment_lacks_stops_the_run(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("K")
+        out = tmp_path / "out.jsonl"
+        with pytest.raises(SystemExit, match="K"):
+            _ = _open_sink(RunConfig(cli_name="sh", out_path=out), IOStreamAdapter())
+        assert not out.exists()
+
+    @classmethod
+    def _capture(cls, sink: Sink, path: Path) -> None:
+        # Opening first makes a server that refuses the session degrade before the
+        # first record, so the fallback file records everything itself.
+        _ = sink.open()
+        _ = sink.feed(IOStreamAdapter(), path, b"echo secretvalue1\n")
+        sink.emit_slash_command(
+            SlashCommand(command="secretvalue1", args="x"),
+            datetime(2026, 6, 1, tzinfo=UTC),
+        )
+        for reader in sink.readers.values():
+            reader.close()
+        sink.close()
 
 
 if __name__ == "__main__":

@@ -58,10 +58,12 @@ from trackinizer.trax.grammar import (
     VALID_KINDS,
     WRITE_FIELDS_CLI,
 )
+from trackinizer.trax.machines import MACHINE_WORD, Machines
 from trackinizer.trax.profile import Profiles
 from trackinizer.trax.run import detach
 from trackinizer.trax.run.materialize import RESUMABLE_TARGETS
 from trackinizer.trax.run.session import build_parser
+from trackinizer.trax.variables import ENV_WORD, Variables
 from trackinizer.types.inquiries import (
     Belief,
     Inquiry,
@@ -494,15 +496,16 @@ def _subcommands(parser: argparse.ArgumentParser) -> dict[str, argparse.Argument
 
 
 # Covers every non-kind dispatcher plus ``run`` (special-cased in the CLI) and
-# ``profile`` (whose ``rest`` hides a hand-parsed sub-grammar stated inline).
+# ``profile``, ``env`` and ``machine`` (whose ``rest`` hides a hand-parsed sub-grammar
+# stated inline).
 def _verb_lines() -> list[str]:
     """Return a usage line per top-level verb, from its live argparse parser."""
     kinds = {k.lower() for k in VALID_KINDS}
     lines: list[str] = []
     for dispatcher in DISPATCHERS:
         verb = next((n for n in dispatcher.names if n not in kinds), None)
-        if verb is None or dispatcher is Profiles:
-            continue  # `kind` dispatcher, or profile (handled below)
+        if verb is None or dispatcher in {Profiles, Variables, Machines}:
+            continue  # `kind` dispatcher, or a hand-parsed verb (handled below)
         lines.append(_verb_usage(verb, dispatcher.make_parser()))
     lines.append(_verb_usage("run", build_parser()))
     # ``run``'s host commands dispatch before its own parser does, so each one is a
@@ -513,6 +516,13 @@ def _verb_lines() -> list[str]:
     )
     # Profile parses ``rest`` by hand; its sub-grammar is fixed, stated directly.
     lines.append("//   profile [NAME] [ url|actor|token [to V] | current NAME | del ]")
+    # Env parses ``rest`` by hand too. Its V is a literal, ``-`` (stdin) or ``@FILE``;
+    # a secret's V is never a literal.
+    lines.append(f"//   {ENV_WORD} [ [secret] NAME to V | NAME del ]")
+    # Machine parses ``rest`` by hand as well; V is a literal, ``-`` or ``@FILE``.
+    lines.append(
+        f"//   {MACHINE_WORD} [ NAME [ role|how [to V] | label add|del L | del ] ]",
+    )
     lines = sorted(lines)
     # ``argparse`` positionals/--as carry meaning the bare usage can't show; gloss the
     # non-obvious ones (sourced from the verbs' own help text).
@@ -578,6 +588,8 @@ def _semantics_block() -> str:
         "//   next=next unblocked Issue; blocked/board/graph=Issue views;",
         "//   recent=audit feed; cost=cost rollup; id=show row by uuid;",
         "//   profile=manage server profiles; send=message a live agent session;",
+        f"//   {ENV_WORD}=the org's environment variables (a secret is write-only);",
+        f"//   {MACHINE_WORD}=the registry of machines campaigns may run on;",
         "//   run=wrap an agent CLI (claude/gemini/codex) and sync its session;",
         "//     --detach hosts it past this terminal, reached by run ls/attach/log/send/stop.",
         *_verb_lines(),

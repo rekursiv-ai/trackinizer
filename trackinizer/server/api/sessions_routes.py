@@ -178,7 +178,16 @@ async def session_inbound_enqueue_route(
     # queue depth -- unchanged on a replay because nothing was re-enqueued.
     inbound.send_once(
         _idempotency_key(request),
-        [(session_id, Inbound(text=body.text, source=identity.email))],
+        [
+            (
+                session_id,
+                Inbound(
+                    text=body.text,
+                    source=identity.email,
+                    source_role=identity.role,
+                ),
+            ),
+        ],
     )
     return InboundEnqueueResponse(queued=inbound.pending(session_id))
 
@@ -259,7 +268,12 @@ async def send_message_route(
         targets.append(
             (
                 session_id,
-                Inbound(text=body.text, source=identity.email, room=scoped_room),
+                Inbound(
+                    text=body.text,
+                    source=identity.email,
+                    source_role=identity.role,
+                    room=scoped_room,
+                ),
             ),
         )
 
@@ -392,6 +406,7 @@ async def session_inbound_drain_route(
             InboundDrainItem(
                 text=m.text,
                 source=m.source,
+                source_role=m.source_role,
                 room=m.room,
                 context=m.context,
             )

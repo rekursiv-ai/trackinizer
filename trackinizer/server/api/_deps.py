@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
     from trackinizer.server.config import Assistant
     from trackinizer.server.inbound import InboundQueue
+    from trackinizer.server.secrets import SecretBackend
     from trackinizer.server.store.core import Store
     from trackinizer.types.inquiries import Inquiry
 
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
 class _State(Protocol):
     store: Store
     inbound: InboundQueue
+    secrets: SecretBackend | None
 
 
 def get_store(request: Request) -> Store:
@@ -87,6 +89,20 @@ def get_assistant(request: Request) -> Assistant | None:
     """
     config: object = getattr(cast("FastAPI", request.app).state, "config", None)
     return config.assistant if isinstance(config, Config) else None
+
+
+def get_secrets(request: Request) -> SecretBackend | None:
+    """Return the secret backend held on the app state; ``None`` when disabled.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The backend, or ``None`` when secret storage is turned off.
+
+    """
+    app = cast(_App, request.app)
+    return app.state.secrets
 
 
 def tag_row(inquiry: Inquiry) -> MutableJSON:

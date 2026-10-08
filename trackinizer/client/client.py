@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Literal, NamedTuple, Self, cast
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import json
 import logging
@@ -72,13 +72,22 @@ if TYPE_CHECKING:
 
     from trackinizer.wire import (
         wire_chats,
+        wire_machine_host,
+        wire_machines,
         wire_metrics,
         wire_metrics_query,
         wire_session_ir,
         wire_sessions,
+        wire_variables,
     )
     from trackinizer.wire.filters import Filter
     from trackinizer.wire.wire_chats import AwaitingChat, ChatReply, ChatThread
+    from trackinizer.wire.wire_machine_host import (
+        EnrollResponse,
+        HeartbeatResponse,
+        JoinResponse,
+    )
+    from trackinizer.wire.wire_machines import Facts, Machine, MachineDetail
     from trackinizer.wire.wire_metrics import (
         LogMetricsResponse,
         MetricPoint,
@@ -101,6 +110,7 @@ if TYPE_CHECKING:
         SessionStartResponse,
         WorkspaceMessageContext,
     )
+    from trackinizer.wire.wire_variables import Variable
 else:
     from wrapt import lazy_import
 
@@ -118,6 +128,11 @@ else:
     # touch it, so its pydantic-model build stays off the cold-start path.
     wire_metrics = lazy_import("trackinizer.wire.wire_metrics")
     wire_metrics_query = lazy_import("trackinizer.wire.wire_metrics_query")
+    # Same lazy-bind for ``wire_machines``: only the machine methods touch it.
+    wire_machines = lazy_import("trackinizer.wire.wire_machines")
+    wire_machine_host = lazy_import("trackinizer.wire.wire_machine_host")
+    # Same lazy-bind for ``wire_variables``: only the variable methods touch it.
+    wire_variables = lazy_import("trackinizer.wire.wire_variables")
     pydantic = lazy_import("pydantic")
 
 
@@ -1849,6 +1864,206 @@ class Client:
             raise ClientError(f"{where} returned a malformed revision {revision!r}")
         return revision
 
+    def list_variables(self) -> list[Variable]:
+        """Return the org's variables, sorted by name; a secret's value is ``None``."""
+        where = wire_variables.VARIABLES_PATH
+        response = self._request("GET", where)
+        return _validate_model(wire_variables.VariableList, response, where).variables
+
+    def put_variable(self, name: str, *, value: str, secret: bool) -> None:
+        """Set one org variable; ``secret`` stores the value write-only.
+
+        Args:
+          name: Environment-variable name.
+          value: The value to store.
+          secret: Store ``value`` in the server's secret backend.
+
+        """
+        try:
+            body = wire_variables.VariablePut(value=value, secret=secret)
+        except pydantic.ValidationError:
+            # Not chained: pydantic's message carries the rejected input.
+            raise ClientError(f"variable {name!r} needs a non-empty value") from None
+        self._request(
+            "PUT",
+            wire_variables.VARIABLE_PATH.format(name=quote(name, safe="")),
+            body=body.model_dump(mode="json"),
+        )
+
+    def delete_variable(self, name: str) -> None:
+        """Delete one org variable; the server answers 404 when it is absent."""
+        self._request(
+            "DELETE",
+            wire_variables.VARIABLE_PATH.format(name=quote(name, safe="")),
+        )
+
+    def list_machines(self) -> list[Machine]:
+        """Return every registered machine, sorted by name."""
+        where = wire_machines.MACHINES_PATH
+        response = self._request("GET", where)
+        return _validate_model(wire_machines.MachineList, response, where).machines
+
+    def get_machine(self, name: str) -> MachineDetail:
+        """Return one machine; the server answers 404 when it is not registered."""
+        where = wire_machines.MACHINE_PATH.format(name=quote(name, safe=""))
+        response = self._request("GET", where)
+        return _validate_model(wire_machines.MachineDetail, response, where)
+
+    def put_machine(
+        self,
+        name: str,
+        *,
+        role: str | None = None,
+        how: str | None = None,
+    ) -> None:
+        """Register a machine, or change the fields named; ``""`` clears a field.
+
+        Args:
+          name: Machine name.
+          role: New role, or ``None`` to keep it.
+          how: New how line, or ``None`` to keep it.
+
+        """
+        try:
+            body = wire_machines.MachinePut(role=role, how=how)
+        except pydantic.ValidationError as err:
+            # Not chained: only the field and the rule are shown, never the input.
+            problems = "; ".join(f"{e['loc'][0]}: {e['msg']}" for e in err.errors())
+            raise ClientError(f"machine {name!r} {problems}") from None
+        self._request(
+            "PUT",
+            wire_machines.MACHINE_PATH.format(name=quote(name, safe="")),
+            body=body.model_dump(mode="json", exclude_none=True),
+        )
+
+    def change_machine_labels(
+        self,
+        name: str,
+        *,
+        add: Sequence[str] = (),
+        remove: Sequence[str] = (),
+    ) -> None:
+        """Add labels, then remove labels; the server answers 404 when absent.
+
+        Args:
+          name: Machine name.
+          add: Labels to add.
+          remove: Labels to remove.
+
+        """
+        body = wire_machines.MachineLabels(add=list(add), remove=list(remove))
+        self._request(
+            "PATCH",
+            wire_machines.MACHINE_LABELS_PATH.format(name=quote(name, safe="")),
+            body=body.model_dump(mode="json"),
+        )
+
+    def delete_machine(self, name: str) -> None:
+        """Unregister a machine; the server answers 404 when it is absent."""
+        self._request(
+            "DELETE",
+            wire_machines.MACHINE_PATH.format(name=quote(name, safe="")),
+        )
+
+    def enroll_machine(self, name: str) -> EnrollResponse:
+        """Register a machine if new and issue a one-use enrollment token (admin).
+
+        Args:
+          name: Machine name.
+
+        Returns:
+          enrolled: The token, shown once, and when it expires.
+
+        """
+        where = wire_machine_host.ENROLL_PATH
+        response = self._request("POST", where, body={"name": name})
+        return _validate_secret_model(wire_machine_host.EnrollResponse, response, where)
+
+    def join_machine(
+        self,
+        name: str,
+        *,
+        token: str,
+        instance: uuid.UUID,
+        host_version: str,
+        facts: Facts,
+    ) -> JoinResponse:
+        """Exchange an enrollment token for a machine credential.
+
+        The request is sent once: a retry after a lost answer would find the token
+        used. No other credential is needed.
+
+        Args:
+          name: Machine name the token was issued for.
+          token: The enrollment token; never shown in an error.
+          instance: The host's own id, kept across its restarts.
+          host_version: The host software's version.
+          facts: What the host reports about itself.
+
+        Returns:
+          joined: The machine id and the credential, shown once.
+
+        """
+        where = wire_machine_host.JOIN_PATH
+        body = _build_body(
+            wire_machine_host.JoinRequest,
+            f"join of machine {name!r}",
+            name=name,
+            token=token,
+            instance=instance,
+            host_version=host_version,
+            facts=facts,
+        )
+        response = self._request(
+            "POST",
+            where,
+            body=body.model_dump(mode="json"),
+            retry_attempts=1,
+        )
+        return _validate_secret_model(wire_machine_host.JoinResponse, response, where)
+
+    def heartbeat_machine(
+        self,
+        machine_id: uuid.UUID,
+        *,
+        instance: uuid.UUID,
+        host_version: str,
+        facts: Facts | None = None,
+    ) -> HeartbeatResponse:
+        """Report that the host is alive, authenticated by its machine credential.
+
+        Args:
+          machine_id: The machine's id, from joining.
+          instance: The host's id; a second id is refused until the first is silent.
+          host_version: The host software's version.
+          facts: What changed about the host, or ``None`` to keep the stored facts.
+
+        Returns:
+          beat: The server's clock at the heartbeat.
+
+        """
+        where = wire_machine_host.HEARTBEAT_PATH.format(machine_id=machine_id)
+        body = _build_body(
+            wire_machine_host.HeartbeatRequest,
+            f"heartbeat of machine {machine_id}",
+            instance=instance,
+            host_version=host_version,
+            facts=facts,
+        )
+        response = self._request(
+            "POST",
+            where,
+            body=body.model_dump(mode="json", exclude_none=True),
+        )
+        return _validate_model(wire_machine_host.HeartbeatResponse, response, where)
+
+    def revoke_machine(self, name: str) -> None:
+        """Take a machine out of service (admin); the server answers 404 when absent."""
+        self._request(
+            "POST",
+            wire_machine_host.REVOKE_PATH.format(name=quote(name, safe="")),
+        )
+
     def _patch_field(
         self,
         target_id: uuid.UUID,
@@ -2084,6 +2299,32 @@ def _validate_model[M: pydantic.BaseModel](
         return model.model_validate(response)
     except pydantic.ValidationError as err:
         raise ClientError(f"{where} returned a malformed payload: {err}") from err
+
+
+def _build_body[M: pydantic.BaseModel](
+    model: type[M],
+    what: str,
+    **fields: object,
+) -> M:
+    """Build a request body, or raise a ``ClientError`` that never quotes a field."""
+    try:
+        return model.model_validate(fields)
+    except pydantic.ValidationError as err:
+        # Not chained: only the field and the rule are shown, never the input.
+        problems = "; ".join(f"{e['loc'][0]}: {e['msg']}" for e in err.errors())
+        raise ClientError(f"{what} {problems}") from None
+
+
+def _validate_secret_model[M: pydantic.BaseModel](
+    model: type[M],
+    response: object,
+    where: str,
+) -> M:
+    """Validate a payload that carries a secret, never quoting it in an error."""
+    try:
+        return model.model_validate(response)
+    except pydantic.ValidationError:
+        raise ClientError(f"{where} returned a malformed payload") from None
 
 
 # A sequence-valued entry emits one repeated query param per element (``filter`` is the

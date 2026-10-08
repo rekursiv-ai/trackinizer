@@ -455,6 +455,11 @@ class InboundDrainItem(BaseModel):
 
     text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
     source: str | None = None
+    source_role: str | None = None
+    """The sender's role (``viewer``, ``writer`` or ``admin``) as the server attested
+    it, beside ``source``; ``None`` for a sender the server cannot name, and from a
+    server that predates the field."""
+
     room: str | None = None
     """The room a routed message was scoped to, for the ``[room] sender:``
     injection prefix; ``None`` for a direct (session-id) enqueue."""

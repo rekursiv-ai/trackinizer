@@ -74,6 +74,9 @@ Left out on purpose, and why:
   blobs, which retention exists to drop.
 * ``users``, ``api_keys``, ``allowlist`` -- credentials and access control,
   not the graph.
+* ``variables`` -- launch configuration, not graph records; a secret row names
+  a value that lives outside the database, so a restored export could not
+  carry it.
 * ``visual_workspaces``, ``visual_workspace_operations``,
   ``visual_workspace_presets``, ``chat_conversations``, ``chat_messages`` --
   per-user canvas state, saved workflows, operation receipts, and Chat history,
@@ -82,5 +85,10 @@ Left out on purpose, and why:
   and author identity; the linked Artifact and graph citations export above.
 * ``session_liveness`` -- when each live session was last heard from, which
   the session reaper keeps; runtime state, meaningless once restored elsewhere.
+* ``variables``, ``machines`` -- deployment configuration (the launch
+  environment, and where campaigns may run), not graph records; a secret's
+  value is not in the database at all.
+* ``machine_enrollments``, ``machine_credentials`` -- hashes of the secrets a
+  host joins and authenticates with: access control, like ``api_keys``.
 * ``applied_migrations`` -- carried in the header instead.
 """

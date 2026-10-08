@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import argparse
 import atexit
 import functools
+import re
 import sys
 
 from trackinizer.client.client import Client, server_url
@@ -25,6 +26,7 @@ from trackinizer.trax.client_cache import (
 )
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import env
+from trackinizer.trax.machines import MACHINE_WORD, Machines
 from trackinizer.trax.parser import parse_list_query
 from trackinizer.trax.profile import (
     Profile,
@@ -33,6 +35,7 @@ from trackinizer.trax.profile import (
     read_profile,
 )
 from trackinizer.trax.render import SHOW_IDS, echo
+from trackinizer.trax.variables import ENV_WORD, Variables
 from trackinizer.trax.verbs import (
     Authority,
     Blocked,
@@ -81,13 +84,18 @@ def connect(args: argparse.Namespace) -> Client:
     """Return a Client for the flags, environment, and saved profile.
 
     Resolution order, highest precedence first:
-      1. ``--host`` / ``--port`` flags.
-      2. ``--profile <name>`` (a saved profile; missing on disk is an error).
-      3. ``$TRACKINIZER_URL`` (a raw URL).
-      4. ``$TRACKINIZER_PROFILE`` (a profile name; missing is an error).
-      5. The ``current`` file written by ``trax profile current NAME``.
-      6. The ``default`` profile.
-      7. ``http://127.0.0.1:8765``, when nothing above is set.
+      1. ``--host`` / ``--port`` flags rewrite the host and port of the URL
+         chosen below.
+      2. ``--profile <name>`` (a saved profile, key included; missing on disk
+         is an error). ``$TRACKINIZER_TOKEN`` is ignored.
+      3. ``$TRACKINIZER_URL`` with ``$TRACKINIZER_TOKEN`` (a raw URL and its
+         key). A token without a URL is ignored, never sent to a profile's
+         server.
+      4. ``$TRACKINIZER_URL`` alone (a raw URL, no key).
+      5. ``$TRACKINIZER_PROFILE`` (a profile name; missing is an error).
+      6. The ``current`` file written by ``trax profile current NAME``.
+      7. The ``default`` profile.
+      8. ``http://127.0.0.1:8765``, when nothing above is set.
 
     Clients are shared per resolved identity. A one-shot CLI run builds
     exactly one either way, but the daemon serves thousands of invocations
@@ -125,7 +133,10 @@ class Help(Command):
             "trax profile url to https://trackinizer.example      set server URL",
         ),
         notes=(
-            "Commands: recent next blocked graph board cost profile",
+            (
+                "Commands: recent next blocked graph board cost profile "
+                f"{ENV_WORD} {MACHINE_WORD}"
+            ),
             "Help: trax issue help; trax issue 7 priority help; trax profile url help",
         ),
     )
@@ -176,6 +187,8 @@ DISPATCHERS: tuple[type[Command], ...] = (
     Workspace,
     Help,
     Profiles,
+    Variables,
+    Machines,
 )
 
 
@@ -295,8 +308,13 @@ def _resolve_target(args: argparse.Namespace) -> Target:
     ):  # -- argparse field.
         profile = read_profile(name)
     elif env_url := env("TRACKINIZER_URL") or "":
-        profile = Profile(url=server_url(env_url, "TRACKINIZER_URL"), author="")
+        profile = Profile(
+            url=server_url(env_url, "TRACKINIZER_URL"),
+            api_key=_env_key(),
+        )
     else:
+        # ``TRACKINIZER_TOKEN`` alone is not read: ops shells export it without a URL,
+        # and sending it to a profile's server would hand that server another key.
         profile = load_profile()
     url = profile.url
     if host is not None or port is not None:
@@ -306,6 +324,19 @@ def _resolve_target(args: argparse.Namespace) -> Target:
         port = port or parsed.port
         url = f"{scheme}://{host if port is None else f'{host}:{port}'}"
     return Target(url=url, author=profile.author, api_key=profile.api_key)
+
+
+# The value must be refused here, with no text of it in the message: httpx2 rejects a
+# header value holding a newline or non-ASCII character with an error that quotes it,
+# and an uncaught traceback would print the key into the caller's log.
+def _env_key() -> str:
+    """Return ``$TRACKINIZER_TOKEN``, empty when unset, refusing a malformed one."""
+    key = env("TRACKINIZER_TOKEN") or ""
+    if key and re.fullmatch(r"[\x21-\x7e]+", key) is None:
+        raise ClientError(
+            "TRACKINIZER_TOKEN must be printable ASCII with no whitespace",
+        )
+    return key
 
 
 # The one kindless path: bare ``trax`` reaches it with no tokens, and a leading filter

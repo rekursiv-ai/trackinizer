@@ -865,6 +865,17 @@
             "title": "Author",
             "type": "string"
           },
+          "author_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author Role"
+          },
           "created": {
             "format": "date-time",
             "title": "Created",
@@ -1411,6 +1422,43 @@
         "title": "DrainInboundResponse",
         "type": "object"
       },
+      "EnrollRequest": {
+        "additionalProperties": false,
+        "description": "Enroll a machine: the name the host will join as.",
+        "properties": {
+          "name": {
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "EnrollRequest",
+        "type": "object"
+      },
+      "EnrollResponse": {
+        "additionalProperties": false,
+        "description": "A one-use enrollment token, shown once.",
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "token": {
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "expires_at"
+        ],
+        "title": "EnrollResponse",
+        "type": "object"
+      },
       "EvidenceTimelineResponse": {
         "additionalProperties": false,
         "description": "The bounded response contract consumed by the generated web client.",
@@ -1487,6 +1535,40 @@
           "unresolved_questions"
         ],
         "title": "EvidenceTimelineResponse",
+        "type": "object"
+      },
+      "FactValue": {
+        "anyOf": [
+          {
+            "maxLength": 256,
+            "pattern": "^[^\\x00]*$",
+            "type": "string"
+          },
+          {
+            "maximum": 9.223372036854776e+18,
+            "minimum": -9.223372036854776e+18,
+            "type": "integer"
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "items": {
+              "maxLength": 256,
+              "pattern": "^[^\\x00]*$",
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ]
+      },
+      "Facts": {
+        "maxProperties": 64,
+        "patternProperties": {
+          "^[a-z][a-z0-9_]{0,31}$": {
+            "$ref": "#/components/schemas/FactValue"
+          }
+        },
         "type": "object"
       },
       "FeedActorFacet": {
@@ -3035,6 +3117,52 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HeartbeatRequest": {
+        "additionalProperties": false,
+        "description": "One heartbeat: who is calling, and optionally what changed.",
+        "properties": {
+          "facts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Facts"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "host_version": {
+            "$ref": "#/components/schemas/HostVersion"
+          },
+          "instance": {
+            "format": "uuid",
+            "title": "Instance",
+            "type": "string"
+          }
+        },
+        "required": [
+          "instance",
+          "host_version"
+        ],
+        "title": "HeartbeatRequest",
+        "type": "object"
+      },
+      "HeartbeatResponse": {
+        "additionalProperties": false,
+        "description": "The server's clock at the heartbeat.",
+        "properties": {
+          "server_time": {
+            "format": "date-time",
+            "title": "Server Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "server_time"
+        ],
+        "title": "HeartbeatResponse",
+        "type": "object"
+      },
       "HideVisual": {
         "additionalProperties": false,
         "description": "Dismiss one visual instance without deleting a saved preset.",
@@ -3083,6 +3211,11 @@
         "title": "Highlight",
         "type": "object"
       },
+      "HostVersion": {
+        "maxLength": 64,
+        "pattern": "^[^\\x00]*$",
+        "type": "string"
+      },
       "InboundDrainItem": {
         "description": "One message drained for a session, with its attested sender.\n\nThe drain **response** item: unlike the enqueue request, it carries\n``source`` -- the producer's attested ``--as`` / principal -- so the\npoller can render the ``[room] sender:`` injection context. Inbound-only\nand transient: it is **not** an ``agent_session_events`` row; when the\nagent consumes it, the capture path logs it as a normal turn.",
         "properties": {
@@ -3117,6 +3250,17 @@
               }
             ],
             "title": "Source"
+          },
+          "source_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Role"
           },
           "text": {
             "maxLength": 16384,
@@ -3250,6 +3394,62 @@
           }
         ]
       },
+      "JoinRequest": {
+        "additionalProperties": false,
+        "description": "Join as a machine with an enrollment token.",
+        "properties": {
+          "facts": {
+            "$ref": "#/components/schemas/Facts"
+          },
+          "host_version": {
+            "$ref": "#/components/schemas/HostVersion"
+          },
+          "instance": {
+            "format": "uuid",
+            "title": "Instance",
+            "type": "string"
+          },
+          "name": {
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "token": {
+            "maxLength": 128,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "token",
+          "instance",
+          "host_version"
+        ],
+        "title": "JoinRequest",
+        "type": "object"
+      },
+      "JoinResponse": {
+        "additionalProperties": false,
+        "description": "The machine credential, shown once.",
+        "properties": {
+          "credential": {
+            "title": "Credential",
+            "type": "string"
+          },
+          "machine_id": {
+            "format": "uuid",
+            "title": "Machine Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine_id",
+          "credential"
+        ],
+        "title": "JoinResponse",
+        "type": "object"
+      },
       "Judgement": {
         "enum": [
           "proven",
@@ -3296,6 +3496,221 @@
         ],
         "title": "LogMetricsResponse",
         "type": "object"
+      },
+      "Machine": {
+        "additionalProperties": false,
+        "description": "One registered machine, as listed.",
+        "properties": {
+          "how": {
+            "maxLength": 2000,
+            "title": "How",
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
+          "last_heartbeat": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Heartbeat"
+          },
+          "name": {
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "role": {
+            "pattern": "^(?:[a-z][a-z0-9-]{0,31})?$",
+            "title": "Role",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MachineStatus",
+            "default": "never"
+          },
+          "updated": {
+            "format": "date-time",
+            "title": "Updated",
+            "type": "string"
+          },
+          "updated_by": {
+            "title": "Updated By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "role",
+          "how",
+          "labels",
+          "updated_by",
+          "updated"
+        ],
+        "title": "Machine",
+        "type": "object"
+      },
+      "MachineDetail": {
+        "additionalProperties": false,
+        "description": "One machine with what its host reported about itself.",
+        "properties": {
+          "facts": {
+            "$ref": "#/components/schemas/Facts"
+          },
+          "host_version": {
+            "default": "",
+            "title": "Host Version",
+            "type": "string"
+          },
+          "how": {
+            "maxLength": 2000,
+            "title": "How",
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
+          "last_heartbeat": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Heartbeat"
+          },
+          "name": {
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "role": {
+            "pattern": "^(?:[a-z][a-z0-9-]{0,31})?$",
+            "title": "Role",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MachineStatus",
+            "default": "never"
+          },
+          "updated": {
+            "format": "date-time",
+            "title": "Updated",
+            "type": "string"
+          },
+          "updated_by": {
+            "title": "Updated By",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "role",
+          "how",
+          "labels",
+          "updated_by",
+          "updated"
+        ],
+        "title": "MachineDetail",
+        "type": "object"
+      },
+      "MachineLabels": {
+        "additionalProperties": false,
+        "description": "Add labels, then remove labels; each is a no-op when already so.",
+        "properties": {
+          "add": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Add",
+            "type": "array"
+          },
+          "remove": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Remove",
+            "type": "array"
+          }
+        },
+        "title": "MachineLabels",
+        "type": "object"
+      },
+      "MachineList": {
+        "additionalProperties": false,
+        "description": "Every registered machine, sorted by name.",
+        "properties": {
+          "machines": {
+            "items": {
+              "$ref": "#/components/schemas/Machine"
+            },
+            "title": "Machines",
+            "type": "array"
+          }
+        },
+        "required": [
+          "machines"
+        ],
+        "title": "MachineList",
+        "type": "object"
+      },
+      "MachinePut": {
+        "additionalProperties": false,
+        "description": "Create a machine or change its fields; a field left out keeps its value.",
+        "properties": {
+          "how": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "How"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "pattern": "^(?:[a-z][a-z0-9-]{0,31})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          }
+        },
+        "title": "MachinePut",
+        "type": "object"
+      },
+      "MachineStatus": {
+        "enum": [
+          "revoked",
+          "never",
+          "online",
+          "offline"
+        ],
+        "type": "string"
       },
       "ManifestBody": {
         "description": "What one part's source file is, re-sent with every append batch.\n\nRe-sent rather than written once because it CHANGES as the file grows:\n``records`` counts what has arrived, and the encoding a reader reports is\nonly correct for the prefix it has consumed -- claude's ascii-escaping\nconvention is a majority that is not decided until the stream ends.",
@@ -6850,6 +7265,104 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "Variable": {
+        "additionalProperties": false,
+        "description": "One stored variable, as listed; a secret never carries its value.",
+        "properties": {
+          "layer": {
+            "enum": [
+              "org",
+              "machine",
+              "user"
+            ],
+            "title": "Layer",
+            "type": "string"
+          },
+          "name": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "secret": {
+            "title": "Secret",
+            "type": "boolean"
+          },
+          "updated": {
+            "format": "date-time",
+            "title": "Updated",
+            "type": "string"
+          },
+          "updated_by": {
+            "title": "Updated By",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "layer",
+          "owner",
+          "name",
+          "secret",
+          "value",
+          "updated_by",
+          "updated"
+        ],
+        "title": "Variable",
+        "type": "object"
+      },
+      "VariableList": {
+        "additionalProperties": false,
+        "description": "Every variable of a layer, sorted by name.",
+        "properties": {
+          "variables": {
+            "items": {
+              "$ref": "#/components/schemas/Variable"
+            },
+            "title": "Variables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "variables"
+        ],
+        "title": "VariableList",
+        "type": "object"
+      },
+      "VariablePut": {
+        "additionalProperties": false,
+        "description": "Set one variable. The response has no body, so a secret is never echoed.",
+        "properties": {
+          "secret": {
+            "default": false,
+            "title": "Secret",
+            "type": "boolean"
+          },
+          "value": {
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "VariablePut",
         "type": "object"
       },
       "VisualCatalogBody": {
@@ -13168,6 +13681,347 @@
         "summary": "Set Validation Route"
       }
     },
+    "/api/machines": {
+      "get": {
+        "description": "List every registered machine.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Writer-role principal.\n\nReturns:\n  machines: Every machine, sorted by name in byte order.",
+        "operationId": "list_machines_route_api_machines_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MachineList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Machines Route"
+      }
+    },
+    "/api/machines/enroll": {
+      "post": {
+        "description": "Register the machine if it is new and issue a one-use enrollment token.\n\nA new token supersedes any open one for the same machine.\n\nArgs:\n  body: The machine's name.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n  identity: Admin principal, recorded as who enrolled the machine.\n\nReturns:\n  enrolled: The token, shown once, and when it expires.\n\nRaises:\n  ValidationError: The name is reserved.",
+        "operationId": "enroll_machine_route_api_machines_enroll_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnrollRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enroll Machine Route"
+      }
+    },
+    "/api/machines/join": {
+      "post": {
+        "description": "Exchange an enrollment token for a machine credential.\n\nThe token is the credential, so the route has no other authentication. It is\nvalid once, within 15 minutes, for the machine name it was issued for, and only\nwhile the admin who issued it is still an active admin. Joining a machine that\nalready has a live credential revokes that credential first.\n\nArgs:\n  body: The machine name, the token, and the host's instance, version and facts.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n\nReturns:\n  joined: The machine's id and its credential, shown once.\n\nRaises:\n  HTTPException: 401 when the token is malformed, unknown, used, expired, issued\n    for another machine, or issued by an account that is no longer an active admin.",
+        "operationId": "join_machine_route_api_machines_join_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JoinRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JoinResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Join Machine Route"
+      }
+    },
+    "/api/machines/{machine_id}/heartbeat": {
+      "post": {
+        "description": "Record that the host is alive, and what it reports about itself.\n\nOne host instance holds a machine at a time. A different instance is refused\nuntil the connected one has been silent for 180 seconds, then takes over.\n\nArgs:\n  body: The host's instance, version, and facts when they changed.\n  request: Request carrying the database engine.\n  machine: The machine the credential authenticated as.\n\nReturns:\n  beat: The server's clock at the heartbeat.\n\nRaises:\n  AnotherHostConnectedError: Another instance is connected and live.\n  HTTPException: 410 when the credential was revoked after it authenticated.",
+        "operationId": "heartbeat_machine_route_api_machines__machine_id__heartbeat_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "machine_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Machine Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HeartbeatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeartbeatResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Heartbeat Machine Route"
+      }
+    },
+    "/api/machines/{name}": {
+      "delete": {
+        "description": "Unregister a machine; nothing on the machine itself is touched.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine.\n  identity: Admin principal.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  NotFoundError: No such machine.\n  MachineInServiceError: The machine holds a live credential.",
+        "operationId": "delete_machine_route_api_machines__name__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Machine Route"
+      },
+      "get": {
+        "description": "Return one machine, with what its host reported.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine.\n  identity: Writer-role principal.\n\nReturns:\n  machine: The machine.\n\nRaises:\n  NotFoundError: No such machine.",
+        "operationId": "get_machine_route_api_machines__name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MachineDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Machine Route"
+      },
+      "put": {
+        "description": "Register a machine, or change the fields the body names.\n\nA field left out keeps its value, or defaults to empty on a new machine;\nan empty string clears it.\n\nArgs:\n  name: The machine's name.\n  body: The new role and how line, each optional.\n  request: Request carrying the database engine.\n  identity: Admin principal, recorded as who changed it.\n\nReturns:\n  empty: 204 with no body.",
+        "operationId": "put_machine_route_api_machines__name__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MachinePut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Machine Route"
+      }
+    },
+    "/api/machines/{name}/labels": {
+      "patch": {
+        "description": "Add labels, then remove labels; each is a no-op when already so.\n\nLabels follow the Issue label rules: stripped, deduplicated, never blank.\n\nArgs:\n  name: The machine's name.\n  body: The labels to add and to remove.\n  request: Request carrying the database engine.\n  identity: Admin principal, recorded as who changed it.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  ValidationError: A label is blank or holds a NUL.\n  NotFoundError: No such machine.",
+        "operationId": "change_machine_labels_route_api_machines__name__labels_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MachineLabels"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Change Machine Labels Route"
+      }
+    },
+    "/api/machines/{name}/revoke": {
+      "post": {
+        "description": "Take a machine out of service; revoking one already revoked is a no-op.\n\nThe machine's credential row is kept, so its host learns of the revoke by a 410\non its next request. An enrollment token not yet used is closed too, so a revoke\nis not undone by a host that joins with it.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine.\n  identity: Admin principal.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  NotFoundError: No such machine.",
+        "operationId": "revoke_machine_route_api_machines__name__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Machine Route"
+      }
+    },
     "/api/me/profile": {
       "get": {
         "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, and canvas opt-in.",
@@ -14877,6 +15731,101 @@
           }
         },
         "summary": "Read Recent Session Turns Route"
+      }
+    },
+    "/api/variables": {
+      "get": {
+        "description": "List the org layer's variables by name; a secret's value is ``null``.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Writer-role principal.\n\nReturns:\n  variables: Every org-layer variable, sorted by name.",
+        "operationId": "list_variables_route_api_variables_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VariableList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Variables Route"
+      }
+    },
+    "/api/variables/{name}": {
+      "delete": {
+        "description": "Delete one org-layer variable; a secret's value goes first.\n\nArgs:\n  name: The environment-variable name.\n  request: Request carrying the database engine and secret backend.\n  identity: Admin principal.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  ValidationError: The URL's last segment is not the name.\n  NotFoundError: No such variable.\n  HTTPException: 503 when it is a secret and no secret store is configured.",
+        "operationId": "delete_variable_route_api_variables__name__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Variable Route"
+      },
+      "put": {
+        "description": "Set one org-layer variable.\n\nA name stored as a secret stays secret: a plain value is refused until the\nvariable is deleted. A plain name may become a secret.\n\nArgs:\n  name: The environment-variable name.\n  body: The value and whether it is secret.\n  request: Request carrying the database engine and secret backend.\n  identity: Admin principal, recorded as who set it.\n\nReturns:\n  empty: 204 with no body, so a secret is never echoed.\n\nRaises:\n  ValidationError: The URL's last segment is not the name, or the value is\n    too long in UTF-8 or holds a NUL.\n  ConflictError: A plain value for a name stored as a secret.\n  HTTPException: 503 when a secret is sent and no secret store is configured.",
+        "operationId": "put_variable_route_api_variables__name__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VariablePut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Variable Route"
       }
     },
     "/api/version": {
