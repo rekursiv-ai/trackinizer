@@ -395,7 +395,7 @@ async def web_get(
 
 
 _GRAPH_NODE_COLS: Final = (
-    "id, kind, seq, title, status, created, belief_judgement, belief_confidence"
+    "id, kind, seq, title, status, created, owner, belief_judgement, belief_confidence"
 )
 
 # The ids ``/graph`` returns: the newest ``$1`` nodes, each followed by the older nodes
@@ -1162,6 +1162,8 @@ def _graph_node(row: asyncpg.Record) -> WebView:
         "status": _record_str(row, "status"),
         "created": _isoformat(_record_datetime(row, "created")),
     }
+    if row["owner"] is not None:
+        out["owner"] = row["owner"]
     if row["belief_judgement"] is not None:
         out["judgement"] = row["belief_judgement"]
     if row["belief_confidence"] is not None:

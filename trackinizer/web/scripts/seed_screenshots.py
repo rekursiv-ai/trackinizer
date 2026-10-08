@@ -80,6 +80,9 @@ def main() -> int:
     )
     _add_arguments(parser)
     flags = cast(_Flags, parser.parse_args())
+    # The synth structure is the design's generator whole: its threads already
+    # hold their own claims and cross-link 7% of their evidence, so no spread
+    # and no filled-in claims are added on top.
     structure = load(GRAPH_STRUCTURE.read_text())
     # The large graph's heaviest batch walks some 100,000 steps of the server's change
     # cascade (seed_graph.cascade_order): two minutes on a PGlite server, and a retry
@@ -415,7 +418,7 @@ def _nodes() -> list[_Node]:
         _issue(
             "tok",
             "Make the tokenizer twice as fast",
-            owner="ada",
+            owner="ada@example.com",
             kind="feature",
             priority=10,
             labels=["tokenizer", "perf"],
@@ -430,7 +433,7 @@ def _nodes() -> list[_Node]:
         _issue(
             "tok-profile",
             "Profile the merge loop",
-            owner="ada",
+            owner="ada@example.com",
             kind="task",
             priority=10,
             status="complete",
@@ -438,7 +441,7 @@ def _nodes() -> list[_Node]:
         _issue(
             "tok-cache",
             "Cache merge ranks between calls",
-            owner="ben",
+            owner="ben@example.com",
             kind="feature",
             priority=10,
             labels=["tokenizer", "perf"],
@@ -446,14 +449,14 @@ def _nodes() -> list[_Node]:
         _issue(
             "tok-vocab",
             "Clear the rank cache when the vocabulary changes",
-            owner="ben",
+            owner="ben@example.com",
             kind="bug",
             status="complete",
         ),
         _issue(
             "tok-vector",
             "Vectorize pre-tokenization",
-            owner="ada",
+            owner="ada@example.com",
             kind="feature",
             priority=30,
             labels=["tokenizer", "perf"],
@@ -462,7 +465,7 @@ def _nodes() -> list[_Node]:
             "tok-belief",
             "Belief",
             "Merge-rank lookups dominate tokenizer time",
-            owner="ada",
+            owner="ada@example.com",
             labels=["tokenizer"],
             judgement="proven",
             confidence=0.8,
@@ -475,7 +478,7 @@ def _nodes() -> list[_Node]:
             "tok-profile-run",
             "Experiment",
             "Profile of a 1 GB shard",
-            owner="ada",
+            owner="ada@example.com",
             labels=["tokenizer", "profile"],
             status="complete",
             outcome="62% of the time is in merge-rank lookups, 21% in pre-tokenization",
@@ -485,7 +488,7 @@ def _nodes() -> list[_Node]:
             "cache-bench",
             "Experiment",
             "Merge-rank cache benchmark",
-            owner="ben",
+            owner="ben@example.com",
             labels=["tokenizer", "perf", "benchmark"],
             status="complete",
             outcome=(
@@ -507,7 +510,7 @@ def _nodes() -> list[_Node]:
             "rank-tables",
             "Paper",
             "Rank tables for linear-time byte-pair merges",
-            owner="ben",
+            owner="ben@example.com",
             labels=["tokenizer"],
             authors=["Ben Sample", "Dee Placeholder"],
             publication_type="inproceedings",
@@ -525,7 +528,7 @@ def _nodes() -> list[_Node]:
         _issue(
             "drift",
             "Find why eval scores drift between runs",
-            owner="cleo",
+            owner="cleo@example.com",
             kind="bug",
             priority=0,
             labels=["evals", "reproducibility"],
@@ -539,23 +542,23 @@ def _nodes() -> list[_Node]:
         _issue(
             "drift-seed",
             "Seed every sampler",
-            owner="cleo",
+            owner="cleo@example.com",
             kind="task",
             status="complete",
         ),
         _issue(
             "drift-order",
             "Pin the eval data order",
-            owner="cleo",
+            owner="cleo@example.com",
             kind="task",
             status="complete",
         ),
-        _issue("drift-gpu", "Rerun on one GPU type", owner="ada", kind="task"),
+        _issue("drift-gpu", "Rerun on one GPU type", owner="ada@example.com", kind="task"),
         _artifact(
             "drift-belief",
             "Belief",
             "Unseeded sampling causes the eval drift",
-            owner="cleo",
+            owner="cleo@example.com",
             labels=["evals"],
             judgement="proven",
             confidence=0.85,
@@ -564,7 +567,7 @@ def _nodes() -> list[_Node]:
             "drift-gpu-belief",
             "Belief",
             "GPU type moves scores by under 0.1 points",
-            owner="cleo",
+            owner="cleo@example.com",
             labels=["evals"],
             judgement="unproven",
             confidence=0.5,
@@ -573,7 +576,7 @@ def _nodes() -> list[_Node]:
             "drift-reruns",
             "Experiment",
             "Ten reruns with fixed seeds",
-            owner="cleo",
+            owner="cleo@example.com",
             labels=["evals", "reproducibility"],
             status="complete",
             outcome="Spread fell from 1.8 to 0.2 points (71.3 to 71.5)",
@@ -583,7 +586,7 @@ def _nodes() -> list[_Node]:
         _issue(
             "survey",
             "Survey attention past 64k tokens",
-            owner="ben",
+            owner="ben@example.com",
             kind="task",
             labels=["attention", "literature"],
             description=(
@@ -594,21 +597,21 @@ def _nodes() -> list[_Node]:
         _issue(
             "survey-read",
             "Read the block-sparse papers",
-            owner="ben",
+            owner="ben@example.com",
             kind="task",
             status="complete",
         ),
         _issue(
             "survey-summary",
             "Summarize what holds at 64k tokens and beyond",
-            owner="ben",
+            owner="ben@example.com",
             kind="task",
         ),
         _artifact(
             "sparse-belief",
             "Belief",
             "Block-sparse attention keeps quality up to 64k tokens",
-            owner="ben",
+            owner="ben@example.com",
             labels=["attention"],
             judgement="unproven",
             confidence=0.6,
@@ -623,7 +626,7 @@ def _nodes() -> list[_Node]:
             "needle",
             "Experiment",
             "Needle recall at 64k: block-sparse against dense",
-            owner="ben",
+            owner="ben@example.com",
             labels=["attention"],
             status="complete",
             outcome="Block-sparse recalls 94% of needles at 64k tokens, dense 97%",
@@ -633,7 +636,7 @@ def _nodes() -> list[_Node]:
             "block-sparse",
             "Paper",
             "Block-sparse attention at long context",
-            owner="ben",
+            owner="ben@example.com",
             labels=["attention"],
             authors=["Ada Example", "Ben Sample", "Cleo Demo"],
             publication_type="inproceedings",
@@ -727,7 +730,7 @@ def _paper(
         key,
         "Paper",
         title,
-        owner="ben",
+        owner="ben@example.com",
         authors=authors,
         publication_type=publication_type,
         venue=venue,

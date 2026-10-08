@@ -14,9 +14,9 @@ export type Palette = {
   readonly fallback: string;
   /** The view's background: an undecidable Belief's half-tone washes it over the fill. */
   readonly background: string;
-  /** A citation with a positive valence; the app's evidence colour. */
+  /** A citation with a positive valence; the graph's `--g-vpos`. */
   readonly support: string;
-  /** A citation with a negative valence. */
+  /** A citation with a negative valence; the graph's `--g-vneg`. */
   readonly against: string;
   /** Every edge outside the focus's: hovered or selected, it dims the rest. */
   readonly faint: string;
@@ -80,6 +80,8 @@ export type NodeShape = {
   readonly confidence?: number;
   /** Distinct inquiries it shares an edge with. */
   readonly degree: number;
+  /** Weighted PageRank, normalised to the graph's busiest node: what lifts a hub's disc. */
+  readonly authority: number;
   /** An Issue that narrows nothing: the top of a tree. */
   readonly root: boolean;
 };
@@ -112,11 +114,12 @@ export function nodeLook(
   const alpha = (dimmed ? DIMMED_ALPHA : retired ? RETIRED_ALPHA : 1) * fade;
   const fillAlpha = dimmed || retired ? alpha : (0.35 + 0.65 * (belief ? (shape.confidence ?? 1) : 1)) * fade;
   // The design's sizes: a base by kind (a Belief the biggest of the small, so a
-  // claim reads at every zoom), authority — here the degree — lifting a hub
-  // above its fellows, and a root Issue the largest of its island.
-  const radius = Math.min(11, (BASE_OF[shape.kind] ?? 2.5) + 6.5 * (shape.degree / (shape.degree + 6)));
+  // claim reads at every zoom) and authority — the weighted PageRank — lifting
+  // the few nodes the evidence flows through into a bright core, while the mass
+  // stays a tight ball of small dots.
+  const radius = (BASE_OF[shape.kind] ?? 2.5) + 6.5 * shape.authority;
   return {
-    radius: shape.root ? Math.max(radius, 12) : radius,
+    radius,
     fill,
     fillAlpha: judgement === "disproven" ? 0 : fillAlpha,
     wash: judgement === "undecidable" ? palette.background : null,
@@ -167,6 +170,19 @@ export function mix(from: string, to: string, amount: number): string {
   return blended;
 }
 
+/**
+ * A panel's colour for a graph colour: the design's "one step lighter than the
+ * graph". A `Kind#seq` in prose is small text, and the canvas's hue at that size
+ * reads as muddy; lifted toward white it is the same hue, and legible.
+ */
+export const panelTint = (colour: string) => mix(colour, "#ffffff", 0.28);
+
+/** A panel's colour for a valence, which the design lifts a little less. */
+export const panelValence = (colour: string) => mix(colour, "#ffffff", 0.2);
+
+/** A panel's colour for one inquiry kind. */
+export const panelKind = (palette: Palette, kind: string) => panelTint(palette.kinds[kind] ?? palette.fallback);
+
 /** `colour`'s red, green and blue, or null when it is neither `#rgb`, `#rrggbb` nor `rgb(…)`. */
 function channels(colour: string): [number, number, number] | null {
   const text = colour.trim();
@@ -212,8 +228,9 @@ export function linkLook(
  * The palette the theme's tokens under `element` give, for the server's
  * `kinds`, `edgeKinds` and `statuses`: `--g-kind-<Kind>`, `--g-edge-<kind>` and
  * `--g-status-<status>`, each `--g-fallback` when unset; valence takes the
- * app's `--l-evidence` and `--l-against`, edges outside a focus `--g-faint`,
- * and the halos the app's `--text` and `--accent-hover`.
+ * graph's `--g-vpos` and `--g-vneg` (the app's list colours behind them), edges
+ * outside a focus `--g-faint`, and the halos the app's `--text` and
+ * `--accent-hover`.
  */
 export function readPalette(
   element: Element,
@@ -229,9 +246,9 @@ export function readPalette(
     edges: each(edgeKinds, "--g-edge-"),
     status: each(statuses, "--g-status-"),
     fallback,
-    background: token("--bg"),
-    support: token("--l-evidence"),
-    against: token("--l-against"),
+    background: token("--g-bg") || token("--bg"),
+    support: token("--g-vpos") || token("--l-evidence"),
+    against: token("--g-vneg") || token("--l-against"),
     faint: token("--g-faint"),
     halo: token("--text"),
     match: token("--accent-hover"),

@@ -1,28 +1,35 @@
 /* The graph's colours, as tokens that encode.ts's readPalette reads: a kind with
-   no --g-kind-<Kind> draws in --g-fallback. Node hues are v1's categorical wheel,
-   at even brightness; edges are quiet slates, so structure recedes behind the
-   nodes; status rings are neutrals and one alert, none of them a node hue, so the
-   key shows each ring beside the app's status glyph. A file of their own, loaded
-   by palette.ts, so the detail's graph preview has them without the graph's chunk. */
+   no --g-kind-<Kind> draws in --g-fallback. The hues are the design's own — the
+   palette of server/assets/graph.html that the prototype was built on — edges
+   are their quiet tints, so structure recedes behind the nodes; status rings are
+   neutrals and one alert, none of them a node hue, so the key shows each ring
+   beside the app's status glyph. A file of their own, loaded by palette.ts, so
+   the detail's graph preview has them without the graph's chunk. */
 :root {
-  --g-kind-Issue: #5e8cf0;
-  --g-kind-Belief: #a98cf0;
-  --g-kind-Experiment: #6fcf8e;
-  --g-kind-Paper: #4fc7d4;
-  --g-kind-CodeChange: #e8995a;
-  --g-kind-WebResult: #d4b94f;
-  --g-kind-WebSearch: #e86f8e;
-  /* Rose, not the indigo it had: beside --g-kind-Issue it was a second blue, and
-     the two kinds were hard to tell apart at a node's size. */
+  --g-kind-Issue: #6e8efb;
+  --g-kind-Belief: #4cc9a0;
+  --g-kind-Experiment: #b69cff;
+  --g-kind-Paper: #67d4e8;
+  --g-kind-CodeChange: #ff9e64;
+  --g-kind-WebResult: #f3d27a;
+  --g-kind-WebSearch: #c3e88d;
   --g-kind-AgentSession: #f0789a;
-  --g-kind-Artifact: #d46f6f;
-  --g-edge-narrows: #7b86a8;
-  --g-edge-requires: #a89b7b;
-  --g-edge-produced_by: #6b7390;
-  --g-edge-proves: #7ba88f;
-  --g-edge-favors: #7ba1a8;
-  --g-edge-supersedes: #a87b86;
-  --g-edge-cites_paper: #8f7ba8;
+  --g-kind-Artifact: #ef7d7d;
+  --g-edge-narrows: #8fa6e6;
+  --g-edge-requires: #d9c08a;
+  --g-edge-produced_by: #a9a6cf;
+  /* The signed kinds wear their valence, mint or coral, on the canvas; the
+     token is the mint they fall back to where only kind is known. */
+  --g-edge-proves: #9fd4a8;
+  --g-edge-favors: #9fd4a8;
+  --g-edge-supersedes: #e08fa8;
+  --g-edge-cites_paper: #8f93e0;
+  /* A citation's two sides, as the design draws them: a pale mint that reads as
+     evidence at a link's width, and a warm amber for the counter. Not the app's
+     list colours (`--l-evidence`, `--l-against`), which are deepened to hold on
+     a light ground and go muddy over black. */
+  --g-vpos: #9fd4a8;
+  --g-vneg: #f5b07a;
   --g-status-active: #eceff5;
   --g-status-complete: #9aa5ce;
   --g-status-abandoned: #444b6e;
@@ -30,6 +37,11 @@
   --g-fallback: var(--ink-tertiary);
   /* --ink-tertiary at 15%. */
   --g-faint: rgba(98, 102, 109, 0.15);
+  /* What the canvas paints behind it all (graph.css's `.graph-stage`), which the
+     undecidable Belief's half-tone washes toward and a cluster title outlines
+     its letters in. Not `--bg`: the page's ground is a grey, and a grey halo
+     around white text on the black field shows. */
+  --g-bg: #000;
   /* The two colours the graph reads as from far off: every record one quiet
      tint, a Belief the one hue that stands out, so an island's claims are what
      the eye finds first. The kind hues above take over as it is zoomed in. */
@@ -37,22 +49,25 @@
   --g-duo-belief: #5b8cff;
 }
 :root[data-theme="light"] {
-  --g-kind-Issue: #2f6fd6;
-  --g-kind-Belief: #7b5fd8;
-  --g-kind-Experiment: #2f9d5a;
-  --g-kind-Paper: #1f97a6;
-  --g-kind-CodeChange: #c56f2a;
-  --g-kind-WebResult: #a88a1c;
-  --g-kind-WebSearch: #c94068;
+  /* The same hues, deepened to hold on a light ground. */
+  --g-kind-Issue: #3f6ad0;
+  --g-kind-Belief: #229d78;
+  --g-kind-Experiment: #8a63d9;
+  --g-kind-Paper: #2ba3bc;
+  --g-kind-CodeChange: #c9662a;
+  --g-kind-WebResult: #b08f1f;
+  --g-kind-WebSearch: #7fa63a;
   --g-kind-AgentSession: #d64e74;
-  --g-kind-Artifact: #b84646;
-  --g-edge-narrows: #7f8aa6;
-  --g-edge-requires: #a39470;
-  --g-edge-produced_by: #9aa3b5;
-  --g-edge-proves: #6f9c83;
-  --g-edge-favors: #6f979c;
-  --g-edge-supersedes: #a3707c;
-  --g-edge-cites_paper: #8a7fa8;
+  --g-kind-Artifact: #c65050;
+  --g-edge-narrows: #5f79c0;
+  --g-edge-requires: #a3894f;
+  --g-edge-produced_by: #7d7699;
+  --g-edge-proves: #4f9c6c;
+  --g-edge-favors: #4f9c6c;
+  --g-edge-supersedes: #b0607a;
+  --g-edge-cites_paper: #6266b5;
+  --g-vpos: #4f9c6c;
+  --g-vneg: #c2703a;
   --g-status-active: #17212d;
   --g-status-complete: #8a97a8;
   --g-status-abandoned: #c3ccd6;

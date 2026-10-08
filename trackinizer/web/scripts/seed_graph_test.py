@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -25,9 +26,11 @@ from trackinizer.web.scripts.seed_graph import (
     GRAPH_CONTENTS,
     SeededGraph,
     cascade_order,
+    claims,
     islands,
     seed_graph,
     showcase,
+    spread,
 )
 from trackinizer.wire.bodies import BATCH_MAX_ITEMS
 
@@ -61,6 +64,93 @@ def test_the_showcase_is_the_island_most_argued_over_and_its_most_cited_belief()
 ):
     assert showcase(_STRUCTURE, islands(_STRUCTURE)).root == 0
     assert showcase(_STRUCTURE, islands(_STRUCTURE)).belief == 3
+
+
+def test_spread_cites_each_belief_once_from_another_island() -> None:
+    # Belief 3's only foreign island's evidence already cites it, so it gains
+    # nothing; belief 9 takes the Experiment of the island below its own.
+    spread_structure = spread(_STRUCTURE)
+    assert spread_structure.nodes == _STRUCTURE.nodes
+    assert set(spread_structure.edges) - set(_STRUCTURE.edges) == {
+        _link(2, 9, "favors", 1),
+    }
+    assert islands(spread_structure) == islands(_STRUCTURE)
+
+
+def test_spread_sends_the_committed_newest_window_arcs_between_islands() -> None:
+    # The grouped graph's mesh is cross-island evidence, and the default view
+    # is the newest thousand: without a share of it there, clusters read alone.
+    structure = spread(load(GRAPH_STRUCTURE.read_text()))
+    assert (
+        structure.edges
+        == spread(
+            load(GRAPH_STRUCTURE.read_text()),
+        ).edges
+    )
+    found = islands(structure)
+    newest = set(range(len(structure.nodes) - 1000, len(structure.nodes)))
+    arcs = [
+        link
+        for link in structure.edges
+        if link.kind in {"proves", "favors"}
+        and link.from_index in newest
+        and link.to_index in newest
+        and found.home.get(link.from_index, link.from_index)
+        != found.home.get(link.to_index, link.to_index)
+    ]
+    assert len(arcs) >= 15
+
+
+def test_claims_gives_a_thin_island_its_ten_beliefs() -> None:
+    work = (
+        Node(kind="Issue", status="active"),
+        *(Node(kind="Experiment", status="complete") for _ in range(23)),
+        Node(kind="Belief", status="active"),
+    )
+    thin = Structure(
+        nodes=work,
+        edges=(
+            *(_link(n, 0, "produced_by") for n in range(1, 24)),
+            _link(24, 0, "produced_by"),
+            _link(1, 24, "proves", 1),
+        ),
+    )
+    filled = claims(thin)
+    beliefs = [n for n, node in enumerate(filled.nodes) if node.kind == "Belief"]
+    assert len(beliefs) == 10
+    assert islands(filled).roots == (0,)
+    for n in beliefs:
+        # Each claim stands produced by an older node of its own thread.
+        parents = [
+            link.to_index
+            for link in filled.edges
+            if link.kind == "produced_by" and link.from_index == n
+        ]
+        assert parents
+        assert all(parent < n for parent in parents)
+
+
+def test_claims_fills_the_committed_thin_islands_without_turning_any_verdict() -> None:
+    spread_structure = spread(load(GRAPH_STRUCTURE.read_text()))
+    filled = claims(spread_structure)
+    assert filled.nodes == claims(spread_structure).nodes
+    found = islands(filled)
+    members: dict[int, list[int]] = {}
+    held: Counter[int] = Counter()
+    for n, node in enumerate(filled.nodes):
+        home = found.home.get(n)
+        if home is not None:
+            members.setdefault(home, []).append(n)
+            if node.kind == "Belief":
+                held[home] += 1
+    assert all(held[home] >= 10 for home, row in members.items() if len(row) >= 24)
+    # Only positive votes were added, so the demo's showcase island stands;
+    # its indexes shift as claims interleave, so check the pick's shape.
+    picked = showcase(filled, found)
+    base = showcase(spread_structure, islands(spread_structure))
+    assert picked.root == base.root
+    assert filled.nodes[picked.belief].kind == "Belief"
+    assert found.home[picked.belief] == picked.root
 
 
 @pytest.mark.parametrize("structure", ["small", "committed"])
@@ -162,14 +252,16 @@ def test_two_seeds_write_the_same() -> None:
     assert first.edges == second.edges
 
 
-def test_in_cascade_order_the_committed_structure_walks_a_tenth_as_far() -> None:
-    # In creation order the server's cascade walks 1,521,324 steps, which took half
-    # an hour; in this order, measured 2026-10-03, 129,290.
+def test_in_cascade_order_the_committed_structure_walks_a_fifth_as_far() -> None:
+    # In creation order the design's structure walks the server's cascade
+    # 2,425,634 steps, which took fourteen minutes; in this order, measured
+    # 2026-10-06 on the banded structure, 151,508 -- threads live in time
+    # bands, so a chain never hangs across a band's whole span.
     cascade = _Cascade()
     steps = sum(
         cascade.add(link) for link in cascade_order(load(GRAPH_STRUCTURE.read_text()))
     )
-    assert steps < 150_000
+    assert steps < 300_000
 
 
 def test_the_committed_structure_has_a_showcase_and_a_title_for_every_root() -> None:

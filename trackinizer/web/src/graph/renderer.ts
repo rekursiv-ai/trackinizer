@@ -8,7 +8,7 @@ import { type Layout, layout } from "./layout";
 import type { DrawLink, DrawNode } from "./model";
 
 /** What covers the canvas, in pixels: a strip on its right (Peek, the key or the zoom buttons). */
-export type Covered = { readonly right: number };
+export type Covered = { readonly right: number; readonly left: number };
 
 /** The theme's colours for an island's name: its title, what it holds, and the outline that keeps both off the edges. */
 export type IslandInk = { readonly title: string; readonly count: string; readonly outline: string };
@@ -537,7 +537,7 @@ function drawLink(link: DrawLink, ctx: CanvasRenderingContext2D, scale: number):
         : 0.3
       : (QUIET[kind] ?? 0.3);
   const width = Math.max(0.55, Math.min(1, 0.45 + scale * 0.3)) / scale;
-  const bright = 0.75 + 0.45 * Math.min(1, Math.max(0, (scale - 0.5) / 1.2));
+  const bright = 0.9 + 0.45 * Math.min(1, Math.max(0, (scale - 0.5) / 1.2));
   const far = Math.min(1, Math.max(0, (DUO_ZOOM - scale) / FAR_RANGE));
   ctx.globalCompositeOperation = "lighter";
   ctx.globalAlpha = Math.min(1, base * bright) * (1 - far * FAR_DIM);
@@ -592,4 +592,4 @@ const ISLAND_NAME_MAX = 16;
 /** How far below `ISLAND_NAME_ZOOM` the edges' fade takes to reach its full. */
 const FAR_RANGE = 0.3;
 /** How much of itself an edge keeps at the fade's full: the far view's whisper. */
-const FAR_DIM = 0.4;
+const FAR_DIM = 0.15;

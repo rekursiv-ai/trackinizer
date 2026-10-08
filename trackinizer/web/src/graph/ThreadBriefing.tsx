@@ -1,9 +1,12 @@
+import { type CSSProperties, useState } from "react";
 import { dateTime, useMinuteClock } from "../detail/time";
+import { formatRoute } from "../router/route";
 import { shortAge } from "../lists/Row";
 import { Icon } from "../ui/icons";
 import { KindIcon } from "../ui/kinds";
 import { StatusGlyph } from "../ui/glyphs";
 import type { Graph, GraphNode } from "../api/graph";
+import { type Palette, panelKind } from "./encode";
 import {
   type GraphView,
   membersOf,
@@ -31,16 +34,28 @@ import "./briefing.css";
 export function ThreadBriefing({
   group,
   graph,
+  palette,
   onBack,
   onSelectNode,
 }: {
   group: RootGroup;
   graph: Graph;
+  palette: Palette;
   onBack?: () => void;
   onSelectNode: (node: GraphNode) => void;
 }) {
   const view: GraphView = viewOf(graph);
   const now = useMinuteClock();
+  const [copied, setCopied] = useState<string | null>(null);
+  const copy = async (text: string, which: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // A clipboard the browser will not hand out (an insecure context): the buttons still read.
+    }
+    setCopied(which);
+    setTimeout(() => setCopied(null), 1600);
+  };
   const members = membersOf(group, view);
   const root = group.root;
   const verdicts = verdictsOf(members);
@@ -65,8 +80,10 @@ export function ThreadBriefing({
       {root ? (
         <div className="briefing-hero">
           <div className="briefing-ref mono">
-            <KindIcon kind={root.kind} size={13} />
-            {root.kind}#{root.seq}
+            <span className="briefing-ref-kind" style={{ color: panelKind(palette, root.kind) }}>
+              <KindIcon kind={root.kind} size={13} />
+              {root.kind}#{root.seq}
+            </span>
             <StatusGlyph status={root.status} size={13} />
           </div>
           <h2 className="briefing-title">{root.title || "(untitled)"}</h2>
@@ -74,6 +91,27 @@ export function ThreadBriefing({
             {members.length.toLocaleString("en-US")} records · {shortAge(group.newest, now)}
           </p>
           <Verdicts verdicts={verdicts} claims={claims} experiments={experiments} sources={sources} />
+          <div className="briefing-actions">
+            <button
+              type="button"
+              className="btn ghost mono"
+              onClick={() => void copy(writeUp(group, members, verdicts, turns, view, now), "copy")}
+            >
+              {copied === "copy" ? "copied" : "copy"}
+            </button>
+            {/* The chat is a real place, not a prompt to paste: the root's page is where
+                the canvas pairs the thread with a live agent session. A new tab leaves the
+                graph framed as it was. */}
+            <a
+              className="btn ghost mono"
+              href={root ? formatRoute({ name: "ref", kind: root.kind, seq: root.seq }) : "#"}
+              target="_blank"
+              rel="noreferrer"
+              title="Chat about this thread with the agent, on its record's page"
+            >
+              chat
+            </a>
+          </div>
         </div>
       ) : (
         <div className="briefing-hero">
@@ -90,14 +128,14 @@ export function ThreadBriefing({
             This thread set out to {lower(root.title.replace(/[.?]$/, ""))}.{" "}
             {held[0] ? (
               <>
-                So far the evidence shows <NodePill node={held[0].belief} onSelect={onSelectNode} /> {held[0].belief.title};{" "}
+                So far the evidence shows <NodePill node={held[0].belief} palette={palette} onSelect={onSelectNode} /> {held[0].belief.title};{" "}
               </>
             ) : (
               "Nothing is proven yet. "
             )}
             {broken[0] ? (
               <>
-                The evidence rules out <NodePill node={broken[0].belief} onSelect={onSelectNode} /> {broken[0].belief.title}.{" "}
+                The evidence rules out <NodePill node={broken[0].belief} palette={palette} onSelect={onSelectNode} /> {broken[0].belief.title}.{" "}
               </>
             ) : (
               "Nothing has been ruled out yet. "
@@ -113,7 +151,7 @@ export function ThreadBriefing({
           <h5>turning points</h5>
           <ol className="briefing-turns">
             {turns.map((turn, index) => (
-              <TurnRow key={index} turn={turn} view={view} now={now} onSelect={onSelectNode} />
+              <TurnRow key={index} turn={turn} view={view} palette={palette} now={now} onSelect={onSelectNode} />
             ))}
           </ol>
         </section>
@@ -122,7 +160,7 @@ export function ThreadBriefing({
         <section className="briefing-sec">
           <h5>best next experiments</h5>
           {next.map((entry) => (
-            <NextRow key={entry.belief.id} entry={entry} onSelect={onSelectNode} />
+            <NextRow key={entry.belief.id} entry={entry} palette={palette} onSelect={onSelectNode} />
           ))}
         </section>
       ) : null}
@@ -134,7 +172,9 @@ export function ThreadBriefing({
           {relied.map(({ belief, evidence }) => (
             <button key={belief.id} type="button" className="briefing-row" onClick={() => onSelectNode(belief)}>
               <BeliefDot belief={belief} />
-              <span className="briefing-row-ref mono">{belief.kind}#{belief.seq}</span>
+              <span className="briefing-row-ref mono" style={{ color: panelKind(palette, belief.kind) }}>
+                {belief.kind}#{belief.seq}
+              </span>
               <span className="briefing-row-title">{belief.title || "(untitled)"}</span>
               <span className="briefing-row-side num">{evidence}</span>
             </button>
@@ -192,11 +232,13 @@ function Verdicts({
 function TurnRow({
   turn,
   view,
+  palette,
   now,
   onSelect,
 }: {
   turn: Turn;
   view: GraphView;
+  palette: Palette;
   now: number;
   onSelect: (node: GraphNode) => void;
 }) {
@@ -209,7 +251,7 @@ function TurnRow({
       <span className="briefing-turn-what">
         {turn.say === "opened" ? "opened" : turn.say === "broke" ? "broke" : "proved"}
         {named.map((node) => (
-          <NodePill key={node.id} node={node} onSelect={onSelect} />
+          <NodePill key={node.id} node={node} palette={palette} onSelect={onSelect} />
         ))}
         {named[1] ? <span className="briefing-turn-title">{named[1].title}</span> : null}
       </span>
@@ -218,23 +260,25 @@ function TurnRow({
 }
 
 /** One next experiment: what to run, to settle what, and what it would take. */
-function NextRow({ entry, onSelect }: { entry: NextExperiment; onSelect: (node: GraphNode) => void }) {
+function NextRow({ entry, palette, onSelect }: { entry: NextExperiment; palette: Palette; onSelect: (node: GraphNode) => void }) {
   const { belief, template, rerun } = entry;
   return (
     <div className="briefing-next">
       <div className="briefing-next-run">
         {template ? (
           <>
-            {rerun ? "Re-run" : "Adapt"} <NodePill node={template} onSelect={onSelect} />{" "}
-            <span className="briefing-next-template">{template.title}</span>
+            {rerun ? "Re-run" : "Adapt"} <NodePill node={template} palette={palette} onSelect={onSelect} />{" "}
+            <span className="briefing-next-template" title={template.title}>
+              {trunc(template.title, 26)}
+            </span>
             {rerun ? " with a new seed" : " for this claim"}
           </>
         ) : (
           "Design a first experiment"
         )}
       </div>
-      <div className="briefing-next-settle">
-        to settle <NodePill node={belief} onSelect={onSelect} /> {belief.title}
+      <div className="briefing-next-settle" title={belief.title}>
+        to settle <NodePill node={belief} palette={palette} onSelect={onSelect} /> {trunc(belief.title, 48)}
       </div>
       <div className="briefing-next-meta mono">
         <span>conf {(belief.confidence ?? 0.5).toFixed(2)}</span>
@@ -245,15 +289,19 @@ function NextRow({ entry, onSelect }: { entry: NextExperiment; onSelect: (node: 
   );
 }
 
-/** A record's pill: its kind's glyph and `Kind#seq`, a click selecting it. */
-function NodePill({ node, onSelect }: { node: GraphNode; onSelect: (node: GraphNode) => void }) {
+/** A record's pill: its kind's glyph and `Kind#seq`, a click selecting it. Its
+ *  border, wash and ink are the kind's own hue, lifted a step for prose. */
+function NodePill({ node, palette, onSelect }: { node: GraphNode; palette: Palette; onSelect: (node: GraphNode) => void }) {
   return (
-    <button type="button" className="briefing-pill mono" onClick={() => onSelect(node)}>
+    <button type="button" className="briefing-pill mono" style={tint(palette, node.kind)} onClick={() => onSelect(node)}>
       <KindIcon kind={node.kind} size={11} />
       {node.kind}#{node.seq}
     </button>
   );
 }
+
+/** A pill's `--c`: the kind's canvas hue, one step lighter, as the design's panels wear it. */
+const tint = (palette: Palette, kind: string) => ({ "--c": panelKind(palette, kind) }) as CSSProperties;
 
 /** A belief's verdict dot: filled when proven, hollow when disproven, dimmed when open. */
 function BeliefDot({ belief }: { belief: GraphNode }) {
@@ -262,4 +310,34 @@ function BeliefDot({ belief }: { belief: GraphNode }) {
 
 function lower(text: string): string {
   return text.charAt(0).toLowerCase() + text.slice(1);
+}
+
+/** A title shortened to one line's worth, as the design's lists do; the row's
+ *  `title` still carries the whole of it. */
+function trunc(text: string, most: number): string {
+  return text.length > most ? `${text.slice(0, most - 1).trimEnd()}…` : text;
+}
+
+/** The thread as plain prose, which the `copy` button puts on the clipboard. */
+function writeUp(
+  group: RootGroup,
+  members: readonly GraphNode[],
+  verdicts: { readonly proven: number; readonly unproven: number; readonly disproven: number },
+  turns: readonly Turn[],
+  view: GraphView,
+  now: number,
+): string {
+  const lines = [
+    `# ${group.root?.title || "Unrooted"}`,
+    "",
+    `${members.length.toLocaleString("en-US")} records as of ${dateTime(new Date(now).toISOString())}.`,
+    `${verdicts.proven} proven · ${verdicts.unproven} unproven · ${verdicts.disproven} disproven.`,
+    "",
+    "Turning points:",
+  ];
+  for (const turn of turns) {
+    const named = turn.refs.map((id) => view.byId.get(id)).filter((node) => node !== undefined);
+    lines.push(`- ${dateTime(turn.created)} — ${turn.say} ${named.map((node) => `${node.kind}#${node.seq} ${node.title}`).join(", ")}`);
+  }
+  return lines.join("\n");
 }

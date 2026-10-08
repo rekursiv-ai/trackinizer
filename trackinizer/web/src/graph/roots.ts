@@ -46,8 +46,28 @@ export function findRoots({ nodes, edges }: Graph): Roots {
   /** What narrows each node or was produced by it. */
   const below = new Map<string, string[]>();
   const narrowing = new Set<string>();
+  // The server hangs a produced_by beside every requires and every narrows
+  // between two Issues, and a requires often crosses lines of inquiry:
+  // counting its companion as producing would hang one root goal's tree off
+  // another's. A produced_by between two Issues counts only where the pair
+  // holds no such companion and it stands on its own.
+  const bound = new Set<string>();
+  for (const { from_id: from, to_id: to, edge_kind: kind } of edges) {
+    if (kind === "narrows" || kind === "requires") {
+      bound.add(`${from}|${to}`);
+      bound.add(`${to}|${from}`);
+    }
+  }
   for (const { from_id: from, to_id: to, edge_kind: kind } of edges) {
     if ((kind !== "narrows" && kind !== "produced_by") || !byId.has(from) || !byId.has(to)) continue;
+    if (
+      kind === "produced_by" &&
+      byId.get(from)!.kind === "Issue" &&
+      byId.get(to)!.kind === "Issue" &&
+      bound.has(`${from}|${to}`)
+    ) {
+      continue;
+    }
     if (kind === "narrows") narrowing.add(from);
     const children = below.get(to) ?? [];
     children.push(from);

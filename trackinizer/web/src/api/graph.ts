@@ -8,6 +8,8 @@ export type GraphNode = {
   readonly title: string;
   readonly status: string;
   readonly created: string;
+  /** Whose line of work the record is; absent when the row has no owner. */
+  readonly owner?: string;
   /** A Belief's verdict and certainty, absent when unset and on other kinds. */
   readonly judgement?: string;
   readonly confidence?: number;

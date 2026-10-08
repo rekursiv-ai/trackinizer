@@ -144,31 +144,42 @@ export function layout<B extends Body>(input: LayoutInput<B>, random: () => numb
         velocitiesX[index] = (node.vx ?? 0) * 0.5;
         velocitiesY[index] = (node.vy ?? 0) * 0.5;
       }
-      // Local repulsion, a cell and its neighbours: the ball packs, the graph stays put.
+      // Local repulsion, a cell and its eight neighbours: the ball packs round,
+      // not on the cell grid. Each unordered pair is met once — cells hold only
+      // the indices already placed, all of them earlier than `index`.
       const cells = new Map<number, number[]>();
       const repulsion = 38 * alpha + 6;
+      const cellKey = (column: number, row: number): number => (column + 4096) * 8192 + (row + 4096);
       nodes.forEach((node, index) => {
         const column = Math.floor((node.x ?? 0) / CELL);
         const row = Math.floor((node.y ?? 0) / CELL);
-        const key = (column + 4096) * 8192 + (row + 4096);
-        const cell = cells.get(key) ?? [];
-        for (const other of cell) {
-          let [dx, dy] = [(node.x ?? 0) - (nodes[other]!.x ?? 0), (node.y ?? 0) - (nodes[other]!.y ?? 0)];
-          const squared = dx * dx + dy * dy;
-          if (squared > CELL * CELL * 2.2) continue;
-          if (squared < 0.01) {
-            dx = random() - 0.5;
-            dy = random() - 0.5;
+        for (let offsetX = -1; offsetX <= 1; offsetX++) {
+          for (let offsetY = -1; offsetY <= 1; offsetY++) {
+            const neighbours = cells.get(cellKey(column + offsetX, row + offsetY));
+            if (!neighbours) continue;
+            for (const other of neighbours) {
+              let [dx, dy] = [(node.x ?? 0) - (nodes[other]!.x ?? 0), (node.y ?? 0) - (nodes[other]!.y ?? 0)];
+              let squared = dx * dx + dy * dy;
+              if (squared > CELL * CELL * 2.2) continue;
+              if (squared < 0.01) {
+                dx = random() - 0.5;
+                dy = random() - 0.5;
+                squared = 0.5;
+              }
+              const distance = Math.sqrt(squared);
+              const min = radiusOf(node) + radiusOf(nodes[other]!) + 3;
+              let force = repulsion / squared;
+              if (distance < min) force += (min - distance) / distance * 0.35;
+              const [fx, fy] = [dx * force, dy * force];
+              velocitiesX[index] += fx;
+              velocitiesY[index] += fy;
+              velocitiesX[other] -= fx;
+              velocitiesY[other] -= fy;
+            }
           }
-          const distance = Math.sqrt(squared) || 0.7;
-          const min = radiusOf(node) + radiusOf(nodes[other]!) + 3;
-          const force = repulsion / (distance * distance) + (distance < min ? (min - distance) / distance * 0.35 : 0);
-          const [fx, fy] = [dx * force, dy * force];
-          velocitiesX[index] += fx;
-          velocitiesY[index] += fy;
-          velocitiesX[other] -= fx;
-          velocitiesY[other] -= fy;
         }
+        const key = cellKey(column, row);
+        const cell = cells.get(key) ?? [];
         cell.push(index);
         cells.set(key, cell);
       });

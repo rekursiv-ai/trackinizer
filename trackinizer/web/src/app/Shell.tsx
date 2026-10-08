@@ -98,7 +98,11 @@ export function Shell() {
   return (
     <PaletteContext value={palette}>
       <OpenDrawerContext value={openDrawer}>
-        <div className={`app${drawerOpen ? " drawer-open" : ""}${sidebar.collapsed ? " sidebar-collapsed" : ""}`}>
+        <div
+          className={`app${drawerOpen ? " drawer-open" : ""}${sidebar.collapsed ? " sidebar-collapsed" : ""}${
+            (view ?? background).name === "graph" ? " graph-bleed" : ""
+          }`}
+        >
           <Sidebar onNavigate={closeDrawer} panel={sidebar} />
           <div className="drawer-scrim" onClick={closeDrawer} />
           <main className="main">

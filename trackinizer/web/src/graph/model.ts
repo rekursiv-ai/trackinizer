@@ -13,10 +13,13 @@ export type DrawNode = {
   title: string;
   status: string;
   created: string;
+  owner?: string;
   judgement?: string;
   confidence?: number;
   /** Distinct inquiries it shares an edge with. */
   degree: number;
+  /** Weighted PageRank, normalised to the graph's busiest node: what lifts a hub's disc. */
+  authority: number;
   /** An Issue that narrows nothing: the top of a tree (S6-03: `requires` makes no parent). */
   root: boolean;
   look: NodeLook;
@@ -44,9 +47,10 @@ export type DrawLink = {
 
 /** What the view shows of the graph: what it hides, what it lights, and what search found. */
 export type Lens = {
-  /** Kinds and statuses the Filter hides: their nodes are never drawn. */
+  /** Kinds, statuses and owners the Filter hides: their nodes are never drawn. */
   readonly hiddenKinds: ReadonlySet<string>;
   readonly hiddenStatuses: ReadonlySet<string>;
+  readonly hiddenOwners: ReadonlySet<string>;
   /**
    * What a focus, or a hovered or selected node, lights: each lit node's hops
    * from it. Null lights everything.
@@ -68,6 +72,7 @@ export type Lens = {
 export const PLAIN_LENS: Lens = {
   hiddenKinds: new Set(),
   hiddenStatuses: new Set(),
+  hiddenOwners: new Set(),
   lit: null,
   skipEdges: new Set(),
   only: false,
@@ -75,6 +80,29 @@ export const PLAIN_LENS: Lens = {
   matches: new Set(),
   labelled: new Set(),
 };
+
+/**
+ * The wires the field draws: the server's edges, minus each `produced_by` that only
+ * companions a `narrows` or a `requires` between the same two Issues. The server
+ * hangs one beside every refinement, so a refinement reads as a parent too; the
+ * islands already decline to count that companion, and the light must decline as
+ * well, or a fifth of the field's wires are drawn twice over themselves and the
+ * whole thing reads as a hairball instead of a spine.
+ */
+export function wires(graph: Graph): Graph["edges"] {
+  const bound = new Set<string>();
+  for (const { from_id: from, to_id: to, edge_kind: kind } of graph.edges) {
+    if (kind === "narrows" || kind === "requires") {
+      bound.add(`${from}|${to}`);
+      bound.add(`${to}|${from}`);
+    }
+  }
+  const kindOf = new Map(graph.nodes.map((row) => [row.id, row.kind]));
+  return graph.edges.filter(
+    ({ from_id: from, to_id: to, edge_kind: kind }) =>
+      !(kind === "produced_by" && kindOf.get(from) === "Issue" && kindOf.get(to) === "Issue" && bound.has(`${from}|${to}`)),
+  );
+}
 
 /**
  * The graph the canvas draws, kept across the server's answers.
@@ -108,19 +136,20 @@ export class GraphModel {
     this.nodes = graph.nodes.map((row) => {
       const kept = nodesBefore.get(row.id);
       if (kept) return Object.assign(withoutBelief(kept), row);
-      const drawn = { ...row, degree: 0, root: false, look: NO_LOOK, hidden: false };
+      const drawn = { ...row, degree: 0, authority: 0, root: false, look: NO_LOOK, hidden: false };
       added.push(drawn);
       return drawn;
     });
-    this.links = graph.edges.map(({ from_id: from, to_id: to, edge_kind: kind, valence }) => {
-      const kept = linksBefore.get(linkKey(from, to, kind));
-      if (kept) {
-        kept.valence = valence;
-        return kept;
-      }
-      addedLinks += 1;
-      return { from, to, kind, valence, source: from, target: to, look: NO_LINK_LOOK, hidden: false };
-    });
+    this.links = wires(graph)
+      .map(({ from_id: from, to_id: to, edge_kind: kind, valence }) => {
+        const kept = linksBefore.get(linkKey(from, to, kind));
+        if (kept) {
+          kept.valence = valence;
+          return kept;
+        }
+        addedLinks += 1;
+        return { from, to, kind, valence, source: from, target: to, look: NO_LINK_LOOK, hidden: false };
+      });
     this.#byId = new Map(this.nodes.map((drawn) => [drawn.id, drawn]));
     // Every node was kept or added, so with none added a count that differs means
     // one left; the same holds for links.
@@ -130,6 +159,7 @@ export class GraphModel {
       this.nodes.length !== nodesBefore.size ||
       this.links.length !== linksBefore.size;
     this.#neighbours = this.#connect();
+    weighAuthority(this.nodes, this.links);
     if (changed) place(added, this.nodes, this.#neighbours);
     this.#restyle();
     return changed;
@@ -165,7 +195,7 @@ export class GraphModel {
   }
 
   #restyle(): void {
-    const { hiddenKinds, hiddenStatuses, lit, skipEdges, only, strong, matches, labelled } = this.#lens;
+    const { hiddenKinds, hiddenStatuses, hiddenOwners, lit, skipEdges, only, strong, matches, labelled } = this.#lens;
     for (const drawn of this.nodes) {
       const far = lit?.get(drawn.id);
       const dimmed = lit !== null && far === undefined;
@@ -174,16 +204,75 @@ export class GraphModel {
       // What a focus lights keeps its kind's hue at every zoom: the reader asked
       // what this neighbourhood is made of, and the answer should not wait for a zoom.
       drawn.look = nodeLook(drawn, this.#palette, { dimmed, far: far !== undefined && far >= 2, halo, label, near: lit !== null && !dimmed });
-      drawn.hidden = hiddenKinds.has(drawn.kind) || hiddenStatuses.has(drawn.status) || (only && dimmed);
+      drawn.hidden =
+        hiddenKinds.has(drawn.kind) ||
+        hiddenStatuses.has(drawn.status) ||
+        hiddenOwners.has(drawn.owner ?? "") ||
+        (only && dimmed);
     }
     for (const link of this.links) {
       const [from, to] = [this.#byId.get(link.from)!, this.#byId.get(link.to)!];
       const dimmed = lit !== null && (!lit.has(link.from) || !lit.has(link.to) || skipEdges.has(link.kind));
       link.look = linkLook(link, Math.max(from.degree, to.degree), this.#palette, dimmed);
-      link.hidden = from.hidden || to.hidden;
+      // A kind switched off in the key is gone from the canvas, as the
+      // prototype's `hiddenEdges` are: not dimmed, not drawn.
+      link.hidden = from.hidden || to.hidden || skipEdges.has(link.kind);
     }
   }
 }
+
+/**
+ * Each node's authority, the design's weighted PageRank over child→parent edges
+ * (dependent→dependency), normalised to the graph's busiest node and square-
+ * rooted. Degree would crown every hub; authority crowns only what the evidence
+ * actually flows through, which is what packs an island into a ball with a bright
+ * core instead of a loose scatter of equal dots.
+ */
+function weighAuthority(nodes: readonly DrawNode[], links: readonly DrawLink[]): void {
+  const count = nodes.length;
+  if (count === 0) return;
+  const indexOf = new Map(nodes.map((node, position) => [node.id, position] as const));
+  const from = new Int32Array(links.length);
+  const to = new Int32Array(links.length);
+  const weight = new Float64Array(links.length);
+  const outWeight = new Float64Array(count);
+  links.forEach((link, position) => {
+    const [a, b] = [indexOf.get(link.from), indexOf.get(link.to)];
+    if (a === undefined || b === undefined) return;
+    from[position] = a;
+    to[position] = b;
+    weight[position] = (EDGE_WEIGHT[link.kind] ?? 0.3) * (link.valence === undefined ? 1 : Math.max(0.15, Math.abs(link.valence)));
+    outWeight[a] += weight[position];
+  });
+  let current = new Float64Array(count).fill(1 / count);
+  let next = new Float64Array(count);
+  for (let pass = 0; pass < PAGERANK_PASSES; pass++) {
+    let dangling = 0;
+    for (let node = 0; node < count; node++) if (outWeight[node] === 0) dangling += current[node];
+    next.fill((0.15 + 0.85 * dangling) / count);
+    for (let edge = 0; edge < links.length; edge++) {
+      if (outWeight[from[edge]!] === 0) continue;
+      next[to[edge]!] += (0.85 * current[from[edge]!]! * weight[edge]) / outWeight[from[edge]!];
+    }
+    [current, next] = [next, current];
+  }
+  let peak = 0;
+  for (let node = 0; node < count; node++) peak = Math.max(peak, current[node]!);
+  if (peak <= 0) return;
+  for (let node = 0; node < count; node++) nodes[node]!.authority = Math.sqrt(current[node]! / peak);
+}
+
+/** The PageRank's weight per edge kind: evidence flows hardest through proof. */
+const EDGE_WEIGHT: { [kind: string]: number } = {
+  proves: 1,
+  favors: 0.5,
+  cites_paper: 0.6,
+  narrows: 0.35,
+  requires: 0.35,
+  produced_by: 0.25,
+  supersedes: 0.4,
+};
+const PAGERANK_PASSES = 40;
 
 /** `drawn` without a Belief's fields, which an answer that lacks them has cleared. */
 function withoutBelief(drawn: DrawNode): DrawNode {

@@ -231,3 +231,47 @@ export function impactOf(node: GraphNode, view: GraphView, take = 5): { belief: 
   }
   return out.sort((a, b) => a.hops - b.hops || b.belief.created.localeCompare(a.belief.created)).slice(0, take);
 }
+
+/** Each edge kind's two verbs: how the edge reads from its child end, and from its parent. */
+const VERBS: { readonly [kind: string]: readonly [child: string, parent: string] } = {
+  produced_by: ["produced_by", "produces"],
+  narrows: ["narrows", "narrowed_by"],
+  requires: ["requires", "required_by"],
+  proves: ["proves", "proved_by"],
+  favors: ["favors", "favored_by"],
+  supersedes: ["supersedes", "superseded_by"],
+  cites_paper: ["cites", "cited_by"],
+};
+
+/** One of the panel's connection groups: the edges a node shares, named by the verb they read as. */
+export type ConnectionGroup = { readonly label: string; readonly rows: { node: GraphNode; edge: GraphEdge }[] };
+
+/**
+ * `node`'s connections, grouped by verb: what it produced, what cites it, what
+ * it narrows. A Belief's `proves` and `favors` are left out — its ledger tells
+ * those better. The busiest groups come first.
+ */
+export function groupsOf(node: GraphNode, view: GraphView): ConnectionGroup[] {
+  const { byId, edgesOf } = view;
+  const groups = new Map<string, { node: GraphNode; edge: GraphEdge }[]>();
+  for (const edge of edgesOf.get(node.id) ?? []) {
+    const verbs = VERBS[edge.edge_kind];
+    if (!verbs) continue;
+    const child = edge.from_id === node.id;
+    if (node.kind === "Belief" && !child && (edge.edge_kind === "proves" || edge.edge_kind === "favors")) continue;
+    const other = byId.get(child ? edge.to_id : edge.from_id);
+    if (!other) continue;
+    const label = child ? verbs[0] : verbs[1];
+    const rows = groups.get(label) ?? [];
+    rows.push({ node: other, edge });
+    groups.set(label, rows);
+  }
+  return [...groups]
+    .map(([label, rows]) => ({ label, rows: rows.sort((a, b) => a.node.created.localeCompare(b.node.created)) }))
+    .sort((a, b) => b.rows.length - a.rows.length || a.label.localeCompare(b.label));
+}
+
+/** `belief`'s evidence, the way its ledger reads: the heaviest votes first, whichever way they vote. */
+export function ledgerOf(belief: GraphNode, view: GraphView): { node: GraphNode; edge: GraphEdge }[] {
+  return evidenceOf(belief, view).sort((a, b) => Math.abs(b.edge.valence ?? 1) - Math.abs(a.edge.valence ?? 1));
+}

@@ -1,7 +1,8 @@
-/* The cluster briefing (ThreadBriefing.tsx) in the roots list's place, and the
-   node insights (NodeInsights.tsx) at the top of Peek: the design prototype's
-   panels, on the app's tokens. Colours read the list panels' (--text, --muted,
-   --line), and the verdicts the evidence hues (--l-evidence, --l-against). */
+/* The cluster briefing (ThreadBriefing.tsx), on a root's own record panel
+   (GraphRecord.tsx): the design prototype's panels, on the app's tokens. Colours read the list panels' (--text, --muted,
+   --line), the graph's own valence hues (--g-vpos, --g-vneg) at the panel step
+   the design uses (--p-vpos, --p-vneg), and each reference's kind hue, which the
+   components pass in as `--c`. */
 
 .briefing {
   display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain;
@@ -12,6 +13,8 @@
 .briefing-crumb { font-size: 12px; }
 .briefing-hero { padding: 12px 14px 4px; }
 .briefing-ref { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+/* The hero's own reference, wearing its kind's hue as the design's `.ref` does. */
+.briefing-ref-kind { display: inline-flex; align-items: center; gap: 6px; }
 .briefing-title { margin: 6px 0 0; font-size: 16px; font-weight: 550; line-height: 1.35; text-wrap: balance; }
 .briefing-sub { margin: 4px 0 0; font-size: 11.5px; }
 
@@ -29,7 +32,7 @@
 .briefing-vkey-side { flex-basis: 100%; color: var(--muted); }
 
 .briefing-sec { padding: 14px 14px 4px; }
-.briefing-sec h5 { display: flex; margin: 0 0 7px; font: 500 10.5px var(--mono); letter-spacing: 0.02em; color: var(--muted); text-transform: lowercase; }
+.briefing-sec h5 { display: flex; margin: 0 0 7px; font-size: 12px; font-weight: 500; color: var(--muted); text-transform: lowercase; }
 .briefing-sec-side { margin-left: auto; color: var(--muted); }
 .briefing-prose { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
 
@@ -40,7 +43,8 @@
 .briefing-turn-what { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 2px; }
 .briefing-turn-title { color: var(--muted); }
 
-.briefing-next { padding: 0 0 10px; border-bottom: 1px solid var(--row-divider); }
+.briefing-next { display: block; padding: 8px 8px 9px; margin: 0 -8px; border-bottom: 1px solid var(--row-divider); border-radius: 6px; }
+.briefing-next:hover { background: var(--surface-hover); }
 .briefing-next-run { font-size: 12.5px; line-height: 1.55; color: var(--text); }
 .briefing-next-template { color: var(--muted); }
 .briefing-next-settle { margin-top: 3px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
@@ -53,27 +57,16 @@
 .briefing-row:hover .briefing-row-title { color: var(--text); }
 .briefing-row-side { color: var(--muted); font-size: 11px; }
 .briefing-dot { width: 7px; height: 7px; border-radius: 50%; }
-.briefing-dot.is-proven { background: var(--l-evidence); }
-.briefing-dot.is-open { background: var(--surface-hover); }
-.briefing-dot.is-hollow { background: none; border: 1.3px solid var(--l-against); }
+.briefing-dot.is-proven { background: var(--g-kind-Belief, var(--l-evidence)); }
+.briefing-dot.is-open { background: var(--g-kind-Belief, var(--muted)); opacity: .55; }
+.briefing-dot.is-hollow { background: none; border: 1.3px solid var(--g-kind-Belief, var(--l-against)); }
 
-.briefing-pill { display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line-strong); background: var(--surface-raised); color: var(--ink-muted); font-size: 10.5px; }
-.briefing-pill:hover { border-color: var(--muted); color: var(--text); }
+/* The design's `.pill`: a reference wears its kind's hue, passed in as `--c`. */
+.briefing-pill { display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: 4px; border: 1px solid color-mix(in srgb, var(--c, var(--line-strong)) 70%, transparent); background: color-mix(in srgb, var(--c, var(--surface-raised)) 14%, transparent); color: var(--c, var(--ink-muted)); font-size: 10.5px; }
+.briefing-pill:hover { background: color-mix(in srgb, var(--c, var(--surface-raised)) 24%, transparent); }
 
-/* The node's insights at the top of Peek, its detail under them. */
-.node-insights { flex-shrink: 0; max-height: 46%; overflow-y: auto; overscroll-behavior: contain; border-bottom: 1px solid var(--line); scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
-.node-insights .briefing-sec:last-child { padding-bottom: 12px; }
-.node-chain { list-style: none; margin: 0; padding: 0; }
-.node-chain-step { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 0 0 6px; font-size: 12px; }
-.node-chain-verb { flex-basis: 100%; margin: 0 0 2px 10px; padding-left: 10px; border-left: 1px solid var(--line-strong); font-size: 10.5px; color: var(--muted); }
-.node-chain-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
-.node-mix { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; font: 11.5px var(--mono); color: var(--muted); }
-.node-mix-item { display: inline-flex; align-items: center; gap: 6px; }
-.node-mix-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
-.node-mix-dot.is-exp { background: var(--g-kind-Experiment, var(--violet)); }
-.node-mix-dot.is-source { background: var(--g-kind-Paper, var(--accent-hover)); }
-.node-mix-dot.is-belief { background: var(--g-kind-Belief, var(--violet)); }
-.node-mix-dot.is-work { background: var(--g-kind-Issue, var(--accent)); }
-.node-mix-sub { display: flex; gap: 14px; margin: 6px 0 0; font-size: 11px; color: var(--muted); }
-.node-mix-sub .is-against { color: var(--l-against); }
-.node-next { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
+
+
+/* The cluster briefing's actions, and the Peek bar's breadcrumb. */
+.briefing-actions { display: flex; gap: 8px; margin-top: 10px; }
+.briefing-actions .btn { font-size: 11px; }

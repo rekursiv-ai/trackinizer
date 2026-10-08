@@ -109,7 +109,7 @@ beforeEach(() => {
   renderer = forceGraphRenderer(
     document.createElement("div"),
     { hover: () => {}, click: () => {}, doubleClick: () => {}, island: () => {} },
-    () => ({ right: 0 }),
+    () => ({ right: 0, left: 0 }),
   );
 });
 

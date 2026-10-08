@@ -11,16 +11,23 @@ import { capitalize, StatusGlyph } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
 import { KindIcon, kindLook } from "../ui/kinds";
 import { EmptyState } from "../ui/view";
-import { linkLook, type Palette } from "./encode";
+import { type Palette, panelKind, panelTint, panelValence } from "./encode";
 import { hopsName } from "./search";
 
-/** The kinds and statuses the Filter hides. */
-export type Hidden = { readonly kinds: readonly string[]; readonly statuses: readonly string[] };
+/** The kinds, statuses and owners the Filter hides. */
+export type Hidden = {
+  readonly kinds: readonly string[];
+  readonly statuses: readonly string[];
+  readonly owners: readonly string[];
+};
 type Field = keyof Hidden;
 
 /**
- * The Filter menu, as a list's: pick Kind or Status, then tick what shows. Each
- * value has its count among the nodes loaded; all show at first.
+ * The Filter menu, as a list's: pick Kind, Status or Owner, then tick what
+ * shows. Each value has its count among the nodes loaded; all show at first.
+ * Owner lists the people: a session's owner is the agent that ran it, since
+ * the server keys live sessions by owner, so the people are every other
+ * record's owner -- and ticking one off leaves that person's lines of work.
  */
 export function FilterMenu({
   meta,
@@ -35,6 +42,7 @@ export function FilterMenu({
 }) {
   const [field, setField] = useState<Field | null>(null);
   const tally = (pick: (node: GraphNode) => string, value: string) => String(nodes.filter((node) => pick(node) === value).length);
+  const people = [...new Set(nodes.flatMap((node) => (node.kind !== "AgentSession" && node.owner !== undefined ? [node.owner] : [])))].sort();
   const options: MenuOption[] =
     field === "kinds"
       ? meta.kinds.map((kind) => ({
@@ -52,11 +60,18 @@ export function FilterMenu({
             hint: tally((node) => node.status, status),
             checked: !hidden.statuses.includes(status),
           }))
-        : FIELDS.map(([value, label]) => ({ value, label, icon: <Icon name="filter" size={14} /> }));
-  const count = hidden.kinds.length + hidden.statuses.length;
+        : field === "owners"
+          ? people.map((owner) => ({
+              value: owner,
+              label: owner,
+              hint: tally((node) => node.owner ?? "", owner),
+              checked: !hidden.owners.includes(owner),
+            }))
+          : FIELDS.map(([value, label]) => ({ value, label, icon: <Icon name="filter" size={14} /> }));
+  const count = hidden.kinds.length + hidden.statuses.length + hidden.owners.length;
   return (
     <Menu
-      label={field === "kinds" ? "Show kinds…" : field === "statuses" ? "Show statuses…" : "Filter by…"}
+      label={field === "kinds" ? "Show kinds…" : field === "statuses" ? "Show statuses…" : field === "owners" ? "Show owners…" : "Filter by…"}
       trigger={
         <button type="button" className="btn ghost">
           <Icon name="filter" size={14} />
@@ -94,7 +109,7 @@ export function FilterChips({
 }) {
   const chips = FIELDS.filter(([field]) => hidden[field].length > 0);
   if (chips.length === 0) return null;
-  const name = (field: Field, value: string) => (field === "kinds" ? kindLook(value).plural : capitalize(value));
+  const name = (field: Field, value: string) => (field === "kinds" ? kindLook(value).plural : field === "owners" ? value : capitalize(value));
   const phrase = (field: Field) => {
     const shown = present[field].filter((value) => !hidden[field].includes(value));
     const named = (values: readonly string[]) => values.map((value) => name(field, value)).join(", ");
@@ -296,13 +311,14 @@ export function FocusRow({
 }
 
 /**
- * The key over the canvas, under three headings. Kinds lists each kind loaded
- * as a button, as a chart legend's entries are: a hidden kind clicked shows it
- * too, and a shown one shows only it, unless it is the only one shown, which
- * shows every kind. Only it hides every other kind, those not loaded yet too,
- * so a kind a later read brings stays hidden. Each sets the kinds Filter hides;
- * a hidden kind has no count. Links names each edge kind drawn by its stroke,
- * as the detail names it, and Status each status drawn by its ring.
+ * The key over the canvas, in the design's four sections. `beliefs` reads a
+ * Belief's three verdicts; `nodes, full color when zoomed in` lists each kind
+ * loaded as a button, as a chart legend's entries are: a hidden kind clicked
+ * shows it too, and a shown one shows only it, unless it is the only one shown,
+ * which shows every kind — each sets the kinds Filter hides, and a hidden kind
+ * has no count. `between clusters` names the two hairline hues, and `links`
+ * lists every edge kind by its stroke with how many are loaded, as toggle
+ * buttons: one clicked hides that kind's wires, as `Through` does.
  */
 export function Key({
   id,
@@ -313,6 +329,8 @@ export function Key({
   edges,
   hiddenKinds,
   onHiddenKinds,
+  hiddenEdges,
+  onHiddenEdges,
 }: {
   id: string;
   meta: Meta;
@@ -325,8 +343,12 @@ export function Key({
   edges: readonly { readonly kind: string; readonly valence?: number }[];
   hiddenKinds: readonly string[];
   onHiddenKinds: (hiddenKinds: readonly string[]) => void;
+  hiddenEdges: readonly string[];
+  onHiddenEdges: (hiddenEdges: readonly string[]) => void;
 }) {
   const counts = tally(nodes.map((node) => node.kind));
+  const edgeCounts = tally(edges.map((edge) => edge.kind));
+  // The panel's colours: one step lighter than the graph's, as the design's are.
   const shown = kinds.filter((kind) => !hiddenKinds.includes(kind));
   const pick = (kind: string): { readonly title: string; readonly hidden: readonly string[] } => {
     const { plural } = kindLook(kind);
@@ -334,68 +356,81 @@ export function Key({
     if (shown.length === 1) return { title: "Show every kind", hidden: [] };
     return { title: `Show only ${plural}`, hidden: meta.kinds.filter((other) => other !== kind) };
   };
-  const statuses = new Set(nodes.map((node) => node.status));
-  const strokes = [
-    ...Object.keys(meta.edges)
-      .filter((kind) => edges.some((edge) => edge.kind === kind && edge.valence === undefined))
-      .map((kind) => ({ name: sentence(meta.edges[kind]!.forward), look: linkLook({ kind }, 0, palette) })),
-    ...(edges.some((edge) => edge.valence !== undefined && edge.valence >= 0) ? [{ name: "Supports", look: { color: palette.support, dash: null } }] : []),
-    ...(edges.some((edge) => edge.valence !== undefined && edge.valence < 0) ? [{ name: "Against", look: { color: palette.against, dash: null } }] : []),
-  ];
-  const sections = [
-    {
-      name: "Kinds",
-      items: kinds.map((kind) => {
-        const on = shown.includes(kind);
-        const next = pick(kind);
-        return (
-          <li key={kind}>
-            <button type="button" aria-pressed={on} title={next.title} onClick={() => onHiddenKinds(next.hidden)}>
-              <span className="graph-mark">
-                <span className="graph-dot" style={{ background: palette.kinds[kind] ?? palette.fallback }} />
-              </span>
-              {kindLook(kind).plural}
-              {on ? <span className="graph-tally num">{counts.get(kind)}</span> : null}
-            </button>
-          </li>
-        );
-      }),
-    },
-    {
-      name: "Links",
-      items: strokes.map(({ name, look }) => (
-        <li key={name}>
-          <span className="graph-mark">
-            <span className="graph-stroke" style={{ borderTopColor: look.color, borderTopStyle: look.dash ? "dashed" : "solid" }} />
-          </span>
-          {name}
-        </li>
-      )),
-    },
-    {
-      name: "Status",
-      items: (meta.enums.status ?? [])
-        .filter((status) => statuses.has(status))
-        .map((status) => (
-          <li key={status}>
-            <span className="graph-mark">
-              <span className="graph-ring" style={{ borderColor: palette.status[status] ?? palette.fallback }} />
-            </span>
-            {capitalize(status)}
-          </li>
-        )),
-    },
-  ];
+  const belief = palette.kinds.Belief ?? palette.fallback;
+  const linkRows = Object.keys(meta.edges)
+    .filter((kind) => edgeCounts.has(kind))
+    .map((kind) => {
+      const cited = kind === "proves" || kind === "favors";
+      return {
+        kind,
+        name: sentence(meta.edges[kind]!.forward),
+        color: cited ? panelValence(palette.support) : panelTint(palette.edges[kind] ?? palette.fallback),
+        dashed: kind === "favors",
+        count: (edgeCounts.get(kind) ?? 0) as number,
+      };
+    });
   return (
     <aside id={id} className="graph-key" aria-label="Key">
-      {sections
-        .filter(({ items }) => items.length > 0)
-        .map(({ name, items }) => (
-          <div key={name}>
-            <h2 id={`${id}-${name}`}>{name}</h2>
-            <ul aria-labelledby={`${id}-${name}`}>{items}</ul>
-          </div>
-        ))}
+      <div>
+        <h2 id={`${id}-beliefs`}>beliefs</h2>
+        <ul aria-labelledby={`${id}-beliefs`}>
+          <li><span className="graph-mark"><span className="graph-dot" style={{ background: belief }} /></span>proven</li>
+          <li><span className="graph-mark"><span className="graph-dot" style={{ background: belief, opacity: 0.55 }} /></span>unproven</li>
+          <li><span className="graph-mark"><span className="graph-ring" style={{ borderColor: belief }} /></span>disproven</li>
+        </ul>
+      </div>
+      <div>
+        <h2 id={`${id}-kinds`}>nodes, full color when zoomed in</h2>
+        <ul aria-labelledby={`${id}-kinds`}>
+          {kinds.map((kind) => {
+            const on = shown.includes(kind);
+            const next = pick(kind);
+            return (
+              <li key={kind}>
+                <button type="button" aria-pressed={on} title={next.title} onClick={() => onHiddenKinds(next.hidden)}>
+                  <span className="graph-mark">
+                    <span className="graph-dot" style={{ background: panelKind(palette, kind) }} />
+                  </span>
+                  {kindLook(kind).plural}
+                  {on ? <span className="graph-tally num">{counts.get(kind)}</span> : null}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+      <div>
+        <h2 id={`${id}-between`}>between clusters</h2>
+        <ul aria-labelledby={`${id}-between`}>
+          <li><span className="graph-mark"><span className="graph-stroke" style={{ borderTopColor: panelValence(palette.support) }} /></span>supporting evidence</li>
+          <li><span className="graph-mark"><span className="graph-stroke" style={{ borderTopColor: panelValence(palette.against) }} /></span>counter-evidence</li>
+        </ul>
+      </div>
+      <div>
+        <h2 id={`${id}-links`}>links</h2>
+        <ul aria-labelledby={`${id}-links`}>
+          {linkRows.map((row) => {
+            const off = hiddenEdges.includes(row.kind);
+            return (
+              <li key={row.kind}>
+                <button
+                  type="button"
+                  aria-pressed={!off}
+                  title={off ? `Show ${row.name.toLowerCase()} links` : `Hide ${row.name.toLowerCase()} links`}
+                  onClick={() => onHiddenEdges(hiddenEdges.includes(row.kind) ? hiddenEdges.filter((other) => other !== row.kind) : [...hiddenEdges, row.kind])}
+                >
+                  <span className="graph-mark">
+                    <span className="graph-stroke" style={{ borderTopColor: row.color, borderTopStyle: row.dashed ? "dashed" : "solid" }} />
+                  </span>
+                  {row.name}
+                  <span className="graph-tally num">{off ? null : row.count}</span>
+                </button>
+              </li>
+            );
+          })}
+          <li><span className="graph-mark"><span className="graph-stroke" style={{ borderTopColor: panelValence(palette.against) }} /></span>argues against</li>
+        </ul>
+      </div>
     </aside>
   );
 }
@@ -457,13 +492,13 @@ function tally(values: readonly string[]): Map<string, number> {
 const FIELDS = [
   ["kinds", "Kind"],
   ["statuses", "Status"],
+  ["owners", "Owner"],
 ] as const satisfies readonly (readonly [Field, string])[];
-/** The node limits offered, by name: v1's three, and every inquiry. */
+/** The node limits offered, by name: the three the design draws, and any count typed in. */
 const LIMITS = [
-  [100, "100"],
   [1000, "1k"],
+  [2500, "2.5k"],
   [5000, "5k"],
-  [ALL_NODES, "All"],
 ] as const;
 /** v1's Replay speeds. */
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 10];

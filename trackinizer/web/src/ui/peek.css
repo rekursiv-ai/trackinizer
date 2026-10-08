@@ -14,3 +14,5 @@
    for it: Peek's own collapse button is in the corner above, alike. */
 .peek .detail-top .panel-toggle { display: none; }
 .peek .d-rail[hidden] { display: flex; }
+.peek-crumb { max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--muted); }
+button.peek-crumb:hover { color: var(--text); text-decoration: underline; }
