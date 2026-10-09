@@ -217,7 +217,7 @@ export function Chat({ instance, workspace }: RendererProps) {
   return (
     <section className="chat-panel" aria-label="Chat" onKeyDown={closeOnEscape}>
       <header className="chat-head">
-        <div className="chat-partner" aria-label="Chat partner">
+        <div className="chat-partner" role="group" aria-label="Chat partner">
           {partner && <>
             <strong>{partnerName(partner)}</strong>
             <span className="chat-partner-note">{partnerNote(partner)}</span>

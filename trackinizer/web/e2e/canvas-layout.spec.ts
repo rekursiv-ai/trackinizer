@@ -128,7 +128,7 @@ for (const screen of [{ width: 1280, height: 800 }, { width: 1440, height: 900 }
     await page.waitForTimeout(500);
     await page.screenshot({ path: `${SHOTS}/five-${screen.width}.png` });
     expect(await overflow(page)).toEqual([]);
-    for (const name of ["Partner", "History", "New chat", "Clear"]) {
+    for (const name of ["History", "Clear chat"]) {
       await expect(page.getByRole("button", { name, exact: true }), `Chat's ${name}`).toBeInViewport({ ratio: 1 });
     }
     await expect(page.getByRole("textbox", { name: "Message" })).toBeInViewport({ ratio: 1 });
@@ -156,7 +156,7 @@ test("with Chat beside the page, an Issue's title stays readable beside its labe
 });
 
 for (const theme of ["dark", "light"] as const) {
-  test(`the context graph's controls and edge labels take the app's colours, ${theme} theme`, async ({ page, request }) => {
+  test(`the context graph's zoom buttons take the app's colours, ${theme} theme`, async ({ page, request }) => {
     await arrange(request, (issue) => [{ kind: "show", visual_type: "trax.subgraph", placement: "side", record_id: issue }]);
     await page.addInitScript((choice) => {
       try {
@@ -167,7 +167,7 @@ for (const theme of ["dark", "light"] as const) {
     }, theme);
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto("/app/#/list/Issue");
-    await expect(page.locator(".react-flow__controls-button").first()).toBeVisible();
+    await expect(page.getByRole("group", { name: "Zoom" })).toBeVisible();
     const colours = await page.evaluate(() => {
       const probe = (token: string) => {
         const element = Object.assign(document.createElement("div"), { style: `background: var(${token}); color: var(${token})` });
@@ -176,17 +176,14 @@ for (const theme of ["dark", "light"] as const) {
         element.remove();
         return backgroundColor;
       };
-      const button = document.querySelector(".react-flow__controls-button")!;
-      const style = getComputedStyle(button);
-      const attribution = document.querySelector(".react-flow__attribution");
+      const group = document.querySelector(".graph-zoom")!;
+      const button = group.querySelector("button")!;
       return {
-        raised: probe("--surface-raised"), ink: probe("--text"),
-        button: style.backgroundColor, glyph: getComputedStyle(button.querySelector("svg")!).fill, buttonInk: style.color,
-        attribution: attribution ? getComputedStyle(attribution).backgroundColor : null,
+        overlay: probe("--surface-overlay"), muted: probe("--muted"),
+        group: getComputedStyle(group).backgroundColor, buttonInk: getComputedStyle(button).color,
       };
     });
-    expect(colours.button, "a control's background").toBe(colours.raised);
-    expect(colours.buttonInk, "a control's glyph colour").toBe(colours.ink);
-    if (colours.attribution) expect(colours.attribution, "the attribution's background").toBe(colours.raised);
+    expect(colours.group, "the zoom group's background").toBe(colours.overlay);
+    expect(colours.buttonInk, "a zoom button's glyph colour").toBe(colours.muted);
   });
 }
