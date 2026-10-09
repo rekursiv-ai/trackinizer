@@ -11,7 +11,7 @@ cascade below, fill what resolves, record what does not — never fail the node
 for a missing optional field, never invent a value, never write a placeholder.
 
 Per-kind expectations doc (SoT). Fields are owned by `types/inquiries.py`; write
-grammar by `../trax/SKILL.md`. This file owns *what a complete Paper looks like
+grammar by `../SKILL.md`. This file owns *what a complete Paper looks like
 and how to source it.*
 
 ## Completeness bar

@@ -9,7 +9,7 @@ A `Belief` is a proposition whose support comes from cited artifacts. Write it s
 the claim is falsifiable and its evidence is legible.
 
 Per-kind expectations doc (SoT). Fields owned by `types/inquiries.py`; grammar by
-`../trax/SKILL.md`.
+`../SKILL.md`.
 
 ## Completeness bar
 
