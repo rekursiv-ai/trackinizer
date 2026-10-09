@@ -13975,7 +13975,7 @@
     },
     "/api/me/acknowledge": {
       "put": {
-        "description": "Record that the caller agreed to the alpha rules as they stand now.\n\nThe rules are Issue#1; their version is its last change, so editing them makes\nthis agreement stale and the welcome flow asks again.\n\nArgs:\n  body: The rules version the caller was shown; it must still be the current\n    one, so an agreement never covers rules the caller did not read.\n  request: FastAPI request with a database engine.\n  identity: Authenticated account owner.\n\nReturns:\n  result: When the caller agreed, and the rules version they agreed to.\n\nRaises:\n  HTTPException: 403 for an API key, 409 when the rules changed since the\n    caller read them.",
+        "description": "Record that the caller agreed to the alpha rules as they stand now.\n\nThe rules are Issue#1; their version is its last change, so editing them makes\nthis agreement stale and the welcome flow asks again.\n\nArgs:\n  body: The rules version the caller was shown; it must still be the current\n    one, so an agreement never covers rules the caller did not read.\n  request: FastAPI request with a database engine.\n  identity: Authenticated account owner.\n\nReturns:\n  result: When the caller agreed, and the rules version they agreed to.\n\nRaises:\n  HTTPException: 403 for an API key, 409 when no rules are in force or they\n    changed since the caller read them.",
         "operationId": "acknowledge_route_api_me_acknowledge_put",
         "requestBody": {
           "content": {
@@ -14014,7 +14014,7 @@
     },
     "/api/me/profile": {
       "get": {
-        "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, canvas opt-in, the\n    id of the API key the request used (``None`` for a browser session), when\n    the caller agreed to the rules and to which version, and the current rules\n    version with the id of the Issue that holds the rules.",
+        "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, canvas opt-in, the\n    id of the API key the request used (``None`` for a browser session), when\n    the caller agreed to the rules and to which version, and the current rules\n    version with the id of the Issue that holds the rules (both ``None`` while\n    Issue#1 is missing or unlocked).",
         "operationId": "profile_route_api_me_profile_get",
         "responses": {
           "200": {

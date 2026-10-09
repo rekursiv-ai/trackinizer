@@ -438,17 +438,18 @@ class TestProfile:
             "WHERE log.subject_id = issue.id "
             "AND log.kind IN ('title', 'description')), "
             "issue.created) AS version "
-            "FROM inquiries AS issue WHERE issue.kind = 'Issue' AND issue.seq = 1"
+            "FROM inquiries AS issue "
+            "WHERE issue.kind = 'Issue' AND issue.seq = 1 AND issue.locked"
         )
 
-    def test_has_no_rules_version_without_a_rules_issue(
+    def test_has_no_rules_version_without_a_locked_rules_issue(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
         engine.conn.fetchrow = AsyncMock(side_effect=[None, None])
         body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
-        assert body["rules_version"] == "none"
+        assert body["rules_version"] is None
         assert body["rules_issue_id"] is None
         assert body["acknowledged_at"] is None
         assert body["acknowledged_rules_version"] is None
@@ -497,10 +498,28 @@ class TestAcknowledge:
     ) -> None:
         client, _store, engine = route_client
         _browser_session()
-        engine.conn.fetchrow = AsyncMock(return_value=None)
+        engine.conn.fetchrow = AsyncMock(
+            return_value={"id": _RULES_ID, "version": _WHEN},
+        )
         engine.conn.fetchval = AsyncMock(return_value=None)
-        r = client.put("/api/me/acknowledge", json={"rules_version": "none"})
+        r = client.put(
+            "/api/me/acknowledge",
+            json={"rules_version": _WHEN.isoformat()},
+        )
         assert r.status_code == 404
+
+    def test_no_rules_in_force_is_409(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        _browser_session()
+        engine.conn.fetchrow = AsyncMock(return_value=None)
+        engine.conn.fetchval = AsyncMock(return_value=_WHEN)
+        r = client.put("/api/me/acknowledge", json={"rules_version": "none"})
+        assert r.status_code == 409
+        assert "no rules in force" in r.text
+        assert not engine.conn.fetchval.called
 
     def test_rules_that_changed_since_they_were_read_are_409(
         self,

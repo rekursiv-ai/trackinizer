@@ -13,7 +13,7 @@
       "name": "no-auth",
       "role": "admin",
       "rules_issue_id": null,
-      "rules_version": "none",
+      "rules_version": null,
       "user_id": "00000000-0000-4000-9000-000000000001",
       "visual_workspace_enabled": true
     },

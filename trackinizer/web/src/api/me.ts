@@ -25,10 +25,10 @@ export type Profile = {
   acknowledged_at: string | null;
   /** The rules version they agreed to; null before they have. */
   acknowledged_rules_version: string | null;
-  /** The Issue that holds the rules (`Issue#1`); null where there is none. */
+  /** The Issue that holds the rules (`Issue#1`); null unless it exists and is locked. */
   rules_issue_id: string | null;
-  /** The rules as they stand: Issue#1's last change, or `none`. Editing them makes an agreement stale. */
-  rules_version: string;
+  /** The rules as they stand: Issue#1's last change; null while no rules are in force. */
+  rules_version: string | null;
 };
 
 /** What `PUT /api/me/acknowledge` answers: when the caller agreed, and to which rules version. */

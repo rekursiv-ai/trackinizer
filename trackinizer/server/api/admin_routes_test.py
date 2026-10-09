@@ -1006,7 +1006,7 @@ class TestProfileRoute:
         assert body["name"] == "Alice"
         assert body["visual_workspace_enabled"] is False
         assert body["acknowledged_rules_version"] == "v1"
-        assert body["rules_version"] == "none"
+        assert body["rules_version"] is None
         assert body["rules_issue_id"] is None
         last_login = body["last_login"]
         assert isinstance(last_login, str)

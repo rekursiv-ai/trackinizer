@@ -542,7 +542,9 @@ makes every recorded agreement stale and a cascade or cost roll-up under it does
 A version that is no longer the current one answers 409: the user read other rules.
 `GET /api/me/profile` returns
 `acknowledged_at` and `acknowledged_rules_version` (null before the user agrees), the
-current `rules_version` (`none` where there is no Issue#1) and `rules_issue_id`.
+current `rules_version` and `rules_issue_id`, both null unless Issue#1 exists and is
+locked: rules are in force only then, so a deployment turns the welcome flow on by
+locking its rules Issue. With no rules in force the acknowledge call answers 409.
 
 `PUT /api/admin/inquiries/<uuid>/lock` with `{"locked": true | false}` is admin
 only. While an inquiry is locked, only an admin may set, patch or clear its
@@ -554,8 +556,9 @@ the row. The lock covers fields, edges and delete only: a session's lifecycle
 (`/api/sessions/<id>/end`), its metrics and its records are not edits of the row and
 stay open to the session's owner. `POST /api/inquiries/next_issue` skips a locked
 Issue. Locking records no change and leaves `modified` alone; `inquiry_lock_log`
-holds who set or cleared each lock and when. Migration `schema.038.sql` locks Issue#1
-so that no writer rewrites the rules; an admin unlocks it to edit them.
+holds who set or cleared each lock and when. Migration `schema.038.sql` locks nothing;
+an admin locks Issue#1 so that no writer rewrites the rules, and unlocks it to
+edit them.
 `GET /api/web/get/<uuid>` carries `locked` beside
 `self`.
 

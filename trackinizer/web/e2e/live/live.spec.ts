@@ -54,21 +54,7 @@ const SUBSCRIBE = STREAM_ROUTES;
 test.beforeAll(async () => {
   test.setTimeout(180_000);
   server = await LiveServer.start();
-  // This server's one user has not met the welcome flow, whose dialog would stand over every page. The
-  // rules (Issue#1) are made first, since the agreement is to their version, and a first Issue would change it.
-  const rules = await fetch(`${server.url}/api/inquiries/issue`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ title: "Rules" }),
-  });
-  if (!rules.ok) throw new Error(`Could not make the rules: ${rules.status}`);
-  const shown = (await (await fetch(`${server.url}/api/me/profile`)).json()) as { rules_version: string };
-  const agreed = await fetch(`${server.url}/api/me/acknowledge`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ rules_version: shown.rules_version }),
-  });
-  if (!agreed.ok) throw new Error(`Could not agree to the rules: ${agreed.status}`);
+  // No Issue is locked on this server, so no rules are in force and the welcome flow never stands over a page.
   writer = new Writer(server.url);
 });
 

@@ -3,8 +3,8 @@
 -- change), so editing the rules shows the agreement again. A locked inquiry changes
 -- only for an admin. Additive: the old build never reads these columns, so this is
 -- safe to apply before the restart. Locks are logged: who set or cleared one, and
--- when. Issue#1, the rules, is locked here so that no writer rewrites what every user
--- agrees to; an admin unlocks it to edit.
+-- when. Nothing is locked here: a deployment that wants the welcome flow writes its
+-- rules into Issue#1 and has an admin lock it, which is what turns the flow on.
 ALTER TABLE users
     ADD COLUMN IF NOT EXISTS acknowledged_at            TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS acknowledged_rules_version TEXT;
@@ -19,11 +19,3 @@ CREATE TABLE IF NOT EXISTS inquiry_lock_log (
     actor      TEXT NOT NULL,
     created    TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
-
-WITH rules AS (
-    UPDATE inquiries SET locked = TRUE
-    WHERE kind = 'Issue' AND seq = 1 AND NOT locked
-    RETURNING id
-)
-INSERT INTO inquiry_lock_log (inquiry_id, locked, actor)
-SELECT id, TRUE, 'schema.038' FROM rules;

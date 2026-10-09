@@ -41,7 +41,53 @@ async def test_a_new_user_has_agreed_to_nothing(
     assert profile["acknowledged_at"] is None
     assert profile["acknowledged_rules_version"] is None
     assert profile["rules_issue_id"] is None
-    assert profile["rules_version"] == "none"
+    assert profile["rules_version"] is None
+
+
+async def test_an_unlocked_rules_issue_is_not_in_force(
+    pglite_route_client: _Client,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    await _rules_issue(client)
+
+    profile = await _profile(client)
+    agreed = await client.put("/api/me/acknowledge", json={"rules_version": "x"})
+
+    assert profile["rules_issue_id"] is None
+    assert profile["rules_version"] is None
+    assert agreed.status_code == 409
+
+
+async def test_locking_the_rules_puts_them_in_force(
+    pglite_route_client: _Client,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    rules = await _rules_issue(client)
+    before = await _profile(client)
+
+    await _lock(client, rules, locked=True)
+    after = await _profile(client)
+    agreed = await _agree(client)
+
+    assert before["rules_version"] is None
+    assert after["rules_issue_id"] == rules
+    assert isinstance(after["rules_version"], str)
+    assert agreed.status_code == 200, agreed.text
+
+
+async def test_unlocking_the_rules_takes_them_out_of_force(
+    pglite_route_client: _Client,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    rules = await _rules_issue(client)
+    await _lock(client, rules, locked=True)
+
+    await _lock(client, rules, locked=False)
+
+    assert (await _profile(client))["rules_version"] is None
 
 
 async def test_agreeing_records_the_current_rules_version(
@@ -50,6 +96,7 @@ async def test_agreeing_records_the_current_rules_version(
     client, store = pglite_route_client
     await seed_accounts(store)
     rules = await _rules_issue(client)
+    await _lock(client, rules, locked=True)
 
     agreed = await _agree(client)
     profile = await _profile(client)
@@ -71,6 +118,7 @@ async def test_editing_the_rules_makes_the_agreement_stale(
     client, store = pglite_route_client
     await seed_accounts(store)
     rules = await _rules_issue(client)
+    await _lock(client, rules, locked=True)
     await _agree(client)
     agreed = await _profile(client)
 
@@ -85,22 +133,19 @@ async def test_editing_the_rules_makes_the_agreement_stale(
     assert stale["acknowledged_rules_version"] == agreed["rules_version"]
 
 
-async def test_locking_the_rules_leaves_the_version_alone(
+async def test_locking_the_rules_again_leaves_the_version_alone(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
     await seed_accounts(store)
     rules = await _rules_issue(client)
+    await _lock(client, rules, locked=True)
     before = await _profile(client)
 
-    _as("admin")
-    locked = await client.put(
-        f"/api/admin/inquiries/{rules}/lock",
-        json={"locked": True},
-    )
+    await _lock(client, rules, locked=False)
+    await _lock(client, rules, locked=True)
     after = await _profile(client)
 
-    assert locked.status_code == 200, locked.text
     assert after["rules_version"] == before["rules_version"]
 
 
@@ -110,6 +155,7 @@ async def test_editing_a_child_of_the_rules_leaves_the_version_alone(
     client, store = pglite_route_client
     await seed_accounts(store)
     rules = await _rules_issue(client)
+    await _lock(client, rules, locked=True)
     child = await client.post(
         "/api/inquiries/issue",
         json={"title": "child", "narrows": [[rules, None]]},
@@ -134,6 +180,7 @@ async def test_agreeing_to_rules_that_changed_since_they_were_read_is_refused(
     client, store = pglite_route_client
     await seed_accounts(store)
     rules = await _rules_issue(client)
+    await _lock(client, rules, locked=True)
     read = await _profile(client)
     await client.put(f"/api/inquiries/{rules}/description", json={"value": "new"})
 
@@ -171,6 +218,16 @@ async def _rules_issue(client: httpx2.AsyncClient) -> str:
     made = await client.post("/api/inquiries/issue", json={"title": "Rules"})
     assert made.status_code == 201, made.text
     return from_plain(from_plain(made.json(), dict[str, object])["id"], str)
+
+
+async def _lock(client: httpx2.AsyncClient, target: str, *, locked: bool) -> None:
+    """Lock or unlock a row as an admin, who then makes the requests that follow."""
+    _as("admin")
+    put = await client.put(
+        f"/api/admin/inquiries/{target}/lock",
+        json={"locked": locked},
+    )
+    assert put.status_code == 200, put.text
 
 
 async def _agree(client: httpx2.AsyncClient) -> httpx2.Response:

@@ -6,7 +6,8 @@ export { expect };
 
 /** Agree to the rules as they stand, as the page does: naming the version the profile shows. */
 export async function agreeToRules(request: APIRequestContext): Promise<void> {
-  const profile = (await (await request.get("/api/me/profile")).json()) as { rules_version: string };
+  const profile = (await (await request.get("/api/me/profile")).json()) as { rules_version: string | null };
+  if (profile.rules_version === null) return;
   const put = await request.put("/api/me/acknowledge", { data: { rules_version: profile.rules_version } });
   if (!put.ok()) throw new Error(`Could not agree to the rules: ${put.status()} ${await put.text()}`);
 }

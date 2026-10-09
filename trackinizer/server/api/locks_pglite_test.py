@@ -305,7 +305,7 @@ async def test_the_lock_is_admin_only_and_clears(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_the_migration_locks_the_rules_issue_and_logs_it(
+async def test_the_migration_locks_nothing(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
@@ -318,8 +318,8 @@ async def test_the_migration_locks_the_rules_issue_and_logs_it(
         await conn.execute(migration)
         locked = await conn.fetch("SELECT id FROM inquiries WHERE locked")
 
-    assert [from_plain(r["id"], uuid.UUID) for r in locked] == [rules]
-    assert await _lock_log(store, rules) == [(True, "schema.038")]
+    assert locked == []
+    assert await _lock_log(store, rules) == []
     assert await _lock_log(store, later) == []
 
 

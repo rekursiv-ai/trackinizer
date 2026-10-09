@@ -122,7 +122,8 @@ async def profile_route(
       result: JSON with user_id, email, name, role, last_login, canvas opt-in, the
         id of the API key the request used (``None`` for a browser session), when
         the caller agreed to the rules and to which version, and the current rules
-        version with the id of the Issue that holds the rules.
+        version with the id of the Issue that holds the rules (both ``None`` while
+        Issue#1 is missing or unlocked).
 
     """
     engine = engine_of(request)
@@ -179,8 +180,8 @@ async def acknowledge_route(
       result: When the caller agreed, and the rules version they agreed to.
 
     Raises:
-      HTTPException: 403 for an API key, 409 when the rules changed since the
-        caller read them.
+      HTTPException: 403 for an API key, 409 when no rules are in force or they
+        changed since the caller read them.
 
     """
     if identity.api_key_id is not None:
@@ -190,6 +191,11 @@ async def acknowledge_route(
         )
     async with engine_of(request).acquire() as conn:
         _, version = await _rules(conn)
+        if version is None:
+            raise HTTPException(
+                status_code=409,
+                detail="There are no rules in force to agree to",
+            )
         if body.rules_version != version:
             raise HTTPException(
                 status_code=409,
@@ -423,16 +429,19 @@ def _serialize(row: dict[str, object]) -> MutableJSON:
 # edit, else the Issue's creation. It is not ``modified``, which every cascade and cost
 # roll-up under the Issue moves as well, and each move would ask every user to agree
 # again.
-async def _rules(conn: Conn) -> tuple[uuid.UUID | None, str]:
-    """Read the rules Issue's id and version; the version is ``none`` without one."""
+# Rules are in force only while Issue#1 exists and is locked, so a deployment opts in by
+# having an admin lock the Issue; until then nobody has anything to agree to.
+async def _rules(conn: Conn) -> tuple[uuid.UUID | None, str | None]:
+    """Read the rules Issue's id and version; ``(None, None)`` if none is in force."""
     row = await conn.fetchrow(
         "SELECT issue.id, coalesce((SELECT max(log.created) FROM change_log AS log "
         "WHERE log.subject_id = issue.id AND log.kind IN ('title', 'description')), "
         "issue.created) AS version "
-        "FROM inquiries AS issue WHERE issue.kind = 'Issue' AND issue.seq = 1",
+        "FROM inquiries AS issue "
+        "WHERE issue.kind = 'Issue' AND issue.seq = 1 AND issue.locked",
     )
     if row is None:
-        return None, "none"
+        return None, None
     return (
         from_plain(row["id"], uuid.UUID),
         from_plain(iso_format(row["version"]), str),
