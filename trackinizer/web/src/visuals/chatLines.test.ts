@@ -20,6 +20,15 @@ test("a person's line is a message from its poster, an answer an assistant messa
   ]);
 });
 
+test("an answer is pointed when its turn called the Highlight tool, whatever prefix a host gives it", () => {
+  const { pointed } = readTranscript(parts(
+    said(0, "ada", "q"), call(1, "Highlight"), answer(2, "a"),
+    said(3, "ada", "q2"), call(4, "SearchRecords"), answer(5, "b"),
+    said(6, "ada", "q3"), call(7, "mcp__canvas__Highlight"), answer(8, "c"),
+  ));
+  expect([...pointed]).toEqual(["0:2", "0:8"]);
+});
+
 test("lines of every part come in part order, each keyed by its part and place", () => {
   const { lines } = readTranscript([{ part: 0, records: [said(0, "ada", "one"), answer(1, "a")] }, { part: 2, records: [said(0, "grace", "two")] }]);
   expect(lines.map((line) => [line.key, line.author ?? "assistant", line.text])).toEqual([

@@ -13,6 +13,7 @@ import { KeyValue, ReadError, Section } from "./account";
 import { AliasesSection } from "./Aliases";
 import { BrowserDataSection } from "./BrowserData";
 import { ChatPartnerSection } from "./ChatPartner";
+import { useHighlightMentions } from "./highlightMentions";
 import { TokensSection } from "./Tokens";
 import "../editors/editors.css";
 import "../writes/writes.css";
@@ -69,6 +70,7 @@ function VisualWorkspaceSection() {
     },
   });
   const enabled = change.data?.enabled ?? profile.visual_workspace_enabled;
+  const [mentions, chooseMentions] = useHighlightMentions();
   return (
     <Section title="Agent workspace">
       <div className="st-row">
@@ -79,6 +81,13 @@ function VisualWorkspaceSection() {
         </label>
         {change.isPending && <span className="w-status" role="status">Saving…</span>}
         {change.isError && <span className="form-err" role="alert">Could not save workspace preference.</span>}
+      </div>
+      {/* This browser's, like the theme: it changes how the page draws an answer, not what the server holds. */}
+      <div className="st-row">
+        <label className="st-workspace-choice">
+          <input type="checkbox" checked={mentions} onChange={(event) => chooseMentions(event.target.checked)} />
+          Highlight rows the assistant mentions
+        </label>
       </div>
     </Section>
   );

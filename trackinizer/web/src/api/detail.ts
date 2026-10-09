@@ -105,7 +105,9 @@ export async function findRef(kind: string, seq: number, { signal }: CallOptions
     client.GET("/api/inquiries/{kind}/{seq}", { params: { path: { kind: one!, seq } }, signal }),
   );
   // The route answers with the whole row (`get_inquiry`), typed as free JSON.
-  return (row as { id: string }).id;
+  const { id } = row as { id?: unknown };
+  if (typeof id !== "string") throw new Error(`${one}#${seq} came back with no id`);
+  return id;
 }
 
 /**

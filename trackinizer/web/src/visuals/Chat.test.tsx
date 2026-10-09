@@ -8,11 +8,13 @@ import type { Profile } from "../api/me";
 import { listSessionParts, readSessionRecords, type SessionRecord } from "../api/sessions";
 import type { WorkspaceState } from "../api/workspaces";
 import { MetaContext, ProfileContext } from "../app/boot";
+import { HighlightContext, HighlightStore } from "../app/highlights";
 import { META } from "../detail/testing";
 import { LiveContext } from "../live";
 import type { LiveHub } from "../live/hub";
 import type { LiveQuery } from "../live/serial";
 import { startTrail } from "../router/trail";
+import { chooseHighlightMentions } from "../settings/highlightMentions";
 import { Chat } from "./Chat";
 import { ChatFeed, ChatFeedContext } from "./chatFeed";
 import { OPENING } from "./chatRecords";
@@ -52,6 +54,8 @@ beforeEach(() => {
   OPENING.everyMs = 5;
   OPENING.giveUpMs = 150;
   vi.mocked(listChats).mockResolvedValue([]);
+  // A cited row resolves to an id unless a test says otherwise, as the server's route answers.
+  vi.mocked(findRef).mockImplementation(async (kind, seq) => `id-${kind}-${seq}`);
   vi.mocked(listSessionParts).mockImplementation(async (id) => {
     const held = sessions.get(id) ?? [];
     return [{ part: 0, name: "chat.jsonl", format: "sagent", records: held.length, metadata: {}, ir_id: "i" }];
@@ -71,6 +75,7 @@ afterEach(() => {
   sessions.clear();
   registered = [];
   localStorage.clear();
+  chooseHighlightMentions(ME, true);
   history.replaceState(null, "", "#/");
 });
 
@@ -98,6 +103,7 @@ function shell(
   options: { actions?: Partial<NonNullable<Actions>>; profile?: Partial<Profile>; queries?: { retry: number | false; retryDelay?: number } } = {},
 ) {
   const feed = new ChatFeed();
+  const highlights = new HighlightStore();
   const client = new QueryClient({ defaultOptions: { queries: options.queries ?? { retry: false } } });
   const value = canvasActions(options.actions);
   const live = { register: (query: LiveQuery) => {
@@ -106,11 +112,11 @@ function shell(
   } } as unknown as LiveHub;
   const ui = (next: WorkspaceState) => <QueryClientProvider client={client}><MetaContext value={META}>
     <ProfileContext value={{ ...PROFILE, ...options.profile }}><LiveContext value={live}>
-      <ChatFeedContext value={feed}><WorkspaceActionsProvider value={value}>
+      <ChatFeedContext value={feed}><HighlightContext value={highlights}><WorkspaceActionsProvider value={value}>
         <Chat instance={next.visuals[0]!} focused={false} workspace={next} onWorkspaceChanged={vi.fn()} />
-      </WorkspaceActionsProvider></ChatFeedContext></LiveContext></ProfileContext></MetaContext></QueryClientProvider>;
+      </WorkspaceActionsProvider></HighlightContext></ChatFeedContext></LiveContext></ProfileContext></MetaContext></QueryClientProvider>;
   const view = render(ui(state));
-  return { feed, value, client, view, again: (next: WorkspaceState = state) => view.rerender(ui(next)), mount: () => { view.unmount(); return render(ui(state)); } };
+  return { feed, value, client, view, highlights, again: (next: WorkspaceState = state) => view.rerender(ui(next)), mount: () => { view.unmount(); return render(ui(state)); } };
 }
 
 /** The stream says the session changed; the live layer hands that to whoever follows it. */
@@ -887,4 +893,166 @@ test("a line still being sent, and a chat I cannot post in, offer no fork", asyn
   shell(workspace, { profile: { role: "viewer" } });
   await screen.findByText("a2");
   expect(screen.queryByRole("button", { name: "Fork from here" })).toBeNull();
+});
+
+// What an answer cites lights up on the canvas as it arrives, through the store the agent's Highlight feeds.
+
+const idOf = (kind: string, seq: number) => `id-${kind}-${seq}`;
+const marked = (highlights: HighlightStore) => [...highlights.snapshot()].toSorted();
+
+/** Hold a conversation with one line of mine, show it, and return the shell; its answers come by `reply`. */
+async function conversation() {
+  open("c1");
+  hold("c1", said(0, ME, "What is open?"));
+  const view = shell();
+  await screen.findByText("What is open?");
+  const lines = [said(0, ME, "What is open?")];
+  const reply = async (content: string) => {
+    lines.push(answered(lines.length, content));
+    hold("c1", ...lines);
+    await changed("s-c1");
+  };
+  return { ...view, reply };
+}
+
+test("an answer that arrives lights up every row it cites, any kind, resolving each once", async () => {
+  const { highlights, reply } = await conversation();
+  await reply("Start with Belief#7 and Issue#12, then AgentSession#4 and Issue#12 again.");
+  await waitFor(() => expect(marked(highlights)).toEqual([idOf("AgentSession", 4), idOf("Belief", 7), idOf("Issue", 12)]), { interval: 1 });
+  expect(vi.mocked(findRef).mock.calls.map(([kind, seq]) => `${kind}#${seq}`).toSorted()).toEqual(["AgentSession#4", "Belief#7", "Issue#12"]);
+});
+
+test("a row named by its id lights up with no lookup", async () => {
+  const { highlights, reply } = await conversation();
+  await reply("It is 61D3A095-C7F1-4D27-A4C4-A5B1C218A31E.");
+  await waitFor(() => expect(marked(highlights)).toEqual(["61d3a095-c7f1-4d27-a4c4-a5b1c218a31e"]), { interval: 1 });
+  expect(findRef).not.toHaveBeenCalled();
+});
+
+test("the rows are looked up together, and one that does not resolve does not hold the others back", async () => {
+  const { highlights, reply } = await conversation();
+  const pending: ((id: string) => void)[] = [];
+  vi.mocked(findRef).mockImplementation((kind, seq) => kind === "Belief"
+    ? Promise.reject(new ApiError(404, "gone"))
+    : new Promise((resolve) => pending.push((id) => resolve(id + seq))));
+  await reply("Issue#1, Belief#2 and Issue#3");
+  await waitFor(() => expect(pending).toHaveLength(2), { interval: 1 });
+  expect(marked(highlights)).toEqual([]);
+  act(() => pending.forEach((resolve) => resolve("row-")));
+  await waitFor(() => expect(marked(highlights)).toEqual(["row-1", "row-3"]), { interval: 1 });
+});
+
+test("each row lights as its own lookup returns, so a slow one holds the rest up no longer", async () => {
+  const { highlights, reply } = await conversation();
+  let release = (_id: string) => {};
+  vi.mocked(findRef).mockImplementation((kind, seq) => seq === 2
+    ? new Promise((resolve) => { release = resolve; })
+    : Promise.resolve(idOf(kind, seq)));
+  await reply("Issue#1, Issue#2 and Issue#3");
+  await waitFor(() => expect(marked(highlights)).toEqual([idOf("Issue", 1), idOf("Issue", 3)]), { interval: 1 });
+  await act(async () => release("slow"));
+  expect(marked(highlights)).toEqual([idOf("Issue", 1), idOf("Issue", 3), "slow"]);
+});
+
+test("a lookup that fails is not retried, as the app's read retries would hold the row dark for seconds", async () => {
+  vi.mocked(findRef).mockImplementation(async (kind, seq) => {
+    if (seq === 2) throw new ApiError(503, "busy");
+    return idOf(kind, seq);
+  });
+  open("c1");
+  hold("c1", said(0, ME, "What is open?"));
+  const { highlights } = shell(workspace, { queries: { retry: 3, retryDelay: 1 } });
+  await screen.findByText("What is open?");
+  hold("c1", said(0, ME, "What is open?"), answered(1, "Issue#1 and Issue#2"));
+  await changed("s-c1");
+  await waitFor(() => expect(marked(highlights)).toEqual([idOf("Issue", 1)]), { interval: 1 });
+  // Long enough for the retries the app would make at this delay.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  expect(vi.mocked(findRef).mock.calls.filter(([, seq]) => seq === 2)).toHaveLength(1);
+});
+
+test("an answer after the agent called Highlight leaves its marks alone, and the next turn's answer lights again", async () => {
+  const { highlights } = await conversation();
+  hold("c1", said(0, ME, "What is open?"), called(1, "Highlight"), answered(2, "Compare with Issue#12."));
+  await changed("s-c1");
+  await screen.findByText(/Compare with/);
+  expect(findRef).not.toHaveBeenCalled();
+  expect(marked(highlights)).toEqual([]);
+  hold("c1", said(0, ME, "What is open?"), called(1, "Highlight"), answered(2, "Compare with Issue#12."),
+    said(3, ME, "and?"), called(4, "SearchRecords"), answered(5, "See Issue#13."));
+  await changed("s-c1");
+  await waitFor(() => expect(marked(highlights)).toEqual([idOf("Issue", 13)]), { interval: 1 });
+});
+
+test("rows an answer quotes in code are not cited, and an answer that cites none leaves the marks as they were", async () => {
+  const { highlights, reply } = await conversation();
+  await reply("Issue#1 is the one.");
+  await waitFor(() => expect(marked(highlights)).toEqual([idOf("Issue", 1)]), { interval: 1 });
+  await reply("Write refs as `Issue#2`, quoted.");
+  expect((await screen.findByText("Issue#2")).tagName).toBe("CODE");
+  expect(marked(highlights)).toEqual([idOf("Issue", 1)]);
+  expect(vi.mocked(findRef).mock.calls.map(([kind, seq]) => `${kind}#${seq}`)).toEqual(["Issue#1"]);
+});
+
+test("the newest answer replaces the marks, and a slower lookup for an older one does not overwrite it", async () => {
+  const { highlights, reply } = await conversation();
+  let release = (_id: string) => {};
+  vi.mocked(findRef).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+  await reply("First: Issue#1");
+  await waitFor(() => expect(findRef).toHaveBeenCalledTimes(1), { interval: 1 });
+  await reply("Then: Issue#2");
+  await waitFor(() => expect(marked(highlights)).toEqual([idOf("Issue", 2)]), { interval: 1 });
+  await act(async () => release("late"));
+  expect(marked(highlights)).toEqual([idOf("Issue", 2)]);
+});
+
+test("a row seen before costs no second lookup", async () => {
+  const { highlights, reply } = await conversation();
+  await reply("Issue#5");
+  await waitFor(() => expect(marked(highlights)).toEqual([idOf("Issue", 5)]), { interval: 1 });
+  await reply("Issue#5 again, with Issue#6");
+  await waitFor(() => expect(marked(highlights)).toEqual([idOf("Issue", 5), idOf("Issue", 6)]), { interval: 1 });
+  expect(vi.mocked(findRef).mock.calls.map(([kind, seq]) => `${kind}#${seq}`)).toEqual(["Issue#5", "Issue#6"]);
+});
+
+test("answers already in a conversation when it opens light nothing: only a new one does", async () => {
+  vi.mocked(findRef).mockImplementation(async (kind, seq) => idOf(kind, seq));
+  open("c1");
+  hold("c1", said(0, ME, "q"), answered(1, "Earlier: Issue#1"));
+  const { highlights } = shell();
+  await screen.findByText(/Earlier/);
+  expect(marked(highlights)).toEqual([]);
+  expect(findRef).not.toHaveBeenCalled();
+  hold("c1", said(0, ME, "q"), answered(1, "Earlier: Issue#1"), said(2, ME, "q2"), answered(3, "Nothing to cite"));
+  await changed("s-c1");
+  await screen.findByText("Nothing to cite");
+  expect(marked(highlights)).toEqual([]);
+  hold("c1", said(0, ME, "q"), answered(1, "Earlier: Issue#1"), said(2, ME, "q2"), answered(3, "Nothing to cite"), said(4, ME, "q3"), answered(5, "Now: Issue#2"));
+  await changed("s-c1");
+  await waitFor(() => expect(marked(highlights)).toEqual([idOf("Issue", 2)]), { interval: 1 });
+  expect(vi.mocked(findRef).mock.calls.map(([kind, seq]) => `${kind}#${seq}`)).toEqual(["Issue#2"]);
+});
+
+test("with the switch off an answer lights nothing, and turning it on lights only answers that come after", async () => {
+  const { highlights, reply } = await conversation();
+  act(() => chooseHighlightMentions(ME, false));
+  await reply("Issue#1 and Issue#2");
+  await screen.findByText(/Issue#1/);
+  expect(marked(highlights)).toEqual([]);
+  expect(findRef).not.toHaveBeenCalled();
+  act(() => chooseHighlightMentions(ME, true));
+  expect(marked(highlights)).toEqual([]);
+  await reply("Issue#3");
+  await waitFor(() => expect(marked(highlights)).toEqual([idOf("Issue", 3)]), { interval: 1 });
+});
+
+test("the switch is honoured while a lookup is under way", async () => {
+  const { highlights, reply } = await conversation();
+  let release = (_id: string) => {};
+  vi.mocked(findRef).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+  await reply("Issue#1");
+  await waitFor(() => expect(findRef).toHaveBeenCalledTimes(1), { interval: 1 });
+  act(() => chooseHighlightMentions(ME, false));
+  await act(async () => release("row"));
+  expect(marked(highlights)).toEqual([]);
 });

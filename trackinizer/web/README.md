@@ -340,6 +340,18 @@ with one response shape, so the fixtures take one per verb.
   was forked and which chat a fork came from.
 - The composer says chats are public to every user and cannot be deleted. Chat has
   no delete.
+- An answer that arrives lights up the rows it cites at once, through the tab's
+  highlight store, as the agent's Highlight does, with no server round trip beyond
+  `GET /api/inquiries/{Kind}/{seq}` for a ref not seen before (`useAnswerHighlights`,
+  `src/visuals/chatHighlights.ts`; the lookups run together and are kept, since a
+  seq never moves). The newest answer that cites any replaces the marks; one that
+  cites none leaves them. A cited row is a `Kind#seq` of a known kind or a UUID
+  (`namedRows`, `chatRefs.ts`), read as the page links one: a ref in a code span
+  or block is quoted, not cited, and a link's text cites its ref but its target
+  does not. The answers there when a conversation opens are history and light
+  nothing. Settings' "Highlight rows the assistant mentions", in this browser, per
+  user, on by default (`settings/highlightMentions.ts`), turns it off at once,
+  a lookup under way included.
 - A conversation's lines are the session's records (`src/visuals/chatRecords.ts`):
   parts and records are read incrementally, part by part, and
   `readTranscript` (`chatLines.ts`) turns them into lines. A person's line

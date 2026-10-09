@@ -41,6 +41,8 @@ export type Transcript = {
    * is the last record). Null when the last line is an answer, or there is none.
    */
   readonly working: string | null;
+  /** The keys of the answers whose turn called the Highlight tool before it answered. */
+  readonly pointed: ReadonlySet<string>;
 };
 
 /**
@@ -52,6 +54,8 @@ export type Transcript = {
 export function readTranscript(parts: readonly ChatPart[]): Transcript {
   const lines: Line[] = [];
   let working: string | null = null;
+  const pointed = new Set<string>();
+  let pointing = false;
   for (const { part, records } of parts) {
     for (const record of records) {
       const key = `${part}:${record.idx}`;
@@ -59,15 +63,18 @@ export function readTranscript(parts: readonly ChatPart[]): Transcript {
       if (record.kind === "AgentToAgentMessage") {
         lines.push({ key, at: { part, idx: record.idx }, role: "user", author: text(payload.sender) || null, text: text(payload.content), pending: false });
         working = "";
+        pointing = false;
       } else if (record.kind === "AssistantMessage" && text(payload.content)) {
+        if (pointing) pointed.add(key);
         lines.push({ key, at: { part, idx: record.idx }, role: "assistant", author: null, text: text(payload.content), pending: false });
         working = null;
-      } else if (record.kind === "ToolCall" && working !== null) {
-        working = text(payload.name);
+      } else if (record.kind === "ToolCall") {
+        if (isHighlight(text(payload.name))) pointing = true;
+        if (working !== null) working = text(payload.name);
       }
     }
   }
-  return { lines, working };
+  return { lines, working, pointed };
 }
 
 /**
@@ -97,6 +104,11 @@ export function sentBefore(lines: readonly Line[], { me }: { readonly me: string
 export function linesThrough(lines: readonly Line[], at: LineAt): Line[] {
   const end = lines.findIndex((line) => line.at?.part === at.part && line.at.idx === at.idx);
   return end < 0 ? [] : lines.slice(0, end + 1);
+}
+
+/** Whether a tool call's name is the canvas Highlight tool, which a host may prefix. */
+function isHighlight(name: string): boolean {
+  return name === "Highlight" || name.endsWith("__Highlight");
 }
 
 function text(value: unknown): string {

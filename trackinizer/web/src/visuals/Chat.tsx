@@ -16,6 +16,7 @@ import { HelperCommands } from "../settings/ChatPartner";
 import { type ChatPart, type Line, type LineAt, linesThrough, PENDING, type PendingLine, readTranscript, sentBefore, withPending } from "./chatLines";
 import { chatRecordsKey, OPENING, readChatParts, useLiveChat } from "./chatRecords";
 import { useChatFeed } from "./chatFeed";
+import { useAnswerHighlights } from "./chatHighlights";
 import type { RendererProps } from "./registry";
 import { useWorkspaceActions } from "./workspaceActions";
 
@@ -85,6 +86,10 @@ export function Chat({ instance, workspace }: RendererProps) {
   useLiveChat(session);
 
   const transcript = useMemo(() => readTranscript(records.data ?? []), [records.data]);
+  // What the answers cite lights up on the page as they arrive (the Settings switch turns it off).
+  const answers = useMemo(() => records.data === undefined ? null
+    : transcript.lines.filter((line) => line.role === "assistant").map(({ key, text }) => ({ key, text, pointed: transcript.pointed.has(key) })), [records.data, transcript]);
+  useAnswerHighlights(answers, session);
   const lines = withPending(transcript, pending.filter((line) => line.conversationId === conversationId), { me });
   const loading = session !== null && records.data === undefined && !records.isError;
   const unopened = conversationId !== null && head.data === null && !head.isFetching;
