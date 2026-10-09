@@ -1,6 +1,6 @@
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { Profiler, useEffect } from "react";
+import { act, cleanup, fireEvent, render as renderBare, screen, waitFor, within } from "@testing-library/react";
+import { Profiler, useEffect, type ReactElement, type ReactNode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { getVisualCatalog } from "../api/visuals";
 import { findRef } from "../api/detail";
@@ -15,7 +15,10 @@ import { ProfileContext } from "../app/boot";
 import { PROFILE } from "../detail/testing";
 import { createQueryClient } from "../app/queryClient";
 import { newerWorkspace } from "../app/canvasStream";
+import { storageKey } from "../state/store";
+import { EMPTY_STATE, parseState } from "../state/value";
 import { Canvas } from "./Canvas";
+import { CLICK_SLOP, rememberedTile, withTile } from "./floatingTile";
 
 vi.mock("../api/visuals", () => ({ getVisualCatalog: vi.fn() }));
 vi.mock("../api/workspaces", () => ({
@@ -37,6 +40,11 @@ vi.mock("../api/detail", () => ({
   }),
 }));
 
+/** The canvas shows the signed-in user's state, so every render has a profile above it. */
+function render(ui: ReactElement) {
+  return renderBare(ui, { wrapper: ({ children }: { children: ReactNode }) => <ProfileContext value={PROFILE}>{children}</ProfileContext> });
+}
+
 const workspace: WorkspaceState = {
   id: "c5286865-67b6-4bd8-ab51-e06e10c326c5",
   revision: 3,
@@ -53,6 +61,7 @@ afterEach(() => {
   window.innerWidth = 1024;
   history.replaceState(null, "", "#/");
   sessionStorage.clear();
+  localStorage.clear();
 });
 
 test("saves the current canvas with workflow guidance and reopens it", async () => {
@@ -801,4 +810,305 @@ test("the Chat button shows Chat floating, and focuses it once shown", async () 
   fireEvent.click(button());
   await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenLastCalledWith(
     workspace.id, 4, { kind: "focus", instance_id: "chat-instance" }, expect.any(String)));
+});
+
+const BROWSE_TILE = `[data-visual-instance="${workspace.visuals[0]!.id}"]`;
+const STATE_KEY = storageKey(PROFILE.email);
+
+function storedTile() {
+  return rememberedTile(parseState(JSON.parse(localStorage.getItem(STATE_KEY)!)), "trax.browse");
+}
+
+/** The floating page, 800 x 600 stage and a 300 x 400 tile, with its top bar. */
+async function mountFloating() {
+  vi.mocked(getVisualCatalog).mockResolvedValue({
+    default_visual: "trax.browse",
+    visuals: [{ type: "trax.browse", version: 1, title: "Browse", description: "Browse records",
+      default_size: "wide", requires: [], parameter_schema: {} }],
+  });
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
+  vi.mocked(getWorkspace).mockResolvedValue(workspace);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
+  const handle = await screen.findByRole("button", { name: "Move Browse" });
+  const tile = document.querySelector<HTMLElement>(BROWSE_TILE)!;
+  const bar = tile.querySelector<HTMLElement>(".visual-tile-toolbar")!;
+  const stage = document.querySelector<HTMLElement>(".visual-stage")!;
+  // jsdom has no pointer capture and no layout.
+  Element.prototype.setPointerCapture = vi.fn();
+  Object.defineProperty(stage, "clientWidth", { configurable: true, value: 800 });
+  Object.defineProperty(stage, "clientHeight", { configurable: true, value: 600 });
+  Object.defineProperty(tile, "offsetWidth", { configurable: true, value: 300 });
+  Object.defineProperty(tile, "offsetHeight", { configurable: true, value: 400 });
+  return { tile, bar, handle, title: within(bar).getByText("Browse") };
+}
+
+test("pressing the title bar and dragging moves the tile with the pointer, and the place is kept on release", async () => {
+  const { tile, title } = await mountFloating();
+  fireEvent.pointerDown(title, { pointerId: 1, clientX: 100, clientY: 100 });
+  fireEvent.pointerMove(title, { pointerId: 1, clientX: 140, clientY: 120 });
+  expect(tile.style.transform).toBe("translate(40px, 20px)");
+  fireEvent.pointerUp(title, { pointerId: 1, clientX: 140, clientY: 120 });
+  expect(tile.style.transform).toBe("");
+  expect([tile.style.left, tile.style.top]).toEqual(["40px", "20px"]);
+  // A drag is not a click: the tile stays open.
+  expect(tile.classList.contains("visual-tile-collapsed")).toBe(false);
+  expect(storedTile()).toEqual({ collapsed: false, place: { left: 40, top: 20 } });
+});
+
+test("a drag by the title bar follows every move with a transform alone: the canvas does not render", async () => {
+  let commits = 0;
+  vi.mocked(getVisualCatalog).mockResolvedValue({
+    default_visual: "trax.browse",
+    visuals: [{ type: "trax.browse", version: 1, title: "Browse", description: "Browse records",
+      default_size: "wide", requires: [], parameter_schema: {} }],
+  });
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
+  vi.mocked(getWorkspace).mockResolvedValue(workspace);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><Profiler id="canvas" onRender={() => { commits += 1; }}>
+    <Canvas><div>Browse content</div></Canvas>
+  </Profiler></QueryClientProvider>);
+  await screen.findByRole("button", { name: "Move Browse" });
+  const tile = document.querySelector<HTMLElement>(BROWSE_TILE)!;
+  const bar = tile.querySelector<HTMLElement>(".visual-tile-toolbar")!;
+  Element.prototype.setPointerCapture = vi.fn();
+  Object.defineProperty(document.querySelector(".visual-stage"), "clientWidth", { configurable: true, value: 800 });
+  Object.defineProperty(document.querySelector(".visual-stage"), "clientHeight", { configurable: true, value: 600 });
+  Object.defineProperty(tile, "offsetWidth", { configurable: true, value: 300 });
+  Object.defineProperty(tile, "offsetHeight", { configurable: true, value: 400 });
+
+  fireEvent.pointerDown(bar, { pointerId: 1, clientX: 10, clientY: 10 });
+  const before = commits;
+  for (let step = 1; step <= 30; step += 1) {
+    fireEvent.pointerMove(bar, { pointerId: 1, clientX: 10 + step * 10, clientY: 10 + step });
+    expect(tile.style.transform).toBe(`translate(${Math.min(500, step * 10)}px, ${step}px)`);
+  }
+  expect(commits).toBe(before);
+  fireEvent.pointerCancel(bar, { pointerId: 1 });
+  // The browser taking the pointer puts the tile back.
+  expect(tile.style.transform).toBe("");
+  expect(tile.style.left).toBe("");
+  expect(localStorage.getItem(STATE_KEY)).toBeNull();
+});
+
+test("a press on the title bar that does not move collapses the tile to its bar, and the next expands it", async () => {
+  const { tile, title } = await mountFloating();
+  fireEvent.pointerDown(title, { pointerId: 1, clientX: 100, clientY: 100 });
+  fireEvent.pointerMove(title, { pointerId: 1, clientX: 100 + CLICK_SLOP, clientY: 100 });
+  fireEvent.pointerUp(title, { pointerId: 1, clientX: 100 + CLICK_SLOP, clientY: 100 });
+  expect(tile.classList.contains("visual-tile-collapsed")).toBe(true);
+  // A click moves nothing, even by the pixels the hand wandered.
+  expect(tile.style.transform).toBe("");
+  expect(tile.style.left).toBe("");
+  expect(storedTile().collapsed).toBe(true);
+
+  fireEvent.pointerDown(title, { pointerId: 2, clientX: 100, clientY: 100 });
+  fireEvent.pointerUp(title, { pointerId: 2, clientX: 100, clientY: 100 });
+  expect(tile.classList.contains("visual-tile-collapsed")).toBe(false);
+  expect(storedTile().collapsed).toBe(false);
+});
+
+test("a collapsed tile can be dragged by its bar, and stays collapsed", async () => {
+  const { tile, title } = await mountFloating();
+  fireEvent.pointerDown(title, { pointerId: 1, clientX: 100, clientY: 100 });
+  fireEvent.pointerUp(title, { pointerId: 1, clientX: 100, clientY: 100 });
+  fireEvent.pointerDown(title, { pointerId: 2, clientX: 100, clientY: 100 });
+  fireEvent.pointerMove(title, { pointerId: 2, clientX: 160, clientY: 100 });
+  fireEvent.pointerUp(title, { pointerId: 2, clientX: 160, clientY: 100 });
+  expect(tile.classList.contains("visual-tile-collapsed")).toBe(true);
+  expect(storedTile()).toEqual({ collapsed: true, place: { left: 60, top: 0 } });
+});
+
+test("the bar's buttons and place control keep working: pressing them starts no drag and no collapse", async () => {
+  const { tile, bar } = await mountFloating();
+  const focus = within(bar).getByRole("button", { name: "Focus" });
+  fireEvent.pointerDown(focus, { pointerId: 1, clientX: 100, clientY: 100 });
+  fireEvent.pointerMove(focus, { pointerId: 1, clientX: 180, clientY: 100 });
+  fireEvent.pointerUp(focus, { pointerId: 1, clientX: 180, clientY: 100 });
+  const place = within(bar).getByRole("combobox", { name: "Place trax.browse" });
+  fireEvent.pointerDown(place, { pointerId: 2, clientX: 100, clientY: 100 });
+  fireEvent.pointerUp(place, { pointerId: 2, clientX: 100, clientY: 100 });
+  expect(tile.style.transform).toBe("");
+  expect(tile.classList.contains("visual-tile-collapsed")).toBe(false);
+  expect(applyWorkspaceOperation).not.toHaveBeenCalled();
+  expect(localStorage.getItem(STATE_KEY)).toBeNull();
+  fireEvent.click(focus);
+  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalled());
+});
+
+test("a right-button press on the bar starts nothing", async () => {
+  const { tile, title } = await mountFloating();
+  fireEvent.pointerDown(title, { pointerId: 1, button: 2, clientX: 100, clientY: 100 });
+  fireEvent.pointerUp(title, { pointerId: 1, button: 2, clientX: 100, clientY: 100 });
+  expect(tile.classList.contains("visual-tile-collapsed")).toBe(false);
+});
+
+test("the move handle still drags, and a press on it that does not move does not collapse", async () => {
+  const { tile, handle } = await mountFloating();
+  fireEvent.pointerDown(handle, { pointerId: 1, clientX: 100, clientY: 100 });
+  fireEvent.pointerUp(handle, { pointerId: 1, clientX: 100, clientY: 100 });
+  expect(tile.classList.contains("visual-tile-collapsed")).toBe(false);
+  fireEvent.pointerDown(handle, { pointerId: 2, clientX: 100, clientY: 100 });
+  fireEvent.pointerMove(handle, { pointerId: 2, clientX: 130, clientY: 150 });
+  fireEvent.pointerUp(handle, { pointerId: 2, clientX: 130, clientY: 150 });
+  expect([tile.style.left, tile.style.top]).toEqual(["30px", "50px"]);
+  expect(storedTile().place).toEqual({ left: 30, top: 50 });
+});
+
+test("arrow keys on the handle move the tile and the place is kept", async () => {
+  const { tile, handle } = await mountFloating();
+  fireEvent.keyDown(handle, { key: "ArrowDown", shiftKey: true });
+  expect(tile.style.top).toBe("48px");
+  expect(storedTile().place).toEqual({ left: 0, top: 48 });
+});
+
+test("on a phone the bar is a plain header: pressing it moves and folds nothing", async () => {
+  window.innerWidth = 390;
+  const { tile, title } = await mountFloating();
+  fireEvent.pointerDown(title, { pointerId: 1, clientX: 100, clientY: 100 });
+  fireEvent.pointerMove(title, { pointerId: 1, clientX: 140, clientY: 100 });
+  fireEvent.pointerUp(title, { pointerId: 1, clientX: 140, clientY: 100 });
+  expect(tile.style.transform).toBe("");
+  expect(tile.classList.contains("visual-tile-collapsed")).toBe(false);
+});
+
+test("the collapse button does what a click on the bar does, for the keyboard", async () => {
+  const { tile, bar } = await mountFloating();
+  fireEvent.click(within(bar).getByRole("button", { name: "Collapse Browse" }));
+  expect(tile.classList.contains("visual-tile-collapsed")).toBe(true);
+  expect(within(bar).getByRole("button", { name: "Expand Browse" }).getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(within(bar).getByRole("button", { name: "Expand Browse" }));
+  expect(tile.classList.contains("visual-tile-collapsed")).toBe(false);
+  expect(storedTile().collapsed).toBe(false);
+});
+
+test("a place and a collapse stored for this user show on the next load", async () => {
+  localStorage.setItem(STATE_KEY, JSON.stringify(withTile(EMPTY_STATE, "trax.browse", { collapsed: true, place: { left: 120, top: 70 } })));
+  const { tile } = await mountFloating();
+  expect(tile.classList.contains("visual-tile-collapsed")).toBe(true);
+  expect([tile.style.left, tile.style.top]).toEqual(["120px", "70px"]);
+});
+
+test("a stored place the stage has since shrunk below is held inside it", async () => {
+  localStorage.setItem(STATE_KEY, JSON.stringify(withTile(EMPTY_STATE, "trax.browse", { place: { left: 700, top: 590 } })));
+  const { tile } = await mountFloating();
+  // The measure runs on the next layout, once jsdom has been told the sizes.
+  fireEvent(window, new Event("resize"));
+  expect([tile.style.left, tile.style.top]).toEqual(["500px", "200px"]);
+});
+
+test("storage that cannot hold the state still lets the tile move and collapse", async () => {
+  // A value of another shape: the canvas must not overwrite it, and must not fail.
+  const unreadable = JSON.stringify({ stars: [], notification: {} });
+  localStorage.setItem(STATE_KEY, unreadable);
+  const { tile, title } = await mountFloating();
+  fireEvent.pointerDown(title, { pointerId: 1, clientX: 100, clientY: 100 });
+  fireEvent.pointerMove(title, { pointerId: 1, clientX: 110, clientY: 120 });
+  fireEvent.pointerUp(title, { pointerId: 1, clientX: 110, clientY: 120 });
+  expect([tile.style.left, tile.style.top]).toEqual(["10px", "20px"]);
+  fireEvent.pointerDown(title, { pointerId: 2, clientX: 100, clientY: 100 });
+  fireEvent.pointerUp(title, { pointerId: 2, clientX: 100, clientY: 100 });
+  expect(tile.classList.contains("visual-tile-collapsed")).toBe(true);
+  expect(localStorage.getItem(STATE_KEY)).toBe(unreadable);
+});
+
+test("opening a saved view shows its places over the ones dragged before, and keeps what is collapsed", async () => {
+  localStorage.setItem(STATE_KEY, JSON.stringify(withTile(EMPTY_STATE, "trax.browse", { collapsed: true, place: { left: 120, top: 70 } })));
+  vi.mocked(listWorkspacePresets).mockResolvedValue([{
+    id: "preset-id", name: "Triage", agent_instructions: null, continuation_record_id: null,
+    state: { visuals: workspace.visuals, focused_instance: null, agent_instructions: null, continuation_record_id: null },
+    created_at: "2026-09-29T08:00:00Z", modified_at: "2026-09-29T08:00:00Z",
+  }]);
+  vi.mocked(openWorkspacePreset).mockResolvedValue({
+    ...workspace, revision: 4,
+    visuals: workspace.visuals.map((visual) => ({ ...visual, floating_rect: { left: 72, top: 64, width: 440, height: 320 } })),
+  });
+  const { tile } = await mountFloating();
+  fireEvent.click(screen.getByRole("button", { name: "Configure" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Open Triage" }));
+  await screen.findByText("Opened “Triage”.");
+  expect([tile.style.left, tile.style.top]).toEqual(["72px", "64px"]);
+  expect(storedTile()).toEqual({ collapsed: true, place: null });
+});
+
+/** The stage and tile as the page draws them: jsdom lays nothing out. */
+function drawnAt(tile: HTMLElement, left: number, top: number) {
+  tile.getBoundingClientRect = () => ({ left, top, right: left + 300, bottom: top + 400, width: 300, height: 400, x: left, y: top, toJSON: () => ({}) });
+}
+
+/** Drag the tile to (left, top), then shrink the stage so it holds the tile at (heldLeft, heldTop). */
+async function dragThenShrink(left: number, top: number, held: { left: number; top: number }) {
+  const mounted = await mountFloating();
+  const { tile, title } = mounted;
+  fireEvent.pointerDown(title, { pointerId: 9, clientX: 0, clientY: 0 });
+  fireEvent.pointerMove(title, { pointerId: 9, clientX: left, clientY: top });
+  fireEvent.pointerUp(title, { pointerId: 9, clientX: left, clientY: top });
+  const stage = document.querySelector<HTMLElement>(".visual-stage")!;
+  Object.defineProperty(stage, "clientWidth", { configurable: true, value: held.left + 300 });
+  Object.defineProperty(stage, "clientHeight", { configurable: true, value: held.top + 400 });
+  fireEvent(window, new Event("resize"));
+  expect([tile.style.left, tile.style.top]).toEqual([`${held.left}px`, `${held.top}px`]);
+  // The stage held the tile inside itself; the place last dragged to still says otherwise.
+  drawnAt(tile, held.left, held.top);
+  return mounted;
+}
+
+test("a drag starts from where the tile is drawn, not from the place it was last dragged to", async () => {
+  const { tile, title } = await dragThenShrink(500, 200, { left: 300, top: 100 });
+  fireEvent.pointerDown(title, { pointerId: 1, clientX: 100, clientY: 100 });
+  fireEvent.pointerMove(title, { pointerId: 1, clientX: 90, clientY: 100 });
+  expect(tile.style.transform).toBe("translate(-10px, 0px)");
+  fireEvent.pointerUp(title, { pointerId: 1, clientX: 90, clientY: 100 });
+  expect(storedTile().place).toEqual({ left: 290, top: 100 });
+});
+
+test("an arrow key moves the tile from where it is drawn, not from the place it was last dragged to", async () => {
+  const { handle } = await dragThenShrink(500, 200, { left: 300, top: 100 });
+  fireEvent.keyDown(handle, { key: "ArrowUp" });
+  expect(storedTile().place).toEqual({ left: 300, top: 84 });
+});
+
+test("a drag whose pointer capture was lost is over: the next press drags", async () => {
+  const { tile, title } = await mountFloating();
+  fireEvent.pointerDown(title, { pointerId: 1, clientX: 100, clientY: 100 });
+  fireEvent.pointerMove(title, { pointerId: 1, clientX: 130, clientY: 100 });
+  // The captured element left the page, so no pointerup will arrive.
+  fireEvent.lostPointerCapture(title, { pointerId: 1 });
+  expect(tile.style.transform).toBe("");
+  fireEvent.pointerDown(title, { pointerId: 2, clientX: 100, clientY: 100 });
+  fireEvent.pointerMove(title, { pointerId: 2, clientX: 120, clientY: 100 });
+  expect(tile.style.transform).toBe("translate(20px, 0px)");
+  fireEvent.pointerUp(title, { pointerId: 2, clientX: 120, clientY: 100 });
+  expect(storedTile().place).toEqual({ left: 20, top: 0 });
+});
+
+test("the normal end of a drag is not undone by the capture release that follows it", async () => {
+  const { tile, title } = await mountFloating();
+  fireEvent.pointerDown(title, { pointerId: 1, clientX: 100, clientY: 100 });
+  fireEvent.pointerMove(title, { pointerId: 1, clientX: 140, clientY: 100 });
+  fireEvent.pointerUp(title, { pointerId: 1, clientX: 140, clientY: 100 });
+  fireEvent.lostPointerCapture(title, { pointerId: 1 });
+  expect([tile.style.left, tile.style.transform]).toEqual(["40px", ""]);
+});
+
+test("a tile held inside a smaller stage returns to its saved place when the stage grows back", async () => {
+  localStorage.setItem(STATE_KEY, JSON.stringify(withTile(EMPTY_STATE, "trax.browse", { place: { left: 500, top: 100 } })));
+  const { tile } = await mountFloating();
+  const stage = document.querySelector<HTMLElement>(".visual-stage")!;
+  const width = (value: number) => Object.defineProperty(stage, "clientWidth", { configurable: true, value });
+  width(600);
+  fireEvent(window, new Event("resize"));
+  expect(tile.style.left).toBe("300px");
+  width(800);
+  fireEvent(window, new Event("resize"));
+  expect(tile.style.left).toBe("500px");
+});
+
+test("on a phone the saved place is left alone: the tile is a plain header there", async () => {
+  window.innerWidth = 390;
+  localStorage.setItem(STATE_KEY, JSON.stringify(withTile(EMPTY_STATE, "trax.browse", { place: { left: 700, top: 100 } })));
+  const { tile } = await mountFloating();
+  fireEvent(window, new Event("resize"));
+  expect(tile.style.left).toBe("700px");
 });

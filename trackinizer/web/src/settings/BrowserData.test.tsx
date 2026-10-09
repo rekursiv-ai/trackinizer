@@ -15,7 +15,7 @@ const MINE: BrowserState = {
   views: [VIEW],
   aliases: ["ada"],
   read: { boundary: "2026-09-20T10:00:00+00:00", marks: [] },
-  ui: { collapsed: ["browse"], lens: "lineage" },
+  ui: { collapsed: ["browse"], lens: "lineage", tiles: {} },
 };
 
 beforeEach(() => {
@@ -75,7 +75,7 @@ test("an import merges by the rules, keeps this browser's UI state, and says wha
     aliases: ["Agent"],
     people: { bob: { name: "Bob", type: "person" } },
     read: { boundary: "2026-09-25T10:00:00+00:00", marks: ["c9"] },
-    ui: { collapsed: [], lens: "details" },
+    ui: { collapsed: [], lens: "details", tiles: {} },
   };
   renderScreen(<BrowserDataSection />, ADA);
   await userEvent.upload(screen.getByLabelText("Import JSON file"), file("other.json", exportState(theirs)));

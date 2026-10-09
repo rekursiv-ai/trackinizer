@@ -99,9 +99,9 @@ describe("an import merges into this browser's state and deletes nothing", () =>
   });
 
   test("UI state is not imported: this browser's stays", () => {
-    const mine = state({ ui: { collapsed: ["browse"], lens: "lineage" } });
-    const merged = mergeImport(mine, state({ ui: { collapsed: ["views"], lens: "details" } }));
-    expect(merged.ui).toEqual({ collapsed: ["browse"], lens: "lineage" });
+    const mine = state({ ui: { collapsed: ["browse"], lens: "lineage", tiles: { "trax.chat": { collapsed: true, place: null } } } });
+    const merged = mergeImport(mine, state({ ui: { collapsed: ["views"], lens: "details", tiles: {} } }));
+    expect(merged.ui).toEqual(mine.ui);
   });
 
   test("everything this browser holds is still there after importing an empty state", () => {
@@ -111,7 +111,7 @@ describe("an import merges into this browser's state and deletes nothing", () =>
       aliases: ["dan"],
       people: { bob: { name: "Bob", type: "person" } },
       read: { boundary: "2026-09-20T10:00:00+00:00", marks: ["c1"] },
-      ui: { collapsed: ["browse"], lens: null },
+      ui: { collapsed: ["browse"], lens: null, tiles: {} },
     });
     expect(mergeImport(mine, EMPTY_STATE)).toEqual(mine);
   });
@@ -125,13 +125,19 @@ describe("parsing an export", () => {
       aliases: ["dan"],
       people: { bob: { name: "Bob", type: "person" } },
       read: { boundary: "2026-09-20T10:00:00+00:00", marks: ["c1"] },
-      ui: { collapsed: ["browse"], lens: "lineage" },
+      ui: { collapsed: ["browse"], lens: "lineage", tiles: { "trax.chat": { collapsed: true, place: { left: 12, top: 40.5 } } } },
     });
     expect(parseState(JSON.parse(exportState(full)))).toEqual(full);
   });
 
   test("a category the file lacks is empty", () => {
-    expect(parseState({ version: 1, stars: ["a"] })).toEqual(state({ stars: ["a"] }));
+    expect(parseState({ version: 2, stars: ["a"] })).toEqual(state({ stars: ["a"] }));
+  });
+
+  test("a version 1 value, from before floating tiles were remembered, reads as the current version with none", () => {
+    const old = { version: 1, stars: ["a"], ui: { collapsed: ["browse"], lens: "lineage" } };
+    expect(parseState(old)).toEqual(state({ stars: ["a"], ui: { collapsed: ["browse"], lens: "lineage", tiles: {} } }));
+    expect(EMPTY_STATE.version).toBe(2);
   });
 
   test("a file of the wrong shape is refused, saying what is wrong", () => {
@@ -139,7 +145,8 @@ describe("parsing an export", () => {
       [null, "This is not an export of Trackinizer's browser state."],
       [[1], "This is not an export of Trackinizer's browser state."],
       [{ stars: [] }, "This is not an export of Trackinizer's browser state."],
-      [{ version: 2 }, "This export is version 2; this build reads version 1. Reload for the latest build."],
+      [{ version: 3 }, "This export is version 3; this build reads version 2. Reload for the latest build."],
+      [{ version: 0 }, "This export is version 0; this build reads version 2. Reload for the latest build."],
       [{ version: 1, stars: "a" }, "stars must be a list."],
       [{ version: 1, aliases: ["dan", 7] }, "aliases[1] must be text."],
       [{ version: 1, views: [{ id: "v", name: "x" }] }, "views[0].request must be an object."],
@@ -151,6 +158,9 @@ describe("parsing an export", () => {
       [{ version: 1, read: { boundary: 5 } }, "read.boundary must be text."],
       [{ version: 1, read: { boundary: "nonsense" } }, "read.boundary must be a time, such as 2026-09-27T10:00:00Z."],
       [{ version: 1, ui: [] }, "ui must be an object."],
+      [{ version: 2, ui: { tiles: { chat: {} } } }, "ui.tiles.chat.collapsed must be true or false."],
+      [{ version: 2, ui: { tiles: { chat: { collapsed: false, place: { left: "a", top: 1 } } } } }, "ui.tiles.chat.place.left must be a number."],
+      [{ version: 2, ui: { tiles: { chat: { collapsed: false, place: { left: 1, top: null } } } } }, "ui.tiles.chat.place.top must be a number."],
     ];
     for (const [value, message] of refusals) {
       expect(() => parseState(value), JSON.stringify(value)).toThrow(new Error(message));

@@ -108,3 +108,18 @@
   .visual-main-strip > .visual-tile + .visual-tile { border-left: 0; border-top: 1px solid var(--line); }
 }
 @media (max-width: 900px) { .visual-tile-floating { position: relative; top: auto !important; right: auto; width: 100%; height: 34px; border-radius: 0; box-shadow: none; flex: 0 0 auto; } .visual-tile-floating.visual-tile-mobile-expanded { height: min(400px, 48vh); } .visual-mobile-tab-toggle { display: inline-block; } }
+/* A floating tile's whole top bar moves it (a click without movement folds it to the bar); the controls on the bar keep their own cursors. */
+.visual-tile-floating > .visual-tile-toolbar-draggable { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.visual-tile-floating > .visual-tile-toolbar-draggable:active { cursor: grabbing; }
+.visual-tile-toolbar-draggable button, .visual-tile-toolbar-draggable select { cursor: pointer; }
+.visual-tile-toolbar .visual-tile-fold { min-width: 22px; line-height: 1; }
+/* A folded tile is its top bar alone; its contents stay mounted, so Chat keeps its conversation and its stream. */
+@media (min-width: 901px) {
+  .visual-tile-floating.visual-tile-collapsed { height: auto !important; min-height: 0; overflow: hidden; resize: none; }
+  .visual-tile-collapsed > :not(.visual-tile-toolbar) { display: none; }
+  .visual-tile-collapsed > .visual-tile-toolbar { border-bottom: 0; }
+}
+@media (max-width: 900px) {
+  .visual-tile-toolbar .visual-tile-fold { display: none; }
+  .visual-tile-floating > .visual-tile-toolbar-draggable { cursor: auto; touch-action: auto; user-select: auto; -webkit-user-select: auto; }
+}

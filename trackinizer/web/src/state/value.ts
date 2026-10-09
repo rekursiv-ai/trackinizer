@@ -37,11 +37,35 @@ export type ReadState = {
   readonly marks: readonly string[];
 };
 
-/** Collapsed sections, by key, and the detail lens last used. */
-export type UiState = { readonly collapsed: readonly string[]; readonly lens: string | null };
+/** Collapsed sections, by key, the detail lens last used, and how each floating tile was left. */
+export type UiState = {
+  readonly collapsed: readonly string[];
+  readonly lens: string | null;
+  /** Floating canvas tiles, by visual type. */
+  readonly tiles: { readonly [type: string]: TileMemory };
+};
 
-/** The value's version. A change to its shape bumps it, and `parseState` refuses a newer one. */
-export const VERSION = 1;
+/**
+ * How a floating tile was left: folded to its top bar or not, and where the
+ * user dragged it, in pixels from the canvas stage's top left (null until it
+ * was dragged).
+ */
+export type TileMemory = {
+  readonly collapsed: boolean;
+  readonly place: { readonly left: number; readonly top: number } | null;
+};
+
+/**
+ * The value's version. A change to its shape bumps it, and `parseState` refuses
+ * a newer one. It reads every version from `OLDEST_READABLE`, filling in what
+ * the older ones lack, so the next store writes the current shape.
+ *
+ * - 2: `ui.tiles`.
+ */
+export const VERSION = 2;
+
+/** The oldest version `parseState` reads. */
+const OLDEST_READABLE = 1;
 
 /** The state of a browser that has stored nothing yet. */
 export const EMPTY_STATE: BrowserState = {
@@ -51,7 +75,7 @@ export const EMPTY_STATE: BrowserState = {
   aliases: [],
   people: {},
   read: { boundary: null, marks: [] },
-  ui: { collapsed: [], lens: null },
+  ui: { collapsed: [], lens: null, tiles: {} },
 };
 
 /**
@@ -64,7 +88,7 @@ export function parseState(value: unknown): BrowserState {
   if (!isRecord(value) || typeof value.version !== "number") {
     throw new Error("This is not an export of Trackinizer's browser state.");
   }
-  if (value.version !== VERSION) {
+  if (value.version > VERSION || value.version < OLDEST_READABLE) {
     throw new Error(`This export is version ${value.version}; this build reads version ${VERSION}. Reload for the latest build.`);
   }
   const read = record(value.read ?? {}, "read");
@@ -76,7 +100,13 @@ export function parseState(value: unknown): BrowserState {
     aliases: strings(value.aliases ?? [], "aliases"),
     people: Object.fromEntries(Object.entries(record(value.people ?? {}, "people")).map(([actor, person]) => [actor, personOf(person, actor)])),
     read: { boundary: boundaryOf(read.boundary ?? null), marks: strings(read.marks ?? [], "read.marks") },
-    ui: { collapsed: strings(ui.collapsed ?? [], "ui.collapsed"), lens: nullableString(ui.lens ?? null, "ui.lens") },
+    ui: {
+      collapsed: strings(ui.collapsed ?? [], "ui.collapsed"),
+      lens: nullableString(ui.lens ?? null, "ui.lens"),
+      tiles: Object.fromEntries(
+        Object.entries(record(ui.tiles ?? {}, "ui.tiles")).map(([type, tile]) => [type, tileOf(tile, type)]),
+      ),
+    },
   };
 }
 
@@ -186,6 +216,20 @@ function personOf(value: unknown, actor: string): Person {
   const type = text(person.type, `${where}.type`);
   if (type !== "person" && type !== "agent") throw new Error(`${where}.type must be person or agent.`);
   return { name: text(person.name, `${where}.name`), type };
+}
+
+function tileOf(value: unknown, type: string): TileMemory {
+  const where = `ui.tiles.${type}`;
+  const tile = record(value, where);
+  if (typeof tile.collapsed !== "boolean") throw new Error(`${where}.collapsed must be true or false.`);
+  if ((tile.place ?? null) === null) return { collapsed: tile.collapsed, place: null };
+  const place = record(tile.place, `${where}.place`);
+  return { collapsed: tile.collapsed, place: { left: pixels(place.left, `${where}.place.left`), top: pixels(place.top, `${where}.place.top`) } };
+}
+
+function pixels(value: unknown, where: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${where} must be a number.`);
+  return value;
 }
 
 /** Every filter operator, so an imported one is checked; `satisfies` keeps it equal to `FilterOp`. */

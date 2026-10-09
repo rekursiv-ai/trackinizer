@@ -616,9 +616,26 @@ with one response shape, so the fixtures take one per verb.
   `trackinizer.v2.<origin>.<email>` (`src/state/`): stars, saved views
   (`{id, name, request}`, the exact list request), aliases, people added by hand,
   notification read state (`{boundary, marks}`) and UI state
-  (`{collapsed, lens}`). Settings exports it and imports another browser's: an
+  (`{collapsed, lens, tiles}`). Settings exports it and imports another browser's: an
   import never deletes, views merge by id, and UI state stays this browser's.
-  Tabs see each other's changes through the `storage` event.
+  Tabs see each other's changes through the `storage` event. The value is
+  version 2; a version 1 value reads as version 2 with no tiles.
+- A floating canvas tile (Chat floated) moves by its whole top bar and by the
+  ⠿ handle, which also moves by the arrow keys (16 px, 48 with Shift). A press
+  on the bar that stays within 4 px is a click and folds the tile to its bar,
+  and the next one unfolds it; a drag never folds. Controls on the bar are not
+  part of the bar: a press on one starts nothing. Under 900 px the tile is a
+  plain header in the page's flow and neither moves nor folds by the bar. A move
+  is a transform on the tile alone, kept inside the stage, and the canvas takes
+  the place once, on release. The place and the fold are kept per visual type in
+  `ui.tiles` (`{collapsed, place: {left, top} | null}`), so they survive a
+  reload; a browser that cannot store keeps them for the session. Opening a
+  saved view forgets the places and shows the view's. A drag and an arrow key
+  start from where the tile is drawn, which the stage's hold may have moved from
+  the saved place. The stage holds each tile from the place it is meant to stand
+  at, not from where an earlier hold left it, so a tile a narrow window pushed in
+  returns when the window grows back; under 900 px it holds nothing. A drag whose
+  bar loses pointer capture (the tile left the page) ends there.
 - "Me" is the account email plus the aliases ticked in Settings. An owner or
   subscriber filter for me matches any of them; a write of me writes the email.
 - Each list keeps its tab, filters, grouping, sort, view (List, or Streams or

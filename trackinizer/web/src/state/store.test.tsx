@@ -53,11 +53,11 @@ test("a change applies to what is stored when it runs, so another tab's change i
 });
 
 test("a stored value this build cannot read shows as empty, and is never overwritten", () => {
-  const unreadable = JSON.stringify({ version: 2, stars: ["from a newer build"] });
+  const unreadable = JSON.stringify({ version: 3, stars: ["from a newer build"] });
   localStorage.setItem(KEY, unreadable);
   const { result } = renderHook(() => useBrowserState(), { wrapper });
   expect(result.current[0]).toEqual(EMPTY_STATE);
-  expect(() => result.current[1]((state) => ({ ...state, stars: ["x"] }))).toThrow(/version 2/);
+  expect(() => result.current[1]((state) => ({ ...state, stars: ["x"] }))).toThrow(/version 3/);
   expect(localStorage.getItem(KEY)).toBe(unreadable);
 });
 

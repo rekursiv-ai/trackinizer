@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { ApiError } from "../api/client";
 import { findRef } from "../api/detail";
 import { newUuid } from "../api/idempotency";
@@ -21,7 +21,10 @@ import {
 import { acceptWorkspace as cacheWorkspace, newerWorkspace } from "../app/canvasStream";
 import { CrashBoundary } from "../app/CrashBoundary";
 import { parseHash } from "../router/route";
+import { useBrowserState } from "../state/store";
+import type { TileMemory } from "../state/value";
 import { type PanelSpec, usePanel } from "../ui/panel";
+import { finishGesture, moveGesture, rememberedTile, startGesture, withoutPlaces, withTile, type Gesture } from "./floatingTile";
 import { orderVisuals } from "./layout";
 import { preloadRenderers, RENDERERS, VisualPane } from "./registry";
 import { WorkspaceActionsProvider } from "./workspaceActions";
@@ -75,7 +78,12 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   const [presetError, setPresetError] = useState<string | null>(null);
   const [presetStatus, setPresetStatus] = useState<string | null>(null);
   const [expandedMobileFloat, setExpandedMobileFloat] = useState<string | null>(null);
+  // Where floating tiles stand and whether they are folded, as this session left
+  // them: a tile by its instance id, a fold by its visual type. The browser's
+  // state remembers both across loads; these hold when it cannot store.
   const [floatingPositions, setFloatingPositions] = useState<Record<string, { readonly left: number; readonly top: number }>>({});
+  const [foldedTypes, setFoldedTypes] = useState<Record<string, boolean>>({});
+  const [browser, updateBrowser] = useBrowserState();
   const stageRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<FloatingDrag | null>(null);
   const [writeError, setWriteError] = useState<string | null>(null);
@@ -119,6 +127,43 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   const focusedVisual = workspace?.visuals.find((visual) => visual.id === workspace.focused_instance);
   const chatRecordId = focusedVisual?.type === "trax.artifact" && focusedVisual.record_id
     ? focusedVisual.record_id : currentRecordId;
+
+  // What decides a floating tile's size and place; the tiles are held inside the
+  // stage again when it changes, or when the stage itself does. Each is held from
+  // the place it is meant to stand at, never from where an earlier hold left it, so
+  // a tile a narrow stage pushed in returns when the stage grows back.
+  const intendedPlaces: Record<string, { readonly left: number; readonly top: number } | null> = {};
+  const floatingLayout = panes.filter((pane) => pane.placement === "floating").map((pane) => {
+    const remembered = rememberedTile(browser, pane.type);
+    const place = floatingPositions[pane.id] ?? remembered.place ?? pane.floating_rect ?? null;
+    intendedPlaces[pane.id] = place && { left: place.left, top: place.top };
+    return [pane.id, intendedPlaces[pane.id], foldedTypes[pane.type] ?? remembered.collapsed];
+  });
+  const floatingLayoutKey = JSON.stringify(floatingLayout);
+  useLayoutEffect(() => {
+    const stage = stageRef.current;
+    if (!stage || floatingLayoutKey === "[]") return;
+    const hold = () => {
+      // A stage with no size is not shown; holding tiles inside it would pin them to its corner.
+      if (stage.clientWidth === 0 || stage.clientHeight === 0) return;
+      // On a phone the tile is a header in the flow, where a left or top only shifts it.
+      if (window.innerWidth <= NARROW_VIEWPORT) return;
+      for (const tile of stage.querySelectorAll<HTMLElement>(".visual-tile-floating")) {
+        const place = intendedPlaces[tile.dataset.visualInstance ?? ""];
+        if (!place) continue;
+        tile.style.left = `${Math.min(Math.max(0, stage.clientWidth - tile.offsetWidth), Math.max(0, place.left))}px`;
+        tile.style.top = `${Math.min(Math.max(0, stage.clientHeight - tile.offsetHeight), Math.max(0, place.top))}px`;
+      }
+    };
+    hold();
+    addEventListener("resize", hold);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(hold);
+    observer?.observe(stage);
+    return () => {
+      removeEventListener("resize", hold);
+      observer?.disconnect();
+    };
+  }, [floatingLayoutKey]);
 
   useEffect(() => {
     if (!workspace) return;
@@ -222,6 +267,12 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       setPresetInstructions(state.agent_instructions ?? "");
       setContinuationRecordId(state.continuation_record_id ?? "");
       setFloatingPositions({});
+      // A saved view's places show over the ones dragged before it.
+      try {
+        updateBrowser(withoutPlaces);
+      } catch {
+        // Storage is off, full or holds a value this build cannot read; the session already forgot them.
+      }
       setPresetStatus(`Opened “${preset.name}”.`);
     },
     onError: (error) => {
@@ -282,41 +333,72 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     void write({ kind: "show", visual_type: "trax.artifact", placement: "main", record_id: parsed.id });
   }
 
-  function moveFloatingPane(paneId: string, left: number, top: number) {
+  /** Remember how the floating tile of visual type `type` was left; a browser that cannot store keeps it for the session only. */
+  function rememberTile(type: string, change: Partial<TileMemory>) {
+    try {
+      updateBrowser((state) => withTile(state, type, change));
+    } catch {
+      // Storage is off, full or holds a value this build cannot read.
+    }
+  }
+
+  /** Where `tile` is drawn in the stage, which the stage's hold may have moved from the place last saved. */
+  function drawnPlace(stage: HTMLElement, tile: HTMLElement) {
+    const stageRect = stage.getBoundingClientRect();
+    const tileRect = tile.getBoundingClientRect();
+    return { left: tileRect.left - stageRect.left, top: tileRect.top - stageRect.top };
+  }
+
+  function placeFloatingPane(paneId: string, type: string, place: { readonly left: number; readonly top: number }) {
+    setFloatingPositions((previous) => ({ ...previous, [paneId]: place }));
+    rememberTile(type, { place });
+  }
+
+  function foldFloatingPane(type: string, collapsed: boolean) {
+    setFoldedTypes((previous) => ({ ...previous, [type]: collapsed }));
+    rememberTile(type, { collapsed });
+  }
+
+  function moveFloatingPane(paneId: string, type: string, left: number, top: number) {
     const stage = stageRef.current;
     const tile = stage?.querySelector<HTMLElement>(`[data-visual-instance="${paneId}"]`);
     if (!stage || !tile) return;
     const maxLeft = Math.max(0, stage.clientWidth - tile.offsetWidth);
     const maxTop = Math.max(0, stage.clientHeight - tile.offsetHeight);
-    setFloatingPositions((previous) => ({
-      ...previous,
-      [paneId]: {
-        left: Math.min(maxLeft, Math.max(0, left)),
-        top: Math.min(maxTop, Math.max(0, top)),
-      },
-    }));
+    placeFloatingPane(paneId, type, {
+      left: Math.min(maxLeft, Math.max(0, left)),
+      top: Math.min(maxTop, Math.max(0, top)),
+    });
   }
 
-  function startFloatingDrag(event: PointerEvent<HTMLButtonElement>, paneId: string) {
+  /**
+   * A press on a floating tile's top bar or its move handle. Pressing a
+   * control on the bar (a button, the place menu) starts nothing, and nor
+   * does a press on a phone, where the tile is a plain header in the flow.
+   */
+  function startFloatingDrag(event: PointerEvent<HTMLElement>, paneId: string, type: string, collapsed: boolean) {
     const stage = stageRef.current;
     const tile = event.currentTarget.closest<HTMLElement>(".visual-tile");
-    if (!stage || !tile) return;
-    const stageRect = stage.getBoundingClientRect();
-    const tileRect = tile.getBoundingClientRect();
-    const position = floatingPositions[paneId] ?? {
-      left: tileRect.left - stageRect.left,
-      top: tileRect.top - stageRect.top,
-    };
+    const target = event.target;
+    if (!stage || !tile || !(target instanceof Element)) return;
+    // A drag whose tile has left the page never gets its release; it is not a drag in progress.
+    if (dragRef.current?.tile.isConnected) return;
+    if (event.button !== 0 || window.innerWidth <= NARROW_VIEWPORT) return;
+    const byHandle = target.closest(".visual-tile-drag-handle") !== null;
+    if (!byHandle && target.closest("button, select, input, textarea, a") !== null) return;
+    const position = drawnPlace(stage, tile);
     // The bounds are measured once: read on every move, they lay the page out
     // again each time.
     dragRef.current = {
-      id: paneId, pointerId: event.pointerId, x: event.clientX, y: event.clientY,
-      left: position.left, top: position.top, tile,
-      maxLeft: Math.max(0, stage.clientWidth - tile.offsetWidth),
-      maxTop: Math.max(0, stage.clientHeight - tile.offsetHeight),
-      dx: 0, dy: 0,
+      id: paneId, type, pointerId: event.pointerId, tile, byHandle, collapsed,
+      gesture: startGesture({
+        x: event.clientX, y: event.clientY, left: position.left, top: position.top,
+        maxLeft: Math.max(0, stage.clientWidth - tile.offsetWidth),
+        maxTop: Math.max(0, stage.clientHeight - tile.offsetHeight),
+      }),
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
+    tile.style.willChange = "transform";
+    target.setPointerCapture(event.pointerId);
   }
 
   /**
@@ -324,25 +406,43 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
    * every visual in it, Chat's whole conversation included (6 ms a move with
    * 120 lines, against 3.3 ms so). The canvas takes the place once, on release.
    */
-  function updateFloatingDrag(event: PointerEvent<HTMLButtonElement>) {
+  function updateFloatingDrag(event: PointerEvent<HTMLElement>) {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    drag.dx = Math.min(drag.maxLeft, Math.max(0, drag.left + event.clientX - drag.x)) - drag.left;
-    drag.dy = Math.min(drag.maxTop, Math.max(0, drag.top + event.clientY - drag.y)) - drag.top;
-    drag.tile.style.transform = `translate(${drag.dx}px, ${drag.dy}px)`;
+    moveGesture(drag.gesture, event.clientX, event.clientY);
+    drag.tile.style.transform = `translate(${drag.gesture.dx}px, ${drag.gesture.dy}px)`;
   }
 
-  function stopFloatingDrag(event: PointerEvent<HTMLButtonElement>) {
+  /**
+   * The release of a press: a drag leaves the tile where the pointer took it;
+   * a press that stayed within the click slop folds or unfolds a tile pressed
+   * on its bar, and does nothing on the handle.
+   */
+  function stopFloatingDrag(event: PointerEvent<HTMLElement>) {
     const drag = dragRef.current;
     if (drag?.pointerId !== event.pointerId) return;
     dragRef.current = null;
-    const place = { left: drag.left + drag.dx, top: drag.top + drag.dy };
+    drag.tile.style.willChange = "";
+    const outcome = finishGesture(drag.gesture);
+    if (outcome.kind === "click") {
+      drag.tile.style.transform = "";
+      if (!drag.byHandle) foldFloatingPane(drag.type, !drag.collapsed);
+      return;
+    }
     // Placed before the transform goes, so no frame shows the tile back where it started.
-    Object.assign(drag.tile.style, { left: `${place.left}px`, top: `${place.top}px`, right: "auto", transform: "" });
-    setFloatingPositions((previous) => ({ ...previous, [drag.id]: place }));
+    Object.assign(drag.tile.style, { left: `${outcome.place.left}px`, top: `${outcome.place.top}px`, right: "auto", transform: "" });
+    placeFloatingPane(drag.id, drag.type, outcome.place);
   }
 
-  function moveWithKeyboard(event: KeyboardEvent<HTMLButtonElement>, paneId: string) {
+  /** The browser took the pointer (a touch became a scroll), or the captured bar left the page: the tile goes back. */
+  function cancelFloatingDrag(event: PointerEvent<HTMLElement>) {
+    const drag = dragRef.current;
+    if (drag?.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    Object.assign(drag.tile.style, { transform: "", willChange: "" });
+  }
+
+  function moveWithKeyboard(event: KeyboardEvent<HTMLButtonElement>, paneId: string, type: string) {
     const directions = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] } as const;
     const direction = directions[event.key as keyof typeof directions];
     if (!direction) return;
@@ -350,11 +450,9 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     const stage = stageRef.current;
     const tile = event.currentTarget.closest<HTMLElement>(".visual-tile");
     if (!stage || !tile) return;
-    const rect = tile.getBoundingClientRect();
-    const stageRect = stage.getBoundingClientRect();
-    const position = floatingPositions[paneId] ?? { left: rect.left - stageRect.left, top: rect.top - stageRect.top };
+    const position = drawnPlace(stage, tile);
     const step = event.shiftKey ? 48 : 16;
-    moveFloatingPane(paneId, position.left + direction[0] * step, position.top + direction[1] * step);
+    moveFloatingPane(paneId, type, position.left + direction[0] * step, position.top + direction[1] * step);
   }
 
   function operate(operation: WorkspaceOperation) {
@@ -390,32 +488,44 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     }
   }
 
-  const renderTile = (pane: (typeof panes)[number], index: number) => (
+  const renderTile = (pane: (typeof panes)[number], index: number) => {
+    const floating = pane.placement === "floating";
+    const title = catalog.data?.visuals.find((visual) => visual.type === pane.type)?.title ?? pane.type;
+    const remembered = rememberedTile(browser, pane.type);
+    const collapsed = floating && (foldedTypes[pane.type] ?? remembered.collapsed);
+    const at = floatingPositions[pane.id] ?? remembered.place ?? pane.floating_rect ?? null;
+    return (
     // Browse is keyed by its type, which a canvas has once: its id is the
     // type until the server's canvas arrives, then a UUID, and a new key
     // would remount the view inside it, which reads its data again.
-    <div className={`visual-tile visual-tile-${pane.placement ?? "main"}${pane.type === "trax.browse" ? " visual-tile-browse" : ""}${workspace?.focused_instance === pane.id ? " visual-tile-focused" : ""}${expandedMobileFloat === pane.id ? " visual-tile-mobile-expanded" : ""}`}
+    <div className={`visual-tile visual-tile-${pane.placement ?? "main"}${pane.type === "trax.browse" ? " visual-tile-browse" : ""}${workspace?.focused_instance === pane.id ? " visual-tile-focused" : ""}${expandedMobileFloat === pane.id ? " visual-tile-mobile-expanded" : ""}${collapsed ? " visual-tile-collapsed" : ""}`}
       key={pane.type === "trax.browse" ? pane.type : pane.id}
       data-visual-instance={pane.id}
-      style={pane.placement === "floating" ? {
-        top: `${floatingPositions[pane.id]?.top ?? pane.floating_rect?.top ?? 54 + index * 24}px`,
-        ...(floatingPositions[pane.id] || pane.floating_rect ? {
-          left: `${floatingPositions[pane.id]?.left ?? pane.floating_rect?.left ?? 0}px`, right: "auto",
-        } : {}),
+      style={floating ? {
+        top: `${at?.top ?? 54 + index * 24}px`,
+        ...(at ? { left: `${at.left}px`, right: "auto" } : {}),
         ...(pane.floating_rect ? {
           width: `${pane.floating_rect.width}px`, height: `${pane.floating_rect.height}px`,
         } : {}),
         zIndex: 10 + index,
       } : undefined}>
-      {workspace && (panes.length > 1 || pane.placement === "floating") && <div className="visual-tile-toolbar">
-        {pane.placement === "floating" && <button className="visual-tile-drag-handle" type="button"
-          aria-label={`Move ${catalog.data?.visuals.find((visual) => visual.type === pane.type)?.title ?? pane.type}`}
+      {workspace && (panes.length > 1 || floating) && <div
+        className={`visual-tile-toolbar${floating ? " visual-tile-toolbar-draggable" : ""}`}
+        {...(floating ? {
+          onPointerDown: (event: PointerEvent<HTMLElement>) => startFloatingDrag(event, pane.id, pane.type, collapsed),
+          onPointerMove: updateFloatingDrag, onPointerUp: stopFloatingDrag, onPointerCancel: cancelFloatingDrag,
+          onLostPointerCapture: cancelFloatingDrag,
+        } : {})}>
+        {floating && <button className="visual-tile-drag-handle" type="button"
+          aria-label={`Move ${title}`}
           title="Drag to move; use arrow keys to move"
-          onPointerDown={(event) => startFloatingDrag(event, pane.id)}
-          onPointerMove={updateFloatingDrag} onPointerUp={stopFloatingDrag} onPointerCancel={stopFloatingDrag}
-          onKeyDown={(event) => moveWithKeyboard(event, pane.id)}>⠿</button>}
-        <span>{catalog.data?.visuals.find((visual) => visual.type === pane.type)?.title ?? pane.type}</span>
-        {pane.placement === "floating" && <button className="visual-mobile-tab-toggle" type="button"
+          onKeyDown={(event) => moveWithKeyboard(event, pane.id, pane.type)}>⠿</button>}
+        <span>{title}</span>
+        {floating && <button className="visual-tile-fold" type="button" aria-expanded={!collapsed}
+          aria-label={`${collapsed ? "Expand" : "Collapse"} ${title}`}
+          title={collapsed ? "Show the whole tile" : "Fold the tile to its bar"}
+          onClick={() => foldFloatingPane(pane.type, !collapsed)}>{collapsed ? "▸" : "▾"}</button>}
+        {floating && <button className="visual-mobile-tab-toggle" type="button"
           aria-expanded={expandedMobileFloat === pane.id}
           onClick={() => setExpandedMobileFloat(expandedMobileFloat === pane.id ? null : pane.id)}>
           {expandedMobileFloat === pane.id ? "Collapse" : "Expand"}
@@ -438,7 +548,8 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
           : null}
       </VisualPane>
     </div>
-  );
+    );
+  };
 
   return (
     <WorkspaceActionsProvider value={workspace ? {
@@ -577,23 +688,24 @@ function errorText(error: unknown): string {
 }
 
 /**
- * A floating visual being dragged: the pointer's start, the tile's place then
- * and how far it may go, and how far it has moved (`dx`, `dy`), applied as a
- * transform until release.
+ * A floating visual being pressed on: the tile, and the gesture (the pointer's
+ * start, the tile's place then, how far it may go, and how far it has moved),
+ * applied as a transform until release.
  */
 type FloatingDrag = {
   readonly id: string;
+  readonly type: string;
   readonly pointerId: number;
-  readonly x: number;
-  readonly y: number;
-  readonly left: number;
-  readonly top: number;
   readonly tile: HTMLElement;
-  readonly maxLeft: number;
-  readonly maxTop: number;
-  dx: number;
-  dy: number;
+  /** Pressed on the move handle, which never folds the tile. */
+  readonly byHandle: boolean;
+  /** Whether the tile was folded when pressed. */
+  readonly collapsed: boolean;
+  readonly gesture: Gesture;
 };
+
+/** The canvas stacks its tiles in one column at this width and below (see canvas.css), floating ones included. */
+const NARROW_VIEWPORT = 900;
 
 /**
  * The Configure visuals panel: opened on demand by the toolbar's Configure,
