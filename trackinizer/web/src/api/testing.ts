@@ -49,3 +49,14 @@ export function stubFetch(
   });
   return sent;
 }
+
+/**
+ * The profile fields of a user who has agreed to the rules as they stand, for
+ * tests that are not about the agreement.
+ */
+export const AGREED = {
+  acknowledged_at: "2026-10-01T09:00:00+00:00",
+  acknowledged_rules_version: "v1",
+  rules_issue_id: null,
+  rules_version: "v1",
+};

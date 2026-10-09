@@ -4,6 +4,7 @@ import { bootQueries } from "../app/boot";
 import { LiveHub } from "./hub";
 import type { Batch, Later } from "./serial";
 import { testClient } from "./testing";
+import { AGREED } from "../api/testing";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -187,7 +188,7 @@ test("live updates count as paused once the stream has been down for 10 s, and r
 
 test("a refused stream refetches the profile, whose 401 would end the session", async () => {
   const { client, hub } = hubWithQuery();
-  const profile = vi.fn(async () => ({ user_id: "u", email: "a@b", name: "A", role: "viewer", last_login: null, visual_workspace_enabled: false }));
+  const profile = vi.fn(async () => ({ user_id: "u", email: "a@b", name: "A", role: "viewer", last_login: null, visual_workspace_enabled: false, ...AGREED }));
   client.setQueryData(bootQueries.profile.queryKey, await profile());
   new QueryObserver(client, { ...bootQueries.profile, queryFn: profile, staleTime: Infinity }).subscribe(() => {});
   hub.refuse();

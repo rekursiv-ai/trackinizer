@@ -1,0 +1,19 @@
+{
+  "request": {
+    "body": {
+      "locked": false
+    },
+    "method": "PUT",
+    "path": "/api/admin/inquiries/00000000-0000-4000-8000-000000000001/lock"
+  },
+  "response": {
+    "body": {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "locked": false
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

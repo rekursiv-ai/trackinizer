@@ -32,6 +32,7 @@ from trackinizer.server.api._routes_shared import (
     parse_fields,
     parse_seq_ranges,
 )
+from trackinizer.server.api.locks import require_unlocked
 from trackinizer.server.api.session_access import require_chat_opener_of
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import iter_sse_events
@@ -470,6 +471,7 @@ async def delete_inquiry_route(
       result: Mapping with "id" (inquiry UUID) and "change_id" (purge operation).
 
     """
+    await require_unlocked(request, identity, [target_id], include_peers=True)
     await require_chat_opener_of(request, identity, target_id)
     store = get_store(request)
     change_id = await store.purge(

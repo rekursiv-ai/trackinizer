@@ -1,8 +1,15 @@
 // The suite's `test` and `expect`. Every spec imports them from here, not from
 // @playwright/test, so every test runs under the error guard below.
-import { type Page, test as base, expect } from "@playwright/test";
+import { type APIRequestContext, type Page, test as base, expect } from "@playwright/test";
 
 export { expect };
+
+/** Agree to the rules as they stand, as the page does: naming the version the profile shows. */
+export async function agreeToRules(request: APIRequestContext): Promise<void> {
+  const profile = (await (await request.get("/api/me/profile")).json()) as { rules_version: string };
+  const put = await request.put("/api/me/acknowledge", { data: { rules_version: profile.rules_version } });
+  if (!put.ok()) throw new Error(`Could not agree to the rules: ${put.status()} ${await put.text()}`);
+}
 
 /**
  * `test`, failing a test whose pages logged a `console.error` or threw an error
@@ -16,7 +23,13 @@ export { expect };
  * comment saying why. The guard watches the test's browser context, so a second
  * page it opens counts too; a context the test makes itself does not.
  */
-export const test = base.extend<{ allowErrors: (pattern: RegExp) => void; canvas: boolean; canvasPreference: undefined }>({
+export const test = base.extend<{
+  allowErrors: (pattern: RegExp) => void;
+  canvas: boolean;
+  canvasPreference: undefined;
+  welcome: boolean;
+  welcomeAgreement: undefined;
+}>({
   // Whether the suite's one user has the agent canvas on for the test. It is on
   // by default for every user, and a spec of the default path (stream.spec,
   // session-chat.spec, the canvas specs) asks for it with `test.use({ canvas: true })`.
@@ -28,6 +41,18 @@ export const test = base.extend<{ allowErrors: (pattern: RegExp) => void; canvas
     async ({ request, canvas }, use) => {
       const put = await request.put("/api/me/visual-workspace", { data: { enabled: canvas } });
       if (!put.ok()) throw new Error(`Could not set the canvas preference: ${put.status()}`);
+      await use(undefined);
+    },
+    { auto: true },
+  ],
+  // Whether the test is about the welcome flow. Every other test starts with the suite's
+  // one user having agreed to the rules in force, as a returning user has, so the flow's
+  // dialog does not stand over the page the test is about. A spec of the flow asks for
+  // `test.use({ welcome: true })`, and makes its user new itself.
+  welcome: [false, { option: true }],
+  welcomeAgreement: [
+    async ({ request, welcome }, use) => {
+      if (!welcome) await agreeToRules(request);
       await use(undefined);
     },
     { auto: true },

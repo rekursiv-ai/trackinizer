@@ -80,7 +80,7 @@ def test_non_nullable_columns_match_schema_metadata() -> None:
     same way the source derives it, so a hardcoded edit that desyncs from
     the specs fails loudly.
     """
-    identity = {"id", "kind", "seq", "created", "modified"}
+    identity = {"id", "kind", "seq", "locked", "created", "modified"}
     expected = set(identity)
     for src in (
         Inquiry,

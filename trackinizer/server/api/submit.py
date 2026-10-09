@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
 
 from trackinizer.server.api._deps import get_store
+from trackinizer.server.api.locks import referenced_ids, require_unlocked
 from trackinizer.server.auth import (
     AuthIdentity,
     assert_account_active,
@@ -95,6 +96,7 @@ async def submit_batch_route(
       body: JSON object with "ids" key mapping to list of minted server IDs.
 
     """
+    await require_unlocked(request, identity, referenced_ids(req))
     store = get_store(request)
     # Resolve each item's account, then validate the DISTINCT set before the
     # all-or-nothing transaction: a single inactive account fails the whole
@@ -161,6 +163,7 @@ async def submit_route(
             status_code=422,
             detail=err.errors(include_context=False),
         ) from err
+    await require_unlocked(request, identity, referenced_ids(req))
     return {"id": str(await _submit_one(get_store(request), req, identity))}
 
 

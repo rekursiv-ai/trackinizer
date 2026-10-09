@@ -292,6 +292,7 @@ def _exercise(rec: _Recorder, *, url: str) -> None:
     graph |= _add_evidence(rec, graph, url=url)
     _write_fields(rec, graph)
     _write_edges(rec, graph)
+    _lock(rec, graph)
     _read_lists(rec)
     _read_rows(rec, graph)
     _account(rec)
@@ -710,8 +711,22 @@ def _read_rows(rec: _Recorder, graph: Mapping[str, str]) -> None:
         _ = rec.call(name, "GET", path, query=query)
 
 
+def _lock(rec: _Recorder, graph: dict[str, str]) -> None:
+    """Lock the root and unlock it, so the later reads show it unlocked."""
+    path = f"/api/admin/inquiries/{graph['root']}/lock"
+    _ = rec.call("admin/setInquiryLock", "PUT", path, body={"locked": True})
+    _ = rec.call("admin/setInquiryLock.clear", "PUT", path, body={"locked": False})
+
+
 def _account(rec: _Recorder) -> None:
-    """Make, list, change and revoke a token, then sign out."""
+    """Agree to the rules, make, list, change and revoke a token, then sign out."""
+    shown = from_plain(rec.setup("GET", "/api/me/profile"), dict[str, object])
+    _ = rec.call(
+        "me/acknowledge",
+        "PUT",
+        "/api/me/acknowledge",
+        body={"rules_version": from_plain(shown["rules_version"], str)},
+    )
     token = _id(
         rec.call(
             "me/createToken",

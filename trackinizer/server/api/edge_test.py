@@ -13,6 +13,7 @@ import asyncpg
 import pytest
 
 from trackinizer.conftest import (
+    FakeEngine,
     make_store,
     new_uuid,
     queue_field_rows,
@@ -20,8 +21,17 @@ from trackinizer.conftest import (
 )
 from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api.app import app
-from trackinizer.server.api.edge import _set_edge_annotation
+from trackinizer.server.api.edge import _edge_response, _set_edge_annotation
 from trackinizer.types.errors import ConflictError
+
+
+def test_edge_response_names_the_change_and_whether_the_edge_was_made() -> None:
+    change = uuid.uuid4()
+    assert _edge_response(None) == {"change_id": None, "created": False}
+    assert _edge_response(change, created=True) == {
+        "change_id": str(change),
+        "created": True,
+    }
 
 
 def test_set_edge_annotation_rejects_unknown_field() -> None:
@@ -54,7 +64,6 @@ if TYPE_CHECKING:
 
     from fastapi.testclient import TestClient
 
-    from trackinizer.conftest import FakeEngine
     from trackinizer.server.store.core import Store
     from trackinizer.types.edges import Edge
     from trackinizer.types.inquiries import Inquiry, Issue
@@ -92,8 +101,16 @@ async def _non_session_authz(target_id: uuid.UUID) -> tuple[str, uuid.UUID | Non
     return ("Issue", None)
 
 
-class _PartialEdgeStore:
+class _StubEdgeStore:
+    """Base of the partial stores: it holds the engine the lock probe reads."""
+
     def __init__(self) -> None:
+        self.engine = FakeEngine()
+
+
+class _PartialEdgeStore(_StubEdgeStore):
+    def __init__(self) -> None:
+        super().__init__()
         self.calls = 0
 
     async def session_authz(
@@ -135,7 +152,7 @@ class _PartialEdgeStore:
         return uuid.uuid4(), True
 
 
-class _ConflictEdgeStore:
+class _ConflictEdgeStore(_StubEdgeStore):
     """Edge store whose ``add_edge`` raises a client-safe ConflictError.
 
     Edge creation is an upsert, so a duplicate no longer errors; but a cycle /
@@ -168,7 +185,7 @@ class _ConflictEdgeStore:
         raise ConflictError(f"{edge_kind} edge would close a cycle")
 
 
-class _LeakyEdgeStore:
+class _LeakyEdgeStore(_StubEdgeStore):
     """Edge store whose ``add_edge`` raises a raw asyncpg violation.
 
     The DETAIL carries internal constraint / column names that must never

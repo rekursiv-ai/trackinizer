@@ -849,6 +849,7 @@
           }
         ]
       },
+      "locked": false,
       "self": {
         "account": "no-auth@localhost",
         "created": "2026-01-01T00:00:00.000000+00:00",

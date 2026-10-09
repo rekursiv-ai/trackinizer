@@ -1,0 +1,19 @@
+{
+  "request": {
+    "body": {
+      "rules_version": "2026-01-01T00:00:00.000000+00:00"
+    },
+    "method": "PUT",
+    "path": "/api/me/acknowledge"
+  },
+  "response": {
+    "body": {
+      "acknowledged_at": "2026-01-01T00:00:00.000000+00:00",
+      "acknowledged_rules_version": "2026-01-01T00:00:00.000000+00:00"
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

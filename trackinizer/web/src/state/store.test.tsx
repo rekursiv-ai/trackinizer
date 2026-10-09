@@ -5,9 +5,10 @@ import { ProfileContext } from "../app/boot";
 import { meFilter, meNames, mePattern, useMe } from "./me";
 import { storageKey, useBrowserState } from "./store";
 import { EMPTY_STATE } from "./value";
+import { AGREED } from "../api/testing";
 
 const KEY = `trackinizer.v2.${location.origin}.ada@example.com`;
-const PROFILE = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false };
+const PROFILE = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false, ...AGREED };
 
 function wrapper({ children }: { children: ReactNode }) {
   return <ProfileContext value={PROFILE}>{children}</ProfileContext>;

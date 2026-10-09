@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from trackinizer.lib.codec import from_plain
 from trackinizer.server.api._deps import get_store
+from trackinizer.server.api.locks import require_unlocked
 from trackinizer.server.api.session_access import require_chat_opener_of
 from trackinizer.server.auth import (
     AuthIdentity,
@@ -88,6 +89,7 @@ def _make_put(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON]]
         request: Request,
         identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     ) -> MutableJSON:
+        await require_unlocked(request, identity, [target_id])
         await require_chat_opener_of(request, identity, target_id)
         store = get_store(request)
         if body.mode == "cas":
@@ -124,6 +126,7 @@ def _make_patch(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON
         request: Request,
         identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     ) -> MutableJSON:
+        await require_unlocked(request, identity, [target_id])
         await require_chat_opener_of(request, identity, target_id)
         store = get_store(request)
         change_id = await _run_patch(route, target_id, body, store, identity)
@@ -144,6 +147,7 @@ def _make_delete(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSO
         request: Request,
         identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     ) -> MutableJSON:
+        await require_unlocked(request, identity, [target_id])
         await require_chat_opener_of(request, identity, target_id)
         store = get_store(request)
         change_id = await _clear_value(route, target_id, body, store, identity)

@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
-import { type Sent, stubFetch } from "../api/testing";
+import { AGREED, type Sent, stubFetch } from "../api/testing";
 import { openEarlyStream } from "../live/earlyStream";
 import { FakeEventSource } from "../live/testing";
 import { DetailView, GraphView } from "../router/views";
@@ -13,7 +13,7 @@ vi.mock("../graph/renderer", async () => ({ forceGraphRenderer: new (await impor
 
 const ID = "00000000-0000-4000-8000-000000000007";
 const BOOT = ["/api/me/profile", "/api/meta/edges", "/api/meta/enums", "/api/meta/fields"];
-const PROFILE = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false };
+const PROFILE = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false, ...AGREED };
 
 const BODIES: { [path: string]: unknown } = {
   "/api/meta/enums": { inquiry_kind_all: ["Issue", "Paper", "Belief"], status: ["active", "complete"] },

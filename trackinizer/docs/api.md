@@ -238,6 +238,7 @@ and the page puts it back on `next`, so signing in returns to the same view.
 ```
 GET  /api/me/profile
 PUT  /api/me/visual-workspace
+PUT  /api/me/acknowledge
 GET  /api/me/tokens
 POST /api/me/tokens
 POST /api/me/tokens/<uuid>/revoke
@@ -247,6 +248,7 @@ PUT  /api/me/tokens/<uuid>/role
 ### 1.18 Admin users
 
 ```
+PUT    /api/admin/inquiries/<uuid>/lock
 GET    /api/admin/users
 PUT    /api/admin/users/<uuid>/role
 POST   /api/admin/users/<uuid>/disable
@@ -531,6 +533,31 @@ the catalog descriptor; an out-of-range value returns 422, a missing record
 an interactive browser session. API keys cannot change that choice.
 `GET /api/me/profile` includes `visual_workspace_enabled`; it defaults to true. It
 also names `api_key_id`, the key the request used, or null for a browser session.
+
+`PUT /api/me/acknowledge` with `{"rules_version": "<version shown>"}` records that
+the signed-in user agreed to the alpha rules, from an interactive browser session;
+API keys are refused with 403. The rules are Issue#1 and their version is when its
+title or description last changed (its creation until then), so editing the words
+makes every recorded agreement stale and a cascade or cost roll-up under it does not.
+A version that is no longer the current one answers 409: the user read other rules.
+`GET /api/me/profile` returns
+`acknowledged_at` and `acknowledged_rules_version` (null before the user agrees), the
+current `rules_version` (`none` where there is no Issue#1) and `rules_issue_id`.
+
+`PUT /api/admin/inquiries/<uuid>/lock` with `{"locked": true | false}` is admin
+only. While an inquiry is locked, only an admin may set, patch or clear its
+fields, add or remove its edges (an edge write is refused when either end is
+locked), name it in a create (a parent, a prerequisite, a citation, a batch edge),
+or purge it or a row linked to it, or publish an Artifact for it or as a revision of
+a locked Artifact (`POST /api/artifacts/content`); any other writer gets 403 naming
+the row. The lock covers fields, edges and delete only: a session's lifecycle
+(`/api/sessions/<id>/end`), its metrics and its records are not edits of the row and
+stay open to the session's owner. `POST /api/inquiries/next_issue` skips a locked
+Issue. Locking records no change and leaves `modified` alone; `inquiry_lock_log`
+holds who set or cleared each lock and when. Migration `schema.038.sql` locks Issue#1
+so that no writer rewrites the rules; an admin unlocks it to edit them.
+`GET /api/web/get/<uuid>` carries `locked` beside
+`self`.
 
 `POST /api/workspaces` creates or reopens the signed-in user's default canvas,
 which starts with `trax.browse` in the main pane and `trax.chat` at the side.

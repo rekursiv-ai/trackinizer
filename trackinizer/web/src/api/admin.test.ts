@@ -8,6 +8,7 @@ import {
   listUsers,
   removeAllowlistEntry,
   setAllowlistRole,
+  setInquiryLock,
   setUserRole,
 } from "./admin";
 import { stubFetch } from "./testing";
@@ -81,3 +82,11 @@ export async function rejected(): Promise<void> {
   // @ts-expect-error No unknown keys: the server would drop them without a word.
   await addAllowlistEntry({ email_or_pattern: "a@b.c", role: "viewer", note: "x" });
 }
+
+test("a lock is a PUT of the admin route with the flag, and no idempotency key", async () => {
+  const sent = stubFetch((request) => Response.json({ id: USER, locked: request.url.includes("lock") }));
+  expect(await setInquiryLock(USER, true)).toEqual({ id: USER, locked: true });
+  expect(sent).toEqual([
+    { method: "PUT", path: `/api/admin/inquiries/${USER}/lock`, query: "", headers: JSON_BODY, body: { locked: true } },
+  ]);
+});

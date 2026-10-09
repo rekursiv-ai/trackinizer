@@ -92,6 +92,12 @@ function combineBoot([enums, fieldOwners, edges, profile]: [
 export const MetaContext = createContext<Meta | null>(null);
 export const ProfileContext = createContext<Profile | null>(null);
 
+/**
+ * Whether the page shows a locked inquiry that the signed-in user may not change
+ * (only an admin may), so its write controls do not show.
+ */
+export const LockedContext = createContext(false);
+
 /** The server's vocabulary. */
 export function useMeta(): Meta {
   const meta = useContext(MetaContext);
@@ -107,11 +113,13 @@ export function useProfile(): Profile {
 }
 
 /**
- * How write controls show: `hidden` for a viewer, `disabled` while offline,
- * `enabled` otherwise. The server refuses a viewer's writes with 403 anyway.
+ * How write controls show: `hidden` for a viewer, and on a locked inquiry for
+ * anyone but an admin, `disabled` while offline, `enabled` otherwise. The server
+ * refuses a viewer's writes, and a locked row's, with 403 anyway.
  */
 export function useWriteMode(): "hidden" | "disabled" | "enabled" {
   const online = useOnline();
-  if (useProfile().role === "viewer") return "hidden";
+  const locked = useContext(LockedContext);
+  if (useProfile().role === "viewer" || locked) return "hidden";
   return online ? "enabled" : "disabled";
 }

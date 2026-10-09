@@ -396,6 +396,7 @@
         }
       ],
       "edges": {},
+      "locked": false,
       "self": {
         "account": "no-auth@localhost",
         "confidence": 0.7,

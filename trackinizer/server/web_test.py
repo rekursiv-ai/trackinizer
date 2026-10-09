@@ -15,6 +15,8 @@ import os
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.routing import APIRoute
+from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 
 
@@ -145,6 +147,7 @@ def _inquiry_row(**overrides: object) -> dict[str, object]:
         "subscribers": ["bob"],
         "marginal_cost_agent_usd": 1.5,
         "marginal_cost_resource_usd": 2.5,
+        "locked": False,
         "created": now,
         "modified": now,
         "belief_judgement": None,
@@ -181,6 +184,7 @@ def _null_row(kind: Inquiry.InquiryKind) -> dict[str, object]:
         "title": "title",
         "marginal_cost_agent_usd": 0.0,
         "marginal_cost_resource_usd": 0.0,
+        "locked": False,
         "created": now,
         "modified": now,
     }
@@ -894,6 +898,10 @@ class TestRoutes:
         response = client.get("/static/report.html")
         assert response.status_code == 200
         assert response.text == "<html>report</html>"
+        # The mount is named, so a template can ask for a static file by name.
+        assert (
+            str(app.url_path_for("static", path="report.html")) == "/static/report.html"
+        )
 
     def test_attach_is_idempotent(self, tmp_path: Path) -> None:
         # ``server.py`` calls ``attach`` on the module-global app; a second
@@ -1376,6 +1384,55 @@ def _build_app_dir_app(tmp_path: Path, app_dir: Path) -> FastAPI:
     return app
 
 
+class TestAttachedRoutes:
+    def test_every_route_is_get_only_and_off_the_schema(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # The UI's pages and redirects are not API; a stray method or schema entry
+        # would publish them as endpoints.
+        assets = tmp_path / "pages"
+        assets.mkdir()
+        (assets / "login.html").write_text("LOGIN")
+        app = FastAPI()
+        web.attach(app, assets_dir=assets, app_dir=tmp_path / "missing")
+        routes = {
+            r.path: r
+            for r in app.routes
+            if isinstance(r, APIRoute) and not r.path.startswith("/api/web")
+        }
+        assert set(routes) == {
+            "/app/{path:path}",
+            "/",
+            "/me",
+            "/admin",
+            "/graph",
+            "/console",
+            "/auth/login_page",
+        }
+        for route in routes.values():
+            assert route.methods == {"GET"}
+            assert route.include_in_schema is False
+
+    def test_app_files_skip_the_directory_check(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Starlette ignores a falsy ``check_dir`` of any spelling, so only the
+        # argument itself shows the server may start before a build exists.
+        seen: list[bool] = []
+
+        class Spy(StaticFiles):
+            def __init__(self, *, directory: Path, check_dir: bool) -> None:
+                seen.append(check_dir)
+                super().__init__(directory=directory, check_dir=check_dir)
+
+        monkeypatch.setattr(web, "StaticFiles", Spy)
+        web._app_files(tmp_path / "missing")
+        assert seen == [False]
+
+
 class TestAppDir:
     def test_signed_out_page_redirects_to_login_with_next(
         self,
@@ -1392,6 +1449,18 @@ class TestAppDir:
             location = urlparse(r.headers["location"])
             assert location.path == "/auth/login_page"
             assert parse_qs(location.query)["next"] == [path]
+
+    def test_the_app_and_its_redirects_stay_out_of_the_api_schema(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
+        schema = from_plain(app.openapi(), dict[str, object])
+        paths = set(from_plain(schema["paths"], dict[str, object]))
+        assert paths.isdisjoint(
+            {"/", "/me", "/admin", "/graph", "/console", "/app/{path}"},
+        )
+        assert "/api/web/get/{target_id}" in paths
 
     def test_signed_out_asset_is_401(self, tmp_path: Path) -> None:
         # A script or stylesheet cannot follow a redirect to the login page,
@@ -1829,6 +1898,47 @@ async def test_web_get_breaks_change_time_ties_by_id_on_a_real_engine(
     ]
     assert len(change_ids) == 5
     assert change_ids == sorted(change_ids, reverse=True)
+
+
+def test_graph_node_keeps_an_empty_title_empty_and_a_belief_verdict() -> None:
+    row = {
+        **_inquiry_row(title=None),
+        "belief_judgement": "proven",
+        "belief_confidence": 0.5,
+    }
+    node = web._graph_node(cast("asyncpg.Record", row))
+    assert node["title"] == ""
+    assert (node["judgement"], node["confidence"]) == ("proven", 0.5)
+    plain = web._graph_node(
+        cast(
+            "asyncpg.Record",
+            {**_inquiry_row(), "belief_judgement": None, "belief_confidence": None},
+        ),
+    )
+    assert plain["title"] == "title"
+    assert "judgement" not in plain
+    assert "confidence" not in plain
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_web_get_reports_whether_the_row_is_locked(
+    pglite_store: Store,
+) -> None:
+    """The detail view carries ``locked`` beside ``self``, true only once set."""
+    target_id = await pglite_store.submit_issue(
+        SubmitIssue(account="alice@example.com", title="rules"),
+    )
+    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    before = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
+    async with pglite_store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE inquiries SET locked = TRUE WHERE id = $1",
+            target_id,
+        )
+    after = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
+
+    assert (before["locked"], after["locked"]) == (False, True)
 
 
 @pytest.mark.db_pglite

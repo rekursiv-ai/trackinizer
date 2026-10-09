@@ -217,11 +217,13 @@ class TestRoutes:
             engine.conn,
             {"experiment_codechanges": [], "kind": "Experiment"},
         )
+        # The lock probe fetches first and finds no locked row. Then
         # ``add_codechange`` validates the target via lookup_kinds
         # (one fetch). After it, the emit_change cascade re-walks
         # ``edges`` -- side_effect lets the validator return the kind
         # row first, then the cascade walk returns no edges.
         engine.conn.fetch.side_effect = [
+            [],
             [{"id": codechange, "kind": "CodeChange"}],
             [],
         ]

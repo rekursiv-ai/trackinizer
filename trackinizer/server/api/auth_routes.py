@@ -9,13 +9,14 @@ caller (or already revoked) return 404, never a hint that they exist.
 
 from __future__ import annotations
 
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from trackinizer.lib.codec import from_plain
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api._routes_shared import (
     RoleLiteral,
@@ -35,10 +36,16 @@ from trackinizer.server.auth import (
 from trackinizer.wire.json_types import MutableJSON
 
 
+if TYPE_CHECKING:
+    from trackinizer.lib.postgres import Conn
+
+
 __all__ = [
+    "AcknowledgeResult",
     "CreateTokenBody",
     "TokenRoleChangeBody",
     "VisualWorkspacePreference",
+    "acknowledge_route",
     "create_token_route",
     "list_tokens_route",
     "profile_route",
@@ -81,6 +88,19 @@ class VisualWorkspacePreference(BaseModel):
     enabled: bool
 
 
+class AcknowledgeBody(BaseModel):
+    """The rules version the caller read before they agreed."""
+
+    rules_version: str
+
+
+class AcknowledgeResult(BaseModel):
+    """When the caller agreed to the alpha rules, and to which version of them."""
+
+    acknowledged_at: str
+    acknowledged_rules_version: str
+
+
 @router.get("/api/me/profile")
 async def profile_route(
     request: Request,
@@ -99,22 +119,30 @@ async def profile_route(
       identity: Authenticated user from Bearer token or session cookie.
 
     Returns:
-      result: JSON with user_id, email, name, role, last_login, canvas opt-in, and
-        the id of the API key the request used (``None`` for a browser session).
+      result: JSON with user_id, email, name, role, last_login, canvas opt-in, the
+        id of the API key the request used (``None`` for a browser session), when
+        the caller agreed to the rules and to which version, and the current rules
+        version with the id of the Issue that holds the rules.
 
     """
     engine = engine_of(request)
     async with engine.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT name, last_login, visual_workspace_enabled "
-            "FROM users WHERE id = $1",
+            "SELECT name, last_login, visual_workspace_enabled, acknowledged_at, "
+            "acknowledged_rules_version FROM users WHERE id = $1",
             identity.user_id,
         )
+        rules_issue_id, rules_version = await _rules(conn)
     name = identity.email if row is None else row["name"]
     assert isinstance(name, str)
     last_login = None if row is None else row["last_login"]
     workspace_enabled = False if row is None else row["visual_workspace_enabled"]
     assert isinstance(workspace_enabled, bool)
+    acknowledged_version = (
+        None
+        if row is None
+        else from_plain(row["acknowledged_rules_version"], str, default=None)
+    )
     return {
         "user_id": str(identity.user_id),
         "email": identity.email,
@@ -123,7 +151,62 @@ async def profile_route(
         "last_login": iso_format(last_login),
         "visual_workspace_enabled": workspace_enabled,
         "api_key_id": None if identity.api_key_id is None else str(identity.api_key_id),
+        "acknowledged_at": None if row is None else iso_format(row["acknowledged_at"]),
+        "acknowledged_rules_version": acknowledged_version,
+        "rules_issue_id": None if rules_issue_id is None else str(rules_issue_id),
+        "rules_version": rules_version,
     }
+
+
+@router.put("/api/me/acknowledge", response_model=AcknowledgeResult)
+async def acknowledge_route(
+    body: AcknowledgeBody,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_user)],
+) -> AcknowledgeResult:
+    """Record that the caller agreed to the alpha rules as they stand now.
+
+    The rules are Issue#1; their version is its last change, so editing them makes
+    this agreement stale and the welcome flow asks again.
+
+    Args:
+      body: The rules version the caller was shown; it must still be the current
+        one, so an agreement never covers rules the caller did not read.
+      request: FastAPI request with a database engine.
+      identity: Authenticated account owner.
+
+    Returns:
+      result: When the caller agreed, and the rules version they agreed to.
+
+    Raises:
+      HTTPException: 403 for an API key, 409 when the rules changed since the
+        caller read them.
+
+    """
+    if identity.api_key_id is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Agreeing to the rules requires an interactive session",
+        )
+    async with engine_of(request).acquire() as conn:
+        _, version = await _rules(conn)
+        if body.rules_version != version:
+            raise HTTPException(
+                status_code=409,
+                detail="The rules changed since you read them; read them again",
+            )
+        stamped = await conn.fetchval(
+            "UPDATE users SET acknowledged_at = clock_timestamp(), "
+            "acknowledged_rules_version = $1 WHERE id = $2 RETURNING acknowledged_at",
+            version,
+            identity.user_id,
+        )
+    if stamped is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return AcknowledgeResult(
+        acknowledged_at=iso_format(stamped) or "",
+        acknowledged_rules_version=version,
+    )
 
 
 @router.put(
@@ -334,3 +417,23 @@ def _serialize(row: dict[str, object]) -> MutableJSON:
         "last_used_at": iso_format(row["last_used_at"]),
         "revoked_at": iso_format(row["revoked_at"]),
     }
+
+
+# The version is when the rules' words last changed: the latest title or description
+# edit, else the Issue's creation. It is not ``modified``, which every cascade and cost
+# roll-up under the Issue moves as well, and each move would ask every user to agree
+# again.
+async def _rules(conn: Conn) -> tuple[uuid.UUID | None, str]:
+    """Read the rules Issue's id and version; the version is ``none`` without one."""
+    row = await conn.fetchrow(
+        "SELECT issue.id, coalesce((SELECT max(log.created) FROM change_log AS log "
+        "WHERE log.subject_id = issue.id AND log.kind IN ('title', 'description')), "
+        "issue.created) AS version "
+        "FROM inquiries AS issue WHERE issue.kind = 'Issue' AND issue.seq = 1",
+    )
+    if row is None:
+        return None, "none"
+    return (
+        from_plain(row["id"], uuid.UUID),
+        from_plain(iso_format(row["version"]), str),
+    )

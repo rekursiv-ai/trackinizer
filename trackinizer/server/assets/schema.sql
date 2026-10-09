@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS inquiries (
     favors_authority    DOUBLE PRECISION,
     cited_by_authority  DOUBLE PRECISION,
     issue_authority     DOUBLE PRECISION,
+    -- An admin-set flag, not a ColumnSpec field: while TRUE only an admin may edit the
+    -- row, change its edges or delete it (``api/locks.py``). Setting it records no
+    -- change, so it leaves ``modified`` alone.
+    locked         BOOLEAN NOT NULL DEFAULT FALSE,
     created        TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     modified       TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
 
@@ -584,7 +588,22 @@ CREATE TABLE IF NOT EXISTS users (
     status      TEXT NOT NULL CHECK (status IN ('active', 'disabled')),
     visual_workspace_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    last_login  TIMESTAMPTZ
+    last_login  TIMESTAMPTZ,
+    -- The welcome flow's agreement: when, and to which rules version (see
+    -- ``api/auth_routes.py``).
+    acknowledged_at            TIMESTAMPTZ,
+    acknowledged_rules_version TEXT
+);
+
+-- Who set or cleared an inquiry's ``locked`` flag, and when (``api/locks.py``).
+-- ``inquiry_id`` is FK-free like ``change_log.subject_id``, so a purged row keeps its
+-- history.
+CREATE TABLE IF NOT EXISTS inquiry_lock_log (
+    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    inquiry_id UUID NOT NULL,
+    locked     BOOLEAN NOT NULL,
+    actor      TEXT NOT NULL,
+    created    TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
 CREATE TABLE IF NOT EXISTS api_keys (

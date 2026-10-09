@@ -2,6 +2,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { Profile } from "../api/me";
 import { ProfileContext, useWriteMode } from "./boot";
+import { AGREED } from "../api/testing";
 
 afterEach(() => {
   cleanup();
@@ -13,7 +14,7 @@ function Mode() {
 }
 
 function profile(role: string): Profile {
-  return { user_id: "u", email: "ada@example.com", name: "Ada", role, last_login: null, visual_workspace_enabled: false };
+  return { user_id: "u", email: "ada@example.com", name: "Ada", role, last_login: null, visual_workspace_enabled: false, ...AGREED };
 }
 
 test("a viewer sees no write controls; others see them, disabled while offline", () => {

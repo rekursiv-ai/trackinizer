@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 import { onTestFinished } from "vitest";
 import type { AllowlistEntry, User } from "../api/admin";
 import type { Profile, Role, Token } from "../api/me";
-import { type Sent, stubFetch } from "../api/testing";
+import { AGREED, type Sent, stubFetch } from "../api/testing";
 import type { WorkspaceOperation, WorkspaceState } from "../api/workspaces";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { Session, SessionContext } from "../app/session";
@@ -19,7 +19,7 @@ const META: Meta = { kinds: KINDS, enums: { inquiry_kind_all: KINDS }, fieldOwne
 
 /** A signed-in user of `role`: Ada, whose id is `u-ada`. */
 export function profile(role: Role): Profile {
-  return { user_id: "u-ada", email: "ada@example.com", name: "Ada", role, last_login: "2026-09-26T10:00:00+00:00", visual_workspace_enabled: false };
+  return { user_id: "u-ada", email: "ada@example.com", name: "Ada", role, last_login: "2026-09-26T10:00:00+00:00", visual_workspace_enabled: false, ...AGREED };
 }
 
 /** Render `ui` with the app's providers for `who`; `queryClient` is its cache. */

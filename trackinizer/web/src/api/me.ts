@@ -21,6 +21,20 @@ export type Profile = {
   role: string;
   last_login: string | null;
   visual_workspace_enabled: boolean;
+  /** When the caller agreed to the alpha rules; null before they have. */
+  acknowledged_at: string | null;
+  /** The rules version they agreed to; null before they have. */
+  acknowledged_rules_version: string | null;
+  /** The Issue that holds the rules (`Issue#1`); null where there is none. */
+  rules_issue_id: string | null;
+  /** The rules as they stand: Issue#1's last change, or `none`. Editing them makes an agreement stale. */
+  rules_version: string;
+};
+
+/** What `PUT /api/me/acknowledge` answers: when the caller agreed, and to which rules version. */
+export type Acknowledgement = {
+  readonly acknowledged_at: string;
+  readonly acknowledged_rules_version: string;
 };
 
 /** One of the caller's API tokens, as `GET /api/me/tokens` lists it: never its secret. */
@@ -48,6 +62,19 @@ export async function getProfile({ signal }: CallOptions = {}): Promise<Profile>
     client.GET("/api/me/profile", { signal }),
   );
   return profile as Profile;
+}
+
+/**
+ * Record that the caller agreed to the alpha rules as they stand now.
+ *
+ * A browser session only: an API key is refused with 403. `rulesVersion` is the
+ * version the user was shown; the server answers 409 when the rules have changed
+ * since, so an agreement never covers rules the user did not read.
+ */
+export async function acknowledgeRules(rulesVersion: string): Promise<Acknowledgement> {
+  return send(TIMEOUT_MS.write, undefined, (signal) =>
+    client.PUT("/api/me/acknowledge", { body: { rules_version: rulesVersion }, signal }),
+  );
 }
 
 /** Persist the account's opt-in for the agent-guided canvas. */

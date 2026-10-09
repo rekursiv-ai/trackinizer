@@ -46,6 +46,7 @@ _LEFT_OUT: Final = frozenset(
         "api_keys",
         "applied_migrations",
         "inquiry_embeddings",
+        "inquiry_lock_log",
         "machine_credentials",
         "machine_enrollments",
         "machines",

@@ -35,6 +35,8 @@
 .detail .d-dates b, .detail .d-cost b { font-weight: 500; color: var(--ink-muted); }
 .detail .d-cost { white-space: nowrap; }
 .detail .d-cost::before { content: "·"; margin-right: 6px; }
+.detail .d-lock { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 999px; font-size: 11.5px; color: var(--ink-muted); white-space: nowrap; }
+.detail .d-lock .ic { color: var(--amber); }
 .detail .d-head { display: flex; flex-direction: column; gap: 10px; }
 .detail .d-head.is-highlighted { padding-left: 12px; box-shadow: inset 3px 0 0 var(--amber); border-radius: 2px; }
 .detail .d-title {

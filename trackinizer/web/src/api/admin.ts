@@ -35,6 +35,18 @@ export type AllowlistEntry = {
 /** The body of an allowlist add. */
 export type AllowlistAddBody = components["schemas"]["AllowlistAddBody"];
 
+/**
+ * Lock or unlock an inquiry. While it is locked only an admin edits its fields,
+ * changes its edges or deletes it; anyone else's write answers 403.
+ */
+export async function setInquiryLock(id: string, locked: boolean): Promise<{ id: string; locked: boolean }> {
+  const set = await send(TIMEOUT_MS.write, undefined, (signal) =>
+    client.PUT("/api/admin/inquiries/{target_id}/lock", { params: { path: { target_id: id } }, body: { locked }, signal }),
+  );
+  // Typed as free JSON by the schema; `set_lock_route` in `server/api/locks.py` answers it.
+  return set as { id: string; locked: boolean };
+}
+
 /** Fetch every user, newest first. */
 export async function listUsers({ signal }: CallOptions = {}): Promise<User[]> {
   const listed = await send(TIMEOUT_MS.read, signal, (signal) => client.GET("/api/admin/users", { signal }));

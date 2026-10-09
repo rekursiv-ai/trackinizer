@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { createToken, getProfile, listTokens, revokeToken, setTokenRole, signOut, type Token } from "./me";
+import { acknowledgeRules, createToken, getProfile, listTokens, revokeToken, setTokenRole, signOut, type Token } from "./me";
 import { stubFetch } from "./testing";
 
 const KEY = "5d3c2b1a-0f9e-4d8c-8b7a-6e5d4c3b2a19";
@@ -90,3 +90,18 @@ export async function rejected(): Promise<void> {
   // @ts-expect-error
   await setTokenRole(KEY, "root");
 }
+
+test("agreeing to the rules is a PUT of /api/me/acknowledge naming the version read, answered with when and to what", async () => {
+  const agreed = { acknowledged_at: "2026-10-09T08:00:00+00:00", acknowledged_rules_version: "2026-10-08T12:00:00+00:00" };
+  const sent = stubFetch(() => Response.json(agreed));
+  expect(await acknowledgeRules("2026-10-08T12:00:00+00:00")).toEqual(agreed);
+  expect(sent).toEqual([
+    {
+      method: "PUT",
+      path: "/api/me/acknowledge",
+      query: "",
+      headers: { "content-type": "application/json" },
+      body: { rules_version: "2026-10-08T12:00:00+00:00" },
+    },
+  ]);
+});

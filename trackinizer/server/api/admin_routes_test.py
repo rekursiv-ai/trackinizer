@@ -985,12 +985,18 @@ class TestProfileRoute:
     ) -> None:
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
+        # The profile reads the user, then the rules Issue, of which there is none.
         engine.conn.fetchrow = AsyncMock(
-            return_value={
-                "name": "Alice",
-                "last_login": datetime(2026, 1, 1, tzinfo=UTC),
-                "visual_workspace_enabled": False,
-            },
+            side_effect=[
+                {
+                    "name": "Alice",
+                    "last_login": datetime(2026, 1, 1, tzinfo=UTC),
+                    "visual_workspace_enabled": False,
+                    "acknowledged_at": datetime(2026, 2, 1, tzinfo=UTC),
+                    "acknowledged_rules_version": "v1",
+                },
+                None,
+            ],
         )
         r = client.get("/api/me/profile")
         assert r.status_code == 200, r.text
@@ -999,6 +1005,9 @@ class TestProfileRoute:
         assert body["role"] == "admin"
         assert body["name"] == "Alice"
         assert body["visual_workspace_enabled"] is False
+        assert body["acknowledged_rules_version"] == "v1"
+        assert body["rules_version"] == "none"
+        assert body["rules_issue_id"] is None
         last_login = body["last_login"]
         assert isinstance(last_login, str)
         assert last_login.startswith("2026")
@@ -1012,11 +1021,16 @@ class TestProfileRoute:
         client, _store, engine = route_client
         install_identity(make_test_identity(api_key_id=key))
         engine.conn.fetchrow = AsyncMock(
-            return_value={
-                "name": "Alice",
-                "last_login": None,
-                "visual_workspace_enabled": False,
-            },
+            side_effect=[
+                {
+                    "name": "Alice",
+                    "last_login": None,
+                    "visual_workspace_enabled": False,
+                    "acknowledged_at": None,
+                    "acknowledged_rules_version": None,
+                },
+                None,
+            ],
         )
         body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
         assert body["api_key_id"] == (None if key is None else str(key))

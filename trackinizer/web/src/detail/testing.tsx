@@ -4,7 +4,7 @@ import { render } from "@testing-library/react";
 import { Profiler } from "react";
 import type { Change, Detail, DetailRow, Peer } from "../api/detail";
 import type { Profile } from "../api/me";
-import { type Sent, stubFetch } from "../api/testing";
+import { AGREED, type Sent, stubFetch } from "../api/testing";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { HighlightContext, HighlightStore } from "../app/highlights";
 import { Session, SessionContext } from "../app/session";
@@ -71,7 +71,7 @@ export const META: Meta = {
 };
 
 /** The signed-in user the detail renders for: a writer, so its editors show. */
-export const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false };
+export const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false, ...AGREED };
 
 /** A stable, distinct UUID for test number `n`. */
 export function uuid(n: number): string {

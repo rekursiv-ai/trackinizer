@@ -93,6 +93,7 @@ how it reads a frame.
 |---|---|---|
 | `meta` | `getEnums`, `getFieldOwners`, `getEdgeTopology` | `GET /api/meta/enums`, `/fields`, `/edges` |
 | `me` | `getProfile` | `GET /api/me/profile` |
+| | `acknowledgeRules` | `PUT /api/me/acknowledge` |
 | | `listTokens`, `createToken` | `GET`, `POST /api/me/tokens` |
 | | `setTokenRole`, `revokeToken` | `PUT /api/me/tokens/{id}/role`, `POST .../revoke` |
 | | `signOut` | `POST /auth/logout` (302 to `/`) |
@@ -119,7 +120,8 @@ how it reads a frame.
 | | `readFeedFacets` | `GET /api/web/feed/facets?since=&until=&actor=&room=&cli=&kind=` |
 | | `sendRoutedMessage` | `POST /api/messages` (header `Idempotency-Key`) |
 | `histogram` | `readHistogram` | `GET /api/web/feed/histogram?since=&until=&buckets=&actor=&room=&cli=&kind=` |
-| `admin` | `listUsers` | `GET /api/admin/users` |
+| `admin` | `setInquiryLock` | `PUT /api/admin/inquiries/{id}/lock` |
+| | `listUsers` | `GET /api/admin/users` |
 | | `setUserRole` | `PUT /api/admin/users/{id}/role` |
 | | `disableUser`, `enableUser` | `POST /api/admin/users/{id}/disable`, `/enable` |
 | | `deleteUser` | `DELETE /api/admin/users/{id}` (204) |

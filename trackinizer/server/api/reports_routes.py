@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from trackinizer.server.api._deps import get_store
+from trackinizer.server.api.locks import require_unlocked
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.visuals.reports import (
     ArtifactContentConflictError,
@@ -46,6 +47,12 @@ async def publish_artifact_content_route(
       revision: Immutable Artifact content shared with signed-in teammates.
 
     """
+    # The publication adds a ``produced_by`` edge into the Issue and a ``supersedes``
+    # edge into the previous Artifact, so a lock on either refuses it.
+    linked = [body.issue_id]
+    if body.previous_artifact_id is not None:
+        linked.append(body.previous_artifact_id)
+    await require_unlocked(request, identity, linked)
     try:
         return await publish_artifact_content(
             get_store(request),

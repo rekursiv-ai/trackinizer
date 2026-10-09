@@ -1,6 +1,39 @@
 {
   "components": {
     "schemas": {
+      "AcknowledgeBody": {
+        "description": "The rules version the caller read before they agreed.",
+        "properties": {
+          "rules_version": {
+            "title": "Rules Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rules_version"
+        ],
+        "title": "AcknowledgeBody",
+        "type": "object"
+      },
+      "AcknowledgeResult": {
+        "description": "When the caller agreed to the alpha rules, and to which version of them.",
+        "properties": {
+          "acknowledged_at": {
+            "title": "Acknowledged At",
+            "type": "string"
+          },
+          "acknowledged_rules_version": {
+            "title": "Acknowledged Rules Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "acknowledged_at",
+          "acknowledged_rules_version"
+        ],
+        "title": "AcknowledgeResult",
+        "type": "object"
+      },
       "Actor": {
         "type": "string"
       },
@@ -3491,6 +3524,20 @@
           "undecidable"
         ],
         "type": "string"
+      },
+      "LockBody": {
+        "description": "Request body for ``PUT /api/admin/inquiries/{id}/lock``.",
+        "properties": {
+          "locked": {
+            "title": "Locked",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "locked"
+        ],
+        "title": "LockBody",
+        "type": "object"
       },
       "LogMetricsRequest": {
         "description": "Batch-append metric points to an experiment.",
@@ -8618,6 +8665,57 @@
           }
         },
         "summary": "Admin Set Allowlist Role Route"
+      }
+    },
+    "/api/admin/inquiries/{target_id}/lock": {
+      "put": {
+        "description": "Lock or unlock one inquiry; admin only.\n\nArgs:\n  target_id: The inquiry to lock or unlock.\n  body: Whether it is locked from now on.\n  request: The request, which carries the store.\n  identity: Authenticated admin.\n\nReturns:\n  result: The inquiry's ``id`` and its ``locked`` flag.",
+        "operationId": "set_lock_route_api_admin_inquiries__target_id__lock_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Target Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LockBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MutableJSON"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Lock Route"
       }
     },
     "/api/admin/users": {
@@ -13875,9 +13973,48 @@
         "summary": "Revoke Machine Route"
       }
     },
+    "/api/me/acknowledge": {
+      "put": {
+        "description": "Record that the caller agreed to the alpha rules as they stand now.\n\nThe rules are Issue#1; their version is its last change, so editing them makes\nthis agreement stale and the welcome flow asks again.\n\nArgs:\n  body: The rules version the caller was shown; it must still be the current\n    one, so an agreement never covers rules the caller did not read.\n  request: FastAPI request with a database engine.\n  identity: Authenticated account owner.\n\nReturns:\n  result: When the caller agreed, and the rules version they agreed to.\n\nRaises:\n  HTTPException: 403 for an API key, 409 when the rules changed since the\n    caller read them.",
+        "operationId": "acknowledge_route_api_me_acknowledge_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcknowledgeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcknowledgeResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Acknowledge Route"
+      }
+    },
     "/api/me/profile": {
       "get": {
-        "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, canvas opt-in, and\n    the id of the API key the request used (``None`` for a browser session).",
+        "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, canvas opt-in, the\n    id of the API key the request used (``None`` for a browser session), when\n    the caller agreed to the rules and to which version, and the current rules\n    version with the id of the Issue that holds the rules.",
         "operationId": "profile_route_api_me_profile_get",
         "responses": {
           "200": {

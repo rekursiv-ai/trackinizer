@@ -60,6 +60,15 @@ export async function serveSeeded(port: number): Promise<Served> {
     const seeded = JSON.parse(
       execFileSync(join(WEB, "scripts", "seed_screenshots.py"), ["--url", origin], { encoding: "utf8" }),
     ) as Seeded;
+    // After the seed, which makes Issue#1, the rules: the agreement is to the rules as they then stand, so the
+    // welcome flow does not stand over the views being captured.
+    const shown = (await (await fetch(`${origin}/api/me/profile`)).json()) as { rules_version: string };
+    const agreed = await fetch(`${origin}/api/me/acknowledge`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ rules_version: shown.rules_version }),
+    });
+    if (!agreed.ok) throw new Error(`Could not agree to the rules: ${agreed.status}`);
     return { origin, seeded, data, stop: stopped };
   } catch (error) {
     await stopped();

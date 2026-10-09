@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { InquiryRow } from "../api/inquiries";
 import type { Profile } from "../api/me";
-import { type Sent, stubFetch } from "../api/testing";
+import { AGREED, type Sent, stubFetch } from "../api/testing";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { createQueryClient } from "../app/queryClient";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
@@ -49,7 +49,7 @@ const META: Meta = {
   edges: {},
   kinds: KINDS,
 };
-const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false };
+const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false, ...AGREED };
 
 let nextSeq = 1;
 function row(fields: Partial<InquiryRow> = {}): InquiryRow {

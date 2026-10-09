@@ -93,7 +93,7 @@ function Boot() {
           <RouterProvider kinds={boot.meta.kinds}>
             <LiveProvider canvas={boot.profile.visual_workspace_enabled}>
               <CanvasStream enabled={boot.profile.visual_workspace_enabled}>
-                <Shell />
+                  <Shell />
               </CanvasStream>
             </LiveProvider>
           </RouterProvider>

@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import type { Change, DetailRow, PeersByEdge } from "../api/detail";
 import { editableFields } from "../api/fields";
-import { type Sent, stubFetch } from "../api/testing";
+import { AGREED, type Sent, stubFetch } from "../api/testing";
 import { bootQueries } from "../app/boot";
 import { createQueryClient } from "../app/queryClient";
 import { stubClipboard } from "../debug/testing";
@@ -462,7 +462,7 @@ test("a 401 ends the session through the query cache; a 403 marks the profile fo
     () => Response.json({ detail: "writer role required" }, { status: 403 }),
   );
   const queryClient = createQueryClient(onUnauthorized);
-  queryClient.setQueryData(bootQueries.profile.queryKey, { user_id: "u", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false });
+  queryClient.setQueryData(bootQueries.profile.queryKey, { user_id: "u", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false, ...AGREED });
   await renderControl(server, "title", setTitle("New"), queryClient);
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   await screen.findByRole("alert");

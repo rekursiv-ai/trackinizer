@@ -76,6 +76,8 @@ export type Change = {
  */
 export type Detail = {
   readonly self: DetailRow;
+  /** Whether only an admin may change the row; absent from a server that predates locks. */
+  readonly locked?: boolean;
   readonly edges: PeersByEdge;
   readonly backlinks: PeersByEdge;
   /** The last 50, newest first. */

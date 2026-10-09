@@ -305,7 +305,7 @@ VALUELESS_FILTER_OPS: Final[frozenset[FilterOp]] = frozenset({"isnull", "notnull
 # Identity/housekeeping columns the schema declares NOT NULL directly; they
 # carry no ColumnSpec, so they can't be derived from the spec metadata below.
 IDENTITY_COLUMNS: Final[frozenset[str]] = frozenset(
-    {"id", "kind", "seq", "created", "modified"},
+    {"id", "kind", "seq", "locked", "created", "modified"},
 )
 
 

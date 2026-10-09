@@ -18,6 +18,7 @@ import { ChatFeed, ChatFeedContext } from "./chatFeed";
 import { OPENING } from "./chatRecords";
 import { canvasActions } from "./testing";
 import { WorkspaceActionsProvider } from "./workspaceActions";
+import { AGREED } from "../api/testing";
 
 vi.mock("../api/chats", async (original) => ({
   ...(await original<typeof import("../api/chats")>()),
@@ -39,7 +40,7 @@ const workspace: WorkspaceState = {
   visuals: [{ id: "889ffcb2-cf44-43e7-9806-eb08428c6203", type: "trax.chat", version: 1,
     placement: "main", record_id: null, params: {} }],
 };
-const PROFILE: Profile = { user_id: "u1", email: ME, name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: true };
+const PROFILE: Profile = { user_id: "u1", email: ME, name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: true, ...AGREED };
 const CREATED = "2026-10-03T10:00:00.000000Z";
 
 /** The records of the session each conversation is held in, as the fake server has them. */

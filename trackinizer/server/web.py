@@ -40,6 +40,7 @@ from typing import (
 )
 from urllib.parse import quote
 from uuid import UUID
+from weakref import WeakSet
 
 import asyncio
 import math
@@ -92,7 +93,7 @@ from trackinizer.wire.wire_sessions import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
     import asyncpg
 
@@ -373,6 +374,7 @@ async def web_get(
         )
     return {
         "self": _row_to_dict(row),
+        "locked": row["locked"],
         "edges": edges,
         "backlinks": backlinks,
         "changes": [_change_to_dict(c) for c in changes],
@@ -883,9 +885,9 @@ def attach(
       app_dir: Directory of a built web app to serve at /app/; unset mounts none.
 
     """
-    if getattr(app.state, "web_attached", False):
+    if app in _ATTACHED:
         return
-    app.state.web_attached = True
+    _ATTACHED.add(app)
     assets = assets_dir or (_CWD / "assets")
     app.include_router(router, prefix="/api/web")
 
@@ -893,13 +895,7 @@ def attach(
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     if app_dir is not None:
-        # ``check_dir=False`` lets the server start before a build exists.
-        app.add_api_route(
-            "/app/{path:path}",
-            _AppRoute(files=StaticFiles(directory=app_dir, check_dir=False)),
-            methods=["GET"],
-            include_in_schema=False,
-        )
+        _get(app, "/app/{path:path}", _AppRoute(files=_app_files(app_dir)))
         # Stored links name ``/`` with a hash, which the browser keeps across a
         # redirect whose ``Location`` has none, and the app's router reads the old
         # hashes. 302, not 301: a browser keeps a 301 for good, which would pin
@@ -911,12 +907,7 @@ def attach(
             ("/graph", "/app/#/graph"),
             ("/console", "/app/#/console"),
         ):
-            app.add_api_route(
-                path,
-                _RedirectRoute(location=location),
-                methods=["GET"],
-                include_in_schema=False,
-            )
+            _get(app, path, _RedirectRoute(location=location))
     _add_login_route(app, assets / "login.html")
 
 
@@ -1015,12 +1006,7 @@ class _LoginPageRoute:
 def _add_login_route(app: FastAPI, page_path: Path) -> None:
     """Mount the login page when its asset exists."""
     if page_path.is_file():
-        app.add_api_route(
-            "/auth/login_page",
-            _LoginPageRoute(page_path=page_path),
-            methods=["GET"],
-            include_in_schema=False,
-        )
+        _get(app, "/auth/login_page", _LoginPageRoute(page_path=page_path))
 
 
 def _login_redirect(request: Request) -> RedirectResponse:
@@ -1464,3 +1450,17 @@ async def _probe_frames(
         seq += 1
         due_sec += every_sec
     await asyncio.sleep(for_sec - (time.monotonic() - start))
+
+
+# Apps ``attach`` has already mounted; weak, so a discarded test app is freed.
+_ATTACHED: WeakSet[FastAPI] = WeakSet()
+
+
+def _get(app: FastAPI, path: str, endpoint: Callable[..., Awaitable[object]]) -> None:
+    """Mount a GET-only route that the OpenAPI schema leaves out."""
+    app.get(path, include_in_schema=False)(endpoint)
+
+
+def _app_files(app_dir: Path) -> StaticFiles:
+    """Serve ``app_dir``; ``check_dir=False`` lets the server start before a build."""
+    return StaticFiles(directory=app_dir, check_dir=False)
