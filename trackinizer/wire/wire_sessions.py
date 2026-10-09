@@ -25,7 +25,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from trackinizer.wire.json_types import JSON
+from trackinizer.wire.json_types import JSON, UtcDatetime
 from trackinizer.wire.wire_science_chat import ChatForkAt
 
 
@@ -102,7 +102,7 @@ class SessionStart(BaseModel):
     ``end`` if the CLI only reveals it later."""
 
     title: str | None = None
-    started: datetime | None = None
+    started: UtcDatetime | None = None
     actor: str | None = None
     account: str | None = None
     """The active user the session row is attributed to. ``None`` defaults to
@@ -532,7 +532,7 @@ class SendMessageResponse(BaseModel):
 class SessionEnd(BaseModel):
     """Mark a session closed, optionally backfilling late-known fields."""
 
-    ended: datetime | None = None
+    ended: UtcDatetime | None = None
     cli_session_id: str | None = Field(default=None, min_length=1)
     """Set when the CLI only revealed its session id mid-run."""
 

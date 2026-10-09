@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 import json
 import os
+import time
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request
@@ -1202,6 +1203,40 @@ class TestRouteBounds:
         c = self._client(app)
         r = c.get("/api/web/recent_changes", params={"limit": 5000})
         assert r.status_code == 400
+
+    @pytest.mark.parametrize(
+        "zone",
+        ["Pacific/Kiritimati", "America/Los_Angeles", "Europe/Berlin"],
+    )
+    def test_feed_reads_a_naive_window_as_utc(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        zone: str,
+    ) -> None:
+        """Read a naive ``since`` and ``until`` as UTC whatever the zone is."""
+        store = AsyncMock()
+        read_feed = AsyncMock(return_value=[])
+        store.read_feed = read_feed
+        app = FastAPI()
+        app.state.engine = FakeEngine()
+        app.state.store = store
+        app.include_router(web.router, prefix="/api/web")
+        c = self._client(app)
+        monkeypatch.setenv("TZ", zone)
+        time.tzset()
+        try:
+            c.get(
+                "/api/web/feed",
+                params={"since": "2024-12-10T00:00:00", "until": "2024-12-11T00:00:00"},
+            )
+        finally:
+            monkeypatch.undo()
+            time.tzset()
+        kwargs = cast("dict[str, datetime]", read_feed.call_args.kwargs)
+        assert kwargs["since"].tzinfo is not None
+        assert kwargs["until"].tzinfo is not None
+        assert kwargs["since"] == datetime(2024, 12, 10, tzinfo=UTC)
+        assert kwargs["until"] == datetime(2024, 12, 11, tzinfo=UTC)
 
     def test_search_rejects_invalid_regex(self) -> None:
         engine = FakeEngine()

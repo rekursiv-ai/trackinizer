@@ -9,7 +9,6 @@ web-facing SSE (``/api/web/subscribe``) and the search routes live in
 from __future__ import annotations
 
 from dataclasses import fields
-from datetime import datetime
 from functools import cache
 from typing import TYPE_CHECKING, Annotated, Literal, cast, get_args, get_type_hints
 
@@ -56,7 +55,11 @@ from trackinizer.wire.filters import (
     FilterOp,
     canonical_filter_field,
 )
-from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
+from trackinizer.wire.json_types import (
+    MutableJSON,
+    MutableJSONValue,
+    UtcDatetime,
+)
 from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
@@ -536,7 +539,7 @@ async def list_change_log_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
-    since: datetime | None = None,
+    since: UtcDatetime | None = None,
     after_id: uuid.UUID | None = None,
     actor: Inquiry.Actor | None = None,
     subject_id: uuid.UUID | None = None,

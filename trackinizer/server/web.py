@@ -83,6 +83,7 @@ from trackinizer.server.store.session_search import (
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
+from trackinizer.wire.json_types import UtcDatetime
 from trackinizer.wire.routes import MAX_LIST_LIMIT, inquiry_relation_fields
 from trackinizer.wire.wire_sessions import (
     FeedCursor,
@@ -625,12 +626,12 @@ async def web_feed(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
     scope: Annotated[FeedScope, Depends(feed_scope)] = WHOLE_FEED,
-    after_created: datetime | None = None,
+    after_created: UtcDatetime | None = None,
     after_session: UUID | None = None,
     after_part: int | None = None,
     after_seq: int | None = None,
-    since: datetime | None = None,
-    until: datetime | None = None,
+    since: UtcDatetime | None = None,
+    until: UtcDatetime | None = None,
     conversation: bool = False,
     limit: int = 200,
     tail: bool = False,
@@ -711,8 +712,8 @@ async def web_feed_facets(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
     scope: Annotated[FeedScope, Depends(feed_scope)] = WHOLE_FEED,
-    since: datetime | None = None,
-    until: datetime | None = None,
+    since: UtcDatetime | None = None,
+    until: UtcDatetime | None = None,
 ) -> FeedFacetsResponse:
     """Count the feed between ``since`` and ``until`` by session, room and kind.
 
@@ -746,8 +747,8 @@ async def web_feed_histogram(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
     scope: Annotated[FeedScope, Depends(feed_scope)] = WHOLE_FEED,
-    since: datetime | None = None,
-    until: datetime | None = None,
+    since: UtcDatetime | None = None,
+    until: UtcDatetime | None = None,
     buckets: int = 120,
 ) -> FeedHistogramResponse:
     """Count the feed's records per time bucket, over at most the last 7 days.
@@ -1045,7 +1046,7 @@ def _feed_cursor(
 
 
 def _check_window(since: datetime | None, until: datetime | None) -> None:
-    """Refuse a window that ends before it starts; a naive time is local."""
+    """Refuse a window that ends before it starts; a naive time is UTC."""
     if (
         since is not None
         and until is not None

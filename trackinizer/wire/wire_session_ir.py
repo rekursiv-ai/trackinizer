@@ -12,7 +12,6 @@ cannot decide what its own transcript matches.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Final
 from uuid import UUID
 
@@ -20,7 +19,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from trackinizer.lib.codec import immutable
 from trackinizer.types.session_records import SessionRecordRow
-from trackinizer.wire.json_types import JSON
+from trackinizer.wire.json_types import JSON, UtcDatetime
 
 
 __all__ = [
@@ -68,7 +67,7 @@ class RecordBody(BaseModel):
     EQUAL ``idx``: a claude context is appended at its own index and names
     itself."""
 
-    timestamp: datetime | None = None
+    timestamp: UtcDatetime | None = None
     model: str | None = None
 
     payload: JSON = Field(default_factory=dict)
@@ -201,7 +200,7 @@ class SlashCommandBody(BaseModel):
     because a sink counter restarts at 0 on a resumed run and would collide.
     """
 
-    timestamp: datetime
+    timestamp: UtcDatetime
     """The submit-time clock the keystroke detector stamped. Required: a typed
     command has no CLI-recorded time, so this is the only one there is."""
 

@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 
 import json
 import logging
+import time
 import uuid
 
 from fastapi import FastAPI
@@ -528,6 +529,31 @@ class TestRoutes:
             },
         )
         assert r.status_code == 400
+
+    @pytest.mark.parametrize(
+        "zone",
+        ["Pacific/Kiritimati", "America/Los_Angeles", "Europe/Berlin"],
+    )
+    def test_change_log_route_reads_a_naive_since_as_utc(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+        zone: str,
+    ) -> None:
+        """Read a naive ``since`` as UTC whatever the server's local zone is."""
+        client, store, _engine = route_client
+        monkeypatch.setenv("TZ", zone)
+        time.tzset()
+        try:
+            with patch.object(store, "list_changes", new_callable=AsyncMock) as mock:
+                mock.return_value = []
+                client.get("/api/change_log", params={"since": "2024-12-10T00:00:00"})
+        finally:
+            monkeypatch.undo()
+            time.tzset()
+        since = cast("datetime", mock.call_args.kwargs["since"])
+        assert since.tzinfo is not None
+        assert since == datetime(2024, 12, 10, tzinfo=UTC)
 
     def test_change_log_route_sends_brief_rows_only_when_asked(
         self,

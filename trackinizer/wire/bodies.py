@@ -10,7 +10,6 @@ lives in ``types/inquiries.py``, not here.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import TYPE_CHECKING, Annotated, Final, Literal, Self
 
 import uuid
@@ -39,6 +38,7 @@ from trackinizer.types.inquiries import (
     Paper,
     is_valid_source,
 )
+from trackinizer.wire.json_types import UtcDatetime
 
 
 if TYPE_CHECKING:
@@ -232,7 +232,7 @@ class SubmitPaper(SubmitBase):
     publication_type: Paper.PublicationType | None = None
     venue: str | None = None
     subvenue: str | None = None
-    publish_date: datetime | None = None
+    publish_date: UtcDatetime | None = None
     source: str | None = None
     google_scholar_cluster_id: str | None = None
     google_scholar_cites_id: str | None = None
@@ -371,7 +371,7 @@ class SubmitAgentSession(SubmitBase):
     cli_session_id: str | None = Field(default=None, min_length=1)
     """The CLI's own session id, for correlation with vendor records."""
 
-    started: datetime | None = None
+    started: UtcDatetime | None = None
     # No ``ended`` at create: a session is born live (``ended IS NULL``).
     # ``ended`` is stamped only by ``POST /api/sessions/{id}/end``, which sets
     # it together with ``status = 'complete'`` -- the lifecycle CHECK on
