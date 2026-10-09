@@ -14,8 +14,10 @@ from trackinizer.lib.agent.types.sessions import AgentToAgentMessage, AssistantM
 from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
+    ASSISTANT,
     ASSISTANT_CONFIG,
     KB_ACTOR,
+    OTHER_AGENT,
     OTHER_EMAIL,
     OTHER_USER_ID,
     act_as_assistant,
@@ -23,12 +25,11 @@ from trackinizer.server.api.canvas_test_support import (
     browser,
     conversation_of,
     drain,
-    open_science_chat,
-    open_workspace,
+    open_canvas,
     seed_accounts,
+    seed_science_chat,
+    seed_session,
     send_chat,
-    show_chat,
-    start_session,
 )
 from trackinizer.server.api.conftest import TEST_USER_EMAIL
 from trackinizer.server.inbound import InboundQueue
@@ -38,7 +39,6 @@ from trackinizer.wire.wire_science_chat import (
     chat_session_id,
     fork_point_label,
 )
-from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
 
 
 if TYPE_CHECKING:
@@ -80,44 +80,47 @@ class _Original:
 async def _accounts(store: Store, *emails: str) -> None:
     """Create a user for each email, since a session is attributed to a real account."""
     async with store.engine.acquire() as conn:
-        for email in emails:
-            await conn.execute(
-                "INSERT INTO users (id, email, name, role, status, "
-                "visual_workspace_enabled) "
-                "VALUES ($1, $2, 'Test', 'writer', 'active', TRUE) ON CONFLICT DO NOTHING",
-                uuid.uuid4(),
-                email,
-            )
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status, "
+            "visual_workspace_enabled) "
+            "SELECT gen_random_uuid(), email, 'Test', 'writer', 'active', TRUE "
+            "FROM unnest($1::text[]) AS email ON CONFLICT DO NOTHING",
+            list(emails),
+        )
 
 
-async def _original(
-    client: httpx2.AsyncClient,
-    store: Store,
-    *,
-    starter: str,
-) -> _Original:
+async def _original(store: Store, *, starter: str) -> _Original:
     """Open a chat ``starter`` began: a question, an answer and a second question."""
     await seed_accounts(store)
     await _accounts(store, ALICE, JAN)
-    act_as_assistant()
-    service = await start_session(client, actor=KB_ACTOR)
+    service = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
     conversation = uuid.uuid4()
-    session = await open_science_chat(
-        client,
+    session = await seed_science_chat(
         store,
         conversation_id=conversation,
         account=starter,
     )
-    act_as_assistant("writer")
-    appended = await client.post(
-        f"/api/sessions/{session}/records",
-        json=_append(
-            AgentToAgentMessage(sender=starter, content="q1", timestamp=_now()),
-            AssistantMessage(content="a1", timestamp=_now()),
-            AgentToAgentMessage(sender=starter, content="q2", timestamp=_now()),
-        ),
+    records = (
+        AgentToAgentMessage(sender=starter, content="q1", timestamp=_now()),
+        AssistantMessage(content="a1", timestamp=_now()),
+        AgentToAgentMessage(sender=starter, content="q2", timestamp=_now()),
     )
-    assert appended.status_code == 200, appended.text
+    part = await store.upsert_session_manifest(
+        session,
+        name="chat.jsonl",
+        metadata={},
+        ir_id=uuid.uuid4(),
+        format="sagent",
+        records=len(records),
+    )
+    written, _skipped, _slash = await store.append_session_records(
+        session,
+        [
+            SessionRecordRow.of(session_id=session, part=part, idx=idx, record=record)
+            for idx, record in enumerate(records)
+        ],
+    )
+    assert written == len(records)
     return _Original(conversation=conversation, session=session, service=service)
 
 
@@ -127,8 +130,7 @@ async def _canvas(
     email: str,
 ) -> tuple[uuid.UUID, uuid.UUID]:
     """Open the second user's canvas, signed in as ``email``; return it and its Chat."""
-    workspace_id = await open_workspace(client, user_id=OTHER_USER_ID, email=email)
-    return workspace_id, await show_chat(client, workspace_id=workspace_id)
+    return await open_canvas(client, user_id=OTHER_USER_ID, email=email)
 
 
 async def _heard(
@@ -160,7 +162,6 @@ async def _head(
 
 
 async def _link_fork(
-    client: httpx2.AsyncClient,
     store: Store,
     *,
     original: _Original,
@@ -170,24 +171,35 @@ async def _link_fork(
     labels: Sequence[str] | None = None,
 ) -> uuid.UUID:
     """Open a fork's session and link it to the original, as the assistant does."""
-    session = await open_science_chat(
-        client,
+    session = await seed_science_chat(store, conversation_id=fork, account=starter)
+    await _link(
         store,
-        conversation_id=fork,
-        account=starter,
+        fork=session,
+        original=original.session,
+        labels=[FORK_EDGE_LABEL, fork_point_label(part=0, idx=at)]
+        if labels is None
+        else labels,
     )
-    act_as_assistant("writer")
-    linked = await client.post(
-        f"/api/edges/{session}/produced_by/{original.session}",
-        json={
-            "actor": KB_ACTOR,
-            "labels": [FORK_EDGE_LABEL, fork_point_label(part=0, idx=at)]
-            if labels is None
-            else list(labels),
-        },
-    )
-    assert linked.status_code == 200, linked.text
     return session
+
+
+async def _link(
+    store: Store,
+    *,
+    fork: uuid.UUID,
+    original: uuid.UUID,
+    labels: Sequence[str],
+) -> None:
+    """Add the assistant's ``produced_by`` edge from ``fork`` to ``original``."""
+    _, created = await store.add_edge(
+        from_id=fork,
+        to_id=original,
+        edge_kind="produced_by",
+        labels=labels,
+        api_key_id=ASSISTANT.key_id,
+        actor=KB_ACTOR,
+    )
+    assert created
 
 
 @pytest.mark.db_pglite
@@ -196,7 +208,7 @@ async def test_typing_in_a_chat_of_my_organisation_posts_into_it(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
-    chat = await _original(client, store, starter=TEST_USER_EMAIL)
+    chat = await _original(store, starter=TEST_USER_EMAIL)
     workspace_id, chat_id = await _canvas(client, email=OTHER_EMAIL)
 
     joined = await send_chat(
@@ -224,7 +236,7 @@ async def test_fork_from_here_in_my_organisation_starts_a_new_chat_at_that_line(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
-    chat = await _original(client, store, starter=TEST_USER_EMAIL)
+    chat = await _original(store, starter=TEST_USER_EMAIL)
     workspace_id, chat_id = await _canvas(client, email=OTHER_EMAIL)
     key = uuid.uuid4()
 
@@ -257,7 +269,7 @@ async def test_typing_in_a_foreign_chat_is_refused_and_forking_it_is_not(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
-    chat = await _original(client, store, starter=TEST_USER_EMAIL)
+    chat = await _original(store, starter=TEST_USER_EMAIL)
     workspace_id, chat_id = await _canvas(client, email=JAN)
     head = await _head(client, conversation=chat.conversation, email=JAN)
     assert head["forks_on_typing"] is True
@@ -294,7 +306,7 @@ async def test_consumer_domains_are_no_organisation_but_my_own_chat_stays_mine(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
-    chat = await _original(client, store, starter=ALICE)
+    chat = await _original(store, starter=ALICE)
     workspace_id, chat_id = await _canvas(client, email=BOB)
 
     posted = await send_chat(
@@ -332,7 +344,7 @@ async def test_a_single_organisation_server_never_makes_typing_a_fork(
 ) -> None:
     monkeypatch.setattr(app.state, "config", ASSISTANT_CONFIG, raising=False)
     client, store = pglite_route_client
-    chat = await _original(client, store, starter=TEST_USER_EMAIL)
+    chat = await _original(store, starter=TEST_USER_EMAIL)
     workspace_id, chat_id = await _canvas(client, email=JAN)
 
     posted = await send_chat(
@@ -354,7 +366,7 @@ async def test_a_fork_needs_a_line_of_a_science_chat_and_names_no_conversation(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
-    chat = await _original(client, store, starter=TEST_USER_EMAIL)
+    chat = await _original(store, starter=TEST_USER_EMAIL)
     workspace_id, chat_id = await _canvas(client, email=OTHER_EMAIL)
 
     # A record beyond the session's end, a session that is no chat, and a fork that
@@ -379,23 +391,21 @@ async def test_a_fork_leaves_the_original_as_it_was_and_is_counted_by_it(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
-    chat = await _original(client, store, starter=TEST_USER_EMAIL)
+    chat = await _original(store, starter=TEST_USER_EMAIL)
     assert (await _head(client, conversation=chat.conversation, email=JAN))[
         "forks"
     ] == 0
     first, second = uuid.uuid4(), uuid.uuid4()
     forked = await _link_fork(
-        client,
         store,
         original=chat,
         fork=first,
         at=1,
         starter=JAN,
     )
-    _ = await _link_fork(client, store, original=chat, fork=second, at=2, starter=ALICE)
+    _ = await _link_fork(store, original=chat, fork=second, at=2, starter=ALICE)
     # An edge without the fork label, as a campaign's session has, is no fork.
     _ = await _link_fork(
-        client,
         store,
         original=chat,
         fork=uuid.uuid4(),
@@ -440,7 +450,7 @@ async def test_a_key_that_names_the_original_posts_nothing_into_it(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
-    chat = await _original(client, store, starter=TEST_USER_EMAIL)
+    chat = await _original(store, starter=TEST_USER_EMAIL)
     workspace_id, chat_id = await _canvas(client, email=JAN)
 
     # The conversation id is in the link Jan was given; sent as the idempotency key of
@@ -474,8 +484,7 @@ async def test_a_chat_the_assistant_has_not_opened_yet_is_its_starters_already(
     client, store = pglite_route_client
     await seed_accounts(store)
     await _accounts(store, ALICE, JAN)
-    act_as_assistant()
-    service = await start_session(client, actor=KB_ACTOR)
+    service = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
     first = await _canvas(client, email=ALICE)
     started = await send_chat(
         client,
@@ -517,7 +526,7 @@ async def test_a_forker_may_retry_their_own_fork_under_its_key(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
-    chat = await _original(client, store, starter=TEST_USER_EMAIL)
+    chat = await _original(store, starter=TEST_USER_EMAIL)
     workspace_id, chat_id = await _canvas(client, email=JAN)
     key = uuid.uuid4()
 
@@ -548,15 +557,10 @@ async def test_only_an_edge_the_forks_own_opener_added_counts_as_a_fork(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
-    chat = await _original(client, store, starter=TEST_USER_EMAIL)
+    chat = await _original(store, starter=TEST_USER_EMAIL)
     real, other = uuid.uuid4(), uuid.uuid4()
-    _ = await _link_fork(client, store, original=chat, fork=real, at=1, starter=JAN)
-    stranger = await open_science_chat(
-        client,
-        store,
-        conversation_id=other,
-        account=ALICE,
-    )
+    _ = await _link_fork(store, original=chat, fork=real, at=1, starter=JAN)
+    stranger = await seed_science_chat(store, conversation_id=other, account=ALICE)
 
     # A writer outside the chat adds the same edge from a chat that is not a fork of it.
     act_as_other_agent("writer")
@@ -581,28 +585,27 @@ async def test_a_session_with_two_fork_edges_names_the_first_as_its_origin(
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
-    first = await _original(client, store, starter=TEST_USER_EMAIL)
+    first = await _original(store, starter=TEST_USER_EMAIL)
     older = uuid.uuid4()
     second = replace(
         first,
         conversation=older,
-        session=await open_science_chat(client, store, conversation_id=older),
+        session=await seed_science_chat(store, conversation_id=older),
     )
     fork = uuid.uuid4()
     forked = await _link_fork(
-        client,
         store,
         original=second,
         fork=fork,
         at=1,
         starter=JAN,
     )
-    act_as_assistant("writer")
-    again = await client.post(
-        f"/api/edges/{forked}/produced_by/{first.session}",
-        json={"actor": KB_ACTOR, "labels": [FORK_EDGE_LABEL]},
+    await _link(
+        store,
+        fork=forked,
+        original=first.session,
+        labels=[FORK_EDGE_LABEL],
     )
-    assert again.status_code == 200, again.text
 
     heads = [await _head(client, conversation=fork, email=JAN) for _ in range(3)]
 
@@ -619,15 +622,14 @@ async def test_a_session_another_key_opened_under_the_id_does_not_make_its_owner
     await _accounts(store, JAN)
     conversation = uuid.uuid4()
     # Jan's own session carries the id, and is older than the assistant's.
-    act_as_other_agent("writer")
-    _ = await start_session(
-        client,
+    _ = await seed_session(
+        store,
+        OTHER_AGENT,
         actor="decoy",
         cli_session_id=chat_session_id(conversation),
         account=JAN,
     )
-    _ = await open_science_chat(
-        client,
+    _ = await seed_science_chat(
         store,
         conversation_id=conversation,
         account=TEST_USER_EMAIL,
@@ -651,7 +653,7 @@ async def test_a_writer_outside_the_chat_cannot_drain_its_session_or_the_assista
     pglite_route_client: _Client,
 ) -> None:
     client, store = pglite_route_client
-    chat = await _original(client, store, starter=TEST_USER_EMAIL)
+    chat = await _original(store, starter=TEST_USER_EMAIL)
     workspace_id, chat_id = await _canvas(client, email=ALICE)
     _ = await send_chat(
         client,
@@ -689,32 +691,6 @@ async def _fork(
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def _append(*records: AgentToAgentMessage | AssistantMessage) -> dict[str, object]:
-    """Return the body that appends ``records`` as the first records of a part."""
-    manifest = ManifestBody(
-        name="chat.jsonl",
-        metadata={},
-        ir_id=uuid.uuid4(),
-        format="sagent",
-        records=len(records),
-    )
-    return {
-        "name": "chat.jsonl",
-        "manifest": manifest.model_dump(mode="json"),
-        "records": [
-            RecordBody.of(
-                SessionRecordRow.of(
-                    session_id=uuid.UUID(int=0),
-                    part=0,
-                    idx=idx,
-                    record=record,
-                ),
-            ).model_dump(mode="json")
-            for idx, record in enumerate(records)
-        ],
-    }
 
 
 if __name__ == "__main__":

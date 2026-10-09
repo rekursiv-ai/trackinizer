@@ -67,6 +67,7 @@ beforeEach(() => {
 
 let stopTrail = () => {};
 afterEach(() => {
+  vi.useRealTimers();
   stopTrail();
   stopTrail = () => {};
   cleanup();
@@ -268,11 +269,15 @@ test("a conversation whose last line is an answer shows no working line", async 
 });
 
 test("a line the assistant never opens a session for is said plainly after a while, and can be sent again", async () => {
+  // The clock is the test's: the give-up time passes by advancing it, not by waiting.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.mocked(sendChatLine).mockResolvedValue({ conversation_id: "c9", session_id: null });
   shell();
   await type("anyone there?");
   await screen.findByText("Waiting for the assistant…");
-  expect((await screen.findByRole("alert", {}, { timeout: 2000 })).textContent).toContain("has not opened this chat");
+  expect(screen.queryByRole("alert")).toBeNull();
+  await act(() => vi.advanceTimersByTimeAsync(OPENING.giveUpMs));
+  expect(screen.getByRole("alert").textContent).toContain("has not opened this chat");
   expect(screen.getByRole("textbox", { name: "Message" })).toHaveProperty("disabled", false);
 });
 

@@ -7,12 +7,14 @@ identity (no API key) or an agent identity (an API key that opened sessions).
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final
 
 import uuid
 
 from trackinizer.lib.codec import from_plain, loads
+from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
@@ -20,7 +22,11 @@ from trackinizer.server.api.conftest import (
     install_identity,
     make_test_identity,
 )
+from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.config import Assistant, Config
+from trackinizer.server.inbound import InboundQueue
+from trackinizer.server.primitives import insert_inquiry
+from trackinizer.server.values import canonical_strs
 from trackinizer.wire.wire_science_chat import (
     SCIENCE_CHAT_LABEL,
     chat_session_id,
@@ -29,7 +35,7 @@ from trackinizer.wire.wire_science_chat import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     import httpx2
 
@@ -45,6 +51,19 @@ KB_USER_ID: Final = uuid.UUID("55555555-5555-5555-5555-555555555555")
 KB_KEY_ID: Final = uuid.UUID("66666666-6666-6666-6666-666666666666")
 KB_EMAIL: Final = "scout@example.com"
 KB_ACTOR: Final = "scout"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Agent:
+    """An account's API key, as it opens sessions."""
+
+    key_id: uuid.UUID
+    email: str
+
+
+USER_AGENT: Final = Agent(key_id=TEST_API_KEY_ID, email=TEST_USER_EMAIL)
+OTHER_AGENT: Final = Agent(key_id=OTHER_KEY_ID, email=OTHER_EMAIL)
+ASSISTANT: Final = Agent(key_id=KB_KEY_ID, email=KB_EMAIL)
 
 ASSISTANT_CONFIG: Final = replace(
     Config(),
@@ -151,6 +170,140 @@ async def start_session(
     return uuid.UUID(session_id)
 
 
+async def seed_session(
+    store: Store,
+    agent: Agent,
+    *,
+    actor: str | None = None,
+    cli: str = "codex",
+    cli_session_id: str | None = None,
+    account: str | None = None,
+    labels: Sequence[str] = (),
+    polled: bool = True,
+) -> uuid.UUID:
+    """Open a session for ``agent`` straight in the store, and poll it once if asked.
+
+    What ``start_session`` does through the routes, for a test whose subject is not
+    the session start: the same row, the same live poller and the same nudge of the
+    open event streams, in two statements instead of a dozen requests' worth. The
+    routing name is taken as given, so it must be free among the live sessions.
+
+    Args:
+      store: The test database.
+      agent: The key that opens the session.
+      actor: The routing name; the key owner's email by default.
+      cli: The CLI the session says it runs.
+      cli_session_id: The id the session is known by across restarts.
+      account: The person the session is attributed to; the key's owner by default.
+      labels: The labels the row carries.
+      polled: Whether the session's runner polls its inbound queue.
+
+    Returns:
+      session_id: The new session.
+
+    """
+    session_id = uuid.uuid4()
+    async with store.engine.acquire() as conn:
+        await insert_inquiry(
+            conn,
+            session_id,
+            "AgentSession",
+            values={
+                "title": f"{cli} session",
+                "owner": actor or agent.email,
+                "account": account or agent.email,
+                "labels": canonical_strs(labels),
+                "subscribers": (),
+                "agentsession_cli": cli,
+                "agentsession_cli_session_id": cli_session_id,
+                "agentsession_rooms": (),
+                "agentsession_opened_by_api_key_id": agent.key_id,
+            },
+        )
+    hub = getattr(app.state, "hub", None)
+    if isinstance(hub, ChatHub):
+        hub.nudge()
+    if polled:
+        inbound = getattr(app.state, "inbound", None)
+        assert isinstance(inbound, InboundQueue)
+        inbound.mark_poller(session_id)
+        await store.record_session_seen(
+            session_id,
+            at=datetime.now(UTC),
+            polled=True,
+        )
+    return session_id
+
+
+async def seed_science_chat(
+    store: Store,
+    *,
+    conversation_id: uuid.UUID,
+    account: str = TEST_USER_EMAIL,
+    posters: tuple[str, ...] = (),
+) -> uuid.UUID:
+    """Open a conversation's session as the assistant does, then act as the browser.
+
+    What ``open_science_chat`` does through the routes, for a test whose subject is
+    not the session start.
+
+    Args:
+      store: The test database.
+      conversation_id: The conversation.
+      account: The person who started it.
+      posters: Everyone who has posted in it besides the starter.
+
+    Returns:
+      session_id: The conversation's live session.
+
+    """
+    session_id = await seed_session(
+        store,
+        ASSISTANT,
+        actor=f"chat-{conversation_id.hex[:12]}",
+        cli_session_id=chat_session_id(conversation_id),
+        account=account,
+        labels=chat_labels(posters),
+    )
+    browser()
+    return session_id
+
+
+def chat_labels(posters: Sequence[str] = ()) -> list[str]:
+    """Name the labels of a science chat that ``posters`` have posted in.
+
+    Args:
+      posters: Everyone who has posted in it besides the starter.
+
+    Returns:
+      labels: The science chat label, then one label per poster.
+
+    """
+    return [SCIENCE_CHAT_LABEL, *(poster_label(email) for email in posters)]
+
+
+async def label_science_chat(
+    store: Store,
+    session_id: uuid.UUID,
+    *,
+    posters: tuple[str, ...] = (),
+) -> None:
+    """Mark ``session_id`` as a science chat that ``posters`` have posted in.
+
+    Args:
+      store: The test database.
+      session_id: The session.
+      posters: Everyone who has posted in it besides the starter.
+
+    """
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE inquiries SET labels = $2 WHERE id = $1",
+            session_id,
+            chat_labels(posters),
+        )
+
+
 async def open_science_chat(
     client: httpx2.AsyncClient,
     store: Store,
@@ -179,12 +332,7 @@ async def open_science_chat(
         cli_session_id=chat_session_id(conversation_id),
         account=account,
     )
-    async with store.engine.acquire() as conn:
-        await conn.execute(
-            "UPDATE inquiries SET labels = $2 WHERE id = $1",
-            session_id,
-            [SCIENCE_CHAT_LABEL, *(poster_label(email) for email in posters)],
-        )
+    await label_science_chat(store, session_id, posters=posters)
     browser()
     return session_id
 
@@ -215,6 +363,41 @@ async def open_workspace(
     )
 
 
+async def open_canvas(
+    client: httpx2.AsyncClient,
+    *,
+    user_id: uuid.UUID = TEST_USER_ID,
+    email: str = TEST_USER_EMAIL,
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """Create the user's canvas as a browser and show its Chat visual.
+
+    What ``open_workspace`` then ``show_chat`` do, reading the new canvas's revision
+    from the answer that created it instead of asking for it again.
+
+    Args:
+      client: The test client.
+      user_id: The signed-in user.
+      email: Their email.
+
+    Returns:
+      workspace_id: The new canvas.
+      chat_id: Its Chat visual's instance id.
+
+    """
+    browser(user_id, email=email)
+    created = await client.post("/api/workspaces")
+    if created.status_code != 200:
+        raise ValueError(f"workspace create answered {created.status_code}")
+    state = from_plain(loads(created.content), dict[str, object])
+    workspace_id = uuid.UUID(from_plain(state["id"], str))
+    chat_id = await _show_chat_at(
+        client,
+        workspace_id=workspace_id,
+        revision=from_plain(state["revision"], int),
+    )
+    return workspace_id, chat_id
+
+
 async def show_chat(
     client: httpx2.AsyncClient,
     *,
@@ -230,29 +413,11 @@ async def show_chat(
       chat_id: The Chat visual's instance id.
 
     """
-    state = from_plain(
-        loads((await client.get(f"/api/workspaces/{workspace_id}")).content),
-        dict[str, object],
+    return await _show_chat_at(
+        client,
+        workspace_id=workspace_id,
+        revision=await revision_of(client, workspace_id=workspace_id),
     )
-    # pragma: no mutate start -- a header name's case is an equivalent mutant.
-    headers = {"Idempotency-Key": str(uuid.uuid4())}
-    # pragma: no mutate end
-    shown = await client.post(
-        f"/api/workspaces/{workspace_id}/operations",
-        json={
-            "revision": state["revision"],
-            "operation": {"kind": "show", "visual_type": "trax.chat"},
-        },
-        headers=headers,
-    )
-    if shown.status_code != 200:
-        raise ValueError(f"show answered {shown.status_code}")
-    visuals = from_plain(
-        from_plain(loads(shown.content), dict[str, object])["visuals"],
-        list[dict[str, object]],
-    )
-    chat = next(v for v in visuals if v["type"] == "trax.chat")
-    return uuid.UUID(from_plain(chat["id"], str))
 
 
 async def send_chat(
@@ -347,6 +512,36 @@ async def converse(
     return await open_science_chat(client, store, conversation_id=conversation_id)
 
 
+async def seed_converse(
+    client: httpx2.AsyncClient,
+    store: Store,
+    *,
+    workspace_id: uuid.UUID,
+    chat_id: uuid.UUID,
+    text: str = "hello",
+) -> uuid.UUID:
+    """Post a line as the browser, and have the assistant open the conversation.
+
+    What ``converse`` does, with the conversation's session opened in the store.
+
+    Args:
+      client: The test client.
+      store: The test database.
+      workspace_id: The canvas.
+      chat_id: Its Chat visual.
+      text: The line.
+
+    Returns:
+      session_id: The conversation's live session.
+
+    """
+    browser()
+    conversation_id = conversation_of(
+        await send_chat(client, workspace_id=workspace_id, chat_id=chat_id, text=text),
+    )
+    return await seed_science_chat(store, conversation_id=conversation_id)
+
+
 async def revision_of(client: httpx2.AsyncClient, *, workspace_id: uuid.UUID) -> int:
     """Read a canvas's revision as the installed browser.
 
@@ -381,6 +576,34 @@ async def drain(
 
     """
     return await client.get(f"/api/sessions/{session_id}/inbound")
+
+
+async def _show_chat_at(
+    client: httpx2.AsyncClient,
+    *,
+    workspace_id: uuid.UUID,
+    revision: int,
+) -> uuid.UUID:
+    """Show the Chat visual on a canvas at ``revision``; return its instance id."""
+    # pragma: no mutate start -- a header name's case is an equivalent mutant.
+    headers = {"Idempotency-Key": str(uuid.uuid4())}
+    # pragma: no mutate end
+    shown = await client.post(
+        f"/api/workspaces/{workspace_id}/operations",
+        json={
+            "revision": revision,
+            "operation": {"kind": "show", "visual_type": "trax.chat"},
+        },
+        headers=headers,
+    )
+    if shown.status_code != 200:
+        raise ValueError(f"show answered {shown.status_code}")
+    visuals = from_plain(
+        from_plain(loads(shown.content), dict[str, object])["visuals"],
+        list[dict[str, object]],
+    )
+    chat = next(v for v in visuals if v["type"] == "trax.chat")
+    return uuid.UUID(from_plain(chat["id"], str))
 
 
 def _agent(key_id: uuid.UUID, *, user_id: uuid.UUID, email: str, role: Role) -> None:

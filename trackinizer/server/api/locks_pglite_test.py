@@ -174,14 +174,15 @@ _CASES: Final[dict[str, _Build]] = {
 
 
 # One write per route family: the admin bypass is a single early return, so each
-# family shows it is reached and the rest add only requests.
-_ADMIN_CASES: Final = (
-    "set a field",
-    "add an edge out of it",
-    "publish a revision of its Artifact",
-    "create a row that narrows it",
-    "purge the row",
-)
+# family shows it is reached and the rest add only requests. Each runs in a test of
+# its own, because a write's cascade grows with the edges the writes before it add.
+_ADMIN_CASES: Final = {
+    "set a field": 200,
+    "add an edge out of it": 200,
+    "publish a revision of its Artifact": 201,
+    "create a row that narrows it": 201,
+    "purge the row": 200,
+}
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -236,22 +237,23 @@ async def test_a_writer_cannot_change_a_locked_row(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("case", "status"),
+    _ADMIN_CASES.items(),
+    ids=list(_ADMIN_CASES),
+)
 async def test_an_admin_can_change_a_locked_row(
     pglite_route_client: _Client,
     rows: _Rows,
+    case: str,
+    status: int,
 ) -> None:
     client, _ = pglite_route_client
     _as("admin")
 
-    answers = {name: await _send(client, _CASES[name](rows)) for name in _ADMIN_CASES}
+    answer = await _send(client, _CASES[case](rows))
 
-    assert {name: r.status_code for name, r in answers.items()} == {
-        "set a field": 200,
-        "add an edge out of it": 200,
-        "publish a revision of its Artifact": 201,
-        "create a row that narrows it": 201,
-        "purge the row": 200,
-    }
+    assert answer.status_code == status, answer.text
 
 
 @pytest.mark.db_pglite

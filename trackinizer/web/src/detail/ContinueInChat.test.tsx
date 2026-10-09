@@ -22,22 +22,20 @@ test("a science chat's session page offers Continue in Chat, which opens it in C
   expect(workspace.operate).toHaveBeenCalledWith({ kind: "show", visual_type: "trax.chat" });
 });
 
-test("no other row offers it: not another session, another kind, a session without the label, or one outside a canvas that offers Chat", async () => {
-  const feed = new ChatFeed();
-  const cases = [
-    [row("AgentSession", 8, { labels: ["slack-thread:x"], cli_session_id: "slack:C1:1" }), { workspace: chatCanvas(), chat: feed }],
-    [row("AgentSession", 9, { labels: ["science-chat"], cli_session_id: "slack:C1:1" }), { workspace: chatCanvas(), chat: feed }],
-    [row("AgentSession", 10, { labels: ["slack-thread:x"], cli_session_id: CHAT.cli_session_id }), { workspace: chatCanvas(), chat: feed }],
-    [row("Issue", 11, { labels: ["science-chat"] }), { workspace: chatCanvas(), chat: feed }],
-    [row("AgentSession", 12, CHAT), { chat: feed }],
-    [row("AgentSession", 13, CHAT), { workspace: canvasActions(), chat: feed }],
-    [row("AgentSession", 14, CHAT), { workspace: chatCanvas() }],
-  ] as const;
-  for (const [self, options] of cases) {
-    serveDetails([detail(self)]);
-    renderDetail({ kind: self.kind, seq: self.seq }, undefined, { ...options });
-    await screen.findByRole("heading", { name: self.title });
-    expect(screen.queryByRole("button", { name: "Continue in Chat" })).toBeNull();
-    cleanup();
-  }
+const feed = new ChatFeed();
+const NOT_OFFERED = [
+  ["another session", row("AgentSession", 8, { labels: ["slack-thread:x"], cli_session_id: "slack:C1:1" }), { workspace: chatCanvas(), chat: feed }],
+  ["a session without the chat id", row("AgentSession", 9, { labels: ["science-chat"], cli_session_id: "slack:C1:1" }), { workspace: chatCanvas(), chat: feed }],
+  ["a session without the label", row("AgentSession", 10, { labels: ["slack-thread:x"], cli_session_id: CHAT.cli_session_id }), { workspace: chatCanvas(), chat: feed }],
+  ["another kind", row("Issue", 11, CHAT), { workspace: chatCanvas(), chat: feed }],
+  ["a page outside a canvas", row("AgentSession", 12, CHAT), { chat: feed }],
+  ["a canvas that does not offer Chat", row("AgentSession", 13, CHAT), { workspace: canvasActions(), chat: feed }],
+  ["a page with no Chat feed", row("AgentSession", 14, CHAT), { workspace: chatCanvas() }],
+] as const;
+
+test.each(NOT_OFFERED)("no other row offers it: %s", async (_case, self, options) => {
+  serveDetails([detail(self)]);
+  renderDetail({ kind: self.kind, seq: self.seq }, undefined, { ...options });
+  await screen.findByRole("heading", { name: self.title });
+  expect(screen.queryByRole("button", { name: "Continue in Chat" })).toBeNull();
 });

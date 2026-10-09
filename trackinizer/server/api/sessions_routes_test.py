@@ -8,8 +8,9 @@ not drain the session's inbound queue).
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from functools import partial
+from functools import partial, partialmethod
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
 
@@ -26,17 +27,21 @@ from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.api import sessions_routes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
+    ASSISTANT,
     ASSISTANT_CONFIG,
     KB_ACTOR,
+    USER_AGENT,
     act_as_assistant,
     act_as_other_agent,
     act_as_user_agent,
     browser,
     conversation_of,
     drain,
+    open_canvas,
     open_workspace,
     revision_of,
     seed_accounts,
+    seed_session,
     send_chat,
     show_chat,
     start_session,
@@ -49,7 +54,7 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.api.science_chat_routes_test import (
-    open_helper_chat,
+    seed_helper_chat,
     start_unpolled,
 )
 from trackinizer.server.auth import current_user
@@ -945,9 +950,13 @@ async def test_only_the_opening_key_drains_a_users_own_helper_sessions(
     """
     client, store = pglite_route_client
     await seed_accounts(store)
-    act_as_user_agent()
-    service = await start_session(client, actor="helper", cli=CHAT_HELPER_CLI)
-    chat = await open_helper_chat(client, store=store, conversation_id=uuid.uuid4())
+    service = await seed_session(
+        store,
+        USER_AGENT,
+        actor="helper",
+        cli=CHAT_HELPER_CLI,
+    )
+    chat = await seed_helper_chat(store, conversation_id=uuid.uuid4())
 
     act_as_other_agent("writer")
     for session in (service, chat):
@@ -1041,15 +1050,14 @@ async def test_a_helper_service_session_keeps_its_unread_lines_when_it_resumes(
     """A `trax helper` that restarts hears the line posted while it was down."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    act_as_user_agent()
-    helper = await start_session(
-        client,
+    helper = await seed_session(
+        store,
+        USER_AGENT,
         actor="helper",
         cli=CHAT_HELPER_CLI,
         cli_session_id="trax-helper:helper",
     )
-    workspace_id = await open_workspace(client)
-    chat_id = await show_chat(client, workspace_id=workspace_id)
+    workspace_id, chat_id = await open_canvas(client)
     chosen = await client.post(
         f"/api/workspaces/{workspace_id}/operations",
         json={
@@ -1154,27 +1162,62 @@ async def test_a_drained_chat_message_carries_its_senders_role(
     ] == [("as writer", "writer"), ("as admin", "admin")]
 
 
+_AWAIT_MESSAGES = InboundQueue.await_messages
+"""The wait itself, as it is before a test wraps it."""
+
+
+@dataclass(slots=True, kw_only=True)
+class _Holds:
+    """The requests that parked on the inbound queue to wait for a message."""
+
+    parked: asyncio.Event = field(default_factory=asyncio.Event)
+    """Set once a request has begun waiting."""
+
+    asked_sec: list[float] = field(default_factory=list)
+    """How long each request asked to wait."""
+
+
+async def _parked(
+    queue: InboundQueue,
+    holds: _Holds,
+    session_id: uuid.UUID,
+    *,
+    timeout_sec: float,
+) -> list[Inbound]:
+    """Wait on ``queue`` as it does, noting that the wait began."""
+    holds.asked_sec.append(timeout_sec)
+    holds.parked.set()
+    return await _AWAIT_MESSAGES(queue, session_id, timeout_sec=timeout_sec)
+
+
 @pytest.mark.db_pglite
 @pytest.mark.usefixtures("assistant_served")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_the_assistant_long_polls_and_a_chat_message_reaches_it_at_once(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The way scout drains: a held request that returns when a message arrives."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    act_as_assistant()
-    kb = await start_session(client, actor=KB_ACTOR)
+    kb = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
     workspace_id = await open_workspace(client)
     chat_id = await show_chat(client, workspace_id=workspace_id)
+    holds = _Holds()
+    monkeypatch.setattr(
+        InboundQueue,
+        "await_messages",
+        partialmethod(_parked, holds),
+    )
 
     async def held() -> httpx2.Response:
         act_as_assistant()
         return await client.get(f"/api/sessions/{kb}/inbound", params={"wait_sec": 10})
 
     waiting = asyncio.ensure_future(held())
-    await asyncio.sleep(0.2)
+    await holds.parked.wait()
     assert not waiting.done()
+    assert holds.asked_sec == [10.0]
     browser()
     sent = await send_chat(
         client,
