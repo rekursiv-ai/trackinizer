@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Final, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field
-
-from trackinizer.wire.wire_chats import ChatMessage
 
 
 if TYPE_CHECKING:
@@ -23,10 +21,6 @@ type Placement = Literal["main", "side", "floating"]
 
 type PartnerChoice = Literal["shared", "local"]
 """Chat's partner: the server's shared assistant, or the owner's own helper."""
-
-
-_ROUTE: Final = r"^#/[^\s\x00-\x1f\x7f]*$"
-"""A `#/...` hash with no space or control character."""
 
 
 class FloatingRect(BaseModel):
@@ -90,41 +84,6 @@ class WorkspaceState(WorkspaceData):
     """The configured assistant's actor, or None when the server has none."""
 
     partner: WorkspacePartner | None = None
-
-
-class WorkspaceMessageRequest(BaseModel):
-    """A browser message scoped to a persisted chat visual."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    text: str = Field(pattern=r"\S", max_length=16_384)
-    chat_instance_id: uuid.UUID | None = None
-    expected_record_id: uuid.UUID | None = None
-    conversation_id: uuid.UUID | None = None
-    """The conversation to continue; none starts one."""
-
-    page: str | None = Field(default=None, max_length=512, pattern=_ROUTE)
-    """The `#/...` address the sender is on as they send."""
-
-    trail: list[Annotated[str, Field(max_length=512, pattern=_ROUTE)]] = Field(
-        default_factory=list,
-        max_length=8,
-    )
-    """The addresses the sender came through before it, oldest first."""
-
-
-class WorkspaceMessageReceipt(BaseModel):
-    """The partner session and conversation of the original send.
-
-    An idempotent replay returns the original receipt.
-    """
-
-    session_id: uuid.UUID | None
-    """None when the partner session record was deleted since."""
-
-    conversation_id: uuid.UUID
-    message: ChatMessage
-    """The user's line as stored."""
 
 
 class OperationModel(BaseModel):

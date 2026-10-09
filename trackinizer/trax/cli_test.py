@@ -694,6 +694,34 @@ def test_run_shim_resolves_client_from_active_profile(
         resolved.close()
 
 
+def test_helper_verb_hands_the_rest_of_the_line_to_the_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``trax helper claude --as guide -- ARGS`` runs the helper; a failure exits."""
+    heard: list[list[str]] = []
+    codes = iter([0, 3])
+
+    def fake_helper_main(
+        argv: Sequence[str],
+        *,
+        client_factory: Callable[[], Client],
+    ) -> int:
+        del client_factory
+        heard.append(list(argv))
+        return next(codes)
+
+    monkeypatch.setattr("trackinizer.trax.run.helper.main", fake_helper_main)
+    assert (
+        cli.parse_and_run(["helper", "claude", "--as", "guide", "--", "-m", "x"])
+        is None
+    )
+    with pytest.raises(SystemExit) as stopped:
+        cli.parse_and_run(["helper", "codex"])
+
+    assert heard == [["claude", "--as", "guide", "--", "-m", "x"], ["codex"]]
+    assert stopped.value.code == 3
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.main import test_main
 

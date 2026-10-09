@@ -14,14 +14,22 @@ from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store
 from trackinizer.server.visuals.partners import (
+    assistant_holds_chat,
     assistant_key_may_use,
     attach_partner,
     is_assistant_session,
+    is_chat_session,
+    live_chat_session,
     opener_email,
     resolve_partner,
 )
 from trackinizer.server.visuals.workspaces import WorkspaceState
-from trackinizer.wire.wire_chats import CHAT_HELPER_CLI
+from trackinizer.wire.wire_science_chat import (
+    CHAT_HELPER_CLI,
+    SCIENCE_CHAT_LABEL,
+    chat_session_id,
+    poster_label,
+)
 
 
 if TYPE_CHECKING:
@@ -107,20 +115,27 @@ async def _session(
     seq: int,
     ended: bool = False,
     cli: str = "codex",
+    cli_session_id: str | None = None,
+    labels: list[str] | None = None,
+    account: str = "user@example.com",
 ) -> uuid.UUID:
     session_id = uuid.uuid4()
     await conn.execute(
         "INSERT INTO inquiries (id, kind, seq, status, account, title, owner, "
-        "agentsession_opened_by_api_key_id, agentsession_cli, agentsession_ended) "
-        "VALUES ($1, 'AgentSession', $2, $3, 'user@example.com', 'S', $4, $5, "
-        "$7, CASE WHEN $6 THEN clock_timestamp() END)",
+        "agentsession_opened_by_api_key_id, agentsession_cli, agentsession_ended, "
+        "agentsession_cli_session_id, labels) "
+        "VALUES ($1, 'AgentSession', $2, $3, $7, 'S', $4, $5, "
+        "$8, CASE WHEN $6 THEN clock_timestamp() END, $9, $10)",
         session_id,
         seq,
         "complete" if ended else "active",
         owner,
         key,
         ended,
+        account,
         cli,
+        cli_session_id,
+        labels,
     )
     return session_id
 
@@ -341,30 +356,27 @@ async def test_the_owners_own_key_may_use_a_canvas_with_its_local_helper(
         assert not await assistant_key_may_use(
             conn,
             owner_id=_USER,
-            workspace_id=_WORKSPACE,
             partner=partner,
             api_key_id=_USER_KEY,
         )
-        await conn.execute(
-            "INSERT INTO chat_conversations "
-            "(id, user_id, workspace_id, title, partner_session_id) "
-            "VALUES ($1, $2, $3, 't', $4)",
-            uuid.uuid4(),
-            _USER,
-            _WORKSPACE,
-            helper,
+        _ = await _session(
+            conn,
+            key=_USER_KEY,
+            owner="chat-1",
+            seq=2,
+            cli=_HELPER,
+            cli_session_id=chat_session_id(uuid.uuid4()),
+            labels=[SCIENCE_CHAT_LABEL],
         )
         assert await assistant_key_may_use(
             conn,
             owner_id=_USER,
-            workspace_id=_WORKSPACE,
             partner=partner,
             api_key_id=_USER_KEY,
         )
         assert not await assistant_key_may_use(
             conn,
             owner_id=_USER,
-            workspace_id=_WORKSPACE,
             partner=partner,
             api_key_id=_OTHER_KEY,
         )
@@ -372,58 +384,217 @@ async def test_the_owners_own_key_may_use_a_canvas_with_its_local_helper(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_an_assistant_key_needs_a_conversation_on_that_canvas(
+async def test_an_assistant_key_needs_a_live_science_chat_the_owner_is_in(
     pglite_engine: PGliteEngine,
 ) -> None:
-    """Talking to scout elsewhere gives it nothing here."""
+    """Talking to scout gives it the canvas of the people in a chat it has open."""
     await _seed(pglite_engine)
-    other_workspace = uuid.uuid4()
     async with pglite_engine.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO visual_workspaces (id, user_id, is_default, state) "
-            "VALUES ($1, $2, FALSE, $3)",
-            other_workspace,
-            _USER,
-            {"visuals": []},
-        )
-        session = await _session(conn, key=_KB_KEY, owner="scout", seq=1)
+        service = await _session(conn, key=_KB_KEY, owner="scout", seq=1)
         partner = await resolve_partner(
             conn,
-            inbound=_polled(session),
+            inbound=_polled(service),
             assistant=_KB,
             choice="shared",
             owner_id=_USER,
         )
 
-        async def may(workspace: uuid.UUID, *, key: uuid.UUID) -> bool:
+        async def may(owner: uuid.UUID, *, key: uuid.UUID = _KB_KEY) -> bool:
             return await assistant_key_may_use(
                 conn,
-                owner_id=_USER,
-                workspace_id=workspace,
+                owner_id=owner,
                 partner=partner,
                 api_key_id=key,
             )
 
-        assert not await may(_WORKSPACE, key=_KB_KEY)
-        await conn.execute(
-            "INSERT INTO chat_conversations "
-            "(id, user_id, workspace_id, title, partner_session_id) "
-            "VALUES ($1, $2, $3, 't', $4)",
-            uuid.uuid4(),
-            _USER,
-            _WORKSPACE,
-            session,
+        assert not await may(_USER)
+        chat = await _session(
+            conn,
+            key=_KB_KEY,
+            owner="chat-1",
+            seq=2,
+            cli_session_id=chat_session_id(uuid.uuid4()),
+            labels=[SCIENCE_CHAT_LABEL],
         )
-        assert await may(_WORKSPACE, key=_KB_KEY)
-        assert not await may(other_workspace, key=_KB_KEY)
-        assert not await may(_WORKSPACE, key=_OTHER_KEY)
+        # The starter is the chat's account; nobody else is in it yet.
+        assert await may(_USER)
+        assert not await may(_OTHER)
+        await conn.execute(
+            "UPDATE inquiries SET labels = labels || $2::text[] WHERE id = $1",
+            chat,
+            [poster_label("other@example.com")],
+        )
+        assert await may(_OTHER)
+        assert not await may(_USER, key=_OTHER_KEY)
         assert not await assistant_key_may_use(
             conn,
             owner_id=_USER,
-            workspace_id=_WORKSPACE,
             partner=None,
             api_key_id=_KB_KEY,
         )
+        await conn.execute(
+            "UPDATE inquiries SET status = 'complete', agentsession_ended = now() "
+            "WHERE id = $1",
+            chat,
+        )
+        assert not await may(_USER)
+        assert not await may(_OTHER)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_chat_that_is_not_science_gives_the_assistant_no_canvas(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """The label, not the session id, makes a session a science chat."""
+    await _seed(pglite_engine)
+    async with pglite_engine.acquire() as conn:
+        service = await _session(conn, key=_KB_KEY, owner="scout", seq=1)
+        _ = await _session(
+            conn,
+            key=_KB_KEY,
+            owner="chat-1",
+            seq=2,
+            cli_session_id=chat_session_id(uuid.uuid4()),
+        )
+        partner = await resolve_partner(
+            conn,
+            inbound=_polled(service),
+            assistant=_KB,
+            choice="shared",
+            owner_id=_USER,
+        )
+        assert not await assistant_key_may_use(
+            conn,
+            owner_id=_USER,
+            partner=partner,
+            api_key_id=_KB_KEY,
+        )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_conversations_live_session_is_the_assistants_polled_one(
+    pglite_engine: PGliteEngine,
+) -> None:
+    """A squatter's session under the same id, or one nobody drains, is not it."""
+    await _seed(pglite_engine)
+    conversation = uuid.uuid4()
+    cli_session_id = chat_session_id(conversation)
+    async with pglite_engine.acquire() as conn:
+        silent = await _session(
+            conn,
+            key=_KB_KEY,
+            owner="chat-1",
+            seq=1,
+            cli_session_id=cli_session_id,
+        )
+        squatter = await _session(
+            conn,
+            key=_OTHER_KEY,
+            owner="chat-2",
+            seq=2,
+            cli_session_id=cli_session_id,
+        )
+        ended = await _session(
+            conn,
+            key=_KB_KEY,
+            owner="chat-3",
+            seq=3,
+            cli_session_id=cli_session_id,
+            ended=True,
+        )
+
+        async def found(inbound: InboundQueue) -> uuid.UUID | None:
+            return await live_chat_session(
+                conn,
+                inbound=inbound,
+                opener=_KB.email,
+                conversation_id=conversation,
+            )
+
+        assert await found(_polled(squatter, ended)) is None
+        assert await found(_polled()) is None
+        assert await found(_polled(silent)) == silent
+        assert (
+            await live_chat_session(
+                conn,
+                inbound=_polled(silent),
+                opener="other@example.com",
+                conversation_id=conversation,
+            )
+            is None
+        )
+        assert (
+            await live_chat_session(
+                conn,
+                inbound=_polled(silent),
+                opener=_KB.email,
+                conversation_id=uuid.uuid4(),
+            )
+            is None
+        )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_assistant_holds_a_conversation_it_opened_live_or_closed(
+    pglite_engine: PGliteEngine,
+) -> None:
+    await _seed(pglite_engine)
+    held, elsewhere = uuid.uuid4(), uuid.uuid4()
+    async with pglite_engine.acquire() as conn:
+        _ = await _session(
+            conn,
+            key=_KB_KEY,
+            owner="chat-1",
+            seq=1,
+            cli_session_id=chat_session_id(held),
+            ended=True,
+        )
+        _ = await _session(
+            conn,
+            key=_USER_KEY,
+            owner="chat-2",
+            seq=2,
+            cli_session_id=chat_session_id(elsewhere),
+        )
+
+        assert await assistant_holds_chat(conn, assistant=_KB, conversation_id=held)
+        # A helper's own session under the id is not the assistant's.
+        assert not await assistant_holds_chat(
+            conn,
+            assistant=_KB,
+            conversation_id=elsewhere,
+        )
+        assert not await assistant_holds_chat(
+            conn,
+            assistant=_KB,
+            conversation_id=uuid.uuid4(),
+        )
+        assert not await assistant_holds_chat(
+            conn,
+            assistant=None,
+            conversation_id=held,
+        )
+
+
+@pytest.mark.parametrize(
+    ("cli_session_id", "email", "expected"),
+    [
+        ("chat:3d0e", "kb@example.com", True),
+        ("chat:3d0e", "other@example.com", False),
+        ("slack:C1:123", "kb@example.com", False),
+        (None, "kb@example.com", False),
+    ],
+)
+def test_a_chat_session_is_a_chat_id_opened_by_the_assistants_account(
+    cli_session_id: str | None,
+    email: str,
+    expected: bool,
+) -> None:
+    assert is_chat_session(_KB, cli_session_id=cli_session_id, email=email) is expected
+    assert not is_chat_session(None, cli_session_id="chat:3d0e", email=email)
 
 
 @pytest.mark.db_pglite

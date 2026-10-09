@@ -11,6 +11,8 @@ import {
   type WorkspaceState,
 } from "../api/workspaces";
 import { createWorkspacePreset, listWorkspacePresets, openWorkspacePreset } from "../api/presets";
+import { ProfileContext } from "../app/boot";
+import { PROFILE } from "../detail/testing";
 import { createQueryClient } from "../app/queryClient";
 import { newerWorkspace } from "../app/canvasStream";
 import { Canvas } from "./Canvas";
@@ -564,7 +566,8 @@ test("a link to a record in Chat only moves the page: it writes nothing to the c
   vi.mocked(createDefaultWorkspace).mockResolvedValue(initial);
   vi.mocked(getWorkspace).mockResolvedValue(initial);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={client}><Canvas><div>Browse record view</div></Canvas></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><ProfileContext value={PROFILE}>
+    <Canvas><div>Browse record view</div></Canvas></ProfileContext></QueryClientProvider>);
 
   const link = await screen.findByRole("link", { name: "Issue#42 Context record" });
   expect(link.getAttribute("href")).toBe("#/lookup/record-id");

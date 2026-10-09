@@ -83,14 +83,14 @@ no assistant of its own can run `trax helper claude --as ACTOR` as one.
 
 The canvas's one `Chat` button shows `trax.chat`; on a record's page it puts
 the record UUID in `record_id`, and elsewhere it clears it. To
-send, the browser calls `POST /api/workspaces/<workspace-id>/messages` with
+send, the browser calls `POST /api/chats` with
 the persisted Chat instance UUID and a fresh `Idempotency-Key`:
 
 ```json
-{"text":"What led to this experiment?","chat_instance_id":"<chat-instance-id>","expected_record_id":"<record-id>"}
+{"kind":"science","workspace_id":"<workspace-id>","text":"What led to this experiment?","chat_instance_id":"<chat-instance-id>","expected_record_id":"<record-id>"}
 ```
 
-The server checks the signed-in workspace owner, a live assistant, and the Chat
+The server checks the signed-in writer, a live assistant, and the Chat
 instance, and that its record still matches `expected_record_id`. A changed
 record returns 409 before queueing. The server adds the persisted record UUID,
 workspace UUID, and visible visual identities to a typed inbound context.
@@ -106,15 +106,19 @@ Any other address, or a record that does not exist, keeps its route and has
 no record. Each visible visual carries the record it shows the same way, so
 "this" means what the sender sees. The agent receives the
 context beside the message and reads the cited graph rows through trax.
-The receipt names the partner session, the conversation and the stored
-message; it does not claim the agent answered. Retry the same draft with the
+The receipt names the conversation, and the session once the assistant has it
+open; it does not claim the agent answered. Retry the same draft with the
 same key. When the canvas has no persisted visuals, send null for both
 `chat_instance_id` and `expected_record_id`; Chat remains the fallback view.
 
-Chat shows the conversation's stored lines, the user's and the partner's, and
-receives new ones on the canvas's event stream. History lists the user's
-conversations; New chat and Clear start and delete one. Subgraph, timeline,
-and Artifact visuals use the same catalog and operation path.
+A conversation is an AgentSession (label `science-chat`). Chat reads its
+records and refreshes when the canvas event stream says the session changed;
+a line by another poster shows its sender. History lists the chats the user
+started or posted in; Clear chat starts a new one and deletes nothing, and the
+composer says chats are public to every user and cannot be deleted. A science
+chat's session in the Console or on its detail page offers Continue in Chat.
+Subgraph, timeline, and Artifact visuals use the same catalog and operation
+path.
 
 ## Lineage and timeline
 

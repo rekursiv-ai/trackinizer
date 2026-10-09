@@ -30,10 +30,14 @@ function event(actor: string, rooms: string[], kind: string, message: { [field: 
 }
 
 /** `event` drawn as one console line, its agent's click told to `onMention`; a code block's or a path's Copy says how it went in a toast. */
-function line(one: FeedEvent, onMention: ((event: FeedEvent) => void) | null = null) {
+function line(
+  one: FeedEvent,
+  onMention: ((event: FeedEvent) => void) | null = null,
+  onContinue: ((sessionId: string) => void) | null = null,
+) {
   return render(
     <ToastProvider>
-      <ConsoleLine held={appendEvents([], [one])[0]!} kinds={["Issue"]} onMention={onMention} />
+      <ConsoleLine held={appendEvents([], [one])[0]!} kinds={["Issue"]} onMention={onMention} onContinue={onContinue} />
     </ToastProvider>,
   );
 }
@@ -58,6 +62,25 @@ test("a line's agent is a button that asks for a message to it, named for it", (
   expect([agent.tagName, agent.getAttribute("type"), agent.title, agent.textContent]).toEqual(["BUTTON", "button", LONG, LONG]);
   agent.click();
   expect(asked.map(({ actor }) => actor)).toEqual([LONG]);
+});
+
+test("a science chat's session offers Continue in Chat, which opens that session in Chat", () => {
+  const continued: string[] = [];
+  const one = event("chat-3d0e9f1a1b2c", [], "AssistantMessage", { content: "An answer." });
+  line(one, null, (sessionId) => continued.push(sessionId));
+  const button = screen.getByRole("button", { name: "Continue in Chat" });
+  button.click();
+  expect(continued).toEqual([one.session_id]);
+});
+
+test("no other session offers Continue in Chat, nor does a console outside a canvas", () => {
+  line(event("tiles-a", [], "AssistantMessage", { content: "On it." }), null, () => {});
+  line(event("chat-3d0e9f1a1b2", [], "AssistantMessage", { content: "A near miss." }), null, () => {});
+  line(event("scout", [], "AssistantMessage", { content: "The assistant itself." }), null, () => {});
+  expect(screen.queryByRole("button", { name: "Continue in Chat" })).toBeNull();
+  cleanup();
+  line(event("chat-3d0e9f1a1b2c", [], "AssistantMessage", { content: "An answer." }));
+  expect(screen.queryByRole("button", { name: "Continue in Chat" })).toBeNull();
 });
 
 test("a To chip's name is cut to an ellipsis, whole on hover and in its button's name", () => {

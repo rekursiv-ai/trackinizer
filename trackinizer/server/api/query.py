@@ -32,6 +32,7 @@ from trackinizer.server.api._routes_shared import (
     parse_fields,
     parse_seq_ranges,
 )
+from trackinizer.server.api.session_access import require_chat_opener_of
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import iter_sse_events
 from trackinizer.server.primitives import lookup_kinds
@@ -455,7 +456,9 @@ async def delete_inquiry_route(
 
     Writer-gated like every other mutation; inquiries (including AgentSessions)
     are a shared workspace, so any writer may purge an unowned row. A claimed
-    row must first release its owner through the compare-and-set owner route.
+    row must first release its owner through the compare-and-set owner route. A
+    science chat is the exception: it is public and permanent, so only the key that
+    opened it may purge it.
 
     Args:
       target_id: UUID of the inquiry to delete.
@@ -467,6 +470,7 @@ async def delete_inquiry_route(
       result: Mapping with "id" (inquiry UUID) and "change_id" (purge operation).
 
     """
+    await require_chat_opener_of(request, identity, target_id)
     store = get_store(request)
     change_id = await store.purge(
         target_id,

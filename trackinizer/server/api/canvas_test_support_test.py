@@ -1,4 +1,4 @@
-"""Tests for the canvas Chat route tests' seeding helpers."""
+"""Tests for the canvas and science chat route tests' seeding helpers."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ import pytest
 
 from trackinizer.conftest import make_store
 from trackinizer.lib.codec import from_plain, loads
-from trackinizer.server.api import chat_test_support
-from trackinizer.server.api.chat_test_support import (
+from trackinizer.server.api import canvas_test_support
+from trackinizer.server.api.canvas_test_support import (
     KB_EMAIL,
     KB_KEY_ID,
     KB_USER_ID,
@@ -26,7 +26,9 @@ from trackinizer.server.api.chat_test_support import (
     act_as_user_agent,
     browser,
     conversation_of,
+    converse,
     drain,
+    open_science_chat,
     open_workspace,
     revision_of,
     seed_accounts,
@@ -50,7 +52,7 @@ if TYPE_CHECKING:
 def installed(monkeypatch: pytest.MonkeyPatch) -> list[AuthIdentity]:
     """Collect the identities the helpers install, in order."""
     identities: list[AuthIdentity] = []
-    monkeypatch.setattr(chat_test_support, "install_identity", identities.append)
+    monkeypatch.setattr(canvas_test_support, "install_identity", identities.append)
     return identities
 
 
@@ -155,8 +157,18 @@ def test_a_started_session_is_polled_once_so_it_is_live() -> None:
     assert _run(server, call=start_session) == session_id
 
     started, polled, started_bare, _ = server.asked
-    assert loads(started.content) == {"cli": "codex", "actor": "scout"}
-    assert loads(started_bare.content) == {"cli": "codex", "actor": None}
+    assert loads(started.content) == {
+        "cli": "codex",
+        "actor": "scout",
+        "cli_session_id": None,
+        "account": None,
+    }
+    assert loads(started_bare.content) == {
+        "cli": "codex",
+        "actor": None,
+        "cli_session_id": None,
+        "account": None,
+    }
     assert (polled.method, polled.url.path) == (
         "GET",
         f"/api/sessions/{session_id}/inbound",
@@ -245,14 +257,11 @@ def test_chat_is_shown_at_the_canvas_current_revision() -> None:
         _run(server, call=lambda client: show_chat(client, workspace_id=workspace_id))
 
 
-def test_a_sent_message_carries_its_conversation_and_key() -> None:
+def test_a_posted_line_carries_its_canvas_conversation_and_key() -> None:
     workspace_id, chat, conversation, key = (uuid.uuid4() for _ in range(4))
     server = _Server(
         answers={
-            ("POST", f"/api/workspaces/{workspace_id}/messages"): (
-                200,
-                {"conversation_id": str(conversation)},
-            ),
+            ("POST", "/api/chats"): (200, {"conversation_id": str(conversation)}),
         },
     )
 
@@ -280,6 +289,7 @@ def test_a_sent_message_carries_its_conversation_and_key() -> None:
     assert conversation_of(sent) == conversation
     continued, started = server.asked
     assert loads(continued.content) == {
+        "workspace_id": str(workspace_id),
         "text": "hi",
         "chat_instance_id": str(chat),
         "expected_record_id": None,
@@ -290,6 +300,95 @@ def test_a_sent_message_carries_its_conversation_and_key() -> None:
         from_plain(loads(started.content), dict[str, object])["conversation_id"] is None
     )
     assert uuid.UUID(started.headers["Idempotency-Key"]) != key
+
+
+def test_a_posted_line_names_the_line_it_forks_when_given_one() -> None:
+    workspace_id, chat, session = (uuid.uuid4() for _ in range(3))
+    server = _Server(
+        answers={("POST", "/api/chats"): (200, {"conversation_id": str(chat)})},
+    )
+    fork = {"session_id": str(session), "part": 0, "idx": 3}
+
+    _ = _run(
+        server,
+        call=lambda client: send_chat(
+            client,
+            workspace_id=workspace_id,
+            chat_id=chat,
+            text="hi",
+            fork=fork,
+        ),
+    )
+
+    [forked] = server.asked
+    assert from_plain(loads(forked.content), dict[str, object])["fork"] == fork
+
+
+def test_the_assistant_opens_a_conversation_as_its_science_chat() -> None:
+    conversation, session_id = uuid.uuid4(), uuid.uuid4()
+    store, engine = make_store()
+    server = _Server(
+        answers={
+            ("POST", "/api/sessions/start"): (201, {"id": str(session_id)}),
+            ("GET", f"/api/sessions/{session_id}/inbound"): (200, {"messages": []}),
+        },
+    )
+
+    opened = _run(
+        server,
+        call=lambda client: open_science_chat(
+            client,
+            store,
+            conversation_id=conversation,
+            account=OTHER_EMAIL,
+            posters=(TEST_USER_EMAIL,),
+        ),
+    )
+
+    assert opened == session_id
+    assert loads(server.asked[0].content) == {
+        "cli": "codex",
+        "actor": f"chat-{conversation.hex[:12]}",
+        "cli_session_id": f"chat:{conversation}",
+        "account": OTHER_EMAIL,
+    }
+    assert [each.args for each in engine.conn.execute.await_args_list] == [
+        (
+            "UPDATE inquiries SET labels = $2 WHERE id = $1",
+            session_id,
+            ["science-chat", f"poster:{TEST_USER_EMAIL}"],
+        ),
+    ]
+
+
+def test_conversing_posts_a_line_then_has_the_assistant_open_its_session() -> None:
+    workspace_id, chat, conversation, session_id = (uuid.uuid4() for _ in range(4))
+    store, _ = make_store()
+    server = _Server(
+        answers={
+            ("POST", "/api/chats"): (200, {"conversation_id": str(conversation)}),
+            ("POST", "/api/sessions/start"): (201, {"id": str(session_id)}),
+            ("GET", f"/api/sessions/{session_id}/inbound"): (200, {"messages": []}),
+        },
+    )
+
+    opened = _run(
+        server,
+        call=lambda client: converse(
+            client,
+            store,
+            workspace_id=workspace_id,
+            chat_id=chat,
+            text="hello there",
+        ),
+    )
+
+    assert opened == session_id
+    posted, started, _ = server.asked
+    assert from_plain(loads(posted.content), dict[str, object])["text"] == "hello there"
+    assert from_plain(loads(started.content), dict[str, object])["cli_session_id"] == (
+        f"chat:{conversation}"
+    )
 
 
 def test_a_refused_send_names_no_conversation() -> None:

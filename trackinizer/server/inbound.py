@@ -56,8 +56,9 @@ class Inbound:
 
     context: WorkspaceMessageContext | None = None
 
-    seq: int | None = None
-    """The Chat message's number in its conversation, for the delivered frame."""
+
+class IdempotencyReuseError(Exception):
+    """An idempotency key that sent one message was used to send another."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -65,6 +66,8 @@ class _SendReceipt:
     """Original send result retained for retry-safe responses."""
 
     delivered: tuple[UUID, ...]
+    fingerprint: str = ""
+    source: str | None = None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -179,6 +182,8 @@ class InboundQueue:
         self,
         key: UUID | None,
         targets: list[tuple[UUID, Inbound]],
+        *,
+        fingerprint: str = "",
     ) -> list[UUID]:
         """Atomically dedup, enqueue, and record one idempotent send.
 
@@ -199,16 +204,27 @@ class InboundQueue:
         Args:
           key: Idempotency key (UUID or None).
           targets: (session_id, message) pairs to enqueue.
+          fingerprint: Names what the send says. A key that is replayed with
+            another fingerprint is a different send under a used key, which is
+            refused; callers that name none replay whatever the body.
 
         Returns:
           delivered: the session ids enqueued to (or the original receipt on
             a key replay).
+
+        Raises:
+          IdempotencyReuseError: ``key`` already sent a message with another
+            fingerprint.
 
         """
         with self._lock:
             if key is not None:
                 seen = self._seen_sends.get(key)
                 if seen is not None:
+                    if seen.fingerprint != fingerprint:
+                        raise IdempotencyReuseError(
+                            "Idempotency-Key already used for another message",
+                        )
                     return list(seen.delivered)
             delivered: list[UUID] = []
             for session_id, message in targets:
@@ -217,9 +233,28 @@ class InboundQueue:
             if key is not None and delivered:
                 self._remember(
                     key,
-                    receipt=_SendReceipt(delivered=tuple(delivered)),
+                    receipt=_SendReceipt(
+                        delivered=tuple(delivered),
+                        fingerprint=fingerprint,
+                        source=targets[0][1].source,
+                    ),
                 )
             return delivered
+
+    def sender_of(self, key: UUID) -> str | None:
+        """Return who sent the message that first used ``key``, while it is remembered.
+
+        Args:
+          key: An idempotency key.
+
+        Returns:
+          source: The attested sender of the send ``key`` delivered; ``None`` for a
+            key never used, forgotten, or used by a message without a sender.
+
+        """
+        with self._lock:
+            seen = self._seen_sends.get(key)
+            return None if seen is None else seen.source
 
     def _remember(self, key: UUID, *, receipt: _SendReceipt) -> None:
         """Retain a bounded receipt under the caller's queue lock."""

@@ -69,9 +69,16 @@
 .chat-line-user { align-self: flex-end; background: var(--surface-overlay); }
 .chat-line-assistant { align-self: flex-start; background: var(--surface-raised); }
 .chat-line-pending { opacity: .7; }
+.chat-line-other { align-self: flex-start; }
+.chat-line-author { display: block; margin-bottom: 3px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.chat-notice { margin: 0; padding: 6px 12px 0; color: var(--muted); font-size: 11px; }
 .chat-line-body { margin: 0; }
+/* Seen on hover or focus, and always where there is no hover to find it by. */
+.chat-line-fork { display: block; margin-top: 4px; padding: 0; font-size: 11px; opacity: 0; }
+.chat-line:hover .chat-line-fork, .chat-line:focus-within .chat-line-fork { opacity: 1; }
+@media (hover: none) { .chat-line-fork { opacity: 1; } }
+.chat-fork-banner { margin: 0; padding: 6px 12px 0; color: var(--muted); font-size: 12px; }
 .chat-line p.chat-line-body { white-space: pre-wrap; }
-.chat-receipt { align-self: flex-end; color: var(--muted); font-size: 11px; }
 .chat-status { align-self: flex-start; color: var(--muted); font-size: 12px; font-style: italic; }
 .chat-panel .composer { padding: 8px 12px 12px; border-top: 1px solid var(--line); }
 /* The page and the other main visuals share a strip: each has 240 px at least, and a strip with more than fit scrolls inside itself. Side visuals stand in one column beside it, up to 360 px or 30% wide, so Chat's header and box stay on the screen however many visuals there are. */

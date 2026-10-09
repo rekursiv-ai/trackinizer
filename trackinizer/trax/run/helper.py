@@ -3,16 +3,29 @@
 Gives any server a Chat assistant. The server's assistant (``--assistant
 ACTOR=EMAIL``) is whichever live session the configured account opens under the
 configured actor, so ``trax helper claude --as ACTOR``, run with that account's
-key, becomes it. Each Chat conversation is one CLI conversation: its first
-message starts one and every later one resumes it (``claude --resume``, ``codex
-exec resume``), so a chat reopened from History goes on where it left off. Each
-answer is posted to its conversation.
+key, becomes it; run with your own key, it is the helper a canvas of yours can
+choose. It serves science chat as a hosted assistant does: each conversation is a
+session of its own (``cli_session_id`` ``chat:<id>``, label ``science-chat``,
+account the first poster), and the helper records the lines posted there, and its
+answers, as that session's records. Each conversation is also one CLI conversation:
+its first line starts one and every later one resumes it (``claude --resume``,
+``codex exec resume``), so a chat reopened from History goes on where it left off.
+The first line of a fork names the line of another chat it starts from: the helper
+opens the fork's session with that chat's lines up to it, links the two, and tells the
+CLI those lines with the first turn, since a new CLI conversation has not heard them.
 
-The session takes messages only through Chat: the server refuses a Console or
-direct send to it, since the helper answers into conversations and keeps no
-transcript. Arguments after ``--`` go to the CLI on every turn, e.g. a model or
-the tools it may run (``--allowedTools 'Bash(trax:*)'`` lets Claude read the
-graph and move the canvas with ``trax``).
+A line left unanswered by a restart is answered when the helper starts. The session
+holds the line but not the canvas it was sent from, so that answer is made without
+the canvas commands or context, as is a restarted assistant's. The helper's own
+session names itself by its actor and resumes on a restart, so lines posted while it
+was down are still queued for it; run one helper per actor and key, and name another
+with ``--as``.
+
+The service session takes lines only through Chat: the server refuses a Console or
+direct send to it, since the helper answers into conversations. Arguments after
+``--`` go to the CLI on every turn, e.g. a model or the tools it may run
+(``--allowedTools 'Bash(trax:*)'`` lets Claude read the graph and move the canvas
+with ``trax``).
 
 Examples:
   trax helper claude -- --model haiku --allowedTools 'Bash(trax:*)'
@@ -30,18 +43,18 @@ from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast
 import argparse
 import json
 import logging
+import os
 import subprocess
 import threading
 
+from trackinizer.client.errors import ClientError
 from trackinizer.lib.codec import ReadError, from_plain, loads
 from trackinizer.lib.userdirs import state_dir
-from trackinizer.trax.run.inbound import render_inbound
-from trackinizer.wire.wire_chats import CHAT_HELPER_CLI, ChatReply
-from trackinizer.wire.wire_sessions import (
-    SessionEnd,
-    SessionStart,
-    WorkspaceMessageContext,
-)
+from trackinizer.trax.run.chat_sessions import ChatSessions
+from trackinizer.trax.run.inbound import render_fork_lines, render_inbound
+from trackinizer.trax.run.redact import redactor_from_environ
+from trackinizer.wire.wire_science_chat import CHAT_HELPER_CLI
+from trackinizer.wire.wire_sessions import SessionEnd, SessionStart
 
 
 if TYPE_CHECKING:
@@ -49,7 +62,9 @@ if TYPE_CHECKING:
 
     import uuid
 
+    from trackinizer.client.chat_forks import ForkLine
     from trackinizer.client.client import Client
+    from trackinizer.trax.run.redact import Redactor
 
 
 _logger = logging.getLogger(__name__)
@@ -273,13 +288,16 @@ def serve(
     memory: Memory,
     run: Runner,
     stop: threading.Event,
+    redactor: Redactor | None = None,
     wait_sec: float = 25.0,
+    retry_sec: float = 5.0,
 ) -> None:
-    """Open the helper's session and answer Chat until ``stop`` is set.
+    """Open the helper's session and serve science chat until ``stop`` is set.
 
-    It first answers each conversation the session owes, as after a restart,
-    then each message as it comes. A message from outside Chat names no
-    conversation, and is left. The session ends however the loop does.
+    It first answers each conversation whose session ends in a line nobody
+    answered, as after a restart, then each line as it comes. A line from outside
+    Chat names no conversation, and is left. Every session it opened ends however
+    the loop does.
 
     Args:
       client: The Trackinizer client, as the assistant's account.
@@ -289,56 +307,82 @@ def serve(
       memory: Which CLI conversation each Chat conversation is.
       run: Runs one turn's command.
       stop: Ends the loop once set.
+      redactor: Masks secret values in every record uploaded to a chat's session.
       wait_sec: How long each drain waits for a message.
+      retry_sec: How long to wait before draining again after the server fails.
 
     """
+    # The service session names itself, so a restart resumes it: a line posted while
+    # the helper was down is still queued for it, and a new session would not have it.
     started = client.session_start(
         SessionStart(
             cli=CHAT_HELPER_CLI,
+            cli_session_id=f"{CHAT_HELPER_CLI}:{actor}",
             actor=actor,
             title=f"Chat helper ({cli.name})",
             started=datetime.now(UTC),
         ),
     )
+    chats = ChatSessions(client, actor=actor, redactor=redactor)
     try:
-        for owed in client.awaiting_chats():
-            last = client.read_chat(owed.conversation_id).messages[-1]
-            context = WorkspaceMessageContext(
-                workspace_id=owed.workspace_id,
-                visible_visuals=[],
-                conversation_id=owed.conversation_id,
-            )
+        for owed in chats.owed():
             _answer(
-                client,
+                chats,
                 cli,
-                prompt=render_inbound(last.text, last.author, None, context=context),
+                prompt=render_inbound(owed.text, owed.author, None),
                 conversation_id=owed.conversation_id,
                 extra=extra,
                 memory=memory,
                 run=run,
             )
         while not stop.is_set():
-            for text, source, room, context in client.drain_inbound(
-                started.id,
-                wait_sec=wait_sec,
-            ):
+            try:
+                drained = client.drain_inbound(started.id, wait_sec=wait_sec)
+            except ClientError:
+                _logger.warning("trax helper: could not drain; retrying", exc_info=True)
+                _ = stop.wait(retry_sec)
+                continue
+            for text, source, room, context in drained:
                 if context is None or context.conversation_id is None:
                     continue
+                forked: list[ForkLine] = []
+                try:
+                    forked = chats.fork(
+                        context.conversation_id,
+                        fork=context.fork,
+                        poster=source,
+                        title=text,
+                    )
+                    chats.hear(context.conversation_id, poster=source, text=text)
+                except ClientError:
+                    _logger.warning(
+                        "trax helper: could not record a line of %s",
+                        context.conversation_id,
+                        exc_info=True,
+                    )
+                    continue
                 _answer(
-                    client,
+                    chats,
                     cli,
-                    prompt=render_inbound(text, source, room, context=context),
+                    prompt=render_fork_lines(
+                        render_inbound(text, source, room, context=context),
+                        lines=forked,
+                    ),
                     conversation_id=context.conversation_id,
                     extra=extra,
                     memory=memory,
                     run=run,
                 )
     finally:
-        client.session_end(started.id, SessionEnd(ended=datetime.now(UTC)))
+        chats.close()
+        try:
+            _ = client.session_end(started.id, SessionEnd(ended=datetime.now(UTC)))
+        except ClientError:
+            _logger.warning("trax helper: could not end its session", exc_info=True)
 
 
 def main(argv: Sequence[str], *, client_factory: Callable[[], Client]) -> int:
-    """Entry point for ``trax helper``, called from ``trax/cli.py``.
+    """Run ``trax helper``, as ``trax/cli.py`` calls it.
 
     Args:
       argv: ``trax helper`` arguments; everything after ``--`` goes to the CLI.
@@ -372,6 +416,7 @@ def main(argv: Sequence[str], *, client_factory: Callable[[], Client]) -> int:
             ),
             run=lambda command: _run(command, timeout_sec=flags.turn_timeout),
             stop=stop,
+            redactor=redactor_from_environ(os.environ),
         )
     except KeyboardInterrupt:
         stop.set()
@@ -406,7 +451,7 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _answer(
-    client: Client,
+    chats: ChatSessions,
     cli: HelperCli,
     *,
     prompt: str,
@@ -415,26 +460,35 @@ def _answer(
     memory: Memory,
     run: Runner,
 ) -> None:
-    """Answer one Chat line by a CLI turn, resuming its conversation; a failure is said in it."""
+    """Answer one line by a CLI turn, resuming its conversation; a failure is said in it."""
     resume = memory.get(conversation_id)
     try:
         turn = _turn(cli, prompt=prompt, resume=resume, extra=extra, run=run)
     except HelperError as error:
         _logger.warning("trax helper: no answer for %s: %s", conversation_id, error)
-        client.post_chat_reply(
-            conversation_id,
-            reply=ChatReply(
-                kind="answer",
-                text=f"The helper could not answer: {error}",
-            ),
+        _record(
+            chats,
+            conversation_id=conversation_id,
+            text=f"The helper could not answer: {error}",
         )
         return
     if turn.cli_session_id is not None:
         memory.put(conversation_id, turn.cli_session_id)
-    client.post_chat_reply(
-        conversation_id,
-        reply=ChatReply(kind="answer", text=turn.text),
-    )
+    _record(chats, conversation_id=conversation_id, text=turn.text)
+
+
+# An answer the server would not take leaves the line last in its session, so the next
+# start finds it owed; the helper has other conversations to serve meanwhile.
+def _record(chats: ChatSessions, *, conversation_id: uuid.UUID, text: str) -> None:
+    """Record an answer in its conversation's session; a server failure is logged."""
+    try:
+        chats.answer(conversation_id, text=text)
+    except ClientError:
+        _logger.warning(
+            "trax helper: could not record the answer to %s",
+            conversation_id,
+            exc_info=True,
+        )
 
 
 # A conversation whose CLI session is gone (deleted, or from another machine) is

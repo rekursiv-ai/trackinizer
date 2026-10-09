@@ -11,22 +11,25 @@ import json
 import uuid
 
 from trackinizer.lib.codec import from_plain
-from trackinizer.server.chat_hub import MessageFrame
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.notify import tx
-from trackinizer.server.visuals.chats import (
-    ChatRequestConflictError,
-    SentMessage,
-    add_message,
-    replay_of,
-    start_or_continue,
+from trackinizer.server.visuals.chat_forks import (
+    ConversationTakenError,
+    ForeignChatError,
+    may_continue,
 )
 from trackinizer.server.visuals.partners import (
+    assistant_holds_chat,
     assistant_key_may_use,
     attach_partner,
+    live_chat_session,
     resolve_partner,
 )
 from trackinizer.server.visuals.reports import read_artifact_content_on_conn
+from trackinizer.server.visuals.science_chats import (
+    read_starter,
+    science_chat_exists_at,
+)
 from trackinizer.server.visuals.screens import read_screen
 from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
@@ -35,13 +38,12 @@ from trackinizer.server.visuals.workspaces import (
     Navigate,
     ShowVisual,
     WorkspaceData,
-    WorkspaceMessageReceipt,
-    WorkspaceMessageRequest,
     WorkspaceState,
     apply_operation,
     initial_data,
     refuse_record,
 )
+from trackinizer.wire.wire_science_chat import ChatSend, ChatSent
 from trackinizer.wire.wire_sessions import (
     WorkspaceArtifactContent,
     WorkspaceMessageContext,
@@ -54,8 +56,7 @@ if TYPE_CHECKING:
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
     from trackinizer.server.auth import Role
-    from trackinizer.server.chat_hub import ChatHub
-    from trackinizer.server.config import Assistant
+    from trackinizer.server.config import Assistant, ChatOrgs
     from trackinizer.server.visuals.catalog import VisualCatalogBody
 
 
@@ -84,7 +85,7 @@ class WorkspaceKeyRefusedError(Exception):
 
 
 class WorkspaceSessionUnavailableError(Exception):
-    """The assistant has no live session to take a browser message."""
+    """The canvas's partner has no session that can take this browser message."""
 
 
 class PartnerBusyError(Exception):
@@ -93,10 +94,6 @@ class PartnerBusyError(Exception):
 
 class WorkspaceContextChangedError(Exception):
     """The chat visual now targets a different record or report."""
-
-
-class DuplicateSendError(Exception):
-    """A concurrent send with the same idempotency key stored its message first."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -108,104 +105,158 @@ class AppliedOperation:
     """The key had already been applied: nothing changed, so nothing is published."""
 
 
-async def send_workspace_message(
+async def send_chat_line(
     engine: DatabaseEngine,
     *,
     user_id: uuid.UUID,
-    workspace_id: uuid.UUID,
-    body: WorkspaceMessageRequest,
+    body: ChatSend,
     key: uuid.UUID,
     source: str,
     source_role: Role,
     inbound: InboundQueue,
     assistant: Assistant | None,
-    hub: ChatHub,
-) -> WorkspaceMessageReceipt | None:
-    """Store a message, publish it, then queue it for the partner.
+    orgs: ChatOrgs,
+) -> ChatSent | None:
+    """Queue a browser line for a science chat's assistant, with its canvas context.
 
-    The message is stored as the next line of its conversation, which a null
-    ``conversation_id`` starts, together with the key and a hash of the request.
-    After the commit it is published to the owner's open browsers, then queued for
-    the assistant with its conversation in the context. A send whose key
-    is already stored is a replay: the same request returns the original receipt,
-    queues nothing, and answers even when the partner has since gone away; a
-    different request under that key raises. Two concurrent sends with one key
-    store one message and replay the other.
+    Nothing is stored here: the assistant records the line in the conversation's
+    session. A conversation whose session the assistant has open takes the line on
+    that session's own queue; any other, and a new one, goes to the assistant's
+    service session, which opens or resumes the conversation's session before it
+    answers. A new conversation is named by ``key``, so a retry under the same key
+    queues nothing again and answers with the same conversation.
 
     Args:
       engine: Database connection source.
       user_id: Authenticated browser account.
-      workspace_id: Canvas carrying the partner and visual context.
-      body: Browser message, optional conversation and chat visual identity.
+      body: The line, its canvas, and optional conversation and chat visual identity.
       key: Required idempotency key.
       source: Attested browser principal email.
       source_role: That principal's role.
       inbound: Session message queue.
       assistant: The configured assistant, if any.
-      hub: Where the committed line is published.
+      orgs: How the server groups its users into organisations.
 
     Returns:
-      receipt: Partner session, conversation and stored line, or None for a
-        foreign canvas.
+      sent: The conversation, and its session when the assistant has it open; None
+        for a foreign canvas.
 
     Raises:
-      ChatConversationNotFoundError: The conversation is not this user's on this canvas.
-      ChatRequestConflictError: The key was used for another send.
-      WorkspaceSessionUnavailableError: The canvas has no live partner.
+      WorkspaceSessionUnavailableError: The canvas has no live partner, or its local
+        helper was asked into a conversation the shared assistant holds.
+      PartnerBusyError: The queue the line would join is full.
+      WorkspaceContextChangedError: The chat visual targets another record now.
+      IdempotencyReuseError: ``key`` already posted another line.
+      ForeignChatError: The conversation was started outside the poster's organisation.
+      ConversationTakenError: The fork's key names a conversation someone else began.
+      ValueError: The fork names no line of a science chat.
 
     """
-    request_hash = hashlib.sha256(
-        json.dumps(
-            {"workspace_id": str(workspace_id), "body": body.model_dump(mode="json")},
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode(),
-    ).hexdigest()
+    conversation_id = key if body.fork else (body.conversation_id or key)
     async with engine.acquire() as conn:
-        replay = await replay_of(
-            conn,
-            user_id=user_id,
-            request_key=key,
-            request_hash=request_hash,
+        row = await conn.fetchrow(
+            "SELECT id, revision, state FROM visual_workspaces "
+            "WHERE id = $1 AND user_id = $2",
+            body.workspace_id,
+            user_id,
         )
-    if replay is not None:
-        return _receipt(replay)
-    try:
-        async with engine.acquire() as conn, tx(conn):
-            queued = await _store_send(
+        if row is None:
+            return None
+        await _check_fork_or_membership(
+            conn,
+            body=body,
+            conversation_id=conversation_id,
+            email=source,
+            assistant=assistant,
+            orgs=orgs,
+            inbound=inbound,
+        )
+        state = state_from_row(cast("Mapping[str, object]", row))
+        partner = await resolve_partner(
+            conn,
+            inbound=inbound,
+            assistant=assistant,
+            choice=state.partner_choice,
+            owner_id=user_id,
+        )
+        if partner is None or partner.session_id is None or partner.status != "live":
+            raise WorkspaceSessionUnavailableError(
+                "Your local helper is not running; start it with `trax helper claude`"
+                if state.partner_choice == "local"
+                else "The assistant is not running",
+            )
+        # Only the assistant drains a chat's own session. A local helper opens its
+        # chats but drains its service session alone, so a line sent to one of its
+        # chats would be read by nobody.
+        chat = None
+        if state.partner_choice == "local":
+            if await assistant_holds_chat(
                 conn,
-                user_id=user_id,
-                workspace_id=workspace_id,
-                body=body,
-                key=key,
-                request_hash=request_hash,
-                source=source,
-                source_role=source_role,
-                inbound=inbound,
                 assistant=assistant,
-            )
-    except DuplicateSendError:
-        async with engine.acquire() as conn:
-            replay = await replay_of(
+                conversation_id=conversation_id,
+            ):
+                raise WorkspaceSessionUnavailableError(
+                    "The shared assistant holds this conversation; start a new one "
+                    "to use your local helper",
+                )
+        elif assistant is not None:
+            chat = await live_chat_session(
                 conn,
-                user_id=user_id,
-                request_key=key,
-                request_hash=request_hash,
+                inbound=inbound,
+                opener=assistant.email,
+                conversation_id=conversation_id,
             )
-        if replay is None:
-            raise ChatRequestConflictError(
-                "Idempotency-Key already used for another message",
-            ) from None
-        return _receipt(replay)
-    if queued is None:
-        return None
-    sent, session_id, inbound_message = queued
-    hub.publish(
-        workspace_id,
-        frame=MessageFrame(conversation_id=sent.conversation_id, message=sent.message),
+        target = chat or partner.session_id
+        if inbound.is_full(target):
+            raise PartnerBusyError("Partner busy: too many unread messages; try again.")
+        record_id, record, artifact_content = await _chat_target(
+            conn,
+            state=state,
+            body=body,
+        )
+        screen = await read_screen(
+            conn,
+            page=body.page,
+            trail=body.trail,
+            visuals=state.visuals,
+        )
+    _ = inbound.send_once(
+        key,
+        [
+            (
+                target,
+                Inbound(
+                    text=body.text,
+                    source=source,
+                    source_role=source_role,
+                    context=WorkspaceMessageContext(
+                        workspace_id=body.workspace_id,
+                        record_id=record_id,
+                        record=record,
+                        artifact_content=artifact_content,
+                        visible_visuals=screen.visuals,
+                        agent_instructions=state.agent_instructions,
+                        continuation_record_id=state.continuation_record_id,
+                        conversation_id=conversation_id,
+                        fork=body.fork,
+                        page=screen.page,
+                        trail=screen.trail,
+                    ),
+                ),
+            ),
+        ],
+        fingerprint=hashlib.sha256(
+            "\0".join(
+                (
+                    str(conversation_id),
+                    str(body.workspace_id),
+                    body.text,
+                    str(body.fork),
+                ),
+            ).encode(),
+        ).hexdigest(),
     )
-    inbound.enqueue(session_id, inbound_message)
-    return _receipt(sent)
+    return ChatSent(conversation_id=conversation_id, session_id=chat)
 
 
 async def create_default_workspace(
@@ -486,109 +537,11 @@ def state_from_row(row: Mapping[str, object]) -> WorkspaceState:
     )
 
 
-async def _store_send(
-    conn: Conn,
-    *,
-    user_id: uuid.UUID,
-    workspace_id: uuid.UUID,
-    body: WorkspaceMessageRequest,
-    key: uuid.UUID,
-    request_hash: str,
-    source: str,
-    source_role: Role,
-    inbound: InboundQueue,
-    assistant: Assistant | None,
-) -> tuple[SentMessage, uuid.UUID, Inbound] | None:
-    """Validate a send and store its message; return it with what to queue."""
-    row = await conn.fetchrow(
-        "SELECT id, revision, state FROM visual_workspaces "
-        "WHERE id = $1 AND user_id = $2 FOR SHARE",
-        workspace_id,
-        user_id,
-    )
-    if row is None:
-        return None
-    state = state_from_row(cast("Mapping[str, object]", row))
-    partner = await resolve_partner(
-        conn,
-        inbound=inbound,
-        assistant=assistant,
-        choice=state.partner_choice,
-        owner_id=user_id,
-    )
-    if partner is None or partner.session_id is None or partner.status != "live":
-        raise WorkspaceSessionUnavailableError(
-            "Your local helper is not running; start it with `trax helper claude`"
-            if state.partner_choice == "local"
-            else "The assistant is not running",
-        )
-    if inbound.is_full(partner.session_id):
-        raise PartnerBusyError("Partner busy: too many unread messages; try again.")
-    record_id, record, artifact_content = await _chat_target(
-        conn,
-        state=state,
-        body=body,
-    )
-    conversation_id = await start_or_continue(
-        conn,
-        user_id=user_id,
-        workspace_id=workspace_id,
-        conversation_id=body.conversation_id,
-        text=body.text,
-        partner_session_id=partner.session_id,
-        partner_actor=partner.actor,
-    )
-    message = await add_message(
-        conn,
-        conversation_id=conversation_id,
-        role="user",
-        author=source,
-        text=body.text,
-        request_key=key,
-        request_hash=request_hash,
-    )
-    if message is None:
-        raise DuplicateSendError
-    screen = await read_screen(
-        conn,
-        page=body.page,
-        trail=body.trail,
-        visuals=state.visuals,
-    )
-    context = WorkspaceMessageContext(
-        workspace_id=workspace_id,
-        record_id=record_id,
-        record=record,
-        artifact_content=artifact_content,
-        visible_visuals=screen.visuals,
-        agent_instructions=state.agent_instructions,
-        continuation_record_id=state.continuation_record_id,
-        conversation_id=conversation_id,
-        page=screen.page,
-        trail=screen.trail,
-    )
-    return (
-        SentMessage(
-            conversation_id=conversation_id,
-            session_id=partner.session_id,
-            message=message,
-        ),
-        partner.session_id,
-        Inbound(
-            text=body.text,
-            source=source,
-            source_role=source_role,
-            context=context,
-            seq=message.seq,
-        ),
-    )
-
-
 async def _chat_target(
     conn: Conn,
     *,
     state: WorkspaceState,
-    body: WorkspaceMessageRequest,
+    body: ChatSend,
 ) -> tuple[
     uuid.UUID | None,
     WorkspaceRecordContext | None,
@@ -630,15 +583,6 @@ async def _chat_target(
                 revision.model_dump(),
             )
     return record_id, record, artifact_content
-
-
-def _receipt(sent: SentMessage) -> WorkspaceMessageReceipt:
-    """Build the receipt for a stored send."""
-    return WorkspaceMessageReceipt(
-        session_id=sent.session_id,
-        conversation_id=sent.conversation_id,
-        message=sent.message,
-    )
 
 
 async def _remember(
@@ -696,10 +640,10 @@ async def _check_record(
 
 
 # A browser sees only its own canvas. An agent key may use a canvas only as its Chat
-# partner: the key opened the partner's live session and the owner has a
-# conversation on this canvas with that session. With a local partner that is the
-# owner's own key; with the shared assistant, the owner's own key is refused by
-# name, so a terminal `trax workspace` learns why. Any other is told nothing.
+# partner: the key opened the partner's live session and a live science chat in
+# which the owner is a poster. With a local partner that is the owner's own key;
+# with the shared assistant, the owner's own key is refused by name, so a terminal
+# `trax workspace` learns why. Any other is told nothing.
 async def _workspace_for_principal(
     conn: Conn,
     *,
@@ -737,7 +681,6 @@ async def _workspace_for_principal(
     if await assistant_key_may_use(
         conn,
         owner_id=owner_id,
-        workspace_id=workspace_id,
         partner=partner,
         api_key_id=agent_api_key_id,
     ):
@@ -747,3 +690,43 @@ async def _workspace_for_principal(
             "Only the canvas's Chat partner may use it with an API key",
         )
     return None
+
+
+# The starter asked about is the conversation the line will be queued for, which the
+# idempotency key can name as well as the body can. The first line of a conversation is
+# queued before any session carries its id, so the sender of the send that used the id
+# as its key is its starter until a session says otherwise.
+async def _check_fork_or_membership(
+    conn: Conn,
+    *,
+    body: ChatSend,
+    conversation_id: uuid.UUID,
+    email: str,
+    assistant: Assistant | None,
+    orgs: ChatOrgs,
+    inbound: InboundQueue,
+) -> None:
+    """Refuse a fork of what is no chat's line, and a post into another's chat."""
+    if body.fork is not None and not await science_chat_exists_at(
+        conn,
+        assistant=assistant,
+        email=email,
+        fork=body.fork,
+    ):
+        raise ValueError("The fork point is not a line of a science chat")
+    starter = inbound.sender_of(conversation_id) or await read_starter(
+        conn,
+        assistant=assistant,
+        conversation_id=conversation_id,
+    )
+    if starter is None:
+        return
+    if body.fork is not None:
+        if starter.lower() != email.lower():
+            raise ConversationTakenError(
+                "This conversation already exists; fork under a new key",
+            )
+    elif not may_continue(email, starter=starter, orgs=orgs):
+        raise ForeignChatError(
+            "This chat was started outside your organisation; fork it to continue",
+        )

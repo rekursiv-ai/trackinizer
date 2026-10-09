@@ -529,7 +529,8 @@ the catalog descriptor; an out-of-range value returns 422, a missing record
 
 `PUT /api/me/visual-workspace` sets the signed-in user's canvas opt-in from
 an interactive browser session. API keys cannot change that choice.
-`GET /api/me/profile` includes `visual_workspace_enabled`; it defaults to true.
+`GET /api/me/profile` includes `visual_workspace_enabled`; it defaults to true. It
+also names `api_key_id`, the key the request used, or null for a browser session.
 
 `POST /api/workspaces` creates or reopens the signed-in user's default canvas,
 which starts with `trax.browse` in the main pane and `trax.chat` at the side.
@@ -561,16 +562,18 @@ send is 409. The owner needs no `--assistant`: a server with none can still serv
 `local` canvases. Opening a preset keeps the canvas's choice.
 
 Any session can be the assistant. `trax helper claude` (or `codex`) `--as
-ACTOR`, run with a key of the account `EMAIL`, opens one and answers each Chat
-message by a turn of that CLI, resuming the conversation's own CLI conversation.
-Its session takes messages only from Chat: a direct or routed send to it is 403.
+ACTOR`, run with a key of the account `EMAIL`, opens one and answers each science
+chat line by a turn of that CLI, resuming the chat's own CLI conversation. Its
+service session takes messages only from Chat: a direct or routed send to it is
+403.
 
 The partner's key may read and operate a canvas while that canvas's partner
-is the session the key opened, and the canvas's owner has a
-conversation on that canvas with it. Any other canvas is 404, so a user who
-never talked to the partner gives it nothing; the owner's own key is 403 unless
-the partner is the owner's local helper, which that key opened. Only the key
-that opened a partner session may drain its inbound queue, whatever the role.
+is the session the key opened, and a live science chat that key opened has the
+canvas's owner as its account or a poster (section 1.25). The check is per
+person, not per canvas. Any other canvas is 404, so a user who never talked to
+the partner gives it nothing; the owner's own key is 403 unless the partner is
+the owner's local helper, which that key opened. Only the key that opened a
+partner or science-chat session may drain its inbound queue, whatever the role.
 
 An operation body has `revision` and one `operation`: `show`, `hide`, `focus`,
 `place`, `partner`, `navigate`, or `highlight`. The caller supplies a UUID `Idempotency-Key`
@@ -599,79 +602,112 @@ stored and not replayed.
 Viewer access is enough to change one's own canvas. Workspace operations do
 not edit trax records or add entries to `change_log`.
 
-### 1.25 Chat conversations and canvas events
+### 1.25 Science chat and canvas events
 
 ```
-POST   /api/workspaces/<uuid>/messages
-GET    /api/workspaces/<uuid>/events
+POST   /api/chats
 GET    /api/chats
-GET    /api/chats/awaiting
-GET    /api/chats/<uuid>?after_seq=<n>
-DELETE /api/chats/<uuid>
-POST   /api/chats/<uuid>/messages
+GET    /api/chats/<uuid>
+GET    /api/workspaces/<uuid>/events
 ```
 
-`POST /api/workspaces/<uuid>/messages` (browser only, with an `Idempotency-Key`)
-sends the user's text, which must hold a non-space character and at most 16,384
-characters, to the canvas's partner. Its optional `conversation_id` continues
-one of the user's conversations on that canvas; none starts one, titled with the
-message's first 80 characters. The server stores the message with the key and a
-hash of the request, commits, publishes it, then queues it with
-`context.conversation_id`. The receipt has `session_id`, `conversation_id`, and
-the stored `message`. A retry of the same request returns the original receipt,
-queues nothing, and answers even when the partner has since gone away; the same
-key for another request is 409. Two concurrent sends with one key store one
-message. An unknown or foreign conversation is 404; no live partner is 409. A
-partner whose queue of unread messages is full is 409 `partner busy`, and nothing
-is stored: a message is refused, never dropped.
+A canvas Chat conversation is one AgentSession the assistant opens: label
+`science-chat`, `cli_session_id` `chat:<conversation id>`, actor
+`chat-<12 hex>`, account the person who started it. Its records are the
+conversation (a person's line is an agent message from its poster, then the
+assistant's tool calls, results and answers), read with the ordinary session
+routes. There is no separate chat store and no delete: chats are public to
+every user.
 
-`GET /api/chats` lists the user's conversations, newest change first, at most
-50. `GET /api/chats/<uuid>` returns the conversation and its messages: the
-newest 500 without `after_seq`, with `earlier` true when older ones exist, or up
-to 500 numbered above `after_seq`. A user's message carries `author_role`, the
-role the author's active account has when the thread is read, and `null` when no
-active account has that email; the partner's messages carry `null`. The owner's
-browser reads it, and so does the agent key that opened the conversation's live
-partner session, which is how an assistant that lost its memory of a thread
-reseeds it; any other key is 403, and a conversation the browser's user does not
-own is 404. `DELETE` takes no body, removes the conversation and its messages,
-answers 204, and pushes a `deleted` frame. It and the list are browser only: an
-API key gets 403.
+`POST /api/chats` (browser only, writer role, with an `Idempotency-Key`) posts a
+line. The body is `{kind: "science", workspace_id, text, chat_instance_id,
+expected_record_id, conversation_id, page, trail}`; `text` holds a non-space
+character and at most 16,384 characters, and `workspace_id` is the poster's own
+canvas. `page` is the `#/...` address the sender is on and `trail` the addresses
+they came through before it, oldest first, at most 8; a malformed address or a
+longer trail is 422. The server resolves them to records in the context. A
+`conversation_id` continues a chat, and any signed-in writer in the starter's
+organisation may post into it (see Forking below). None starts one, and the key
+names it, so a retry names the same conversation. `fork: {session_id, part, idx}`
+instead starts a new conversation from that line of another chat; it and
+`conversation_id` together are 422. The line's poster is the attested account,
+never the body. The server builds the typed canvas context (checking the Chat instance and that the
+record still matches `expected_record_id`, else 409 before queueing) and queues
+the line for the conversation's own session when the canvas's partner has it open
+and some poller drains it, and for the partner's service session otherwise (a
+`trax helper` does not poll its chats, so it hears every line there). The
+receipt is `{conversation_id, session_id}` at once; `session_id` is null until
+the assistant has the session open. The same key again returns the original receipt and queues nothing; a key
+reused for another line is 409. The de-duplication is in memory, so a retry after
+a server restart queues the line again. No live assistant is 409; a full queue is
+409 `partner busy`, and nothing is queued.
 
-`POST /api/chats/<uuid>/messages` is for agent keys only. The body is `text` and
-`kind`, `answer` or `status`, and `text` of at most 65,536 characters must hold a
-non-space character, except that an empty status clears. Only the key that opened
-the conversation's live partner session may call it, otherwise 403. An answer is
-stored as the partner's message and returned; it clears the status, and is 404 if
-the conversation is gone. The records an answer names as `Kind#seq` that exist (at
-most 50, once each, in its order) are then pushed as a `highlight` frame. A status
-is pushed, kept in memory as the conversation's current one, never stored, and
-answers null.
+`GET /api/chats` lists the chats the caller started or posted in (account is the
+caller, or label `poster:<email>`), newest first, at most 50, as
+`{conversation_id, session_id, title, account, modified}`. `GET
+/api/chats/<uuid>` returns `{conversation_id, session_id, title, account, live,
+forks, forked_from, forks_on_typing}` and is 404 until the assistant has opened the session; any signed-in user may
+read it, which is how a chat opens by link. Both are browser only. A chat that
+the caller's own `trax helper` opened (the local choice) is listed and found for
+the caller only.
 
-`GET /api/chats/awaiting` is for the agent key of a partner session. It lists, as
-`{conversation_id, workspace_id, seq}`, the conversations whose partner is a live
-session that key opened and whose last line is the user's, `seq` being that line:
-the answers the partner owes, which an assistant that restarted calls once at
-startup for lines it drained but never answered. It is `[]` for any other key, for
-a revoked key and for an ended session, and 403 for a browser.
+Forking. A fork is a new science chat that starts from a line of another: its
+`account` is the forker, it has its own conversation id (the key), and the
+assistant that serves it (or `trax helper`) opens its session with
+copies of the original's lines up to and including that line, read from the
+original's session, and adds a `produced_by` edge from the fork's session to the
+original's, labelled `chat-fork` and `fork-at:<part>:<idx>`. The original is not
+written, and a fork point is dropped for a conversation that already has lines. Spend,
+campaigns and History belong to the forker. `forks` on the original's head counts
+the conversations with such an edge to it, counting only an edge that the key that
+opened the fork's session added with the fork label; `forked_from` on a fork's
+head is the original's conversation (the earliest such edge). A helper's forks
+count for the forker alone, since the head counts what the viewer may find. Who
+may join a chat or must fork it is the server's `TRACKINIZER_CHAT_ORGS`:
+`domain` (the default, also when unset) makes each verified email domain one
+organisation, except the consumer domains (`gmail.com`, `googlemail.com`, `outlook.com`, `hotmail.com`,
+`live.com`, `yahoo.com`, `icloud.com`, `me.com`, `proton.me`, `protonmail.com`),
+which are none; `single` makes every user one organisation, and only a server
+whose users are all one organisation sets it. A person always joins their own
+chat. Anyone else's post into a chat of another organisation is 403 and queues
+nothing, whether the conversation is named by `conversation_id` or by the
+`Idempotency-Key` of a post that names none; the chat's starter is the account of
+its oldest session (the assistant's first), or, before any session carries the
+id, the sender of the post that began it. A `fork` whose key names a conversation
+someone else began is 409. The head's `forks_on_typing` says a post is refused,
+and the browser then forks at the latest line instead (or on the 403, if it
+posted before the head was read). A `fork` is allowed to anyone, in a chat of their
+organisation too.
 
-When a session ends with Chat messages it never drained, each affected
-conversation gets a status saying they were not delivered and to send again, and
-any other conversation the session was working on loses its status.
+When a session ends with Chat lines it never drained, the unread lines of a
+science chat are queued again for the assistant's service session, which
+reopens the conversation's session. The unread lines of an assistant or
+`trax-helper` service session that names itself (a `cli_session_id`) stay queued
+for the session its next start resumes; one that does not is released, and the
+lines it held are logged with their senders.
+
+Only the key that opened a science chat writes or drains it, whoever that is and
+whether or not an assistant is configured (a session under a `chat:` id is one, a
+user's own `trax helper` chats included; a `trax-helper` session is drained by its
+key alone): appending records, ending it,
+editing any of its fields (its labels and account decide who sees it in History
+and which canvases the assistant may use) and purging it are 403 from any other
+key, a writer's included, and `POST /api/sessions/<uuid>/inbound` and
+`/api/messages` refuse it with 409 because a line sent that way names no
+conversation. A conversation has one session per assistant key that has spoken in
+it, since a session resumes only for the key that opened it; `GET /api/chats/<uuid>`
+and History name the live one, else the newest.
 
 `GET /api/workspaces/<uuid>/events` streams the owner's canvas as server-sent
 events (browser only), and is the tab's one stream. Each frame is `data: <json>`
 with `t`, the server's epoch milliseconds: `{type: "workspace", state}` on open,
 after every applied operation, and when the partner changes (a
 session starts or ends, or its poller lease lapses); `{type: "navigate",
-route}`; `{type: "highlight", ids}`; `{type: "message", conversation_id,
-message}`; `{type: "status",
-conversation_id, text}`; `{type: "delivered", conversation_id, seq}` when the
-partner drains the conversation's messages through `seq`; `{type: "deleted",
-conversation_id}`; and `{type: "changed", id}` for each inquiry id
-`/api/web/subscribe` relays. After the `workspace` frame come each conversation's
-current status and delivered `seq`. A comment goes out on open and after 25 s
-without a frame, and on each the server checks the user is still active and ends
+route}`; `{type: "highlight", ids}`; and `{type: "changed", id}` for each inquiry
+id `/api/web/subscribe` relays. A record appended to a science chat's session
+changes that session, so every viewer of it gets a `changed` frame and reads
+what the session gained. A comment goes out on open and after 25 s without a
+frame, and on each the server checks the user is still active and ends
 the stream if not. A subscriber more than 256 frames behind is dropped and
 reconnects from the `workspace` frame.
 

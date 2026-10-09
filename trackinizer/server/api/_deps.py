@@ -16,7 +16,7 @@ from trackinizer.wire.json_types import MutableJSON
 if TYPE_CHECKING:
     from fastapi import FastAPI, Request
 
-    from trackinizer.server.config import Assistant
+    from trackinizer.server.config import Assistant, ChatOrgs
     from trackinizer.server.inbound import InboundQueue
     from trackinizer.server.secrets import SecretBackend
     from trackinizer.server.store.core import Store
@@ -89,6 +89,20 @@ def get_assistant(request: Request) -> Assistant | None:
     """
     config: object = getattr(cast("FastAPI", request.app).state, "config", None)
     return config.assistant if isinstance(config, Config) else None
+
+
+def get_chat_orgs(request: Request) -> ChatOrgs:
+    """Return how science chats group their users; ``domain`` without a Config.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: ``single`` or ``domain``.
+
+    """
+    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
+    return config.chat_orgs if isinstance(config, Config) else "domain"
 
 
 def get_secrets(request: Request) -> SecretBackend | None:

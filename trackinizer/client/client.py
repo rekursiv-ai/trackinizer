@@ -71,7 +71,6 @@ if TYPE_CHECKING:
     import pydantic
 
     from trackinizer.wire import (
-        wire_chats,
         wire_machine_host,
         wire_machines,
         wire_metrics,
@@ -81,7 +80,6 @@ if TYPE_CHECKING:
         wire_variables,
     )
     from trackinizer.wire.filters import Filter
-    from trackinizer.wire.wire_chats import AwaitingChat, ChatReply, ChatThread
     from trackinizer.wire.wire_machine_host import (
         EnrollResponse,
         HeartbeatResponse,
@@ -119,8 +117,6 @@ else:
     # session. Bind it as a lazy module proxy so the import fires on first
     # attribute access -- inside the session methods below, never on cold start.
     wire_sessions = lazy_import("trackinizer.wire.wire_sessions")
-    # Only an assistant posting a chat reply touches it.
-    wire_chats = lazy_import("trackinizer.wire.wire_chats")
     # Same lazy-bind for the IR bodies: only ``append_records`` touches them,
     # so their pydantic-model build stays off the cold-start path.
     wire_session_ir = lazy_import("trackinizer.wire.wire_session_ir")
@@ -1709,24 +1705,6 @@ class Client:
             wire_sessions.SEND_MESSAGE_PATH,
         ).delivered
 
-    def post_chat_reply(
-        self,
-        conversation_id: uuid.UUID,
-        *,
-        reply: ChatReply,
-    ) -> None:
-        """Post an assistant's answer or status to a canvas Chat conversation.
-
-        Args:
-          conversation_id: The conversation the reply is for.
-          reply: The answer to store, or the status to show; an empty status clears.
-
-        """
-        self.post(
-            wire_chats.CHAT_MESSAGES_PATH.format(conversation_id=conversation_id),
-            body=reply.model_dump(mode="json"),
-        )
-
     def read_workspace(self, workspace_id: uuid.UUID) -> dict[str, PlainTree]:
         """Read a canvas: its revision, visuals and focus.
 
@@ -1826,33 +1804,6 @@ class Client:
             },
         )
         return dict(_require_mapping(marked, where))
-
-    def read_chat(self, conversation_id: uuid.UUID) -> ChatThread:
-        """Read a Chat conversation's newest messages.
-
-        Args:
-          conversation_id: The conversation.
-
-        Returns:
-          thread: Its title, partner and messages, oldest first.
-
-        """
-        where = wire_chats.CHAT_PATH.format(conversation_id=conversation_id)
-        return _validate_model(wire_chats.ChatThread, self.get(where), where)
-
-    def awaiting_chats(self) -> list[AwaitingChat]:
-        """List the Chat conversations whose partner is this session and owes a reply.
-
-        Returns:
-          chats: Each conversation whose partner is the caller's live session and
-            whose last message is the user's.
-
-        """
-        where = f"{wire_chats.CHATS_PATH}/awaiting"
-        return [
-            _validate_model(wire_chats.AwaitingChat, row, where)
-            for row in _require_list(self.get(where), where)
-        ]
 
     def _revision_of(self, workspace_id: uuid.UUID) -> int:
         """Return the canvas's live revision."""

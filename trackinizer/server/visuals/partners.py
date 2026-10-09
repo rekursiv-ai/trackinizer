@@ -15,7 +15,13 @@ from typing import TYPE_CHECKING, cast
 import uuid
 
 from trackinizer.server.visuals.workspaces import WorkspacePartner
-from trackinizer.wire.wire_chats import CHAT_HELPER_CLI
+from trackinizer.wire.wire_science_chat import (
+    CHAT_HELPER_CLI,
+    CHAT_SESSION_PREFIX,
+    POSTER_LABEL_PREFIX,
+    SCIENCE_CHAT_LABEL,
+    chat_session_id,
+)
 
 
 if TYPE_CHECKING:
@@ -100,6 +106,26 @@ async def resolve_partner(
             status="unavailable" if row is None else "live",
             kind="local",
         )
+    return await shared_partner(conn, inbound=inbound, assistant=assistant)
+
+
+async def shared_partner(
+    conn: Conn,
+    *,
+    inbound: InboundQueue,
+    assistant: Assistant | None,
+) -> WorkspacePartner | None:
+    """Name the assistant's newest live session, or say it has none.
+
+    Args:
+      conn: Connection the answer must be consistent with.
+      inbound: In-process poller leases; a session nobody polls is unavailable.
+      assistant: The configured assistant, if any.
+
+    Returns:
+      partner: The assistant, live or unavailable, or None with no assistant.
+
+    """
     if assistant is None:
         return None
     rows = await _live_sessions(
@@ -168,25 +194,125 @@ async def attach_partner(
     )
 
 
+async def live_chat_session(
+    conn: Conn,
+    *,
+    inbound: InboundQueue,
+    opener: str,
+    conversation_id: uuid.UUID,
+) -> uuid.UUID | None:
+    """Return the session a partner has open for a science chat, if it has one.
+
+    A conversation's session is the live session of the partner's account whose
+    ``cli_session_id`` is ``chat:<conversation id>`` and that some poller is
+    draining; any other session that carries the id is not it.
+
+    Args:
+      conn: Database connection.
+      inbound: In-process poller leases; a session nobody drains is not open.
+      opener: The email of the partner's account: the assistant's. A local helper
+        drains only its service session, so none of its chats is ever open here.
+      conversation_id: The conversation.
+
+    Returns:
+      session_id: The conversation's live session, or None.
+
+    """
+    found = await conn.fetchval(
+        "SELECT sess.id FROM inquiries AS sess JOIN api_keys AS credential "
+        "ON credential.id = sess.agentsession_opened_by_api_key_id "
+        "JOIN users AS member ON member.id = credential.user_id "
+        "WHERE sess.kind = 'AgentSession' AND sess.status = 'active' "
+        "AND sess.agentsession_ended IS NULL AND credential.revoked_at IS NULL "
+        "AND sess.agentsession_cli_session_id = $1 AND member.email = $2 "
+        "AND sess.id = ANY($3::uuid[]) "
+        "ORDER BY sess.created DESC, sess.id DESC LIMIT 1",
+        chat_session_id(conversation_id),
+        opener,
+        inbound.active_poller_ids(),
+    )
+    return None if found is None else cast(uuid.UUID, found)
+
+
+async def assistant_holds_chat(
+    conn: Conn,
+    *,
+    assistant: Assistant | None,
+    conversation_id: uuid.UUID,
+) -> bool:
+    """Say whether the assistant has a session, live or closed, for a conversation.
+
+    A local helper that joined such a conversation would open a second session under
+    the same id, and the reads that name a conversation by its live session would
+    show that private one in place of the shared history.
+
+    Args:
+      conn: Database connection.
+      assistant: The configured assistant, if any.
+      conversation_id: The conversation.
+
+    Returns:
+      held: Whether the assistant's account opened a session under its id.
+
+    """
+    if assistant is None:
+        return False
+    return bool(
+        await conn.fetchval(
+            "SELECT 1 FROM inquiries AS sess JOIN api_keys AS credential "
+            "ON credential.id = sess.agentsession_opened_by_api_key_id "
+            "JOIN users AS member ON member.id = credential.user_id "
+            "WHERE sess.kind = 'AgentSession' "
+            "AND sess.agentsession_cli_session_id = $1 AND member.email = $2 "
+            "LIMIT 1",
+            chat_session_id(conversation_id),
+            assistant.email,
+        ),
+    )
+
+
+def is_chat_session(
+    assistant: Assistant | None,
+    *,
+    cli_session_id: str | None,
+    email: str,
+) -> bool:
+    """Say whether a session is one of the assistant's science chats.
+
+    Args:
+      assistant: The configured assistant, if any.
+      cli_session_id: The session's ``cli_session_id``.
+      email: The email of the account that owns the key that opened it.
+
+    Returns:
+      matches: Whether the assistant account opened a ``chat:`` session.
+
+    """
+    return (
+        assistant is not None
+        and email == assistant.email
+        and cli_session_id is not None
+        and cli_session_id.startswith(CHAT_SESSION_PREFIX)
+    )
+
+
 async def assistant_key_may_use(
     conn: Conn,
     *,
     owner_id: uuid.UUID,
-    workspace_id: uuid.UUID,
     partner: WorkspacePartner | None,
     api_key_id: uuid.UUID,
 ) -> bool:
     """Say whether a partner's key may read and operate the canvas.
 
-    The key must have opened the canvas's live partner session, and the canvas's
-    owner must have a conversation on this canvas with that session: a user who
-    never talked to the partner gives it nothing. With a local partner the key is
-    the owner's own, so it passes by the same rule.
+    The key must have opened the canvas's live partner session, and also a live
+    science chat the canvas's owner started or posted in: a user who never talked
+    to the partner gives it nothing. With a local partner the key is the owner's
+    own, so it passes by the same rule.
 
     Args:
       conn: Connection the answer must be consistent with.
       owner_id: The canvas's owner.
-      workspace_id: The canvas.
       partner: The canvas's partner.
       api_key_id: The calling key.
 
@@ -202,12 +328,19 @@ async def assistant_key_may_use(
             "ON credential.id = sess.agentsession_opened_by_api_key_id "
             "WHERE sess.id = $1 AND credential.id = $2 "
             "AND credential.revoked_at IS NULL "
-            "AND EXISTS (SELECT 1 FROM chat_conversations "
-            "WHERE user_id = $3 AND workspace_id = $4 AND partner_session_id = $1)",
+            "AND EXISTS (SELECT 1 FROM inquiries AS chat "
+            "JOIN users AS poster ON poster.id = $3 "
+            "WHERE chat.kind = 'AgentSession' AND chat.status = 'active' "
+            "AND chat.agentsession_ended IS NULL "
+            "AND chat.agentsession_opened_by_api_key_id = $2 "
+            "AND $4 = ANY(chat.labels) "
+            "AND (chat.account = poster.email "
+            "OR $5 || poster.email = ANY(chat.labels)))",
             partner.session_id,
             api_key_id,
             owner_id,
-            workspace_id,
+            SCIENCE_CHAT_LABEL,
+            POSTER_LABEL_PREFIX,
         ),
     )
 

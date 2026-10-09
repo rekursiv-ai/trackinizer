@@ -1,54 +1,55 @@
-import { expect, test, vi } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { ChatFeed } from "./chatFeed";
 
-test("a message starts the conversation's status over, and a cleared status is kept as cleared", () => {
-  const feed = new ChatFeed();
-  const heard = vi.fn();
-  feed.subscribe(heard);
-  feed.setStatus("c", "working");
-  expect(feed.snapshot().status).toEqual({ c: "working" });
-  feed.setStatus("c", "");
-  expect(feed.snapshot().status).toEqual({ c: "" });
-  feed.messaged("c");
-  expect(feed.snapshot().status).toEqual({});
-  const calls = heard.mock.calls.length;
-  feed.messaged("c");
-  expect(heard).toHaveBeenCalledTimes(calls);
+afterEach(() => {
+  vi.restoreAllMocks();
+  localStorage.clear();
 });
 
-test("delivery only moves forward, and forgetting drops a conversation", () => {
+test("the open conversation of a canvas is held, kept in storage, and null for a new chat", () => {
   const feed = new ChatFeed();
-  feed.drained("c", 4);
-  feed.drained("c", 2);
-  expect(feed.snapshot().delivered).toEqual({ c: 4 });
-  feed.setStatus("c", "x");
-  feed.forget("c");
-  expect(feed.snapshot()).toMatchObject({ status: {}, delivered: {} });
-});
-
-test("each open is counted", () => {
-  const feed = new ChatFeed();
-  feed.opened();
-  feed.opened();
-  expect(feed.snapshot().opens).toBe(2);
-});
-
-test("the open conversation is held by the feed, restored from storage once, and survives refused storage", () => {
-  localStorage.setItem("trackinizer.v2.chat.w", "c-stored");
-  const feed = new ChatFeed();
-  expect(feed.openId("w")).toBe("c-stored");
+  expect(feed.openId("w1")).toBeNull();
   expect(feed.openId(null)).toBeNull();
-  feed.setOpen("w", "c2");
-  expect(feed.openId("w")).toBe("c2");
-  expect(localStorage.getItem("trackinizer.v2.chat.w")).toBe("c2");
-  feed.setOpen("w", null);
-  expect(localStorage.getItem("trackinizer.v2.chat.w")).toBeNull();
+  feed.setOpen("w1", "c1");
+  expect(feed.openId("w1")).toBe("c1");
+  expect(localStorage.getItem("trackinizer.v2.chat.w1")).toBe("c1");
+  expect(new ChatFeed().openId("w1")).toBe("c1");
+  feed.setOpen("w1", null);
+  expect(feed.openId("w1")).toBeNull();
+  expect(localStorage.getItem("trackinizer.v2.chat.w1")).toBeNull();
+});
 
+test("storage that is refused loses nothing while the page lives", () => {
   vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("denied"); });
   vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("denied"); });
-  const refused = new ChatFeed();
-  expect(refused.openId("w2")).toBeNull();
-  refused.setOpen("w2", "c3");
-  expect(refused.openId("w2")).toBe("c3");
-  vi.restoreAllMocks();
+  const feed = new ChatFeed();
+  expect(feed.openId("w1")).toBeNull();
+  feed.setOpen("w1", "c1");
+  expect(feed.openId("w1")).toBe("c1");
+});
+
+test("a change of the open conversation is told to whoever listens", () => {
+  const feed = new ChatFeed();
+  const heard = vi.fn();
+  const stop = feed.subscribe(heard);
+  feed.setOpen("w1", "c1");
+  expect(heard).toHaveBeenCalledOnce();
+  expect(feed.snapshot().openVersion).toBe(1);
+  stop();
+  feed.setOpen("w1", "c2");
+  expect(heard).toHaveBeenCalledOnce();
+});
+
+test("a request to continue a session waits for Chat, and only the newest is taken by number", () => {
+  const feed = new ChatFeed();
+  feed.continueIn("s1");
+  const first = feed.snapshot().request!;
+  expect(first).toMatchObject({ sessionId: "s1" });
+  feed.continueIn("s2");
+  const second = feed.snapshot().request!;
+  expect(second.n).toBeGreaterThan(first.n);
+  feed.taken(first.n);
+  expect(feed.snapshot().request).toBe(second);
+  feed.taken(second.n);
+  expect(feed.snapshot().request).toBeNull();
 });

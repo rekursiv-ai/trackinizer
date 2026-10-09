@@ -128,11 +128,10 @@ how it reads a frame.
 | | `removeAllowlistEntry` | `DELETE /api/admin/allowlist/{entry}` |
 | `graph` | `getGraph` | `GET /api/web/graph?limit=` |
 | `stream` | `openStream` | `GET /api/web/subscribe` (server-sent events) |
-| `workspaces` | `sendWorkspaceMessage` | `POST /api/workspaces/{id}/messages` (header `Idempotency-Key`; `conversation_id` null starts a conversation) |
-| | `openWorkspaceEvents` | `GET /api/workspaces/{id}/events` (server-sent events) |
+| `workspaces` | `openWorkspaceEvents` | `GET /api/workspaces/{id}/events` (server-sent events) |
 | `chats` | `listChats` | `GET /api/chats` |
-| | `getChat` | `GET /api/chats/{id}?after_seq=` |
-| | `deleteChat` | `DELETE /api/chats/{id}` |
+| | `getChatHead` | `GET /api/chats/{id}` (404 until the assistant opens the session: `null`) |
+| | `sendChatLine` | `POST /api/chats` (header `Idempotency-Key`; `conversationId` null starts a conversation; `fork` starts one from a line of another) |
 
 Edges are stored child to parent: `from` is the child, which `narrows` its
 parent or `proves` its Belief. `/api/web/get` returns `edges` (this row is the
@@ -297,53 +296,77 @@ with one response shape, so the fixtures take one per verb.
   them fit 1280 px beside the sidebar with no sideways scroll; at 900 px and
   narrower they stack, each 400 px or 48% of the screen high, and the stage
   scrolls up and down.
-- Chat talks to the server's assistant, whichever session runs it (a `trax helper`,
-  say); the partner's name is the only difference between them (`src/visuals/Chat.tsx`).
-  Its header names the partner (`workspace.partner`) and has History and Clear
-  chat. The History menu has the `menu` role, its items `menuitemradio` with the
-  current one checked, and Escape closes it. History lists `GET /api/chats`
-  (title, age, partner) on each open; picking one opens it, and the partner
-  takes it up where it left off. Clear chat starts an empty conversation and
-  keeps the old one in History: the next send goes with `conversation_id: null`,
-  and the receipt's id becomes the open one, unless the user has picked another
-  conversation since.
-  A conversation deleted elsewhere (404 on its read) becomes a new chat. The open
-  conversation is held by the shell (`ChatFeed`), so Chat mounting again keeps
-  it, and in `localStorage` under `trackinizer.v2.chat.<workspace id>`, so a
-  reload reopens it; with storage refused it lasts until the page does.
-- Chat sends the page it is on: each message carries `page`, the `#/...` hash
-  as it is sent, and `trail`, the up to 8 hashes before it, oldest first
-  (routes only; the server resolves their records). `src/router/trail.ts`
-  records them from `main.tsx` on, so pages visited before Chat opened count.
-  With no record pinned, Chat shows `On screen: Kind#seq title` for the record
-  a `#/lookup/<id>` or `#/ref/<Kind>/<seq>` page shows, and follows the page.
-- A conversation's lines are one cache entry, `["chat", id]`: the thread read
-  (the newest 500, "Earlier messages not shown." when the server holds older
-  ones), then every `message` frame and send receipt appended to it, once by
-  message id, in `seq` order. A line pushed before the read lands is kept, and
-  the read merges with it. The read uses the app's read retry.
-- A sent message shows at once, right-aligned and pending ("Sending…"), and the
-  stored message replaces it when the send's receipt returns. "Delivered" shows
-  under the last line when a `delivered` frame's `seq` reaches that message's
-  `seq`, whichever of the receipt and the frame came first. Then "Working…" shows
-  for every partner (a `trax helper` sends no `status`); the partner's
-  `status` text replaces it, and a cleared status (`""`) or the answer ends it.
-  Should the partner go away (`workspace.partner.status` not live), "Working…"
-  and a status give way to "<actor> has ended." or "is unavailable.", and the box
-  is disabled. The transcript's "Delivered" is the one receipt of a send: the
-  composer shows none.
+- Chat talks to the server's assistant (`src/visuals/Chat.tsx`). A conversation is
+  a science chat: an AgentSession (label `science-chat`, `cli_session_id`
+  `chat:<conversation id>`) that the assistant opens. Chat reads the session's
+  records; there is no chat store. Its header names the partner
+  (`workspace.partner`) and has History and Clear chat. The History menu has the
+  `menu` role, its items `menuitemradio` with the current one checked, and Escape
+  closes it. History lists `GET /api/chats` (the chats the user started or posted
+  in: title, age, starter) on each open; picking one opens it. Any other science
+  chat opens by link: a session's page, or the Console line, offers Continue in
+  Chat (`useContinueInChat`, `src/visuals/continueChat.ts`), which leaves a
+  request on the shell's `ChatFeed` and shows Chat; Chat resolves the session
+  (`cli_session_id`, label) and opens its conversation, or says "That session is
+  not a science chat." Clear chat starts an empty conversation and keeps the old
+  one: the next send goes with `conversationId: null`, and the receipt's id
+  becomes the open one, unless the user has picked another conversation since.
+  The open conversation is held by the shell (`ChatFeed`), so Chat mounting again
+  keeps it, and in `localStorage` under `trackinizer.v2.chat.<workspace id>`, so
+  a reload reopens it; with storage refused it lasts until the page does.
+- Chat sends the page it is on: each line carries `page`, the `#/...` hash as it
+  is sent, and `trail`, the up to 8 hashes before it, oldest first (routes only;
+  the server resolves their records). `src/router/trail.ts` records them from
+  `main.tsx` on, so pages visited before Chat opened count. With no record
+  pinned, Chat shows `On screen: Kind#seq title` for the record a
+  `#/lookup/<id>` or `#/ref/<Kind>/<seq>` page shows, and follows the page.
+- The partner is the shared assistant, or the owner's own `trax helper` when the
+  canvas chooses `local`; with none live, Chat says how to start one
+  (`ChatOff`, `HelperCommands`) and the box is off.
+- A chat is joined by typing in it, or forked. Every stored line has a "Fork from
+  here" button (not a line still sending, and not for a viewer): it picks the
+  line, a banner says so with a Cancel, and the next message is sent with
+  `fork: {sessionId, part, idx}` instead of a `conversationId`. The server makes the
+  fork a new conversation, named by the idempotency key, and Chat opens it. A chat
+  whose head says `forks_on_typing` (the server's call, from the verified email
+  domains; see `chat_orgs` in `server/config.py`) forks the same way at its latest
+  line whatever the user types, since the server refuses a post into it; the
+  composer is off until the head is read, and a post the server still refuses
+  (403) is sent again as a fork at the latest stored line. A fork
+  opens with the original's lines up to the one picked, so mine among them are
+  not waited for as a new line (`linesThrough`). The head also says how often a chat
+  was forked and which chat a fork came from.
+- The composer says chats are public to every user and cannot be deleted. Chat has
+  no delete.
+- A conversation's lines are the session's records (`src/visuals/chatRecords.ts`):
+  parts and records are read incrementally, part by part, and
+  `readTranscript` (`chatLines.ts`) turns them into lines. A person's line
+  (`AgentToAgentMessage`) shows its sender when it is not the signed-in user's;
+  an `AssistantMessage` with content is an answer. `useLiveChat` registers on the
+  live hub and reads what the session gained when the canvas stream's `changed`
+  ids include the session (or on a gap), so every viewer of a chat sees a
+  teammate's line. The reads use the app's read retry.
+- A sent line shows at once, right-aligned and pending ("Sending…"). The send
+  returns the conversation id at once; the session does not exist until the
+  assistant opens it, so Chat polls `GET /api/chats/{id}` (every 1.5 s, up to 30
+  s) and shows "Waiting for the assistant…". When the session appears, the line
+  is its record and the pending one gives way (matched by counts of that text
+  before the send). If none appears, Chat says the assistant has not opened the
+  chat and the line can be sent again. "Working: <tool>…" shows while the last
+  record is a tool call or a line with no answer after it. Should the partner go
+  away (`workspace.partner.status` not live), the working line gives way to
+  "<actor> has ended." or "is unavailable.", and the box is disabled. A viewer
+  reads a chat but the box is disabled for them.
   The partner's lines are left-aligned Markdown, without images. The box stays
-  open to typing while a message sends, and what is typed meanwhile stays. It
+  open to typing while a line sends, and what is typed meanwhile stays. It
   refuses a blank message and one over 16,384 characters. A send the server
   refused (4xx) shows the server's reason and offers no Retry; one that got no
-  answer, or a 5xx, keeps the draft with Retry under one idempotency key. A 404
-  on a send means the conversation is gone: Chat starts a new chat and says the
-  message was not sent. The transcript follows the newest row, the delivery and
-  working rows too, unless the reader has scrolled up. Chat shows no write error
-  of its own: the canvas shows it once. A Chat about a record links to it and has
-  Clear context, which returns Chat to the side. The canvas toolbar's Chat button
-  shows Chat at the side, or focuses it when it is shown. The box is disabled,
-  with the reason, while the partner has ended or is unavailable.
+  answer, or a 5xx, keeps the draft with Retry under one idempotency key. The
+  transcript follows the newest row, the working row too, unless the reader has
+  scrolled up. Chat shows no write error of its own: the canvas shows it once. A
+  Chat about a record links to it and has Clear context, which returns Chat to
+  the side. The canvas toolbar's Chat button shows Chat at the side, or focuses
+  it when it is shown.
 - The graph is the home view. It draws the newest 1,000 inquiries by default,
   or 100, 5,000, all of them, or any count typed into the Nodes menu (a typed
   count picks exactly that count: 50 is 50, and 1,000 the 1k preset), each
@@ -631,9 +654,10 @@ with one response shape, so the fixtures take one per verb.
   leaves them alone.
 - The canvas's state is `["workspace", id]` in the cache, filled by the shell's
   workspace events stream (`newerWorkspace` keeps the newest revision) and, once,
-  by a read. A conversation's lines are `["chat", id]` and its history is
-  `["chats"]`. What is not lines (the partner's status, delivery, how often the
-  stream opened, and each canvas's open conversation) is the shell's `ChatFeed`
+  by a read. A conversation's records are `["chat", "records", session]`, its head
+  `["chat", "head", id]` and its history `["chats"]`. What is not records (how
+  often the stream opened, each canvas's open conversation and a Continue in Chat
+  request) is the shell's `ChatFeed`
   (`src/visuals/chatFeed.ts`), above Chat, which is a lazy chunk that may load
   after a frame arrived and mount again.
 
@@ -720,17 +744,13 @@ to the live layer, which recovers a gap as it does for `/api/web/subscribe`
 | `{type: "workspace", state, t}` | The canvas as it stands: on every open, after every applied operation, and when the partner changes. Applied through `newerWorkspace`, so a frame never regresses a revision. |
 | `{type: "navigate", route, t}` | An agent moved the page: the browser goes to `route` when `parseHash` accepts it. |
 | `{type: "highlight", ids, t}` | An agent pointed at inquiries: the tab's highlight store (`app/highlights.ts`) takes `ids` as its marks, replacing the last; `[]` clears. The graph rings those nodes, list rows and the rail's peers take `is-highlighted`, and a record page marks its own header. Not state: a closed stream clears them. |
-| `{type: "message", conversation_id, message, t}` | A stored user or assistant message, appended to the conversation's cache entry. |
-| `{type: "status", conversation_id, text, t}` | The partner's status; `""` clears it. After an open, each conversation's current one. |
-| `{type: "delivered", conversation_id, seq, t}` | The partner drained the conversation's messages through `seq`. After an open, each conversation's current one. |
-| `{type: "deleted", conversation_id, t}` | A conversation was deleted, here or in another tab: dropped from History, and an open Chat on it starts a new chat with one plain line. |
-| `{type: "changed", id, t}` | An inquiry changed, as `/api/web/subscribe` says it. |
+| `{type: "changed", id, t}` | An inquiry changed, as `/api/web/subscribe` says it. A record appended to a science chat's session changes it, so an open Chat reads what the session gained. |
 
 A frame of another shape is logged and skipped. There is no polling beside the
 stream, and no read of the canvas at boot: the stream's opening frame is the
-canvas, and the canvas reads only after a refused write. A conversation's thread
-is read once per open of the stream: at mount, or, when it was already read, the
-messages after its last `seq`, for what was stored while the stream was down.
+canvas, and the canvas reads only after a refused write. A conversation's
+records are read once at mount and then when the live layer reports the session
+changed or a gap.
 While the stream is down the live layer shows the paused bar, as it does for
 `/api/web/subscribe`. The canvas loads every renderer's chunk and the record
 view as soon as it is up (`preloadRenderers`, `src/visuals/registry.tsx`): a

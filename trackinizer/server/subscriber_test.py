@@ -253,10 +253,12 @@ class TestPushChanges:
                 self,
                 key: UUID | None,
                 targets: list[tuple[UUID, Inbound]],
+                *,
+                fingerprint: str = "",
             ) -> list[UUID]:
                 if any(str(poison.subject_id) in t.text for _, t in targets):
                     raise RuntimeError("undeliverable payload")
-                return super().send_once(key, targets)
+                return super().send_once(key, targets, fingerprint=fingerprint)
 
         inbound = _PoisonInbound()
 

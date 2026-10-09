@@ -639,33 +639,6 @@
         "title": "ArtifactSectionDraft",
         "type": "object"
       },
-      "AwaitingChat": {
-        "description": "A conversation whose last line is the user's, waiting on its partner.",
-        "properties": {
-          "conversation_id": {
-            "format": "uuid",
-            "title": "Conversation Id",
-            "type": "string"
-          },
-          "seq": {
-            "minimum": 1.0,
-            "title": "Seq",
-            "type": "integer"
-          },
-          "workspace_id": {
-            "format": "uuid",
-            "title": "Workspace Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "conversation_id",
-          "workspace_id",
-          "seq"
-        ],
-        "title": "AwaitingChat",
-        "type": "object"
-      },
       "BatchEdge": {
         "description": "One edge in a :class:`SubmitBatch`.\n\nEach endpoint is named EITHER by batch item index (``from_index`` /\n``to_index``, 0-based into ``items``) for a row created in this batch,\nOR by an existing row's ``from_id`` / ``to_id`` UUID. Exactly one of\nindex/id must be set per endpoint. Index references are the only way to\nlink two brand-new rows -- inline-created targets have no id until the\nbatch commits. Annotations mirror :class:`CreateEdge`.",
         "properties": {
@@ -858,169 +831,47 @@
         "title": "Change",
         "type": "object"
       },
-      "ChatMessage": {
-        "description": "One stored line of a conversation, numbered from 1 in the order stored.",
+      "ChatForkAt": {
+        "additionalProperties": false,
+        "description": "A line of a science chat's session, which a fork starts from.",
         "properties": {
-          "author": {
-            "title": "Author",
-            "type": "string"
-          },
-          "author_role": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Author Role"
-          },
-          "created": {
-            "format": "date-time",
-            "title": "Created",
-            "type": "string"
-          },
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "role": {
-            "enum": [
-              "user",
-              "assistant"
-            ],
-            "title": "Role",
-            "type": "string"
-          },
-          "seq": {
-            "minimum": 1.0,
-            "title": "Seq",
+          "idx": {
+            "minimum": 0.0,
+            "title": "Idx",
             "type": "integer"
           },
-          "text": {
-            "title": "Text",
+          "part": {
+            "minimum": 0.0,
+            "title": "Part",
+            "type": "integer"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
             "type": "string"
           }
         },
         "required": [
-          "id",
-          "seq",
-          "role",
-          "author",
-          "text",
-          "created"
+          "session_id",
+          "part",
+          "idx"
         ],
-        "title": "ChatMessage",
+        "title": "ChatForkAt",
         "type": "object"
       },
-      "ChatReply": {
-        "additionalProperties": false,
-        "description": "An assistant's line for one conversation: an answer, or its status.\n\nAn answer is stored and shown as the partner's message. A status is shown\nunder the conversation until the next status or answer and is never stored;\nan empty status clears it.",
+      "ChatHead": {
+        "description": "A science chat's session and starter, for opening it by link or after a post.",
         "properties": {
-          "kind": {
-            "enum": [
-              "answer",
-              "status"
-            ],
-            "title": "Kind",
+          "account": {
+            "title": "Account",
             "type": "string"
           },
-          "text": {
-            "maxLength": 65536,
-            "title": "Text",
-            "type": "string"
-          }
-        },
-        "required": [
-          "text",
-          "kind"
-        ],
-        "title": "ChatReply",
-        "type": "object"
-      },
-      "ChatSummary": {
-        "description": "One conversation in its owner's history.",
-        "properties": {
-          "created": {
-            "format": "date-time",
-            "title": "Created",
-            "type": "string"
-          },
-          "id": {
+          "conversation_id": {
             "format": "uuid",
-            "title": "Id",
+            "title": "Conversation Id",
             "type": "string"
           },
-          "modified": {
-            "format": "date-time",
-            "title": "Modified",
-            "type": "string"
-          },
-          "partner_actor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Partner Actor"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          },
-          "workspace_id": {
-            "format": "uuid",
-            "title": "Workspace Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "title",
-          "partner_actor",
-          "workspace_id",
-          "created",
-          "modified"
-        ],
-        "title": "ChatSummary",
-        "type": "object"
-      },
-      "ChatThread": {
-        "description": "A conversation and its messages: the newest 500, or up to 500 after a ``seq``.",
-        "properties": {
-          "earlier": {
-            "title": "Earlier",
-            "type": "boolean"
-          },
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "messages": {
-            "items": {
-              "$ref": "#/components/schemas/ChatMessage"
-            },
-            "title": "Messages",
-            "type": "array"
-          },
-          "partner_actor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Partner Actor"
-          },
-          "partner_session_id": {
+          "forked_from": {
             "anyOf": [
               {
                 "format": "uuid",
@@ -1030,7 +881,24 @@
                 "type": "null"
               }
             ],
-            "title": "Partner Session Id"
+            "title": "Forked From"
+          },
+          "forks": {
+            "title": "Forks",
+            "type": "integer"
+          },
+          "forks_on_typing": {
+            "title": "Forks On Typing",
+            "type": "boolean"
+          },
+          "live": {
+            "title": "Live",
+            "type": "boolean"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
           },
           "title": {
             "title": "Title",
@@ -1038,14 +906,179 @@
           }
         },
         "required": [
-          "id",
+          "conversation_id",
+          "session_id",
           "title",
-          "partner_actor",
-          "partner_session_id",
-          "earlier",
-          "messages"
+          "account",
+          "live",
+          "forks",
+          "forked_from",
+          "forks_on_typing"
         ],
-        "title": "ChatThread",
+        "title": "ChatHead",
+        "type": "object"
+      },
+      "ChatSend": {
+        "additionalProperties": false,
+        "description": "One line a signed-in writer posts to a science chat from their canvas.",
+        "properties": {
+          "chat_instance_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chat Instance Id"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "expected_record_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Record Id"
+          },
+          "fork": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatForkAt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "const": "science",
+            "default": "science",
+            "title": "Kind",
+            "type": "string"
+          },
+          "page": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page"
+          },
+          "text": {
+            "maxLength": 16384,
+            "pattern": "\\S",
+            "title": "Text",
+            "type": "string"
+          },
+          "trail": {
+            "items": {
+              "maxLength": 512,
+              "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
+              "type": "string"
+            },
+            "maxItems": 8,
+            "title": "Trail",
+            "type": "array"
+          },
+          "workspace_id": {
+            "format": "uuid",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "text"
+        ],
+        "title": "ChatSend",
+        "type": "object"
+      },
+      "ChatSent": {
+        "description": "What a posted line was queued for.",
+        "properties": {
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "session_id"
+        ],
+        "title": "ChatSent",
+        "type": "object"
+      },
+      "ChatSummary": {
+        "description": "One science chat in its person's history.",
+        "properties": {
+          "account": {
+            "title": "Account",
+            "type": "string"
+          },
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "modified": {
+            "format": "date-time",
+            "title": "Modified",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "session_id",
+          "title",
+          "account",
+          "modified"
+        ],
+        "title": "ChatSummary",
         "type": "object"
       },
       "ChoosePartner": {
@@ -7953,6 +7986,16 @@
             ],
             "title": "Conversation Id"
           },
+          "fork": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatForkAt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "page": {
             "anyOf": [
               {
@@ -8010,114 +8053,6 @@
           "visible_visuals"
         ],
         "title": "WorkspaceMessageContext",
-        "type": "object"
-      },
-      "WorkspaceMessageReceipt": {
-        "description": "The partner session and conversation of the original send.\n\nAn idempotent replay returns the original receipt.",
-        "properties": {
-          "conversation_id": {
-            "format": "uuid",
-            "title": "Conversation Id",
-            "type": "string"
-          },
-          "message": {
-            "$ref": "#/components/schemas/ChatMessage"
-          },
-          "session_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Session Id"
-          }
-        },
-        "required": [
-          "session_id",
-          "conversation_id",
-          "message"
-        ],
-        "title": "WorkspaceMessageReceipt",
-        "type": "object"
-      },
-      "WorkspaceMessageRequest": {
-        "additionalProperties": false,
-        "description": "A browser message scoped to a persisted chat visual.",
-        "properties": {
-          "chat_instance_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Chat Instance Id"
-          },
-          "conversation_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Conversation Id"
-          },
-          "expected_record_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Expected Record Id"
-          },
-          "page": {
-            "anyOf": [
-              {
-                "maxLength": 512,
-                "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Page"
-          },
-          "text": {
-            "maxLength": 16384,
-            "pattern": "\\S",
-            "title": "Text",
-            "type": "string"
-          },
-          "trail": {
-            "items": {
-              "maxLength": 512,
-              "pattern": "^#/[^\\s\\x00-\\x1f\\x7f]*$",
-              "type": "string"
-            },
-            "maxItems": 8,
-            "title": "Trail",
-            "type": "array"
-          }
-        },
-        "required": [
-          "text"
-        ],
-        "title": "WorkspaceMessageRequest",
         "type": "object"
       },
       "WorkspacePage": {
@@ -9861,7 +9796,7 @@
     },
     "/api/chats": {
       "get": {
-        "description": "List the signed-in user's conversations, newest change first, at most 50.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Authenticated browser account.\n\nReturns:\n  chats: The user's conversations.",
+        "description": "List the science chats the caller started or posted in, newest first, at most 50.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: The signed-in user.\n\nReturns:\n  chats: The caller's history. Any other science chat opens by its link.",
         "operationId": "list_chats_route_api_chats_get",
         "responses": {
           "200": {
@@ -9880,49 +9815,41 @@
           }
         },
         "summary": "List Chats Route"
-      }
-    },
-    "/api/chats/awaiting": {
-      "get": {
-        "description": "List the conversations the caller's live session has yet to answer.\n\nFor the agent key of a partner session. After a restart it names the user\nlines the partner drained but never answered: conversations whose partner is a\nlive session the key opened and whose last line is the user's.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: The partner session's agent key.\n\nReturns:\n  awaiting: Each conversation with its workspace and the user's last seq.",
-        "operationId": "awaiting_chats_route_api_chats_awaiting_get",
+      },
+      "post": {
+        "description": "Post a line to a science chat, or start one, and queue it for the assistant.\n\nAny signed-in writer in a chat's organisation may post into it; a viewer may not,\nand a writer outside it is refused with 403 and forks it instead (``fork`` names the\nline to start from), whether the chat is named by ``conversation_id`` or by the\n``Idempotency-Key`` of a post that names none; a fork whose key names a\nconversation someone else began is refused with 409. The line's poster is the\nattested identity, never anything in the body. The answer is\nthe conversation id at once: the conversation's session appears when the\nassistant opens it, and ``GET /api/chats/{id}`` finds it. A retry under the same\nkey queues nothing again.\n\nArgs:\n  body: The line, the poster's canvas, and the conversation to post into or the\n    line to fork; neither starts one, named by ``key``.\n  request: Request carrying the database engine and inbound queue.\n  identity: The signed-in writer, who must own the canvas.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  sent: The conversation, and its session when the assistant has it open.",
+        "operationId": "post_chat_line_route_api_chats_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatSend"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/AwaitingChat"
-                  },
-                  "title": "Response Awaiting Chats Route Api Chats Awaiting Get",
-                  "type": "array"
+                  "$ref": "#/components/schemas/ChatSent"
                 }
               }
             },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Awaiting Chats Route"
-      }
-    },
-    "/api/chats/{conversation_id}": {
-      "delete": {
-        "description": "Delete one of the user's conversations and its lines.\n\nThe canvas's stream is told with a ``deleted`` frame.\n\nArgs:\n  conversation_id: Conversation to delete.\n  request: Request carrying the database engine.\n  identity: Authenticated browser account, which must own the conversation.",
-        "operationId": "delete_chat_route_api_chats__conversation_id__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "conversation_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Conversation Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
             "description": "Successful Response"
           },
           "422": {
@@ -9936,10 +9863,12 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Delete Chat Route"
-      },
+        "summary": "Post Chat Line Route"
+      }
+    },
+    "/api/chats/{conversation_id}": {
       "get": {
-        "description": "Read one conversation: its newest 500 lines, or those after a number.\n\nThe owner's browser reads it, and so does the agent key of its live partner\nsession, which is how an assistant that lost its memory of the thread reseeds\nitself. No one else may.\n\nArgs:\n  conversation_id: Conversation to read.\n  request: Request carrying the database engine.\n  identity: The owner's browser, or the partner session's agent key.\n  after_seq: Return up to 500 lines numbered above this; without it, the newest 500.\n\nReturns:\n  thread: The conversation and its lines.",
+        "description": "Find a conversation's session; 404 until the assistant has opened it.\n\nArgs:\n  conversation_id: The conversation.\n  request: Request carrying the database engine.\n  identity: The signed-in user; every chat of the assistant is open to every\n    user, and a chat of a user's own helper to that user.\n\nReturns:\n  head: The session, its starter, whether the assistant still has it open, how\n    often it was forked, what it was forked from, and whether the caller's typing\n    forks it.",
         "operationId": "read_chat_route_api_chats__conversation_id__get",
         "parameters": [
           {
@@ -9951,23 +9880,6 @@
               "title": "Conversation Id",
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "after_seq",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "After Seq"
-            }
           }
         ],
         "responses": {
@@ -9975,7 +9887,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ChatThread"
+                  "$ref": "#/components/schemas/ChatHead"
                 }
               }
             },
@@ -9993,65 +9905,6 @@
           }
         },
         "summary": "Read Chat Route"
-      }
-    },
-    "/api/chats/{conversation_id}/messages": {
-      "post": {
-        "description": "Post an assistant's answer or status to a conversation.\n\nOnly the API key that opened the conversation's live partner session may\ncall this. An answer is stored as the partner's line and pushed; a status is\npushed and never stored, and an empty one clears it.\n\nArgs:\n  conversation_id: Conversation the reply is for.\n  body: The text and whether it is an answer or a status.\n  request: Request carrying the database engine and the event hub.\n  identity: Authenticated agent key.\n\nReturns:\n  message: The stored answer; null for a status.",
-        "operationId": "reply_to_chat_route_api_chats__conversation_id__messages_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "conversation_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Conversation Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChatReply"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/ChatMessage"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "title": "Response Reply To Chat Route Api Chats  Conversation Id  Messages Post"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Reply To Chat Route"
       }
     },
     "/api/codechange/{target_id}/sha": {
@@ -12135,7 +11988,7 @@
     },
     "/api/inquiries/{target_id}": {
       "delete": {
-        "description": "Purge an inquiry row and its edges.\n\nWriter-gated like every other mutation; inquiries (including AgentSessions)\nare a shared workspace, so any writer may purge an unowned row. A claimed\nrow must first release its owner through the compare-and-set owner route.\n\nArgs:\n  target_id: UUID of the inquiry to delete.\n  req: Mutation body (actor, reason).\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user identity, writer-role-gated.\n\nReturns:\n  result: Mapping with \"id\" (inquiry UUID) and \"change_id\" (purge operation).",
+        "description": "Purge an inquiry row and its edges.\n\nWriter-gated like every other mutation; inquiries (including AgentSessions)\nare a shared workspace, so any writer may purge an unowned row. A claimed\nrow must first release its owner through the compare-and-set owner route. A\nscience chat is the exception: it is public and permanent, so only the key that\nopened it may purge it.\n\nArgs:\n  target_id: UUID of the inquiry to delete.\n  req: Mutation body (actor, reason).\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user identity, writer-role-gated.\n\nReturns:\n  result: Mapping with \"id\" (inquiry UUID) and \"change_id\" (purge operation).",
         "operationId": "delete_inquiry_route_api_inquiries__target_id__delete",
         "parameters": [
           {
@@ -14024,7 +13877,7 @@
     },
     "/api/me/profile": {
       "get": {
-        "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, and canvas opt-in.",
+        "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, canvas opt-in, and\n    the id of the API key the request used (``None`` for a browser session).",
         "operationId": "profile_route_api_me_profile_get",
         "responses": {
           "200": {
@@ -15413,7 +15266,7 @@
     },
     "/api/sessions/{session_id}/inbound": {
       "get": {
-        "description": "Drain all pending inbound messages for a session (oldest first).\n\nRead by the session's ``trax run`` to inject queued messages into the CLI.\nA viewer key may drain only the session it opened. Unknown session -> 404.\n\n``wait_sec`` holds the request open until a message arrives, so the caller\nwaits instead of asking repeatedly: one held request per session rather\nthan one round trip per interval, and delivery on arrival rather than up\nto an interval late. Zero (the default) returns whatever is pending now,\npreserving the original contract for any caller that does not want to\nblock. The ceiling keeps a held request shorter than the idle timeout of\na proxy that would otherwise cut it. Ending the session ends the hold, so\nthe run that ends it as it exits is not kept waiting on its own poller.\n\nWriters retain shared access to session drains. Viewer access is scoped to\nthe opening API key so reading chat does not grant graph-write permission.\n\nArgs:\n  session_id: UUID of the session to drain messages from.\n  request: Starlette request object.\n  identity: Authenticated reader and, for viewers, the opening key.\n  wait_sec: Seconds to hold the request open for a message to arrive\n    (clamped to [0, 30]; 0 returns queued messages immediately).\n\nReturns:\n  response: DrainInboundResponse with list of pending messages (text,\n    source, room), oldest first, or empty list if none are queued.",
+        "description": "Drain all pending inbound messages for a session (oldest first).\n\nRead by the session's ``trax run`` to inject queued messages into the CLI.\nA viewer key may drain only the session it opened. Unknown session -> 404.\n\n``wait_sec`` holds the request open until a message arrives, so the caller\nwaits instead of asking repeatedly: one held request per session rather\nthan one round trip per interval, and delivery on arrival rather than up\nto an interval late. Zero (the default) returns whatever is pending now,\npreserving the original contract for any caller that does not want to\nblock. The ceiling keeps a held request shorter than the idle timeout of\na proxy that would otherwise cut it. Ending the session ends the hold, so\nthe run that ends it as it exits is not kept waiting on its own poller.\n\nWriters retain shared access to the drains of ordinary sessions, but a science\nchat and the assistant's or a helper's service session are drained by their\nopening key alone (403 otherwise). Viewer access is scoped to the opening API\nkey so reading chat does not grant graph-write permission.\n\nArgs:\n  session_id: UUID of the session to drain messages from.\n  request: Starlette request object.\n  identity: Authenticated reader and, for viewers, the opening key.\n  wait_sec: Seconds to hold the request open for a message to arrive\n    (clamped to [0, 30]; 0 returns queued messages immediately).\n\nReturns:\n  response: DrainInboundResponse with list of pending messages (text,\n    source, room), oldest first, or empty list if none are queued.",
         "operationId": "session_inbound_drain_route_api_sessions__session_id__inbound_get",
         "parameters": [
           {
@@ -17578,7 +17431,7 @@
     },
     "/api/workspaces/{workspace_id}/events": {
       "get": {
-        "description": "Stream a canvas's changes to its owner's browser as server-sent events.\n\nEach frame is ``data: <json>`` with ``t``, the server's epoch milliseconds:\n``workspace`` carries the whole canvas on open, after every change by a\nbrowser or an agent, and when its partner changes; ``navigate`` an agent's\nmove of the page; ``highlight`` the inquiries it points at; ``message`` a stored\nChat line; ``status`` an assistant's status; ``delivered`` how far the partner\nhas read a conversation; and ``changed`` an inquiry id, as\n``/api/web/subscribe`` relays it, so a tab needs\nthis one stream. After the ``workspace`` frame come each conversation's\ncurrent status and delivered ``seq``. The stream opens with a comment and\nsends another after 25 s without a frame. A subscriber more than 256 frames\nbehind is dropped; it reconnects from the ``workspace`` frame.\n\nArgs:\n  workspace_id: Canvas to follow.\n  request: Request carrying the database engine and the event hub.\n  identity: Authenticated browser account, which must own the canvas.\n\nReturns:\n  stream: Server-sent frames.",
+        "description": "Stream a canvas's changes to its owner's browser as server-sent events.\n\nEach frame is ``data: <json>`` with ``t``, the server's epoch milliseconds:\n``workspace`` carries the whole canvas on open, after every change by a\nbrowser or an agent, and when its partner changes; ``navigate`` an agent's\nmove of the page; ``highlight`` the inquiries it points at; and ``changed`` an\ninquiry id, as ``/api/web/subscribe`` relays it, so a tab needs this one stream.\nA Chat conversation is an AgentSession, so a line added to it reaches every\nviewer of the session as the session's ``changed`` id; no frame is Chat's own.\nThe stream opens with a comment and sends another after 25 s without a frame. A subscriber more than 256 frames\nbehind is dropped; it reconnects from the ``workspace`` frame.\n\nArgs:\n  workspace_id: Canvas to follow.\n  request: Request carrying the database engine and the event hub.\n  identity: Authenticated browser account, which must own the canvas.\n\nReturns:\n  stream: Server-sent frames.",
         "operationId": "workspace_events_route_api_workspaces__workspace_id__events_get",
         "parameters": [
           {
@@ -17613,67 +17466,6 @@
           }
         },
         "summary": "Workspace Events Route"
-      }
-    },
-    "/api/workspaces/{workspace_id}/messages": {
-      "post": {
-        "description": "Store a viewer's message, publish it, and queue it for this canvas's partner.\n\nThe partner is the assistant's newest live session.\nA retry with the same key and request returns the original receipt without\nqueueing again; the same key for a different request is 409.\n\nArgs:\n  workspace_id: Canvas carrying the partner.\n  body: Text, optional conversation and chat visual identity.\n  request: Request carrying the database engine and inbound queue.\n  identity: Authenticated browser sender.\n  key: Required retry-safe idempotency key.\n\nReturns:\n  receipt: Partner session, conversation and the stored message.",
-        "operationId": "workspace_message_route_api_workspaces__workspace_id__messages_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "workspace_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Workspace Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Idempotency-Key",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/WorkspaceMessageRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorkspaceMessageReceipt"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Workspace Message Route"
       }
     },
     "/api/workspaces/{workspace_id}/operations": {

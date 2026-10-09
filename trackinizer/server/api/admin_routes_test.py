@@ -15,6 +15,7 @@ from trackinizer.conftest import executed_sql
 from trackinizer.lib.codec import from_plain
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
+    TEST_API_KEY_ID,
     TEST_USER_ID,
     clear_identity_override,
     install_identity,
@@ -1001,6 +1002,24 @@ class TestProfileRoute:
         last_login = body["last_login"]
         assert isinstance(last_login, str)
         assert last_login.startswith("2026")
+
+    @pytest.mark.parametrize("key", [TEST_API_KEY_ID, None])
+    def test_names_the_key_the_caller_used(
+        self,
+        key: uuid.UUID | None,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(api_key_id=key))
+        engine.conn.fetchrow = AsyncMock(
+            return_value={
+                "name": "Alice",
+                "last_login": None,
+                "visual_workspace_enabled": False,
+            },
+        )
+        body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
+        assert body["api_key_id"] == (None if key is None else str(key))
 
     def test_401_without_auth(
         self,

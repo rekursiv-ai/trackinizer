@@ -11,6 +11,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { isChatHandle } from "../api/chats";
 import { newUuid } from "../api/idempotency";
 import {
   type FeedActorFacet,
@@ -43,6 +44,7 @@ import { MentionField } from "./MentionField";
 import { Minimap } from "./Minimap";
 import { parseLine, receipt, targetName } from "./send";
 import { useViews } from "./views";
+import { useContinueInChat } from "../visuals/continueChat";
 import { ViewsSection } from "./ViewsRail";
 import "./console.css";
 
@@ -125,6 +127,7 @@ export function ConsoleView() {
   // The line whose agent was last clicked, for the message box to address; stable, so the lines stay memoised.
   const [adding, setAdding] = useState<{ readonly line: FeedEvent } | null>(null);
   const mention = useCallback((line: FeedEvent) => setAdding({ line }), []);
+  const continueIn = useContinueInChat();
 
   async function send(line: string, key: string): Promise<string> {
     const route = routes.current.get(key) ?? routeOf(line, shownEvents, to);
@@ -197,6 +200,7 @@ export function ConsoleView() {
               held={visible}
               kinds={kinds}
               onMention={mode === "hidden" ? null : mention}
+              onContinue={continueIn}
               scroller={scroller}
               stick={stick}
             />
@@ -372,12 +376,14 @@ function Lines({
   held,
   kinds,
   onMention,
+  onContinue,
   scroller,
   stick,
 }: {
   held: readonly Held[];
   kinds: readonly string[];
   onMention: ((line: FeedEvent) => void) | null;
+  onContinue: ((sessionId: string) => void) | null;
   scroller: RefObject<HTMLDivElement | null>;
   stick: RefObject<boolean>;
 }) {
@@ -388,7 +394,7 @@ function Lines({
   });
   return (
     <ol className="console-lines">
-      {held.map((one) => (one.n >= from ? <ConsoleLine key={one.key} held={one} kinds={kinds} onMention={onMention} /> : null))}
+      {held.map((one) => (one.n >= from ? <ConsoleLine key={one.key} held={one} kinds={kinds} onMention={onMention} onContinue={onContinue} /> : null))}
     </ol>
   );
 }
@@ -408,10 +414,12 @@ export const ConsoleLine = memo(function ConsoleLine({
   held,
   kinds,
   onMention,
+  onContinue = null,
 }: {
   held: Held;
   kinds: readonly string[];
   onMention: ((line: FeedEvent) => void) | null;
+  onContinue?: ((sessionId: string) => void) | null;
 }) {
   const { event, record } = held;
   const drawn = recordView(record);
@@ -431,6 +439,11 @@ export const ConsoleLine = memo(function ConsoleLine({
             {event.actor}
           </b>
         )}
+        {onContinue && isChatHandle(event.actor) ? (
+          <button type="button" className="btn ghost console-continue" onClick={() => onContinue(event.session_id)}>
+            Continue in Chat
+          </button>
+        ) : null}
       </div>
       <div className="turn-h">
         {event.rooms?.length ? (

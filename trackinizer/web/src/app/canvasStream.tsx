@@ -4,7 +4,6 @@ import { createDefaultWorkspace, openWorkspaceEvents, type WorkspaceState } from
 import { recordFrame, recordNavigation } from "../debug/timings";
 import { LiveContext } from "../live";
 import { parseHash } from "../router/route";
-import { appendLines, chatKey } from "../visuals/chatCache";
 import { ChatFeed, ChatFeedContext } from "../visuals/chatFeed";
 import { MetaContext } from "./boot";
 import { HighlightContext, HighlightStore } from "./highlights";
@@ -16,9 +15,11 @@ import { HighlightContext, HighlightStore } from "./highlights";
  * and `/api/web/subscribe` stays shut.
  *
  * It also applies what the stream says about the canvas: the workspace (a
- * revision never replaces a newer one), an agent's navigation, what it points at
- * (the tab's highlights, `highlights.ts`), and Chat's lines,
- * statuses and delivery. Gap recovery on an open is the live layer's own.
+ * revision never replaces a newer one), an agent's navigation, and what it points at
+ * (the tab's highlights, `highlights.ts`). Chat has no frames of its own: a
+ * conversation is a session, and a line added to it is the session's `changed` id, which
+ * the live layer hands to the Chat that follows it. Gap recovery on an open is the
+ * live layer's own.
  */
 export function CanvasStream({ enabled, children }: { enabled: boolean; children: ReactNode }) {
   const queryClient = useQueryClient();
@@ -48,23 +49,8 @@ export function CanvasStream({ enabled, children }: { enabled: boolean; children
         if (window.location.hash !== route) window.location.hash = route;
       },
       highlight: (ids) => highlights.set(ids),
-      message: (conversationId, message) => {
-        appendLines(queryClient, conversationId, [message]);
-        feed.messaged(conversationId);
-      },
-      status: (conversationId, text) => feed.setStatus(conversationId, text),
-      delivered: (conversationId, seq) => feed.drained(conversationId, seq),
-      deleted: (conversationId) => {
-        // An open Chat leaves it by itself (the feed says it is gone); the rest is dropped now.
-        queryClient.removeQueries({ queryKey: chatKey(conversationId), type: "inactive" });
-        void queryClient.invalidateQueries({ queryKey: ["chats"] });
-        feed.forget(conversationId, true);
-      },
       changed: (id) => hub?.change(id),
-      open: () => {
-        hub?.open();
-        feed.opened();
-      },
+      open: () => hub?.open(),
       drop: () => hub?.drop(),
       refuse: () => hub?.refuse(),
     });
@@ -73,7 +59,7 @@ export function CanvasStream({ enabled, children }: { enabled: boolean; children
       close();
       highlights.set([]);
     };
-  }, [workspaceId, queryClient, hub, feed, highlights]);
+  }, [workspaceId, queryClient, hub, highlights]);
   return (
     <ChatFeedContext value={feed}>
       <HighlightContext value={highlights}>{children}</HighlightContext>

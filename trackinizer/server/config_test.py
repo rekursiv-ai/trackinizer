@@ -20,6 +20,7 @@ from trackinizer.server.config import (
     build_embedder,
     build_engine,
     parse_assistant,
+    parse_chat_orgs,
     parse_engine,
 )
 from trackinizer.server.embedders.stub import StubEmbedder
@@ -329,6 +330,38 @@ class TestParsers:
 
     def test_pruning_a_missing_root_is_a_no_op(self, tmp_path: Path) -> None:
         _prune_stale_ephemeral_dirs(tmp_path / "missing")
+
+
+class TestChatOrgs:
+    """``$TRACKINIZER_CHAT_ORGS`` says whether science chats group users by domain."""
+
+    def test_a_server_groups_by_domain_unless_it_says_it_is_one_organisation(
+        self,
+    ) -> None:
+        assert parse_chat_orgs("") == "domain"
+        assert parse_chat_orgs(" single ") == "single"
+        assert parse_chat_orgs("domain") == "domain"
+        assert Config().chat_orgs == "domain"
+
+    def test_a_server_without_the_variable_set_reads_domain(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("TRACKINIZER_CHAT_ORGS", raising=False)
+        assert Config.from_env().chat_orgs == "domain"
+        assert Config.from_args(_server_args(assistant="")).chat_orgs == "domain"
+
+    def test_anything_else_is_a_config_error(self) -> None:
+        with pytest.raises(ConfigError, match="single or domain"):
+            parse_chat_orgs("company")
+
+    def test_both_ways_to_build_a_config_read_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_CHAT_ORGS", "single")
+        assert Config.from_env().chat_orgs == "single"
+        assert Config.from_args(_server_args(assistant="")).chat_orgs == "single"
 
 
 class TestAssistant:

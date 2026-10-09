@@ -21,30 +21,19 @@ from trackinizer.server.chat_hub import (
     iter_workspace_events,
 )
 from trackinizer.server.notify import iter_changed_ids
-from trackinizer.server.visuals.chats import (
-    ChatConversationNotFoundError,
-    ChatRequestConflictError,
-    conversations_of,
-)
 from trackinizer.server.visuals.workspace_store import (
-    PartnerBusyError,
     ReplayConflictError,
     RevisionConflictError,
-    WorkspaceContextChangedError,
     WorkspaceKeyRefusedError,
-    WorkspaceSessionUnavailableError,
     apply_workspace_operation,
     create_default_workspace,
     read_workspace,
-    send_workspace_message,
 )
 from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
     Highlight,
     Navigate,
     WorkspaceConflict,
-    WorkspaceMessageReceipt,
-    WorkspaceMessageRequest,
     WorkspaceState,
 )
 
@@ -63,13 +52,11 @@ async def workspace_events_route(
     Each frame is ``data: <json>`` with ``t``, the server's epoch milliseconds:
     ``workspace`` carries the whole canvas on open, after every change by a
     browser or an agent, and when its partner changes; ``navigate`` an agent's
-    move of the page; ``highlight`` the inquiries it points at; ``message`` a stored
-    Chat line; ``status`` an assistant's status; ``delivered`` how far the partner
-    has read a conversation; and ``changed`` an inquiry id, as
-    ``/api/web/subscribe`` relays it, so a tab needs
-    this one stream. After the ``workspace`` frame come each conversation's
-    current status and delivered ``seq``. The stream opens with a comment and
-    sends another after 25 s without a frame. A subscriber more than 256 frames
+    move of the page; ``highlight`` the inquiries it points at; and ``changed`` an
+    inquiry id, as ``/api/web/subscribe`` relays it, so a tab needs this one stream.
+    A Chat conversation is an AgentSession, so a line added to it reaches every
+    viewer of the session as the session's ``changed`` id; no frame is Chat's own.
+    The stream opens with a comment and sends another after 25 s without a frame. A subscriber more than 256 frames
     behind is dropped; it reconnects from the ``workspace`` frame.
 
     Args:
@@ -94,76 +81,11 @@ async def workspace_events_route(
             get_hub(request),
             workspace_id=workspace_id,
             read_state=read_state,
-            read_conversations=partial(
-                conversations_of,
-                engine_of(request),
-                user_id=identity.user_id,
-                workspace_id=workspace_id,
-            ),
             is_active=partial(_owner_is_active, request, user_id=identity.user_id),
             changes=iter_changed_ids(engine_of(request)),
         ),
         media_type="text/event-stream",
     )
-
-
-@router.post(
-    "/api/workspaces/{workspace_id}/messages",
-    response_model=WorkspaceMessageReceipt,
-)
-async def workspace_message_route(
-    workspace_id: uuid.UUID,
-    body: WorkspaceMessageRequest,
-    request: Request,
-    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
-    key: Annotated[uuid.UUID, Header(alias="Idempotency-Key")],
-) -> WorkspaceMessageReceipt:
-    """Store a viewer's message, publish it, and queue it for this canvas's partner.
-
-    The partner is the assistant's newest live session.
-    A retry with the same key and request returns the original receipt without
-    queueing again; the same key for a different request is 409.
-
-    Args:
-      workspace_id: Canvas carrying the partner.
-      body: Text, optional conversation and chat visual identity.
-      request: Request carrying the database engine and inbound queue.
-      identity: Authenticated browser sender.
-      key: Required retry-safe idempotency key.
-
-    Returns:
-      receipt: Partner session, conversation and the stored message.
-
-    """
-    require_browser(identity)
-    try:
-        result = await send_workspace_message(
-            engine_of(request),
-            user_id=identity.user_id,
-            workspace_id=workspace_id,
-            body=body,
-            key=key,
-            source=identity.email,
-            source_role=identity.role,
-            inbound=get_inbound(request),
-            assistant=get_assistant(request),
-            hub=get_hub(request),
-        )
-    except ChatConversationNotFoundError as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
-    except WorkspaceSessionUnavailableError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except PartnerBusyError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except WorkspaceContextChangedError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except ChatRequestConflictError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-    if result is None:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    return result
 
 
 @router.post("/api/workspaces", response_model=WorkspaceState)

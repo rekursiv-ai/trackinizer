@@ -51,13 +51,24 @@ for (const theme of ["dark", "light"] as const) {
         const workspace = await (await request.post("/api/workspaces")).json();
         const chat = "0b1f6f3e-6c1e-4d3a-9a55-3a1c2f7d9a10";
         const created = "2026-10-03T10:00:00.000000Z";
-        const message = (seq: number, role: string, text: string) => ({ id: `0b1f6f3e-6c1e-4d3a-9a55-3a1c2f7d9a${20 + seq}`, seq, role, author: role === "user" ? "ada@example.com" : "scout", text, created });
-        await page.route(`**/api/chats/${chat}**`, (route) => route.fulfill({ json: {
-          id: chat, title: "What changed", partner_actor: "scout", partner_session_id: null, earlier: true,
-          messages: [message(1, "user", "What changed this week?"), message(2, "assistant", `Two things: **${tag}** and a [link](#/lookup/${issue.id}).\n\n- one\n- two`)],
+        const session = "0b1f6f3e-6c1e-4d3a-9a55-3a1c2f7d9a30";
+        const record = (idx: number, kind: string, payload: { [field: string]: unknown }) => ({
+          idx, kind, payload, text: "", context_id: null, timestamp: created, model: null, ciphertext: null,
+        });
+        const records = [
+          record(0, "AgentToAgentMessage", { sender: "ada@example.com", content: "What changed this week?" }),
+          record(1, "AssistantMessage", { content: `Two things: **${tag}** and a [link](#/lookup/${issue.id}).\n\n- one\n- two` }),
+        ];
+        await page.route(`**/api/sessions/${session}/parts`, (route) => route.fulfill({ json: {
+          parts: [{ part: 0, name: "chat.jsonl", format: "sagent", records: records.length, metadata: {}, ir_id: "ir" }],
+        } }));
+        await page.route(`**/api/sessions/${session}/records**`, (route) => route.fulfill({ json: { records } }));
+        await page.route(`**/api/chats/${chat}`, (route) => route.fulfill({ json: {
+          conversation_id: chat, session_id: session, title: "What changed", account: "ada@example.com", live: true,
+          forks: 0, forked_from: null, forks_on_typing: false,
         } }));
         await page.route("**/api/chats", (route) => route.fulfill({ json: [
-          { id: chat, title: "What changed", partner_actor: "scout", workspace_id: workspace.id, created, modified: created },
+          { conversation_id: chat, session_id: session, title: "What changed", account: "ada@example.com", modified: created },
         ] }));
         await page.addInitScript(([key, id]) => {
           try {

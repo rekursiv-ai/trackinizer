@@ -99,7 +99,8 @@ async def profile_route(
       identity: Authenticated user from Bearer token or session cookie.
 
     Returns:
-      result: JSON with user_id, email, name, role, last_login, and canvas opt-in.
+      result: JSON with user_id, email, name, role, last_login, canvas opt-in, and
+        the id of the API key the request used (``None`` for a browser session).
 
     """
     engine = engine_of(request)
@@ -121,6 +122,7 @@ async def profile_route(
         "role": identity.role,
         "last_login": iso_format(last_login),
         "visual_workspace_enabled": workspace_enabled,
+        "api_key_id": None if identity.api_key_id is None else str(identity.api_key_id),
     }
 
 

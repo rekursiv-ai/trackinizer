@@ -13,6 +13,7 @@ import { LiveContext } from "../live";
 import type { LiveHub } from "../live/hub";
 import { RouterProvider } from "../router/router";
 import { ToastProvider } from "../ui/toast";
+import { type ChatFeed, ChatFeedContext } from "../visuals/chatFeed";
 import { type WorkspaceActions, WorkspaceActionsProvider } from "../visuals/workspaceActions";
 import { DetailView, type DetailTarget } from ".";
 
@@ -179,7 +180,8 @@ export function serveDetails(details: readonly Detail[], confidence = 0.5): Sent
  * the one a 401 would end, `commands` the registry the palette would list,
  * `hub` the live stream's, if it is to keep the detail current, `onCommit` is
  * told of each commit of the detail's tree, `highlights` is the canvas's marks,
- * none by default, and `workspace` is the canvas the detail shows inside, if any.
+ * none by default, `workspace` is the canvas the detail shows inside, if any, and
+ * `chat` is the shell's Chat feed, if the page is to continue a chat in it.
  */
 export function renderDetail(
   target: DetailTarget,
@@ -192,6 +194,7 @@ export function renderDetail(
     onCommit = () => {},
     highlights = new HighlightStore(),
     workspace = null,
+    chat = null,
   }: {
     profile?: Profile;
     session?: Session;
@@ -200,6 +203,7 @@ export function renderDetail(
     onCommit?: () => void;
     highlights?: HighlightStore;
     workspace?: WorkspaceActions | null;
+    chat?: ChatFeed | null;
   } = {},
 ) {
   return render(
@@ -212,13 +216,15 @@ export function renderDetail(
                 <RouterProvider kinds={META.kinds}>
                   <LiveContext value={hub}>
                     <Shortcuts />
-                    <WorkspaceActionsProvider value={workspace}>
-                      <Profiler id="detail" onRender={onCommit}>
-                        <HighlightContext value={highlights}>
-                          <DetailView target={target} />
-                        </HighlightContext>
-                      </Profiler>
-                    </WorkspaceActionsProvider>
+                    <ChatFeedContext value={chat}>
+                      <WorkspaceActionsProvider value={workspace}>
+                        <Profiler id="detail" onRender={onCommit}>
+                          <HighlightContext value={highlights}>
+                            <DetailView target={target} />
+                          </HighlightContext>
+                        </Profiler>
+                      </WorkspaceActionsProvider>
+                    </ChatFeedContext>
                   </LiveContext>
                 </RouterProvider>
               </ProfileContext>

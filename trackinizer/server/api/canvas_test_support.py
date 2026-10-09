@@ -1,4 +1,4 @@
-"""Seeding helpers shared by the canvas Chat route tests.
+"""Seeding helpers shared by the canvas and science chat route tests.
 
 Three principals share one PGlite database: the browser user, a second user, and
 the account the assistant runs under. Each acts through a browser
@@ -21,9 +21,16 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.config import Assistant, Config
+from trackinizer.wire.wire_science_chat import (
+    SCIENCE_CHAT_LABEL,
+    chat_session_id,
+    poster_label,
+)
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     import httpx2
 
     from trackinizer.server.auth import Role
@@ -42,6 +49,7 @@ KB_ACTOR: Final = "scout"
 ASSISTANT_CONFIG: Final = replace(
     Config(),
     assistant=Assistant(actor=KB_ACTOR, email=KB_EMAIL),
+    chat_orgs="single",
 )
 
 
@@ -106,6 +114,8 @@ async def start_session(
     *,
     actor: str | None = None,
     cli: str = "codex",
+    cli_session_id: str | None = None,
+    account: str | None = None,
 ) -> uuid.UUID:
     """Open a session as the installed agent identity and poll once so it is live.
 
@@ -113,6 +123,8 @@ async def start_session(
       client: The test client.
       actor: The routing name to ask for.
       cli: The CLI the session says it runs.
+      cli_session_id: The id the session is known by across restarts.
+      account: The person the session is attributed to; the key's owner by default.
 
     Returns:
       session_id: The new session.
@@ -120,7 +132,12 @@ async def start_session(
     """
     started = await client.post(
         "/api/sessions/start",
-        json={"cli": cli, "actor": actor},
+        json={
+            "cli": cli,
+            "actor": actor,
+            "cli_session_id": cli_session_id,
+            "account": account,
+        },
     )
     if started.status_code != 201:
         raise ValueError(f"session start answered {started.status_code}")
@@ -132,6 +149,44 @@ async def start_session(
     if polled.status_code != 200:
         raise ValueError(f"inbound poll answered {polled.status_code}")
     return uuid.UUID(session_id)
+
+
+async def open_science_chat(
+    client: httpx2.AsyncClient,
+    store: Store,
+    *,
+    conversation_id: uuid.UUID,
+    account: str = TEST_USER_EMAIL,
+    posters: tuple[str, ...] = (),
+) -> uuid.UUID:
+    """Open a conversation's session as the assistant does, then act as the browser.
+
+    Args:
+      client: The test client.
+      store: The test database.
+      conversation_id: The conversation.
+      account: The person who started it.
+      posters: Everyone who has posted in it besides the starter.
+
+    Returns:
+      session_id: The conversation's live session.
+
+    """
+    act_as_assistant("writer")
+    session_id = await start_session(
+        client,
+        actor=f"chat-{conversation_id.hex[:12]}",
+        cli_session_id=chat_session_id(conversation_id),
+        account=account,
+    )
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE inquiries SET labels = $2 WHERE id = $1",
+            session_id,
+            [SCIENCE_CHAT_LABEL, *(poster_label(email) for email in posters)],
+        )
+    browser()
+    return session_id
 
 
 async def open_workspace(
@@ -208,16 +263,20 @@ async def send_chat(
     text: str,
     conversation_id: uuid.UUID | None = None,
     key: uuid.UUID | None = None,
+    screen: Mapping[str, object] | None = None,
+    fork: Mapping[str, object] | None = None,
 ) -> httpx2.Response:
-    """Send one browser message.
+    """Post one browser line to a science chat.
 
     Args:
       client: The test client.
       workspace_id: The canvas.
       chat_id: Its Chat visual.
-      text: The message.
-      conversation_id: The conversation to continue; none starts one.
+      text: The line.
+      conversation_id: The conversation to post into; none starts one.
       key: The idempotency key; a fresh one by default.
+      screen: The sender's ``page`` and ``trail``, when the line carries them.
+      fork: The line to start a new conversation from, as the body names it.
 
     Returns:
       response: The raw response.
@@ -228,24 +287,27 @@ async def send_chat(
     headers = {"Idempotency-Key": idempotency}
     # pragma: no mutate end
     return await client.post(
-        f"/api/workspaces/{workspace_id}/messages",
+        "/api/chats",
         json={
+            "workspace_id": str(workspace_id),
             "text": text,
             "chat_instance_id": str(chat_id),
             "expected_record_id": None,
             "conversation_id": None
             if conversation_id is None
             else str(conversation_id),
+            **(screen or {}),
+            **({} if fork is None else {"fork": dict(fork)}),
         },
         headers=headers,
     )
 
 
 def conversation_of(response: httpx2.Response) -> uuid.UUID:
-    """Name the conversation a send receipt carries.
+    """Name the conversation a posted line's receipt carries.
 
     Args:
-      response: A successful send response.
+      response: A successful post response.
 
     Returns:
       conversation_id: The conversation.
@@ -255,6 +317,34 @@ def conversation_of(response: httpx2.Response) -> uuid.UUID:
         raise ValueError(f"send answered {response.status_code}")
     receipt = from_plain(loads(response.content), dict[str, object])
     return uuid.UUID(from_plain(receipt["conversation_id"], str))
+
+
+async def converse(
+    client: httpx2.AsyncClient,
+    store: Store,
+    *,
+    workspace_id: uuid.UUID,
+    chat_id: uuid.UUID,
+    text: str = "hello",
+) -> uuid.UUID:
+    """Post a line as the browser, and have the assistant open the conversation.
+
+    Args:
+      client: The test client.
+      store: The test database.
+      workspace_id: The canvas.
+      chat_id: Its Chat visual.
+      text: The line.
+
+    Returns:
+      session_id: The conversation's live session.
+
+    """
+    browser()
+    conversation_id = conversation_of(
+        await send_chat(client, workspace_id=workspace_id, chat_id=chat_id, text=text),
+    )
+    return await open_science_chat(client, store, conversation_id=conversation_id)
 
 
 async def revision_of(client: httpx2.AsyncClient, *, workspace_id: uuid.UUID) -> int:

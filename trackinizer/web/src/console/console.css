@@ -118,3 +118,5 @@
   .console-feed { flex: none; height: 75vh; }
   .console-tools, .console-feed, .console-send { padding-left: 12px; padding-right: 12px; }
 }
+
+.console-continue { padding: 0 6px; font-size: 11px; }

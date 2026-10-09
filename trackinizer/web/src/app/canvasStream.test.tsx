@@ -6,7 +6,6 @@ import { recentTimings, resetTimings } from "../debug/timings";
 import { META } from "../detail/testing";
 import { LiveContext } from "../live";
 import { LiveHub as LiveHubClass, type LiveHub } from "../live/hub";
-import { type ChatLines, chatKey } from "../visuals/chatCache";
 import { useChatFeed } from "../visuals/chatFeed";
 import { MetaContext } from "./boot";
 import { acceptWorkspace, CanvasStream, newerWorkspace } from "./canvasStream";
@@ -15,7 +14,6 @@ import { useHighlighted } from "./highlights";
 vi.mock("../api/workspaces", () => ({ createDefaultWorkspace: vi.fn(), openWorkspaceEvents: vi.fn() }));
 
 const workspace: WorkspaceState = { id: "w1", revision: 3, focused_instance: null, visuals: [] };
-const message = { id: "m1", seq: 1, role: "assistant", author: "scout", text: "hi", created: "2026-10-03T10:00:00Z" } as const;
 
 const hub = { change: vi.fn(), open: vi.fn(), drop: vi.fn(), refuse: vi.fn() };
 let client: QueryClient;
@@ -36,7 +34,7 @@ afterEach(() => {
 
 function Probe() {
   const { state } = useChatFeed();
-  return <output>{JSON.stringify([state.status, state.delivered, state.opens])}</output>;
+  return <output>{JSON.stringify([state.openVersion, state.request])}</output>;
 }
 
 function show(enabled: boolean, child: React.ReactNode = <Probe />) {
@@ -162,27 +160,16 @@ test("a highlight moves neither the page nor the canvas", async () => {
   expect(recentTimings()).toEqual([]);
 });
 
-test("chat frames land in the conversation's cache entry, and its status and delivery in the feed", async () => {
-  show(true);
-  const stream = await listener();
-  act(() => stream.status("c1", "Looking", 1));
-  act(() => stream.delivered("c1", 4, 2));
-  act(() => stream.open());
-  expect(JSON.parse(screen.getByRole("status").textContent!)).toEqual([{ c1: "Looking" }, { c1: 4 }, 1]);
-  act(() => stream.message("c1", message, 3));
-  act(() => stream.message("c1", message, 4));
-  expect(client.getQueryData<ChatLines>(chatKey("c1"))).toMatchObject({ read: false, messages: [{ id: "m1" }] });
-  expect(JSON.parse(screen.getByRole("status").textContent!)[0]).toEqual({});
-});
-
-test("a deleted conversation is dropped from the cache and History, and said to Chat", async () => {
-  client.setQueryData(chatKey("c1"), { messages: [], earlier: false, read: true });
+test("a chat has no frames of its own: its session's change reaches the live layer like any inquiry's", async () => {
   show(true);
   const stream = await listener();
   const invalidate = vi.spyOn(client, "invalidateQueries");
-  act(() => stream.deleted("c1", 5));
-  expect(client.getQueryData(chatKey("c1"))).toBeUndefined();
-  expect(invalidate).toHaveBeenCalledWith({ queryKey: ["chats"] });
+  act(() => stream.changed("session-1", 1));
+  act(() => stream.changed("session-1", 2));
+  expect(hub.change).toHaveBeenCalledTimes(2);
+  expect(hub.change).toHaveBeenCalledWith("session-1");
+  expect(invalidate).not.toHaveBeenCalled();
+  expect(Object.keys(stream).toSorted()).toEqual(["changed", "drop", "highlight", "navigate", "open", "refuse", "workspace"]);
 });
 
 test("the stream's state drives the live layer's paused bar: down for 10 s pauses it, an open clears it", async () => {

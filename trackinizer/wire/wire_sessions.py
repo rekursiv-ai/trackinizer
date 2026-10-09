@@ -26,6 +26,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from trackinizer.wire.json_types import JSON
+from trackinizer.wire.wire_science_chat import ChatForkAt
 
 
 _MAX_MESSAGE_CHARS: Final = 16_384
@@ -435,6 +436,10 @@ class WorkspaceMessageContext(BaseModel):
     continuation_record_id: uuid.UUID | None = None
     conversation_id: uuid.UUID | None = None
     """The Chat conversation the message belongs to; an assistant answers there."""
+
+    fork: ChatForkAt | None = None
+    """Set on the first line of a fork: the line of another conversation's session it
+    starts from. The assistant opens the conversation with the lines up to it."""
 
     page: WorkspacePage | None = None
     """The page the sender is on as they send: what "this" means to them."""

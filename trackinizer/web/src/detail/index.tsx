@@ -33,6 +33,8 @@ import { Rail } from "./Rail";
 import { Relations } from "./Relations";
 import { dateTime, relativeTime, useMinuteClock } from "./time";
 import { Transcript } from "./transcript";
+import { conversationOf, SCIENCE_CHAT_LABEL } from "../api/chats";
+import { useContinueInChat } from "../visuals/continueChat";
 import "../writes/writes.css";
 import "./detail.css";
 
@@ -139,6 +141,7 @@ function Page({ detail, stale, retry }: { detail: Detail; stale: Error | null; r
         name={`${row.kind}#${row.seq}`}
         actions={
           <>
+            <ContinueInChat row={row} />
             <ShowInGraph row={row} />
             <MoreMenu detail={detail} />
             <PanelToggle panel={rail} controls={railId} />
@@ -191,6 +194,22 @@ function Page({ detail, stale, retry }: { detail: Detail; stale: Error | null; r
         </div>
       </Frame>
     </RelationFlows>
+  );
+}
+
+/**
+ * Continue in Chat, on a science chat's session: Chat opens on the conversation, which anyone
+ * signed in as a writer can post in. Offered only where the canvas offers Chat.
+ */
+function ContinueInChat({ row }: { row: DetailRow }) {
+  const continueIn = useContinueInChat();
+  const labels = Array.isArray(row.labels) ? row.labels : [];
+  const conversation = conversationOf(typeof row.cli_session_id === "string" ? row.cli_session_id : null);
+  if (!continueIn || row.kind !== "AgentSession" || !conversation || !labels.includes(SCIENCE_CHAT_LABEL)) return null;
+  return (
+    <button type="button" className="btn ghost" onClick={() => continueIn(row.id)}>
+      Continue in Chat
+    </button>
   );
 }
 

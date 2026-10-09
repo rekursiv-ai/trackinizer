@@ -8,7 +8,8 @@ There is deliberately no ``search`` route. Matching records is a filter on the
 AgentSession list (``trax agentsession tool_call re bar``), not a second query
 surface with its own grammar.
 
-The append requires ``writer``; the reads require ``viewer``. Tenant scope is
+The append requires ``writer``, and for a science chat the key that opened it; the
+reads require ``viewer``. Tenant scope is
 derived by joining to ``inquiries``, as every session route does.
 """
 
@@ -22,7 +23,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from trackinizer.lib.codec import from_plain, immutable
 from trackinizer.server.api._deps import get_store
-from trackinizer.server.api.session_access import require_session_write_access
+from trackinizer.server.api.session_access import (
+    require_chat_opener,
+    require_session_write_access,
+)
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.session_reaper import revive_if_reaped
 from trackinizer.server.store.session_ir import SlashCommandRow
@@ -80,6 +84,7 @@ async def append_session_records_route(
     store = get_store(request)
     session = await _require_session(store, session_id)
     require_session_write_access(identity, session)
+    require_chat_opener(identity, session=session)
     # A run closed for silence that uploads again was alive all along; reopen
     # its session first, or the append is refused as a write to an ended one.
     if session.ended is not None:

@@ -1,9 +1,10 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type KeyboardEvent, memo, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type KeyboardEvent, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../api/client";
-import { getChat, listChats } from "../api/chats";
-import { sendWorkspaceMessage, type WorkspacePartner } from "../api/workspaces";
-import { MetaContext } from "../app/boot";
+import { newUuid } from "../api/idempotency";
+import { type ChatFork, conversationOf, getChatHead, listChats, SCIENCE_CHAT_LABEL, sendChatLine } from "../api/chats";
+import type { WorkspacePartner } from "../api/workspaces";
+import { MetaContext, useProfile, useWriteMode } from "../app/boot";
 import { Composer } from "../composer/Composer";
 import { detailQueries } from "../detail/queries";
 import { relativeTime, useMinuteClock } from "../detail/time";
@@ -12,9 +13,9 @@ import { Markdown } from "../markdown/Markdown";
 import { formatRoute, parseHash } from "../router/route";
 import { useHash, validHash, visited } from "../router/trail";
 import { HelperCommands } from "../settings/ChatPartner";
-import { appendLines, type ChatLines, chatKey, lastSeq, readLines } from "./chatCache";
+import { type ChatPart, type Line, type LineAt, linesThrough, PENDING, type PendingLine, readTranscript, sentBefore, withPending } from "./chatLines";
+import { chatRecordsKey, OPENING, readChatParts, useLiveChat } from "./chatRecords";
 import { useChatFeed } from "./chatFeed";
-import { type Line, type PendingLine, transcript } from "./chatLines";
 import type { RendererProps } from "./registry";
 import { useWorkspaceActions } from "./workspaceActions";
 
@@ -24,100 +25,110 @@ const MAX_TEXT = 16_384;
 /** The most earlier pages one message carries. */
 const MAX_TRAIL = 8;
 
+/** The most characters of a line the fork banner quotes. */
+const QUOTED = 80;
+
+/** What the composer says about a chat's reach; it is public and permanent. */
+export const PUBLIC_NOTICE = "Chats are public to every user and cannot be deleted. Do not type secrets here.";
+
 /**
- * Talk with the canvas's partner: the default assistant, or a live
- * session of the user's own. The panel is the same for every partner, which
- * differs only in its name. A conversation's lines are one cache entry (the
- * thread read, then every pushed line and receipt); what the user just sent
- * shows at once, pending. The open conversation lives in the shell's `ChatFeed`,
+ * Talk with the canvas's partner in a science chat: a session the assistant
+ * opens, shared with everyone signed in like a Slack thread. Its lines are the
+ * session's records (read as the Console reads them, and kept current by the
+ * canvas stream's changed ids); a line posted here shows at once, pending, until
+ * its record arrives. A new conversation has an id at once and a session when
+ * the assistant opens it. The open conversation lives in the shell's `ChatFeed`,
  * so Chat mounting again keeps it.
+ *
+ * Typing in a chat joins it, unless the chat was started outside the user's
+ * organisation: then what they type starts a fork of their own, from its latest
+ * line, and they land in it. "Fork from here" on any stored line does the same
+ * from that line, in any chat; the next message sent starts the fork.
  */
 export function Chat({ instance, workspace }: RendererProps) {
   const queryClient = useQueryClient();
   const kinds = useContext(MetaContext)?.kinds ?? [];
+  const { email: me } = useProfile();
+  const writing = useWriteMode() === "enabled";
   const { feed, state } = useChatFeed();
   const workspaceId = workspace?.id ?? null;
   const partner = workspace?.partner ?? null;
   const conversationId = feed.openId(workspaceId);
   const [menu, setMenu] = useState<"history" | null>(null);
   const [pending, setPending] = useState<readonly PendingLine[]>([]);
+  const [sending, setSending] = useState<ReadonlySet<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
+  // The line "Fork from here" picked: the next message starts a fork of this chat after it.
+  const [forkAt, setForkAt] = useState<(LineAt & { readonly quote: string }) | null>(null);
+  // When the last line was sent into the open conversation, while its session may still be on its way.
+  const [sentAt, setSentAt] = useState<number | null>(null);
   // Moves when the user picks another conversation; a receipt that comes back
   // after it no longer decides which one is open.
   const epoch = useRef(0);
   const [epochState, setEpochState] = useState(0);
 
-  const thread = useQuery({
-    queryKey: chatKey(conversationId),
-    queryFn: async ({ signal }) => readLines(
-      await getChat(conversationId!, 0, { signal }),
-      queryClient.getQueryData<ChatLines>(chatKey(conversationId)),
-    ),
+  // The conversation's session: absent until the assistant has opened it.
+  const head = useQuery({
+    queryKey: ["chat", "head", conversationId],
+    queryFn: ({ signal }) => getChatHead(conversationId!, { signal }),
     enabled: conversationId !== null,
-    // Lines pushed before the read are held but not read: the read still comes.
-    staleTime: (query) => (query.state.data?.read ? Infinity : 0),
+    refetchInterval: (query) => (query.state.data === null && sentAt !== null && Date.now() - sentAt < OPENING.giveUpMs ? OPENING.everyMs : false),
   });
-  const loading = conversationId !== null && thread.data?.read !== true && !thread.isError;
-  const lines = transcript(thread.data?.messages ?? NONE, pending.filter((line) => line.conversationId === conversationId));
-  const reported = conversationId ? state.status[conversationId] : undefined;
-  const drained = conversationId ? state.delivered[conversationId] ?? 0 : 0;
-  const known = useRef(0);
-  known.current = lastSeq(thread.data);
+  const session = head.data?.session_id ?? null;
+  const records = useQuery({
+    queryKey: chatRecordsKey(session),
+    queryFn: ({ signal }) => readChatParts(session!, queryClient.getQueryData<ChatPart[]>(chatRecordsKey(session)), signal),
+    enabled: session !== null,
+    // The stream keeps it current (`useLiveChat`); a mount or a reconnect reads what it missed.
+    structuralSharing: false,
+  });
+  useLiveChat(session);
 
-  // A conversation deleted elsewhere is a new chat here.
-  const gone = thread.error instanceof ApiError && thread.error.status === 404;
+  const transcript = useMemo(() => readTranscript(records.data ?? []), [records.data]);
+  const lines = withPending(transcript, pending.filter((line) => line.conversationId === conversationId), { me });
+  const loading = session !== null && records.data === undefined && !records.isError;
+  const unopened = conversationId !== null && head.data === null && !head.isFetching;
+  const stale = unopened && sentAt !== null && Date.now() - sentAt >= OPENING.giveUpMs;
+  // The give-up time is not a render of its own: the last look may come just before it.
+  const [, tick] = useState(0);
   useEffect(() => {
-    if (gone && workspaceId) feed.setOpen(workspaceId, null);
-  }, [gone, workspaceId, feed]);
+    if (sentAt === null) return;
+    const timer = setTimeout(() => tick((n) => n + 1), Math.max(0, sentAt + OPENING.giveUpMs - Date.now()) + 1);
+    return () => clearTimeout(timer);
+  }, [sentAt]);
 
-  // After the stream opens again, read what was stored while it was down.
-  const seenOpens = useRef(state.opens);
-  useEffect(() => {
-    if (seenOpens.current === state.opens) return;
-    seenOpens.current = state.opens;
-    // A read still on its way answers for this open too: one read per open.
-    if (!conversationId || thread.isFetching) return;
-    const controller = new AbortController();
-    getChat(conversationId, known.current, { signal: controller.signal }).then(
-      (after) => appendLines(queryClient, conversationId, after.messages),
-      () => {},
-    );
-    return () => controller.abort();
-  }, [state.opens, conversationId, queryClient]);
-
-  // A conversation deleted through the API, or by the server, is left for a new chat.
-  const removed = conversationId !== null && state.deleted[conversationId] === true;
-  useEffect(() => {
-    if (!removed) return;
-    startConversation(null);
-    setNotice("This conversation was deleted.");
-    // `startConversation` is the same function every render, but for what it closes over.
-  }, [removed]);
+  const pickFork = useCallback((at: LineAt, quote: string) => setForkAt({ ...at, quote }), []);
+  const stored = lines.filter((line) => !line.pending);
+  const forks = head.data?.forks_on_typing === true;
+  const latest = stored.at(-1)?.at ?? null;
+  // The line a message sent now would fork after: the one picked, else the latest of a chat that cannot be joined.
+  const forkPoint = forkAt ?? (forks ? latest : null);
+  const fork: ChatFork | null = session && forkPoint ? { sessionId: session, part: forkPoint.part, idx: forkPoint.idx } : null;
 
   const last = lines.at(-1);
-  const delivered = last?.role === "user" && last.seq !== null && last.seq <= drained;
-  const working = delivered && reported === undefined;
-  const receipt = last?.role !== "user" ? "" : last.seq === null ? "Sending…" : delivered ? "Delivered" : "";
-  // A partner that has gone away answers no more: its status, or the wait for it, gives way to that.
-  const busyText = reported || (working ? "Working…" : "");
+  const waiting = last?.pending ? (sending.has(last.key.slice(PENDING.length)) ? "Sending…" : "Waiting for the assistant…") : "";
+  const busyText = waiting || (transcript.working === null || last?.pending ? "" : transcript.working ? `Working: ${transcript.working}…` : "Working…");
+  // A partner that has gone away answers no more: the wait for it gives way to that.
   const statusText = busyText && partner && partner.status !== "live" ? partnerGone(partner) : busyText;
 
   const stage = useRef<HTMLDivElement>(null);
   const stuck = useRef(true);
-  // Every row that grows the log, the delivery and status rows included.
+  // Every row that grows the log, the working line included.
   useLayoutEffect(() => {
     const element = stage.current;
     if (element && stuck.current) element.scrollTop = element.scrollHeight;
-  }, [lines.length, receipt, statusText, conversationId, notice]);
+  }, [lines.length, statusText, conversationId, notice]);
 
   const chatInstanceId = workspace?.visuals.some((visual) => visual.id === instance.id && visual.type === "trax.chat")
     ? instance.id : null;
   const expectedRecordId = instance.record_id ?? null;
   // The target names where a draft goes, so a retry under one key only ever
   // repeats a send to the same place. `epochState` moves when the user picks
-  // another conversation, not when a first message gives a new one its id.
-  const target = JSON.stringify([workspaceId, partner?.session_id ?? null, chatInstanceId, expectedRecordId, epochState]);
-  const live = !!workspace && partner?.status === "live";
+  // another conversation, not when a first line gives a new one its id.
+  const target = JSON.stringify([workspaceId, partner?.session_id ?? null, chatInstanceId, expectedRecordId, epochState, fork]);
+  const live = !!workspace && partner?.status === "live" && writing;
+  // Whose chat this is, and so whether typing joins it or forks it, is known once its head has been read.
+  const reading = conversationId !== null && head.isPending;
   const hash = useHash();
   const screen = parseHash(hash, kinds);
 
@@ -127,28 +138,72 @@ export function Chat({ instance, workspace }: RendererProps) {
     setEpochState(epoch.current);
     setMenu(null);
     setNotice(null);
+    setForkAt(null);
+    setSentAt(null);
     stuck.current = true;
   }
 
+  // A request from the Console or a session's page: open that science chat here. Taking it
+  // ends this effect's run, so what it started is dropped only when Chat goes away.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  useEffect(() => {
+    const request = state.request;
+    if (!request || !workspaceId) return;
+    feed.taken(request.n);
+    void queryClient.fetchQuery(detailQueries.detail(request.sessionId)).then((detail) => {
+      if (!mounted.current) return;
+      const conversation = conversationOf(typeof detail.self.cli_session_id === "string" ? detail.self.cli_session_id : null);
+      const labels = Array.isArray(detail.self.labels) ? detail.self.labels : [];
+      if (conversation && labels.includes(SCIENCE_CHAT_LABEL)) startConversation(conversation);
+      else setNotice("That session is not a science chat.");
+    }, () => mounted.current && setNotice("Could not open that chat."));
+    // `startConversation` is the same function every render, but for what it closes over.
+  }, [state.request, workspaceId]);
+
+  /** The server refuses a post into a chat started outside my organisation; what I typed then forks it at its latest line. */
   async function send(text: string, key: string): Promise<string> {
-    const sentTo = conversationId;
+    try {
+      return await post(text, key, forkPoint);
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 403) || fork || latest === null) throw error;
+      return post(text, newUuid(), latest);
+    }
+  }
+
+  async function post(text: string, key: string, after: LineAt | null): Promise<string> {
+    // A fork is a new conversation, which the key names; it opens with my own lines up to the fork point.
+    const forkOf: ChatFork | null = session && after ? { sessionId: session, part: after.part, idx: after.idx } : null;
+    const sentTo = forkOf ? key : conversationId;
     const sentEpoch = epoch.current;
-    setPending((held) => [...held.filter((line) => line.key !== key), { key, text, conversationId: sentTo }]);
+    const baseline = sentBefore(after && forkOf ? linesThrough(lines, after) : lines, { me });
+    setPending((held) => [...held.filter((line) => line.key !== key), { key, text, conversationId: sentTo, baseline }]);
+    setSending((held) => new Set(held).add(key));
     try {
       const { page, trail } = whereFrom(location.hash);
-      const sent = await sendWorkspaceMessage(workspace!.id, { text, chatInstanceId, expectedRecordId, conversationId: sentTo, page, trail }, key);
-      appendLines(queryClient, sent.conversation_id, [sent.message]);
-      if (epoch.current === sentEpoch) feed.setOpen(workspace!.id, sent.conversation_id);
+      const sent = await sendChatLine({ workspaceId: workspace!.id, text, chatInstanceId, expectedRecordId, conversationId: forkOf ? null : sentTo,
+        ...(forkOf && { fork: forkOf }), page, trail }, key);
+      setPending((held) => held.map((line) => (line.key === key ? { ...line, conversationId: sent.conversation_id } : line)));
+      if (epoch.current === sentEpoch) {
+        feed.setOpen(workspace!.id, sent.conversation_id);
+        setForkAt(null);
+        setSentAt(Date.now());
+      }
       void queryClient.invalidateQueries({ queryKey: ["chats"] });
+      void queryClient.invalidateQueries({ queryKey: ["chat", "head", sent.conversation_id] });
       return "";
     } catch (error) {
-      if (error instanceof ApiError && error.status === 404 && epoch.current === sentEpoch) {
-        startConversation(null);
-        setNotice("That conversation no longer exists. Your message was not sent; the next one starts a new chat.");
-      }
+      setPending((held) => held.filter((line) => line.key !== key));
       throw error;
     } finally {
-      setPending((held) => held.filter((line) => line.key !== key));
+      setSending((held) => {
+        const next = new Set(held);
+        next.delete(key);
+        return next;
+      });
     }
   }
 
@@ -187,27 +242,38 @@ export function Chat({ instance, workspace }: RendererProps) {
         }}>
         {notice && <p className="chat-note" role="status">{notice}</p>}
         {loading && <p className="chat-note">Loading the conversation…</p>}
-        {thread.isError && !gone && <p role="alert" className="chat-error">Could not load the conversation.{" "}
-          <button className="btn ghost" type="button" onClick={() => void thread.refetch()}>Retry</button></p>}
-        {thread.data?.earlier && <p className="chat-note">Earlier messages not shown.</p>}
-        {lines.length === 0 && !loading && !notice && live && <p className="chat-note">
+        {(head.isError || records.isError) && <p role="alert" className="chat-error">Could not load the conversation.{" "}
+          <button className="btn ghost" type="button" onClick={() => void (head.isError ? head.refetch() : records.refetch())}>Retry</button></p>}
+        {unopened && !stale && sentAt === null && <p className="chat-note" role="status">
+          This conversation has no session on this server yet. It starts when the assistant hears its first line.</p>}
+        {stale && <p className="chat-error" role="alert">The assistant has not opened this chat. Your line may not have been
+          delivered; send it again.</p>}
+        {lines.length === 0 && !loading && !notice && !unopened && live && <p className="chat-note">
           Say something to {partner?.actor ?? "your partner"}.</p>}
-        {lines.map((line) => <ChatLine key={line.key} role={line.role} text={line.text} pending={line.seq === null} kinds={kinds} />)}
-        {receipt && <p className="chat-receipt">{receipt}</p>}
-        {/* Every partner works the same way: a neutral indicator once delivered, its own status in place of it, nothing once cleared or answered. */}
+        {head.data && head.data.account !== me && <p className="chat-note">Started by {head.data.account}.</p>}
+        {head.data?.forked_from && <p className="chat-note">Forked from{" "}
+          <button className="btn ghost" type="button" onClick={() => startConversation(head.data!.forked_from!)}>another chat</button>.</p>}
+        {head.data && head.data.forks > 0 && <p className="chat-note">{forkedTimes(head.data.forks)}</p>}
+        {forks && <p className="chat-note" role="status">This chat was started outside your organisation, so what you type
+          starts a fork of your own from its latest line.</p>}
+        {lines.map((line) => <ChatLine key={line.key} line={line} me={me} kinds={kinds} onFork={live && head.data ? pickFork : undefined} />)}
+        {/* One working line, the last tool call's name, in place of a status the partner no longer sends. */}
         {statusText && <p className="chat-status" role="status">{statusText}</p>}
-        {workspace && !live && !loading && <ChatOff local={workspace.partner_choice === "local"} />}
+        {workspace && writing && !live && !loading && <ChatOff local={workspace.partner_choice === "local"} />}
       </div>
-      <Composer send={send} target={target} enabled={live} editable
-        placeholder={live ? `Message ${partner?.actor ?? "your partner"}…` : "Chat is off"}
+      {forkAt && <p className="chat-fork-banner" role="status">
+        Your next message starts a fork of this chat after “{forkAt.quote}”.{" "}
+        <button className="btn ghost" type="button" onClick={() => setForkAt(null)}>Cancel fork</button>
+      </p>}
+      <p className="chat-notice">{PUBLIC_NOTICE}</p>
+      <Composer send={send} target={target} enabled={live && !reading} editable
+        placeholder={reading ? "Loading the conversation…" : live ? `Message ${partner?.actor ?? "your partner"}…` : readOnly(partner?.status, writing)}
         check={checkText} retryable={resendable}
         failure={(error) => error instanceof ApiError && error.status >= 400 && error.status < 500 && error.detail
           ? error.detail : "Could not send this message. Retry to send the same draft safely."} />
     </section>
   );
 }
-
-const NONE: readonly never[] = [];
 
 /** The page a message is sent from and the up to 8 pages before it, oldest first. */
 function whereFrom(hash: string): { readonly page: string | null; readonly trail: readonly string[] } {
@@ -241,6 +307,10 @@ function partnerGone(partner: WorkspacePartner): string {
   return `${partner.actor ?? "The partner"} is unavailable.`;
 }
 
+function readOnly(status: string | undefined, writing: boolean): string {
+  return status === "live" && !writing ? "You can read this chat but not post in it" : "Chat is off";
+}
+
 /** What to do when no partner is live: two lines, then the commands that start a local helper. */
 function ChatOff({ local }: { readonly local: boolean }) {
   return <div className="chat-off">
@@ -254,21 +324,36 @@ function ChatOff({ local }: { readonly local: boolean }) {
 
 /**
  * One line, by value: the transcript builds its lines afresh on every render,
- * so the panel's renders (a status, a receipt, the canvas around it) leave each
- * line's Markdown alone unless its text changed.
+ * so the panel's renders (a status, the canvas around it) leave each line's
+ * Markdown alone unless its text changed. A line by someone else says who.
  */
-const ChatLine = memo(function ChatLine({ role, text, pending, kinds }: {
-  readonly role: Line["role"];
-  readonly text: string;
-  readonly pending: boolean;
+const ChatLine = memo(function ChatLine({ line, me, kinds, onFork }: {
+  readonly line: Line;
+  readonly me: string;
   readonly kinds: readonly string[];
+  /** Pick this stored line as where a fork starts; absent where a fork cannot be started. */
+  readonly onFork?: (at: LineAt, quote: string) => void;
 }) {
-  return <article className={`chat-line chat-line-${role}${pending ? " chat-line-pending" : ""}`}>
-    {role === "assistant"
-      ? <Markdown source={text} kinds={kinds} className="md chat-line-body" images={false} />
-      : <p className="chat-line-body">{text}</p>}
+  const other = line.role === "user" && line.author !== null && line.author !== me;
+  const at = line.at;
+  return <article className={`chat-line chat-line-${line.role}${other ? " chat-line-other" : ""}${line.pending ? " chat-line-pending" : ""}`}>
+    {other && <span className="chat-line-author">{line.author}</span>}
+    {line.role === "assistant"
+      ? <Markdown source={line.text} kinds={kinds} className="md chat-line-body" images={false} />
+      : <p className="chat-line-body">{line.text}</p>}
+    {onFork && at && <button className="btn ghost chat-line-fork" type="button" onClick={() => onFork(at, quoted(line.text))}>Fork from here</button>}
   </article>;
 });
+
+/** The start of a line, on one line, for the banner that says where a fork starts. */
+function quoted(text: string): string {
+  const flat = text.split(/\s+/).join(" ").trim();
+  return flat.length > QUOTED ? `${flat.slice(0, QUOTED - 1)}…` : flat;
+}
+
+function forkedTimes(count: number): string {
+  return count === 1 ? "Forked once." : `Forked ${count} times.`;
+}
 
 function History({ current, onOpen }: { readonly current: string | null; readonly onOpen: (id: string) => void }) {
   const now = useMinuteClock();
@@ -281,10 +366,10 @@ function History({ current, onOpen }: { readonly current: string | null; readonl
     {chats.isError && <p role="alert" className="chat-error">Could not load history.{" "}
       <button className="btn ghost" type="button" onClick={() => void chats.refetch()}>Retry</button></p>}
     {chats.isSuccess && chats.data.length === 0 && <p className="chat-note">No conversations yet.</p>}
-    {chats.data?.map((chat) => <button key={chat.id} className="chat-menu-option" type="button" role="menuitemradio"
-      aria-checked={chat.id === current} onClick={() => onOpen(chat.id)}>
+    {chats.data?.map((chat) => <button key={chat.conversation_id} className="chat-menu-option" type="button" role="menuitemradio"
+      aria-checked={chat.conversation_id === current} onClick={() => onOpen(chat.conversation_id)}>
       <strong>{chat.title}</strong>
-      <span>{relativeTime(chat.modified, now)}{chat.partner_actor ? ` · ${chat.partner_actor}` : ""}</span>
+      <span>{relativeTime(chat.modified, now)} · {chat.account}</span>
     </button>)}
   </div>;
 }

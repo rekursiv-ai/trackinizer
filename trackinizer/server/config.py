@@ -24,12 +24,14 @@ if TYPE_CHECKING:
 
 __all__ = [
     "Assistant",
+    "ChatOrgs",
     "Config",
     "ConfigError",
     "ConfigFlags",
     "build_embedder",
     "build_engine",
     "parse_assistant",
+    "parse_chat_orgs",
     "parse_engine",
 ]
 
@@ -48,6 +50,11 @@ class ConfigError(Exception):
 _DEFAULT_SESSION_MAX_AGE_SECONDS: int = (
     30 * 24 * 60 * 60
 )  # house-ignore[globals] -- Shared default; threading would duplicate across the Config field default and the env-parse fallback.
+
+
+type ChatOrgs = Literal["single", "domain"]
+"""Who a science chat's starter shares an organisation with: everyone (``single``), or
+only those whose verified email has the starter's domain (``domain``)."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -109,6 +116,11 @@ class Config:
       auth_disabled: Bypass auth -- every request becomes a synthetic
         admin. Local demos only; never in production.
       assistant: The Chat partner of every canvas; none when unset.
+      chat_orgs: ``domain`` (the default) gives each verified email domain its own
+        organisation, consumer domains none: a user outside the starter's forks the
+        chat instead. ``single`` makes every user one organisation, so a science chat
+        is always continued by typing in it; only a server whose users are all one
+        organisation sets it. Environment only (``TRACKINIZER_CHAT_ORGS``).
 
     """
 
@@ -146,6 +158,7 @@ class Config:
     session_max_age_seconds: int = _DEFAULT_SESSION_MAX_AGE_SECONDS
     auth_disabled: bool = False
     assistant: Assistant | None = None
+    chat_orgs: ChatOrgs = "domain"
 
     @classmethod
     def from_env(cls) -> Self:
@@ -177,6 +190,7 @@ class Config:
             session_max_age_seconds=session_max_age_from_env(),
             auth_disabled=auth_disabled_from_env(),
             assistant=parse_assistant(os.environ.get("TRACKINIZER_ASSISTANT", "")),
+            chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
         )
 
     @classmethod
@@ -208,6 +222,8 @@ class Config:
             session_max_age_seconds=flags.session_max_age_seconds,
             auth_disabled=not flags.auth,
             assistant=parse_assistant(flags.assistant),
+            # Like the secrets, a deployment property that no flag overrides.
+            chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
         )
 
     def maintained_embedders(self) -> tuple[str, ...]:
@@ -288,6 +304,33 @@ def parse_assistant(value: str) -> Assistant | None:
         raise ConfigError(f"--assistant must be ACTOR=EMAIL, got {value!r}")
     # users.email is stored lowercase, so only a lowercase one can match it.
     return Assistant(actor=actor.strip(), email=email.strip().lower())
+
+
+def parse_chat_orgs(value: str) -> ChatOrgs:
+    """Parse ``$TRACKINIZER_CHAT_ORGS``: ``single`` or ``domain``; blank is ``domain``.
+
+    Blank is the safe value: a server that never set the variable must not let a
+    person from another organisation type into a chat that is not theirs.
+
+    Args:
+      value: The variable.
+
+    Returns:
+      orgs: How science chats group their users.
+
+    Raises:
+      ConfigError: The value is neither.
+
+    """
+    match value.strip():
+        case "" | "domain":
+            return "domain"
+        case "single":
+            return "single"
+        case other:
+            raise ConfigError(
+                f"TRACKINIZER_CHAT_ORGS must be single or domain, got {other!r}",
+            )
 
 
 def parse_engine(value: str) -> Literal["pglite", "pg"]:

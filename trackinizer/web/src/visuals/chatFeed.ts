@@ -1,32 +1,27 @@
 import { createContext, useContext, useState, useSyncExternalStore } from "react";
 
-/** What the events stream has told Chat about each conversation, by id. */
+/** A request, from outside Chat, to open a science chat's session in it. */
+export type ContinueRequest = { readonly sessionId: string; readonly n: number };
+
+/** What Chat shares with the rest of the shell. */
 export type ChatFeedState = {
-  /** How many times the stream has opened; a rise after the first means a gap. */
-  readonly opens: number;
-  /**
-   * The partner's status line: `""` once it cleared one, absent before any and
-   * after a new message.
-   */
-  readonly status: Readonly<Record<string, string>>;
-  /** The highest `seq` the partner has drained, as the last `delivered` frame said. */
-  readonly delivered: Readonly<Record<string, number>>;
-  /** Conversations deleted since the page opened, here or in another tab. */
-  readonly deleted: Readonly<Record<string, true>>;
   /** Bumped when a canvas's open conversation changes. */
   readonly openVersion: number;
+  /** The newest request to continue a session in Chat, until Chat has taken it. */
+  readonly request: ContinueRequest | null;
 };
 
 /**
- * Chat's state that is not a conversation's lines (those live in the query
- * cache, `chatCache.ts`): the partner's status, delivery, the stream's opens,
- * and which conversation each canvas has open. It lives above Chat, which is a
- * lazy chunk that may mount late and remount, so none of it is lost.
+ * Chat's state that is not a conversation's lines (those are its session's records,
+ * read through the query cache): which conversation each canvas has open, and a request
+ * from the Console or a session's page to continue a session in Chat. It lives above
+ * Chat, which is a lazy chunk that may mount late and remount, so none of it is lost.
  */
 export class ChatFeed {
-  #state: ChatFeedState = { opens: 0, status: {}, delivered: {}, deleted: {}, openVersion: 0 };
+  #state: ChatFeedState = { openVersion: 0, request: null };
   readonly #open = new Map<string, string | null>();
   readonly #listeners = new Set<() => void>();
+  #requests = 0;
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
@@ -34,39 +29,6 @@ export class ChatFeed {
   };
 
   readonly snapshot = (): ChatFeedState => this.#state;
-
-  /** The stream connected. */
-  opened(): void {
-    this.#set({ ...this.#state, opens: this.#state.opens + 1 });
-  }
-
-  /** A message was stored in a conversation: its status starts over. */
-  messaged(conversationId: string): void {
-    if (!(conversationId in this.#state.status)) return;
-    const { [conversationId]: _, ...status } = this.#state.status;
-    this.#set({ ...this.#state, status });
-  }
-
-  /** The partner's status for a conversation; `""` clears it, and the panel then shows none. */
-  setStatus(conversationId: string, text: string): void {
-    this.#set({ ...this.#state, status: { ...this.#state.status, [conversationId]: text } });
-  }
-
-  /** The partner drained the conversation's messages through `seq`. */
-  drained(conversationId: string, seq: number): void {
-    if (seq <= (this.#state.delivered[conversationId] ?? 0)) return;
-    this.#set({ ...this.#state, delivered: { ...this.#state.delivered, [conversationId]: seq } });
-  }
-
-  /** Forget a conversation, once it is deleted; `gone` says so to a Chat that has it open. */
-  forget(conversationId: string, gone = false): void {
-    const { [conversationId]: _s, ...status } = this.#state.status;
-    const { [conversationId]: _d, ...delivered } = this.#state.delivered;
-    this.#set({
-      ...this.#state, status, delivered,
-      deleted: gone ? { ...this.#state.deleted, [conversationId]: true } : this.#state.deleted,
-    });
-  }
 
   /**
    * The conversation open on `workspaceId`: what was set, else what
@@ -84,6 +46,17 @@ export class ChatFeed {
     this.#open.set(workspaceId, id);
     writeStored(workspaceId, id);
     this.#set({ ...this.#state, openVersion: this.#state.openVersion + 1 });
+  }
+
+  /** Ask Chat to open the science chat whose session is `sessionId`, when it is shown. */
+  continueIn(sessionId: string): void {
+    this.#requests += 1;
+    this.#set({ ...this.#state, request: { sessionId, n: this.#requests } });
+  }
+
+  /** Chat took request `n`; a newer one that came meanwhile stays. */
+  taken(n: number): void {
+    if (this.#state.request?.n === n) this.#set({ ...this.#state, request: null });
   }
 
   #set(state: ChatFeedState): void {

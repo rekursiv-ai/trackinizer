@@ -337,6 +337,19 @@ class TestSendIdempotency:
         assert second == [sid]
         assert q.pending(sid) == 1
 
+    def test_a_key_remembers_who_first_sent_under_it(self) -> None:
+        q = InboundQueue(max_seen_keys=1)
+        key, other = uuid.uuid4(), uuid.uuid4()
+        sid = uuid.uuid4()
+        q.send_once(key, [(sid, Inbound(text="hi", source="ada@example.com"))])
+        q.send_once(key, [(sid, Inbound(text="hi", source="jan@other.org"))])
+
+        assert q.sender_of(key) == "ada@example.com"
+        assert q.sender_of(other) is None
+        # A key the bound pushed out is forgotten, as is one that had no sender.
+        q.send_once(other, [(sid, Inbound(text="anon"))])
+        assert (q.sender_of(key), q.sender_of(other)) == (None, None)
+
     def test_send_once_concurrent_same_key_enqueues_once(self) -> None:
         # Two concurrent same-key sends must not BOTH pass the dedup check and
         # double-enqueue: send_once holds the lock across check+enqueue+record,

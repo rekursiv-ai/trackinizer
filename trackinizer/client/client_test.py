@@ -1588,70 +1588,6 @@ def test_a_highlight_reads_no_revision_and_names_the_ids() -> None:
     ]
 
 
-def test_a_chat_is_read_as_the_wire_describes_it() -> None:
-    conversation = uuid.uuid4()
-    message = {
-        "id": str(uuid.uuid4()),
-        "seq": 1,
-        "role": "user",
-        "author": "ada@example.com",
-        "text": "hi",
-        "created": "2026-10-03T10:00:00Z",
-    }
-    reads: list[str] = []
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        reads.append(request.url.path)
-        return httpx2.Response(
-            200,
-            json={
-                "id": str(conversation),
-                "title": "hi",
-                "partner_actor": "scout",
-                "partner_session_id": None,
-                "earlier": False,
-                "messages": [message],
-            },
-        )
-
-    with Client("http://server") as client:
-        _install_mock_transport(client, handler)
-        thread = client.read_chat(conversation)
-
-    assert reads == [f"/api/chats/{conversation}"]
-    assert [(each.seq, each.role, each.text) for each in thread.messages] == [
-        (1, "user", "hi"),
-    ]
-
-
-def test_the_conversations_owed_a_reply_are_listed_as_awaiting_chats() -> None:
-    conversation = uuid.uuid4()
-    workspace = uuid.uuid4()
-    reads: list[str] = []
-
-    def handler(request: httpx2.Request) -> httpx2.Response:
-        reads.append(request.url.path)
-        return httpx2.Response(
-            200,
-            json=[
-                {
-                    "conversation_id": str(conversation),
-                    "workspace_id": str(workspace),
-                    "seq": 3,
-                },
-            ],
-        )
-
-    with Client("http://server") as client:
-        _install_mock_transport(client, handler)
-        owed = client.awaiting_chats()
-
-    assert reads == ["/api/chats/awaiting"]
-    assert [(each.conversation_id, each.workspace_id, each.seq) for each in owed] == [
-        (conversation, workspace, 3),
-    ]
-
-
 def _answering(payload: PlainTree) -> Client:
     """Return a client whose server answers every request with ``payload``."""
 
@@ -2152,6 +2088,7 @@ class TestSessionMethods:
                 {"id": str(visual_id), "type": "trax.chat", "record": None},
             ],
             "conversation_id": None,
+            "fork": None,
             "page": None,
             "trail": [],
         }

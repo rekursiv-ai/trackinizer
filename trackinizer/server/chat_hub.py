@@ -1,10 +1,11 @@
-"""In-process fan-out of canvas and Chat changes to the owner's open browsers.
+"""In-process fan-out of canvas changes to the owner's open browsers.
 
 The server runs single-process, as the inbound queue already requires, so one
-broker keeps every subscriber's queue, and what the partner is doing in each
-conversation: its current status and how far it has read. Callers publish only
-after the database commit, so a frame never names state a reader cannot yet
-fetch.
+broker keeps every subscriber's queue. A Chat conversation is an AgentSession, so
+its lines reach a browser as the session's ``changed`` id, the way every other
+record does; the hub carries the canvas and what an agent does to it. Callers
+publish only after the database commit, so a frame never names state a reader
+cannot yet fetch.
 
 A frame is one SSE ``data:`` line of JSON carrying ``t``, the server's epoch
 milliseconds, so a client can tell how long a change took to reach it.
@@ -23,7 +24,6 @@ import time
 from pydantic import BaseModel, Field
 
 from trackinizer.server.visuals.workspaces import WorkspaceState
-from trackinizer.wire.wire_chats import ChatMessage
 
 
 if TYPE_CHECKING:
@@ -33,13 +33,9 @@ if TYPE_CHECKING:
 __all__ = [
     "ChangedFrame",
     "ChatHub",
-    "DeletedFrame",
-    "DeliveredFrame",
     "Frame",
     "HighlightFrame",
-    "MessageFrame",
     "NavigateFrame",
-    "StatusFrame",
     "Subscription",
     "WorkspaceFrame",
     "iter_workspace_events",
@@ -77,37 +73,6 @@ class HighlightFrame(_Stamped):
     ids: list[UUID]
 
 
-class MessageFrame(_Stamped):
-    """One stored user, assistant or attributed message."""
-
-    type: Literal["message"] = "message"
-    conversation_id: UUID
-    message: ChatMessage
-
-
-class StatusFrame(_Stamped):
-    """An assistant's status for a conversation; empty clears it."""
-
-    type: Literal["status"] = "status"
-    conversation_id: UUID
-    text: str
-
-
-class DeliveredFrame(_Stamped):
-    """The partner drained the conversation's messages through ``seq``."""
-
-    type: Literal["delivered"] = "delivered"
-    conversation_id: UUID
-    seq: int
-
-
-class DeletedFrame(_Stamped):
-    """A conversation was deleted."""
-
-    type: Literal["deleted"] = "deleted"
-    conversation_id: UUID
-
-
 class ChangedFrame(_Stamped):
     """An inquiry changed, as ``/api/web/subscribe`` reports it."""
 
@@ -115,16 +80,7 @@ class ChangedFrame(_Stamped):
     id: str
 
 
-type Frame = (
-    WorkspaceFrame
-    | NavigateFrame
-    | HighlightFrame
-    | MessageFrame
-    | StatusFrame
-    | DeliveredFrame
-    | DeletedFrame
-    | ChangedFrame
-)
+type Frame = WorkspaceFrame | NavigateFrame | HighlightFrame | ChangedFrame
 
 
 @dataclass(frozen=True, slots=True, kw_only=True, eq=False)
@@ -139,15 +95,11 @@ class Subscription:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ChatHub:
-    """Per-workspace subscribers and what each conversation's partner is doing."""
+    """Per-workspace subscribers."""
 
     queue_size: int = SUBSCRIBER_QUEUE_SIZE
 
     _subscribers: dict[UUID, set[Subscription]] = field(default_factory=dict)
-
-    _statuses: dict[UUID, str] = field(default_factory=dict)
-
-    _delivered: dict[UUID, int] = field(default_factory=dict)
 
     @contextmanager
     def subscribe(self, workspace_id: UUID) -> Generator[Subscription]:
@@ -194,33 +146,6 @@ class ChatHub:
             for subscription in subscribers:
                 subscription.nudged.set()
 
-    def set_status(self, conversation_id: UUID, *, text: str) -> None:
-        """Keep a conversation's current status; empty clears it."""
-        if text:
-            self._statuses[conversation_id] = text
-        else:
-            self._statuses.pop(conversation_id, None)
-
-    def status_of(self, conversation_id: UUID) -> str:
-        """Return a conversation's current status, empty when it has none."""
-        return self._statuses.get(conversation_id, "")
-
-    def set_delivered(self, conversation_id: UUID, *, seq: int) -> None:
-        """Keep how far the partner has read a conversation, never moving back."""
-        self._delivered[conversation_id] = max(
-            seq,
-            self._delivered.get(conversation_id, 0),
-        )
-
-    def delivered_of(self, conversation_id: UUID) -> int:
-        """Return the newest message the partner has read, 0 when none."""
-        return self._delivered.get(conversation_id, 0)
-
-    def forget(self, conversation_id: UUID) -> None:
-        """Drop what is kept for a conversation that was deleted."""
-        self._statuses.pop(conversation_id, None)
-        self._delivered.pop(conversation_id, None)
-
     def _drop(self, workspace_id: UUID, *, subscription: Subscription) -> None:
         """Remove a subscriber, and its workspace's entry once it is the last."""
         subscribers = self._subscribers.get(workspace_id)
@@ -236,7 +161,6 @@ async def iter_workspace_events(
     *,
     workspace_id: UUID,
     read_state: Callable[[], Awaitable[WorkspaceState]],
-    read_conversations: Callable[[], Awaitable[list[UUID]]],
     is_active: Callable[[], Awaitable[bool]],
     changes: AsyncGenerator[str] | None = None,
     keepalive_sec: float = 25.0,
@@ -244,9 +168,8 @@ async def iter_workspace_events(
     r"""Stream a canvas's frames as SSE, as ``/api/web/subscribe`` streams ids.
 
     Opens with a comment, because a proxy in front of production holds the
-    response headers until the first body byte, then the canvas as it stands and
-    each conversation's current status and delivered ``seq``, read after
-    subscribing so no change falls between the read and the first frame. The
+    response headers until the first body byte, then the canvas as it stands, read
+    after subscribing so no change falls between the read and the first frame. The
     canvas is read again, and sent when its partner differs, whenever the broker
     is nudged and after each ``keepalive_sec`` without a frame, which also gets a
     comment. Inquiry ids from ``changes`` pass through as ``changed`` frames. The
@@ -257,7 +180,6 @@ async def iter_workspace_events(
       hub: Broker to subscribe on.
       workspace_id: Canvas to follow.
       read_state: Reads the canvas, with its partner.
-      read_conversations: Lists the canvas's conversation ids.
       is_active: Whether the canvas's owner may still use the app; asked on each
         keepalive, and the stream ends when it says no.
       changes: Ids of changed inquiries, or None to relay none.
@@ -273,11 +195,6 @@ async def iter_workspace_events(
         state = await read_state()
         yield _sse(WorkspaceFrame(state=state))
         partner = state.partner
-        for conversation_id in await read_conversations():
-            if status := hub.status_of(conversation_id):
-                yield _sse(StatusFrame(conversation_id=conversation_id, text=status))
-            if seq := hub.delivered_of(conversation_id):
-                yield _sse(DeliveredFrame(conversation_id=conversation_id, seq=seq))
         frame_wait = asyncio.ensure_future(stream.queue.get())
         nudge_wait = asyncio.ensure_future(stream.nudged.wait())
         change_wait = None if changes is None else asyncio.ensure_future(anext(changes))

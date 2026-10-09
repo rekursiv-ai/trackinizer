@@ -5,6 +5,7 @@
   },
   "response": {
     "body": {
+      "api_key_id": null,
       "email": "no-auth@localhost",
       "last_login": null,
       "name": "no-auth",

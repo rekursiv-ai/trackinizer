@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import asyncio
@@ -14,15 +13,11 @@ from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.chat_hub import (
     ChangedFrame,
     ChatHub,
-    DeliveredFrame,
     HighlightFrame,
-    MessageFrame,
     NavigateFrame,
-    StatusFrame,
     iter_workspace_events,
 )
 from trackinizer.server.visuals.workspaces import WorkspacePartner, WorkspaceState
-from trackinizer.wire.wire_chats import ChatMessage
 
 
 if TYPE_CHECKING:
@@ -30,7 +25,7 @@ if TYPE_CHECKING:
 
 
 _WORKSPACE = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-_CONVERSATION = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+_RECORD = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 
 
 def _partner(status: str) -> WorkspacePartner:
@@ -64,26 +59,12 @@ class _Canvas:
     async def active(self) -> bool:
         return self.is_active
 
-    async def conversations(self) -> list[uuid.UUID]:
-        return [_CONVERSATION]
-
 
 def _frame(chunk: bytes) -> dict[str, object]:
     text = chunk.decode()
     assert text.startswith("data: ")
     assert text.endswith("\n\n")
     return from_plain(loads(text.removeprefix("data: ")), dict[str, object])
-
-
-def _message() -> ChatMessage:
-    return ChatMessage(
-        id=uuid.uuid4(),
-        seq=1,
-        role="assistant",
-        author="scout",
-        text="hi",
-        created=datetime.now(UTC),
-    )
 
 
 def _events(
@@ -97,7 +78,6 @@ def _events(
         hub,
         workspace_id=_WORKSPACE,
         read_state=canvas.state,
-        read_conversations=canvas.conversations,
         is_active=canvas.active,
         changes=changes,
         keepalive_sec=keepalive_sec,
@@ -131,61 +111,26 @@ async def test_stream_opens_with_a_comment_then_the_state_then_every_frame() -> 
     assert opened["type"] == "workspace"
     assert from_plain(opened["state"], dict[str, object])["revision"] == 3
 
-    hub.publish(
-        _WORKSPACE,
-        frame=MessageFrame(conversation_id=_CONVERSATION, message=_message()),
-    )
-    hub.publish(
-        _WORKSPACE,
-        frame=StatusFrame(conversation_id=_CONVERSATION, text="thinking"),
-    )
-    hub.publish(_WORKSPACE, frame=DeliveredFrame(conversation_id=_CONVERSATION, seq=4))
     hub.publish(_WORKSPACE, frame=NavigateFrame(route="#/graph"))
     hub.publish(uuid.uuid4(), frame=NavigateFrame(route="#/elsewhere"))
-    hub.publish(_WORKSPACE, frame=HighlightFrame(ids=[_CONVERSATION]))
-    frames = [_frame(await anext(events)) for _ in range(5)]
-    assert [f["type"] for f in frames] == [
-        "message",
-        "status",
-        "delivered",
-        "navigate",
-        "highlight",
-    ]
-    assert frames[4]["ids"] == [str(_CONVERSATION)]
+    hub.publish(_WORKSPACE, frame=HighlightFrame(ids=[_RECORD]))
+    frames = [_frame(await anext(events)) for _ in range(2)]
+    assert [f["type"] for f in frames] == ["navigate", "highlight"]
+    assert frames[1]["ids"] == [str(_RECORD)]
     assert all(isinstance(f["t"], int) and f["t"] > 0 for f in frames)
-    assert frames[0]["conversation_id"] == str(_CONVERSATION)
-    assert from_plain(frames[0]["message"], dict[str, object])["text"] == "hi"
-    assert frames[1]["text"] == "thinking"
-    assert frames[2]["seq"] == 4
-    assert frames[3]["route"] == "#/graph"
+    assert frames[0]["route"] == "#/graph"
     await events.aclose()
 
 
 @pytest.mark.asyncio
-async def test_open_replays_each_conversations_status_and_delivered_seq() -> None:
-    """A reload mid-turn shows what the partner is doing."""
+async def test_the_stream_carries_no_chat_frames_of_its_own() -> None:
+    """A conversation's lines are its session's records, so they arrive as `changed` ids."""
     hub = ChatHub()
-    hub.set_status(_CONVERSATION, text="reading the graph")
-    hub.set_delivered(_CONVERSATION, seq=7)
-    events = _events(hub, canvas=_Canvas())
-    assert await anext(events) == b": open\n\n"
-    assert _frame(await anext(events))["type"] == "workspace"
-    status = _frame(await anext(events))
-    delivered = _frame(await anext(events))
-    assert (status["type"], status["text"]) == ("status", "reading the graph")
-    assert (delivered["type"], delivered["seq"]) == ("delivered", 7)
-    await events.aclose()
-
-
-@pytest.mark.asyncio
-async def test_open_with_nothing_to_replay_sends_only_the_canvas() -> None:
-    """No status and no delivered seq means no frame for them."""
-    hub = ChatHub()
-    events = _events(hub, canvas=_Canvas())
+    events = _events(hub, canvas=_Canvas(), changes=_ids("session-1"))
     await anext(events)
     await anext(events)
-    hub.publish(_WORKSPACE, frame=NavigateFrame(route="#/x"))
-    assert _frame(await anext(events))["type"] == "navigate"
+    frame = _frame(await asyncio.wait_for(anext(events), 2))
+    assert (frame["type"], frame["id"]) == ("changed", "session-1")
     await events.aclose()
 
 
@@ -315,37 +260,11 @@ async def test_subscriber_more_than_256_frames_behind_is_dropped() -> None:
     await anext(slow)
     with hub.subscribe(_WORKSPACE) as healthy:
         for _ in range(257):
-            hub.publish(
-                _WORKSPACE,
-                frame=DeliveredFrame(conversation_id=_CONVERSATION, seq=1),
-            )
+            hub.publish(_WORKSPACE, frame=NavigateFrame(route="#/busy"))
             healthy.queue.get_nowait()
         hub.publish(_WORKSPACE, frame=NavigateFrame(route="#/after"))
         assert healthy.queue.qsize() == 1
     assert [chunk async for chunk in slow] == []
-
-
-def test_status_is_kept_until_cleared_and_forgotten_with_its_conversation() -> None:
-    """A status is the conversation's current one until the next, or empty."""
-    hub = ChatHub()
-    assert hub.status_of(_CONVERSATION) == ""
-    hub.set_status(_CONVERSATION, text="thinking")
-    hub.set_status(_CONVERSATION, text="writing")
-    assert hub.status_of(_CONVERSATION) == "writing"
-    hub.set_status(_CONVERSATION, text="")
-    assert hub.status_of(_CONVERSATION) == ""
-    hub.set_status(_CONVERSATION, text="again")
-    hub.set_delivered(_CONVERSATION, seq=3)
-    hub.forget(_CONVERSATION)
-    assert (hub.status_of(_CONVERSATION), hub.delivered_of(_CONVERSATION)) == ("", 0)
-
-
-def test_delivered_never_moves_back() -> None:
-    """A late, lower seq does not un-deliver a message."""
-    hub = ChatHub()
-    hub.set_delivered(_CONVERSATION, seq=5)
-    hub.set_delivered(_CONVERSATION, seq=2)
-    assert hub.delivered_of(_CONVERSATION) == 5
 
 
 def test_changed_frame_names_its_inquiry() -> None:

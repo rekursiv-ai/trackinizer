@@ -12,7 +12,7 @@ import pytest
 
 from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api.app import app
-from trackinizer.server.api.chat_test_support import (
+from trackinizer.server.api.canvas_test_support import (
     ASSISTANT_CONFIG,
     KB_ACTOR,
     act_as_assistant,
@@ -177,8 +177,9 @@ async def test_save_on_one_client_and_open_on_another(
     assert continued["agent_instructions"] == preset["agent_instructions"]
     assert continued["continuation_record_id"] == preset["continuation_record_id"]
     sent = await client.post(
-        f"/api/workspaces/{workspace_id}/messages",
+        "/api/chats",
         json={
+            "workspace_id": workspace_id,
             "text": "Continue this investigation",
             "chat_instance_id": chat["id"],
             "expected_record_id": None,

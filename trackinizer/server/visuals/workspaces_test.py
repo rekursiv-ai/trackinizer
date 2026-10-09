@@ -20,7 +20,6 @@ from trackinizer.server.visuals.workspaces import (
     HideVisual,
     ShowVisual,
     WorkspaceData,
-    WorkspaceMessageRequest,
     apply_operation,
     initial_data,
     refuse_record,
@@ -211,13 +210,6 @@ def test_chat_artifact_uses_the_same_record_target() -> None:
                 "report_target": {"artifact_id": str(artifact_id)},
             },
         )
-    with pytest.raises(ValidationError):
-        WorkspaceMessageRequest.model_validate(
-            {
-                "text": "hello",
-                "expected_report_target": {"artifact_id": str(artifact_id)},
-            },
-        )
 
 
 def test_artifact_visual_requires_record_target() -> None:
@@ -333,20 +325,6 @@ def test_a_visual_that_takes_no_record_refuses_one() -> None:
             ShowVisual(kind="show", visual_type="trax.browse", record_id=uuid.uuid4()),
             catalog,
         )
-
-
-@pytest.mark.parametrize("text", ["", " ", "\n\t "])
-def test_a_message_must_hold_a_non_space_character(text: str) -> None:
-    """Whitespace alone is nothing to send."""
-    with pytest.raises(ValidationError):
-        WorkspaceMessageRequest(text=text)
-
-
-def test_a_message_is_at_most_16384_characters() -> None:
-    """The bound is exactly 16,384."""
-    assert WorkspaceMessageRequest(text="x" * 16_384).text
-    with pytest.raises(ValidationError):
-        WorkspaceMessageRequest(text="x" * 16_385)
 
 
 def _show(visual: str, *, record: uuid.UUID | None) -> ShowVisual:

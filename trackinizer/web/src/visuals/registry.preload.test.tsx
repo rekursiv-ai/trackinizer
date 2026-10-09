@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { PROFILE } from "../detail/testing";
 
 afterEach(cleanup);
 
@@ -10,9 +11,12 @@ const chat = { id: "chat", type: "trax.chat", version: 1, placement: "side" as c
 async function fresh() {
   vi.resetModules();
   const registry = await import("./registry");
+  const boot = await import("../app/boot");
   const show = () => render(
     <QueryClientProvider client={new QueryClient()}>
-      <registry.VisualPane instance={chat} workspace={null} focused={false} onWorkspaceChanged={vi.fn()} />
+      <boot.ProfileContext value={PROFILE}>
+        <registry.VisualPane instance={chat} workspace={null} focused={false} onWorkspaceChanged={vi.fn()} />
+      </boot.ProfileContext>
     </QueryClientProvider>,
   );
   return { ...registry, show };

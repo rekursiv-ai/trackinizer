@@ -155,11 +155,15 @@ class TestReadParts:
     ) -> None:
         """An Issue is not a session, even though both are inquiries."""
         client, store, _engine = route_client
-        monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=Issue()))
+        read = AsyncMock(return_value=Issue())
+        monkeypatch.setattr(store, "get_inquiry", read)
+        asked = uuid.uuid4()
 
-        response = client.get(f"/api/sessions/{uuid.uuid4()}/parts")
+        response = client.get(f"/api/sessions/{asked}/parts")
 
         assert response.status_code == 404
+        assert response.json() == {"detail": f"unknown session {asked}"}
+        read.assert_awaited_once_with(asked)
 
 
 class TestReadRecords:
