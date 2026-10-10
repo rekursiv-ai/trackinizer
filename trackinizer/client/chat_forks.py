@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal, Protocol
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.wire.wire_science_chat import FORK_EDGE_LABEL, fork_point_label
 

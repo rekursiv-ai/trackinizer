@@ -10,7 +10,7 @@ import json
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import set_client_change_id

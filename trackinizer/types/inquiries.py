@@ -101,7 +101,7 @@ from uuid import UUID, uuid4
 import re
 import sys
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.types.columns import (
     ColumnSpec,

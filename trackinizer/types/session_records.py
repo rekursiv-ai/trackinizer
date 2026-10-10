@@ -34,7 +34,7 @@ from datetime import datetime
 from typing import Final, Self
 from uuid import UUID
 
-from treekle.codec import PlainTree, immutable, mutable
+from treekle import PlainTree, immutable, mutable
 
 from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,

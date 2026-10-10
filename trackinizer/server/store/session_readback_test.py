@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
 
-from treekle.codec import immutable
+from treekle import immutable
 
 import pytest
 import pytest_asyncio

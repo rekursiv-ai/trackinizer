@@ -12,7 +12,7 @@ from types import MappingProxyType
 from typing import Final, get_args
 from uuid import uuid4
 
-from treekle.codec import from_plain, immutable, mutable
+from treekle import from_plain, immutable, mutable
 
 import pytest
 

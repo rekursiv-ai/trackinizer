@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 import uuid
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 import asyncpg
 import pytest

@@ -11,7 +11,7 @@ are that union's, not the IR's: old ``text`` vs IR ``content``, old
 
 from __future__ import annotations
 
-from treekle.codec import immutable
+from treekle import immutable
 
 import pytest
 

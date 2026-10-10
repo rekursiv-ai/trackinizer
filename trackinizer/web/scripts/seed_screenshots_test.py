@@ -11,7 +11,7 @@ import itertools
 import re
 import uuid
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.types.edges import EDGE_POLICIES, kind_group_members
 from trackinizer.types.inquiries import Inquiry
@@ -23,7 +23,7 @@ from trackinizer.wire.wire_sessions import SessionStart, SessionStartResponse
 
 
 if TYPE_CHECKING:
-    from treekle.codec import PlainTree
+    from treekle import PlainTree
 
     from trackinizer.wire.wire_session_ir import ManifestBody
     from trackinizer.wire.wire_sessions import SessionEnd

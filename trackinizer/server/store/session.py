@@ -24,7 +24,7 @@ else:
 
     asyncpg = lazy_import("asyncpg")  # ~60 ms; only start_session() needs it.
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import (

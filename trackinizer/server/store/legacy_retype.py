@@ -34,7 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from treekle.codec import from_plain, immutable
+from treekle import from_plain, immutable
 
 from trackinizer.lib.agent.types.sessions import (
     AgentToAgentMessage,

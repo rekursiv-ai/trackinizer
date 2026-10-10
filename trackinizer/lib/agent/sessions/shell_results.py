@@ -82,7 +82,7 @@ from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol, cast
 import re
 import shlex
 
-from treekle.codec import from_plain, immutable, mutable
+from treekle import from_plain, immutable, mutable
 
 from trackinizer.lib.agent.sessions.udiff import parse_udiff
 from trackinizer.lib.agent.types.sessions import (
@@ -95,7 +95,7 @@ from trackinizer.lib.agent.types.sessions import (
 
 
 if TYPE_CHECKING:
-    from treekle.codec import MutablePlainTree
+    from treekle import MutablePlainTree
 
     import bashlex
 else:

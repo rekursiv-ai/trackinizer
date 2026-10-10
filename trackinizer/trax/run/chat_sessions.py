@@ -25,7 +25,7 @@ from uuid import UUID, uuid4
 
 import logging
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.client.chat_forks import (
     holds_records,
@@ -49,7 +49,7 @@ from trackinizer.wire.wire_sessions import SessionEnd, SessionStart
 
 
 if TYPE_CHECKING:
-    from treekle.codec import PlainTree
+    from treekle import PlainTree
 
     from trackinizer.client.chat_forks import ForkLine
     from trackinizer.client.client import Client

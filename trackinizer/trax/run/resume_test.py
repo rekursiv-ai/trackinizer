@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID, uuid4
 
-from treekle.codec import PlainTree, immutable
+from treekle import PlainTree, immutable
 
 import pytest
 

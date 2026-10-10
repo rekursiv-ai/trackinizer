@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 import asyncpg
 

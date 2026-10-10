@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 import uuid
 
 from fastapi import FastAPI
-from treekle.codec import from_plain, immutable
+from treekle import from_plain, immutable
 
 import httpx2
 import pytest

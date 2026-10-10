@@ -14,7 +14,7 @@ from uuid import UUID
 
 import uuid
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx

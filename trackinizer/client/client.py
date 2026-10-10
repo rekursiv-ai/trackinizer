@@ -45,8 +45,8 @@ import threading
 import time
 import uuid
 
+from treekle import PlainTree
 from treekle.absent import ABSENT, Absent
-from treekle.codec import PlainTree
 
 import httpx2
 

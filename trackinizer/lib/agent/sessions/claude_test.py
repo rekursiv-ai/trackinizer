@@ -11,7 +11,7 @@ from unittest.mock import patch
 import base64
 import json
 
-from treekle.codec import ReadError, from_plain, loads
+from treekle import ReadError, from_plain, loads
 
 import pytest
 

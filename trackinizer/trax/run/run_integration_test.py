@@ -44,7 +44,7 @@ import uuid
 
 from fastapi import FastAPI
 from starlette.responses import Response
-from treekle.codec import from_plain
+from treekle import from_plain
 
 import httpx2
 import pytest

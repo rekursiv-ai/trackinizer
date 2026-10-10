@@ -18,7 +18,7 @@ from io import StringIO
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
-from treekle.codec import from_plain, immutable
+from treekle import from_plain, immutable
 
 from trackinizer.lib.agent.sessions import (
     claude,

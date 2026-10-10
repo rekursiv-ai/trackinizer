@@ -39,7 +39,7 @@ import logging
 import time
 import uuid
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
@@ -49,7 +49,7 @@ from trackinizer.types.inquiries import Inquiry
 
 
 if TYPE_CHECKING:
-    from treekle.codec import PlainTree
+    from treekle import PlainTree
 
 
 _log = logging.getLogger(__name__)

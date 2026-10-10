@@ -17,7 +17,7 @@ from uuid import UUID
 
 import itertools
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.server.notify import tx
 from trackinizer.server.store.shared import _StoreShared

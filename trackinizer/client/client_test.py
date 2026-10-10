@@ -13,7 +13,7 @@ import json
 import logging
 import uuid
 
-from treekle.codec import PlainTree, from_plain, loads
+from treekle import PlainTree, from_plain, loads
 
 import httpx2
 import pytest

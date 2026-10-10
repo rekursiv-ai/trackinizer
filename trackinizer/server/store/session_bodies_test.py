@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 import json
 
-from treekle.codec import immutable, mutable
+from treekle import immutable, mutable
 
 import pytest
 import pytest_asyncio

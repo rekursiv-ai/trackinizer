@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, Depends, Path, Request, Response
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.server.api._routes_shared import engine_of
 from trackinizer.server.auth import AuthIdentity, require_role

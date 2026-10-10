@@ -7,7 +7,7 @@ from typing import Final
 
 import json
 
-from treekle.codec import from_plain, loads
+from treekle import from_plain, loads
 
 from trackinizer.server.visuals.catalog import default_catalog
 

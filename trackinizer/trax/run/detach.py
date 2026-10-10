@@ -40,7 +40,7 @@ import socket
 import sys
 import time
 
-from treekle.codec import from_plain, loads, to_plain
+from treekle import from_plain, loads, to_plain
 
 from trackinizer.lib.posix.attach import attach, stop, submit
 from trackinizer.lib.posix.host import HostSpec

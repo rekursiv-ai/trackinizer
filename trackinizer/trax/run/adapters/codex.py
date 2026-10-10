@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Final
 import os
 import re
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.lib.agent.sessions import codex
 from trackinizer.lib.agent.sessions.tail import Tail

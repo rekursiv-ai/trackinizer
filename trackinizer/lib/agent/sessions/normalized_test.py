@@ -6,7 +6,7 @@ from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from treekle.codec import from_plain, loads
+from treekle import from_plain, loads
 
 import pytest
 

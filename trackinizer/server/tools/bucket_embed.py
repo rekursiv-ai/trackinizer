@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 import asyncio
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 
 if TYPE_CHECKING:

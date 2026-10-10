@@ -44,7 +44,7 @@ import itertools
 import time
 import uuid
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.client.client import Client, server_url
 from trackinizer.client.errors import ClientError
@@ -65,7 +65,7 @@ from trackinizer.wire.wire_sessions import SessionEnd, SessionStart
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable, Sequence
 
-    from treekle.codec import PlainTree
+    from treekle import PlainTree
 
     from trackinizer.trax.profile import Profile
 

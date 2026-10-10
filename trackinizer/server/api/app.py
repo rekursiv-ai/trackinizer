@@ -21,7 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from starlette.types import Send
-from treekle.codec import from_plain
+from treekle import from_plain
 
 import asyncpg
 

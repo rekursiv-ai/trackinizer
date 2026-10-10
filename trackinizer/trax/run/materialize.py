@@ -37,7 +37,7 @@ import json
 import shutil
 import subprocess
 
-from treekle.codec import PlainTree, from_plain, immutable, mutable
+from treekle import PlainTree, from_plain, immutable, mutable
 
 from trackinizer.lib.agent.sessions import (
     claude,

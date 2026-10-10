@@ -50,7 +50,7 @@ from uuid import UUID
 
 import json
 
-from treekle.codec import from_plain, loads, mutable
+from treekle import from_plain, loads, mutable
 
 from trackinizer.lib.agent.types.sessions import UncategorizedRecord
 from trackinizer.server.notify import tx

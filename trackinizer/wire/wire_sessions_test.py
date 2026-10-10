@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import uuid
 
 from pydantic import ValidationError
-from treekle.codec import immutable
+from treekle import immutable
 
 import pytest
 

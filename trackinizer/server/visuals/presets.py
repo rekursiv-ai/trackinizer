@@ -11,7 +11,7 @@ import json
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.server.notify import tx
 from trackinizer.server.visuals.partners import attach_partner

@@ -34,7 +34,7 @@ import sys
 import time
 import uuid
 
-from treekle.codec import PlainTree, from_plain, loads, mutable
+from treekle import PlainTree, from_plain, loads, mutable
 
 import httpx2
 import pytest
@@ -50,7 +50,7 @@ from trackinizer.wire.wire_sessions import SessionStart
 if TYPE_CHECKING:
     from collections.abc import Generator, Sequence
 
-    from treekle.codec import MutablePlainTree
+    from treekle import MutablePlainTree
 
 
 _CWD: Final = Path(__file__).resolve().parent

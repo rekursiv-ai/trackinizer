@@ -39,7 +39,7 @@ import json
 import math
 import uuid
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.client.client import Client
 from trackinizer.lib.agent.types.sessions import (
@@ -60,7 +60,7 @@ from trackinizer.wire.wire_sessions import SessionStart
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from treekle.codec import PlainTree
+    from treekle import PlainTree
 
     from trackinizer.types.inquiries import Inquiry
     from trackinizer.web.scripts.graph_structure import Structure

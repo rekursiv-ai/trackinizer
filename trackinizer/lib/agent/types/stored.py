@@ -21,7 +21,7 @@ from typing import Final, cast, get_type_hints
 
 import weakref
 
-from treekle.codec import (
+from treekle import (
     MutablePlainTree,
     PlainTree,
     from_plain,

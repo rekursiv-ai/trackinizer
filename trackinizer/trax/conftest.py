@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Self, cast
 
 import uuid
 
+from treekle import PlainTree, from_plain
 from treekle.absent import Absent
-from treekle.codec import PlainTree, from_plain
 
 import pytest
 

@@ -17,7 +17,7 @@ from unittest.mock import Mock
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request
-from treekle.codec import from_plain
+from treekle import from_plain
 
 import pytest
 import pytest_asyncio

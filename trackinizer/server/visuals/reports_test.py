@@ -14,7 +14,7 @@ import re
 import uuid
 
 from pydantic import ValidationError
-from treekle.codec import from_plain
+from treekle import from_plain
 
 import pytest
 

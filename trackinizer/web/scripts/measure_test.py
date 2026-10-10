@@ -11,7 +11,7 @@ import argparse
 import gzip
 import json
 
-from treekle.codec import from_plain, loads
+from treekle import from_plain, loads
 
 import httpx2
 import pytest

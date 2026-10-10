@@ -16,7 +16,7 @@ from uuid import UUID
 import collections
 import uuid
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 import asyncpg
 

@@ -16,7 +16,7 @@ from typing import Final
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
-from treekle.codec import immutable
+from treekle import immutable
 
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.json_types import JSON, UtcDatetime

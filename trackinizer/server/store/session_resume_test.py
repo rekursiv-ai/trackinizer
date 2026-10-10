@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 
 import json
 
-from treekle.codec import from_plain, immutable
+from treekle import from_plain, immutable
 
 import pytest
 import pytest_asyncio

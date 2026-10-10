@@ -15,7 +15,7 @@ import itertools
 import json
 
 from asyncpg.pool import PoolConnectionProxy
-from treekle.codec import mutable
+from treekle import mutable
 
 import pytest
 

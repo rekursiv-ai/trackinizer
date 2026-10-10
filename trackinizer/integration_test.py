@@ -13,7 +13,7 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-from treekle.codec import from_plain, immutable
+from treekle import from_plain, immutable
 
 import asyncpg
 import httpx2

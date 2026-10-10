@@ -13,7 +13,7 @@ import time
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
-from treekle.codec import from_plain, loads
+from treekle import from_plain, loads
 
 import asyncpg
 import pytest

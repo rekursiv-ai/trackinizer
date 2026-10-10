@@ -10,7 +10,7 @@ import json
 import uuid
 
 from fastapi import Request
-from treekle.codec import from_plain, loads
+from treekle import from_plain, loads
 
 import pytest
 

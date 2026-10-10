@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from treekle.codec import from_plain, loads
+from treekle import from_plain, loads
 
 import pytest
 

@@ -8,7 +8,7 @@ import asyncio
 import uuid
 
 from fastapi import HTTPException
-from treekle.codec import from_plain, loads
+from treekle import from_plain, loads
 
 import asyncpg
 import pytest

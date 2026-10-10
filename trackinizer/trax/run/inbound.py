@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import json
 
-from treekle.codec import from_plain, loads
+from treekle import from_plain, loads
 
 
 if TYPE_CHECKING:

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import subprocess
 
-from treekle.codec import PlainTree, from_plain, immutable, loads
+from treekle import PlainTree, from_plain, immutable, loads
 
 import pytest
 

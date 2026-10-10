@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
-from treekle.codec import ReadError, immutable
+from treekle import ReadError, immutable
 
 import pytest
 

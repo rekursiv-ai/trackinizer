@@ -22,7 +22,7 @@ import base64
 import binascii
 import json
 
-from treekle.codec import (
+from treekle import (
     MutablePlainTree,
     PlainTree,
     ReadError,

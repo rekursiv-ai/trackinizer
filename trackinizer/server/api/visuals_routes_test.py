@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from treekle.codec import from_plain, loads
+from treekle import from_plain, loads
 
 import pytest
 

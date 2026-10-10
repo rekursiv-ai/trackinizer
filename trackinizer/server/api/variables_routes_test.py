@@ -11,7 +11,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Final, override
 
 from fastapi.testclient import TestClient
-from treekle.codec import from_plain
+from treekle import from_plain
 
 import pytest
 

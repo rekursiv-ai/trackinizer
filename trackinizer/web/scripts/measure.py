@@ -50,7 +50,7 @@ import json
 import statistics
 import time
 
-from treekle.codec import PlainTree, ReadError, from_plain, loads
+from treekle import PlainTree, ReadError, from_plain, loads
 
 import httpx2
 

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import inspect
 
-from treekle.codec import from_plain, loads
+from treekle import from_plain, loads
 
 import asyncpg
 import pytest

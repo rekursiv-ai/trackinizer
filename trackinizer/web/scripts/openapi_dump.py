@@ -30,7 +30,7 @@ import hashlib
 import json
 import sys
 
-from treekle.codec import from_plain, loads
+from treekle import from_plain, loads
 
 import httpx2
 

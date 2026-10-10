@@ -47,7 +47,7 @@ import os
 import subprocess
 import threading
 
-from treekle.codec import ReadError, from_plain, loads
+from treekle import ReadError, from_plain, loads
 
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.userdirs import state_dir

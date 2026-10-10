@@ -57,7 +57,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from treekle.codec import PlainTree
+from treekle import PlainTree
 
 from trackinizer.lib.agent.types.capability import SummaryKind, ThinkingEffort
 

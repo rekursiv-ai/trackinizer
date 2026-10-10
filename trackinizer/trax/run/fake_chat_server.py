@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 
 import threading
 
-from treekle.codec import PlainTree, from_plain
+from treekle import PlainTree, from_plain
 
 from trackinizer.wire.wire_science_chat import CHAT_HELPER_CLI
 from trackinizer.wire.wire_session_ir import ManifestBody, PartBody, RecordBody

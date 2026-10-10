@@ -17,7 +17,7 @@ from uuid import NAMESPACE_DNS, UUID, uuid5
 
 import json
 
-from treekle.codec import (
+from treekle import (
     MutablePlainTree,
     ReadError,
     from_plain,

@@ -18,7 +18,7 @@ import asyncio
 import json
 import re
 
-from treekle.codec import from_plain, mutable
+from treekle import from_plain, mutable
 
 import pytest
 import pytest_asyncio

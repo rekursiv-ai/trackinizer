@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 import json
 
-from treekle.codec import from_plain, loads
+from treekle import from_plain, loads
 
 import pytest
 import pytest_asyncio

@@ -13,7 +13,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Literal, Self, cast, get_args
 from uuid import UUID
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.types.columns import ColumnSpec, Row, column_specs
 from trackinizer.types.inquiries import Artifact, Inquiry, Issue

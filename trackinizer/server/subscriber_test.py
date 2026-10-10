@@ -19,7 +19,7 @@ from uuid import UUID
 
 import asyncio
 
-from treekle.codec import from_plain, loads
+from treekle import from_plain, loads
 
 import pytest
 

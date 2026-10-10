@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
     from trackinizer.types.inquiries import Inquiry
 
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError

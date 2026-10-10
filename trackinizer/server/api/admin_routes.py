@@ -22,7 +22,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
-from treekle.codec import from_plain
+from treekle import from_plain
 
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api._routes_shared import (

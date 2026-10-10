@@ -22,7 +22,7 @@ import uuid
 
 from pytest_postgresql.config import get_config
 from pytest_postgresql.exceptions import ExecutableMissingException
-from treekle.codec import from_plain
+from treekle import from_plain
 
 import pytest
 import pytest_asyncio

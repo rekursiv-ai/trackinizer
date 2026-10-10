@@ -8,7 +8,7 @@ from typing import cast
 import inspect
 import json
 
-from treekle.codec import immutable
+from treekle import immutable
 
 import pytest
 

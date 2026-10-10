@@ -16,7 +16,7 @@ import threading
 import time
 import tracemalloc
 
-from treekle.codec import (
+from treekle import (
     from_plain,
     from_plain as convert_json,
     loads,
