@@ -61,4 +61,4 @@ jobs:
           rm -rf dist
           uv build --out-dir dist
           uv run python -m zipfile -l dist/trackinizer-*.whl | grep -q trackinizer/web/dist/index.html
-          wheels=(dist/trackinizer-*.whl); wheel="${wheels[0]}"; uv run --isolated --index https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match --with "$wheel" --with "treekle @ git+https://github.com/rekursiv-ai/treekle" python -P -c "import trackinizer; print(trackinizer.__file__)"
+          wheels=(dist/trackinizer-*.whl); wheel="${wheels[0]}"; uv run --isolated --index https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match --with "$wheel" --with "treekle @ git+https://github.com/rekursiv-ai/treekle@main" python -P -c "import trackinizer; print(trackinizer.__file__)"

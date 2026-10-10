@@ -219,6 +219,7 @@ markers = [
     "gpu_triton: requires Triton kernels",
     "network_anthropic: reaches Anthropic over the network",
     "network_duckduckgo: reaches DuckDuckGo over the network",
+    "network_e2b: reaches E2B over the network",
     "network_gemini: reaches Gemini over the network",
     "network_google_search: reaches Google Search over the network",
     "network_github: reaches GitHub over the network",
