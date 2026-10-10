@@ -39,6 +39,18 @@ All notable trackinizer changes are documented here. This project follows
 - **Breaking:** `Redactor.redact_json` and `redact_mapping` take `PlainTree`;
   `redact_mapping` returns `Mapping[str, PlainTree]`.
 
+### Fixed
+
+- `trax run claude -- --resume <session-id>` (also `--resume=<id>` and
+  `-r <id>`) captures the session it continues. The transcript existed before
+  the run, so it was skipped as an earlier run's and the session stored no
+  events; it is now followed from its start and re-attaches the AgentSession
+  that captured it, the same as `trax agentsession <id> run claude`.
+- `trax run claude -- --resume`, `-r` or `--continue` without a session id no
+  longer gets `--session-id` added, which claude rejects without
+  `--fork-session`. A `--fork-session` run is given one, so its new transcript
+  is captured.
+
 ## 0.1.6 - 2026-10-07
 
 ### Added
