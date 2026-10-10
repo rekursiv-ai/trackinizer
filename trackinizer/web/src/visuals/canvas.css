@@ -32,7 +32,7 @@
 .visual-stage { display: flex; flex: 1; min-height: 0; position: relative; overflow: auto; }
 .visual-tile { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
 .visual-tile-browse { overflow: hidden; }
-.visual-tile-floating { position: absolute; right: 16px; width: min(390px, calc(100% - 32px)); height: min(480px, calc(100% - 100px)); min-width: min(280px, calc(100vw - 32px)); min-height: min(220px, calc(100vh - 80px)); max-width: calc(100vw - 32px); max-height: calc(100vh - 80px); border: 1px solid var(--line-strong); border-radius: var(--panel-radius); box-shadow: 0 16px 48px #0008; overflow: auto; resize: both; }
+.visual-tile-floating { position: absolute; right: 16px; width: min(390px, calc(100% - 32px)); height: min(480px, calc(100% - 100px)); min-width: min(280px, calc(100vw - 32px)); min-height: min(220px, calc(100vh - 80px)); max-width: calc(100vw - 32px); max-height: calc(100vh - 80px); border: 1px solid var(--line-strong); border-radius: var(--panel-radius); box-shadow: 0 16px 48px #0008; overflow: hidden; }
 .visual-tile-focused { outline: 1px solid var(--accent); outline-offset: -1px; }
 .visual-tile-toolbar { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 2px 8px; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--muted); }
 .visual-tile-toolbar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -83,13 +83,13 @@
 .chat-panel .composer { padding: 8px 12px 12px; border-top: 1px solid var(--line); }
 /* The page and the other main visuals share a strip: each has 240 px at least, and a strip with more than fit scrolls inside itself. Visuals docked at a side stand in one column there, left or right of it, up to 360 px or 30% wide, so Chat's header and box stay on the screen however many visuals there are. */
 .visual-main-strip { display: flex; flex: 1 1 0; min-width: 0; min-height: 0; overflow-x: auto; }
-.visual-main-strip > .visual-tile { flex: 1 0 240px; min-width: 240px; }
+.visual-main-strip > .visual-tile { flex: var(--tile-share, 1) 0 var(--tile-basis, 240px); min-width: 240px; }
 /* The page's lists need 300 px for their own toolbar. */
-.visual-main-strip > .visual-tile-browse { flex-basis: 300px; min-width: 300px; }
-.visual-main-strip > .visual-tile + .visual-tile { border-left: 1px solid var(--line); }
-.visual-side-column { display: flex; flex: 0 1 min(360px, 30%); flex-direction: column; min-width: 260px; min-height: 0; border-left: 1px solid var(--line); overflow-y: auto; }
-.visual-side-column > .visual-tile { flex: 1 1 0; min-height: 280px; }
-.visual-side-column > .visual-tile + .visual-tile { border-top: 1px solid var(--line); }
+.visual-main-strip > .visual-tile-browse { flex-basis: var(--tile-basis, 300px); min-width: 300px; }
+.visual-main-strip > .visual-tile + .visual-tile, .visual-main-strip > .visual-divider + .visual-tile { border-left: 1px solid var(--line); }
+.visual-side-column { display: flex; flex: 0 1 var(--column-width, min(360px, 30%)); flex-direction: column; min-width: 260px; max-width: 70%; min-height: 0; border-left: 1px solid var(--line); overflow-y: auto; }
+.visual-side-column > .visual-tile { flex: var(--tile-share, 1) 1 0; min-height: 280px; }
+.visual-side-column > .visual-tile + .visual-tile, .visual-side-column > .visual-divider + .visual-tile { border-top: 1px solid var(--line); }
 .visual-side-column-left { border-left: 0; border-right: 1px solid var(--line); }
 @media (max-width: 900px) {
   .visual-stage { flex-direction: column; }
@@ -99,23 +99,24 @@
   .visual-main-strip > .visual-tile { flex: 0 0 min(400px, 48vh); min-width: 0; width: 100%; }
   .visual-side-column { flex: 0 0 auto; min-width: 0; width: 100%; border-left: 0; border-top: 1px solid var(--line); overflow-y: visible; }
   .visual-side-column > .visual-tile { flex: 0 0 min(400px, 48vh); min-height: 0; }
-  .visual-main-strip > .visual-tile + .visual-tile { border-left: 0; border-top: 1px solid var(--line); }
+  .visual-main-strip > .visual-tile + .visual-tile, .visual-main-strip > .visual-divider + .visual-tile { border-left: 0; border-top: 1px solid var(--line); }
 }
 @media (max-width: 900px) { .visual-tile-floating { position: relative; top: auto !important; right: auto; width: 100%; height: 34px; border-radius: 0; box-shadow: none; flex: 0 0 auto; } .visual-tile-floating.visual-tile-mobile-expanded { height: min(400px, 48vh); } .visual-mobile-tab-toggle { display: inline-block; } }
-/* A floating tile's whole top bar moves it (a click without movement folds it to the bar); the controls on the bar keep their own cursors. */
-.visual-tile-floating > .visual-tile-toolbar-draggable { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
-.visual-tile-floating > .visual-tile-toolbar-draggable:active { cursor: grabbing; }
+/* A tile's whole top bar drags it (a press without movement focuses it); the controls on the bar keep their own cursors. */
+.visual-tile-toolbar-draggable { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.visual-tile-toolbar-draggable:active { cursor: grabbing; }
 .visual-tile-toolbar-draggable button, .visual-tile-toolbar-draggable select { cursor: pointer; }
 .visual-tile-toolbar .visual-tile-fold { min-width: 22px; line-height: 1; }
 /* A folded tile is its top bar alone; its contents stay mounted, so Chat keeps its conversation and its stream. */
 @media (min-width: 901px) {
-  .visual-tile-floating.visual-tile-collapsed { height: auto !important; min-height: 0; overflow: hidden; resize: none; }
+  .visual-tile-floating.visual-tile-collapsed { height: auto !important; min-height: 0; }
   .visual-tile-collapsed > :not(.visual-tile-toolbar) { display: none; }
   .visual-tile-collapsed > .visual-tile-toolbar { border-bottom: 0; }
 }
 @media (max-width: 900px) {
   .visual-tile-toolbar .visual-tile-fold { display: none; }
-  .visual-tile-floating > .visual-tile-toolbar-draggable { cursor: auto; touch-action: auto; user-select: auto; -webkit-user-select: auto; }
+  .visual-tile-toolbar-draggable { cursor: auto; touch-action: auto; user-select: auto; -webkit-user-select: auto; }
+  .visual-column-edge, .visual-divider, .visual-window-edge { display: none; }
   /* Chat standing aside is a header in its strip's flow, as tall as a floating tile there and not as its strip's tiles. */
   .visual-main-strip > .visual-tile-floating, .visual-side-column > .visual-tile-floating { flex: 0 0 auto; }
 }
@@ -124,3 +125,28 @@
 @media (min-width: 901px) {
   .visual-side-column-vacant { flex: 0 0 0; min-width: 0; border: 0; overflow: visible; }
 }
+/* What a drag draws over the stage. The snap preview marks where the tile would dock: the column at a side, or the whole stage at the top edge, where it joins the page's strip. A docked tile stays in its strip while it is dragged, which would clip it, so it dims and a card follows the pointer in its place. */
+.visual-snap { position: absolute; z-index: 40; display: none; border: 2px solid var(--accent); border-radius: var(--panel-radius); background: var(--accent-soft); pointer-events: none; }
+.visual-snap[data-zone="left"] { display: block; top: 6px; bottom: 6px; left: 6px; width: min(360px, 30%); }
+.visual-snap[data-zone="side"] { display: block; top: 6px; bottom: 6px; right: 6px; width: min(360px, 30%); }
+.visual-snap[data-zone="main"] { display: block; inset: 6px; }
+.visual-drag-ghost { position: absolute; z-index: 45; top: 0; left: 0; display: none; width: 220px; padding: 7px 12px; overflow: hidden; border: 1px solid var(--accent); border-radius: var(--panel-radius); background: var(--surface-overlay); box-shadow: 0 16px 48px #0008; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
+.visual-tile-lifted { opacity: .45; }
+/* The edge between a column and the page: 6 px to grab, 3 px over each of them, so it takes no room of its own. */
+.visual-column-edge { position: relative; z-index: 5; flex: 0 0 6px; margin: 0 -3px; cursor: col-resize; touch-action: none; }
+.visual-column-edge:hover, .visual-column-edge:focus-visible, .visual-column-edge:active, .visual-divider:hover, .visual-divider:active { background: var(--accent); outline: 0; }
+/* The divider between two docked tiles, across the main strip or down a column: 6 px to grab, 3 px over each neighbour. The two trade room; a tile's share of its strip is its flex weight, an even share being 1. */
+.visual-divider { position: relative; z-index: 5; flex: 0 0 6px; touch-action: none; }
+.visual-divider-x { margin: 0 -3px; cursor: col-resize; }
+.visual-divider-y { margin: -3px 0; cursor: row-resize; }
+/* A floating window resizes by any edge or corner, as a desktop's does: strips 6 px thick along its sides and 12 px squares at its corners, over its content. */
+.visual-window-edge { position: absolute; z-index: 3; touch-action: none; }
+.visual-window-edge-n, .visual-window-edge-s { right: 12px; left: 12px; height: 6px; cursor: ns-resize; }
+.visual-window-edge-e, .visual-window-edge-w { top: 12px; bottom: 12px; width: 6px; cursor: ew-resize; }
+.visual-window-edge-ne, .visual-window-edge-se, .visual-window-edge-sw, .visual-window-edge-nw { width: 12px; height: 12px; }
+.visual-window-edge-n, .visual-window-edge-ne, .visual-window-edge-nw { top: 0; }
+.visual-window-edge-s, .visual-window-edge-se, .visual-window-edge-sw { bottom: 0; }
+.visual-window-edge-e, .visual-window-edge-ne, .visual-window-edge-se { right: 0; }
+.visual-window-edge-w, .visual-window-edge-nw, .visual-window-edge-sw { left: 0; }
+.visual-window-edge-ne, .visual-window-edge-sw { cursor: nesw-resize; }
+.visual-window-edge-nw, .visual-window-edge-se { cursor: nwse-resize; }

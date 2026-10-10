@@ -168,6 +168,53 @@ test("a dock button stands Chat at the left of the page at once, and brings it b
   expect(Math.round(right.x + right.width)).toBe(Math.round(stage.x + stage.width));
 });
 
+test("Chat dragged out of its column floats open under the pointer, and dropped at the left edge it docks there", async ({ page }) => {
+  const { tile, bar, message } = await open(page);
+  const stage = await box(page.locator(".visual-stage"));
+  const title = await box(bar.locator("span"));
+  await page.mouse.move(title.x + 20, title.y + title.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(stage.x + 400, stage.y + 200, { steps: 8 });
+  await expect(page.locator(".visual-drag-ghost")).toHaveText("Chat");
+  await page.mouse.up();
+  await expect(tile).toHaveClass(/visual-tile-aside/);
+  // Open while the pointer that dropped it is on it; folded once the pointer has left.
+  await expect(message).toBeVisible();
+  expect(Math.round((await box(tile)).x - stage.x)).toBe(340);
+  await leave(page);
+  await expect(message).toBeHidden();
+
+  const folded = await box(bar.locator("span"));
+  await page.mouse.move(folded.x + 20, folded.y + folded.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(stage.x + 8, stage.y + 300, { steps: 8 });
+  await expect(page.locator('.visual-snap[data-zone="left"]')).toBeVisible();
+  await page.mouse.up();
+  await expect(tile).toHaveClass(/visual-tile-left/);
+  await expect(message).toBeVisible();
+  expect(Math.round((await box(tile)).x)).toBe(Math.round(stage.x));
+});
+
+test("the edge between Chat's column and the page resizes the column, and the width survives a reload", async ({ page }) => {
+  const { tile } = await open(page);
+  const edge = page.getByRole("separator", { name: "Resize the right column" });
+  const before = await box(tile);
+  const at = await box(edge);
+  await page.mouse.move(at.x + at.width / 2, at.y + 300);
+  await page.mouse.down();
+  await page.mouse.move(at.x + at.width / 2 - 150, at.y + 300, { steps: 6 });
+  await page.mouse.up();
+  const wider = await box(tile);
+  expect(Math.abs(wider.width - before.width - 150)).toBeLessThan(3);
+  // The page gave up the room: nothing overflows sideways.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+  await page.reload();
+  await expect(tile.getByRole("textbox", { name: "Message" })).toBeVisible();
+  expect(Math.abs((await box(tile)).width - wider.width)).toBeLessThan(2);
+  // So the next spec starts from the column's own width.
+  await page.evaluate(() => localStorage.removeItem("trackinizer.v2.canvas.sizes"));
+});
+
 test("on a phone, Chat aside is a header under the page that Expand opens, with no sideways scroll", async ({ page }) => {
   const { tile, bar, message } = await open(page);
   await page.setViewportSize({ width: 390, height: 844 });

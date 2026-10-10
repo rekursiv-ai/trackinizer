@@ -634,9 +634,29 @@ with one response shape, so the fixtures take one per verb.
   import never deletes, views merge by id, and UI state stays this browser's.
   Tabs see each other's changes through the `storage` event. The value is
   version 2; a version 1 value reads as version 2 with no tiles.
-- Every visual but the page has two dock buttons on its bar, ◧ and ◨: one press
-  stands it in the column at that side of the page, floating or not (a `place`
-  to `left`, or to `side`, the right).
+- A tile's bar is how it is placed; there is no Focus button and no placement
+  menu. A press on the bar focuses the tile. A drag floats it, or docks it at
+  the edge of the stage it is dropped on: the left or right 48 px for the
+  column at that side, the top 12 px for the main strip beside the page, with
+  an outline of where it will stand shown before the release. A docked tile
+  leaves its place only after 24 px, so a click that slips still focuses; it
+  stays in its strip while dragged (the strip would clip it) and a card with
+  its name follows the pointer. Every visual but the page also has two dock
+  buttons, ◧ and ◨, the same docking by one press or by the keyboard. The page
+  stays the page: docked, its bar only focuses. Chat dragged out floats as it
+  does standing aside (below), open under the pointer that dropped it.
+- Every boundary on the canvas resizes what it bounds, as a desktop's windows
+  and an editor's panes do. A floating window resizes by any of its four edges
+  and four corners: the opposite sides stay, it never goes under 280 by 220 px,
+  and no side leaves the stage. The edge between a side column and the page
+  resizes the column, by the pointer or the arrow keys (16 px, 48 with Shift),
+  between 260 px and seven tenths of the stage. The divider between two docked
+  tiles, across the main strip or down a column, moves room from one to the
+  other, down to each one's least size. The sizes are this browser's, kept in
+  `localStorage` (`trackinizer.v2.canvas.sizes`): a column's width per side, a
+  window's size per visual type, and a docked tile's share of its strip per
+  visual type (an even share is 1). Opening a saved view forgets the windows'
+  sizes, as it forgets their places, and shows the view's.
 - Chat is docked beside the page: in the column at either side, or in the main
   strip when placed there. A canvas that stored it floating shows it at the
   right. When an
@@ -651,11 +671,11 @@ with one response shape, so the fixtures take one per verb.
   a reload starts docked, and its fold is not remembered.
 - A floating canvas tile (a visual placed Float, or Chat standing aside) moves
   by its whole top bar and by the
-  ⠿ handle, which also moves by the arrow keys (16 px, 48 with Shift). A press
-  on the bar that stays within 4 px is a click and folds the tile to its bar,
-  and the next one unfolds it; a drag never folds. Controls on the bar are not
-  part of the bar: a press on one starts nothing. Under 900 px the tile is a
-  plain header in the page's flow and neither moves nor folds by the bar. A move
+  ⠿ handle, which also moves by the arrow keys (16 px, 48 with Shift) and never
+  docks. A press on the bar that stays within 4 px is a click, which focuses;
+  the fold button folds the tile to its bar and unfolds it. Controls on the bar
+  are not part of the bar: a press on one starts nothing. Under 900 px the tile
+  is a plain header in the page's flow and does not move by the bar. A move
   is a transform on the tile alone, kept inside the stage, and the canvas takes
   the place once, on release. The place and the fold are kept per visual type in
   `ui.tiles` (`{collapsed, place: {left, top} | null}`), so they survive a

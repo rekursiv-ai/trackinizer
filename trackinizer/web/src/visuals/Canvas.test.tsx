@@ -19,7 +19,7 @@ import { storageKey } from "../state/store";
 import { EMPTY_STATE, parseState } from "../state/value";
 import { Canvas } from "./Canvas";
 import { ChatFeed, ChatFeedContext } from "./chatFeed";
-import { CLICK_SLOP, rememberedTile, withTile } from "./floatingTile";
+import { CLICK_SLOP, rememberedTile, SNAP_SIDE, SNAP_TOP, TEAR_SLOP, withTile } from "./floatingTile";
 import { FOLD_AFTER_MS, OPEN_AFTER_MS } from "./hoverOpen";
 
 vi.mock("../api/visuals", () => ({ getVisualCatalog: vi.fn() }));
@@ -344,7 +344,7 @@ test("older reads and replay receipts cannot replace a newer canvas revision", (
   expect(newerWorkspace(undefined, workspace)).toBe(workspace);
 });
 
-test("a single floating visual keeps its placement control", async () => {
+test("a single floating visual keeps its bar", async () => {
   vi.mocked(getVisualCatalog).mockResolvedValue({
     default_visual: "trax.browse",
     visuals: [{ type: "trax.browse", version: 1, title: "Browse", description: "Browse records",
@@ -355,7 +355,7 @@ test("a single floating visual keeps its placement control", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(<QueryClientProvider client={client}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
   expect(await screen.findByText("Browse content")).toBeTruthy();
-  expect(await screen.findByRole("combobox", { name: "Place trax.browse" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Move Browse" })).toBeTruthy();
   const tab = screen.getByRole("button", { name: "Expand" });
   expect(tab.getAttribute("aria-expanded")).toBe("false");
   fireEvent.click(tab);
@@ -555,8 +555,9 @@ test.each(["side", "floating"] as const)("Chat stored %s stands docked in the ri
   const { tile } = await mountChat(placement);
   expect(tile.parentElement?.className).toBe("visual-side-column");
   expect([...tile.classList]).toContain("visual-tile-side");
-  expect([...within(tile).getByRole<HTMLSelectElement>("combobox", { name: "Place trax.chat" }).options].map((option) => option.text))
-    .toEqual(["Main", "Left", "Right"]);
+  // Where it stands is the bar's to drag and the dock buttons' to press: no menu, and no Focus button.
+  expect(within(tile).queryByRole("combobox")).toBeNull();
+  expect(within(tile).queryByRole("button", { name: "Focus" })).toBeNull();
   // Docked at the right, only the other side is somewhere to go.
   expect(within(tile).getByRole<HTMLButtonElement>("button", { name: "Dock Chat at the right" }).disabled).toBe(true);
   expect(within(tile).getByRole<HTMLButtonElement>("button", { name: "Dock Chat at the left" }).disabled).toBe(false);
@@ -574,7 +575,8 @@ test("a dock button moves a tile to that side of the page at once; the page itse
   await waitFor(() => expect(document.querySelector(`.visual-side-column-left > ${CHAT_TILE}`)).not.toBeNull(), { interval: 1 });
   // The left column stands before the page's strip, and its button has nowhere left to go.
   const stage = document.querySelector(".visual-stage")!;
-  expect([...stage.children].map((child) => child.className)).toEqual(["visual-side-column visual-side-column-left", "visual-main-strip"]);
+  expect([...stage.children].map((child) => child.className)).toEqual([
+    "visual-side-column visual-side-column-left", "visual-column-edge", "visual-main-strip", "visual-snap", "visual-drag-ghost"]);
   await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Dock Chat at the left" }).disabled).toBe(true), { interval: 1 });
 });
 
@@ -587,6 +589,208 @@ test("a dock button brings back a Chat that stands aside, to the side it names",
     state.id, state.revision, { kind: "place", instance_id: "chat-instance", placement: "left" }, expect.any(String)), { interval: 1 });
 });
 
+const SIZES_KEY = "trackinizer.v2.canvas.sizes";
+
+/** Tell jsdom, which lays nothing out, that the stage is 800 px wide and starts at the window's corner. */
+function sizeStage() {
+  const stage = document.querySelector<HTMLElement>(".visual-stage")!;
+  Element.prototype.setPointerCapture = vi.fn();
+  Object.defineProperty(stage, "clientWidth", { configurable: true, value: 800 });
+  Object.defineProperty(stage, "clientHeight", { configurable: true, value: 600 });
+  vi.spyOn(stage, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 } as DOMRect);
+  return stage;
+}
+
+test("a press on a docked tile's bar that only slips focuses it: the tile leaves its place when dragged farther", async () => {
+  const { feed, state, tile } = await mountChat();
+  sizeStage();
+  const title = within(tile.querySelector<HTMLElement>(".visual-tile-toolbar")!).getByText("Chat");
+  const ghost = document.querySelector<HTMLElement>(".visual-drag-ghost")!;
+  fireEvent.pointerDown(title, { pointerId: 1, clientX: 600, clientY: 16 });
+  fireEvent.pointerMove(title, { pointerId: 1, clientX: 600 - TEAR_SLOP, clientY: 16 });
+  expect(ghost.style.display).not.toBe("block");
+  fireEvent.pointerUp(title, { pointerId: 1, clientX: 600 - TEAR_SLOP, clientY: 16 });
+  expect(feed.snapshot().aside).toBe(0);
+  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+    state.id, state.revision, { kind: "focus", instance_id: "chat-instance" }, expect.any(String)), { interval: 1 });
+});
+
+test("Chat dragged out of its column floats where it is dropped, open under the pointer, and folds when the pointer leaves", async () => {
+  const { feed, tile } = await mountChat();
+  sizeStage();
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const title = within(tile.querySelector<HTMLElement>(".visual-tile-toolbar")!).getByText("Chat");
+  const ghost = document.querySelector<HTMLElement>(".visual-drag-ghost")!;
+  fireEvent.pointerDown(title, { pointerId: 1, clientX: 600, clientY: 16 });
+  fireEvent.pointerMove(title, { pointerId: 1, clientX: 400, clientY: 300 });
+  // The tile stays in its column, dimmed, and a card with its name follows the pointer.
+  expect([...tile.classList]).toContain("visual-tile-lifted");
+  expect([ghost.style.display, ghost.textContent, ghost.style.transform]).toEqual(["block", "Chat", "translate(340px, 284px)"]);
+  fireEvent.pointerUp(title, { pointerId: 1, clientX: 400, clientY: 300 });
+
+  expect(ghost.style.display).toBe("none");
+  expect(feed.snapshot().aside).toBe(1);
+  expect(document.querySelector(CHAT_TILE)).toBe(tile);
+  expect([...tile.classList]).toEqual(expect.arrayContaining(["visual-tile-floating", "visual-tile-aside"]));
+  expect([...tile.classList]).not.toContain("visual-tile-lifted");
+  expect([...tile.classList]).not.toContain("visual-tile-collapsed");
+  expect([tile.style.left, tile.style.top]).toEqual(["340px", "284px"]);
+  // Dragging it out wrote nothing to the canvas: Chat floats as this tab's state.
+  expect(applyWorkspaceOperation).not.toHaveBeenCalled();
+  fireEvent.pointerLeave(tile);
+  act(() => { vi.advanceTimersByTime(FOLD_AFTER_MS); });
+  expect([...tile.classList]).toContain("visual-tile-collapsed");
+});
+
+test("a docked tile dragged to the other edge docks there, to the top edge joins the page's strip, and Chat aside comes back the same way", async () => {
+  const { feed, state, tile } = await mountChat();
+  sizeStage();
+  const snap = document.querySelector<HTMLElement>(".visual-snap")!;
+  const title = () => within(tile.querySelector<HTMLElement>(".visual-tile-toolbar")!).getByText("Chat");
+  const drop = (pointerId: number, x: number, y: number) => {
+    fireEvent.pointerDown(title(), { pointerId, clientX: 600, clientY: 16 });
+    fireEvent.pointerMove(title(), { pointerId, clientX: x, clientY: y });
+    const zone = snap.dataset.zone;
+    fireEvent.pointerUp(title(), { pointerId, clientX: x, clientY: y });
+    return zone;
+  };
+  expect(drop(1, 20, 300)).toBe("left");
+  expect(drop(2, 400, 4)).toBe("main");
+  // Back at the edge it stands at already: nothing to write.
+  expect(drop(3, 790, 300)).toBe("side");
+  await waitFor(() => expect(vi.mocked(applyWorkspaceOperation).mock.calls.map((call) => call[2])).toEqual(
+    ["left", "main"].map((placement) => ({ kind: "place", instance_id: "chat-instance", placement }))), { interval: 1 });
+  expect(vi.mocked(applyWorkspaceOperation).mock.calls[0]!.slice(0, 2)).toEqual([state.id, state.revision]);
+
+  act(() => feed.stepAside());
+  expect(drop(4, 790, 300)).toBe("side");
+  expect(feed.snapshot().aside).toBe(0);
+  expect([...tile.classList]).toContain("visual-tile-side");
+});
+
+test("a docked visual that is not Chat floats by its placement when dragged out", async () => {
+  vi.mocked(getVisualCatalog).mockResolvedValue({
+    default_visual: "trax.browse",
+    visuals: [
+      { type: "trax.browse", version: 1, title: "Browse", description: "Browse records",
+        default_size: "wide", requires: [], parameter_schema: {} },
+      { type: "test.note", version: 1, title: "Note", description: "A visual no renderer draws",
+        default_size: "compact", requires: [], parameter_schema: {} },
+    ],
+  });
+  const state: WorkspaceState = { ...workspace, visuals: [
+    { ...workspace.visuals[0]!, placement: "main" },
+    { id: "note-instance", type: "test.note", version: 1, placement: "side", record_id: null, params: {} }] };
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(state);
+  vi.mocked(getWorkspace).mockResolvedValue(state);
+  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...state, revision: 4 });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
+  const title = await screen.findByText("Note");
+  sizeStage();
+  fireEvent.pointerDown(title, { pointerId: 1, clientX: 600, clientY: 16 });
+  fireEvent.pointerMove(title, { pointerId: 1, clientX: 400, clientY: 300 });
+  fireEvent.pointerUp(title, { pointerId: 1, clientX: 400, clientY: 300 });
+  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+    state.id, state.revision, { kind: "place", instance_id: "note-instance", placement: "floating" }, expect.any(String)), { interval: 1 });
+  expect(rememberedTile(parseState(JSON.parse(localStorage.getItem(STATE_KEY)!)), "test.note").place).toEqual({ left: 340, top: 284 });
+  // The page stays the page: its bar focuses, and does not drag.
+  expect(document.querySelector(BROWSE_TILE + " .visual-tile-toolbar-draggable")).toBeNull();
+});
+
+test("the edge between a column and the page resizes the column, by the pointer or the arrow keys, and the width is kept", async () => {
+  const { tile } = await mountChat();
+  sizeStage();
+  const column = tile.parentElement!;
+  const edge = screen.getByRole("separator", { name: "Resize the right column" });
+  Object.defineProperty(column, "offsetWidth", { configurable: true, get: () => Number.parseInt(column.style.getPropertyValue("--column-width") || "360", 10) });
+  fireEvent.pointerDown(edge, { pointerId: 1, clientX: 440, clientY: 300 });
+  fireEvent.pointerMove(edge, { pointerId: 1, clientX: 380, clientY: 300 });
+  expect(column.style.getPropertyValue("--column-width")).toBe("420px");
+  // Never narrower than Chat's header and box need, never more than seven tenths of the stage.
+  fireEvent.pointerMove(edge, { pointerId: 1, clientX: 790, clientY: 300 });
+  expect(column.style.getPropertyValue("--column-width")).toBe("260px");
+  fireEvent.pointerMove(edge, { pointerId: 1, clientX: 10, clientY: 300 });
+  expect(column.style.getPropertyValue("--column-width")).toBe("560px");
+  fireEvent.pointerMove(edge, { pointerId: 1, clientX: 400, clientY: 300 });
+  fireEvent.pointerUp(edge, { pointerId: 1, clientX: 400, clientY: 300 });
+  expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toEqual({ side: 400, floating: {}, share: {} });
+  await waitFor(() => expect(edge.getAttribute("aria-valuenow")).toBe("400"), { interval: 1 });
+
+  // The arrow points where the edge goes: left widens the right column.
+  fireEvent.keyDown(edge, { key: "ArrowLeft" });
+  await waitFor(() => expect(column.style.getPropertyValue("--column-width")).toBe("416px"), { interval: 1 });
+  fireEvent.keyDown(edge, { key: "ArrowRight", shiftKey: true });
+  await waitFor(() => expect(column.style.getPropertyValue("--column-width")).toBe("368px"), { interval: 1 });
+  expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toEqual({ side: 368, floating: {}, share: {} });
+});
+
+test("two tiles that share the main strip trade room by the divider between them, and their shares are kept", async () => {
+  vi.mocked(getVisualCatalog).mockResolvedValue({
+    default_visual: "trax.browse",
+    visuals: [
+      { type: "trax.browse", version: 1, title: "Browse", description: "Browse records",
+        default_size: "wide", requires: [], parameter_schema: {} },
+      { type: "test.note", version: 1, title: "Note", description: "A visual no renderer draws",
+        default_size: "wide", requires: [], parameter_schema: {} },
+    ],
+  });
+  const state: WorkspaceState = { ...workspace, visuals: [
+    { ...workspace.visuals[0]!, placement: "main" },
+    { id: "note-instance", type: "test.note", version: 1, placement: "main", record_id: null, params: {} }] };
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(state);
+  vi.mocked(getWorkspace).mockResolvedValue(state);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(<QueryClientProvider client={client}><Canvas><div>Browse content</div></Canvas></QueryClientProvider>);
+  await screen.findByText("Note");
+  Element.prototype.setPointerCapture = vi.fn();
+  const [page, note] = [...document.querySelectorAll<HTMLElement>(".visual-main-strip > .visual-tile")];
+  page!.getBoundingClientRect = () => ({ width: 500, height: 600 }) as DOMRect;
+  note!.getBoundingClientRect = () => ({ width: 300, height: 600 }) as DOMRect;
+  // One divider, between the two: it is the strip's second child.
+  const divider = screen.getByRole("separator");
+  expect([...page!.parentElement!.children].map((child) => child.className.split(" ")[0])).toEqual(["visual-tile", "visual-divider", "visual-tile"]);
+  const shares = () => [page!, note!].map((tile) => tile.style.getPropertyValue("--tile-share"));
+
+  fireEvent.pointerDown(divider, { pointerId: 1, clientX: 500, clientY: 300 });
+  fireEvent.pointerMove(divider, { pointerId: 1, clientX: 560, clientY: 300 });
+  // While it is dragged, each tile's share is its width: what the page gains the other gives.
+  expect(shares()).toEqual(["560", "240"]);
+  expect(page!.style.getPropertyValue("--tile-basis")).toBe("0px");
+  fireEvent.pointerUp(divider, { pointerId: 1, clientX: 560, clientY: 300 });
+  // Kept as shares of the strip, an even one being 1.
+  expect(JSON.parse(localStorage.getItem(SIZES_KEY)!)).toEqual({ floating: {}, share: { "trax.browse": 1.4, "test.note": 0.6 } });
+  await waitFor(() => expect(shares()).toEqual(["1.4", "0.6"]), { interval: 1 });
+});
+
+test("a floating window resizes by any edge or corner, inside the stage, and keeps the size it was left", async () => {
+  const { tile, bar } = await mountFloating();
+  drawnAt(tile, 100, 50);
+  const box = () => [tile.style.left, tile.style.top, tile.style.width, tile.style.height];
+  const drag = (edge: string, pointerId: number, dx: number, dy: number) => {
+    const handle = tile.querySelector<HTMLElement>(`.visual-window-edge-${edge}`)!;
+    fireEvent.pointerDown(handle, { pointerId, clientX: 200, clientY: 200 });
+    fireEvent.pointerMove(handle, { pointerId, clientX: 200 + dx, clientY: 200 + dy });
+    const during = box();
+    fireEvent.pointerUp(handle, { pointerId, clientX: 200 + dx, clientY: 200 + dy });
+    return during;
+  };
+  expect(tile.querySelectorAll(".visual-window-edge")).toHaveLength(8);
+  // The tile is 300 by 400 at (100, 50) in a stage of 800 by 600.
+  expect(drag("e", 1, 60, 99)).toEqual(["100px", "50px", "360px", "400px"]);
+  expect(JSON.parse(localStorage.getItem(SIZES_KEY)!).floating).toEqual({ "trax.browse": { width: 360, height: 400 } });
+  await waitFor(() => expect(tile.style.width).toBe("360px"), { interval: 1 });
+  expect(storedTile().place).toEqual({ left: 100, top: 50 });
+  // jsdom still measures 300 by 400: each drag starts from that box.
+  expect(drag("nw", 2, -40, -20)).toEqual(["60px", "30px", "340px", "420px"]);
+  expect(drag("s", 3, 0, 5000)).toEqual(["100px", "50px", "300px", "550px"]);
+  expect(drag("w", 4, 5000, 0)).toEqual(["120px", "50px", "280px", "400px"]);
+
+  // Folded to its bar, a window has no size to give.
+  fireEvent.click(within(bar).getByRole("button", { name: "Collapse Browse" }));
+  expect(tile.querySelectorAll(".visual-window-edge")).toHaveLength(0);
+});
+
 test("when the assistant shows something Chat stands aside: the same tile floats, folded, and its column takes no room, until it is docked", async () => {
   const { feed, tile } = await mountChat();
   act(() => feed.stepAside());
@@ -594,8 +798,6 @@ test("when the assistant shows something Chat stands aside: the same tile floats
   expect(document.querySelector(CHAT_TILE)).toBe(tile);
   expect([...tile.classList]).toEqual(expect.arrayContaining(["visual-tile-floating", "visual-tile-aside", "visual-tile-collapsed"]));
   expect(tile.parentElement?.className).toBe("visual-side-column visual-side-column-vacant");
-  // As the browser leaves a tile sized by hand.
-  Object.assign(tile.style, { width: "500px", height: "300px" });
 
   // Back at the side it came from: nothing to write to the canvas.
   fireEvent.click(within(tile).getByRole("button", { name: "Dock Chat at the right" }));
@@ -603,7 +805,6 @@ test("when the assistant shows something Chat stands aside: the same tile floats
   expect([...tile.classList]).toContain("visual-tile-side");
   expect([...tile.classList]).not.toContain("visual-tile-floating");
   expect(tile.parentElement?.className).toBe("visual-side-column");
-  expect([tile.style.width, tile.style.height]).toEqual(["", ""]);
   expect(applyWorkspaceOperation).not.toHaveBeenCalled();
 });
 
@@ -973,27 +1174,53 @@ test("a drag by the title bar follows every move with a transform alone: the can
   expect(localStorage.getItem(STATE_KEY)).toBeNull();
 });
 
-test("a press on the title bar that does not move collapses the tile to its bar, and the next expands it", async () => {
+test("a press on the title bar that does not move focuses the tile, and neither moves nor collapses it", async () => {
   const { tile, title } = await mountFloating();
+  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...workspace, revision: 4, focused_instance: workspace.visuals[0]!.id });
   fireEvent.pointerDown(title, { pointerId: 1, clientX: 100, clientY: 100 });
   fireEvent.pointerMove(title, { pointerId: 1, clientX: 100 + CLICK_SLOP, clientY: 100 });
   fireEvent.pointerUp(title, { pointerId: 1, clientX: 100 + CLICK_SLOP, clientY: 100 });
-  expect(tile.classList.contains("visual-tile-collapsed")).toBe(true);
   // A click moves nothing, even by the pixels the hand wandered.
   expect(tile.style.transform).toBe("");
   expect(tile.style.left).toBe("");
-  expect(storedTile().collapsed).toBe(true);
+  expect(tile.classList.contains("visual-tile-collapsed")).toBe(false);
+  expect(localStorage.getItem(STATE_KEY)).toBeNull();
+  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+    workspace.id, workspace.revision, { kind: "focus", instance_id: workspace.visuals[0]!.id }, expect.any(String)), { interval: 1 });
+  await waitFor(() => expect(tile.classList.contains("visual-tile-focused")).toBe(true), { interval: 1 });
 
+  // Focused already, a second click writes nothing.
   fireEvent.pointerDown(title, { pointerId: 2, clientX: 100, clientY: 100 });
   fireEvent.pointerUp(title, { pointerId: 2, clientX: 100, clientY: 100 });
-  expect(tile.classList.contains("visual-tile-collapsed")).toBe(false);
-  expect(storedTile().collapsed).toBe(false);
+  expect(applyWorkspaceOperation).toHaveBeenCalledOnce();
+});
+
+test("a floating tile dropped at an edge of the stage docks there, and the stage shows where while it is dragged", async () => {
+  const { tile, title } = await mountFloating();
+  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...workspace, revision: 4 });
+  const snap = document.querySelector<HTMLElement>(".visual-snap")!;
+  const drop = (pointerId: number, x: number, y: number) => {
+    fireEvent.pointerDown(title, { pointerId, clientX: 300, clientY: 200 });
+    fireEvent.pointerMove(title, { pointerId, clientX: x, clientY: y });
+    const zone = snap.dataset.zone;
+    fireEvent.pointerUp(title, { pointerId, clientX: x, clientY: y });
+    return zone;
+  };
+  // In the open the tile only moves; its bar's move handle never docks it.
+  expect(drop(1, 400, 300)).toBe("");
+  expect(applyWorkspaceOperation).not.toHaveBeenCalled();
+  expect(drop(2, SNAP_SIDE, 300)).toBe("left");
+  expect(drop(3, 800 - SNAP_SIDE, 300)).toBe("side");
+  expect(drop(4, 400, SNAP_TOP)).toBe("main");
+  expect(snap.dataset.zone).toBe("");
+  expect(tile.style.transform).toBe("");
+  await waitFor(() => expect(vi.mocked(applyWorkspaceOperation).mock.calls.map((call) => call[2])).toEqual(
+    ["left", "side", "main"].map((placement) => ({ kind: "place", instance_id: workspace.visuals[0]!.id, placement }))), { interval: 1 });
 });
 
 test("a collapsed tile can be dragged by its bar, and stays collapsed", async () => {
-  const { tile, title } = await mountFloating();
-  fireEvent.pointerDown(title, { pointerId: 1, clientX: 100, clientY: 100 });
-  fireEvent.pointerUp(title, { pointerId: 1, clientX: 100, clientY: 100 });
+  const { tile, bar, title } = await mountFloating();
+  fireEvent.click(within(bar).getByRole("button", { name: "Collapse Browse" }));
   fireEvent.pointerDown(title, { pointerId: 2, clientX: 100, clientY: 100 });
   fireEvent.pointerMove(title, { pointerId: 2, clientX: 160, clientY: 100 });
   fireEvent.pointerUp(title, { pointerId: 2, clientX: 160, clientY: 100 });
@@ -1001,21 +1228,18 @@ test("a collapsed tile can be dragged by its bar, and stays collapsed", async ()
   expect(storedTile()).toEqual({ collapsed: true, place: { left: 60, top: 0 } });
 });
 
-test("the bar's buttons and place control keep working: pressing them starts no drag and no collapse", async () => {
+test("the bar's buttons keep their own presses: pressing one starts no drag and focuses nothing", async () => {
   const { tile, bar } = await mountFloating();
-  const focus = within(bar).getByRole("button", { name: "Focus" });
-  fireEvent.pointerDown(focus, { pointerId: 1, clientX: 100, clientY: 100 });
-  fireEvent.pointerMove(focus, { pointerId: 1, clientX: 180, clientY: 100 });
-  fireEvent.pointerUp(focus, { pointerId: 1, clientX: 180, clientY: 100 });
-  const place = within(bar).getByRole("combobox", { name: "Place trax.browse" });
-  fireEvent.pointerDown(place, { pointerId: 2, clientX: 100, clientY: 100 });
-  fireEvent.pointerUp(place, { pointerId: 2, clientX: 100, clientY: 100 });
+  const fold = within(bar).getByRole("button", { name: "Collapse Browse" });
+  fireEvent.pointerDown(fold, { pointerId: 1, clientX: 100, clientY: 100 });
+  fireEvent.pointerMove(fold, { pointerId: 1, clientX: 180, clientY: 100 });
+  fireEvent.pointerUp(fold, { pointerId: 1, clientX: 180, clientY: 100 });
   expect(tile.style.transform).toBe("");
   expect(tile.classList.contains("visual-tile-collapsed")).toBe(false);
   expect(applyWorkspaceOperation).not.toHaveBeenCalled();
   expect(localStorage.getItem(STATE_KEY)).toBeNull();
-  fireEvent.click(focus);
-  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalled());
+  fireEvent.click(fold);
+  expect(tile.classList.contains("visual-tile-collapsed")).toBe(true);
 });
 
 test("a right-button press on the bar starts nothing", async () => {
@@ -1088,8 +1312,7 @@ test("storage that cannot hold the state still lets the tile move and collapse",
   fireEvent.pointerMove(title, { pointerId: 1, clientX: 110, clientY: 120 });
   fireEvent.pointerUp(title, { pointerId: 1, clientX: 110, clientY: 120 });
   expect([tile.style.left, tile.style.top]).toEqual(["10px", "20px"]);
-  fireEvent.pointerDown(title, { pointerId: 2, clientX: 100, clientY: 100 });
-  fireEvent.pointerUp(title, { pointerId: 2, clientX: 100, clientY: 100 });
+  fireEvent.click(within(tile).getByRole("button", { name: "Collapse Browse" }));
   expect(tile.classList.contains("visual-tile-collapsed")).toBe(true);
   expect(localStorage.getItem(STATE_KEY)).toBe(unreadable);
 });

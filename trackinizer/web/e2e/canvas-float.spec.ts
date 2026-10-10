@@ -3,9 +3,12 @@ import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 import { resetCanvas } from "./canvasState";
 
-// A floating tile (the context graph, floated) moves by its whole top bar, a
-// click on the bar folds it to the bar, and where it stands and whether it is
-// folded survive a reload. Chat is docked, and floats only while it stands aside
+// A floating tile (the context graph, floated) moves by its whole top bar and
+// docks at the edge of the stage it is dropped on; a docked one floats again
+// when its bar is dragged out. A click on the bar focuses the tile, its fold
+// button folds it to the bar, and where it stands and whether it is folded
+// survive a reload. It resizes by any edge or corner, and docked tiles trade
+// room by the divider between them. Chat is docked, and floats only while it stands aside
 // (canvas-chat-aside.spec.ts), so it is not the tile here.
 
 test.use({ canvas: true });
@@ -118,43 +121,46 @@ test("the tile follows the pointer on every frame, inside the page", async ({ pa
 test("the tile stays inside the page however far it is dragged", async ({ page, request }) => {
   await floatGraph(request);
   const { tile, bar } = await open(page);
-  await dragBy(page, bar.locator("span"), -2000, -2000);
+  const handle = bar.getByRole("button", { name: "Move Context graph" });
+  await dragBy(page, handle, -2000, -2000);
   const stage = await box(page.locator(".visual-stage"));
   const corner = await box(tile);
   expect(corner.x).toBeGreaterThanOrEqual(stage.x - 1);
   expect(corner.y).toBeGreaterThanOrEqual(stage.y - 1);
-  await dragBy(page, bar.locator("span"), 3000, 3000);
+  await dragBy(page, handle, 3000, 3000);
   const far = await box(tile);
   expect(far.x + far.width).toBeLessThanOrEqual(stage.x + stage.width + 1);
   expect(far.y + far.height).toBeLessThanOrEqual(stage.y + stage.height + 1);
 });
 
-test("a click on the title bar folds the tile to its bar, and the next click opens it", async ({ page, request }) => {
+test("a click on the title bar focuses the tile; its fold button folds it to the bar and opens it again", async ({ page, request }) => {
   await floatGraph(request);
   const { tile, bar } = await open(page);
   const open_ = await box(tile);
   const place = { x: open_.x, y: open_.y };
+  // The focus goes to the page with a click on its bar, and comes back with one on this bar, which folds nothing.
+  await page.locator(".visual-tile-browse > .visual-tile-toolbar").click();
+  await expect(tile).not.toHaveClass(/visual-tile-focused/);
   await bar.locator("span").click();
+  await expect(tile).toHaveClass(/visual-tile-focused/);
+  await expect(tile).not.toHaveClass(/visual-tile-collapsed/);
+  expect(await box(tile)).toEqual(open_);
+  await bar.getByRole("button", { name: /^(Collapse|Expand) Context graph$/ }).click();
   await expect(tile).toHaveClass(/visual-tile-collapsed/);
   await expect(tile.getByRole("region", { name: "Context graph" })).toBeHidden();
   const folded = await box(tile);
   expect(folded.height).toBeLessThan(60);
   expect(folded.height).toBeCloseTo((await box(bar)).height + 2, 0);
   expect({ x: folded.x, y: folded.y }).toEqual(place);
-  await bar.locator("span").click();
+  await bar.getByRole("button", { name: /^(Collapse|Expand) Context graph$/ }).click();
   await expect(tile).not.toHaveClass(/visual-tile-collapsed/);
   await expect(tile.getByRole("region", { name: "Context graph" })).toBeVisible();
   expect((await box(tile)).height).toBe(open_.height);
 });
 
-test("the bar's buttons still work, and the fold button is the keyboard's way to fold", async ({ page, request }) => {
+test("the fold button is the keyboard's way to fold", async ({ page, request }) => {
   await floatGraph(request);
   const { tile, bar } = await open(page);
-  const before = await box(tile);
-  await bar.getByRole("button", { name: "Focus" }).click();
-  await expect(tile).toHaveClass(/visual-tile-focused/);
-  await expect(tile).not.toHaveClass(/visual-tile-collapsed/);
-  expect(await box(tile)).toEqual(before);
   await bar.getByRole("button", { name: "Collapse Context graph" }).focus();
   await page.keyboard.press("Enter");
   await expect(tile).toHaveClass(/visual-tile-collapsed/);
@@ -191,7 +197,7 @@ test("where the tile stands and whether it is folded survive a reload", async ({
   expect(Math.round(reloaded.x)).toBe(Math.round(moved.x));
   expect(Math.round(reloaded.y)).toBe(Math.round(moved.y));
 
-  await bar.locator("span").click();
+  await bar.getByRole("button", { name: /^(Collapse|Expand) Context graph$/ }).click();
   await expect(tile).toHaveClass(/visual-tile-collapsed/);
   await page.reload();
   await expect(tile).toHaveClass(/visual-tile-collapsed/);
@@ -203,10 +209,10 @@ test("where the tile stands and whether it is folded survive a reload", async ({
 test("after a fold held the tile inside the page, a drag starts from where it is drawn", async ({ page, request }) => {
   await floatGraph(request);
   const { tile, bar } = await open(page);
-  await bar.locator("span").click();
+  await bar.getByRole("button", { name: /^(Collapse|Expand) Context graph$/ }).click();
   await dragBy(page, bar.locator("span"), 0, 2000);
   // Unfolded at the bottom, the page holds the tile higher than it was saved.
-  await bar.locator("span").click();
+  await bar.getByRole("button", { name: /^(Collapse|Expand) Context graph$/ }).click();
   await expect(tile).not.toHaveClass(/visual-tile-collapsed/);
   const held = await box(tile);
   const title = await box(bar.locator("span"));
@@ -225,9 +231,9 @@ test("after a fold held the tile inside the page, a drag starts from where it is
 test("an arrow key after a fold held the tile inside the page moves it from where it is drawn", async ({ page, request }) => {
   await floatGraph(request);
   const { tile, bar } = await open(page);
-  await bar.locator("span").click();
+  await bar.getByRole("button", { name: /^(Collapse|Expand) Context graph$/ }).click();
   await dragBy(page, bar.locator("span"), 0, 2000);
-  await bar.locator("span").click();
+  await bar.getByRole("button", { name: /^(Collapse|Expand) Context graph$/ }).click();
   const held = await box(tile);
   await tile.getByRole("button", { name: "Move Context graph" }).press("ArrowUp");
   await expect.poll(async () => Math.round(held.y - (await box(tile)).y)).toBe(16);
@@ -269,13 +275,141 @@ test("a tile a narrow window pushed in returns to its saved place when the windo
 test("a smaller window holds a saved place inside the page", async ({ page, request }) => {
   await floatGraph(request);
   const { tile, bar } = await open(page);
-  await dragBy(page, bar.locator("span"), 2000, 0);
+  await dragBy(page, bar.getByRole("button", { name: "Move Context graph" }), 2000, 0);
   await page.setViewportSize({ width: 1000, height: 700 });
   const stage = await box(page.locator(".visual-stage"));
   await expect.poll(async () => {
     const held = await box(tile);
     return held.x + held.width <= stage.x + stage.width + 1;
   }).toBe(true);
+});
+
+test("dropped at an edge of the stage the tile docks there, and dragged out by its bar it floats again", async ({ page, request }) => {
+  await floatGraph(request);
+  const { tile, bar } = await open(page);
+  const stage = await box(page.locator(".visual-stage"));
+  const graph = page.locator(".visual-tile", { has: page.getByRole("region", { name: "Context graph" }) });
+  const press = async (title: Locator) => {
+    const at = await box(title);
+    await page.mouse.move(at.x + 20, at.y + at.height / 2);
+    await page.mouse.down();
+  };
+  // To the left edge: the stage shows where the tile will stand before the release.
+  await press(bar.locator("span"));
+  await page.mouse.move(stage.x + 300, stage.y + 300, { steps: 6 });
+  await expect(page.locator(".visual-snap")).toBeHidden();
+  await page.mouse.move(stage.x + 10, stage.y + 300, { steps: 6 });
+  await expect(page.locator('.visual-snap[data-zone="left"]')).toBeVisible();
+  await page.mouse.up();
+  await expect(graph).toHaveClass(/visual-tile-left/);
+  await expect(page.locator(".visual-snap")).toBeHidden();
+  expect(Math.round((await box(graph)).x)).toBe(Math.round(stage.x));
+
+  // Out by its bar: the tile stays in its column while a card follows the pointer, then floats where it is dropped.
+  await press(graph.locator(".visual-tile-toolbar span"));
+  await page.mouse.move(stage.x + 500, stage.y + 200, { steps: 8 });
+  await expect(page.locator(".visual-drag-ghost")).toBeVisible();
+  await expect(graph).toHaveClass(/visual-tile-left/);
+  await page.mouse.up();
+  await expect(tile).toBeVisible();
+  await expect(page.locator(".visual-drag-ghost")).toBeHidden();
+  const floated = await box(tile);
+  expect(Math.round(floated.x - stage.x)).toBe(440);
+  expect(Math.round(floated.y - stage.y)).toBe(184);
+
+  // To the top edge: it joins the page's strip.
+  await press(bar.locator("span"));
+  await page.mouse.move(stage.x + 600, stage.y + 4, { steps: 8 });
+  await expect(page.locator('.visual-snap[data-zone="main"]')).toBeVisible();
+  await page.mouse.up();
+  await expect(graph).toHaveClass(/visual-tile-main/);
+  // A slip along a docked bar is not a drag: the tile stays, focused.
+  await press(graph.locator(".visual-tile-toolbar span"));
+  await page.mouse.move((await box(graph)).x + 30, (await box(graph)).y + 16, { steps: 3 });
+  await page.mouse.up();
+  await expect(graph).toHaveClass(/visual-tile-main/);
+});
+
+test("the window resizes by every edge and corner, down to its least size, and keeps its size across a reload", async ({ page, request }) => {
+  await floatGraph(request);
+  const { tile, bar } = await open(page);
+  // Away from the stage's corner, so every side has room to move.
+  await dragBy(page, bar.locator("span"), -300, 60);
+  const pull = async (edge: string, dx: number, dy: number) => {
+    const at = await box(tile.locator(`.visual-window-edge-${edge}`));
+    const [x, y] = [at.x + at.width / 2, at.y + at.height / 2];
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + dx, y + dy, { steps: 5 });
+    await page.mouse.up();
+  };
+  const rounded = async () => {
+    const now = await box(tile);
+    return [now.x, now.y, now.width, now.height].map(Math.round);
+  };
+  const [x, y, width, height] = await rounded();
+  await pull("e", 50, 0);
+  expect(await rounded()).toEqual([x, y, width + 50, height]);
+  await pull("s", 0, 40);
+  expect(await rounded()).toEqual([x, y, width + 50, height + 40]);
+  // The left and top sides move the window's corner; the far sides stay.
+  await pull("w", -30, 0);
+  expect(await rounded()).toEqual([x - 30, y, width + 80, height + 40]);
+  await pull("n", 0, -20);
+  expect(await rounded()).toEqual([x - 30, y - 20, width + 80, height + 60]);
+  await pull("se", 20, 10);
+  await pull("nw", -10, -10);
+  expect(await rounded()).toEqual([x - 40, y - 30, width + 110, height + 80]);
+  await pull("e", -2000, 0);
+  expect((await rounded())[2]).toBe(280);
+
+  const left = await rounded();
+  await page.reload();
+  await expect(tile.getByRole("region", { name: "Context graph" })).toBeVisible();
+  expect(await rounded()).toEqual(left);
+});
+
+test("docked tiles trade room by the divider between them: across the page's strip, and down a column", async ({ page, request }) => {
+  await floatGraph(request);
+  const { bar } = await open(page);
+  const stage = await box(page.locator(".visual-stage"));
+  const graph = page.locator(".visual-tile", { has: page.getByRole("region", { name: "Context graph" }) });
+  const slide = async (divider: Locator, dx: number, dy: number) => {
+    const at = await box(divider);
+    const [x, y] = [at.x + at.width / 2, at.y + at.height / 2];
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + dx, y + dy, { steps: 5 });
+    await page.mouse.up();
+  };
+  // Beside the page, in its strip.
+  const title = await box(bar.locator("span"));
+  await page.mouse.move(title.x + 20, title.y + title.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(stage.x + 600, stage.y + 4, { steps: 8 });
+  await page.mouse.up();
+  await expect(graph).toHaveClass(/visual-tile-main/);
+  const browse = page.locator(".visual-tile-browse");
+  const [pageWas, graphWas] = [await box(browse), await box(graph)];
+  await slide(page.locator(".visual-main-strip > .visual-divider"), 120, 0);
+  const [pageNow, graphNow] = [await box(browse), await box(graph)];
+  expect(Math.round(pageNow.width - pageWas.width)).toBe(120);
+  expect(Math.round(graphWas.width - graphNow.width)).toBe(120);
+  await page.reload();
+  await expect(graph).toBeVisible();
+  expect(Math.abs((await box(browse)).width - pageNow.width)).toBeLessThan(2);
+
+  // Down a column: the graph over Chat, at the right.
+  await page.locator(".visual-toolbar-actions").getByRole("button", { name: "Chat", exact: true }).click();
+  const chat = page.locator(".visual-tile:has(.chat-panel)");
+  await expect(chat).toBeVisible();
+  await graph.getByRole("button", { name: "Dock Context graph at the right" }).click();
+  await expect(graph).toHaveClass(/visual-tile-side/);
+  const [upper, lower] = (await box(graph)).y < (await box(chat)).y ? [graph, chat] : [chat, graph];
+  const [upperWas, lowerWas] = [await box(upper), await box(lower)];
+  await slide(page.locator(".visual-side-column > .visual-divider"), 0, 50);
+  expect(Math.round((await box(upper)).height - upperWas.height)).toBe(50);
+  expect(Math.round(lowerWas.height - (await box(lower)).height)).toBe(50);
 });
 
 test("a dock button stands the floating tile at that side of the page at once", async ({ page, request }) => {
@@ -301,7 +435,7 @@ for (const theme of ["light", "dark"] as const) {
     await page.screenshot({ path: `${SHOTS}/float-default-${theme}.png` });
     await dragBy(page, bar.locator("span"), -420, 40);
     await page.screenshot({ path: `${SHOTS}/float-moved-${theme}.png` });
-    await bar.locator("span").click();
+    await bar.getByRole("button", { name: /^(Collapse|Expand) Context graph$/ }).click();
     await expect(tile).toHaveClass(/visual-tile-collapsed/);
     await page.screenshot({ path: `${SHOTS}/float-folded-${theme}.png` });
   });

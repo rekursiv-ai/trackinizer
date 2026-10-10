@@ -8,7 +8,10 @@ function Tile() {
   const tile = useRef<HTMLDivElement>(null);
   const hover = useHoverOpen(tile);
   return <div ref={tile} data-testid="tile" data-open={hover.open} {...hover.handlers}>
-    <div className="visual-tile-toolbar"><button type="button" onClick={() => hover.set(!hover.open)}>Fold</button></div>
+    <div className="visual-tile-toolbar">
+      <button type="button" onClick={() => hover.set(!hover.open)}>Fold</button>
+      <button type="button" onClick={hover.enter}>Drop</button>
+    </div>
     <textarea aria-label="Message" />
   </div>;
 }
@@ -99,4 +102,15 @@ test("a touch has no hover: it opens and folds nothing by coming and going", () 
   fireEvent.pointerLeave(tile, { pointerType: "touch" });
   wait(FOLD_AFTER_MS);
   expect(open()).toBe(true);
+});
+
+test("a tile dropped under the pointer is open at once, and folds once the pointer leaves", () => {
+  const { tile, open, wait } = mount();
+  fireEvent.click(screen.getByRole("button", { name: "Drop" }));
+  expect(open()).toBe(true);
+  wait(OPEN_AFTER_MS + FOLD_AFTER_MS);
+  expect(open()).toBe(true);
+  fireEvent.pointerLeave(tile);
+  wait(FOLD_AFTER_MS);
+  expect(open()).toBe(false);
 });

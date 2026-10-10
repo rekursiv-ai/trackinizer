@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type PointerEvent, type ReactNode } from "react";
 import { ApiError } from "../api/client";
 import { findRef } from "../api/detail";
 import { newUuid } from "../api/idempotency";
@@ -25,9 +25,10 @@ import { useBrowserState } from "../state/store";
 import type { TileMemory } from "../state/value";
 import { type PanelSpec, usePanel } from "../ui/panel";
 import { useChatFeed } from "./chatFeed";
-import { finishGesture, moveGesture, rememberedTile, startGesture, withoutPlaces, withTile, type Gesture } from "./floatingTile";
+import { type CanvasSizes, heldWidth, MIN_COLUMN, MIN_FLOAT, readCanvasSizes, writeCanvasSizes } from "./canvasSizes";
+import { CLICK_SLOP, EDGES, finishGesture, moveGesture, rememberedTile, resizeRect, slideDivider, snapZone, startGesture, TEAR_SLOP, withoutPlaces, withTile, type Edge, type Gesture, type Rect, type Zone } from "./floatingTile";
 import { useHoverOpen } from "./hoverOpen";
-import { chatHome, orderVisuals, type Placement, SIDES } from "./layout";
+import { chatHome, orderVisuals, SIDES } from "./layout";
 import { preloadRenderers, RENDERERS, VisualPane } from "./registry";
 import { WorkspaceActionsProvider } from "./workspaceActions";
 import "./canvas.css";
@@ -87,7 +88,19 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   const [foldedTypes, setFoldedTypes] = useState<Record<string, boolean>>({});
   const [browser, updateBrowser] = useBrowserState();
   const stageRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<FloatingDrag | null>(null);
+  const dragRef = useRef<TileDrag | null>(null);
+  // What a drag draws over the stage: where the tile would dock, and, for a
+  // docked tile, a card that follows the pointer in its place.
+  const snapRef = useRef<HTMLDivElement>(null);
+  const ghostRef = useRef<HTMLDivElement>(null);
+  // The sizes dragged in this browser, and the drags that set them: a column's
+  // edge, a floating window's edge or corner, the divider between two docked tiles.
+  const resizeRef = useRef<ColumnResize | null>(null);
+  const windowRef = useRef<WindowResize | null>(null);
+  const dividerRef = useRef<DividerDrag | null>(null);
+  const [sizes, setSizes] = useState<CanvasSizes>(readCanvasSizes);
+  // Chat the user dragged out of its column stays open under the pointer that dropped it.
+  const tornOff = useRef(false);
   // Chat's home is a panel beside the page. While the assistant shows something
   // it stands aside: the same tile floats over the page, folded to its bar unless
   // the pointer or the keyboard is in it. None of that is the canvas's state.
@@ -183,14 +196,11 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   // from under the pointer and the keyboard too.
   useEffect(() => {
     if (chatFeed.aside === 0) return;
-    chatOpen.set(false);
+    if (tornOff.current) chatOpen.enter();
+    else chatOpen.set(false);
+    tornOff.current = false;
     setExpandedMobileFloat(null);
   }, [chatFeed.aside]);
-
-  // A floating tile sized by hand keeps the browser's own width and height; docked again, Chat takes its panel's.
-  useLayoutEffect(() => {
-    if (!chatAside && chatTile.current) Object.assign(chatTile.current.style, { width: "", height: "" });
-  }, [chatAside]);
 
   useEffect(() => {
     if (!workspace) return;
@@ -294,7 +304,8 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       setPresetInstructions(state.agent_instructions ?? "");
       setContinuationRecordId(state.continuation_record_id ?? "");
       setFloatingPositions({});
-      // A saved view's places show over the ones dragged before it.
+      keepSizes((previous) => ({ ...previous, floating: {} }));
+      // A saved view's places and sizes show over the ones dragged before it.
       try {
         updateBrowser(withoutPlaces);
       } catch {
@@ -373,13 +384,32 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   }
 
   /**
-   * Stand `pane` in the column at one side of the page, at once: a floating
-   * tile docks there, a docked one crosses the page, and Chat standing aside
-   * comes back.
+   * Stand `pane` in the column at one side of the page, or in the main strip
+   * beside it, at once: a floating tile docks there, a docked one moves, and
+   * Chat standing aside comes back.
    */
-  function dockTile(pane: (typeof panes)[number], side: (typeof SIDES)[number]["placement"]) {
+  function dockTile(pane: Pane, zone: Zone) {
     if (pane.type === "trax.chat") feed.dock();
-    if (pane.placement !== side) operate({ kind: "place", instance_id: pane.id, placement: side });
+    if (pane.placement !== zone) operate({ kind: "place", instance_id: pane.id, placement: zone });
+  }
+
+  /**
+   * Float docked `pane` over the stage at `place`. Chat floats by standing
+   * aside, which is this tab's state and folds when the pointer leaves it; any
+   * other visual by its placement.
+   */
+  function floatTile(pane: Pane, place: { readonly left: number; readonly top: number }) {
+    placeFloatingPane(pane.id, pane.type, place);
+    if (pane.type === "trax.chat") {
+      tornOff.current = true;
+      feed.stepAside();
+    } else {
+      operate({ kind: "place", instance_id: pane.id, placement: "floating" });
+    }
+  }
+
+  function focusTile(pane: Pane) {
+    if (workspace?.focused_instance !== pane.id) operate({ kind: "focus", instance_id: pane.id });
   }
 
   function foldFloatingPane(type: string, collapsed: boolean) {
@@ -402,11 +432,13 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   }
 
   /**
-   * A press on a floating tile's top bar or its move handle. Pressing a
-   * control on the bar (a button, the place menu) starts nothing, and nor
-   * does a press on a phone, where the tile is a plain header in the flow.
+   * A press on a tile's top bar or its move handle. Pressing a control on the
+   * bar starts nothing, and nor does a press on a phone, where the tiles stack
+   * in one column. A floating tile follows the pointer itself; a docked one
+   * stays where it stands, since its strip would clip it, and a card follows
+   * the pointer in its place once the press has gone far enough to be a drag.
    */
-  function startFloatingDrag(event: PointerEvent<HTMLElement>, paneId: string, type: string, collapsed: boolean) {
+  function startTileDrag(event: PointerEvent<HTMLElement>, pane: Pane, floating: boolean) {
     const stage = stageRef.current;
     const tile = event.currentTarget.closest<HTMLElement>(".visual-tile");
     const target = event.target;
@@ -420,56 +452,230 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     // The bounds are measured once: read on every move, they lay the page out
     // again each time.
     dragRef.current = {
-      id: paneId, type, pointerId: event.pointerId, tile, byHandle, collapsed,
+      pane, pointerId: event.pointerId, tile, byHandle, floating, zone: null,
+      stage: { left: stage.getBoundingClientRect().left, top: stage.getBoundingClientRect().top, width: stage.clientWidth },
+      title: event.currentTarget.querySelector("span")?.textContent ?? "",
       gesture: startGesture({
         x: event.clientX, y: event.clientY, left: position.left, top: position.top,
         maxLeft: Math.max(0, stage.clientWidth - tile.offsetWidth),
         maxTop: Math.max(0, stage.clientHeight - tile.offsetHeight),
       }),
     };
-    tile.style.willChange = "transform";
+    if (floating) tile.style.willChange = "transform";
     target.setPointerCapture(event.pointerId);
   }
 
   /**
-   * Each move only transforms the tile: rendering the canvas per move redrew
+   * Each move only transforms the tile, or the card that stands for a docked
+   * one, and marks where it would dock: rendering the canvas per move redrew
    * every visual in it, Chat's whole conversation included (6 ms a move with
-   * 120 lines, against 3.3 ms so). The canvas takes the place once, on release.
+   * 120 lines, against 3.3 ms so). The canvas takes the outcome once, on release.
    */
-  function updateFloatingDrag(event: PointerEvent<HTMLElement>) {
+  function updateTileDrag(event: PointerEvent<HTMLElement>) {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     moveGesture(drag.gesture, event.clientX, event.clientY);
-    drag.tile.style.transform = `translate(${drag.gesture.dx}px, ${drag.gesture.dy}px)`;
+    const at = { x: event.clientX - drag.stage.left, y: event.clientY - drag.stage.top };
+    if (drag.floating) {
+      drag.tile.style.transform = `translate(${drag.gesture.dx}px, ${drag.gesture.dy}px)`;
+    } else if (drag.gesture.peak > TEAR_SLOP && ghostRef.current) {
+      drag.tile.classList.add("visual-tile-lifted");
+      ghostRef.current.textContent = drag.title;
+      Object.assign(ghostRef.current.style, { display: "block", transform: `translate(${at.x - GHOST_GRIP.x}px, ${at.y - GHOST_GRIP.y}px)` });
+    }
+    // The move handle only moves a floating tile: it never docks it.
+    const dragging = drag.gesture.peak > (drag.floating ? CLICK_SLOP : TEAR_SLOP) && !drag.byHandle;
+    drag.zone = dragging ? snapZone(at.x, at.y, drag.stage.width) : null;
+    if (snapRef.current) snapRef.current.dataset.zone = drag.zone ?? "";
+  }
+
+  /** Take away what a drag drew over the stage. */
+  function endDragMarks(drag: TileDrag) {
+    drag.tile.style.willChange = "";
+    drag.tile.classList.remove("visual-tile-lifted");
+    if (ghostRef.current) ghostRef.current.style.display = "none";
+    if (snapRef.current) snapRef.current.dataset.zone = "";
   }
 
   /**
-   * The release of a press: a drag leaves the tile where the pointer took it;
-   * a press that stayed within the click slop folds or unfolds a tile pressed
-   * on its bar, and does nothing on the handle.
+   * The release of a press. One that stayed within the slop is a click, which
+   * focuses a tile pressed on its bar. A drag dropped at an edge of the stage
+   * docks the tile there; dropped anywhere else it leaves a floating tile
+   * where the pointer took it, and floats a docked one there.
    */
-  function stopFloatingDrag(event: PointerEvent<HTMLElement>) {
+  function stopTileDrag(event: PointerEvent<HTMLElement>) {
     const drag = dragRef.current;
     if (drag?.pointerId !== event.pointerId) return;
     dragRef.current = null;
-    drag.tile.style.willChange = "";
-    const outcome = finishGesture(drag.gesture);
+    endDragMarks(drag);
+    const outcome = finishGesture(drag.gesture, drag.floating ? CLICK_SLOP : TEAR_SLOP);
     if (outcome.kind === "click") {
       drag.tile.style.transform = "";
-      if (!drag.byHandle) foldFloatingPane(drag.type, !drag.collapsed);
-      return;
+      if (!drag.byHandle) focusTile(drag.pane);
+    } else if (drag.zone) {
+      drag.tile.style.transform = "";
+      dockTile(drag.pane, drag.zone);
+    } else if (drag.floating) {
+      // Placed before the transform goes, so no frame shows the tile back where it started.
+      Object.assign(drag.tile.style, { left: `${outcome.place.left}px`, top: `${outcome.place.top}px`, right: "auto", transform: "" });
+      placeFloatingPane(drag.pane.id, drag.pane.type, outcome.place);
+    } else {
+      // Under the pointer as the card was; the stage's hold keeps the tile inside it.
+      floatTile(drag.pane, {
+        left: Math.max(0, event.clientX - drag.stage.left - GHOST_GRIP.x),
+        top: Math.max(0, event.clientY - drag.stage.top - GHOST_GRIP.y),
+      });
     }
-    // Placed before the transform goes, so no frame shows the tile back where it started.
-    Object.assign(drag.tile.style, { left: `${outcome.place.left}px`, top: `${outcome.place.top}px`, right: "auto", transform: "" });
-    placeFloatingPane(drag.id, drag.type, outcome.place);
   }
 
   /** The browser took the pointer (a touch became a scroll), or the captured bar left the page: the tile goes back. */
-  function cancelFloatingDrag(event: PointerEvent<HTMLElement>) {
+  function cancelTileDrag(event: PointerEvent<HTMLElement>) {
     const drag = dragRef.current;
     if (drag?.pointerId !== event.pointerId) return;
     dragRef.current = null;
-    Object.assign(drag.tile.style, { transform: "", willChange: "" });
+    endDragMarks(drag);
+    drag.tile.style.transform = "";
+  }
+
+  /** The column at `side` of the page, as the stage holds it now. */
+  function columnAt(side: Side): HTMLElement | null {
+    return stageRef.current?.querySelector<HTMLElement>(side === "left" ? ".visual-side-column-left" : ".visual-side-column:not(.visual-side-column-left)") ?? null;
+  }
+
+  /** Keep a size the user dragged, for this page and in this browser. */
+  function keepSizes(change: (previous: CanvasSizes) => CanvasSizes) {
+    setSizes((previous) => {
+      const next = change(previous);
+      writeCanvasSizes(next);
+      return next;
+    });
+  }
+
+  function keepColumnWidth(side: Side, width: number) {
+    keepSizes((previous) => ({ ...previous, [side]: width }));
+  }
+
+  /** A press on an edge or a corner of a floating window: the sides it names follow the pointer, inside the stage. */
+  function startWindowResize(event: PointerEvent<HTMLElement>, pane: Pane, edge: Edge) {
+    const stage = stageRef.current;
+    const tile = event.currentTarget.closest<HTMLElement>(".visual-tile");
+    if (!stage || !tile || event.button !== 0) return;
+    const rect = { ...drawnPlace(stage, tile), width: tile.offsetWidth, height: tile.offsetHeight };
+    windowRef.current = {
+      pane, edge, pointerId: event.pointerId, tile, x: event.clientX, y: event.clientY, start: rect, rect,
+      bounds: { width: stage.clientWidth, height: stage.clientHeight },
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  /** As a tile's drag, each move only sets the window's own box; the canvas takes it once, on release. */
+  function updateWindowResize(event: PointerEvent<HTMLElement>) {
+    const resize = windowRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    resize.rect = resizeRect(resize.start, resize.edge, event.clientX - resize.x, event.clientY - resize.y, MIN_FLOAT, resize.bounds);
+    const { left, top, width, height } = resize.rect;
+    Object.assign(resize.tile.style, { left: `${left}px`, top: `${top}px`, right: "auto", width: `${width}px`, height: `${height}px` });
+  }
+
+  function stopWindowResize(event: PointerEvent<HTMLElement>) {
+    const resize = windowRef.current;
+    if (resize?.pointerId !== event.pointerId) return;
+    windowRef.current = null;
+    const { left, top, width, height } = resize.rect;
+    placeFloatingPane(resize.pane.id, resize.pane.type, { left, top });
+    keepSizes((previous) => ({ ...previous, floating: { ...previous.floating, [resize.pane.type]: { width, height } } }));
+  }
+
+  /**
+   * A press on the divider between two docked tiles: across the strip (`x`) or
+   * down the column (`y`). Every tile in the flow of that strip is measured
+   * once, so the two beside the divider can trade room while the rest hold.
+   */
+  function startDivider(event: PointerEvent<HTMLElement>, axis: "x" | "y") {
+    const strip = event.currentTarget.parentElement;
+    if (!strip || event.button !== 0) return;
+    const tiles = [...strip.children].filter((child): child is HTMLElement =>
+      child instanceof HTMLElement && child.classList.contains("visual-tile") && !child.classList.contains("visual-tile-floating"));
+    let before = event.currentTarget.previousElementSibling;
+    while (before && !tiles.includes(before as HTMLElement)) before = before.previousElementSibling;
+    const at = tiles.indexOf(before as HTMLElement);
+    if (at < 0 || at + 1 >= tiles.length) return;
+    const px = (tile: HTMLElement, ...names: ("minWidth" | "minHeight" | "borderLeftWidth" | "borderRightWidth" | "borderTopWidth" | "borderBottomWidth")[]) =>
+      names.reduce((sum, name) => sum + (Number.parseFloat(getComputedStyle(tile)[name]) || 0), 0);
+    // As laid out, fractions included: whole pixels would not add up to the strip, and the shares would drift by one.
+    const measured = tiles.map((tile) => tile.getBoundingClientRect()[axis === "x" ? "width" : "height"]);
+    dividerRef.current = {
+      axis, pointerId: event.pointerId, tiles, at, start: axis === "x" ? event.clientX : event.clientY,
+      measured, now: measured,
+      least: [px(tiles[at]!, axis === "x" ? "minWidth" : "minHeight"), px(tiles[at + 1]!, axis === "x" ? "minWidth" : "minHeight")],
+      // The rule a tile draws between itself and its neighbour is not room the strip shares out.
+      ruled: tiles.map((tile) => (axis === "x" ? px(tile, "borderLeftWidth", "borderRightWidth") : px(tile, "borderTopWidth", "borderBottomWidth"))),
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  /** Each move only sets the tiles' shares of the strip, as their sizes in pixels; the canvas takes them once, on release. */
+  function updateDivider(event: PointerEvent<HTMLElement>) {
+    const drag = dividerRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const delta = (drag.axis === "x" ? event.clientX : event.clientY) - drag.start;
+    const [a, b] = slideDivider(drag.measured[drag.at]!, drag.measured[drag.at + 1]!, delta, drag.least[0], drag.least[1]);
+    drag.now = drag.measured.map((size, index) => (index === drag.at ? a : index === drag.at + 1 ? b : size));
+    for (const [index, tile] of drag.tiles.entries()) {
+      tile.style.setProperty("--tile-share", String(drag.now[index]! - drag.ruled[index]!));
+      tile.style.setProperty("--tile-basis", "0px");
+    }
+  }
+
+  function stopDivider(event: PointerEvent<HTMLElement>) {
+    const drag = dividerRef.current;
+    if (drag?.pointerId !== event.pointerId) return;
+    dividerRef.current = null;
+    // Kept as a share of the strip, an even one being 1, so a window of another size divides the same way.
+    const room = drag.now.map((size, index) => size - drag.ruled[index]!);
+    const even = room.reduce((sum, size) => sum + size, 0) / room.length || 1;
+    const shares = Object.fromEntries(drag.tiles.map((tile, index) => [tile.dataset.visualType ?? "", Math.round((room[index]! / even) * 10_000) / 10_000]));
+    keepSizes((previous) => ({ ...previous, share: { ...previous.share, ...shares } }));
+  }
+
+  /** A press on the edge between a column and the page: the column takes the width the pointer drags that edge to. */
+  function startColumnResize(event: PointerEvent<HTMLElement>, side: Side) {
+    const stage = stageRef.current;
+    const column = columnAt(side);
+    if (!stage || !column || event.button !== 0) return;
+    resizeRef.current = { side, pointerId: event.pointerId, column, stage: stage.getBoundingClientRect(), width: column.offsetWidth };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+
+  /** As a tile's drag, each move only sets the column's width; the canvas takes it once, on release. */
+  function updateColumnResize(event: PointerEvent<HTMLElement>) {
+    const resize = resizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    const dragged = resize.side === "left" ? event.clientX - resize.stage.left : resize.stage.right - event.clientX;
+    resize.width = heldWidth(dragged, resize.stage.width);
+    resize.column.style.setProperty("--column-width", `${resize.width}px`);
+  }
+
+  function stopColumnResize(event: PointerEvent<HTMLElement>) {
+    const resize = resizeRef.current;
+    if (resize?.pointerId !== event.pointerId) return;
+    resizeRef.current = null;
+    keepColumnWidth(resize.side, resize.width);
+  }
+
+  /** The arrow keys move the edge 16 px, 48 with Shift, toward the side the arrow points. */
+  function resizeWithKeyboard(event: KeyboardEvent<HTMLElement>, side: Side) {
+    const toward = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+    const stage = stageRef.current;
+    const column = columnAt(side);
+    if (!toward || !stage || !column) return;
+    event.preventDefault();
+    const wider = side === "left" ? toward : -toward;
+    keepColumnWidth(side, heldWidth(column.offsetWidth + wider * (event.shiftKey ? 48 : 16), stage.clientWidth));
   }
 
   function moveWithKeyboard(event: KeyboardEvent<HTMLButtonElement>, paneId: string, type: string) {
@@ -521,10 +727,13 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   const renderTile = (pane: (typeof panes)[number], index: number) => {
     const floating = floats(pane);
     const isChat = pane.type === "trax.chat";
+    const isPage = pane.type === "trax.browse";
     const aside = floating && isChat;
     const title = catalog.data?.visuals.find((visual) => visual.type === pane.type)?.title ?? pane.type;
     const collapsed = floating && folded(pane);
     const at = floatingPositions[pane.id] ?? rememberedTile(browser, pane.type).place ?? pane.floating_rect ?? null;
+    const size = sizes.floating[pane.type] ?? pane.floating_rect;
+    const share = sizes.share[pane.type];
     return (
     // Browse is keyed by its type, which a canvas has once: its id is the
     // type until the server's canvas arrives, then a UUID, and a new key
@@ -534,24 +743,28 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     <div className={`visual-tile visual-tile-${floating ? "floating" : pane.placement ?? "main"}${aside ? " visual-tile-aside" : ""}${pane.type === "trax.browse" ? " visual-tile-browse" : ""}${workspace?.focused_instance === pane.id ? " visual-tile-focused" : ""}${expandedMobileFloat === pane.id ? " visual-tile-mobile-expanded" : ""}${collapsed ? " visual-tile-collapsed" : ""}`}
       key={pane.type === "trax.browse" ? pane.type : pane.id}
       data-visual-instance={pane.id}
+      data-visual-type={pane.type}
       ref={isChat ? chatTile : undefined}
       {...(aside ? chatOpen.handlers : {})}
       style={floating ? {
         top: `${at?.top ?? 54 + index * 24}px`,
         ...(at ? { left: `${at.left}px`, right: "auto" } : {}),
-        ...(pane.floating_rect ? {
-          width: `${pane.floating_rect.width}px`, height: `${pane.floating_rect.height}px`,
-        } : {}),
+        ...(size ? { width: `${size.width}px`, height: `${size.height}px` } : {}),
         // Chat aside lies over every other floating tile, whichever strip it is drawn in.
         zIndex: 10 + (aside ? panes.length : index),
-      } : undefined}>
+      } : share ? { "--tile-share": share, "--tile-basis": "0px" } as CSSProperties : undefined}>
+      {/* A floating window resizes by any edge or corner, as a desktop's does; folded to its bar it has no size to give. */}
+      {floating && !collapsed && EDGES.map((edge) => <div key={edge} className={`visual-window-edge visual-window-edge-${edge}`} aria-hidden="true"
+        onPointerDown={(event) => startWindowResize(event, pane, edge)} onPointerMove={updateWindowResize}
+        onPointerUp={stopWindowResize} onPointerCancel={stopWindowResize} />)}
+      {/* A press on the bar focuses the tile; a drag floats it, or docks it at the edge it is dropped on. The page stays the page: docked, its bar only focuses. */}
       {workspace && (panes.length > 1 || floating) && <div
-        className={`visual-tile-toolbar${floating ? " visual-tile-toolbar-draggable" : ""}`}
-        {...(floating ? {
-          onPointerDown: (event: PointerEvent<HTMLElement>) => startFloatingDrag(event, pane.id, pane.type, collapsed),
-          onPointerMove: updateFloatingDrag, onPointerUp: stopFloatingDrag, onPointerCancel: cancelFloatingDrag,
-          onLostPointerCapture: cancelFloatingDrag,
-        } : {})}>
+        className={`visual-tile-toolbar${floating || !isPage ? " visual-tile-toolbar-draggable" : ""}`}
+        {...(floating || !isPage ? {
+          onPointerDown: (event: PointerEvent<HTMLElement>) => startTileDrag(event, pane, floating),
+          onPointerMove: updateTileDrag, onPointerUp: stopTileDrag, onPointerCancel: cancelTileDrag,
+          onLostPointerCapture: cancelTileDrag,
+        } : { onClick: () => focusTile(pane) })}>
         {floating && <button className="visual-tile-drag-handle" type="button"
           aria-label={`Move ${title}`}
           title="Drag to move; use arrow keys to move"
@@ -561,8 +774,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
           aria-label={`${collapsed ? "Expand" : "Collapse"} ${title}`}
           title={collapsed ? "Show the whole tile" : "Fold the tile to its bar"}
           onClick={() => foldFloatingPane(pane.type, !collapsed)}>{collapsed ? "▸" : "▾"}</button>}
-        {/* The page is the page: it has no side to dock at. */}
-        {pane.type !== "trax.browse" && SIDES.map((side) => <button key={side.placement} type="button"
+        {!isPage && SIDES.map((side) => <button key={side.placement} type="button"
           aria-label={`Dock ${title} at the ${side.name}`} title={`Dock at the ${side.name} of the page`}
           disabled={change.isPending || (!floating && pane.placement === side.placement)}
           onClick={() => dockTile(pane, side.placement)}>{side.glyph}</button>)}
@@ -571,13 +783,7 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
           onClick={() => setExpandedMobileFloat(expandedMobileFloat === pane.id ? null : pane.id)}>
           {expandedMobileFloat === pane.id ? "Collapse" : "Expand"}
         </button>}
-        <button type="button" title="Focus visual" disabled={change.isPending}
-          onClick={() => operate({ kind: "focus", instance_id: pane.id })}>Focus</button>
-        <select aria-label={`Place ${pane.type}`} value={pane.placement ?? "main"} disabled={change.isPending}
-          onChange={(event) => operate({ kind: "place", instance_id: pane.id, placement: event.target.value as Placement })}>
-          <option value="main">Main</option><option value="left">Left</option><option value="side">Right</option>{!isChat && <option value="floating">Float</option>}
-        </select>
-        {pane.type !== "trax.browse" && <button type="button" title="Dismiss visual" disabled={change.isPending}
+        {!isPage && <button type="button" title="Dismiss visual" disabled={change.isPending}
           onClick={() => operate({ kind: "hide", instance_id: pane.id })}>×</button>}
       </div>}
       <VisualPane instance={pane} workspace={workspace ?? null} onWorkspaceChanged={acceptWorkspace}
@@ -592,11 +798,50 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     );
   };
 
-  const sideColumn = (side: (typeof SIDES)[number]["placement"]) => panes.some((pane) => pane.placement === side) && (
-    <div className={`visual-side-column${side === "left" ? " visual-side-column-left" : ""}${panes.some((pane) => pane.placement === side && !floats(pane)) ? "" : " visual-side-column-vacant"}`}>
-      {panes.map((pane, index) => pane.placement === side ? renderTile(pane, index) : null)}
-    </div>
-  );
+  /**
+   * The tiles standing at `placement`, with a divider between each two that
+   * share its flow: across the main strip (`x`) or down a column (`y`). Chat
+   * standing aside keeps its place among them and takes none of the flow.
+   */
+  const strip = (placement: "main" | Side, axis: "x" | "y") => {
+    let flowing = 0;
+    return panes.flatMap((pane, index) => {
+      if ((pane.placement ?? "main") !== placement) return [];
+      const tile = renderTile(pane, index);
+      if (floats(pane)) return [tile];
+      flowing += 1;
+      return flowing === 1 ? [tile] : [
+        <div key={`divider-${pane.type === "trax.browse" ? pane.type : pane.id}`} className={`visual-divider visual-divider-${axis}`}
+          role="separator" aria-orientation={axis === "x" ? "vertical" : "horizontal"} title="Drag to resize"
+          onPointerDown={(event) => startDivider(event, axis)} onPointerMove={updateDivider}
+          onPointerUp={stopDivider} onPointerCancel={stopDivider} />,
+        tile,
+      ];
+    });
+  };
+
+  /** The column at `side` and, while it holds a tile in the flow, the edge between it and the page that resizes it. */
+  const sideColumn = (side: Side) => {
+    if (!panes.some((pane) => pane.placement === side)) return null;
+    const held = panes.some((pane) => pane.placement === side && !floats(pane));
+    const width = sizes[side];
+    const column = (
+      <div key="column" className={`visual-side-column${side === "left" ? " visual-side-column-left" : ""}${held ? "" : " visual-side-column-vacant"}`}
+        style={held && width ? { "--column-width": `${width}px` } as CSSProperties : undefined}>
+        {strip(side, "y")}
+      </div>
+    );
+    const name = SIDES.find((each) => each.placement === side)!.name;
+    const edge = held && (
+      <div key="edge" className="visual-column-edge" role="separator" aria-orientation="vertical" tabIndex={0}
+        aria-label={`Resize the ${name} column`} aria-valuemin={MIN_COLUMN} aria-valuenow={width ?? DEFAULT_COLUMN}
+        title="Drag to resize; use the arrow keys to resize"
+        onPointerDown={(event) => startColumnResize(event, side)} onPointerMove={updateColumnResize}
+        onPointerUp={stopColumnResize} onPointerCancel={stopColumnResize}
+        onKeyDown={(event) => resizeWithKeyboard(event, side)} />
+    );
+    return side === "left" ? [column, edge] : [edge, column];
+  };
 
   return (
     <WorkspaceActionsProvider value={workspace ? {
@@ -677,11 +922,13 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         {sideColumn("left")}
         {panes.some((pane) => (pane.placement ?? "main") === "main") && (
           <div className="visual-main-strip">
-            {panes.map((pane, index) => (pane.placement ?? "main") === "main" ? renderTile(pane, index) : null)}
+            {strip("main", "x")}
           </div>
         )}
         {sideColumn("side")}
         {panes.map((pane, index) => pane.placement === "floating" ? renderTile(pane, index) : null)}
+        <div ref={snapRef} className="visual-snap" aria-hidden="true" />
+        <div ref={ghostRef} className="visual-drag-ghost" aria-hidden="true" />
       </div>
     </div>
     </WorkspaceActionsProvider>
@@ -732,22 +979,76 @@ function errorText(error: unknown): string {
   return error instanceof ApiError ? error.detail : error instanceof Error ? error.message : "Please try again.";
 }
 
+/** A visual as the canvas draws it: what the drag and dock functions are handed. */
+type Pane = { readonly id: string; readonly type: string; readonly placement?: "main" | "left" | "side" | "floating" };
+
+type Side = (typeof SIDES)[number]["placement"];
+
 /**
- * A floating visual being pressed on: the tile, and the gesture (the pointer's
- * start, the tile's place then, how far it may go, and how far it has moved),
- * applied as a transform until release.
+ * A tile being pressed on by its bar: the tile, where the stage stood then, and
+ * the gesture (the pointer's start, the tile's place then, how far it may go,
+ * and how far it has moved). A floating tile takes the gesture as a transform
+ * until release; a docked one stays, and a card follows the pointer instead.
  */
-type FloatingDrag = {
-  readonly id: string;
-  readonly type: string;
+type TileDrag = {
+  readonly pane: Pane;
   readonly pointerId: number;
   readonly tile: HTMLElement;
-  /** Pressed on the move handle, which never folds the tile. */
+  /** Pressed on the move handle, which only moves the tile: it neither focuses nor docks it. */
   readonly byHandle: boolean;
-  /** Whether the tile was folded when pressed. */
-  readonly collapsed: boolean;
+  /** Whether the tile floated when pressed. */
+  readonly floating: boolean;
+  /** Where the stage stood when pressed, and how wide it was. */
+  readonly stage: { readonly left: number; readonly top: number; readonly width: number };
+  /** The tile's name, which the card of a docked tile says. */
+  readonly title: string;
   readonly gesture: Gesture;
+  /** Where the tile would dock if dropped now. */
+  zone: Zone | null;
 };
+
+/** A column's edge being dragged: the column, where the stage stood then, and the width it has now. */
+type ColumnResize = {
+  readonly side: Side;
+  readonly pointerId: number;
+  readonly column: HTMLElement;
+  readonly stage: DOMRect;
+  width: number;
+};
+
+/** A floating window being resized by an edge or a corner: where the press began, the window's box then and now, and the stage it must stay in. */
+type WindowResize = {
+  readonly pane: Pane;
+  readonly edge: Edge;
+  readonly pointerId: number;
+  readonly tile: HTMLElement;
+  readonly x: number;
+  readonly y: number;
+  readonly start: Rect;
+  readonly bounds: { readonly width: number; readonly height: number };
+  rect: Rect;
+};
+
+/** The divider between two docked tiles being dragged: the strip's tiles in the flow, their sizes at the press and now, and the least each neighbour takes. */
+type DividerDrag = {
+  readonly axis: "x" | "y";
+  readonly pointerId: number;
+  readonly tiles: readonly HTMLElement[];
+  /** The tile before the divider, in `tiles`. */
+  readonly at: number;
+  readonly start: number;
+  readonly measured: readonly number[];
+  readonly least: readonly [number, number];
+  /** How much of each tile's size is its own rule, which it keeps whatever its share. */
+  readonly ruled: readonly number[];
+  now: readonly number[];
+};
+
+/** Where on the card that stands for a docked tile the pointer holds it, and so where the floating tile lands under it. */
+const GHOST_GRIP = { x: 60, y: 16 };
+
+/** What a column never resized is told to assistive tech: the 360 px its CSS gives it at most. */
+const DEFAULT_COLUMN = 360;
 
 /** The canvas stacks its tiles in one column at this width and below (see canvas.css), floating ones included. */
 const NARROW_VIEWPORT = 900;

@@ -18,6 +18,8 @@ export function useHoverOpen(tile: RefObject<HTMLElement | null>): {
   readonly open: boolean;
   /** Open or fold at once. Folding takes the keyboard out of the tile; what was typed in it stays. */
   readonly set: (open: boolean) => void;
+  /** The pointer is on the tile already, as after the drop that put it there: open until it leaves. */
+  readonly enter: () => void;
   /** The tile's own handlers. */
   readonly handlers: {
     readonly onPointerEnter: (event: PointerEvent) => void;
@@ -41,6 +43,11 @@ export function useHoverOpen(tile: RefObject<HTMLElement | null>): {
       // After the blur, whose own wait would open the tile again under a pointer still on its bar.
       clearTimeout(timer.current);
       setOpen(next);
+    },
+    enter: () => {
+      clearTimeout(timer.current);
+      hovered.current = true;
+      setOpen(true);
     },
     handlers: {
       onPointerEnter: (event) => {
