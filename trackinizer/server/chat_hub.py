@@ -57,6 +57,8 @@ class WorkspaceFrame(_Stamped):
 
     type: Literal["workspace"] = "workspace"
     state: WorkspaceState
+    shown: UUID | None = None
+    """The instance an agent's show brought up with this change, else None."""
 
 
 class NavigateFrame(_Stamped):

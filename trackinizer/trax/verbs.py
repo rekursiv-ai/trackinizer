@@ -2768,7 +2768,10 @@ class Workspace(Command):
         )
         parser.add_argument("subject", nargs="*")
         parser.add_argument("--record")
-        parser.add_argument("--placement", choices=("main", "side", "floating"))
+        parser.add_argument(
+            "--placement",
+            choices=("main", "left", "side", "floating"),
+        )
         parser.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
         return parser
 
@@ -2846,7 +2849,7 @@ def _workspace_operation(
             len(subject) != 2
             or args.record is not None
             or args.placement is not None
-            or subject[1] not in {"main", "side", "floating"}
+            or subject[1] not in {"main", "left", "side", "floating"}
         ):
             raise ClientError("place requires an instance UUID and placement")
         operation = {

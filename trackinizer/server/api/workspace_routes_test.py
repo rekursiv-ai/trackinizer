@@ -52,6 +52,7 @@ from trackinizer.server.chat_hub import (
     ChatHub,
     HighlightFrame,
     NavigateFrame,
+    WorkspaceFrame,
     iter_workspace_events,
 )
 from trackinizer.server.config import Assistant, Config
@@ -1562,6 +1563,45 @@ async def test_navigate_moves_the_page_without_changing_the_canvas(
             key,
         )
     assert stored in ({}, "{}")
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("assistant_served")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_show_names_what_it_brought_up_only_when_an_agent_made_it(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    assistant_served: ChatHub,
+) -> None:
+    """An agent's show says which instance it showed; the owner's own says none."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    await seed_session(store, ASSISTANT, actor=KB_ACTOR)
+    workspace_id, chat_id = await open_canvas(client)
+    await seed_converse(
+        client,
+        store,
+        workspace_id=workspace_id,
+        chat_id=chat_id,
+        text="show me the page",
+    )
+
+    with assistant_served.subscribe(workspace_id) as stream:
+        for become in (act_as_assistant, browser):
+            become()
+            shown = await client.post(
+                f"/api/workspaces/{workspace_id}/operations",
+                json={
+                    "revision": await revision_of(client, workspace_id=workspace_id),
+                    "operation": {"kind": "show", "visual_type": "trax.browse"},
+                },
+                headers={"Idempotency-Key": str(uuid.uuid4())},
+            )
+            assert shown.status_code == 200
+        frames = [f for f in _frames(stream) if isinstance(f, WorkspaceFrame)]
+    by_agent, by_owner = frames
+    assert by_agent.shown is not None
+    assert by_agent.shown == by_agent.state.focused_instance
+    assert by_owner.shown is None
 
 
 @pytest.mark.db_pglite

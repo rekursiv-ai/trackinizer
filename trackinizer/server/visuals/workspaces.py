@@ -16,7 +16,9 @@ if TYPE_CHECKING:
     )
 
 
-type Placement = Literal["main", "side", "floating"]
+type Placement = Literal["main", "left", "side", "floating"]
+"""Where a visual stands: the main strip, the column left of it, the column right
+of it (``side``), or floating over them."""
 
 
 type PartnerChoice = Literal["shared", "local"]
@@ -174,7 +176,7 @@ class WorkspaceConflict(BaseModel):
 
 
 def initial_data(catalog: VisualCatalogBody) -> WorkspaceData:
-    """Start a new canvas with the default visual, and Chat floating over it if offered.
+    """Start a new canvas with the default visual, and Chat beside it if offered.
 
     Args:
       catalog: Trusted visual definitions and initial selection.
@@ -208,7 +210,7 @@ def initial_data(catalog: VisualCatalogBody) -> WorkspaceData:
                 id=uuid.uuid4(),
                 type=chat.type,
                 version=chat.version,
-                placement="floating",
+                placement="side",
             ),
         )
     return WorkspaceData(visuals=visuals)

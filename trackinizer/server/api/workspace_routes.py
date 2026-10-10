@@ -33,6 +33,7 @@ from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
     Highlight,
     Navigate,
+    ShowVisual,
     WorkspaceConflict,
     WorkspaceState,
 )
@@ -51,7 +52,8 @@ async def workspace_events_route(
 
     Each frame is ``data: <json>`` with ``t``, the server's epoch milliseconds:
     ``workspace`` carries the whole canvas on open, after every change by a
-    browser or an agent, and when its partner changes; ``navigate`` an agent's
+    browser or an agent, and when its partner changes, with ``shown`` naming the
+    instance an agent's show brought up; ``navigate`` an agent's
     move of the page; ``highlight`` the inquiries it points at; and ``changed`` an
     inquiry id, as ``/api/web/subscribe`` relays it, so a tab needs this one stream.
     A Chat conversation is an AgentSession, so a line added to it reaches every
@@ -217,7 +219,18 @@ async def workspace_operation_route(
         elif isinstance(body.operation, Highlight):
             hub.publish(workspace_id, frame=HighlightFrame(ids=body.operation.ids))
         else:
-            hub.publish(workspace_id, frame=WorkspaceFrame(state=applied.state))
+            # A show focuses what it shows. The browser moves Chat out of the way
+            # of an agent's show, and never of its owner's own.
+            shown = (
+                applied.state.focused_instance
+                if identity.api_key_id is not None
+                and isinstance(body.operation, ShowVisual)
+                else None
+            )
+            hub.publish(
+                workspace_id,
+                frame=WorkspaceFrame(state=applied.state, shown=shown),
+            )
     return applied.state
 
 

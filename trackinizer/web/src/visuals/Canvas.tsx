@@ -24,8 +24,10 @@ import { parseHash } from "../router/route";
 import { useBrowserState } from "../state/store";
 import type { TileMemory } from "../state/value";
 import { type PanelSpec, usePanel } from "../ui/panel";
+import { useChatFeed } from "./chatFeed";
 import { finishGesture, moveGesture, rememberedTile, startGesture, withoutPlaces, withTile, type Gesture } from "./floatingTile";
-import { orderVisuals } from "./layout";
+import { useHoverOpen } from "./hoverOpen";
+import { chatHome, orderVisuals, type Placement, SIDES } from "./layout";
 import { preloadRenderers, RENDERERS, VisualPane } from "./registry";
 import { WorkspaceActionsProvider } from "./workspaceActions";
 import "./canvas.css";
@@ -86,6 +88,13 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   const [browser, updateBrowser] = useBrowserState();
   const stageRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<FloatingDrag | null>(null);
+  // Chat's home is a panel beside the page. While the assistant shows something
+  // it stands aside: the same tile floats over the page, folded to its bar unless
+  // the pointer or the keyboard is in it. None of that is the canvas's state.
+  const { feed, state: chatFeed } = useChatFeed();
+  const chatAside = chatFeed.aside > 0;
+  const chatTile = useRef<HTMLDivElement>(null);
+  const chatOpen = useHoverOpen(chatTile);
   const [writeError, setWriteError] = useState<string | null>(null);
   const presets = useQuery({
     queryKey: ["workspace-presets", workspaceId],
@@ -107,10 +116,16 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   }));
   const chat = catalog.data?.visuals.find((visual) => visual.type === "trax.chat");
   const visualTypes = useMemo(() => new Set(catalog.data?.visuals.map((visual) => visual.type)), [catalog.data]);
-  const panes = orderVisuals(visible.length ? visible : [{
+  const panes = orderVisuals((visible.length ? visible : [{
     id: "chat-disconnected", type: "trax.chat", version: chat?.version ?? 1,
     placement: "main" as const, record_id: null, params: {},
-  }], workspace?.focused_instance ?? null);
+  }]).map((visual) => visual.type === "trax.chat" ? { ...visual, placement: chatHome(visual.placement) } : visual),
+  workspace?.focused_instance ?? null);
+  /** Whether `pane` is drawn floating over the stage: placed so, or Chat standing aside. */
+  const floats = (pane: (typeof panes)[number]) => pane.placement === "floating" || (pane.type === "trax.chat" && chatAside);
+  /** Whether floating `pane` is folded to its bar: Chat by where the pointer and the keyboard are, any other as it was left. */
+  const folded = (pane: (typeof panes)[number]) => pane.type === "trax.chat"
+    ? !chatOpen.open : foldedTypes[pane.type] ?? rememberedTile(browser, pane.type).collapsed;
   const route = parseHash(window.location.hash, []);
   const refRoute = /^#\/ref\/([^/?]+)\/(\d+)$/.exec(window.location.hash);
   const refKind = refRoute?.[1] ?? null;
@@ -133,11 +148,10 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   // the place it is meant to stand at, never from where an earlier hold left it, so
   // a tile a narrow stage pushed in returns when the stage grows back.
   const intendedPlaces: Record<string, { readonly left: number; readonly top: number } | null> = {};
-  const floatingLayout = panes.filter((pane) => pane.placement === "floating").map((pane) => {
-    const remembered = rememberedTile(browser, pane.type);
-    const place = floatingPositions[pane.id] ?? remembered.place ?? pane.floating_rect ?? null;
+  const floatingLayout = panes.filter(floats).map((pane) => {
+    const place = floatingPositions[pane.id] ?? rememberedTile(browser, pane.type).place ?? pane.floating_rect ?? null;
     intendedPlaces[pane.id] = place && { left: place.left, top: place.top };
-    return [pane.id, intendedPlaces[pane.id], foldedTypes[pane.type] ?? remembered.collapsed];
+    return [pane.id, intendedPlaces[pane.id], folded(pane)];
   });
   const floatingLayoutKey = JSON.stringify(floatingLayout);
   useLayoutEffect(() => {
@@ -164,6 +178,19 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
       observer?.disconnect();
     };
   }, [floatingLayoutKey]);
+
+  // Each time the assistant shows something, Chat folds out of its way at once,
+  // from under the pointer and the keyboard too.
+  useEffect(() => {
+    if (chatFeed.aside === 0) return;
+    chatOpen.set(false);
+    setExpandedMobileFloat(null);
+  }, [chatFeed.aside]);
+
+  // A floating tile sized by hand keeps the browser's own width and height; docked again, Chat takes its panel's.
+  useLayoutEffect(() => {
+    if (!chatAside && chatTile.current) Object.assign(chatTile.current.style, { width: "", height: "" });
+  }, [chatAside]);
 
   useEffect(() => {
     if (!workspace) return;
@@ -282,15 +309,10 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     },
   });
 
-  async function write(operation: WorkspaceOperation, expandRecordId?: string): Promise<boolean> {
+  async function write(operation: WorkspaceOperation): Promise<boolean> {
     if (!latestWorkspace.current) return false;
     try {
-      const state = await change.mutateAsync(operation);
-      if (expandRecordId) {
-        const chatPane = state.visuals.find((visual) =>
-          visual.type === "trax.chat" && visual.record_id === expandRecordId && visual.placement === "floating");
-        if (chatPane) setExpandedMobileFloat(chatPane.id);
-      }
+      await change.mutateAsync(operation);
       return true;
     } catch {
       return false;
@@ -298,22 +320,18 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   }
 
   /**
-   * Show Chat floating over the page, about the record the page shows if any.
+   * Show Chat docked beside the page, about the record the page shows if any.
    *
    * A Chat already about that record, or about none on a page without one, is
-   * only focused; one about another record moves to this page's.
+   * only focused; one about another record moves to this page's. A new Chat
+   * takes the side, where the server places it.
    */
   function showChat() {
+    feed.dock();
     const existing = workspace?.visuals.find((visual) => visual.type === "trax.chat");
-    if (existing && (existing.record_id ?? null) === chatRecordId) {
-      operate({ kind: "focus", instance_id: existing.id });
-    } else if (chatRecordId) {
-      void write({ kind: "show", visual_type: "trax.chat", placement: "floating", record_id: chatRecordId }, chatRecordId);
-    } else {
-      operate(existing
-        ? { kind: "show", visual_type: "trax.chat", record_id: null }
-        : { kind: "show", visual_type: "trax.chat", placement: "floating" });
-    }
+    operate(existing && (existing.record_id ?? null) === chatRecordId
+      ? { kind: "focus", instance_id: existing.id }
+      : { kind: "show", visual_type: "trax.chat", record_id: chatRecordId });
   }
 
   function openArtifact(event: FormEvent<HTMLFormElement>) {
@@ -354,7 +372,19 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     rememberTile(type, { place });
   }
 
+  /**
+   * Stand `pane` in the column at one side of the page, at once: a floating
+   * tile docks there, a docked one crosses the page, and Chat standing aside
+   * comes back.
+   */
+  function dockTile(pane: (typeof panes)[number], side: (typeof SIDES)[number]["placement"]) {
+    if (pane.type === "trax.chat") feed.dock();
+    if (pane.placement !== side) operate({ kind: "place", instance_id: pane.id, placement: side });
+  }
+
   function foldFloatingPane(type: string, collapsed: boolean) {
+    // Chat folds on its own; how it was last left is not remembered.
+    if (type === "trax.chat") return chatOpen.set(!collapsed);
     setFoldedTypes((previous) => ({ ...previous, [type]: collapsed }));
     rememberTile(type, { collapsed });
   }
@@ -489,25 +519,31 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
   }
 
   const renderTile = (pane: (typeof panes)[number], index: number) => {
-    const floating = pane.placement === "floating";
+    const floating = floats(pane);
+    const isChat = pane.type === "trax.chat";
+    const aside = floating && isChat;
     const title = catalog.data?.visuals.find((visual) => visual.type === pane.type)?.title ?? pane.type;
-    const remembered = rememberedTile(browser, pane.type);
-    const collapsed = floating && (foldedTypes[pane.type] ?? remembered.collapsed);
-    const at = floatingPositions[pane.id] ?? remembered.place ?? pane.floating_rect ?? null;
+    const collapsed = floating && folded(pane);
+    const at = floatingPositions[pane.id] ?? rememberedTile(browser, pane.type).place ?? pane.floating_rect ?? null;
     return (
     // Browse is keyed by its type, which a canvas has once: its id is the
     // type until the server's canvas arrives, then a UUID, and a new key
     // would remount the view inside it, which reads its data again.
-    <div className={`visual-tile visual-tile-${pane.placement ?? "main"}${pane.type === "trax.browse" ? " visual-tile-browse" : ""}${workspace?.focused_instance === pane.id ? " visual-tile-focused" : ""}${expandedMobileFloat === pane.id ? " visual-tile-mobile-expanded" : ""}${collapsed ? " visual-tile-collapsed" : ""}`}
+    // Chat keeps its place among its home's tiles while it stands aside, so going
+    // aside and docking never mount it again: its draft and its scroll stay.
+    <div className={`visual-tile visual-tile-${floating ? "floating" : pane.placement ?? "main"}${aside ? " visual-tile-aside" : ""}${pane.type === "trax.browse" ? " visual-tile-browse" : ""}${workspace?.focused_instance === pane.id ? " visual-tile-focused" : ""}${expandedMobileFloat === pane.id ? " visual-tile-mobile-expanded" : ""}${collapsed ? " visual-tile-collapsed" : ""}`}
       key={pane.type === "trax.browse" ? pane.type : pane.id}
       data-visual-instance={pane.id}
+      ref={isChat ? chatTile : undefined}
+      {...(aside ? chatOpen.handlers : {})}
       style={floating ? {
         top: `${at?.top ?? 54 + index * 24}px`,
         ...(at ? { left: `${at.left}px`, right: "auto" } : {}),
         ...(pane.floating_rect ? {
           width: `${pane.floating_rect.width}px`, height: `${pane.floating_rect.height}px`,
         } : {}),
-        zIndex: 10 + index,
+        // Chat aside lies over every other floating tile, whichever strip it is drawn in.
+        zIndex: 10 + (aside ? panes.length : index),
       } : undefined}>
       {workspace && (panes.length > 1 || floating) && <div
         className={`visual-tile-toolbar${floating ? " visual-tile-toolbar-draggable" : ""}`}
@@ -525,6 +561,11 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
           aria-label={`${collapsed ? "Expand" : "Collapse"} ${title}`}
           title={collapsed ? "Show the whole tile" : "Fold the tile to its bar"}
           onClick={() => foldFloatingPane(pane.type, !collapsed)}>{collapsed ? "▸" : "▾"}</button>}
+        {/* The page is the page: it has no side to dock at. */}
+        {pane.type !== "trax.browse" && SIDES.map((side) => <button key={side.placement} type="button"
+          aria-label={`Dock ${title} at the ${side.name}`} title={`Dock at the ${side.name} of the page`}
+          disabled={change.isPending || (!floating && pane.placement === side.placement)}
+          onClick={() => dockTile(pane, side.placement)}>{side.glyph}</button>)}
         {floating && <button className="visual-mobile-tab-toggle" type="button"
           aria-expanded={expandedMobileFloat === pane.id}
           onClick={() => setExpandedMobileFloat(expandedMobileFloat === pane.id ? null : pane.id)}>
@@ -533,8 +574,8 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         <button type="button" title="Focus visual" disabled={change.isPending}
           onClick={() => operate({ kind: "focus", instance_id: pane.id })}>Focus</button>
         <select aria-label={`Place ${pane.type}`} value={pane.placement ?? "main"} disabled={change.isPending}
-          onChange={(event) => operate({ kind: "place", instance_id: pane.id, placement: event.target.value as "main" | "side" | "floating" })}>
-          <option value="main">Main</option><option value="side">Side</option><option value="floating">Float</option>
+          onChange={(event) => operate({ kind: "place", instance_id: pane.id, placement: event.target.value as Placement })}>
+          <option value="main">Main</option><option value="left">Left</option><option value="side">Right</option>{!isChat && <option value="floating">Float</option>}
         </select>
         {pane.type !== "trax.browse" && <button type="button" title="Dismiss visual" disabled={change.isPending}
           onClick={() => operate({ kind: "hide", instance_id: pane.id })}>×</button>}
@@ -550,6 +591,12 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     </div>
     );
   };
+
+  const sideColumn = (side: (typeof SIDES)[number]["placement"]) => panes.some((pane) => pane.placement === side) && (
+    <div className={`visual-side-column${side === "left" ? " visual-side-column-left" : ""}${panes.some((pane) => pane.placement === side && !floats(pane)) ? "" : " visual-side-column-vacant"}`}>
+      {panes.map((pane, index) => pane.placement === side ? renderTile(pane, index) : null)}
+    </div>
+  );
 
   return (
     <WorkspaceActionsProvider value={workspace ? {
@@ -626,17 +673,14 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
         </aside>
       )}
       <div ref={stageRef} className={`visual-stage${panes.length > 1 ? " visual-stage-split" : ""}`}>
-        {/* The page and the other main visuals share a strip that scrolls inside itself when they outgrow it; the side visuals stand in one column beside it, so Chat's header never leaves the screen; floating ones lie over both. */}
+        {/* The page and the other main visuals share a strip that scrolls inside itself when they outgrow it; the visuals docked at a side stand in one column there, so Chat's header never leaves the screen; floating ones lie over all three, as Chat does from inside its strip while it stands aside. */}
+        {sideColumn("left")}
         {panes.some((pane) => (pane.placement ?? "main") === "main") && (
           <div className="visual-main-strip">
             {panes.map((pane, index) => (pane.placement ?? "main") === "main" ? renderTile(pane, index) : null)}
           </div>
         )}
-        {panes.some((pane) => pane.placement === "side") && (
-          <div className="visual-side-column">
-            {panes.map((pane, index) => pane.placement === "side" ? renderTile(pane, index) : null)}
-          </div>
-        )}
+        {sideColumn("side")}
         {panes.map((pane, index) => pane.placement === "floating" ? renderTile(pane, index) : null)}
       </div>
     </div>
@@ -671,7 +715,8 @@ function readFloatingRects(
   if (!stage) return {};
   const stageRect = stage.getBoundingClientRect();
   return Object.fromEntries(state.visuals.flatMap((visual) => {
-    if (visual.placement !== "floating") return [];
+    // Chat floats only while it stands aside, which no saved view holds.
+    if (visual.placement !== "floating" || visual.type === "trax.chat") return [];
     const tile = stage.querySelector<HTMLElement>(`[data-visual-instance="${visual.id}"]`);
     if (!tile) return visual.floating_rect ? [[visual.id, visual.floating_rect]] : [];
     const rect = tile.getBoundingClientRect();

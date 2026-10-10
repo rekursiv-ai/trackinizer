@@ -634,7 +634,23 @@ with one response shape, so the fixtures take one per verb.
   import never deletes, views merge by id, and UI state stays this browser's.
   Tabs see each other's changes through the `storage` event. The value is
   version 2; a version 1 value reads as version 2 with no tiles.
-- A floating canvas tile (Chat floated) moves by its whole top bar and by the
+- Every visual but the page has two dock buttons on its bar, ◧ and ◨: one press
+  stands it in the column at that side of the page, floating or not (a `place`
+  to `left`, or to `side`, the right).
+- Chat is docked beside the page: in the column at either side, or in the main
+  strip when placed there. A canvas that stored it floating shows it at the
+  right. When an
+  agent moves the page (`navigate`) or shows a visual (a `workspace` frame's
+  `shown`), Chat stands aside: the same tile, never mounted again, floats over
+  the page folded to a filled bar. It opens after the pointer has rested on it
+  120 ms, stays open while the pointer is over it or the keyboard is in its
+  contents, and folds 300 ms after both have left; each later navigation or
+  show folds it at once. A dock button on its bar puts it back at that side,
+  and the toolbar's Chat at the side it came from.
+  Standing aside is the tab's own state (`ChatFeed.aside`), never the canvas's:
+  a reload starts docked, and its fold is not remembered.
+- A floating canvas tile (a visual placed Float, or Chat standing aside) moves
+  by its whole top bar and by the
   ⠿ handle, which also moves by the arrow keys (16 px, 48 with Shift). A press
   on the bar that stays within 4 px is a click and folds the tile to its bar,
   and the next one unfolds it; a drag never folds. Controls on the bar are not

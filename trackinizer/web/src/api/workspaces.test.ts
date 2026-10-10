@@ -33,6 +33,8 @@ test("the events stream opens on the workspace's route and passes on each kind o
   source.open();
   const frames = [
     { type: "workspace", state, t: 1 },
+    { type: "workspace", state, shown: "v", t: 3 },
+    { type: "workspace", state, shown: null, t: 4 },
     { type: "navigate", route: "#/lookup/x", t: 2 },
     { type: "highlight", ids: ["a", "b"], t: 21 },
     { type: "highlight", ids: [], t: 22 },
@@ -40,7 +42,9 @@ test("the events stream opens on the workspace's route and passes on each kind o
   ];
   for (const frame of frames) source.send("", JSON.stringify(frame));
   expect(heard).toEqual([
-    ["open"], ["workspace", state, 1], ["navigate", "#/lookup/x", 2], ["highlight", ["a", "b"], 21], ["highlight", [], 22],
+    // `shown` names the instance an agent's show brought up; a frame without one says null.
+    ["open"], ["workspace", state, 1, null], ["workspace", state, 3, "v"], ["workspace", state, 4, null],
+    ["navigate", "#/lookup/x", 2], ["highlight", ["a", "b"], 21], ["highlight", [], 22],
     ["changed", "row", 7],
   ]);
 });

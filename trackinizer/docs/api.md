@@ -730,10 +730,12 @@ and History name the live one, else the newest.
 
 `GET /api/workspaces/<uuid>/events` streams the owner's canvas as server-sent
 events (browser only), and is the tab's one stream. Each frame is `data: <json>`
-with `t`, the server's epoch milliseconds: `{type: "workspace", state}` on open,
-after every applied operation, and when the partner changes (a
-session starts or ends, or its poller lease lapses); `{type: "navigate",
-route}`; `{type: "highlight", ids}`; and `{type: "changed", id}` for each inquiry
+with `t`, the server's epoch milliseconds: `{type: "workspace", state, shown}`
+on open, after every applied operation, and when the partner changes (a
+session starts or ends, or its poller lease lapses), where `shown` is the
+instance an agent's `show` brought up and null for any other change;
+`{type: "navigate", route}`; `{type: "highlight", ids}`; and
+`{type: "changed", id}` for each inquiry
 id `/api/web/subscribe` relays. A record appended to a science chat's session
 changes that session, so every viewer of it gets a `changed` frame and reads
 what the session gained. A comment goes out on open and after 25 s without a

@@ -9,16 +9,22 @@ export type ChatFeedState = {
   readonly openVersion: number;
   /** The newest request to continue a session in Chat, until Chat has taken it. */
   readonly request: ContinueRequest | null;
+  /**
+   * How many times the assistant has moved the page or shown a visual since Chat
+   * last stood docked beside the page; 0 while it is docked.
+   */
+  readonly aside: number;
 };
 
 /**
  * Chat's state that is not a conversation's lines (those are its session's records,
- * read through the query cache): which conversation each canvas has open, and a request
- * from the Console or a session's page to continue a session in Chat. It lives above
- * Chat, which is a lazy chunk that may mount late and remount, so none of it is lost.
+ * read through the query cache): which conversation each canvas has open, a request
+ * from the Console or a session's page to continue a session in Chat, and whether
+ * Chat stands aside for what the assistant shows. It lives above Chat, which is a
+ * lazy chunk that may mount late and remount, so none of it is lost.
  */
 export class ChatFeed {
-  #state: ChatFeedState = { openVersion: 0, request: null };
+  #state: ChatFeedState = { openVersion: 0, request: null, aside: 0 };
   readonly #open = new Map<string, string | null>();
   readonly #listeners = new Set<() => void>();
   #requests = 0;
@@ -57,6 +63,16 @@ export class ChatFeed {
   /** Chat took request `n`; a newer one that came meanwhile stays. */
   taken(n: number): void {
     if (this.#state.request?.n === n) this.#set({ ...this.#state, request: null });
+  }
+
+  /** The assistant moved the page or showed a visual: Chat makes room for it, until it is docked again. */
+  stepAside(): void {
+    this.#set({ ...this.#state, aside: this.#state.aside + 1 });
+  }
+
+  /** Chat stands beside the page again; told to no one when it already does. */
+  dock(): void {
+    if (this.#state.aside !== 0) this.#set({ ...this.#state, aside: 0 });
   }
 
   #set(state: ChatFeedState): void {

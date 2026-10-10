@@ -250,7 +250,7 @@ VERB_ARG: /\S+/
 //   search-sessions QUERY [--limit V] [--semantic/--no-semantic] [--format text|json]
 //   send TARGET TEXT...
 //   version
-//   workspace WORKSPACE_ID [show|navigate|highlight|hide|focus|place] [SUBJECT] [--record V] [--placement main|side|floating] [--param V]
+//   workspace WORKSPACE_ID [show|navigate|highlight|hide|focus|place] [SUBJECT] [--record V] [--placement main|left|side|floating] [--param V]
 //   ^ run --as NAME = the session's owner; doubles as its routing handle
 //     (others address it @NAME), uniquified on collision (scientist#2).
 //     send TARGET = @actor[:room] of a live session; QUERY/TEXT are free words.

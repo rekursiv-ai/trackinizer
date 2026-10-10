@@ -53,3 +53,18 @@ test("a request to continue a session waits for Chat, and only the newest is tak
   feed.taken(second.n);
   expect(feed.snapshot().request).toBeNull();
 });
+
+test("Chat stands aside each time it is told to, until it is docked; docking a docked Chat tells no one", () => {
+  const feed = new ChatFeed();
+  const heard = vi.fn();
+  feed.subscribe(heard);
+  expect(feed.snapshot().aside).toBe(0);
+  feed.dock();
+  expect(heard).not.toHaveBeenCalled();
+  feed.stepAside();
+  feed.stepAside();
+  expect(feed.snapshot().aside).toBe(2);
+  feed.dock();
+  expect(feed.snapshot().aside).toBe(0);
+  expect(heard).toHaveBeenCalledTimes(3);
+});

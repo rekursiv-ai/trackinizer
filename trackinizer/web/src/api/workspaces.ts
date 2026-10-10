@@ -43,8 +43,8 @@ function valid(state: WorkspaceState): WorkspaceState {
 
 /** What the workspace's events stream tells its listener; `t` is the server's epoch milliseconds. */
 export type WorkspaceEventListener = {
-  /** The canvas changed, or its first state after the stream opened. */
-  readonly workspace: (state: WorkspaceState, t: number) => void;
+  /** The canvas changed, or its first state after the stream opened; `shown` is the instance an agent's show brought up, else null. */
+  readonly workspace: (state: WorkspaceState, t: number, shown: string | null) => void;
   /** An agent moved the page: `route` is a `#/...` hash, not yet checked against the router. */
   readonly navigate: (route: string, t: number) => void;
   /** An agent pointed at inquiries, by id; the newest list replaces the last and an empty one clears. */
@@ -81,7 +81,7 @@ export function openWorkspaceEvents(
         return;
       }
       switch (frame.type) {
-        case "workspace": return listener.workspace(frame.state, frame.t);
+        case "workspace": return listener.workspace(frame.state, frame.t, frame.shown);
         case "navigate": return listener.navigate(frame.route, frame.t);
         case "highlight": return listener.highlight(frame.ids, frame.t);
         case "changed": return listener.changed(frame.id, frame.t);
@@ -91,7 +91,7 @@ export function openWorkspaceEvents(
 }
 
 type Frame =
-  | { readonly type: "workspace"; readonly state: WorkspaceState; readonly t: number }
+  | { readonly type: "workspace"; readonly state: WorkspaceState; readonly shown: string | null; readonly t: number }
   | { readonly type: "navigate"; readonly route: string; readonly t: number }
   | { readonly type: "highlight"; readonly ids: readonly string[]; readonly t: number }
   | { readonly type: "changed"; readonly id: string; readonly t: number };
@@ -106,11 +106,11 @@ function parseFrame(data: unknown): Frame | null {
     return null;
   }
   if (typeof frame !== "object" || frame === null) return null;
-  const { type, t, state, route, id, ids } = frame as { [name: string]: unknown };
+  const { type, t, state, shown, route, id, ids } = frame as { [name: string]: unknown };
   if (typeof t !== "number") return null;
   if (type === "workspace") {
     try {
-      return { type, state: valid(state as WorkspaceState), t };
+      return { type, state: valid(state as WorkspaceState), shown: typeof shown === "string" ? shown : null, t };
     } catch {
       return null;
     }

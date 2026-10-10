@@ -1,4 +1,4 @@
-import { type APIRequestContext, expect } from "@playwright/test";
+import { type APIRequestContext, expect, type Page } from "@playwright/test";
 
 /** What the server's initial canvas holds: the page, and Chat at the side. */
 export async function resetCanvas(request: APIRequestContext): Promise<void> {
@@ -17,4 +17,26 @@ export async function resetCanvas(request: APIRequestContext): Promise<void> {
     await apply({ kind: "hide", instance_id: visual.id });
   }
   await apply({ kind: "show", visual_type: "trax.chat", placement: "side" });
+}
+
+/** Keep the page's event sources where the script can reach them. */
+export function exposeEventSources() {
+  const Original = window.EventSource;
+  const held: EventSource[] = [];
+  Object.assign(window, { heldEventSources: held });
+  window.EventSource = class extends Original {
+    constructor(url: string | URL, init?: EventSourceInit) {
+      super(url, init);
+      held.push(this);
+    }
+  };
+}
+
+/** Hand the page's workspace stream a `navigate` frame to `route`, stamped now. */
+export async function pushNavigate(page: Page, route: string): Promise<void> {
+  await page.evaluate((route) => {
+    const sources = (window as unknown as { heldEventSources: EventSource[] }).heldEventSources;
+    const stream = sources.find((source) => source.url.includes("/events"))!;
+    stream.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "navigate", route, t: Date.now() }) }));
+  }, route);
 }

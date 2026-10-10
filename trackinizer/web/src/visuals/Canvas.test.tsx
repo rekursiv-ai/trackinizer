@@ -18,7 +18,9 @@ import { newerWorkspace } from "../app/canvasStream";
 import { storageKey } from "../state/store";
 import { EMPTY_STATE, parseState } from "../state/value";
 import { Canvas } from "./Canvas";
+import { ChatFeed, ChatFeedContext } from "./chatFeed";
 import { CLICK_SLOP, rememberedTile, withTile } from "./floatingTile";
+import { FOLD_AFTER_MS, OPEN_AFTER_MS } from "./hoverOpen";
 
 vi.mock("../api/visuals", () => ({ getVisualCatalog: vi.fn() }));
 vi.mock("../api/workspaces", () => ({
@@ -477,7 +479,7 @@ test("a delayed read cannot undo an operation's newer canvas revision", async ()
   expect((screen.getByRole("checkbox", { name: /Chat/ }) as HTMLInputElement).checked).toBe(true);
 });
 
-test("on a record's page, Chat shows a floating Chat pane with the record context", async () => {
+test("on a record's page, Chat docks beside the page with the record context", async () => {
   const recordId = "61d3a095-c7f1-4d27-a4c4-a5b1c218a31e";
   history.replaceState(null, "", `#/lookup/${recordId}`);
   vi.mocked(getVisualCatalog).mockResolvedValue({
@@ -496,7 +498,7 @@ test("on a record's page, Chat shows a floating Chat pane with the record contex
     revision: 4,
     focused_instance: "chat-instance",
     visuals: [...workspace.visuals, {
-      id: "chat-instance", type: "trax.chat", version: 1, placement: "floating",
+      id: "chat-instance", type: "trax.chat", version: 1, placement: "side",
       record_id: recordId, params: {},
     }],
   };
@@ -514,17 +516,18 @@ test("on a record's page, Chat shows a floating Chat pane with the record contex
   await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
     workspace.id,
     workspace.revision,
-    { kind: "show", visual_type: "trax.chat", placement: "floating", record_id: recordId },
+    { kind: "show", visual_type: "trax.chat", record_id: recordId },
     expect.any(String),
   ));
   await waitFor(() => expect(client.getQueryData<WorkspaceState>(["workspace", workspace.id])?.focused_instance)
     .toBe("chat-instance"));
+  await waitFor(() => expect(document.querySelector(`.visual-side-column > ${CHAT_TILE}`)).not.toBeNull(), { interval: 1 });
 });
 
-test("Chat opens the floating Chat body at a narrow viewport", async () => {
-  window.innerWidth = 800;
-  const recordId = "61d3a095-c7f1-4d27-a4c4-a5b1c218a31e";
-  history.replaceState(null, "", `#/lookup/${recordId}`);
+const CHAT_TILE = '[data-visual-instance="chat-instance"]';
+
+/** The page with Chat beside it, stored at `placement`, under a feed the test holds. */
+async function mountChat(placement: "side" | "floating" = "side") {
   vi.mocked(getVisualCatalog).mockResolvedValue({
     default_visual: "trax.browse",
     visuals: [
@@ -534,27 +537,105 @@ test("Chat opens the floating Chat body at a narrow viewport", async () => {
         default_size: "compact", requires: [], parameter_schema: {} },
     ],
   });
-  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
-  vi.mocked(getWorkspace).mockResolvedValue(workspace);
-  const changed: WorkspaceState = {
-    ...workspace,
-    revision: 4,
-    focused_instance: "chat-instance",
-    visuals: [...workspace.visuals, {
-      id: "chat-instance", type: "trax.chat", version: 1, placement: "floating",
-      record_id: recordId, params: {},
-    }],
-  };
-  vi.mocked(applyWorkspaceOperation).mockResolvedValue(changed);
+  const state: WorkspaceState = { ...workspace, visuals: [
+    { ...workspace.visuals[0]!, placement: "main" },
+    { id: "chat-instance", type: "trax.chat", version: 1, placement, record_id: null, params: {} }] };
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(state);
+  vi.mocked(getWorkspace).mockResolvedValue(state);
+  vi.mocked(applyWorkspaceOperation).mockResolvedValue({ ...state, revision: 4, focused_instance: "chat-instance" });
+  const feed = new ChatFeed();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={client}><Canvas><div>Record detail</div></Canvas></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><ChatFeedContext value={feed}>
+    <Canvas><div>Browse content</div></Canvas></ChatFeedContext></QueryClientProvider>);
+  await waitFor(() => expect(document.querySelector(CHAT_TILE)).not.toBeNull(), { interval: 1 });
+  return { feed, state, tile: document.querySelector<HTMLElement>(CHAT_TILE)! };
+}
 
-  const chatButton = screen.getByRole("button", { name: "Chat" });
-  await waitFor(() => expect((chatButton as HTMLButtonElement).disabled).toBe(false), { interval: 1 });
-  fireEvent.click(chatButton);
+test.each(["side", "floating"] as const)("Chat stored %s stands docked in the right column, and cannot be placed floating", async (placement) => {
+  const { tile } = await mountChat(placement);
+  expect(tile.parentElement?.className).toBe("visual-side-column");
+  expect([...tile.classList]).toContain("visual-tile-side");
+  expect([...within(tile).getByRole<HTMLSelectElement>("combobox", { name: "Place trax.chat" }).options].map((option) => option.text))
+    .toEqual(["Main", "Left", "Right"]);
+  // Docked at the right, only the other side is somewhere to go.
+  expect(within(tile).getByRole<HTMLButtonElement>("button", { name: "Dock Chat at the right" }).disabled).toBe(true);
+  expect(within(tile).getByRole<HTMLButtonElement>("button", { name: "Dock Chat at the left" }).disabled).toBe(false);
+});
 
-  expect(await screen.findByRole("button", { name: "Collapse" })).toBeTruthy();
-  expect(document.querySelector(".visual-tile-mobile-expanded")).toBeTruthy();
+test("a dock button moves a tile to that side of the page at once; the page itself has none", async () => {
+  const { state, tile } = await mountChat();
+  const moved: WorkspaceState = { ...state, revision: 4, visuals: [state.visuals[0]!, { ...state.visuals[1]!, placement: "left" }] };
+  vi.mocked(applyWorkspaceOperation).mockResolvedValue(moved);
+  expect(within(document.querySelector<HTMLElement>(BROWSE_TILE)!).queryByRole("button", { name: /^Dock / })).toBeNull();
+
+  fireEvent.click(within(tile).getByRole("button", { name: "Dock Chat at the left" }));
+  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+    state.id, state.revision, { kind: "place", instance_id: "chat-instance", placement: "left" }, expect.any(String)), { interval: 1 });
+  await waitFor(() => expect(document.querySelector(`.visual-side-column-left > ${CHAT_TILE}`)).not.toBeNull(), { interval: 1 });
+  // The left column stands before the page's strip, and its button has nowhere left to go.
+  const stage = document.querySelector(".visual-stage")!;
+  expect([...stage.children].map((child) => child.className)).toEqual(["visual-side-column visual-side-column-left", "visual-main-strip"]);
+  await waitFor(() => expect(screen.getByRole<HTMLButtonElement>("button", { name: "Dock Chat at the left" }).disabled).toBe(true), { interval: 1 });
+});
+
+test("a dock button brings back a Chat that stands aside, to the side it names", async () => {
+  const { feed, state, tile } = await mountChat();
+  act(() => feed.stepAside());
+  fireEvent.click(within(tile).getByRole("button", { name: "Dock Chat at the left" }));
+  expect(feed.snapshot().aside).toBe(0);
+  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+    state.id, state.revision, { kind: "place", instance_id: "chat-instance", placement: "left" }, expect.any(String)), { interval: 1 });
+});
+
+test("when the assistant shows something Chat stands aside: the same tile floats, folded, and its column takes no room, until it is docked", async () => {
+  const { feed, tile } = await mountChat();
+  act(() => feed.stepAside());
+  // The same element: Chat was never mounted again, so its draft and its scroll stay.
+  expect(document.querySelector(CHAT_TILE)).toBe(tile);
+  expect([...tile.classList]).toEqual(expect.arrayContaining(["visual-tile-floating", "visual-tile-aside", "visual-tile-collapsed"]));
+  expect(tile.parentElement?.className).toBe("visual-side-column visual-side-column-vacant");
+  // As the browser leaves a tile sized by hand.
+  Object.assign(tile.style, { width: "500px", height: "300px" });
+
+  // Back at the side it came from: nothing to write to the canvas.
+  fireEvent.click(within(tile).getByRole("button", { name: "Dock Chat at the right" }));
+  expect(document.querySelector(CHAT_TILE)).toBe(tile);
+  expect([...tile.classList]).toContain("visual-tile-side");
+  expect([...tile.classList]).not.toContain("visual-tile-floating");
+  expect(tile.parentElement?.className).toBe("visual-side-column");
+  expect([tile.style.width, tile.style.height]).toEqual(["", ""]);
+  expect(applyWorkspaceOperation).not.toHaveBeenCalled();
+});
+
+test("Chat aside opens under the pointer, folds once it has left, and folds at once when the assistant shows more", async () => {
+  const { feed, tile } = await mountChat();
+  const folded = () => tile.classList.contains("visual-tile-collapsed");
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  act(() => feed.stepAside());
+  fireEvent.pointerEnter(tile);
+  act(() => { vi.advanceTimersByTime(OPEN_AFTER_MS); });
+  expect(folded()).toBe(false);
+  fireEvent.pointerLeave(tile);
+  act(() => { vi.advanceTimersByTime(FOLD_AFTER_MS); });
+  expect(folded()).toBe(true);
+
+  // The fold button does it for the keyboard, and nothing of it is remembered.
+  fireEvent.click(within(tile).getByRole("button", { name: "Expand Chat" }));
+  expect(folded()).toBe(false);
+  expect(localStorage.getItem(STATE_KEY)).toBeNull();
+  act(() => feed.stepAside());
+  expect(folded()).toBe(true);
+});
+
+test("the Chat button docks a Chat that stands aside", async () => {
+  const { feed, state, tile } = await mountChat();
+  act(() => feed.stepAside());
+  expect([...tile.classList]).toContain("visual-tile-floating");
+  fireEvent.click(within(screen.getByRole("toolbar", { name: "Canvas controls" })).getByRole("button", { name: "Chat" }));
+  expect(feed.snapshot().aside).toBe(0);
+  expect([...tile.classList]).toContain("visual-tile-side");
+  await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
+    state.id, state.revision, { kind: "focus", instance_id: "chat-instance" }, expect.any(String)), { interval: 1 });
 });
 
 test("a link to a record in Chat only moves the page: it writes nothing to the canvas", async () => {
@@ -598,7 +679,7 @@ test("the record Chat is about comes from the address alone, never from a visual
   await waitFor(() => expect(button.disabled).toBe(false), { interval: 1 });
   fireEvent.click(button);
   await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
-    withRecord.id, withRecord.revision, { kind: "show", visual_type: "trax.chat", placement: "floating" },
+    withRecord.id, withRecord.revision, { kind: "show", visual_type: "trax.chat", record_id: null },
     expect.any(String)), { interval: 1 });
 });
 
@@ -749,7 +830,7 @@ test("a shared Artifact route can open Chat about its exact revision", async () 
   fireEvent.click(button);
   await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
     workspace.id, workspace.revision,
-    { kind: "show", visual_type: "trax.chat", placement: "floating", record_id: artifactId },
+    { kind: "show", visual_type: "trax.chat", record_id: artifactId },
     expect.any(String),
   ));
 });
@@ -786,14 +867,14 @@ test("Chat targets the focused Artifact visual when another record is in the URL
   fireEvent.click(button);
   await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
     state.id, state.revision,
-    { kind: "show", visual_type: "trax.chat", placement: "floating", record_id: artifactId },
+    { kind: "show", visual_type: "trax.chat", record_id: artifactId },
     expect.any(String),
   ));
 });
 
-test("the Chat button shows Chat floating, and focuses it once shown", async () => {
+test("the Chat button shows Chat, where the server places it, and focuses it once shown", async () => {
   browseOnly();
-  const chat = { id: "chat-instance", type: "trax.chat", version: 1, placement: "floating" as const, record_id: null, params: {} };
+  const chat = { id: "chat-instance", type: "trax.chat", version: 1, placement: "side" as const, record_id: null, params: {} };
   const withChat: WorkspaceState = { ...workspace, revision: 4, visuals: [...workspace.visuals, chat] };
   vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
   vi.mocked(getWorkspace).mockResolvedValue(workspace);
@@ -804,7 +885,7 @@ test("the Chat button shows Chat floating, and focuses it once shown", async () 
   await waitFor(() => expect(button().disabled).toBe(false), { interval: 1 });
   fireEvent.click(button());
   await waitFor(() => expect(applyWorkspaceOperation).toHaveBeenCalledWith(
-    workspace.id, 3, { kind: "show", visual_type: "trax.chat", placement: "floating" }, expect.any(String)));
+    workspace.id, 3, { kind: "show", visual_type: "trax.chat", record_id: null }, expect.any(String)));
   await waitFor(() => expect(client.getQueryData<WorkspaceState>(["workspace", workspace.id])?.revision).toBe(4), { interval: 1 });
   await waitFor(() => expect(button().disabled).toBe(false), { interval: 1 });
   fireEvent.click(button());

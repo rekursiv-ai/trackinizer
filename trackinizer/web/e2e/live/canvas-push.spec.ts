@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { APIRequestContext, Page } from "@playwright/test";
 import { expect, test } from "../fixtures";
-import { resetCanvas } from "../canvasState";
+import { exposeEventSources, pushNavigate, resetCanvas } from "../canvasState";
 
 // The canvas's push bar: from the server accepting an operation to the visual
 // painted in the browser, under 100 ms at p50 and p90 for every visual type, and
@@ -76,28 +76,6 @@ async function seed(request: APIRequestContext): Promise<{ issues: string[]; art
     artifacts.push(published.artifact_id);
   }
   return { issues: ids, artifacts };
-}
-
-/** Keep the page's event sources where the script can reach them. */
-function exposeEventSources() {
-  const Original = window.EventSource;
-  const held: EventSource[] = [];
-  Object.assign(window, { heldEventSources: held });
-  window.EventSource = class extends Original {
-    constructor(url: string | URL, init?: EventSourceInit) {
-      super(url, init);
-      held.push(this);
-    }
-  };
-}
-
-/** Hand the page's workspace stream a `navigate` frame to `route`, stamped now. */
-async function pushNavigate(page: Page, route: string): Promise<void> {
-  await page.evaluate((route) => {
-    const sources = (window as unknown as { heldEventSources: EventSource[] }).heldEventSources;
-    const stream = sources.find((source) => source.url.includes("/events"))!;
-    stream.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({ type: "navigate", route, t: Date.now() }) }));
-  }, route);
 }
 
 /** Wait until the page holds the frame `pick` finds, with the marks `kinds` for `type`. */

@@ -81,7 +81,7 @@
 .chat-line p.chat-line-body { white-space: pre-wrap; }
 .chat-status { align-self: flex-start; color: var(--muted); font-size: 12px; font-style: italic; }
 .chat-panel .composer { padding: 8px 12px 12px; border-top: 1px solid var(--line); }
-/* The page and the other main visuals share a strip: each has 240 px at least, and a strip with more than fit scrolls inside itself. Side visuals stand in one column beside it, up to 360 px or 30% wide, so Chat's header and box stay on the screen however many visuals there are. */
+/* The page and the other main visuals share a strip: each has 240 px at least, and a strip with more than fit scrolls inside itself. Visuals docked at a side stand in one column there, left or right of it, up to 360 px or 30% wide, so Chat's header and box stay on the screen however many visuals there are. */
 .visual-main-strip { display: flex; flex: 1 1 0; min-width: 0; min-height: 0; overflow-x: auto; }
 .visual-main-strip > .visual-tile { flex: 1 0 240px; min-width: 240px; }
 /* The page's lists need 300 px for their own toolbar. */
@@ -90,8 +90,11 @@
 .visual-side-column { display: flex; flex: 0 1 min(360px, 30%); flex-direction: column; min-width: 260px; min-height: 0; border-left: 1px solid var(--line); overflow-y: auto; }
 .visual-side-column > .visual-tile { flex: 1 1 0; min-height: 280px; }
 .visual-side-column > .visual-tile + .visual-tile { border-top: 1px solid var(--line); }
+.visual-side-column-left { border-left: 0; border-right: 1px solid var(--line); }
 @media (max-width: 900px) {
   .visual-stage { flex-direction: column; }
+  /* A phone has no left: both columns come under the page. */
+  .visual-side-column-left { order: 1; border-right: 0; }
   .visual-main-strip { flex: 0 0 auto; flex-direction: column; overflow-x: visible; }
   .visual-main-strip > .visual-tile { flex: 0 0 min(400px, 48vh); min-width: 0; width: 100%; }
   .visual-side-column { flex: 0 0 auto; min-width: 0; width: 100%; border-left: 0; border-top: 1px solid var(--line); overflow-y: visible; }
@@ -113,4 +116,11 @@
 @media (max-width: 900px) {
   .visual-tile-toolbar .visual-tile-fold { display: none; }
   .visual-tile-floating > .visual-tile-toolbar-draggable { cursor: auto; touch-action: auto; user-select: auto; -webkit-user-select: auto; }
+  /* Chat standing aside is a header in its strip's flow, as tall as a floating tile there and not as its strip's tiles. */
+  .visual-main-strip > .visual-tile-floating, .visual-side-column > .visual-tile-floating { flex: 0 0 auto; }
+}
+/* Chat standing aside floats from inside its strip, over the stage. Folded, its bar is filled, so it is found at a glance (a phone's header is folded until Expand opens it); a column that holds nothing else in the flow takes no room. */
+.visual-tile-aside.visual-tile-collapsed:not(.visual-tile-mobile-expanded) > .visual-tile-toolbar { background: var(--accent); color: #fff; }
+@media (min-width: 901px) {
+  .visual-side-column-vacant { flex: 0 0 0; min-width: 0; border: 0; overflow: visible; }
 }

@@ -91,8 +91,8 @@ test("the live layer takes its inquiry ids and its gaps from the stream", async 
 test("a workspace frame is applied under both keys, and an older one never replaces a newer", async () => {
   show(true);
   const stream = await listener();
-  act(() => stream.workspace({ ...workspace, revision: 6 }, 10));
-  act(() => stream.workspace({ ...workspace, revision: 4, focused_instance: "stale" }, 11));
+  act(() => stream.workspace({ ...workspace, revision: 6 }, 10, null));
+  act(() => stream.workspace({ ...workspace, revision: 4, focused_instance: "stale" }, 11, null));
   for (const key of [["workspace", "default"], ["workspace", "w1"]]) {
     expect(client.getQueryData<WorkspaceState>(key)).toMatchObject({ revision: 6, focused_instance: null });
   }
@@ -128,6 +128,28 @@ test("a navigation to where the page already is changes nothing", async () => {
   await new Promise((resolve) => setTimeout(resolve, 5));
   expect(listen).not.toHaveBeenCalled();
   window.removeEventListener("hashchange", listen);
+});
+
+function Aside() {
+  return <output data-testid="aside">{useChatFeed().state.aside}</output>;
+}
+
+test("an agent that moves the page or shows a visual sends Chat aside; nothing else does", async () => {
+  show(true, <Aside />);
+  const stream = await listener();
+  const aside = () => screen.getByTestId("aside").textContent;
+  const shown: WorkspaceState = { ...workspace, revision: 4, visuals: [
+    { id: "graph", type: "trax.subgraph", version: 1 }, { id: "chat", type: "trax.chat", version: 1 }] };
+  // The owner's own change, an agent's show of Chat itself, and a route the router refuses.
+  act(() => stream.workspace(shown, 1, null));
+  act(() => stream.workspace({ ...shown, revision: 5 }, 2, "chat"));
+  act(() => stream.navigate("#/nowhere", 3));
+  act(() => stream.highlight(["row-1"], 4));
+  expect(aside()).toBe("0");
+  act(() => stream.workspace({ ...shown, revision: 6 }, 5, "graph"));
+  expect(aside()).toBe("1");
+  act(() => stream.navigate("#/list/Issue", 6));
+  expect(aside()).toBe("2");
 });
 
 function Marks() {

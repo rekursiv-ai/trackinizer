@@ -3685,6 +3685,7 @@ def test_workspace_show_sends_one_operation_through_the_clients_one_path(
     _workspace(client, "hide", str(instance))
     _workspace(client, "focus", str(instance))
     _workspace(client, "place", str(instance), "floating")
+    _workspace(client, "place", str(instance), "left")
 
     assert client.operations == [
         {
@@ -3696,6 +3697,7 @@ def test_workspace_show_sends_one_operation_through_the_clients_one_path(
         {"kind": "hide", "instance_id": str(instance)},
         {"kind": "focus", "instance_id": str(instance)},
         {"kind": "place", "instance_id": str(instance), "placement": "floating"},
+        {"kind": "place", "instance_id": str(instance), "placement": "left"},
     ]
     assert client.reads == []
     assert f"workspace {client.workspace} revision 9" in capsys.readouterr().out

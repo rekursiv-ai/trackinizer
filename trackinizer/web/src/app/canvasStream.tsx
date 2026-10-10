@@ -16,7 +16,8 @@ import { HighlightContext, HighlightStore } from "./highlights";
  *
  * It also applies what the stream says about the canvas: the workspace (a
  * revision never replaces a newer one), an agent's navigation, and what it points at
- * (the tab's highlights, `highlights.ts`). Chat has no frames of its own: a
+ * (the tab's highlights, `highlights.ts`). An agent that moves the page or shows a
+ * visual sends Chat aside, out of the way of it. Chat has no frames of its own: a
  * conversation is a session, and a line added to it is the session's `changed` id, which
  * the live layer hands to the Chat that follows it. Gap recovery on an open is the
  * live layer's own.
@@ -39,14 +40,17 @@ export function CanvasStream({ enabled, children }: { enabled: boolean; children
   useEffect(() => {
     if (!workspaceId) return;
     const close = openWorkspaceEvents(workspaceId, {
-      workspace: (state, t) => {
+      workspace: (state, t, shown) => {
         recordFrame(state.revision, t);
         acceptWorkspace(queryClient, state);
+        // Chat makes room for what an agent shows, never for itself.
+        if (state.visuals.some((visual) => visual.id === shown && visual.type !== "trax.chat")) feed.stepAside();
       },
       navigate: (route, t) => {
         if (!route.startsWith("#/") || parseHash(route, kindsRef.current).name === "notFound") return;
         recordNavigation(route, t);
         if (window.location.hash !== route) window.location.hash = route;
+        feed.stepAside();
       },
       highlight: (ids) => highlights.set(ids),
       changed: (id) => hub?.change(id),
@@ -59,7 +63,7 @@ export function CanvasStream({ enabled, children }: { enabled: boolean; children
       close();
       highlights.set([]);
     };
-  }, [workspaceId, queryClient, hub, highlights]);
+  }, [workspaceId, queryClient, hub, highlights, feed]);
   return (
     <ChatFeedContext value={feed}>
       <HighlightContext value={highlights}>{children}</HighlightContext>

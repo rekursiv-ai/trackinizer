@@ -18,6 +18,8 @@ from trackinizer.server.visuals.catalog import (
 from trackinizer.server.visuals.workspaces import (
     ApplyWorkspaceOperation,
     HideVisual,
+    Placement,
+    PlaceVisual,
     ShowVisual,
     WorkspaceData,
     apply_operation,
@@ -26,14 +28,36 @@ from trackinizer.server.visuals.workspaces import (
 )
 
 
-def test_a_new_canvas_has_chat_floating_over_its_default_visual() -> None:
-    """Chat is there with no setup: the default visual in main, Chat floating."""
+def test_a_new_canvas_has_chat_beside_its_default_visual() -> None:
+    """Chat is there with no setup: the default visual in main, Chat at the side."""
     data = initial_data(default_catalog())
     assert [(v.type, v.placement) for v in data.visuals] == [
         ("trax.browse", "main"),
-        ("trax.chat", "floating"),
+        ("trax.chat", "side"),
     ]
     assert data.focused_instance is None
+
+
+def test_a_visual_is_placed_at_either_side_of_the_page_and_nowhere_unnamed() -> None:
+    """Chat moves to the column left of the page and back; another name is refused."""
+    catalog = default_catalog()
+    data = initial_data(catalog)
+    chat = data.visuals[1].id
+    sides: tuple[Placement, ...] = ("left", "side")
+    for placement in sides:
+        data = apply_operation(
+            data,
+            PlaceVisual(kind="place", instance_id=chat, placement=placement),
+            catalog,
+        )
+        assert [(v.type, v.placement) for v in data.visuals] == [
+            ("trax.browse", "main"),
+            ("trax.chat", placement),
+        ]
+    with pytest.raises(ValidationError):
+        PlaceVisual.model_validate(
+            {"kind": "place", "instance_id": str(chat), "placement": "right"},
+        )
 
 
 def test_timeline_is_off_in_a_new_canvas_and_recentres_when_shown_again() -> None:
