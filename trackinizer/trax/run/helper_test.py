@@ -53,14 +53,44 @@ GRACE = "grace@x"
 
 def test_claude_turns_print_json_and_resume_by_session_id() -> None:
     claude = Claude()
-    first = claude.argv("Why?", resume=None, extra=["--model", "haiku"])
-    assert first[:4] == ["claude", "-p", "--output-format", "json"]
-    assert "--resume" not in first
-    assert first[first.index("--append-system-prompt") + 1] == helper.GUIDE
-    assert first[-3:] == ["--model", "haiku", "Why?"]
-    again = claude.argv("And?", resume="abc", extra=[])
-    assert again[again.index("--resume") + 1] == "abc"
-    assert again[-1] == "And?"
+    first = claude.command("Why?", resume=None, extra=["--model", "haiku"])
+    assert first.argv[:4] == ["claude", "-p", "--output-format", "json"]
+    assert "--resume" not in first.argv
+    assert first.argv[first.argv.index("--append-system-prompt") + 1] == helper.GUIDE
+    assert first.argv[-2:] == ["--model", "haiku"]
+    assert first.stdin == "Why?"
+    again = claude.command("And?", resume="abc", extra=[])
+    assert again.argv[again.argv.index("--resume") + 1] == "abc"
+    assert again.stdin == "And?"
+
+
+def test_a_prompt_reaches_claude_after_an_option_that_takes_many_values(
+    tmp_path: Path,
+) -> None:
+    # `--allowedTools <tools...>` takes every argument up to the next option, so a
+    # prompt argument after it would be one more tool, and the turn would have none.
+    server = FakeChatServer(batches=[[_chat("Why?", FIRST)], [_chat("And?", FIRST)]])
+    runner = _Runner(answers={"Why?": ("Because.", "c1"), "And?": ("So.", "c1")})
+    _serve(
+        server,
+        runner,
+        tmp_path,
+        extra=["--model", "haiku", "--allowedTools", "Bash(trax:*)"],
+    )
+    assert server.lines(FIRST) == [
+        (ADA, "Why?"),
+        ("answer", "Because."),
+        (ADA, "And?"),
+        ("answer", "So."),
+    ]
+    assert runner.resumed == [None, "c1"]
+    assert runner.tools == [["Bash(trax:*)"], ["Bash(trax:*)"]]
+
+
+def test_a_turn_writes_its_command_stdin_to_the_cli() -> None:
+    # `cat` prints the stdin it reads, as `claude -p` reads a prompt given no argument.
+    command = helper.Command(argv=["cat"], stdin="ada@x: Why?\n")
+    assert helper._run(command, timeout_sec=10.0) == "ada@x: Why?\n"
 
 
 def test_claude_output_is_the_answer_and_its_session() -> None:
@@ -90,20 +120,34 @@ def test_claude_output_is_the_answer_and_its_session() -> None:
 
 def test_codex_turns_resume_by_thread_and_carry_the_guide_first() -> None:
     codex = Codex()
-    first = codex.argv("Why?", resume=None, extra=["-m", "gpt-6-luna"])
-    assert first[:3] == ["codex", "exec", "--json"]
-    assert first[-3:-1] == ["-m", "gpt-6-luna"]
-    assert first[-1].startswith(helper.GUIDE)
-    assert first[-1].endswith("Why?")
+    # `codex exec -i <FILE>...` takes every argument up to the next option, so the
+    # prompt is read from stdin (`-`), after `--` ends the options.
+    first = codex.command(
+        "Why?",
+        resume=None,
+        extra=["-m", "gpt-6-luna", "-i", "a.png"],
+    )
+    assert first == helper.Command(
+        argv=["codex", "exec", "--json", "-m", "gpt-6-luna", "-i", "a.png", "--", "-"],
+        stdin=f"{helper.GUIDE}\n\nWhy?",
+    )
     # `codex exec resume [OPTIONS] SESSION_ID PROMPT`; the guide is in the thread already.
-    assert codex.argv("And?", resume="t1", extra=[]) == [
-        "codex",
-        "exec",
-        "resume",
-        "--json",
-        "t1",
-        "And?",
-    ]
+    assert codex.command("And?", resume="t1", extra=["-m", "gpt-6-luna"]) == (
+        helper.Command(
+            argv=[
+                "codex",
+                "exec",
+                "resume",
+                "--json",
+                "-m",
+                "gpt-6-luna",
+                "--",
+                "t1",
+                "-",
+            ],
+            stdin="And?",
+        )
+    )
 
 
 def test_codex_output_is_its_last_message_and_its_thread() -> None:
@@ -718,12 +762,13 @@ def _serve(
     *,
     memory: Memory | None = None,
     redactor: Redactor | None = None,
+    extra: Sequence[str] = (),
 ) -> None:
     serve(
         cast(Client, server),
         Claude(),
         actor="helper",
-        extra=[],
+        extra=extra,
         memory=memory or Memory(tmp_path / "helper.json"),
         run=runner,
         stop=server.stop,
@@ -837,7 +882,7 @@ class _Flaky(FakeChatServer):
 
 
 class _Runner:
-    """A CLI that answers each prompt as told, keyed by the line it ends with."""
+    """A ``claude -p`` that answers each prompt as told, keyed by the line it ends with."""
 
     def __init__(
         self,
@@ -849,12 +894,19 @@ class _Runner:
         self.failures = failures or {}
         self.prompts: list[str] = []
         self.resumed: list[str | None] = []
+        self.tools: list[list[str]] = []
 
-    def __call__(self, argv: Sequence[str]) -> str:
-        prompt = argv[-1]
-        resume = argv[argv.index("--resume") + 1] if "--resume" in argv else None
+    def __call__(self, command: helper.Command) -> str:
+        options, prompt = _claude_reads(command)
+        resume = options["--resume"][0] if "--resume" in options else None
         self.prompts.append(prompt)
         self.resumed.append(resume)
+        self.tools.append(options.get("--allowedTools", []))
+        if not prompt:
+            raise HelperError(
+                "Input must be provided either through stdin or as a prompt argument "
+                "when using --print",
+            )
         # A fork's first prompt quotes the lines it opened with, then a blank line.
         message = (
             prompt.partition("\n\n")[2] if prompt.startswith("Earlier") else prompt
@@ -872,6 +924,26 @@ class _Runner:
                 "session_id": session,
             },
         )
+
+
+# As commander parses them: ``-p`` takes no value, the variadic ``--allowedTools
+# <tools...>`` every argument up to the next option, and any other option one. The
+# prompt is the argument no option takes, else stdin.
+def _claude_reads(command: helper.Command) -> tuple[dict[str, list[str]], str]:
+    """Return the options ``claude -p`` takes from a command, and its prompt."""
+    options: dict[str, list[str]] = {}
+    prompts: list[str] = []
+    taking: str | None = None
+    for arg in command.argv[1:]:
+        if arg.startswith("-"):
+            options[arg] = []
+            taking = None if arg == "-p" else arg
+        elif taking is None:
+            prompts.append(arg)
+        else:
+            options[taking].append(arg)
+            taking = taking if taking == "--allowedTools" else None
+    return options, prompts[0] if prompts else command.stdin
 
 
 if __name__ == "__main__":

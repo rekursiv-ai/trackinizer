@@ -84,6 +84,14 @@ class HelperError(Exception):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class Command:
+    """One turn's command line, and what it reads on stdin."""
+
+    argv: list[str]
+    stdin: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class Turn:
     """One answer, and the CLI's id for the conversation it continues."""
 
@@ -96,13 +104,13 @@ class HelperCli(Protocol):
 
     name: ClassVar[str]
 
-    def argv(
+    def command(
         self,
         prompt: str,
         *,
         resume: str | None,
         extra: Sequence[str],
-    ) -> list[str]:
+    ) -> Command:
         """Return the command that runs one turn."""
         ...
 
@@ -116,26 +124,30 @@ class Claude:
 
     name: ClassVar[str] = "claude"
 
-    def argv(
+    def command(
         self,
         prompt: str,
         *,
         resume: str | None,
         extra: Sequence[str],
-    ) -> list[str]:
+    ) -> Command:
         """Return ``claude -p --output-format json``, resuming ``resume`` if given.
+
+        The prompt goes on stdin, not after ``extra``: an option there may take
+        every argument up to the next option, as ``--allowedTools <tools...>``
+        does, and would take the prompt as one more tool.
 
         Args:
           prompt: The turn's message.
           resume: The conversation to continue, or None to start one.
-          extra: Arguments for the CLI, before the prompt.
+          extra: Arguments for the CLI.
 
         Returns:
-          argv: The command.
+          command: The command.
 
         """
         resumed = ["--resume", resume] if resume is not None else []
-        return [
+        argv = [
             "claude",
             "-p",
             "--output-format",
@@ -144,8 +156,8 @@ class Claude:
             "--append-system-prompt",
             GUIDE,
             *extra,
-            prompt,
         ]
+        return Command(argv=argv, stdin=prompt)
 
     def read(self, stdout: str) -> Turn:
         """Return the result and the session id.
@@ -180,30 +192,38 @@ class Codex:
 
     name: ClassVar[str] = "codex"
 
-    def argv(
+    def command(
         self,
         prompt: str,
         *,
         resume: str | None,
         extra: Sequence[str],
-    ) -> list[str]:
+    ) -> Command:
         """Return ``codex exec --json``, or ``codex exec resume --json`` for ``resume``.
 
         Codex takes no system prompt here, so a new conversation opens with the
-        guide; a resumed one has it already.
+        guide; a resumed one has it already. The prompt is read from stdin (``-``)
+        and ``--`` ends the options: an option in ``extra`` may take every argument
+        up to the next option, as ``codex exec -i <FILE>...`` does.
 
         Args:
           prompt: The turn's message.
           resume: The thread to continue, or None to start one.
-          extra: Arguments for the CLI, before the prompt.
+          extra: Arguments for the CLI.
 
         Returns:
-          argv: The command.
+          command: The command.
 
         """
         if resume is not None:
-            return ["codex", "exec", "resume", "--json", *extra, resume, prompt]
-        return ["codex", "exec", "--json", *extra, f"{GUIDE}\n\n{prompt}"]
+            return Command(
+                argv=["codex", "exec", "resume", "--json", *extra, "--", resume, "-"],
+                stdin=prompt,
+            )
+        return Command(
+            argv=["codex", "exec", "--json", *extra, "--", "-"],
+            stdin=f"{GUIDE}\n\n{prompt}",
+        )
 
     def read(self, stdout: str) -> Turn:
         """Return the turn's last agent message and its thread.
@@ -275,7 +295,7 @@ class Memory:
             return {}
 
 
-type Runner = Callable[[Sequence[str]], str]
+type Runner = Callable[[Command], str]
 """Run one turn's command and return what it printed; raise HelperError on failure."""
 
 
@@ -503,29 +523,30 @@ def _turn(
 ) -> Turn:
     """Run one turn, starting afresh when the conversation it resumes cannot be resumed."""
     try:
-        return cli.read(run(cli.argv(prompt, resume=resume, extra=extra)))
+        return cli.read(run(cli.command(prompt, resume=resume, extra=extra)))
     except HelperError:
         if resume is None:
             raise
         _logger.warning("trax helper: could not resume %s; starting afresh", resume)
-        return cli.read(run(cli.argv(prompt, resume=None, extra=extra)))
+        return cli.read(run(cli.command(prompt, resume=None, extra=extra)))
 
 
-def _run(command: Sequence[str], *, timeout_sec: float) -> str:
+def _run(command: Command, *, timeout_sec: float) -> str:
     """Run one turn's command and return its output."""
     try:
         done = subprocess.run(  # noqa: S603 -- the user's chosen CLI and flags; no shell.
-            list(command),
+            command.argv,
+            input=command.stdin,
             capture_output=True,
             text=True,
             timeout=timeout_sec,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
-        raise HelperError(f"{command[0]} did not answer: {error}") from error
+        raise HelperError(f"{command.argv[0]} did not answer: {error}") from error
     if done.returncode != 0:
         detail = (done.stderr or done.stdout).strip().splitlines()[-1:] or [""]
-        raise HelperError(f"{command[0]} exited {done.returncode}: {detail[0]}")
+        raise HelperError(f"{command.argv[0]} exited {done.returncode}: {detail[0]}")
     return done.stdout
 
 
