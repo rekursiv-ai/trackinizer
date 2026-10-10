@@ -25,6 +25,8 @@ from uuid import UUID, uuid4
 
 import logging
 
+from treekle.codec import from_plain
+
 from trackinizer.client.chat_forks import (
     holds_records,
     link_fork,
@@ -32,7 +34,6 @@ from trackinizer.client.chat_forks import (
 )
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.agent.types.sessions import AgentToAgentMessage, AssistantMessage
-from trackinizer.lib.codec import from_plain
 from trackinizer.trax.run.redact import redact_body
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.filters import Filter
@@ -48,9 +49,10 @@ from trackinizer.wire.wire_sessions import SessionEnd, SessionStart
 
 
 if TYPE_CHECKING:
+    from treekle.codec import PlainTree
+
     from trackinizer.client.chat_forks import ForkLine
     from trackinizer.client.client import Client
-    from trackinizer.lib.codec import PlainTree
     from trackinizer.trax.run.redact import Redactor
     from trackinizer.wire.wire_science_chat import ChatForkAt
 

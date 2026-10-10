@@ -21,12 +21,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from starlette.types import Send
+from treekle.codec import from_plain
 
 import asyncpg
 
 from trackinizer.addons.addon import ServerContext
 from trackinizer.addons.deployment import Deployment, supervise
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.api import (
     addons_routes,
     admin_routes,

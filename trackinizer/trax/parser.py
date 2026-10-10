@@ -7,8 +7,9 @@ from typing import TYPE_CHECKING, Literal, cast, get_args
 
 import uuid
 
+from treekle.codec import from_plain
+
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.codec import from_plain
 from trackinizer.trax.grammar import (
     AGAINST_RELATION_SPELLINGS,
     COST_FIELDS,

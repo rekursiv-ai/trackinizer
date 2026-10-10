@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import uuid
 
-from trackinizer.lib.codec import from_plain
+from treekle.codec import from_plain
 
 
 if TYPE_CHECKING:

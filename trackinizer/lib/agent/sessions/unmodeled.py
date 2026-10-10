@@ -19,8 +19,8 @@ from typing import Final, TypeGuard, cast
 
 import math
 
-from trackinizer.lib.absent import ABSENT, Absent
-from trackinizer.lib.codec import (
+from treekle.absent import ABSENT, Absent
+from treekle.codec import (
     Invalid,
     PlainTree,
     ReadError,

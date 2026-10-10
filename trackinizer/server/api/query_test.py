@@ -23,6 +23,7 @@ from hypothesis import (
     settings,
     strategies as st,
 )
+from treekle.codec import from_plain, loads
 
 import httpx2
 import pytest
@@ -34,7 +35,6 @@ from trackinizer.conftest import (
     queue_field_rows,
     set_field_row,
 )
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server import web
 from trackinizer.server.api import query
 from trackinizer.server.api.app import app

@@ -12,6 +12,8 @@ from types import MappingProxyType
 from typing import Final, get_args
 from uuid import uuid4
 
+from treekle.codec import from_plain, immutable, mutable
+
 import pytest
 
 from trackinizer.lib.agent.types.sessions import (
@@ -40,7 +42,6 @@ from trackinizer.lib.agent.types.sessions import (
     WebSearchResult,
     WebSearchResults,
 )
-from trackinizer.lib.codec import from_plain, immutable, mutable
 from trackinizer.types.session_records import (
     _BY_KIND,
     MAX_SEARCH_TEXT_BYTES,

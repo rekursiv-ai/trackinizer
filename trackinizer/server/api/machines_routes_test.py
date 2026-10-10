@@ -11,10 +11,11 @@ from typing import TYPE_CHECKING
 
 import uuid
 
+from treekle.codec import from_plain
+
 import pytest
 
 from trackinizer.conftest import executed_sql
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     install_identity,

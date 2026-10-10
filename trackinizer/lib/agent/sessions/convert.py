@@ -35,10 +35,11 @@ import sys
 import threading
 import time
 
+from treekle.codec import loads
+
 from trackinizer.lib.agent.sessions import claude, codex, gemini, normalized, sagent
 from trackinizer.lib.agent.sessions.fuse import chain, fuse, names_of, unfuse
 from trackinizer.lib.agent.types.sessions import IncompleteRecord
-from trackinizer.lib.codec import loads
 
 
 if TYPE_CHECKING:

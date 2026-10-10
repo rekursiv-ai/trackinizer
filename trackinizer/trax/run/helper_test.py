@@ -39,7 +39,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-    from trackinizer.lib.codec import PlainTree
+    from treekle.codec import PlainTree
+
     from trackinizer.wire.filters import Filter
     from trackinizer.wire.wire_session_ir import ManifestBody, PartBody
 

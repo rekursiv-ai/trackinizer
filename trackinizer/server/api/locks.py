@@ -20,8 +20,8 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from treekle.codec import from_plain
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.wire.json_types import MutableJSON

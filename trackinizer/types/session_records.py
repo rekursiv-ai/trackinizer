@@ -34,6 +34,8 @@ from datetime import datetime
 from typing import Final, Self
 from uuid import UUID
 
+from treekle.codec import PlainTree, immutable, mutable
+
 from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,
     AgentToAgentMessage,
@@ -58,7 +60,6 @@ from trackinizer.lib.agent.types.sessions import (
     WebSearchResults,
 )
 from trackinizer.lib.agent.types.stored import from_stored, to_stored
-from trackinizer.lib.codec import PlainTree, immutable, mutable
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 
 

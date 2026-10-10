@@ -16,6 +16,12 @@ import threading
 import time
 import tracemalloc
 
+from treekle.codec import (
+    from_plain,
+    from_plain as convert_json,
+    loads,
+)
+
 import psutil
 import pytest
 
@@ -32,11 +38,6 @@ from trackinizer.lib.agent.sessions.convert import (
     convert_file,
     detect_format,
     main,
-)
-from trackinizer.lib.codec import (
-    from_plain,
-    from_plain as convert_json,
-    loads,
 )
 
 

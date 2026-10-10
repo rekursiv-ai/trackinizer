@@ -6,11 +6,12 @@ import argparse
 import io
 import uuid
 
+from treekle.codec import from_plain, loads
+
 import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.trax import cli, verbs
 from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.grammar import (

@@ -20,9 +20,10 @@ from typing import TYPE_CHECKING, Final
 import os
 import re
 
+from treekle.codec import from_plain
+
 from trackinizer.lib.agent.sessions import codex
 from trackinizer.lib.agent.sessions.tail import Tail
-from trackinizer.lib.codec import from_plain
 
 
 if TYPE_CHECKING:

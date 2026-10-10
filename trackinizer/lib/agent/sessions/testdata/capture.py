@@ -55,7 +55,8 @@ import threading
 import time
 import zlib
 
-from trackinizer.lib.codec import from_plain, loads
+from treekle.codec import from_plain, loads
+
 from trackinizer.lib.posix.relay import ThreadedRelay
 
 

@@ -14,6 +14,8 @@ from uuid import UUID, uuid4
 
 import json
 
+from treekle.codec import from_plain, immutable
+
 import pytest
 import pytest_asyncio
 
@@ -23,7 +25,6 @@ from trackinizer.lib.agent.sessions import (
 )
 from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import SessionRecord, Thinking
-from trackinizer.lib.codec import from_plain, immutable
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.trax.run.errors import CiphertextDroppedError

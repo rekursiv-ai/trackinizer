@@ -9,9 +9,10 @@ from typing import TYPE_CHECKING
 import itertools
 import uuid
 
+from treekle.codec import from_plain, loads
+
 import pytest
 
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.types.edges import EDGE_POLICIES
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.web.scripts.graph_structure import (

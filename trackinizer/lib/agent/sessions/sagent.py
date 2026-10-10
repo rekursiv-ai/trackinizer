@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING
 
 import json
 
+from treekle.codec import ReadError, from_plain, immutable, loads
+
 from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,
     AgentToAgentMessage,
@@ -49,7 +51,6 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
     WebFetchResult,
 )
-from trackinizer.lib.codec import ReadError, from_plain, immutable, loads
 
 
 if TYPE_CHECKING:

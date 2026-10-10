@@ -7,10 +7,11 @@ from typing import TYPE_CHECKING
 import json
 import uuid
 
+from treekle.codec import from_plain, loads
+
 import httpx2
 import pytest
 
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (
     ASSISTANT_CONFIG,

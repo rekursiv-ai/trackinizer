@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING, Final
 import uuid
 
 from pydantic import BaseModel
+from treekle.codec import from_plain
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.visuals.chat_forks import may_continue
 from trackinizer.wire.wire_science_chat import (
     CHAT_SESSION_PREFIX,

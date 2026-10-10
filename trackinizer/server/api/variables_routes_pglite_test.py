@@ -15,9 +15,10 @@ import logging
 import stat
 import threading
 
+from treekle.codec import from_plain
+
 import pytest
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,

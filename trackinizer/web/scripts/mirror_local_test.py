@@ -9,12 +9,13 @@ from typing import TYPE_CHECKING
 
 import uuid
 
+from treekle.codec import from_plain, loads
+
 import httpx2
 import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.trax.profile import Profile
 from trackinizer.web.scripts.mirror_local import (
     Activity,

@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING
 
 import json
 
+from treekle.codec import from_plain, loads
+
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex
@@ -34,7 +36,6 @@ from trackinizer.lib.agent.types.sessions import (
     SessionRecord,
     ToolCall,
 )
-from trackinizer.lib.codec import from_plain, loads
 
 
 if TYPE_CHECKING:

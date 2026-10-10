@@ -44,9 +44,10 @@ import itertools
 import time
 import uuid
 
+from treekle.codec import from_plain
+
 from trackinizer.client.client import Client, server_url
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.codec import from_plain
 from trackinizer.trax.profile import load_profile
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.bodies import BATCH_MAX_ITEMS
@@ -64,7 +65,8 @@ from trackinizer.wire.wire_sessions import SessionEnd, SessionStart
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable, Sequence
 
-    from trackinizer.lib.codec import PlainTree
+    from treekle.codec import PlainTree
+
     from trackinizer.trax.profile import Profile
 
 

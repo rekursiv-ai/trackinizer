@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
+from treekle.codec import ReadError, immutable
+
 import pytest
 
 from trackinizer.lib.agent.types.sessions import (
@@ -12,7 +14,6 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
 )
 from trackinizer.lib.agent.types.stored import from_stored, to_stored
-from trackinizer.lib.codec import ReadError, immutable
 
 
 _MESSAGE = UserMessage(

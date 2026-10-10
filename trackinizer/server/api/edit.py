@@ -25,8 +25,8 @@ from typing import TYPE_CHECKING, Annotated, Literal, cast
 import uuid  # noqa: TC003 -- Handler signature resolved by FastAPI at request time.
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from treekle.codec import from_plain
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.locks import require_unlocked
 from trackinizer.server.api.session_access import require_chat_opener_of

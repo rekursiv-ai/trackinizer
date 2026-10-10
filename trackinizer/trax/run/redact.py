@@ -43,7 +43,8 @@ import re
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from trackinizer.lib.codec import PlainTree
+    from treekle.codec import PlainTree
+
     from trackinizer.wire.wire_session_ir import RecordBody
 
 

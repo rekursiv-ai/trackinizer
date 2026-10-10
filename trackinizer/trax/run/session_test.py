@@ -32,6 +32,8 @@ import threading
 import time
 import uuid
 
+from treekle.codec import from_plain, loads
+
 import pytest
 
 from trackinizer.client.client import Client
@@ -42,7 +44,6 @@ from trackinizer.lib.agent.types.sessions import (
     SessionRecord,
     UserMessage,
 )
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.lib.posix import follow
 from trackinizer.lib.posix.follow import follow_tree
 from trackinizer.lib.posix.host import HostSpec

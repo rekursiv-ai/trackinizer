@@ -37,6 +37,8 @@ import json
 import shutil
 import subprocess
 
+from treekle.codec import PlainTree, from_plain, immutable, mutable
+
 from trackinizer.lib.agent.sessions import (
     claude,
     codex,
@@ -47,7 +49,6 @@ from trackinizer.lib.agent.types.sessions import (
     Thinking,
     TurnContext,
 )
-from trackinizer.lib.codec import PlainTree, from_plain, immutable, mutable
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.errors import (

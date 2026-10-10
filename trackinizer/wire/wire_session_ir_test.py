@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Final
 from uuid import uuid4
 
-from trackinizer.lib.codec import immutable
+from treekle.codec import immutable
+
 from trackinizer.wire.wire_session_ir import ManifestBody, PartBody, RecordBody
 
 

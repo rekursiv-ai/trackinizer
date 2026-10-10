@@ -19,10 +19,11 @@ from uuid import UUID
 
 import asyncio
 
+from treekle.codec import from_plain, loads
+
 import pytest
 
 from trackinizer.conftest import new_uuid
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.store.core import Store
 from trackinizer.server.subscriber import (

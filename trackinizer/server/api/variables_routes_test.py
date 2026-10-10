@@ -11,10 +11,10 @@ from functools import partial
 from typing import TYPE_CHECKING, Final, override
 
 from fastapi.testclient import TestClient
+from treekle.codec import from_plain
 
 import pytest
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,

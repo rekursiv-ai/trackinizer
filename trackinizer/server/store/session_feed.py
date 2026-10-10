@@ -17,7 +17,8 @@ from uuid import UUID
 
 import itertools
 
-from trackinizer.lib.codec import from_plain
+from treekle.codec import from_plain
+
 from trackinizer.server.notify import tx
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import manifest_bound, vetted_sql

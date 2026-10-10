@@ -11,8 +11,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final, cast
 
-from trackinizer.lib.absent import ABSENT, Absent
-from trackinizer.lib.codec import from_plain
+from treekle.absent import ABSENT, Absent
+from treekle.codec import from_plain
+
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
     infer_produced_endpoints,

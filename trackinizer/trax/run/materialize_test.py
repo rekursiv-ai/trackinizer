@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 import subprocess
 
+from treekle.codec import PlainTree, from_plain, immutable, loads
+
 import pytest
 
 from trackinizer.lib.agent.sessions import claude
@@ -20,7 +22,6 @@ from trackinizer.lib.agent.types.sessions import (
     TurnContext,
     UserMessage,
 )
-from trackinizer.lib.codec import PlainTree, from_plain, immutable, loads
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.errors import (
     CiphertextDroppedError,

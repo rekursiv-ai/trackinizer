@@ -82,6 +82,8 @@ from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol, cast
 import re
 import shlex
 
+from treekle.codec import from_plain, immutable, mutable
+
 from trackinizer.lib.agent.sessions.udiff import parse_udiff
 from trackinizer.lib.agent.types.sessions import (
     FileEditResult,
@@ -90,13 +92,12 @@ from trackinizer.lib.agent.types.sessions import (
     ShellCommandResult,
     Splice,
 )
-from trackinizer.lib.codec import from_plain, immutable, mutable
 
 
 if TYPE_CHECKING:
-    import bashlex
+    from treekle.codec import MutablePlainTree
 
-    from trackinizer.lib.codec import MutablePlainTree
+    import bashlex
 else:
     from wrapt import lazy_import
 

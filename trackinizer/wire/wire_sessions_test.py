@@ -7,10 +7,10 @@ from datetime import UTC, datetime
 import uuid
 
 from pydantic import ValidationError
+from treekle.codec import immutable
 
 import pytest
 
-from trackinizer.lib.codec import immutable
 from trackinizer.wire.wire_sessions import (
     FeedCursor,
     FeedEvent,

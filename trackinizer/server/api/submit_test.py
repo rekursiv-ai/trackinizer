@@ -8,11 +8,12 @@ from unittest.mock import AsyncMock
 
 import uuid
 
+from treekle.codec import from_plain
+
 import asyncpg
 import pytest
 
 from trackinizer.conftest import executed_sql
-from trackinizer.lib.codec import from_plain
 from trackinizer.wire.bodies import SubmitBase
 
 

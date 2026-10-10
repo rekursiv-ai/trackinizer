@@ -47,8 +47,9 @@ import os
 import subprocess
 import threading
 
+from treekle.codec import ReadError, from_plain, loads
+
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.codec import ReadError, from_plain, loads
 from trackinizer.lib.userdirs import state_dir
 from trackinizer.trax.run.chat_sessions import ChatSessions
 from trackinizer.trax.run.inbound import render_fork_lines, render_inbound

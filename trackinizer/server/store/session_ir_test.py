@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
+from treekle.codec import immutable
+
 import pytest
 import pytest_asyncio
 
@@ -21,7 +23,6 @@ from trackinizer.lib.agent.types.sessions import (
     TurnContext,
     UserMessage,
 )
-from trackinizer.lib.codec import immutable
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_ir import SlashCommandRow

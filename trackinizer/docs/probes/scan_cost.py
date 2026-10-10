@@ -22,7 +22,8 @@ import argparse
 import statistics
 import time
 
-from trackinizer.lib.codec import from_plain
+from treekle.codec import from_plain
+
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.gemini import GeminiAdapter

@@ -10,9 +10,10 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
+from treekle.codec import from_plain
+
 import pytest
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     install_identity,

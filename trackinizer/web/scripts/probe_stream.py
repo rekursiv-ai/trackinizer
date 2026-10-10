@@ -41,9 +41,10 @@ import argparse
 import json
 import time
 
+from treekle.codec import from_plain, loads
+
 import httpx2
 
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.trax.profile import Profile, load_profile
 
 

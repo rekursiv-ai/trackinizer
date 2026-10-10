@@ -32,11 +32,12 @@ else:
 
     asyncpg = lazy_import("asyncpg")
 
+from treekle.codec import from_plain, loads
+
 import pytest
 import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine, make_conn, make_store, new_uuid
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.lib.postgres import Conn
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server import web

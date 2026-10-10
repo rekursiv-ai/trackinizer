@@ -44,6 +44,7 @@ import uuid
 
 from fastapi import FastAPI
 from starlette.responses import Response
+from treekle.codec import from_plain
 
 import httpx2
 import pytest
@@ -53,7 +54,6 @@ from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import SessionRecord, UserMessage
-from trackinizer.lib.codec import from_plain
 from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.lib.userdirs import state_dir

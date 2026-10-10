@@ -32,7 +32,8 @@ import math
 import string
 import uuid
 
-from trackinizer.lib.codec import from_plain, loads
+from treekle.codec import from_plain, loads
+
 from trackinizer.wire.bodies import BATCH_MAX_ITEMS
 
 

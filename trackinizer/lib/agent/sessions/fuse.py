@@ -39,13 +39,14 @@ from dataclasses import replace
 from pathlib import PurePath
 from typing import TYPE_CHECKING
 
+from treekle.codec import from_plain, immutable
+
 from trackinizer.lib.agent.types.sessions import (
     ContextClear,
     SessionRecord,
     TurnContext,
     UserMessage,
 )
-from trackinizer.lib.codec import from_plain, immutable
 
 
 if TYPE_CHECKING:

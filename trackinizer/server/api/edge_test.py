@@ -8,6 +8,7 @@ import asyncio
 import uuid
 
 from fastapi import HTTPException
+from treekle.codec import from_plain, loads
 
 import asyncpg
 import pytest
@@ -19,7 +20,6 @@ from trackinizer.conftest import (
     queue_field_rows,
     set_field_row,
 )
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api.app import app
 from trackinizer.server.api.edge import _edge_response, _set_edge_annotation
 from trackinizer.types.errors import ConflictError

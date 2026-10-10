@@ -11,11 +11,11 @@ import asyncio
 from configgle import Fig, Makes
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
+from treekle.codec import from_plain, loads
 
 from trackinizer.addons.addon import AddonManifest
 from trackinizer.addons.deployment import Deployment
 from trackinizer.conftest import make_store
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api import addons_routes, app
 from trackinizer.server.api.addons_routes import attach_deployment, deployment_of
 from trackinizer.server.api.app import _build_app, lifespan

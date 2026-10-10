@@ -13,10 +13,11 @@ from uuid import UUID, uuid4
 
 import json
 
+from treekle.codec import from_plain, loads
+
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.api.export_routes import export_lines
 from trackinizer.server.embedders.stub import StubEmbedder

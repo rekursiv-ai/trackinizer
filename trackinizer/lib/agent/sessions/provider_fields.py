@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import overload
 
-from trackinizer.lib.codec import ReadError, from_plain
+from treekle.codec import ReadError, from_plain
 
 
 __all__ = ["read_or_default"]

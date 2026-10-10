@@ -6,9 +6,10 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
+from treekle.codec import from_plain, loads
+
 import pytest
 
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api.conftest import (
     clear_identity_override,
     install_identity,

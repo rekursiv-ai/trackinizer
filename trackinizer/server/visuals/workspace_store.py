@@ -10,7 +10,8 @@ import hashlib
 import json
 import uuid
 
-from trackinizer.lib.codec import from_plain
+from treekle.codec import from_plain
+
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.notify import tx
 from trackinizer.server.visuals.chat_forks import (

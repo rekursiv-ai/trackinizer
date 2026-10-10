@@ -7,9 +7,10 @@ from typing import TYPE_CHECKING
 import json
 import uuid
 
+from treekle.codec import from_plain, loads
+
 import pytest
 
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     TEST_USER_ID,

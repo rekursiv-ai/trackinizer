@@ -14,11 +14,12 @@ import io
 import json
 import threading
 
+from treekle.codec import from_plain, loads
+
 import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.lib.agent.types.sessions import AssistantMessage, ToolCall, UserMessage
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.lib.posix.follow import follow_tree
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter, LineCapture

@@ -58,9 +58,9 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from treekle.absent import ABSENT
+from treekle.codec import from_plain
 
-from trackinizer.lib.absent import ABSENT
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.api._deps import get_store, tag_row
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api._routes_shared import parse_fields

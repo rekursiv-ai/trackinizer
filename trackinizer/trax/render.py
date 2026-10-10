@@ -11,7 +11,8 @@ import json
 import shutil
 import sys
 
-from trackinizer.lib.codec import from_plain
+from treekle.codec import from_plain
+
 from trackinizer.trax.context import err_stream, out_stream
 from trackinizer.types.edges import EDGE_POLICIES, Edge
 

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Self
 
 import math
 
-from trackinizer.lib.codec import from_plain
+from treekle.codec import from_plain
 
 
 if TYPE_CHECKING:

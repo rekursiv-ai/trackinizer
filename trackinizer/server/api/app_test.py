@@ -13,12 +13,12 @@ import time
 
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
+from treekle.codec import from_plain, loads
 
 import asyncpg
 import pytest
 
 from trackinizer.conftest import FakeEngine, make_store
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api import app
 from trackinizer.server.api.app import (
     RequestLoggingMiddleware,

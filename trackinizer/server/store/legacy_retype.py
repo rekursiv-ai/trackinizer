@@ -34,6 +34,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from treekle.codec import from_plain, immutable
+
 from trackinizer.lib.agent.types.sessions import (
     AgentToAgentMessage,
     AssistantMessage,
@@ -48,7 +50,6 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedToolResult,
     UserMessage,
 )
-from trackinizer.lib.codec import from_plain, immutable
 
 
 if TYPE_CHECKING:

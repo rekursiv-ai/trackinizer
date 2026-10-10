@@ -7,9 +7,10 @@ from typing import TYPE_CHECKING
 import asyncio
 import uuid
 
+from treekle.codec import from_plain, loads
+
 import pytest
 
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.chat_hub import (
     ChangedFrame,
     ChatHub,

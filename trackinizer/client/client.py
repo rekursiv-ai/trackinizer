@@ -45,11 +45,12 @@ import threading
 import time
 import uuid
 
+from treekle.absent import ABSENT, Absent
+from treekle.codec import PlainTree
+
 import httpx2
 
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.absent import ABSENT, Absent
-from trackinizer.lib.codec import PlainTree
 from trackinizer.types.inquiries import Inquiry, Issue
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
 from trackinizer.wire.routes import (

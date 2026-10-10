@@ -14,12 +14,13 @@ from uuid import UUID, uuid4
 
 import json
 
+from treekle.codec import from_plain, immutable, mutable
+
 import pytest
 import pytest_asyncio
 
 from trackinizer.lib.agent.types.sessions import UncategorizedRecord
 from trackinizer.lib.agent.types.stored import to_stored
-from trackinizer.lib.codec import from_plain, immutable, mutable
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.session_records import SessionRecordRow

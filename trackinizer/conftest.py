@@ -22,12 +22,12 @@ import uuid
 
 from pytest_postgresql.config import get_config
 from pytest_postgresql.exceptions import ExecutableMissingException
+from treekle.codec import from_plain
 
 import pytest
 import pytest_asyncio
 
 from trackinizer.lib import postgres
-from trackinizer.lib.codec import from_plain
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.lib.testing.resource_markers import pytest_collection_modifyitems
 from trackinizer.lib.testing.userdirs_fixture import (

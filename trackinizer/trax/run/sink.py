@@ -41,7 +41,8 @@ import sys
 import threading
 import time
 
-from trackinizer.lib.codec import PlainTree, immutable
+from treekle.codec import PlainTree, immutable
+
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.redact import redact_body
 from trackinizer.types.session_records import SessionRecordRow

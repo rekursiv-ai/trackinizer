@@ -18,6 +18,8 @@ from io import StringIO
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
+from treekle.codec import from_plain, immutable
+
 from trackinizer.lib.agent.sessions import (
     claude,
     codex,
@@ -27,7 +29,6 @@ from trackinizer.lib.agent.types.sessions import (
     SessionRecord,
     TurnContext,
 )
-from trackinizer.lib.codec import from_plain, immutable
 from trackinizer.trax.run.errors import (
     LossyConversionError,
     NotResumableError,

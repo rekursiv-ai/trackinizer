@@ -8,6 +8,8 @@ from typing import cast
 import inspect
 import json
 
+from treekle.codec import immutable
+
 import pytest
 
 from trackinizer.lib.agent.sessions import sagent
@@ -33,7 +35,6 @@ from trackinizer.lib.agent.types.sessions import (
     UserMessage,
     WebFetchResult,
 )
-from trackinizer.lib.codec import immutable
 
 
 def _read(*lines: dict[str, object] | str) -> list[SessionRecord]:

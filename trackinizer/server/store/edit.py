@@ -13,9 +13,10 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID
 
+from treekle.codec import from_plain
+
 import asyncpg
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
     upsert_embedding,

@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Final
 
 import json
 
+from treekle.codec import MutablePlainTree, from_plain, loads
+
 import pytest
 
 from trackinizer.lib.agent.sessions import codex
@@ -43,7 +45,6 @@ from trackinizer.lib.agent.types.sessions import (
     WebSearchResult,
     WebSearchResults,
 )
-from trackinizer.lib.codec import MutablePlainTree, from_plain, loads
 
 
 if TYPE_CHECKING:

@@ -16,8 +16,8 @@ from uuid import UUID
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from treekle.codec import from_plain
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.api._routes_shared import engine_of
 from trackinizer.server.api.machines_routes import (
     MachineName,

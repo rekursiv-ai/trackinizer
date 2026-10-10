@@ -34,8 +34,9 @@ from typing import TYPE_CHECKING, Final, Protocol, cast, get_args
 import argparse
 import json
 
+from treekle.codec import from_plain, loads
+
 from trackinizer.client.client import Client, server_url
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.trax.profile import load_profile
 from trackinizer.types.edges import EDGE_POLICIES, Edge
 from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry

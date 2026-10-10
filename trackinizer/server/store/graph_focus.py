@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
-from trackinizer.lib.codec import from_plain
+from treekle.codec import from_plain
 
 
 if TYPE_CHECKING:

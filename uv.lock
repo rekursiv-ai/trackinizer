@@ -1538,6 +1538,7 @@ dependencies = [
     { name = "torch", version = "2.14.1", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "torch", version = "2.14.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux'" },
     { name = "transformers" },
+    { name = "treekle" },
     { name = "uvicorn" },
     { name = "watchdog", marker = "sys_platform != 'linux'" },
     { name = "wrapt" },
@@ -1621,6 +1622,7 @@ requires-dist = [
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.11.0" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.11.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "transformers", specifier = ">=4.57.0" },
+    { name = "treekle", git = "https://github.com/rekursiv-ai/treekle?branch=main" },
     { name = "uvicorn", specifier = ">=0.30.0" },
     { name = "watchdog", marker = "sys_platform == 'darwin'", specifier = ">=6.0.0" },
     { name = "wrapt" },
@@ -1713,6 +1715,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/65/4c/70012ed0795235fb6
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b9/59/1e7f1212c215c73690ae6cab4678efe1555ff985953e145d88cc212859b0/transformers-5.19.0-py3-none-any.whl", hash = "sha256:afcd2dd5f603ed28c1e1fcb00a338ccbb4ef5f878ed289635df8b58187afb518", size = 12599123, upload-time = "2026-10-06T16:38:56.794Z" },
 ]
+
+[[package]]
+name = "treekle"
+version = "0.1.0"
+source = { git = "https://github.com/rekursiv-ai/treekle?branch=main#5f9be5952799e7e16f05a95bdc96c263124a181a" }
 
 [[package]]
 name = "trove-classifiers"

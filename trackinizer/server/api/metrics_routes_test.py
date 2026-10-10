@@ -11,9 +11,10 @@ from typing import TYPE_CHECKING
 
 import uuid
 
+from treekle.codec import from_plain, loads
+
 import pytest
 
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.wire.bodies import SubmitExperiment, SubmitIssue
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.wire_metrics import MetricPoint, experiment_metrics_path

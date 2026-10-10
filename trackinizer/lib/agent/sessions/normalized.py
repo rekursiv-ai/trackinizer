@@ -18,9 +18,10 @@ from typing import TYPE_CHECKING, TextIO
 
 import json
 
+from treekle.codec import from_plain, loads
+
 from trackinizer.lib.agent.types.sessions import SessionRecord
 from trackinizer.lib.agent.types.stored import to_stored
-from trackinizer.lib.codec import from_plain, loads
 
 
 if TYPE_CHECKING:

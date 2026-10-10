@@ -23,6 +23,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
+    "treekle",
     # database
     "asyncpg>=0.31.0",
     "py-pglite[asyncpg,extensions]>=0.5.3",
@@ -739,6 +740,7 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv.sources]
+treekle = { git = "https://github.com/rekursiv-ai/treekle", branch = "main" }
 rekursiv-ai-typeshed = { path = "packages/rekursiv-ai-typeshed" }
 # uv-only (stripped from the built wheel). Linux -> CPU wheel for lock/CI;
 # non-linux falls through to PyPI (macOS torch has no +cpu variant).

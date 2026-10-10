@@ -13,11 +13,12 @@ from typing import TYPE_CHECKING, Self, cast
 
 import uuid
 
+from treekle.absent import Absent
+from treekle.codec import PlainTree, from_plain
+
 import pytest
 
 from trackinizer.client.client import Client, EdgeWrite
-from trackinizer.lib.absent import Absent
-from trackinizer.lib.codec import PlainTree, from_plain
 from trackinizer.trax import cli
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import (

@@ -15,6 +15,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
+from treekle.codec import immutable
+
 import pytest
 import pytest_asyncio
 
@@ -26,7 +28,6 @@ from trackinizer.lib.agent.types.sessions import (
     ToolCall,
     UserMessage,
 )
-from trackinizer.lib.codec import immutable
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.inquiries import AgentSession

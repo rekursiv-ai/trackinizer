@@ -16,9 +16,10 @@ from uuid import UUID
 import collections
 import uuid
 
+from treekle.codec import from_plain
+
 import asyncpg
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.notify import (
     NOTIFICATION_BUFFER,
     Notification,

@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock
 import uuid
 
 from fastapi import HTTPException
+from treekle.codec import from_plain
 
 import pytest
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.api.conftest import install_identity, make_test_identity
 from trackinizer.server.api.locks import referenced_ids, require_unlocked
 from trackinizer.server.auth import AuthIdentity

@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING
 import uuid
 
 from fastapi import HTTPException
+from treekle.codec import from_plain
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.api._deps import get_store
 from trackinizer.wire.wire_science_chat import CHAT_SESSION_PREFIX
 

@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 
 import inspect
 
+from treekle.codec import from_plain, loads
+
 import asyncpg
 import pytest
 
@@ -19,7 +21,6 @@ from trackinizer.conftest import (
     new_uuid,
     queue_field_rows,
 )
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL

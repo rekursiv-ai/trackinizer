@@ -11,6 +11,8 @@ from unittest.mock import patch
 import base64
 import json
 
+from treekle.codec import ReadError, from_plain, loads
+
 import pytest
 
 from trackinizer.lib.agent.sessions import claude
@@ -44,7 +46,6 @@ from trackinizer.lib.agent.types.sessions import (
     WebSearchResult,
     WebSearchResults,
 )
-from trackinizer.lib.codec import ReadError, from_plain, loads
 
 
 if TYPE_CHECKING:

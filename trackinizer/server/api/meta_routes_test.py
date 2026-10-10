@@ -11,10 +11,10 @@ import subprocess
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from treekle.codec import from_plain, loads
 
 import pytest
 
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api import meta_routes
 from trackinizer.server.version import build_sha
 from trackinizer.types.columns import column_specs

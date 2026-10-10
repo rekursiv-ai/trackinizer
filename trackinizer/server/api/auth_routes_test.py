@@ -8,9 +8,10 @@ from unittest.mock import AsyncMock, _Call
 
 import uuid
 
+from treekle.codec import from_plain
+
 import pytest
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.api.app import app
 from trackinizer.server.auth import AuthIdentity, current_user, generate_token
 

@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Final
 
 import json
 
+from treekle.codec import from_plain
+
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex, fuse
@@ -19,7 +21,6 @@ from trackinizer.lib.agent.types.sessions import (
     TurnContext,
     UserMessage,
 )
-from trackinizer.lib.codec import from_plain
 
 
 if TYPE_CHECKING:

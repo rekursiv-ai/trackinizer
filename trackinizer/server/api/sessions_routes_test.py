@@ -18,11 +18,11 @@ import asyncio
 import uuid
 
 from fastapi import FastAPI
+from treekle.codec import from_plain, loads
 
 import httpx2
 import pytest
 
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.api import sessions_routes
 from trackinizer.server.api.app import app

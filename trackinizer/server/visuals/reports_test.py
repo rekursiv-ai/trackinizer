@@ -14,11 +14,11 @@ import re
 import uuid
 
 from pydantic import ValidationError
+from treekle.codec import from_plain
 
 import pytest
 
 from trackinizer.conftest import make_store, queue_field_rows
-from trackinizer.lib.codec import from_plain
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,

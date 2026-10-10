@@ -12,7 +12,8 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
-from trackinizer.lib.codec import from_plain
+from treekle.codec import from_plain
+
 from trackinizer.server.notify import tx
 from trackinizer.server.projection import (
     fetch_edges,

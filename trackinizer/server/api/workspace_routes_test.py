@@ -13,10 +13,10 @@ import json
 import uuid
 
 from starlette.requests import Request
+from treekle.codec import from_plain, loads
 
 import pytest
 
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api import workspace_routes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.canvas_test_support import (

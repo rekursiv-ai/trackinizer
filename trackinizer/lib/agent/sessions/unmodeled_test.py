@@ -9,16 +9,17 @@ import inspect
 import json
 import math
 
+from treekle.absent import ABSENT
+from treekle.codec import Invalid, loads
+
 import pytest
 
-from trackinizer.lib.absent import ABSENT
 from trackinizer.lib.agent.sessions.unmodeled import (
     extract_unmodeled_fields,
     read_field_keeping_invalid,
     restore_unmodeled_fields,
     same_json_value,
 )
-from trackinizer.lib.codec import Invalid, loads
 
 
 class TestLosslessFields:

@@ -39,6 +39,14 @@ jobs:
           uv run python -c "import trackinizer; print(trackinizer.__file__)"
           uv run python -m zipfile -l dist/trackinizer-*.whl | grep -q trackinizer/web/dist/index.html
 
+      # Resolve the wheel against PyPI alone -- a symbol that exists only on
+      # treekle main fails HERE, before an irreversible upload, instead of in a
+      # user's `pip install`.
+      - name: Validate against published dependencies
+        run: |
+          wheels=(dist/trackinizer-*.whl)
+          uv run --isolated --with "${wheels[0]}" python -P -c "import trackinizer"
+
       - name: Publish package
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:

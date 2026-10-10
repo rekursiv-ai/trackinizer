@@ -20,7 +20,18 @@ import base64
 import binascii
 import json
 
-from trackinizer.lib.absent import Absent
+from treekle.absent import Absent
+from treekle.codec import (
+    Invalid,
+    MutablePlainTree,
+    PlainTree,
+    ReadError,
+    from_plain,
+    immutable,
+    loads,
+    mutable,
+)
+
 from trackinizer.lib.agent.sessions.codex_orders import payload_orders
 from trackinizer.lib.agent.sessions.provider_fields import read_or_default
 from trackinizer.lib.agent.sessions.shell_results import (
@@ -63,16 +74,6 @@ from trackinizer.lib.agent.types.sessions import (
     WebFetchResult,
     WebSearchResult,
     WebSearchResults,
-)
-from trackinizer.lib.codec import (
-    Invalid,
-    MutablePlainTree,
-    PlainTree,
-    ReadError,
-    from_plain,
-    immutable,
-    loads,
-    mutable,
 )
 
 

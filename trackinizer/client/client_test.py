@@ -13,6 +13,8 @@ import json
 import logging
 import uuid
 
+from treekle.codec import PlainTree, from_plain, loads
+
 import httpx2
 import pytest
 
@@ -22,7 +24,6 @@ from trackinizer.client.client import (
     server_url,
 )
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.codec import PlainTree, from_plain, loads
 from trackinizer.trax import cli, profile
 from trackinizer.trax.conftest import FakeClient
 from trackinizer.trax.grammar import parse_kind, parse_ref

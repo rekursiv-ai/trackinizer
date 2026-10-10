@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID, uuid4
 
+from treekle.codec import PlainTree, immutable
+
 import pytest
 
 from trackinizer.client.client import Client
@@ -22,7 +24,6 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedRecord,
     UserMessage,
 )
-from trackinizer.lib.codec import PlainTree, immutable
 from trackinizer.trax.run.errors import (
     CiphertextDroppedError,
     LossyConversionError,

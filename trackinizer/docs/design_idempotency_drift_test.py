@@ -14,7 +14,8 @@ from typing import Final
 
 import re
 
-from trackinizer.lib.codec import from_plain
+from treekle.codec import from_plain
+
 from trackinizer.server.store.core import Store
 
 

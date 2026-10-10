@@ -26,8 +26,9 @@ import json
 import re
 import uuid
 
+from treekle.codec import from_plain
+
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.codec import from_plain
 from trackinizer.types.columns import flat_column_specs
 from trackinizer.types.inquiries import (
     CITATION_VALENCE_DEFAULT,

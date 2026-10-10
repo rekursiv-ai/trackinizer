@@ -13,6 +13,7 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from treekle.codec import from_plain, immutable
 
 import asyncpg
 import httpx2
@@ -20,7 +21,6 @@ import pytest
 
 from trackinizer.conftest import new_uuid
 from trackinizer.lib.agent.types.sessions import UserMessage
-from trackinizer.lib.codec import from_plain, immutable
 from trackinizer.server import web
 from trackinizer.server.api import (
     edit,

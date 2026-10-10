@@ -39,16 +39,17 @@ import logging
 import time
 import uuid
 
+from treekle.codec import from_plain
+
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.codec import from_plain
 from trackinizer.trax.profile import load_profile
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import Inquiry
 
 
 if TYPE_CHECKING:
-    from trackinizer.lib.codec import PlainTree
+    from treekle.codec import PlainTree
 
 
 _log = logging.getLogger(__name__)

@@ -7,11 +7,12 @@ from uuid import UUID, uuid4
 
 import json
 
+from treekle.codec import immutable, mutable
+
 import pytest
 import pytest_asyncio
 
 from trackinizer.lib import zstd_compat
-from trackinizer.lib.codec import immutable, mutable
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.semantic_mapper_footprint import HEAD_CHARS
 from trackinizer.server.store.core import Store

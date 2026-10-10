@@ -21,7 +21,7 @@ from typing import Final, cast, get_type_hints
 
 import weakref
 
-from trackinizer.lib.codec import (
+from treekle.codec import (
     MutablePlainTree,
     PlainTree,
     from_plain,

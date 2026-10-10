@@ -29,8 +29,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
-
-from trackinizer.lib.codec import ReadError, from_plain
+from treekle.codec import ReadError, from_plain
 
 
 if TYPE_CHECKING:

@@ -23,8 +23,8 @@ import re
 import secrets
 
 from fastapi import HTTPException, Request
+from treekle.codec import from_plain
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.server import auth
 from trackinizer.server.api._routes_shared import engine_of
 from trackinizer.types.errors import NotFoundError

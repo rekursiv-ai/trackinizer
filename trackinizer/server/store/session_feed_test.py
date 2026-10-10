@@ -15,6 +15,7 @@ import itertools
 import json
 
 from asyncpg.pool import PoolConnectionProxy
+from treekle.codec import mutable
 
 import pytest
 
@@ -23,7 +24,6 @@ from trackinizer.lib.agent.types.sessions import (
     Attachment,
     UserMessage,
 )
-from trackinizer.lib.codec import mutable
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     BucketGrid,

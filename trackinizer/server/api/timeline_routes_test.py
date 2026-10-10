@@ -7,9 +7,10 @@ from typing import TYPE_CHECKING
 
 import uuid
 
+from treekle.codec import from_plain, loads
+
 import pytest
 
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api.app import app
 from trackinizer.server.visuals.catalog import (
     StaticVisual,

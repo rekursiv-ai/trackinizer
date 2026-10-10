@@ -22,12 +22,13 @@ from typing import TYPE_CHECKING
 
 import uuid
 
+from treekle.codec import from_plain
+
 import asyncpg
 import pytest
 import pytest_asyncio
 
 from trackinizer.lib import postgres
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.sql import load_sql

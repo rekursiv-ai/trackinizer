@@ -11,6 +11,8 @@ are that union's, not the IR's: old ``text`` vs IR ``content``, old
 
 from __future__ import annotations
 
+from treekle.codec import immutable
+
 import pytest
 
 from trackinizer.lib.agent.types.sessions import (
@@ -26,7 +28,6 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedToolResult,
     UserMessage,
 )
-from trackinizer.lib.codec import immutable
 from trackinizer.server.store import legacy_retype
 from trackinizer.server.store.legacy_retype import (
     LEGACY_KINDS,

@@ -8,11 +8,12 @@ from typing import TYPE_CHECKING
 import asyncio
 import uuid
 
+from treekle.codec import from_plain, loads
+
 import httpx2
 import pytest
 
 from trackinizer.conftest import make_store
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.server.api import canvas_test_support
 from trackinizer.server.api.canvas_test_support import (
     KB_EMAIL,

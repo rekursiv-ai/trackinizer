@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast
 
 import asyncio
 
-from trackinizer.lib.codec import from_plain
+from treekle.codec import from_plain
 
 
 if TYPE_CHECKING:

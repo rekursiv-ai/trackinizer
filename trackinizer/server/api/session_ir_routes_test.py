@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 import uuid
 
 from fastapi import FastAPI
+from treekle.codec import from_plain, immutable
 
 import httpx2
 import pytest
@@ -26,7 +27,6 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedRecord,
     UserMessage,
 )
-from trackinizer.lib.codec import from_plain, immutable
 from trackinizer.server.api import session_ir_routes
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,

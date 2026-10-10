@@ -6,6 +6,8 @@ from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+from treekle.codec import from_plain, loads
+
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex, normalized
@@ -27,7 +29,6 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedToolResult,
     UserMessage,
 )
-from trackinizer.lib.codec import from_plain, loads
 
 
 if TYPE_CHECKING:

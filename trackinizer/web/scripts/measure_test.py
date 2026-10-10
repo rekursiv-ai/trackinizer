@@ -11,11 +11,12 @@ import argparse
 import gzip
 import json
 
+from treekle.codec import from_plain, loads
+
 import httpx2
 import pytest
 
 from trackinizer.lib import zstd_compat
-from trackinizer.lib.codec import from_plain, loads
 from trackinizer.trax.profile import Profile
 from trackinizer.web.scripts import measure as measurement
 from trackinizer.web.scripts.measure import (

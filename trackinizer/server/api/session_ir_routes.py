@@ -20,8 +20,8 @@ from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from treekle.codec import from_plain, immutable
 
-from trackinizer.lib.codec import from_plain, immutable
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.session_access import (
     require_chat_opener,

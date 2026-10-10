@@ -22,6 +22,16 @@ import base64
 import binascii
 import json
 
+from treekle.codec import (
+    MutablePlainTree,
+    PlainTree,
+    ReadError,
+    from_plain,
+    immutable,
+    loads,
+    mutable,
+)
+
 from trackinizer.lib.agent.sessions.claude_orders import (
     assistant_order,
     attachment_order,
@@ -73,15 +83,6 @@ from trackinizer.lib.agent.types.sessions import (
     WebFetchResult,
     WebSearchResult,
     WebSearchResults,
-)
-from trackinizer.lib.codec import (
-    MutablePlainTree,
-    PlainTree,
-    ReadError,
-    from_plain,
-    immutable,
-    loads,
-    mutable,
 )
 
 

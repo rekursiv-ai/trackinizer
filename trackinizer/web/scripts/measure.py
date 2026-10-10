@@ -50,10 +50,11 @@ import json
 import statistics
 import time
 
+from treekle.codec import PlainTree, ReadError, from_plain, loads
+
 import httpx2
 
 from trackinizer.lib import zstd_compat
-from trackinizer.lib.codec import PlainTree, ReadError, from_plain, loads
 from trackinizer.trax.profile import load_profile
 from trackinizer.web.scripts.mirror_local import source_token
 

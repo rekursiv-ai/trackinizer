@@ -17,11 +17,11 @@ from unittest.mock import Mock
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request
+from treekle.codec import from_plain
 
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.server import web
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.server.config import Config

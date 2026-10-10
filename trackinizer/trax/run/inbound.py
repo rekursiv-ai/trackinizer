@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import json
 
-from trackinizer.lib.codec import from_plain, loads
+from treekle.codec import from_plain, loads
 
 
 if TYPE_CHECKING:

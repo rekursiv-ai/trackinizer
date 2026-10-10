@@ -6,9 +6,10 @@ from typing import TYPE_CHECKING
 
 import uuid
 
+from treekle.codec import from_plain
+
 import pytest
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.sql import load_sql

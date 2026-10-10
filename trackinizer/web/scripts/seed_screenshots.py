@@ -39,6 +39,8 @@ import json
 import math
 import uuid
 
+from treekle.codec import from_plain
+
 from trackinizer.client.client import Client
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
@@ -47,7 +49,6 @@ from trackinizer.lib.agent.types.sessions import (
     ToolCall,
     UserMessage,
 )
-from trackinizer.lib.codec import from_plain
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.web.scripts.graph_structure import GRAPH_STRUCTURE, load
 from trackinizer.web.scripts.seed_graph import seed_graph
@@ -59,7 +60,8 @@ from trackinizer.wire.wire_sessions import SessionStart
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from trackinizer.lib.codec import PlainTree
+    from treekle.codec import PlainTree
+
     from trackinizer.types.inquiries import Inquiry
     from trackinizer.web.scripts.graph_structure import Structure
     from trackinizer.wire.wire_sessions import SessionEnd, SessionStartResponse

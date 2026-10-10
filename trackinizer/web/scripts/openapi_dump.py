@@ -30,9 +30,9 @@ import hashlib
 import json
 import sys
 
-import httpx2
+from treekle.codec import from_plain, loads
 
-from trackinizer.lib.codec import from_plain, loads
+import httpx2
 
 
 if TYPE_CHECKING:

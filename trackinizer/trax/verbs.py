@@ -15,8 +15,9 @@ import math
 import sys
 import uuid
 
+from treekle.codec import from_plain
+
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.codec import from_plain
 from trackinizer.trax import render
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import cwd, env

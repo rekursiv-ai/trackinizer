@@ -13,6 +13,8 @@ from io import StringIO
 
 import json
 
+from treekle.codec import from_plain, loads
+
 import pytest
 
 from trackinizer.lib.agent.sessions import gemini
@@ -29,7 +31,6 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedRecord,
     UserMessage,
 )
-from trackinizer.lib.codec import from_plain, loads
 
 
 def _content(record: SessionRecord) -> str:

@@ -13,10 +13,11 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import uuid
 
+from treekle.codec import from_plain
+
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     TEST_USER_ID,

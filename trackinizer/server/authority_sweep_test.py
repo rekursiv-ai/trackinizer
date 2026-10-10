@@ -6,10 +6,11 @@ from typing import TYPE_CHECKING
 
 import asyncio
 
+from treekle.codec import from_plain
+
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.codec import from_plain
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.authority_sweep import (
     authority_sweep_loop,

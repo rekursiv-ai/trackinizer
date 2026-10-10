@@ -18,10 +18,11 @@ import asyncio
 import json
 import re
 
+from treekle.codec import from_plain, mutable
+
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.codec import from_plain, mutable
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store import legacy_retype_runner
 from trackinizer.server.store.core import Store
