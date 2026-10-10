@@ -89,6 +89,7 @@
         ],
         "publication_type": null,
         "publish_date": "2026-01-01T00:00:00.000000+00:00",
+        "recorded": null,
         "seq": 1,
         "source": "https://example.com/paper",
         "status": "active",
@@ -120,6 +121,7 @@
         "produced_by": [],
         "produces": [],
         "proves": [],
+        "recorded": null,
         "rooms": null,
         "seq": 1,
         "started": null,
@@ -170,6 +172,7 @@
             "valence": 0.6
           }
         ],
+        "recorded": null,
         "seq": 1,
         "status": "active",
         "subscribers": null,
@@ -223,6 +226,7 @@
           }
         ],
         "proves": [],
+        "recorded": null,
         "seq": 1,
         "status": "active",
         "subscribers": null,
@@ -257,6 +261,7 @@
         "produced_by": [],
         "produces": [],
         "proves": [],
+        "recorded": null,
         "seq": 1,
         "status": "active",
         "subscribers": null,
@@ -288,6 +293,7 @@
         ],
         "produces": [],
         "proves": [],
+        "recorded": null,
         "seq": 2,
         "status": "active",
         "subscribers": [
@@ -339,6 +345,7 @@
             "note": null
           }
         ],
+        "recorded": null,
         "required_by": [],
         "requires": [],
         "seq": 1,
@@ -377,6 +384,7 @@
             "note": null
           }
         ],
+        "recorded": null,
         "required_by": [
           {
             "id": "00000000-0000-4000-8000-000000000003",
@@ -453,6 +461,7 @@
             "note": null
           }
         ],
+        "recorded": null,
         "required_by": [],
         "requires": [
           {
@@ -525,6 +534,7 @@
             "note": null
           }
         ],
+        "recorded": null,
         "required_by": [
           {
             "id": "00000000-0000-4000-8000-000000000003",

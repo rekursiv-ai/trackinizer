@@ -39,6 +39,7 @@
         "modified": "2026-01-01T00:00:00.000000+00:00",
         "owner": null,
         "priority": 0,
+        "recorded": null,
         "seq": 3,
         "status": "active",
         "subscribers": [

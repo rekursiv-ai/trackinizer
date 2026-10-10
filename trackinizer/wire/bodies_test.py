@@ -8,6 +8,8 @@ across modules.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import math
 
 from pydantic import ValidationError
@@ -52,6 +54,21 @@ class TestSubmitModels:
         assert SubmitCodeChange(title="c", sha="abc").labels is None
         assert SubmitWebResult(title="r", url="https://x").labels is None
         assert SubmitWebSearch(title="s", query="x").provider is None
+
+    def test_recorded_defaults_to_absent_and_keeps_its_offset(self) -> None:
+        """Unset means "born here"; a set one is stored as the client meant it."""
+        assert SubmitIssue(title="x").recorded is None
+        declared = datetime(2026, 7, 14, 9, 0, tzinfo=timezone(timedelta(hours=5.5)))
+        assert SubmitIssue(title="x", recorded=declared).recorded == declared
+
+    def test_naive_recorded_rejected_on_submit(self) -> None:
+        """A worklog date with no zone has no single meaning, so it is refused.
+
+        Assuming UTC would silently shift a backfilled corpus by up to a day,
+        and the caller is the only party that knows which zone it meant.
+        """
+        with pytest.raises(ValueError, match="timezone"):
+            SubmitIssue(title="x", recorded=datetime(2026, 7, 14, 9, 0))  # noqa: DTZ001
 
     def test_blank_actor_rejected_on_submit(self) -> None:
         """A blank (whitespace-only) ``actor`` is malformed input (F18).

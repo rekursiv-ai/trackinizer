@@ -116,6 +116,10 @@ CHANGE_LOG_COLUMN_ORDER: Final[tuple[str, ...]] = (
     "agentsession_started",
     "agentsession_ended",
     "agentsession_rooms",
+    # Appended rather than filed with the other base columns: this order is
+    # the change_log's physical column order, and inserting mid-list would
+    # renumber every mirror column after it for no gain.
+    "recorded",
 )
 
 _EDGE_METADATA_COLUMN_ORDER: Final[tuple[str, ...]] = (

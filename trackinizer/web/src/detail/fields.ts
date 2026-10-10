@@ -159,6 +159,7 @@ const LOOKS: { readonly [field: string]: FieldLook } = {
   started: { label: "Started", place: "details" },
   // A session with no end is still running, as the old UI's "live" said.
   ended: { label: "Ended", place: "details", format: "date", unset: "Live" },
+  recorded: { label: "Recorded", place: "details" },
   rooms: { label: "Rooms", place: "details" },
   codechanges: { label: "Code changes", place: "details" },
   opened_by_api_key_id: { label: "Opened by key", place: "details", mono: true },

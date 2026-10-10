@@ -414,6 +414,7 @@
         },
         "modified": "2026-01-01T00:00:00.000000+00:00",
         "owner": null,
+        "recorded": null,
         "seq": 1,
         "status": "active",
         "subscribers": null,

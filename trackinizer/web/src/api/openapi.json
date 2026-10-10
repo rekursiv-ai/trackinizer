@@ -5520,6 +5520,18 @@
               }
             ]
           },
+          "recorded": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded"
+          },
           "status": {
             "anyOf": [
               {
@@ -5705,6 +5717,18 @@
               }
             ]
           },
+          "recorded": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded"
+          },
           "rooms": {
             "anyOf": [
               {
@@ -5846,6 +5870,18 @@
                 "type": "null"
               }
             ]
+          },
+          "recorded": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded"
           },
           "status": {
             "anyOf": [
@@ -6080,6 +6116,18 @@
             "title": "Proved By",
             "type": "array"
           },
+          "recorded": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded"
+          },
           "status": {
             "anyOf": [
               {
@@ -6195,6 +6243,18 @@
                 "type": "null"
               }
             ]
+          },
+          "recorded": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded"
           },
           "sha": {
             "anyOf": [
@@ -6361,6 +6421,18 @@
               }
             ]
           },
+          "recorded": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded"
+          },
           "status": {
             "anyOf": [
               {
@@ -6526,6 +6598,18 @@
                 "type": "null"
               }
             ]
+          },
+          "recorded": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded"
           },
           "requires": {
             "items": {
@@ -6731,6 +6815,18 @@
             ],
             "title": "Publish Date"
           },
+          "recorded": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded"
+          },
           "source": {
             "anyOf": [
               {
@@ -6880,6 +6976,18 @@
               }
             ]
           },
+          "recorded": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded"
+          },
           "status": {
             "anyOf": [
               {
@@ -7028,6 +7136,18 @@
               }
             ],
             "title": "Query"
+          },
+          "recorded": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recorded"
           },
           "status": {
             "anyOf": [
@@ -8410,6 +8530,7 @@
           "account",
           "subscribers",
           "marginal_cost",
+          "recorded",
           "issue_kind",
           "issue_validation",
           "issue_priority",
@@ -13043,6 +13164,104 @@
           }
         },
         "summary": "Proves Belief Route"
+      }
+    },
+    "/api/inquiries/{target_id}/recorded": {
+      "delete": {
+        "operationId": "unset_recorded_route_api_inquiries__target_id__recorded_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Target Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FieldMutation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MutableJSON"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unset Recorded Route"
+      },
+      "put": {
+        "operationId": "set_recorded_route_api_inquiries__target_id__recorded_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Target Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FieldSet_Union_datetime__NoneType__"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MutableJSON"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Recorded Route"
       }
     },
     "/api/inquiries/{target_id}/status": {
