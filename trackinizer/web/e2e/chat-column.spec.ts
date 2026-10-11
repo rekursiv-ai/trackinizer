@@ -128,7 +128,7 @@ test("the shortcut hides Chat to a strip in the accent colour; the strip shows i
   await expect(column).toBeHidden();
   await expect(strip).toBeVisible();
   const thin = await box(strip);
-  expect(Math.round(thin.width)).toBe(8);
+  expect(Math.round(thin.width)).toBe(16);
   expect(Math.round(thin.height)).toBe(Math.round(shown.height));
   // The workbench takes the room Chat left, less the strip.
   expect(Math.round((await box(stage)).width)).toBeGreaterThan(Math.round(shown.width));

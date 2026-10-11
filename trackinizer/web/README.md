@@ -312,7 +312,7 @@ with one response shape, so the fixtures take one per verb.
   screen, lives with the side in one store (`src/visuals/chatColumn.ts`), so a
   reload shows Chat. `Ctrl+\` (⌘\) and the Hide button in its header hide it,
   and three docked columns in the workbench hide it until one goes; hidden,
-  it leaves an 8 px strip in the accent colour at its edge, and a press on the
+  it leaves a 16 px strip in the accent colour at its edge, and a press on the
   strip shows it. An agent hides and shows it with a `chat` frame
   (`{type: "chat", hidden, t}`, routed to the store by `CanvasStream`; a hide leaves
   full screen, a show keeps the side, and a reload shows Chat). Resting the pointer

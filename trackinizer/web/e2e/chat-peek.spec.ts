@@ -49,7 +49,7 @@ test("a chat frame hides Chat to its strip and a later one shows it again, the s
   await pushChat(page, true);
   await expect(column).toBeHidden();
   await expect(strip).toBeVisible();
-  expect(Math.round((await box(strip)).width)).toBe(8);
+  expect(Math.round((await box(strip)).width)).toBe(16);
   expect((await box(stage)).width).toBeGreaterThan(beside.width);
   await pushChat(page, false);
   await expect(column).toBeVisible();

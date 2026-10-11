@@ -10,7 +10,7 @@
 .chat-column-edge { position: relative; z-index: 5; flex: 0 0 6px; margin: 0 -3px; cursor: col-resize; touch-action: none; }
 .chat-column-edge:hover, .chat-column-edge:focus-visible, .chat-column-edge:active { background: var(--accent); outline: 0; }
 /* Hidden, Chat leaves this strip at its edge, in the accent colour: pressing it shows Chat. */
-.chat-strip { flex: 0 0 8px; padding: 0; border: 0; background: var(--accent); cursor: pointer; }
+.chat-strip { flex: 0 0 16px; padding: 0; border: 0; background: var(--accent); cursor: pointer; }
 .chat-strip:hover, .chat-strip:focus-visible { background: var(--accent-hover); outline: 0; }
 /* Hidden, hovering the strip opens Chat over the workbench at its column width, which the workbench does not give way to. */
 .chat-column-peek { position: absolute; z-index: 30; top: 0; bottom: 0; width: var(--chat-width, min(33.333vw, calc(80ch + 24px))); background: var(--bg); box-shadow: 0 16px 48px #0008; }
