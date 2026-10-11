@@ -28,9 +28,9 @@ from treekle import (
     ReadError,
     from_plain,
     immutable,
+    json_loads,
     mutable,
 )
-from treekle.wire import json_loads
 
 from trackinizer.lib.agent.sessions.claude_orders import (
     assistant_order,

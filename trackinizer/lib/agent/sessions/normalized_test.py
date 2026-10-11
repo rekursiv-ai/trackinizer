@@ -6,8 +6,7 @@ from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from treekle import from_plain
-from treekle.wire import json_loads
+from treekle import from_plain, json_loads
 
 import pytest
 

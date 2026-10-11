@@ -41,8 +41,7 @@ import argparse
 import json
 import time
 
-from treekle import from_plain
-from treekle.wire import json_loads
+from treekle import from_plain, json_loads
 
 import httpx2
 

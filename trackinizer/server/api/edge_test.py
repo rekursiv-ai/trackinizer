@@ -8,8 +8,7 @@ import asyncio
 import uuid
 
 from fastapi import HTTPException
-from treekle import from_plain
-from treekle.wire import json_loads
+from treekle import from_plain, json_loads
 
 import asyncpg
 import pytest

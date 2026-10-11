@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import inspect
 
-from treekle.wire import json_loads
+from treekle import json_loads
 
 import asyncpg
 import pytest

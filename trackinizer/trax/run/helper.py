@@ -47,8 +47,7 @@ import os
 import subprocess
 import threading
 
-from treekle import ReadError, from_plain
-from treekle.wire import json_loads
+from treekle import ReadError, from_plain, json_loads
 
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.userdirs import state_dir

@@ -30,7 +30,7 @@ import hashlib
 import json
 import sys
 
-from treekle.wire import json_loads
+from treekle import json_loads
 
 import httpx2
 

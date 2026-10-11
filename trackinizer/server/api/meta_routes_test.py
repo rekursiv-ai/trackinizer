@@ -11,8 +11,7 @@ import subprocess
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from treekle import from_plain
-from treekle.wire import json_loads
+from treekle import from_plain, json_loads
 
 import pytest
 

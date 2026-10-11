@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, TypedDict
 import asyncio
 import uuid
 
-from treekle.wire import json_loads
+from treekle import json_loads
 
 import pytest
 

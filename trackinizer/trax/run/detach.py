@@ -40,8 +40,7 @@ import socket
 import sys
 import time
 
-from treekle import to_plain
-from treekle.wire import json_loads
+from treekle import json_loads, to_plain
 
 from trackinizer.lib.posix.attach import attach, stop, submit
 from trackinizer.lib.posix.host import HostSpec

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import asyncio
 import uuid
 
-from treekle.wire import json_loads
+from treekle import json_loads
 
 import httpx2
 import pytest

@@ -11,7 +11,7 @@ import asyncio
 from configgle import Fig, Makes
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
-from treekle.wire import json_loads
+from treekle import json_loads
 
 from trackinizer.addons.addon import AddonManifest
 from trackinizer.addons.deployment import Deployment

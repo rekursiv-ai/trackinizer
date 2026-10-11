@@ -8,8 +8,7 @@ from unittest.mock import patch
 
 import subprocess
 
-from treekle import PlainTree, from_plain, immutable
-from treekle.wire import json_loads
+from treekle import PlainTree, from_plain, immutable, json_loads
 
 import pytest
 

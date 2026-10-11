@@ -27,10 +27,10 @@ from treekle import (
     ReadError,
     from_plain,
     immutable,
+    json_loads,
     mutable,
 )
 from treekle.absent import Absent
-from treekle.wire import json_loads
 
 from trackinizer.lib.agent.sessions.codex_orders import payload_orders
 from trackinizer.lib.agent.sessions.provider_fields import read_or_default

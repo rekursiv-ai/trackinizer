@@ -34,8 +34,7 @@ import sys
 import time
 import uuid
 
-from treekle import PlainTree, from_plain, mutable
-from treekle.wire import json_loads
+from treekle import PlainTree, from_plain, json_loads, mutable
 
 import httpx2
 import pytest

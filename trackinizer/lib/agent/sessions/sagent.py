@@ -27,8 +27,7 @@ from typing import TYPE_CHECKING
 
 import json
 
-from treekle import ReadError, from_plain, immutable
-from treekle.wire import json_loads
+from treekle import ReadError, from_plain, immutable, json_loads
 
 from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,

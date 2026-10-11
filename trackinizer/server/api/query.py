@@ -21,8 +21,7 @@ import uuid
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import TypeAdapter
-from treekle import from_plain
-from treekle.wire import json_loads
+from treekle import from_plain, json_loads
 
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.server.api._deps import get_store, tag_kind, tag_row

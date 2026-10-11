@@ -55,7 +55,7 @@ import threading
 import time
 import zlib
 
-from treekle.wire import json_loads
+from treekle import json_loads
 
 from trackinizer.lib.posix.relay import ThreadedRelay
 

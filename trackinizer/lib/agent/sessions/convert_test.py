@@ -16,8 +16,7 @@ import threading
 import time
 import tracemalloc
 
-from treekle import from_plain
-from treekle.wire import json_loads
+from treekle import from_plain, json_loads
 
 import psutil
 import pytest

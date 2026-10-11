@@ -7,8 +7,7 @@ from typing import Final
 
 import json
 
-from treekle import from_plain
-from treekle.wire import json_loads
+from treekle import from_plain, json_loads
 
 from trackinizer.server.visuals.catalog import default_catalog
 

@@ -32,8 +32,7 @@ import math
 import string
 import uuid
 
-from treekle import from_plain
-from treekle.wire import json_loads
+from treekle import from_plain, json_loads
 
 from trackinizer.wire.bodies import BATCH_MAX_ITEMS
 

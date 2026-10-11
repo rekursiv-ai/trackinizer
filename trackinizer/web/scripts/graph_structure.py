@@ -34,8 +34,7 @@ from typing import TYPE_CHECKING, Final, Protocol, cast, get_args
 import argparse
 import json
 
-from treekle import from_plain
-from treekle.wire import json_loads
+from treekle import from_plain, json_loads
 
 from trackinizer.client.client import Client, server_url
 from trackinizer.trax.profile import load_profile

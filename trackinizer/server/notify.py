@@ -12,8 +12,7 @@ import asyncio
 import json
 import logging
 
-from treekle import from_plain
-from treekle.wire import json_loads
+from treekle import from_plain, json_loads
 
 import asyncpg
 

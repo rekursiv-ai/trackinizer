@@ -370,7 +370,7 @@ def daemon_source_version() -> str:
 
     Measured on this package's 184 modules: 2.0ms median, against 4.4ms for
     the stat-only walk over every file this replaced and 11.6ms for hashing
-    every file; the 10 modules beside it add no measurable time. A checkout
+    every file; the 17 modules beside it add no measurable time. A checkout
     whose modules all share one tick, the most this ever reads, costs 4.8ms.
 
     Returns:

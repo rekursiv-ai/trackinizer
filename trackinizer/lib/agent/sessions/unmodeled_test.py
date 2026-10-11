@@ -9,9 +9,8 @@ import inspect
 import json
 import math
 
-from treekle import Invalid
+from treekle import Invalid, json_loads
 from treekle.absent import ABSENT
-from treekle.wire import json_loads
 
 import pytest
 

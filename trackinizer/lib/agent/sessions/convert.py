@@ -35,7 +35,7 @@ import sys
 import threading
 import time
 
-from treekle.wire import json_loads
+from treekle import json_loads
 
 from trackinizer.lib.agent.sessions import claude, codex, gemini, normalized, sagent
 from trackinizer.lib.agent.sessions.fuse import chain, fuse, names_of, unfuse

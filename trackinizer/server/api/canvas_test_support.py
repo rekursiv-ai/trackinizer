@@ -13,8 +13,7 @@ from typing import TYPE_CHECKING, Final
 
 import uuid
 
-from treekle import from_plain
-from treekle.wire import json_loads
+from treekle import from_plain, json_loads
 
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (

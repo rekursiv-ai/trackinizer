@@ -17,8 +17,14 @@ from uuid import NAMESPACE_DNS, UUID, uuid5
 
 import json
 
-from treekle import MutablePlainTree, ReadError, from_plain, immutable, mutable
-from treekle.wire import json_loads
+from treekle import (
+    MutablePlainTree,
+    ReadError,
+    from_plain,
+    immutable,
+    json_loads,
+    mutable,
+)
 
 from trackinizer.lib.agent.sessions.provider_fields import read_or_default
 from trackinizer.lib.agent.sessions.unmodeled import extract_unmodeled_fields

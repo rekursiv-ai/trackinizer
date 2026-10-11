@@ -19,7 +19,7 @@ from uuid import UUID
 
 import asyncio
 
-from treekle.wire import json_loads
+from treekle import json_loads
 
 import pytest
 

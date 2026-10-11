@@ -14,7 +14,7 @@ from typing import TypedDict
 
 import json
 
-from treekle.wire import json_loads
+from treekle import json_loads
 
 import pytest
 

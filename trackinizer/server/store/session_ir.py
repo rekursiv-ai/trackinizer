@@ -22,8 +22,7 @@ from uuid import UUID
 
 import json
 
-from treekle import PlainTree, immutable, mutable
-from treekle.wire import json_loads
+from treekle import PlainTree, immutable, json_loads, mutable
 
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.cascade import _CascadeAuditMixin
