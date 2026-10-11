@@ -118,6 +118,15 @@ test("export this browser's state, then import it into a fresh browser", async (
   await fresh.close();
 });
 
+test("Close takes the tab back to the page it was on before Settings", async ({ page }) => {
+  await page.goto("/app/#/list/Issue");
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await page.getByRole("navigation", { name: "Sidebar" }).getByRole("link", { name: "Your settings" }).click();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Your settings");
+  await page.getByRole("link", { name: "Close settings" }).click();
+  await expect(page).toHaveURL(/#\/list\/Issue$/);
+});
+
 // Sign out itself is the unit tests' (src/settings/index.test.tsx): this server
 // signs nobody in.
 test("under --no-auth, where nobody signs in, settings offer no sign out", async ({ page }) => {

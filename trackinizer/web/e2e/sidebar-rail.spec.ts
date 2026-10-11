@@ -89,7 +89,7 @@ async function middle(locator: Locator): Promise<[number, number]> {
 }
 
 for (const side of ["right", "left"] as const) {
-  test(`at the ${side}, the pin button stays put as the rail opens and is pinned, over a row of Search and New above Graph`, async ({ page }) => {
+  test(`at the ${side}, the pin button stays put as the rail opens and is pinned, over Search and then New, each a row, above Graph`, async ({ page }) => {
     const { sidebar, app } = await open(page);
     if (side === "left") await page.locator(".chat-column").getByRole("button", { name: "Move Chat to the right" }).click();
     const pin = sidebar.locator(".panel-toggle");
@@ -100,15 +100,31 @@ for (const side of ["right", "left"] as const) {
     await pin.click();
     await expect(app).not.toHaveClass(/sidebar-collapsed/);
     expect(await middle(pin)).toEqual(rail);
+    // Search, then New on a row of its own under it, then Graph; each as wide as the other.
     const search = await box(sidebar.getByRole("button", { name: "Search" }));
-    const create = await middle(sidebar.getByRole("button", { name: /^New / }));
+    const create = await box(sidebar.getByRole("button", { name: /^New / }));
     const header = await box(pin);
     expect(search.y).toBeGreaterThanOrEqual(header.y + header.height);
-    expect(create[1]).toBe(Math.round(search.y + search.height / 2));
-    expect((await box(sidebar.getByRole("link", { name: "Graph" }))).y).toBeGreaterThanOrEqual(search.y + search.height);
+    expect(create.y).toBeGreaterThanOrEqual(search.y + search.height);
+    expect(Math.round(create.width)).toBe(Math.round(search.width));
+    await expect(sidebar.getByRole("button", { name: /^New / })).toContainText("New issue");
+    expect((await box(sidebar.getByRole("link", { name: "Graph" }))).y).toBeGreaterThanOrEqual(create.y + create.height);
     await forget(page);
   });
 }
+
+test("pinned open, the Workbench section starts folded, and its heading unfolds it", async ({ page }) => {
+  const { sidebar, app } = await open(page);
+  await sidebar.getByRole("button", { name: "Expand sidebar" }).click();
+  await page.mouse.move(300, 400);
+  await expect(app).not.toHaveClass(/sidebar-collapsed/);
+  const heading = sidebar.locator(".nav-section-h", { hasText: "Workbench" });
+  await expect(heading).toHaveAttribute("aria-expanded", "false");
+  await expect(sidebar.getByRole("checkbox", { name: /Browse/ })).toBeHidden();
+  await heading.click();
+  await expect(heading).toHaveAttribute("aria-expanded", "true");
+  await expect(sidebar.getByRole("checkbox", { name: /Browse/ })).toBeVisible();
+});
 
 test("the rail shows one Workbench icon that opens the sidebar on the visual toggles; there they work", async ({ page }) => {
   const { sidebar, app } = await open(page);

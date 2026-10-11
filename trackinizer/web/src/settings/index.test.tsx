@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import noAuth from "../../test/testdata/me/getProfile.json";
 import { LOGIN_URL } from "../app/session";
 import { chooseChatStyle } from "../chatStyle";
+import { startTrail } from "../router/trail";
 import { chooseTheme, installTheme } from "../theme";
 import { SettingsView } from ".";
 import { FAST, profile, renderScreen, serveAccount } from "./testing";
@@ -42,6 +43,28 @@ test("the page shows the profile, refetched on open, and every section", async (
     "Session",
   ]);
   await waitFor(() => expect(server.reads("/api/me/profile")).toBe(1), FAST);
+});
+
+test("Close goes back to the last page before Settings, or to the graph when there was none", async () => {
+  serveAccount(ADA);
+  const close = () => screen.getByRole("link", { name: "Close settings" }).getAttribute("href");
+  history.replaceState(null, "", "#/settings");
+  let stop = startTrail();
+  renderScreen(<SettingsView assign={vi.fn()} />, ADA);
+  expect(close()).toBe("#/graph");
+  cleanup();
+  stop();
+  history.replaceState(null, "", "#/list/Paper");
+  stop = startTrail();
+  for (const hash of ["#/admin", "#/settings"]) {
+    location.hash = hash;
+    await waitFor(() => expect(location.hash).toBe(hash));
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+  }
+  renderScreen(<SettingsView assign={vi.fn()} />, ADA);
+  expect(close()).toBe("#/list/Paper");
+  stop();
+  history.replaceState(null, "", "#/");
 });
 
 test("agent workspace opt-in updates the account preference", async () => {

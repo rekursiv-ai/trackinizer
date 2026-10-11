@@ -147,21 +147,19 @@ kbd {
   padding: 3px 6px; border-radius: var(--radius); font-weight: 600; font-size: 13.5px;
 }
 a.ws-switch:hover { background: var(--surface-raised); }
-/* Search and New, the row under the logo's. Search reads as a field, its keys at its end. */
-.sidebar-tools { display: flex; align-items: center; gap: 4px; margin-bottom: 10px; }
-.sidebar-search {
-  display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; height: 28px; padding: 0 4px 0 8px;
+/* Search, then New, each a row of its own under the logo's, each with its keys at its end. */
+.sidebar-tools { display: flex; flex-direction: column; align-items: stretch; gap: 4px; margin-bottom: 10px; }
+.sidebar-search, .sidebar-new {
+  display: flex; align-items: center; gap: 8px; min-width: 0; height: 28px; padding: 0 4px 0 8px;
   border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface-raised);
   font-size: 13px; color: var(--muted); text-align: left;
 }
-.sidebar-search:hover { color: var(--text); }
-.sidebar-search > .label { flex: 1; }
+.sidebar-search:hover, .sidebar-new:hover:not(:disabled) { color: var(--text); }
+.sidebar-search > .label, .sidebar-new > .label { flex: 1; }
 .ws-mark { width: 22px; height: 22px; flex-shrink: 0; color: var(--accent); }
 .ws-mark .ws-filament { color: var(--text); }
-/* The sidebar's compose button: here, not in create.css, which loads with the
-   create form's chunk. Its color is .icon-btn's. */
-.compose-btn { border: 1px solid var(--line-strong); background: var(--surface-raised); }
-.compose-btn:disabled { opacity: .45; cursor: default; }
+/* The sidebar's New row: here, not in create.css, which loads with the create form's chunk. */
+.sidebar-new:disabled { opacity: .45; cursor: default; }
 .icon-btn {
   width: 28px; height: 28px; border-radius: var(--radius); display: inline-grid; place-items: center;
   color: var(--muted); flex-shrink: 0;
@@ -220,10 +218,11 @@ a.ws-switch:hover { background: var(--surface-raised); }
   .app.sidebar-collapsed { grid-template-columns: 48px minmax(0, 1fr); }
   .app.sidebar-collapsed:not(.sidebar-peek) .sidebar { padding: 10px 6px 12px; }
   .app.sidebar-collapsed:not(.sidebar-peek) .ws-row { flex-direction: column; margin-bottom: 2px; }
-  .app.sidebar-collapsed:not(.sidebar-peek) .sidebar-tools { flex-direction: column; margin-bottom: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
-  .app.sidebar-collapsed:not(.sidebar-peek) .sidebar-search { flex: none; width: 28px; padding: 0; justify-content: center; border: 0; background: none; }
+  .app.sidebar-collapsed:not(.sidebar-peek) .sidebar-tools { align-items: center; margin-bottom: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  .app.sidebar-collapsed:not(.sidebar-peek) :is(.sidebar-search, .sidebar-new) { width: 28px; padding: 0; justify-content: center; }
+  .app.sidebar-collapsed:not(.sidebar-peek) .sidebar-search { border: 0; background: none; }
   .app.sidebar-collapsed:not(.sidebar-peek) .sidebar-search:hover { background: var(--surface-hover); }
-  .app.sidebar-collapsed:not(.sidebar-peek) :is(.ws-switch, .sidebar-search > .label, .sidebar-search > kbd, .nav-section-h, .nav-item > .label, .me-email, .role-chip) { display: none; }
+  .app.sidebar-collapsed:not(.sidebar-peek) :is(.ws-switch, .sidebar-search > .label, .sidebar-search > kbd, .sidebar-new > .label, .sidebar-new > kbd, .nav-section-h, .nav-item > .label, .me-email, .role-chip) { display: none; }
   .app.sidebar-collapsed:not(.sidebar-peek) .nav-item { justify-content: center; padding: 8px 0; }
   .app.sidebar-collapsed:not(.sidebar-peek) .nav-section { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--line); }
   /* A section its heading folded shows its entries all the same: the heading

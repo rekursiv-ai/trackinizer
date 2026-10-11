@@ -513,14 +513,15 @@ with one response shape, so the fixtures take one per verb.
   Chat's folded tile, `useHoverOpen`), and a link followed folds it at once. The
   button beside the logo, or ⌘B (Ctrl+B), as VS Code's primary side bar does,
   pins it open, taking room from the workbench. It stands at the sidebar's outer
-  edge, so it stays put as the rail opens and folds, over a row of Search and
-  New; `[` and `]` stay each view's own. The graph frames again in the width a
-  pin gives. While a workbench is mounted
-  the sidebar has a Workbench section: the visual toggles and the Artifact
-  link (the section's body is a slot, `src/app/workbenchSlot.tsx`, that the
-  canvas draws into). In the rail it is one icon, which opens the sidebar on
-  its controls. Narrow, the sidebar is the drawer, whole, whether collapsed or
-  not, and has no collapse button.
+  edge, so it stays put as the rail opens and folds, over Search and then New,
+  each a row of its own with its key; `[` and `]` stay each view's own. The
+  graph frames again in the width a pin gives. While a workbench is mounted the
+  sidebar has a Workbench section, folded at first: the visual toggles and the
+  Artifact link (the section's body is a slot, `src/app/workbenchSlot.tsx`, that
+  the canvas draws into). In the rail it is one icon, which opens the sidebar on
+  its controls, unfolded. Settings has a Close link in its header, back to the
+  last page before Settings or Admin, or the graph. Narrow, the sidebar is the
+  drawer, whole, whether collapsed or not, and has no collapse button.
 - The sun or moon beside the user, in the sidebar or its rail, switches the
   theme to light or dark; Settings' Appearance also offers System, and shows
   a switch made here at once (`useTheme` in `src/theme.ts`).

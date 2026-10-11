@@ -209,13 +209,17 @@ test("a canvas puts its controls in the sidebar's Workbench section, and the rai
   await act(async () => loaded.release());
   await screen.findByRole("region", { name: "Canvas" });
   const sidebar = screen.getByRole("navigation", { name: "Sidebar" });
-  const section = within(sidebar).getByText("Workbench", { selector: ".nav-section-h" }).closest(".nav-section") as HTMLElement;
+  const heading = within(sidebar).getByText("Workbench", { selector: ".nav-section-h" });
+  const section = heading.closest(".nav-section") as HTMLElement;
   expect(section.hidden).toBe(false);
   expect(within(section).getByRole("checkbox", { name: "Note" })).toBeTruthy();
+  // Folded at first, as its heading says; the rail's icon unfolds it.
+  expect(heading.getAttribute("aria-expanded")).toBe("false");
   const icon = within(section).getByTitle("Workbench");
   expect(document.querySelector(".app")!.classList).toContain("sidebar-collapsed");
   fireEvent.click(icon);
   expect(document.querySelector(".app")!.classList).toContain("sidebar-peek");
+  expect(heading.getAttribute("aria-expanded")).toBe("true");
   await waitFor(() => expect(document.activeElement).toBe(within(section).getByRole("checkbox", { name: "Note" })), { interval: 1 });
 });
 

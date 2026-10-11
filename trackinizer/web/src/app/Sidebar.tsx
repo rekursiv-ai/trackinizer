@@ -23,9 +23,9 @@ export const SIDEBAR: PanelSpec = { id: "app.sidebar", name: "sidebar", side: "l
 const SIDEBAR_ID = "app-sidebar";
 
 /**
- * The sidebar: the logo, a row of Search and New, Graph (the home view),
- * Console, Activity, one Browse entry per kind, the Workbench section (the
- * canvas's visuals and Artifact link, while a canvas is mounted), Settings
+ * The sidebar: the logo, Search, New, Graph (the home view), Console,
+ * Activity, one Browse entry per kind, the Workbench section (the canvas's
+ * visuals and Artifact link, while a canvas is mounted, folded at first), Settings
  * (with Admin for admins only), and the signed-in user. The mock's other
  * entries (Starred, Notifications, Views, Later) belong to later phases and
  * stay out until those ship. The button beside the logo, at the sidebar's
@@ -48,6 +48,8 @@ export function Sidebar({ onNavigate, onWorkbench, panel }: {
   const currentKind = route.name === "list" || route.name === "ref" ? route.kind : null;
   const compact = panel.collapsed;
   const workbench = useWorkbenchPresent();
+  // Folded at first: the visual toggles are there when wanted, and the rail's icon unfolds them.
+  const [workbenchOpen, setWorkbenchOpen] = useState(false);
   const toggle = <PanelToggle panel={panel} controls={SIDEBAR_ID} />;
   return (
     <nav id={SIDEBAR_ID} className="sidebar" aria-label="Sidebar">
@@ -112,8 +114,17 @@ export function Sidebar({ onNavigate, onWorkbench, panel }: {
         ))}
       </NavSection>
       {/* Its body is where the canvas draws its controls; in the rail only the icon stands, which opens the sidebar on them. */}
-      <NavSection title="Workbench" hidden={!workbench}>
-        <button type="button" className="nav-item workbench-rail" aria-label="Workbench" title="Workbench" onClick={onWorkbench}>
+      <NavSection title="Workbench" hidden={!workbench} open={workbenchOpen} onOpen={setWorkbenchOpen}>
+        <button
+          type="button"
+          className="nav-item workbench-rail"
+          aria-label="Workbench"
+          title="Workbench"
+          onClick={() => {
+            setWorkbenchOpen(true);
+            onWorkbench();
+          }}
+        >
           <Icon name="sliders" />
         </button>
         <WorkbenchSlot />
@@ -169,9 +180,23 @@ function ThemeButton() {
   );
 }
 
-/** A titled group of entries that its title collapses and opens. */
-function NavSection({ title, hidden = false, children }: { title: string; hidden?: boolean; children: ReactNode }) {
-  const [open, setOpen] = useState(true);
+/** A titled group of entries that its title collapses and opens: open at first, unless its owner holds `open`. */
+function NavSection({
+  title,
+  hidden = false,
+  open: held,
+  onOpen,
+  children,
+}: {
+  title: string;
+  hidden?: boolean;
+  open?: boolean;
+  onOpen?: (open: boolean) => void;
+  children: ReactNode;
+}) {
+  const [own, setOwn] = useState(true);
+  const open = held ?? own;
+  const setOpen = onOpen ?? setOwn;
   return (
     <div className={open ? "nav-section" : "nav-section is-collapsed"} hidden={hidden}>
       <button type="button" className="nav-section-h" aria-expanded={open} onClick={() => setOpen(!open)}>
