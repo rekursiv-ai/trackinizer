@@ -2,8 +2,8 @@
 
 An admin enrolls a machine by name and receives a one-use token. The host
 presents that token once to join, receives a machine credential, and then
-heartbeats with the credential. An admin revokes the machine, or marks it
-destroyed, after which every host route answers the credential 410.
+heartbeats with the credential. An admin revokes the machine, after which every
+host route answers the credential 410.
 
 Both secrets are bearer strings of the form ``<prefix><32 hex id>_<43 char
 secret>``. The server stores only a hash of the secret and finds the row by the
@@ -27,7 +27,6 @@ from trackinizer.wire.wire_machines import NAME_PATTERN, Facts
 
 __all__ = [
     "CREDENTIAL_PREFIX",
-    "DESTROYED_PATH",
     "ENROLLMENT_PREFIX",
     "ENROLL_PATH",
     "ENROLL_TTL_SEC",
@@ -64,7 +63,6 @@ ENROLL_PATH: Final = "/api/machines/enroll"
 JOIN_PATH: Final = "/api/machines/join"
 HEARTBEAT_PATH: Final = "/api/machines/{machine_id}/heartbeat"
 REVOKE_PATH: Final = "/api/machines/{name}/revoke"
-DESTROYED_PATH: Final = "/api/machines/{name}/destroyed"
 
 type HostVersion = Annotated[
     str,

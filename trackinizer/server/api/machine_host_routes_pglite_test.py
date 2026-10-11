@@ -28,7 +28,6 @@ from trackinizer.server.api.conftest import (
 from trackinizer.server.auth import create_api_key
 from trackinizer.wire.wire_machine_host import (
     CREDENTIAL_PREFIX,
-    DESTROYED_PATH,
     ENROLL_PATH,
     ENROLL_TTL_SEC,
     ENROLLMENT_PREFIX,
@@ -39,10 +38,6 @@ from trackinizer.wire.wire_machine_host import (
     EnrollResponse,
     HeartbeatResponse,
     JoinResponse,
-)
-from trackinizer.wire.wire_machine_requests import (
-    MACHINE_REQUEST_PATH,
-    MACHINE_REQUESTS_PATH,
 )
 from trackinizer.wire.wire_machines import (
     MACHINE_PATH,
@@ -442,17 +437,11 @@ async def test_revoked_is_410_on_every_host_route_unknown_is_401(
     unknown = f"{CREDENTIAL_PREFIX}{uuid.uuid4().hex}_{'A' * 43}"
 
     # Every host route; each later PR that adds one lists it here.
-    on_revoked = [
-        await _heartbeat(client, joined),
-        *await _request_routes(client, "dev-1", bearer=joined.credential),
-    ]
-    on_unknown = [
-        await _heartbeat(client, joined, bearer=unknown),
-        *await _request_routes(client, "dev-1", bearer=unknown),
-    ]
+    on_revoked = [await _heartbeat(client, joined)]
+    on_unknown = [await _heartbeat(client, joined, bearer=unknown)]
 
-    assert [r.status_code for r in on_revoked] == [410] * 4
-    assert [r.status_code for r in on_unknown] == [401] * 4
+    assert [r.status_code for r in on_revoked] == [410]
+    assert [r.status_code for r in on_unknown] == [401]
 
 
 async def test_wrong_secret_for_a_revoked_id_is_401(
@@ -517,86 +506,6 @@ async def test_revoke_needs_admin_and_a_registered_machine(
         422,
     )
     assert (await _heartbeat(client, joined)).status_code == 200
-
-
-async def test_destroyed_revokes_closes_the_token_and_reads_destroyed_first(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    client, store = pglite_route_client
-    joined = await _joined(client, "dev-1")
-    token = await _enroll(client, "dev-2")
-    assert (await _heartbeat(client, joined)).status_code == 200
-
-    first = await client.post(DESTROYED_PATH.format(name="dev-1"))
-    async with store.engine.acquire() as conn:
-        destroyed_at = await conn.fetchval(
-            "SELECT destroyed_at FROM machines WHERE name = 'dev-1'",
-        )
-    again = await client.post(DESTROYED_PATH.format(name="dev-1"))
-    other = await client.post(DESTROYED_PATH.format(name="dev-2"))
-
-    assert [r.status_code for r in (first, again, other)] == [204, 204, 204]
-    assert (await _heartbeat(client, joined)).status_code == 410
-    assert (await _join(client, "dev-2", token)).status_code == 401
-    one = await _detail(client, "dev-1")
-    assert (one.status, one.destroyed_at) == ("destroyed", destroyed_at)
-    assert (await _detail(client, "dev-2")).status == "destroyed"
-
-
-async def test_a_destroyed_machine_never_takes_a_new_host(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    client, store = pglite_route_client
-    await _joined(client, "dev-1")
-    await client.post(DESTROYED_PATH.format(name="dev-1"))
-
-    enroll = await client.post(ENROLL_PATH, json={"name": "dev-1"})
-
-    assert enroll.status_code == 409
-    assert from_plain(enroll.json(), dict[str, str])["code"] == "machine_destroyed"
-    async with store.engine.acquire() as conn:
-        open_tokens = await conn.fetchval(
-            "SELECT count(*) FROM machine_enrollments WHERE used_at IS NULL",
-        )
-    assert open_tokens == 0
-    assert (await _detail(client, "dev-1")).status == "destroyed"
-
-
-async def test_a_token_left_open_on_a_destroyed_machine_is_401_like_any_other(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    client, store = pglite_route_client
-    token = await _enroll(client, "dev-1")
-    wrong = await _join(client, "dev-1", f"{token[:-43]}{'A' * 43}")
-    # Marked destroyed without the route, so the token stays open: only the destroyed
-    # check stands between it and a credential.
-    async with store.engine.acquire() as conn:
-        await conn.execute(
-            "UPDATE machines SET destroyed_at = now() WHERE name = 'dev-1'",
-        )
-
-    response = await _join(client, "dev-1", token)
-
-    assert (response.status_code, response.text) == (401, wrong.text)
-    async with store.engine.acquire() as conn:
-        credentials = await conn.fetchval("SELECT count(*) FROM machine_credentials")
-    assert credentials == 0
-    assert (await _detail(client, "dev-1")).status == "destroyed"
-
-
-async def test_destroyed_needs_admin_and_a_registered_machine(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    client, _ = pglite_route_client
-    joined = await _joined(client, "dev-1")
-    _as("writer")
-    refused = await client.post(DESTROYED_PATH.format(name="dev-1"))
-    _as("admin")
-    absent = await client.post(DESTROYED_PATH.format(name="nope"))
-
-    assert (refused.status_code, absent.status_code) == (403, 404)
-    assert (await _heartbeat(client, joined)).status_code == 200
-    assert (await _detail(client, "dev-1")).destroyed_at is None
 
 
 async def test_a_machine_enrolls_again_after_revoke(
@@ -810,28 +719,6 @@ async def _heartbeat(
         json=body,
         headers=_bearer(joined.credential if bearer is None else bearer),
     )
-
-
-async def _request_routes(
-    client: httpx2.AsyncClient,
-    name: str,
-    *,
-    bearer: str,
-) -> list[httpx2.Response]:
-    """Send each machine-request route a machine may call, with ``bearer``."""
-    headers = _bearer(bearer)
-    return [
-        await client.post(
-            MACHINE_REQUESTS_PATH.format(name=name),
-            json={"kind": "push"},
-            headers=headers,
-        ),
-        await client.get(MACHINE_REQUESTS_PATH.format(name=name), headers=headers),
-        await client.get(
-            MACHINE_REQUEST_PATH.format(name=name, request_id=uuid.uuid4()),
-            headers=headers,
-        ),
-    ]
 
 
 async def _silent_for(store: Store, seconds: int) -> None:

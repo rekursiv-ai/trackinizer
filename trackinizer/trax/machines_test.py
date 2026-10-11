@@ -15,18 +15,16 @@ from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli, machine_host
 from trackinizer.trax.machines import MACHINE_WORD, Machines
-from trackinizer.wire.wire_machine_requests import MachineRequest
 from trackinizer.wire.wire_machines import (
     MAX_HOW_CHARS,
     NAME_PATTERN,
     RESERVED_NAMES,
     Machine,
-    MachineDetail,
 )
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
 
@@ -59,7 +57,7 @@ class _StubClient:
         self.machines = list(machines)
         self.error = error
         self.calls: list[tuple[object, ...]] = []
-        # ``connect`` and ``request`` read only the URL; the host loop is stubbed.
+        # ``connect`` reads only the URL; the host loop is stubbed.
         self.base_url = "https://server"
 
     def list_machines(self) -> list[Machine]:
@@ -98,26 +96,6 @@ class _StubClient:
 
     def delete_machine(self, name: str) -> None:
         self.calls.append(("delete", name))
-        if self.error is not None:
-            raise self.error
-
-    def provision_machine(
-        self,
-        provider: str,
-        *,
-        ttl_sec: int | None = None,
-        spec: Mapping[str, object] | None = None,
-        labels: Sequence[str] = (),
-    ) -> MachineDetail:
-        self.calls.append(("up", provider, ttl_sec, spec, tuple(labels)))
-        if self.error is not None:
-            raise self.error
-        return MachineDetail.model_validate(
-            {**_machine(f"{provider}-ab12cd34").model_dump(), "provider": provider},
-        )
-
-    def down_machine(self, name: str) -> None:
-        self.calls.append(("down", name))
         if self.error is not None:
             raise self.error
 
@@ -213,28 +191,6 @@ def test_show_prints_every_field(capsys: pytest.CaptureFixture[str]) -> None:
         "updated:    2026-10-06T12:00:00+00:00",
     ]
     assert client.calls == [("get", "gpu-box")]
-
-
-def test_show_of_a_provisioned_machine_adds_its_provider_and_times(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    machine = _machine("cloud-ab12cd34").model_copy(
-        update={
-            "status": "online",
-            "provider": "cloud",
-            "requested_by": "bob",
-            "expires_at": datetime(2026, 10, 7, 12, 0, tzinfo=UTC),
-            "down_at": datetime(2026, 10, 6, 13, 0, tzinfo=UTC),
-        },
-    )
-    _run(["cloud-ab12cd34"], client=_StubClient([machine]))
-    assert capsys.readouterr().out.splitlines()[4:9] == [
-        "status:     online",
-        "provider:   cloud",
-        "requested:  bob",
-        "expires:    2026-10-07T12:00:00+00:00",
-        "down:       2026-10-06T13:00:00+00:00",
-    ]
 
 
 def test_show_of_a_bare_machine_marks_what_is_unset(
@@ -368,8 +324,7 @@ def test_delete_unregisters_the_machine(
     assert capsys.readouterr().out == "deleted: machine gpu-box\n"
 
 
-# ``up`` is the provisioning verb in that position, covered by its own tests below.
-@pytest.mark.parametrize("name", sorted(RESERVED_NAMES - {"up"}))
+@pytest.mark.parametrize("name", sorted(RESERVED_NAMES))
 def test_a_reserved_name_is_refused_before_any_request(name: str) -> None:
     client = _StubClient()
     for argv in (
@@ -553,71 +508,6 @@ def test_a_trailing_help_word_is_never_a_name_or_label(
     assert client.calls == []
 
 
-def test_up_provisions_and_prints_only_the_name(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    client = _StubClient()
-    _run(["UP", "cloud"], client=client)
-    assert client.calls == [("up", "cloud", None, {}, ())]
-    assert capsys.readouterr().out == "cloud-ab12cd34\n"
-
-
-def test_up_reads_a_ttl_and_a_spec_from_a_file_or_stdin(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    (tmp_path / "spec.json").write_text('{"repos": [{"url": "u", "sha": "s"}]}\n')
-    monkeypatch.chdir(tmp_path)
-    _stdin(monkeypatch, b'{"repos": []}')
-    client = _StubClient()
-    _run(["up", "cloud", "ttl", "3600", "spec", "@spec.json"], client=client)
-    _run(["up", "cloud", "SPEC", "-"], client=client)
-    assert client.calls == [
-        ("up", "cloud", 3600, {"repos": [{"url": "u", "sha": "s"}]}, ()),
-        ("up", "cloud", None, {"repos": []}, ()),
-    ]
-
-
-@pytest.mark.parametrize(
-    ("argv", "message"),
-    [
-        (["up"], "usage: trax machine"),
-        (["up", "cloud", "ttl"], "usage: trax machine"),
-        (["up", "cloud", "spec", "-", "ttl", "60"], "usage: trax machine"),
-        (["up", "cloud", "ttl", "1h"], "ttl must be a whole number of seconds"),
-        (["up", "cloud", "ttl", "-5"], "ttl must be a whole number of seconds"),
-        (["up", "cloud", "spec", "[1]"], "spec must be one JSON object"),
-        (["up", "cloud", "spec", "{bad"], "spec must be one JSON object"),
-        (["up", "cloud", "extra"], "usage: trax machine"),
-    ],
-)
-def test_a_malformed_up_is_refused_before_any_request(
-    argv: list[str],
-    message: str,
-) -> None:
-    client = _StubClient()
-    assert str(_refusal(argv, client=client)).startswith(message)
-    assert client.calls == []
-
-
-def test_up_names_the_role_it_needs_and_passes_the_limit_through() -> None:
-    forbidden = _StubClient(error=ClientError("-> 403", status_code=403))
-    limit = ClientError("POST /api/machines -> 409: limit", status_code=409)
-    assert str(_refusal(["up", "cloud"], client=forbidden)) == "needs the writer role"
-    assert _refusal(["up", "cloud"], client=_StubClient(error=limit)) is limit
-
-
-def test_down_asks_the_provider_to_end_the_machine(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    client = _StubClient()
-    _run(["cloud-ab12cd34", "DOWN"], client=client)
-    assert client.calls == [("down", "cloud-ab12cd34")]
-    assert capsys.readouterr().out == "down: machine cloud-ab12cd34\n"
-    absent = _StubClient(error=ClientError("-> 404", status_code=404))
-    assert str(_refusal(["gone", "down"], client=absent)) == "no machine gone"
-
-
 def test_connect_hands_the_host_loop_stdin_and_a_client_per_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -639,65 +529,10 @@ def test_connect_hands_the_host_loop_stdin_and_a_client_per_key(
     assert seen["read_token"] == sys.stdin.readline
 
 
-@pytest.mark.parametrize("status", ["done", "failed"])
-def test_request_sends_the_body_prints_the_result_and_fails_on_failed(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    status: str,
-) -> None:
-    (tmp_path / "push.json").write_text('{"repo": "r", "ref": "agent/x"}')
-    monkeypatch.chdir(tmp_path)
-    sent: list[tuple[str, str, Mapping[str, object]]] = []
-    finished = MachineRequest.model_validate(
-        {
-            "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
-            "kind": "push",
-            "body": {},
-            "status": status,
-            "result": {"sha": "abc"},
-            "created_by": "cloud-ab12cd34",
-            "created": "2026-10-10T12:00:00Z",
-            "updated": "2026-10-10T12:00:00Z",
-        },
-    )
-
-    def fake_send(
-        name: str,
-        *,
-        kind: str,
-        body: Mapping[str, object],
-        **_: object,
-    ) -> MachineRequest:
-        sent.append((name, kind, body))
-        return finished
-
-    monkeypatch.setattr(machine_host, "send_request", fake_send)
-    argv = ["cloud-ab12cd34", "request", "push", "body", "@push.json"]
-    if status == "done":
-        _run(argv, client=_StubClient())
-    else:
-        err = _refusal(argv, client=_StubClient())
-        assert str(err) == f"request {finished.id} failed"
-    assert sent == [("cloud-ab12cd34", "push", {"repo": "r", "ref": "agent/x"})]
-    assert capsys.readouterr().out == '{"sha": "abc"}\n'
-
-
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["cloud-ab12cd34", "request"],
-        ["cloud-ab12cd34", "request", "push", "body"],
-        ["cloud-ab12cd34", "request", "push", "to", "x"],
-        ["cloud-ab12cd34", "connect", "now"],
-        ["cloud-ab12cd34", "down", "now"],
-    ],
-)
-def test_a_malformed_host_command_is_refused_before_any_request(
-    argv: list[str],
-) -> None:
+def test_a_malformed_connect_is_refused_before_any_request() -> None:
     client = _StubClient()
-    assert str(_refusal(argv, client=client)).startswith("usage: trax machine")
+    err = _refusal(["cloud-ab12cd34", "connect", "now"], client=client)
+    assert str(err).startswith("usage: trax machine")
     assert client.calls == []
 
 

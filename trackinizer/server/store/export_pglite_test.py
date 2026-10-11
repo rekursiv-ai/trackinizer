@@ -50,7 +50,6 @@ _LEFT_OUT: Final = frozenset(
         "inquiry_lock_log",
         "machine_credentials",
         "machine_enrollments",
-        "machine_requests",
         "machines",
         "session_bodies",
         "session_ciphertext",
@@ -73,8 +72,7 @@ the database, so a restored export could not carry them, and its plain values
 are launch configuration, not graph records. ``machines`` is the same: it names
 where campaigns may run, which belongs to the deployment, not the graph.
 ``machine_enrollments`` and ``machine_credentials`` hold hashes of the secrets a
-host joins with, which is access control, as ``api_keys`` is. ``machine_requests``
-are what a machine asked its provider to do, deployment operations like ``machines``.
+host joins with, which is access control, as ``api_keys`` is.
 """
 
 

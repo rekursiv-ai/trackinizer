@@ -34,17 +34,11 @@ from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
 from trackinizer.wire.wire_export import EXPORT_API_PATH
 from trackinizer.wire.wire_machine_host import (
-    DESTROYED_PATH,
     ENROLL_PATH,
     HEARTBEAT_PATH,
     JOIN_PATH,
 )
-from trackinizer.wire.wire_machine_requests import (
-    MACHINE_REQUEST_RESULT_PATH,
-    MACHINE_REQUESTS_PATH,
-)
 from trackinizer.wire.wire_machines import (
-    MACHINE_DOWN_PATH,
     MACHINE_PATH,
     MACHINES_PATH,
     MAX_HOW_CHARS,
@@ -1330,10 +1324,7 @@ _FAKE_EXEMPT: frozenset[str] = frozenset(
     | {"list_variables", "put_variable", "delete_variable"}
     | {"list_machines", "get_machine", "put_machine"}
     | {"change_machine_labels", "delete_machine"}
-    | {"enroll_machine", "join_machine", "heartbeat_machine", "revoke_machine"}
-    | {"provision_machine", "down_machine", "mark_machine_destroyed"}
-    | {"create_machine_request", "list_machine_requests", "get_machine_request"}
-    | {"finish_machine_request"},
+    | {"enroll_machine", "join_machine", "heartbeat_machine", "revoke_machine"},
 )
 
 
@@ -2676,214 +2667,6 @@ class TestMachineHostMethods:
             ("POST", "/api/machines/gpu-box/revoke"),
         ] * 2
         assert err.value.status_code == 404
-
-
-_REQUEST_ID = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
-_REQUEST_ROW = {
-    "id": str(_REQUEST_ID),
-    "kind": "push",
-    "body": {"ref": "agent/x"},
-    "status": "pending",
-    "result": {},
-    "created_by": "cloud-ab12cd34",
-    "created": "2026-10-10T12:00:00Z",
-    "updated": "2026-10-10T12:00:00Z",
-}
-
-
-class TestMachineProvisionMethods:
-    """Provision, down, destroyed and requests build the right requests."""
-
-    def test_provision_machine_posts_once_and_parses_the_machine(self) -> None:
-        seen: list[httpx2.Request] = []
-        statuses = iter((503, 201))
-
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            seen.append(request)
-            return httpx2.Response(
-                next(statuses),
-                json={
-                    **_MACHINE_ROW,
-                    "name": "cloud-ab12cd34",
-                    "status": "provisioning",
-                    "provider": "cloud",
-                    "spec": {"repos": []},
-                },
-            )
-
-        with Client("https://server") as client:
-            _install_mock_transport(client, handler)
-            with pytest.raises(ClientError) as err:
-                client.provision_machine("cloud", spec={"repos": []})
-            made = client.provision_machine(
-                "cloud",
-                ttl_sec=600,
-                labels=("gpu",),
-            )
-
-        # A retry after a lost answer would provision a second machine.
-        assert err.value.status_code == 503
-        assert [(r.method, r.url.path) for r in seen] == [("POST", MACHINES_PATH)] * 2
-        assert [json_loads(r.content) for r in seen] == [
-            {"provider": "cloud", "spec": {"repos": []}, "labels": []},
-            {"provider": "cloud", "ttl_sec": 600, "spec": {}, "labels": ["gpu"]},
-        ]
-        assert (made.name, made.status, made.spec) == (
-            "cloud-ab12cd34",
-            "provisioning",
-            {"repos": []},
-        )
-
-    def test_provision_machine_surfaces_the_limit_code(self) -> None:
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            del request
-            return httpx2.Response(
-                409,
-                json={"detail": "64 alive", "code": "machine_limit"},
-            )
-
-        with Client("https://server") as client:
-            _install_mock_transport(client, handler)
-            with pytest.raises(ClientError) as err:
-                client.provision_machine("cloud")
-
-        assert (err.value.status_code, err.value.code) == (409, "machine_limit")
-
-    def test_provision_machine_refuses_a_bad_field_before_any_request(self) -> None:
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            raise AssertionError(f"no request expected, got {request.url}")
-
-        with Client("https://server") as client:
-            _install_mock_transport(client, handler)
-            with pytest.raises(ClientError, match="provider"):
-                client.provision_machine("Cloud")
-            with pytest.raises(ClientError, match="ttl_sec"):
-                client.provision_machine("cloud", ttl_sec=1)
-
-    def test_down_and_destroyed_post_to_the_named_paths(self) -> None:
-        seen: list[httpx2.Request] = []
-
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            seen.append(request)
-            return httpx2.Response(204)
-
-        with Client("https://server") as client:
-            _install_mock_transport(client, handler)
-            assert client.down_machine("cloud-ab12cd34") is None
-            assert client.mark_machine_destroyed("cloud-ab12cd34") is None
-
-        assert [(r.method, r.url.path) for r in seen] == [
-            ("POST", MACHINE_DOWN_PATH.format(name="cloud-ab12cd34")),
-            ("POST", DESTROYED_PATH.format(name="cloud-ab12cd34")),
-        ]
-
-    def test_create_machine_request_posts_once_with_the_credential(self) -> None:
-        seen: list[httpx2.Request] = []
-        statuses = iter((502, 201))
-
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            seen.append(request)
-            return httpx2.Response(next(statuses), json=_REQUEST_ROW)
-
-        with Client("https://server", api_key=_CREDENTIAL) as client:
-            _install_mock_transport(client, handler)
-            with pytest.raises(ClientError):
-                client.create_machine_request(
-                    "cloud-ab12cd34",
-                    kind="push",
-                    body={"ref": "agent/x"},
-                )
-            created = client.create_machine_request(
-                "cloud-ab12cd34",
-                kind="push",
-                body={"ref": "agent/x"},
-            )
-
-        # A retry after a lost answer would write a second request.
-        assert len(seen) == 2
-        assert seen[0].url.path == MACHINE_REQUESTS_PATH.format(name="cloud-ab12cd34")
-        assert seen[0].headers["Authorization"] == f"Bearer {_CREDENTIAL}"
-        assert json_loads(seen[0].content) == {
-            "kind": "push",
-            "body": {"ref": "agent/x"},
-        }
-        assert (created.id, created.status, created.body) == (
-            _REQUEST_ID,
-            "pending",
-            {"ref": "agent/x"},
-        )
-
-    def test_list_and_get_machine_requests_read_the_machine_s_requests(self) -> None:
-        seen: list[httpx2.Request] = []
-
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            seen.append(request)
-            if request.url.path.endswith(str(_REQUEST_ID)):
-                return httpx2.Response(200, json=_REQUEST_ROW)
-            return httpx2.Response(200, json={"requests": [_REQUEST_ROW]})
-
-        with Client("https://server") as client:
-            _install_mock_transport(client, handler)
-            pending = client.list_machine_requests("cloud-ab12cd34", status="pending")
-            every = client.list_machine_requests("cloud-ab12cd34")
-            one = client.get_machine_request("cloud-ab12cd34", _REQUEST_ID)
-
-        assert [(r.method, str(r.url).split("server", 1)[1]) for r in seen] == [
-            ("GET", "/api/machines/cloud-ab12cd34/requests?status=pending"),
-            ("GET", "/api/machines/cloud-ab12cd34/requests"),
-            ("GET", f"/api/machines/cloud-ab12cd34/requests/{_REQUEST_ID}"),
-        ]
-        assert [r.id for r in pending] == [r.id for r in every] == [_REQUEST_ID]
-        assert one.kind == "push"
-
-    def test_finish_machine_request_posts_the_result(self) -> None:
-        seen: list[httpx2.Request] = []
-
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            seen.append(request)
-            return httpx2.Response(
-                200,
-                json={**_REQUEST_ROW, "status": "done", "result": {"sha": "abc"}},
-            )
-
-        with Client("https://server") as client:
-            _install_mock_transport(client, handler)
-            finished = client.finish_machine_request(
-                "cloud-ab12cd34",
-                _REQUEST_ID,
-                status="done",
-                result={"sha": "abc"},
-            )
-
-        assert seen[0].url.path == MACHINE_REQUEST_RESULT_PATH.format(
-            name="cloud-ab12cd34",
-            request_id=_REQUEST_ID,
-        )
-        assert json_loads(seen[0].content) == {
-            "status": "done",
-            "result": {"sha": "abc"},
-        }
-        assert (finished.status, finished.result) == ("done", {"sha": "abc"})
-
-    def test_finish_machine_request_surfaces_a_second_answer_as_409(self) -> None:
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            del request
-            return httpx2.Response(
-                409,
-                json={"detail": "finished", "code": "request_finished"},
-            )
-
-        with Client("https://server") as client:
-            _install_mock_transport(client, handler)
-            with pytest.raises(ClientError) as err:
-                client.finish_machine_request(
-                    "cloud-ab12cd34",
-                    _REQUEST_ID,
-                    status="failed",
-                    result={},
-                )
-
-        assert (err.value.status_code, err.value.code) == (409, "request_finished")
 
 
 if __name__ == "__main__":

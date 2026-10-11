@@ -1,16 +1,13 @@
-"""Host a machine: join it, keep it connected, and send requests as it.
+"""Host a machine: join it and keep it connected.
 
 ``trax machine NAME connect`` joins once with the one-use ``enr_`` token read from
 stdin (never argv, which any user on the host can read in a process listing) and
 saves the machine credential it receives, readable by this user only. It then
 heartbeats every 15 s until the server answers 410, which means the machine was
-revoked or destroyed. Lost contact never stops it: a refused connection, a server
+revoked. Lost contact never stops it: a refused connection, a server
 error, or another host still holding the machine is retried, sooner at first.
 
-``trax machine NAME request KIND`` writes a request with that saved credential and
-waits for the provider's result.
-
-Both use the machine's own credential, never the profile's key, so they run in the
+It uses the machine's own credential, never the profile's key, so it runs in the
 calling process rather than in traxd.
 """
 
@@ -33,12 +30,11 @@ from trackinizer.wire.wire_machine_host import HEARTBEAT_SEC, JoinResponse
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable
 
     import pydantic
 
     from trackinizer.wire.wire_machine_host import HeartbeatResponse
-    from trackinizer.wire.wire_machine_requests import MachineRequest
     from trackinizer.wire.wire_machines import Facts
 else:
     from wrapt import lazy_import
@@ -49,18 +45,13 @@ else:
 
 __all__ = [
     "HOST_CLIS",
-    "REQUEST_POLL_SEC",
     "HostClient",
     "connect",
     "host_facts",
-    "send_request",
 ]
 
 HOST_CLIS: Final = ("claude", "codex", "gemini", "git", "uv")
 """The commands a host reports when it finds them on ``PATH``."""
-
-REQUEST_POLL_SEC: Final = 2.0
-"""How often ``request`` asks whether its request has a result, in seconds."""
 
 
 class HostClient(Protocol):
@@ -87,24 +78,6 @@ class HostClient(Protocol):
         facts: Facts | None = None,
     ) -> HeartbeatResponse:
         """Report that the host is alive."""
-        ...
-
-    def create_machine_request(
-        self,
-        name: str,
-        *,
-        kind: str,
-        body: Mapping[str, object],
-    ) -> MachineRequest:
-        """Write a request for the machine's provider."""
-        ...
-
-    def get_machine_request(
-        self,
-        name: str,
-        request_id: uuid.UUID,
-    ) -> MachineRequest:
-        """Read one of the machine's requests."""
         ...
 
     def close(self) -> None:
@@ -175,54 +148,6 @@ def connect(
             unsent = None
             failures = 0
             sleep(HEARTBEAT_SEC)
-
-
-def send_request(
-    name: str,
-    *,
-    kind: str,
-    body: Mapping[str, object],
-    client_for: Callable[[str], HostClient],
-    sleep: Callable[[float], None],
-) -> MachineRequest:
-    """Write a request as the machine and wait for the provider's result.
-
-    Args:
-      name: The machine's name, already checked against the name rules.
-      kind: What is asked for, such as ``push``.
-      body: What the provider needs to do it.
-      client_for: Returns a client that sends the given key.
-      sleep: Waits the given seconds between polls.
-
-    Returns:
-      finished: The request, ``done`` or ``failed``.
-
-    Raises:
-      ClientError: No credential is saved for the machine, or an answer a retry
-        cannot change.
-
-    """
-    saved = _saved_credential(name)
-    if saved is None:
-        raise ClientError(
-            f"no credential is saved for machine {name}; "
-            f"run 'trax machine {name} connect' on this host first",
-        )
-    with closing(client_for(saved.credential)) as client:
-        current = client.create_machine_request(name, kind=kind, body=body)
-        failures = 0
-        delay = REQUEST_POLL_SEC
-        while current.status == "pending":
-            sleep(delay)
-            try:
-                current = client.get_machine_request(name, current.id)
-            except ClientError as err:
-                failures += 1
-                delay = _retry_delay(err, failures=failures)
-                continue
-            failures = 0
-            delay = REQUEST_POLL_SEC
-    return current
 
 
 def host_facts() -> Facts:

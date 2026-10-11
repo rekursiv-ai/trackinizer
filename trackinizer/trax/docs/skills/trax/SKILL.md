@@ -422,14 +422,8 @@ value. Never echo a secret into a command, a row or your own output.
 shows one, with its role, labels, `how` line and status (writer role). `trax
 machine NAME role to ROLE` and `how to TEXT` set a field and create the machine;
 `label add|del LABEL` and `del` change or unregister it (admin role). Read
-`how` before using one.
-
-`trax machine up PROVIDER [ttl SECONDS] [spec @FILE]` provisions a machine and
-prints its name; it reads `provisioning` until its host joins, then `online`.
-`trax machine NAME down` asks its provider to end it; take down what you
-provisioned once the work is done. On a machine's own host, `trax machine NAME
-request KIND body @FILE` asks its provider for what the machine may not do
-itself (a `push`), waits, and prints the result.
+`how` before using one. The registry only records machines; it never reaches
+one.
 
 ## Recovery
 

@@ -73,7 +73,6 @@ if TYPE_CHECKING:
 
     from trackinizer.wire import (
         wire_machine_host,
-        wire_machine_requests,
         wire_machines,
         wire_metrics,
         wire_metrics_query,
@@ -86,11 +85,6 @@ if TYPE_CHECKING:
         EnrollResponse,
         HeartbeatResponse,
         JoinResponse,
-    )
-    from trackinizer.wire.wire_machine_requests import (
-        MachineRequest,
-        RequestOutcome,
-        RequestStatus,
     )
     from trackinizer.wire.wire_machines import Facts, Machine, MachineDetail
     from trackinizer.wire.wire_metrics import (
@@ -134,7 +128,6 @@ else:
     # Same lazy-bind for ``wire_machines``: only the machine methods touch it.
     wire_machines = lazy_import("trackinizer.wire.wire_machines")
     wire_machine_host = lazy_import("trackinizer.wire.wire_machine_host")
-    wire_machine_requests = lazy_import("trackinizer.wire.wire_machine_requests")
     # Same lazy-bind for ``wire_variables``: only the variable methods touch it.
     wire_variables = lazy_import("trackinizer.wire.wire_variables")
     pydantic = lazy_import("pydantic")
@@ -2026,178 +2019,6 @@ class Client:
             "POST",
             wire_machine_host.REVOKE_PATH.format(name=quote(name, safe="")),
         )
-
-    def provision_machine(
-        self,
-        provider: str,
-        *,
-        ttl_sec: int | None = None,
-        spec: Mapping[str, object] | None = None,
-        labels: Sequence[str] = (),
-    ) -> MachineDetail:
-        """Provision a machine for ``provider`` to create; 409 ``machine_limit`` past it.
-
-        The request is sent once: a retry after a lost answer would provision a
-        second machine.
-
-        Args:
-          provider: The provider that creates the host; the machine is named after it.
-          ttl_sec: Seconds until the provider destroys it; ``None`` for the most.
-          spec: What the provider should set up, a JSON object.
-          labels: Labels to start with.
-
-        Returns:
-          machine: The new machine, ``provisioning``.
-
-        """
-        where = wire_machines.MACHINES_PATH
-        body = _build_body(
-            wire_machines.MachineProvision,
-            f"machine for provider {provider!r}",
-            provider=provider,
-            ttl_sec=ttl_sec,
-            spec=spec or {},
-            labels=list(labels),
-        )
-        response = self._request(
-            "POST",
-            where,
-            body=body.model_dump(mode="json", exclude_none=True),
-            retry_attempts=1,
-        )
-        return _validate_model(wire_machines.MachineDetail, response, where)
-
-    def down_machine(self, name: str) -> None:
-        """Ask a provisioned machine's provider to take it down; again is a no-op."""
-        self._request(
-            "POST",
-            wire_machines.MACHINE_DOWN_PATH.format(name=quote(name, safe="")),
-        )
-
-    def mark_machine_destroyed(self, name: str) -> None:
-        """Record that a machine's host was destroyed (admin); again is a no-op."""
-        self._request(
-            "POST",
-            wire_machine_host.DESTROYED_PATH.format(name=quote(name, safe="")),
-        )
-
-    def create_machine_request(
-        self,
-        name: str,
-        *,
-        kind: str,
-        body: Mapping[str, object],
-    ) -> MachineRequest:
-        """Write a request for the machine's provider, as the machine.
-
-        The client's key must be the machine's own credential. The request is sent
-        once: a retry after a lost answer would write a second request.
-
-        Args:
-          name: Machine name.
-          kind: What is asked for, such as ``push``.
-          body: What the provider needs to do it, a JSON object.
-
-        Returns:
-          created: The request, ``pending``.
-
-        """
-        where = wire_machine_requests.MACHINE_REQUESTS_PATH.format(
-            name=quote(name, safe=""),
-        )
-        request = _build_body(
-            wire_machine_requests.MachineRequestCreate,
-            f"request of machine {name!r}",
-            kind=kind,
-            body=body,
-        )
-        response = self._request(
-            "POST",
-            where,
-            body=request.model_dump(mode="json"),
-            retry_attempts=1,
-        )
-        return _validate_model(wire_machine_requests.MachineRequest, response, where)
-
-    def list_machine_requests(
-        self,
-        name: str,
-        *,
-        status: RequestStatus | None = None,
-    ) -> list[MachineRequest]:
-        """Return a machine's requests, oldest first, as an admin or the machine.
-
-        Args:
-          name: Machine name.
-          status: Only requests in this status; every request when ``None``.
-
-        Returns:
-          requests: The requests.
-
-        """
-        where = wire_machine_requests.MACHINE_REQUESTS_PATH.format(
-            name=quote(name, safe=""),
-        )
-        response = self._request("GET", where, params={"status": status})
-        return _validate_model(
-            wire_machine_requests.MachineRequestList,
-            response,
-            where,
-        ).requests
-
-    def get_machine_request(self, name: str, request_id: uuid.UUID) -> MachineRequest:
-        """Return one of a machine's requests, as an admin or the machine.
-
-        Args:
-          name: Machine name.
-          request_id: The request's id.
-
-        Returns:
-          found: The request.
-
-        """
-        where = wire_machine_requests.MACHINE_REQUEST_PATH.format(
-            name=quote(name, safe=""),
-            request_id=request_id,
-        )
-        response = self._request("GET", where)
-        return _validate_model(wire_machine_requests.MachineRequest, response, where)
-
-    def finish_machine_request(
-        self,
-        name: str,
-        request_id: uuid.UUID,
-        *,
-        status: RequestOutcome,
-        result: Mapping[str, object],
-    ) -> MachineRequest:
-        """Record the provider's one answer to a request (admin).
-
-        A second answer is 409 ``request_finished``, a replay of the same one
-        included.
-
-        Args:
-          name: Machine name.
-          request_id: The request's id.
-          status: ``done`` or ``failed``.
-          result: What the provider reports, a JSON object.
-
-        Returns:
-          finished: The request with its result.
-
-        """
-        where = wire_machine_requests.MACHINE_REQUEST_RESULT_PATH.format(
-            name=quote(name, safe=""),
-            request_id=request_id,
-        )
-        body = _build_body(
-            wire_machine_requests.MachineRequestResult,
-            f"result of request {request_id}",
-            status=status,
-            result=result,
-        )
-        response = self._request("POST", where, body=body.model_dump(mode="json"))
-        return _validate_model(wire_machine_requests.MachineRequest, response, where)
 
     def _patch_field(
         self,

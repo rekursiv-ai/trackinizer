@@ -119,20 +119,6 @@ def get_chat_orgs(request: Request) -> ChatOrgs:
     return config.chat_orgs if isinstance(config, Config) else "domain"
 
 
-def get_config(request: Request) -> Config:
-    """Return the lifespan's Config; the defaults when no lifespan ran, as in tests.
-
-    Args:
-      request: Request.
-
-    Returns:
-      result: The Config.
-
-    """
-    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
-    return config if isinstance(config, Config) else Config()
-
-
 def get_secrets(request: Request) -> SecretBackend | None:
     """Return the secret backend held on the app state; ``None`` when disabled.
 

@@ -598,12 +598,11 @@ async def test_variables_checks_refuse_a_secret_that_stores_its_value(
 async def test_migration_035_matches_the_baseline_machines_table(
     scratch_engine: postgres.PostgresEngine,
 ) -> None:
-    """The ``machines`` table 035 builds, then 036 and 039 extend, equals the fresh one.
+    """The ``machines`` table 035 builds, then 036 extends, equals the fresh one.
 
     Bootstrap builds the baseline shape. This drops the table (as a pre-035
-    database lacks it), replays ``schema.035``, ``schema.036`` and ``schema.039``,
-    and compares every column, constraint and index against what the baseline
-    produced.
+    database lacks it), replays ``schema.035`` and ``schema.036``, and compares
+    every column, constraint and index against what the baseline produced.
     """
     await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
     columns = (
@@ -625,14 +624,11 @@ async def test_migration_035_matches_the_baseline_machines_table(
         assert baseline_cols, "the baseline did not create machines"
 
         await conn.execute(
-            "DROP TABLE machine_requests, machine_credentials, machine_enrollments, "
-            "machines",
+            "DROP TABLE machine_credentials, machine_enrollments, machines",
         )
         await conn.execute(load_sql("schema.035"))
-        # The baseline holds 036's and 039's columns too, so they are added before
-        # comparing.
+        # The baseline holds 036's columns too, so they are added before comparing.
         await conn.execute(load_sql("schema.036"))
-        await conn.execute(load_sql("schema.039"))
         migrated_cols = [dict(r) for r in await conn.fetch(columns)]
         migrated_cons = {
             (r["conname"], r["def"]) for r in await conn.fetch(constraints)
@@ -691,10 +687,10 @@ async def test_migration_036_matches_the_baseline_machine_host_tables(
 ) -> None:
     """The columns and tables 036 adds equal the fresh-install ones.
 
-    Bootstrap builds the baseline shape. This drops the tables (as a pre-035
-    database lacks them), replays ``schema.035``, ``schema.036`` and ``schema.039``
-    (whose columns the baseline also holds), and compares every column, constraint
-    and index of each table against what the baseline produced.
+    Bootstrap builds the baseline shape. This drops the three tables (as a
+    pre-035 database lacks them), replays ``schema.035`` then ``schema.036``,
+    and compares every column, constraint and index of each table against what
+    the baseline produced.
     """
     await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
     async with scratch_engine.acquire() as conn:
@@ -702,101 +698,15 @@ async def test_migration_036_matches_the_baseline_machine_host_tables(
         assert baseline["machine_credentials"][0], "the baseline lacks the tables"
 
         await conn.execute(
-            "DROP TABLE machine_requests, machine_credentials, machine_enrollments, "
-            "machines",
+            "DROP TABLE machine_credentials, machine_enrollments, machines",
         )
         await conn.execute(load_sql("schema.035"))
         await conn.execute(load_sql("schema.036"))
-        await conn.execute(load_sql("schema.039"))
         migrated = {t: await _table_shape(conn, t) for t in _MACHINE_HOST_TABLES}
         # Replaying it over the existing tables is a no-op, not an error.
         await conn.execute(load_sql("schema.036"))
 
     assert migrated == baseline
-
-
-_PROVISIONED_TABLES = ("machines", "machine_requests")
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_migration_039_matches_the_baseline_provisioning_tables(
-    scratch_engine: postgres.PostgresEngine,
-) -> None:
-    """The columns and the table 039 adds equal the fresh-install ones.
-
-    Bootstrap builds the baseline shape. This drops ``machine_requests`` and 039's
-    columns (as a pre-039 database lacks them), replays ``schema.039``, and compares
-    every column, constraint and index against what the baseline produced.
-    """
-    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
-    async with scratch_engine.acquire() as conn:
-        baseline = {t: await _table_shape(conn, t) for t in _PROVISIONED_TABLES}
-        assert baseline["machine_requests"][0], "the baseline lacks machine_requests"
-
-        await conn.execute("DROP TABLE machine_requests")
-        await conn.execute(
-            "ALTER TABLE machines DROP COLUMN provider, DROP COLUMN spec, "
-            "DROP COLUMN requested_by, DROP COLUMN expires_at, DROP COLUMN down_at, "
-            "DROP COLUMN destroyed_at",
-        )
-        await conn.execute(load_sql("schema.039"))
-        migrated = {t: await _table_shape(conn, t) for t in _PROVISIONED_TABLES}
-        # Replaying it over the existing tables is a no-op, not an error.
-        await conn.execute(load_sql("schema.039"))
-        replayed = {t: await _table_shape(conn, t) for t in _PROVISIONED_TABLES}
-
-    assert migrated == baseline
-    assert replayed == baseline
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_provisioning_checks_bound_each_column(
-    scratch_engine: postgres.PostgresEngine,
-) -> None:
-    """Each CHECK 039 adds refuses its bad row."""
-    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
-    async with scratch_engine.acquire() as conn:
-        machine = await conn.fetchval(
-            "INSERT INTO machines (name, updated_by, provider, spec) "
-            "VALUES ('dev-1', 'tester', 'p-1', $1) RETURNING id",
-            {"k": "v" * 16_000},
-        )
-        for update, value in (
-            ("UPDATE machines SET provider = $2 WHERE id = $1", "Upper"),
-            ("UPDATE machines SET provider = $2 WHERE id = $1", "1st"),
-            ("UPDATE machines SET provider = $2 WHERE id = $1", "p" * 33),
-            ("UPDATE machines SET spec = $2 WHERE id = $1", ["not", "an", "object"]),
-            ("UPDATE machines SET spec = $2 WHERE id = $1", {"k": "v" * 16_400}),
-        ):
-            with pytest.raises(asyncpg.CheckViolationError):
-                await conn.execute(update, machine, value)
-        insert = (
-            "INSERT INTO machine_requests (machine_id, kind, body, status, created_by) "
-            "VALUES ($1, $2, $3, $4, 'tester')"
-        )
-        await conn.execute(insert, machine, "push", {"k": "v" * 130_000}, "pending")
-        refused: tuple[tuple[str, object, str], ...] = (
-            ("Push", {}, "pending"),
-            ("k" * 33, {}, "pending"),
-            ("push", [], "pending"),
-            ("push", {"k": "v" * 131_100}, "pending"),
-            ("push", {}, "running"),
-        )
-        for kind, body, status in refused:
-            with pytest.raises(asyncpg.CheckViolationError):
-                await conn.execute(insert, machine, kind, body, status)
-        row = await conn.fetchrow(
-            "SELECT requested_by, expires_at, down_at, destroyed_at FROM machines",
-        )
-    assert row is not None
-    assert dict(row) == {
-        "requested_by": "",
-        "expires_at": None,
-        "down_at": None,
-        "destroyed_at": None,
-    }
 
 
 @pytest.mark.db_pglite
@@ -842,6 +752,31 @@ async def test_machine_host_checks_bound_each_column(
         # A revoked row does not count against the one live credential.
         await conn.execute(insert, machine, digest, datetime.now(UTC))
         await conn.execute(insert, machine, digest, datetime.now(UTC))
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_039_runs_and_changes_nothing(
+    scratch_engine: postgres.PostgresEngine,
+) -> None:
+    """``schema.039`` executes on PGlite and leaves ``machines`` as it was.
+
+    A fresh database records every migration without running it, so nothing
+    else ever executes this file; a body of only comments fails under asyncpg.
+    """
+    await Store(scratch_engine, embed=StubEmbedder()).bootstrap()
+    columns = (
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = 'machines' "
+        "ORDER BY ordinal_position"
+    )
+    async with scratch_engine.acquire() as conn:
+        before = [r["column_name"] for r in await conn.fetch(columns)]
+        await conn.execute(load_sql("schema.039"))
+        after = [r["column_name"] for r in await conn.fetch(columns)]
+
+    assert before
+    assert after == before
 
 
 @pytest.mark.db_pglite

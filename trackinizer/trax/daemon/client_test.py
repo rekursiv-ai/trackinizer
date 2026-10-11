@@ -231,7 +231,7 @@ class TestTokenNeverCrossesTheSocket:
 
 
 class TestMachineHostCommands:
-    """``machine NAME enroll``, ``connect`` and ``request`` run in-process."""
+    """``machine NAME enroll`` and ``machine NAME connect`` run in-process."""
 
     @pytest.mark.parametrize(
         "argv",
@@ -239,13 +239,8 @@ class TestMachineHostCommands:
             ["machine", "gpu-box", "enroll"],
             ["machine", "gpu-box", "connect"],
             ["machine", "gpu-box", "CONNECT"],
-            ["machine", "gpu-box", "request", "push"],
-            ["machine", "gpu-box", "request", "push", "body", "@push.json"],
             ["--profile", "origin", "machine", "gpu-box", "connect"],
             ["--port=9", "machine", "gpu-box", "enroll", "--ttl", "1h"],
-            # The spec comes from stdin, which the daemon does not share.
-            ["machine", "up", "cloud", "spec", "-"],
-            ["machine", "up", "cloud", "ttl", "60", "SPEC", "-"],
         ],
     )
     def test_refuses_the_host_verbs(self, argv: list[str]) -> None:
@@ -259,10 +254,6 @@ class TestMachineHostCommands:
             ["machine", "gpu-box", "role", "to", "connect"],
             ["machine", "gpu-box", "how", "to", "enroll"],
             ["machine", "gpu-box", "label", "add", "connect"],
-            ["machine", "gpu-box", "how", "to", "request"],
-            ["machine", "gpu-box", "down"],
-            ["machine", "up", "cloud"],
-            ["machine", "up", "cloud", "spec", "@spec.json"],
             ["issue", "7", "title", "to", "connect"],
             ["issue", "gpu-box", "enroll"],
         ],

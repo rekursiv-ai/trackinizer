@@ -6,27 +6,20 @@ logger are on the path, and the table's own checks stand behind the routes'.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING
 from urllib.parse import quote
-
-import json
-import re
 
 from treekle import from_plain
 
 import pytest
 
-from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     install_identity,
     make_test_identity,
 )
-from trackinizer.server.config import Config
-from trackinizer.wire.wire_machine_host import DESTROYED_PATH
 from trackinizer.wire.wire_machines import (
-    MACHINE_DOWN_PATH,
     MACHINE_LABELS_PATH,
     MACHINE_PATH,
     MACHINES_PATH,
@@ -312,184 +305,6 @@ async def test_a_machine_can_be_registered_again_after_delete(
 
     one = await _one(client, "dev-1")
     assert (one.role, one.how, one.labels) == ("", "", [])
-
-
-async def test_a_writer_provisions_a_machine_that_reads_provisioning(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    client, _ = pglite_route_client
-    _as("writer")
-    before = datetime.now(UTC)
-
-    response = await client.post(
-        MACHINES_PATH,
-        json={
-            "provider": "cloud",
-            "ttl_sec": 600,
-            "spec": {"repos": [{"url": "https://example.com/r.git", "sha": "abc"}]},
-            "labels": [" gpu ", "gpu"],
-        },
-    )
-
-    assert response.status_code == 201, response.text
-    made = MachineDetail.model_validate_json(response.text)
-    assert re.fullmatch(r"cloud-[a-z0-9]{8}", made.name)
-    assert (made.status, made.provider, made.requested_by, made.labels) == (
-        "provisioning",
-        "cloud",
-        TEST_USER_EMAIL,
-        ["gpu"],
-    )
-    assert made.spec == {"repos": [{"url": "https://example.com/r.git", "sha": "abc"}]}
-    assert made.expires_at is not None
-    assert abs(made.expires_at - before - timedelta(seconds=600)) < timedelta(
-        seconds=30,
-    )
-    assert (made.down_at, made.destroyed_at) == (None, None)
-    assert await _one(client, made.name) == made
-    listed = (await _listed(client)).machines
-    assert [(m.name, m.status, m.provider) for m in listed] == [
-        (made.name, "provisioning", "cloud"),
-    ]
-
-
-async def test_a_machine_without_a_ttl_lives_the_server_s_longest(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    client, _ = pglite_route_client
-    monkeypatch.setattr(
-        app.state,
-        "config",
-        Config(machine_max_ttl_sec=7_200),
-        raising=False,
-    )
-    _as("writer")
-    before = datetime.now(UTC)
-
-    made = await _provision(client)
-    too_long = await client.post(
-        MACHINES_PATH,
-        json={"provider": "cloud", "ttl_sec": 7_201},
-    )
-
-    assert made.expires_at is not None
-    lifetime = made.expires_at - before
-    assert timedelta(seconds=7_170) < lifetime < timedelta(seconds=7_230)
-    assert too_long.status_code == 422
-
-
-async def test_the_limit_counts_live_provisioned_machines_only(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    client, store = pglite_route_client
-    monkeypatch.setattr(app.state, "config", Config(machine_limit=2), raising=False)
-    _as("admin")
-    await client.put(_path("hand-made"), json={})
-    first = await _provision(client)
-    await _provision(client)
-
-    refused = await client.post(MACHINES_PATH, json={"provider": "cloud"})
-    async with store.engine.acquire() as conn:
-        await conn.execute(
-            "UPDATE machines SET destroyed_at = now() WHERE name = $1",
-            first.name,
-        )
-    after_destroy = await client.post(MACHINES_PATH, json={"provider": "cloud"})
-
-    assert refused.status_code == 409
-    assert from_plain(refused.json(), dict[str, str])["code"] == "machine_limit"
-    assert after_destroy.status_code == 201
-    statuses = sorted(m.status for m in (await _listed(client)).machines)
-    assert statuses == ["destroyed", "never", "provisioning", "provisioning"]
-
-
-async def test_down_sets_down_at_once_and_refuses_a_hand_registered_machine(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    client, _ = pglite_route_client
-    _as("admin")
-    await client.put(_path("hand-made"), json={})
-    _as("writer")
-    made = await _provision(client)
-
-    first = await client.post(MACHINE_DOWN_PATH.format(name=made.name))
-    down_at = (await _one(client, made.name)).down_at
-    again = await client.post(MACHINE_DOWN_PATH.format(name=made.name))
-    hand = await client.post(MACHINE_DOWN_PATH.format(name="hand-made"))
-    absent = await client.post(MACHINE_DOWN_PATH.format(name="nope"))
-
-    assert (first.status_code, first.content, again.status_code) == (204, b"", 204)
-    assert down_at is not None
-    assert (await _one(client, made.name)).down_at == down_at
-    assert (hand.status_code, absent.status_code) == (409, 404)
-    assert from_plain(hand.json(), dict[str, str])["code"] == "not_provisioned"
-    assert (await _one(client, "hand-made")).down_at is None
-
-
-async def test_down_after_destroyed_stays_an_idempotent_204(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    client, _ = pglite_route_client
-    _as("writer")
-    made = await _provision(client)
-    _as("admin")
-    destroyed = await client.post(DESTROYED_PATH.format(name=made.name))
-    _as("writer")
-
-    first = await client.post(MACHINE_DOWN_PATH.format(name=made.name))
-    down_at = (await _one(client, made.name)).down_at
-    again = await client.post(MACHINE_DOWN_PATH.format(name=made.name))
-
-    assert [r.status_code for r in (destroyed, first, again)] == [204, 204, 204]
-    one = await _one(client, made.name)
-    assert (one.status, one.down_at) == ("destroyed", down_at)
-    assert down_at is not None
-
-
-async def test_a_viewer_can_neither_provision_nor_take_down(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    client, _ = pglite_route_client
-    _as("writer")
-    made = await _provision(client)
-    _as("viewer")
-
-    up = await client.post(MACHINES_PATH, json={"provider": "cloud"})
-    down = await client.post(MACHINE_DOWN_PATH.format(name=made.name))
-
-    assert (up.status_code, down.status_code) == (403, 403)
-    _as("writer")
-    assert len((await _listed(client)).machines) == 1
-
-
-@pytest.mark.parametrize(
-    "spec",
-    [{"k": "\x00"}, {"k": "v" * 9_000}, {"n": float("inf")}],
-    ids=["nul", "too-large", "inf"],
-)
-async def test_a_spec_the_table_cannot_hold_is_422_and_stores_nothing(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-    spec: dict[str, object],
-) -> None:
-    client, _ = pglite_route_client
-    _as("writer")
-
-    response = await client.post(
-        MACHINES_PATH,
-        content=json.dumps({"provider": "cloud", "spec": spec}),
-        headers={"Content-Type": "application/json"},
-    )
-
-    assert response.status_code == 422
-    assert (await _listed(client)).machines == []
-
-
-async def _provision(client: httpx2.AsyncClient) -> MachineDetail:
-    response = await client.post(MACHINES_PATH, json={"provider": "cloud"})
-    assert response.status_code == 201, response.text
-    return MachineDetail.model_validate_json(response.text)
 
 
 def _path(name: str) -> str:

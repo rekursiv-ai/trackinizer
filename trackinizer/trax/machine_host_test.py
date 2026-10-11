@@ -1,4 +1,4 @@
-"""Tests for the machine host loop and machine requests, against a scripted client."""
+"""Tests for the machine host loop, against a scripted client."""
 
 from __future__ import annotations
 
@@ -14,10 +14,8 @@ from trackinizer.client.errors import ClientError
 from trackinizer.lib.userdirs import state_dir
 from trackinizer.trax.machine_host import (
     HOST_CLIS,
-    REQUEST_POLL_SEC,
     connect,
     host_facts,
-    send_request,
 )
 from trackinizer.wire.wire_machine_host import (
     HEARTBEAT_SEC,
@@ -25,17 +23,15 @@ from trackinizer.wire.wire_machine_host import (
     JoinRequest,
     JoinResponse,
 )
-from trackinizer.wire.wire_machine_requests import MachineRequest
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
     from trackinizer.wire.wire_machines import Facts
 
 
 _MACHINE_ID: Final = uuid.UUID("11111111-1111-1111-1111-111111111111")
-_REQUEST_ID: Final = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 _CREDENTIAL: Final = "trax_machine_" + "1" * 32 + "_" + "C" * 43
 _TOKEN: Final = "enr_" + "0" * 32 + "_" + "S" * 43
 _NOW: Final = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
@@ -44,17 +40,15 @@ _REVOKED: Final = ClientError("-> 410", status_code=410)
 
 
 class _Host:
-    """A scripted server: each heartbeat or poll takes the next outcome in turn."""
+    """A scripted server: each heartbeat takes the next outcome in turn."""
 
     def __init__(
         self,
         *,
         beats: Sequence[ClientError | None] = (_REVOKED,),
-        polls: Sequence[ClientError | str] = (),
         join_error: ClientError | None = None,
     ) -> None:
         self.beats = list(beats)
-        self.polls = list(polls)
         self.join_error = join_error
         self.calls: list[tuple[object, ...]] = []
         self.keys: list[str] = []
@@ -92,44 +86,8 @@ class _Host:
             raise outcome
         return HeartbeatResponse(server_time=_NOW)
 
-    def create_machine_request(
-        self,
-        name: str,
-        *,
-        kind: str,
-        body: Mapping[str, object],
-    ) -> MachineRequest:
-        self.calls.append(("create", name, kind, dict(body)))
-        return _request("pending")
-
-    def get_machine_request(
-        self,
-        name: str,
-        request_id: uuid.UUID,
-    ) -> MachineRequest:
-        self.calls.append(("get", name, request_id))
-        outcome = self.polls.pop(0)
-        if isinstance(outcome, ClientError):
-            raise outcome
-        return _request(outcome)
-
     def close(self) -> None:
         self.closed += 1
-
-
-def _request(status: str) -> MachineRequest:
-    return MachineRequest.model_validate(
-        {
-            "id": str(_REQUEST_ID),
-            "kind": "push",
-            "body": {},
-            "status": status,
-            "result": {"sha": "abc"} if status != "pending" else {},
-            "created_by": "box-1",
-            "created": _NOW.isoformat(),
-            "updated": _NOW.isoformat(),
-        },
-    )
 
 
 def _save() -> None:
@@ -301,75 +259,6 @@ def test_a_corrupt_credential_file_is_named_without_quoting_it() -> None:
     assert str(path) in str(err.value)
     assert _CREDENTIAL not in str(err.value)
     assert err.value.__cause__ is None
-
-
-def test_a_request_polls_until_the_provider_answers() -> None:
-    _save()
-    host = _Host(polls=["pending", "pending", "done"])
-    slept: list[float] = []
-
-    finished = send_request(
-        "box-1",
-        kind="push",
-        body={"ref": "agent/x"},
-        client_for=host,
-        sleep=slept.append,
-    )
-
-    assert (finished.status, finished.result) == ("done", {"sha": "abc"})
-    assert host.calls[0] == ("create", "box-1", "push", {"ref": "agent/x"})
-    assert [call[0] for call in host.calls[1:]] == ["get"] * 3
-    assert slept == [REQUEST_POLL_SEC] * 3
-    assert (host.keys, host.closed) == ([_CREDENTIAL], 1)
-
-
-def test_a_request_poll_survives_lost_contact_and_reports_failed() -> None:
-    _save()
-    refused = ClientError("GET /x failed: connection refused")
-    host = _Host(polls=[refused, refused, "failed"])
-    slept: list[float] = []
-
-    finished = send_request(
-        "box-1",
-        kind="push",
-        body={},
-        client_for=host,
-        sleep=slept.append,
-    )
-
-    assert finished.status == "failed"
-    assert slept == [REQUEST_POLL_SEC, 2.0, 4.0]
-
-
-def test_a_request_from_a_destroyed_machine_fails() -> None:
-    _save()
-    host = _Host(polls=[ClientError("-> 410", status_code=410)])
-
-    with pytest.raises(ClientError) as err:
-        send_request(
-            "box-1",
-            kind="push",
-            body={},
-            client_for=host,
-            sleep=lambda _: None,
-        )
-
-    assert err.value.status_code == 410
-
-
-def test_a_request_without_a_saved_credential_says_to_connect_first() -> None:
-    host = _Host()
-
-    with pytest.raises(ClientError, match="run 'trax machine box-1 connect'"):
-        send_request(
-            "box-1",
-            kind="push",
-            body={},
-            client_for=host,
-            sleep=lambda _: None,
-        )
-
-    assert host.calls == []
 
 
 def test_host_facts_fit_the_join_contract() -> None:

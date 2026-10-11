@@ -457,8 +457,8 @@ kinds resolve first, so a field can never shadow a command.
 - `trax profile [name] (action)` -- profile management; see section 8.
 - `trax env [secret] [NAME (action)]` -- the org's environment variables;
   see section 8a.
-- `trax machine [up PROVIDER ... | NAME (action)]` -- the registry of machines
-  campaigns may run on, provisioning, and hosting one; see section 8b.
+- `trax machine [NAME (action)]` -- the registry of machines campaigns may
+  run on, and hosting one; see section 8b.
 - `trax id <uuid> [--format table|json] [--changes]` -- show one row by its
   global id, with no leading kind (the UUID is unique, so the kind is
   redundant). Unlike `trax <kind> <uuid>` it applies no kind typo-guard.
@@ -556,50 +556,35 @@ request (E011). `secret` is a keyword only in front of `NAME to VALUE`;
 ## 8b. Machine command
 
 ```
-machine_command ::= "machine" ( machine_up | machine_tail )?
-machine_up      ::= "up" provider ( "ttl" seconds )? ( "spec" value )?
+machine_command ::= "machine" machine_tail?
 machine_tail    ::= machine_name machine_action?
-machine_action  ::= "del" | "down" | "connect"
-                 |  "request" kind ( "body" value )?
+machine_action  ::= "del" | "connect"
                  |  machine_field ( "to" value )?
                  |  "label" ( "add" | "del" ) label
 machine_field   ::= "role" | "how"
 machine_name    ::= [a-z0-9][a-z0-9-]{0,62}
-provider        ::= [a-z][a-z0-9-]{0,31}
-kind            ::= [a-z][a-z0-9-]{0,31}
-seconds         ::= [0-9]+
 value           ::= "-" | "@" path | literal
 label           ::= literal
 ```
 
 The registry records where campaigns may run: a name, a `role`, one `how`
-line telling an agent how to use the machine, and labels. `del` unregisters a
-machine without touching it.
+line telling an agent how to use the machine, and labels. It only records
+machines; nothing here reaches one, and `del` unregisters a machine without
+touching it.
 
 Bare `trax machine` **lists the machines**, one line each: name, role,
 labels, and `how` cut to one line (`-` stands for an empty field).
-`machine NAME` shows one machine in full, with its status and, for a
-provisioned one, its provider, requester and times; a bare `machine_field`
+`machine NAME` shows one machine in full, with its status; a bare `machine_field`
 (`machine NAME role`) prints that field's value as stored, for scripts.
-Listing, showing, `up` and `down` need the writer role; setting, labelling
-and `del` need the admin role.
+Listing and showing need the writer role; `connect` uses the machine's own
+credential; every other form needs the admin role.
 
-`machine up PROVIDER` **provisions a machine** for that provider to create, and
-prints only its name, `PROVIDER-` and eight random `[a-z0-9]`. `ttl SECONDS`
-sets its lifetime (at least 60; the server's longest when left out), and
-`spec VALUE` hands the provider one JSON object. The server refuses one past
-the org's limit. `machine NAME down` asks the provider to take it down; a
-machine registered by hand has no provider, and is refused.
-
-`machine NAME connect` and `machine NAME request` run on the machine's host
-and use its own credential, never the profile's key, so traxd never runs them.
-`connect` joins once, reading the one-use enrollment token from stdin (never
-the command line), saves the machine credential for this user only, then
-heartbeats every 15 seconds until the machine is revoked or destroyed, and
-exits 0. Lost contact never stops it; it retries, sooner at first.
-`request KIND [body VALUE]` asks the machine's provider for something, waits
-for the result, prints it as JSON, and fails when the provider reports
-`failed`.
+`machine NAME connect` runs on the machine's host with the machine's own
+credential, never the profile's key, so traxd never runs it. It joins once,
+reading the one-use enrollment token from stdin (never the command line), saves
+the machine credential for this user only, then heartbeats every 15 seconds
+until the machine is revoked, and exits 0. Lost contact never stops it; it
+retries, sooner at first.
 
 `machine NAME role to ROLE` sets one field and creates the machine when it
 is new; a field left out keeps its value, and `to ''` clears one. A `value`
@@ -611,7 +596,7 @@ most 2,000 characters, and a label is any non-blank text. `label add` and
 `label del` change one label and are no-ops when it is already so.
 
 A name outside `machine_name`, or one of `enroll join init import check
-connect leave top up request`, is refused before any request (E012, E013).
+connect leave top`, is refused before any request (E012, E013).
 Examples in section 10.
 
 ## 9. Token tables
@@ -1103,11 +1088,7 @@ trax machine gpu-box how to @how.txt
 trax machine gpu-box label add gpu
 trax machine gpu-box label del gpu
 trax machine gpu-box del
-trax machine up cloud
-trax machine up cloud ttl 3600 spec @spec.json
-trax machine cloud-ab12cd34 down
-printf '%s\n' "$ENROLLMENT_TOKEN" | trax machine cloud-ab12cd34 connect
-trax machine cloud-ab12cd34 request push body @push.json
+printf '%s\n' "$ENROLLMENT_TOKEN" | trax machine gpu-box connect
 ```
 
 ## 11. Counterexamples

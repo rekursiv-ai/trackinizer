@@ -30,7 +30,6 @@ from trackinizer.server.api.conftest import (
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.notify import tx
 from trackinizer.wire.wire_machine_host import (
-    DESTROYED_PATH,
     ENROLL_PATH,
     ENROLLMENT_PREFIX,
     HEARTBEAT_PATH,
@@ -153,7 +152,7 @@ async def test_two_joins_with_one_token_that_both_passed_the_check_make_one_cred
     assert (sorted(r.status_code for r in responses), credentials) == ([201, 401], 1)
 
 
-@pytest.mark.parametrize("other", ["enroll", "revoke", "delete", "destroyed"])
+@pytest.mark.parametrize("other", ["enroll", "revoke", "delete"])
 async def test_join_racing_another_route_on_the_machine_is_never_a_500(
     served: httpx2.AsyncClient,
     other: str,
@@ -242,79 +241,6 @@ async def test_delete_racing_a_join_that_commits_first_is_409(
     assert kept == machine_id
 
 
-async def test_a_destroy_committing_while_a_join_waits_leaves_no_live_credential(
-    served: httpx2.AsyncClient,
-    integ_store: Store,
-) -> None:
-    token = await _enroll(served, "dev-1")
-
-    async with integ_store.engine.acquire() as holder, tx(holder):
-        machine_id = await _lock_machine(holder, "dev-1")
-        # The join read the token as open and the machine as live; it now queues.
-        joining = asyncio.create_task(_join(served, "dev-1", token))
-        await asyncio.sleep(_SETTLE_SEC)
-        # Only the destroyed mark, not the token close the route also commits, so
-        # the claim's own check under the lock is what refuses the join.
-        await holder.execute(
-            "UPDATE machines SET destroyed_at = now() WHERE id = $1",
-            machine_id,
-        )
-
-    response = await joining
-    async with integ_store.engine.acquire() as conn:
-        live = await conn.fetchval(
-            "SELECT count(*) FROM machine_credentials WHERE revoked_at IS NULL",
-        )
-    assert (response.status_code, live) == (401, 0)
-
-
-async def test_an_enroll_waiting_on_a_destroy_is_409_and_issues_no_token(
-    served: httpx2.AsyncClient,
-    integ_store: Store,
-) -> None:
-    await _enroll(served, "dev-1")
-
-    async with integ_store.engine.acquire() as holder, tx(holder):
-        machine_id = await _lock_machine(holder, "dev-1")
-        await holder.execute(
-            "UPDATE machines SET destroyed_at = now() WHERE id = $1",
-            machine_id,
-        )
-        enrolling = asyncio.create_task(_race(served, "enroll", "dev-1"))
-        await asyncio.sleep(_SETTLE_SEC)
-
-    response = await enrolling
-    async with integ_store.engine.acquire() as conn:
-        tokens = await conn.fetchval("SELECT count(*) FROM machine_enrollments")
-    assert response.status_code == 409, response.text
-    assert from_plain(response.json(), dict[str, str])["code"] == "machine_destroyed"
-    assert tokens == 1
-
-
-async def test_join_racing_destroyed_never_leaves_a_live_credential(
-    served: httpx2.AsyncClient,
-    integ_store: Store,
-) -> None:
-    for round_number in range(_ROUNDS):
-        name = f"dev-{round_number}"
-        token = await _enroll(served, name)
-
-        joined, destroyed = await asyncio.gather(
-            _join(served, name, token),
-            _race(served, "destroyed", name),
-        )
-
-        async with integ_store.engine.acquire() as conn:
-            live = await conn.fetchval(
-                "SELECT count(*) FROM machine_credentials c "
-                "JOIN machines m ON m.id = c.machine_id "
-                "WHERE m.name = $1 AND c.revoked_at IS NULL",
-                name,
-            )
-        assert joined.status_code in {201, 401}, joined.text
-        assert (destroyed.status_code, live) == (204, 0)
-
-
 async def _lock_machine(conn: Conn, name: str) -> uuid.UUID:
     """Take the machine row's lock in the open transaction, as each writer does."""
     return from_plain(
@@ -332,8 +258,6 @@ async def _race(http: httpx2.AsyncClient, route: str, name: str) -> httpx2.Respo
         return await http.post(ENROLL_PATH, json={"name": name})
     if route == "revoke":
         return await http.post(REVOKE_PATH.format(name=name))
-    if route == "destroyed":
-        return await http.post(DESTROYED_PATH.format(name=name))
     return await _delete(http, name)
 
 

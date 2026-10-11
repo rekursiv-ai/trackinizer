@@ -494,47 +494,6 @@ class TestSecrets:
         assert Config.from_args(_server_args()).secrets == "file:/srv/secrets"
 
 
-class TestMachineSettings:
-    """The provisioned-machine limit and longest lifetime come from the environment."""
-
-    def test_unset_keeps_64_machines_and_a_day(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.delenv("TRACKINIZER_MACHINE_LIMIT", raising=False)
-        monkeypatch.setenv("TRACKINIZER_MACHINE_MAX_TTL_SEC", " ")
-        config = Config.from_env()
-        assert (config.machine_limit, config.machine_max_ttl_sec) == (64, 86_400)
-
-    def test_env_and_args_read_both(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TRACKINIZER_MACHINE_LIMIT", "0")
-        monkeypatch.setenv("TRACKINIZER_MACHINE_MAX_TTL_SEC", "60")
-        from_env = Config.from_env()
-        from_args = Config.from_args(_server_args())
-        for config in (from_env, from_args):
-            assert (config.machine_limit, config.machine_max_ttl_sec) == (0, 60)
-
-    @pytest.mark.parametrize(
-        ("name", "value", "message"),
-        [
-            ("TRACKINIZER_MACHINE_LIMIT", "many", "must be an integer"),
-            ("TRACKINIZER_MACHINE_LIMIT", "-1", "must be >= 0"),
-            ("TRACKINIZER_MACHINE_MAX_TTL_SEC", "59", "must be >= 60"),
-            ("TRACKINIZER_MACHINE_MAX_TTL_SEC", "1.5", "must be an integer"),
-        ],
-    )
-    def test_a_bad_value_refuses_to_start(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        name: str,
-        value: str,
-        message: str,
-    ) -> None:
-        monkeypatch.setenv(name, value)
-        with pytest.raises(ConfigError, match=f"^{name} {message}"):
-            Config.from_env()
-
-
 def _patch_data_dir(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
     """Redirect ``config.data_dir`` at ``root`` so workdir tests stay in tmp."""
 

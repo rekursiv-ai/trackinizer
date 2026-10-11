@@ -30,7 +30,6 @@ from trackinizer.server.machine_auth import (
 )
 from trackinizer.wire.wire_machine_host import (
     CREDENTIAL_PREFIX,
-    DESTROYED_PATH,
     ENROLL_PATH,
     ENROLL_TTL_SEC,
     ENROLLMENT_PREFIX,
@@ -60,8 +59,7 @@ def test_enroll_supersedes_open_tokens_then_stores_only_the_digest(
 ) -> None:
     client, _, engine = route_client
     _as("admin")
-    engine.conn.fetch.return_value = [{"id": _MACHINE_ID, "destroyed_at": None}]
-    engine.conn.fetchval.side_effect = [_BEAT]
+    engine.conn.fetchval.side_effect = [_MACHINE_ID, _BEAT]
 
     response = client.post(ENROLL_PATH, json={"name": "dev-1"})
 
@@ -69,14 +67,12 @@ def test_enroll_supersedes_open_tokens_then_stores_only_the_digest(
     token = from_plain(response.json(), dict[str, str])["token"]
     parsed = parse_enrollment(token)
     assert parsed is not None
-    (upsert,) = engine.conn.fetch.call_args_list
-    (insert,) = engine.conn.fetchval.call_args_list
+    upsert, insert = engine.conn.fetchval.call_args_list
     # One statement registers the machine or locks its row; a separate insert and
     # lock leave a gap in which a delete commits and the lock finds no machine.
     sql = from_plain(upsert.args[0], str)
     assert "INSERT INTO machines (name, updated_by) VALUES ($1, $2)" in sql
-    assert "ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name" in sql
-    assert "RETURNING id, destroyed_at" in sql
+    assert "ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id" in sql
     assert upsert.args[1:] == ("dev-1", TEST_USER_EMAIL)
     assert "INSERT INTO machine_enrollments" in from_plain(insert.args[0], str)
     assert insert.args[1:] == (
@@ -87,34 +83,13 @@ def test_enroll_supersedes_open_tokens_then_stores_only_the_digest(
         ENROLL_TTL_SEC,
     )
     sent = executed_sql(engine.conn)
-    assert [sql.split(" WHERE")[0].split(" (")[0] for sql in sent] == [
+    assert [sql.split(" WHERE")[0] for sql in sent] == [
         "BEGIN",
-        "INSERT INTO machines",
         "UPDATE machine_enrollments SET used_at = now()",
         "COMMIT",
     ]
-    assert "used_at IS NULL" in sent[2]
+    assert "used_at IS NULL" in sent[1]
     assert token not in " ".join(sent)
-
-
-def test_enroll_of_a_destroyed_machine_is_409_and_issues_no_token(
-    route_client: tuple[TestClient, Store, FakeEngine],
-) -> None:
-    client, _, engine = route_client
-    _as("admin")
-    engine.conn.fetch.return_value = [{"id": _MACHINE_ID, "destroyed_at": _BEAT}]
-
-    response = client.post(ENROLL_PATH, json={"name": "dev-1"})
-
-    assert response.status_code == 409
-    assert from_plain(response.json(), dict[str, str])["code"] == "machine_destroyed"
-    engine.conn.fetchval.assert_not_called()
-    sent = executed_sql(engine.conn)
-    assert [sql.split(" (")[0] for sql in sent] == [
-        "BEGIN",
-        "INSERT INTO machines",
-        "ROLLBACK",
-    ]
 
 
 def test_enroll_by_a_non_admin_sends_nothing(
@@ -151,7 +126,7 @@ def test_join_checks_the_token_unlocked_then_locks_the_machine_and_claims_it(
     assert "FOR UPDATE" not in sql
     assert "FROM machine_enrollments e JOIN machines m ON m.id = e.machine_id" in sql
     assert "e.id = $1 AND m.name = $2 AND e.used_at IS NULL" in sql
-    assert "AND e.expires_at > now() AND m.destroyed_at IS NULL" in sql
+    assert "AND e.expires_at > now()" in sql
     assert (
         "FROM users u WHERE u.email = e.created_by "
         "AND u.status = 'active' AND u.role = 'admin'"
@@ -167,10 +142,6 @@ def test_join_checks_the_token_unlocked_then_locks_the_machine_and_claims_it(
     assert "AND machine_id = $3" in sql
     assert (
         "FROM users WHERE email = created_by AND status = 'active' AND role = 'admin'"
-    ) in sql
-    # Checked again under the lock: a destroy that committed meanwhile is seen here.
-    assert (
-        "EXISTS (SELECT 1 FROM machines WHERE id = $3 AND destroyed_at IS NULL)"
     ) in sql
     assert claim.args[1:] == (
         parsed_enrollment.id,
@@ -469,46 +440,6 @@ def test_revoke_by_a_non_admin_sends_nothing(
 
     assert response.status_code == 403
     _assert_untouched(engine)
-
-
-def test_destroyed_closes_the_host_as_revoke_does_and_keeps_the_first_time(
-    route_client: tuple[TestClient, Store, FakeEngine],
-) -> None:
-    client, _, engine = route_client
-    _as("admin")
-    engine.conn.fetchval.return_value = _MACHINE_ID
-
-    response = client.post(DESTROYED_PATH.format(name="cloud-ab12cd34"))
-
-    assert (response.status_code, response.content) == (204, b"")
-    select = engine.conn.fetchval.call_args
-    assert "FROM machines WHERE name = $1 FOR UPDATE" in from_plain(select.args[0], str)
-    sent = executed_sql(engine.conn)
-    assert [sql.split(" SET")[0] for sql in sent] == [
-        "BEGIN",
-        "UPDATE machine_credentials",
-        "UPDATE machine_enrollments",
-        "UPDATE machines",
-        "COMMIT",
-    ]
-    assert "used_at IS NULL" in sent[2]
-    assert "host_instance = NULL" in sent[3]
-    assert "destroyed_at = COALESCE(destroyed_at, now())" in sent[3]
-
-
-def test_destroyed_of_an_absent_machine_is_404_and_a_writer_is_refused(
-    route_client: tuple[TestClient, Store, FakeEngine],
-) -> None:
-    client, _, engine = route_client
-
-    refused = client.post(DESTROYED_PATH.format(name="dev-1"))
-    _assert_untouched(engine)
-    _as("admin")
-    engine.conn.fetchval.return_value = None
-    absent = client.post(DESTROYED_PATH.format(name="nope"))
-
-    assert (refused.status_code, absent.status_code) == (403, 404)
-    assert executed_sql(engine.conn) == ["BEGIN", "ROLLBACK"]
 
 
 def _as(role: Role) -> None:
