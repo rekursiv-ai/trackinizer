@@ -123,6 +123,10 @@ test("Close takes the tab back to the page it was on before Settings", async ({ 
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   await page.getByRole("navigation", { name: "Sidebar" }).getByRole("link", { name: "Your settings" }).click();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Your settings");
+  // The page is as wide as its content, so Close stands at the content's right edge.
+  const close = (await page.getByRole("link", { name: "Close settings" }).boundingBox())!;
+  const profile = (await page.getByRole("region", { name: "Profile" }).boundingBox())!;
+  expect(Math.round(close.x + close.width)).toBe(Math.round(profile.x + profile.width));
   await page.getByRole("link", { name: "Close settings" }).click();
   await expect(page).toHaveURL(/#\/list\/Issue$/);
 });

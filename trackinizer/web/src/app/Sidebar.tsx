@@ -25,8 +25,9 @@ const SIDEBAR_ID = "app-sidebar";
 /**
  * The sidebar: the logo, Search, New, Graph (the home view), Console,
  * Activity, one Browse entry per kind, the Workbench section (the canvas's
- * visuals and Artifact link, while a canvas is mounted, folded at first), Settings
- * (with Admin for admins only), and the signed-in user. The mock's other
+ * visuals and Artifact link, while a canvas is mounted, folded at first), and at
+ * its foot Your settings, Admin (for admins only), the theme and the signed-in
+ * user. Each icon stands where the rail has it, opened or not. The mock's other
  * entries (Starred, Notifications, Views, Later) belong to later phases and
  * stay out until those ship. The button beside the logo, at the sidebar's
  * outer edge, collapses it (`panel`) to a rail, as VS Code's activity bar is:
@@ -129,7 +130,8 @@ export function Sidebar({ onNavigate, onWorkbench, panel }: {
         </button>
         <WorkbenchSlot />
       </NavSection>
-      <NavSection title="Settings">
+      {/* The foot, a row each: Settings, Admin, the theme and the user, in the rail as opened. */}
+      <div className="sidebar-foot">
         <NavItem
           route={{ name: "settings" }}
           current={route.name === "settings"}
@@ -148,17 +150,13 @@ export function Sidebar({ onNavigate, onWorkbench, panel }: {
             onNavigate={onNavigate}
           />
         ) : null}
-      </NavSection>
-      <div className="sidebar-foot">
-        <div className="foot-row">
-          <div className="me-row" role="group" aria-label="Signed in" title={compact ? `${profile.email} (${profile.role})` : undefined}>
-            <span className="avatar" aria-hidden="true">
-              {profile.email.charAt(0).toUpperCase()}
-            </span>
-            <span className="me-email">{profile.email}</span>
-            <span className="role-chip">{profile.role}</span>
-          </div>
-          <ThemeButton />
+        <ThemeButton />
+        <div className="me-row" role="group" aria-label="Signed in" title={compact ? `${profile.email} (${profile.role})` : undefined}>
+          <span className="avatar" aria-hidden="true">
+            {profile.email.charAt(0).toUpperCase()}
+          </span>
+          <span className="me-email">{profile.email}</span>
+          <span className="role-chip">{profile.role}</span>
         </div>
       </div>
     </nav>
@@ -167,15 +165,17 @@ export function Sidebar({ onNavigate, onWorkbench, panel }: {
 
 /**
  * Switches the theme shown, dark to light or light to dark, as a browser
- * choice; Settings keeps System as well. It shows the theme it switches to.
+ * choice; Settings keeps System as well. A row of the foot, it shows the theme
+ * it switches to.
  */
 function ThemeButton() {
   const { shown } = useTheme();
   const next = shown === "dark" ? "light" : "dark";
   const label = `Switch to ${next} theme`;
   return (
-    <button type="button" className="icon-btn theme-btn" aria-label={label} title={label} onClick={() => chooseTheme(next)}>
+    <button type="button" className="nav-item theme-btn" aria-label={label} title={label} onClick={() => chooseTheme(next)}>
       <Icon name={next === "light" ? "sun" : "moon"} />
+      <span className="label">{next === "light" ? "Light theme" : "Dark theme"}</span>
     </button>
   );
 }

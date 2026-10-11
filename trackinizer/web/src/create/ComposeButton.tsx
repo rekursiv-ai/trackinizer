@@ -28,7 +28,7 @@ export function ComposeButton({ onNavigate }: { onNavigate: () => void }) {
       title={`New ${kindLook(kind).one} (C)`}
       aria-label={`New ${kindLook(kind).one}`}
     >
-      <Icon name="compose" size={15} />
+      <Icon name="compose" />
       <span className="label">New {kindLook(kind).one}</span>
       <kbd>C</kbd>
     </button>

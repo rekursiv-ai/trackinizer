@@ -147,10 +147,15 @@ kbd {
   padding: 3px 6px; border-radius: var(--radius); font-weight: 600; font-size: 13.5px;
 }
 a.ws-switch:hover { background: var(--surface-raised); }
-/* Search, then New, each a row of its own under the logo's, each with its keys at its end. */
-.sidebar-tools { display: flex; flex-direction: column; align-items: stretch; gap: 4px; margin-bottom: 10px; }
+/* Search, then New, each a row of its own under the logo's, each with its keys at its end, and a
+   rule under them. Every icon of the sidebar has its middle 24 px from the outer edge, as the
+   rail's 48 px centre it: the 10 px of padding, then the row's own. */
+.sidebar-tools {
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+  margin-bottom: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--line);
+}
 .sidebar-search, .sidebar-new {
-  display: flex; align-items: center; gap: 8px; min-width: 0; height: 28px; padding: 0 4px 0 8px;
+  display: flex; align-items: center; gap: 8px; min-width: 0; height: 28px; padding: 0 4px 0 5px;
   border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface-raised);
   font-size: 13px; color: var(--muted); text-align: left;
 }
@@ -167,7 +172,7 @@ a.ws-switch:hover { background: var(--surface-raised); }
 .icon-btn:hover { background: var(--surface-hover); color: var(--text); }
 .nav-item {
   display: flex; align-items: center; gap: 9px; width: 100%;
-  min-height: 28px; padding: 4px 8px; border-radius: var(--radius);
+  min-height: 28px; padding: 4px 6px; border-radius: var(--radius);
   font-size: 13px; font-weight: 500; color: var(--ink-muted); text-align: left;
 }
 .nav-item .ic { color: var(--muted); }
@@ -181,20 +186,18 @@ a.ws-switch:hover { background: var(--surface-raised); }
 }
 .nav-section { margin-top: 14px; }
 .nav-section-h {
-  display: flex; align-items: center; gap: 4px; width: 100%;
-  padding: 3px 8px; font-size: 12px; font-weight: 500; color: var(--muted); border-radius: var(--radius);
+  display: flex; align-items: center; gap: 4px; width: 100%; height: 20px;
+  padding: 0 6px; font-size: 12px; font-weight: 500; color: var(--muted); border-radius: var(--radius);
 }
 .nav-section-h:hover { color: var(--ink-muted); }
 .nav-section-h .ic { transition: transform .12s; }
 .nav-section.is-collapsed .nav-section-h .ic { transform: rotate(-90deg); }
 .nav-section.is-collapsed .nav-section-body { display: none; }
 .nav-section-body { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; }
-.sidebar-foot { margin-top: auto; padding-top: 14px; display: flex; flex-direction: column; gap: 8px; }
-/* The user, then the theme button (Sidebar.tsx's ThemeButton). */
-.foot-row { display: flex; align-items: center; gap: 4px; }
-.foot-row .me-row { flex: 1; min-width: 0; }
+/* Settings, Admin, the theme and the user, a row each, from the bottom up. */
+.sidebar-foot { margin-top: auto; padding-top: 14px; display: flex; flex-direction: column; gap: 2px; }
 .me-row {
-  display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  display: flex; align-items: center; gap: 8px; min-height: 28px; padding: 4px;
   font-size: 12.5px; color: var(--ink-muted);
 }
 .me-email { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -217,18 +220,19 @@ a.ws-switch:hover { background: var(--surface-raised); }
 @media (width > 760px) {
   .app.sidebar-collapsed { grid-template-columns: 48px minmax(0, 1fr); }
   .app.sidebar-collapsed:not(.sidebar-peek) .sidebar { padding: 10px 6px 12px; }
-  .app.sidebar-collapsed:not(.sidebar-peek) .ws-row { flex-direction: column; margin-bottom: 2px; }
-  .app.sidebar-collapsed:not(.sidebar-peek) .sidebar-tools { align-items: center; margin-bottom: 4px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  .app.sidebar-collapsed:not(.sidebar-peek) .ws-row { flex-direction: column; }
+  .app.sidebar-collapsed:not(.sidebar-peek) .sidebar-tools { align-items: center; }
   .app.sidebar-collapsed:not(.sidebar-peek) :is(.sidebar-search, .sidebar-new) { width: 28px; padding: 0; justify-content: center; }
   .app.sidebar-collapsed:not(.sidebar-peek) .sidebar-search { border: 0; background: none; }
   .app.sidebar-collapsed:not(.sidebar-peek) .sidebar-search:hover { background: var(--surface-hover); }
-  .app.sidebar-collapsed:not(.sidebar-peek) :is(.ws-switch, .sidebar-search > .label, .sidebar-search > kbd, .sidebar-new > .label, .sidebar-new > kbd, .nav-section-h, .nav-item > .label, .me-email, .role-chip) { display: none; }
-  .app.sidebar-collapsed:not(.sidebar-peek) .nav-item { justify-content: center; padding: 8px 0; }
-  .app.sidebar-collapsed:not(.sidebar-peek) .nav-section { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--line); }
+  .app.sidebar-collapsed:not(.sidebar-peek) :is(.ws-switch, .sidebar-search > .label, .sidebar-search > kbd, .sidebar-new > .label, .sidebar-new > kbd, .nav-item > .label, .me-email, .role-chip) { display: none; }
+  .app.sidebar-collapsed:not(.sidebar-peek) .nav-item { justify-content: center; padding: 6px 0; }
+  /* A heading keeps its place, a rule drawn across it, so each icon below stands where it does opened. */
+  .app.sidebar-collapsed:not(.sidebar-peek) .nav-section-h { visibility: hidden; }
+  .app.sidebar-collapsed:not(.sidebar-peek) .nav-section { background: linear-gradient(var(--line), var(--line)) 0 10px / 100% 1px no-repeat; }
   /* A section its heading folded shows its entries all the same: the heading
      is hidden here, and nothing else could unfold them. */
-  .app.sidebar-collapsed:not(.sidebar-peek) .nav-section .nav-section-body { display: flex; margin-top: 0; }
-  .app.sidebar-collapsed:not(.sidebar-peek) .foot-row { flex-direction: column; }
+  .app.sidebar-collapsed:not(.sidebar-peek) .nav-section .nav-section-body { display: flex; }
   .app.sidebar-collapsed:not(.sidebar-peek) .me-row { justify-content: center; padding: 4px 0; }
   /* The Workbench section's controls need room: the rail shows the icon that opens the sidebar on them. */
   .app.sidebar-collapsed:not(.sidebar-peek) .workbench-slot { display: none; }
@@ -237,6 +241,9 @@ a.ws-switch:hover { background: var(--surface-raised); }
   .app.sidebar-right.sidebar-collapsed { grid-template-columns: minmax(0, 1fr) 48px; }
   .app.sidebar-right .sidebar-dock { order: 2; }
   .app.sidebar-right .main { margin: 8px 0 8px 8px; }
+  /* Opened at the right, each row turns over, so its icon stays at the outer edge where the rail has it. */
+  .app.sidebar-right :is(.nav-item, .sidebar-search, .sidebar-new, .me-row, .nav-section-h) { flex-direction: row-reverse; text-align: right; }
+  .app.sidebar-right :is(.sidebar-search, .sidebar-new) { padding: 0 5px 0 4px; }
   /* A rail opened by hover lies over the workbench from its own edge, the rail's cell unchanged. */
   .app.sidebar-collapsed .sidebar-dock { z-index: 40; }
   .app.sidebar-peek .sidebar { position: absolute; top: 0; bottom: 0; left: 0; width: 244px; background: var(--sidebar); border-right: 1px solid var(--line); box-shadow: 0 8px 32px #0006; }

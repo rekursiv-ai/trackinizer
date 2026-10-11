@@ -113,6 +113,47 @@ for (const side of ["right", "left"] as const) {
   });
 }
 
+/** Where each entry's icon stands, by entry: its middle, in whole pixels. Hidden entries are left out. */
+async function iconPlaces(sidebar: Locator): Promise<Record<string, [number, number]>> {
+  return sidebar.evaluate((nav) => {
+    const places: Record<string, [number, number]> = {};
+    for (const entry of nav.querySelectorAll<HTMLElement>("a.nav-item, .sidebar-search, .sidebar-new, .panel-toggle, .theme-btn, .me-row")) {
+      const icon = entry.querySelector<HTMLElement>("svg, .avatar");
+      const box = icon?.getBoundingClientRect();
+      if (!box || box.width === 0) continue;
+      const name = entry.classList.contains("panel-toggle") ? "pin" : entry.getAttribute("aria-label") ?? entry.textContent!.trim();
+      places[name] = [Math.round(box.x + box.width / 2), Math.round(box.y + box.height / 2)];
+    }
+    return places;
+  });
+}
+
+for (const side of ["right", "left"] as const) {
+  test(`at the ${side}, every icon stands where it stood in the rail, the rail opened or pinned`, async ({ page }) => {
+    const { sidebar, app } = await open(page);
+    if (side === "left") await page.locator(".chat-column").getByRole("button", { name: "Move Chat to the right" }).click();
+    const rail = await iconPlaces(sidebar);
+    expect(Object.keys(rail)).toEqual(expect.arrayContaining(["pin", "Search", "New issue", "Graph", "Issues", "Your settings", "Admin", "Signed in"]));
+    await sidebar.hover();
+    await expect(app).toHaveClass(/sidebar-peek/);
+    expect(await iconPlaces(sidebar)).toEqual(rail);
+    await sidebar.locator(".panel-toggle").click();
+    await page.mouse.move(700, 400);
+    await expect(app).not.toHaveClass(/sidebar-collapsed/);
+    expect(await iconPlaces(sidebar)).toEqual(rail);
+    await forget(page);
+  });
+}
+
+test("Settings and Admin stand in the sidebar's foot, over the signed-in user", async ({ page }) => {
+  const { sidebar } = await open(page);
+  const foot = sidebar.locator(".sidebar-foot");
+  await expect(foot.getByRole("link", { name: "Your settings" })).toBeVisible();
+  await expect(foot.getByRole("link", { name: "Admin" })).toBeVisible();
+  const admin = await box(foot.getByRole("link", { name: "Admin" }));
+  expect((await box(foot.getByRole("group", { name: "Signed in" }))).y).toBeGreaterThanOrEqual(admin.y + admin.height);
+});
+
 test("pinned open, the Workbench section starts folded, and its heading unfolds it", async ({ page }) => {
   const { sidebar, app } = await open(page);
   await sidebar.getByRole("button", { name: "Expand sidebar" }).click();

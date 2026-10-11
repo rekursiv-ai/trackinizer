@@ -35,7 +35,7 @@ export function SettingsView({ assign = (url: string) => location.assign(url) }:
   const profile = useProfile();
   const now = useMinuteClock();
   return (
-    <div className="view">
+    <div className="view settings-view">
       <ViewHeader icon={<Icon name="gear" />} title="Your settings">
         <CloseSettings />
       </ViewHeader>

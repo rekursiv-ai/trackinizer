@@ -1,6 +1,9 @@
 /* Your settings and Admin, from the design mock ("settings: yours and
    admin", ".st"). The names list, the suggestions and the notes are ours. */
 .st { max-width: 880px; padding: 8px 24px 80px; display: flex; flex-direction: column; gap: 18px; }
+/* Your settings is as wide as its sections, so Close stands at their right edge. */
+.settings-view { max-width: 880px; }
+.settings-view .view-h { padding-right: 24px; }
 .st-sec { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; background: var(--surface); overflow-x: auto; }
 .st-h { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 10px; }
 .st-h > div { flex: 1; min-width: 0; }

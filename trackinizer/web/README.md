@@ -506,8 +506,12 @@ with one response shape, so the fixtures take one per verb.
   flipping Chat's side moves both (`src/app/Shell.tsx`). It starts as a 48 px
   rail of its icons, as VS Code's activity bar is: the button that pins it open
   on top, then Search, New and every entry in its order, each a link named and
-  titled by its label, the current one marked, and the user's avatar at the
-  foot. Rules stand in for the section headings. Resting the pointer on the
+  titled by its label, the current one marked; at the foot Your settings,
+  Admin, the theme and the user's avatar. A rule stands in each section
+  heading's place, and every row is as tall as opened, so each icon stands
+  exactly where it does with the sidebar open: 24 px from the outer edge. At
+  the right the open sidebar's rows turn over, icon outermost, to keep that.
+  Resting the pointer on the
   rail for 120 ms opens it over the workbench, which keeps its width; it folds
   300 ms after the pointer and the keyboard have left it (the timings of
   Chat's folded tile, `useHoverOpen`), and a link followed folds it at once. The
@@ -520,9 +524,10 @@ with one response shape, so the fixtures take one per verb.
   Artifact link (the section's body is a slot, `src/app/workbenchSlot.tsx`, that
   the canvas draws into). In the rail it is one icon, which opens the sidebar on
   its controls, unfolded. Settings has a Close link in its header, back to the
-  last page before Settings or Admin, or the graph. Narrow, the sidebar is the
-  drawer, whole, whether collapsed or not, and has no collapse button.
-- The sun or moon beside the user, in the sidebar or its rail, switches the
+  last page before Settings or Admin, or the graph; the page is as wide as its
+  sections, so Close stands at their edge. Narrow, the sidebar is the drawer,
+  whole, whether collapsed or not, and has no collapse button.
+- The sun or moon over the user, in the sidebar or its rail, switches the
   theme to light or dark; Settings' Appearance also offers System, and shows
   a switch made here at once (`useTheme` in `src/theme.ts`).
 - Search in the palette answers while you type from what the app has loaded:

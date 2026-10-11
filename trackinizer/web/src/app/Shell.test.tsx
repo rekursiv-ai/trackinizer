@@ -127,6 +127,9 @@ test("the sidebar starts as a rail of its entries, named, titled and in order; i
   expect(named()).toEqual(names.map((name) => [name, name]));
   expect(within(sidebar).getByRole("link", { current: "page" }).getAttribute("aria-label")).toBe("Issues");
   expect(within(sidebar).getByRole("group", { name: "Signed in" }).getAttribute("title")).toBe("ada@example.com (writer)");
+  // Settings stands at the foot with the theme and the user, not among the views.
+  const foot = sidebar.querySelector(".sidebar-foot") as HTMLElement;
+  expect([...foot.children].map((child) => child.getAttribute("aria-label"))).toEqual(["Your settings", "Switch to light theme", "Signed in"]);
   await user.click(toggle());
   expect(document.querySelector(".app")!.classList).not.toContain("sidebar-collapsed");
   expect(toggle().getAttribute("aria-label")).toBe("Collapse sidebar");
