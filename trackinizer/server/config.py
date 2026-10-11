@@ -16,6 +16,7 @@ from trackinizer.lib.postgres import DatabaseEngine, PGliteEngine, PostgresEngin
 from trackinizer.lib.userdirs import data_dir
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
+from trackinizer.wire.wire_machines import MIN_TTL_SEC
 
 
 if TYPE_CHECKING:
@@ -121,6 +122,11 @@ class Config:
         chat instead. ``single`` makes every user one organisation, so a science chat
         is always continued by typing in it; only a server whose users are all one
         organisation sets it. Environment only (``TRACKINIZER_CHAT_ORGS``).
+      machine_limit: Most provisioned machines alive at once; one more is refused.
+        Environment only (``TRACKINIZER_MACHINE_LIMIT``).
+      machine_max_ttl_sec: Longest lifetime a provisioned machine may ask for, and
+        the one it gets when it asks for none. Environment only
+        (``TRACKINIZER_MACHINE_MAX_TTL_SEC``).
 
     """
 
@@ -159,6 +165,8 @@ class Config:
     auth_disabled: bool = False
     assistant: Assistant | None = None
     chat_orgs: ChatOrgs = "domain"
+    machine_limit: int = 64
+    machine_max_ttl_sec: int = 86_400
 
     @classmethod
     def from_env(cls) -> Self:
@@ -168,6 +176,7 @@ class Config:
           result: Config with settings from TRACKINIZER_* env vars.
 
         """
+        machine_limit, machine_max_ttl_sec = machine_settings_from_env()
         return cls(
             engine=parse_engine(os.environ.get("TRACKINIZER_ENGINE", "pglite")),
             datadir=Path(env_datadir)
@@ -191,6 +200,8 @@ class Config:
             auth_disabled=auth_disabled_from_env(),
             assistant=parse_assistant(os.environ.get("TRACKINIZER_ASSISTANT", "")),
             chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
+            machine_limit=machine_limit,
+            machine_max_ttl_sec=machine_max_ttl_sec,
         )
 
     @classmethod
@@ -205,6 +216,7 @@ class Config:
             environment only.
 
         """
+        machine_limit, machine_max_ttl_sec = machine_settings_from_env()
         return cls(
             engine=parse_engine(flags.engine),
             datadir=flags.datadir,
@@ -224,6 +236,8 @@ class Config:
             assistant=parse_assistant(flags.assistant),
             # Like the secrets, a deployment property that no flag overrides.
             chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
+            machine_limit=machine_limit,
+            machine_max_ttl_sec=machine_max_ttl_sec,
         )
 
     def maintained_embedders(self) -> tuple[str, ...]:
@@ -282,6 +296,37 @@ def secrets_from_env() -> str:
 def auth_disabled_from_env() -> bool:
     """Whether ``TRACKINIZER_NO_AUTH=1`` asks for single-user local mode."""
     return os.environ.get("TRACKINIZER_NO_AUTH") == "1"
+
+
+def machine_settings_from_env() -> tuple[int, int]:
+    """Read the provisioned-machine limit and the longest lifetime one may ask for.
+
+    An unset or blank variable keeps the :class:`Config` default. A value that is
+    not a whole number, or is below its floor, is an operator error and raises
+    rather than fall back: a limit read as 0 would refuse every machine.
+
+    Returns:
+      machine_limit: ``TRACKINIZER_MACHINE_LIMIT``, at least 0.
+      machine_max_ttl_sec: ``TRACKINIZER_MACHINE_MAX_TTL_SEC``, at least
+        :data:`MIN_TTL_SEC`.
+
+    Raises:
+      ConfigError: A value is set but is not a whole number at or above its floor.
+
+    """
+    defaults = Config()
+    return (
+        _whole_from_env(
+            "TRACKINIZER_MACHINE_LIMIT",
+            default=defaults.machine_limit,
+            floor=0,
+        ),
+        _whole_from_env(
+            "TRACKINIZER_MACHINE_MAX_TTL_SEC",
+            default=defaults.machine_max_ttl_sec,
+            floor=MIN_TTL_SEC,
+        ),
+    )
 
 
 def parse_assistant(value: str) -> Assistant | None:
@@ -383,6 +428,20 @@ def build_embedder(name: str) -> Embedder:
     if name == "stub":
         return StubEmbedder()
     raise ConfigError(f"unknown embedder {name!r}")
+
+
+def _whole_from_env(name: str, *, default: int, floor: int) -> int:
+    """Read a whole-number variable, ``default`` when unset or blank."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigError(f"{name} must be an integer, got {raw!r}") from None
+    if value < floor:
+        raise ConfigError(f"{name} must be >= {floor}, got {value}")
+    return value
 
 
 def _parse_session_embedders(raw: str) -> tuple[str, ...]:

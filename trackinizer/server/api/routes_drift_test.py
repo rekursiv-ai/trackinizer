@@ -32,12 +32,19 @@ from trackinizer.wire.routes import (
 )
 from trackinizer.wire.wire_export import EXPORT_API_PATHS
 from trackinizer.wire.wire_machine_host import (
+    DESTROYED_PATH,
     ENROLL_PATH,
     HEARTBEAT_PATH,
     JOIN_PATH,
     REVOKE_PATH,
 )
+from trackinizer.wire.wire_machine_requests import (
+    MACHINE_REQUEST_PATH,
+    MACHINE_REQUEST_RESULT_PATH,
+    MACHINE_REQUESTS_PATH,
+)
 from trackinizer.wire.wire_machines import (
+    MACHINE_DOWN_PATH,
     MACHINE_LABELS_PATH,
     MACHINE_PATH,
     MACHINES_PATH,
@@ -239,24 +246,43 @@ def test_machines_paths_are_registered_and_documented() -> None:
     """The machine routes exist on the live app and appear in ``docs/api.md``."""
     registered = registered_paths(app)
     api_md = (_CWD.parents[1] / "docs" / "api.md").read_text()
-    for path in (MACHINES_PATH, MACHINE_PATH, MACHINE_LABELS_PATH):
+    for path in (MACHINES_PATH, MACHINE_PATH, MACHINE_LABELS_PATH, MACHINE_DOWN_PATH):
         assert path in registered
     assert f"GET    {MACHINES_PATH}" in api_md
+    assert f"POST   {MACHINES_PATH}" in api_md
     assert "PUT    /api/machines/<name>" in api_md
     assert "PATCH  /api/machines/<name>/labels" in api_md
     assert "DELETE /api/machines/<name>" in api_md
+    assert "POST   /api/machines/<name>/down" in api_md
 
 
 def test_machine_host_paths_are_registered_and_documented() -> None:
-    """The enroll, join, heartbeat and revoke routes exist and appear in the docs."""
+    """The machine host routes exist on the live app and appear in the docs."""
     registered = registered_paths(app)
     api_md = (_CWD.parents[1] / "docs" / "api.md").read_text()
-    for path in (ENROLL_PATH, JOIN_PATH, HEARTBEAT_PATH, REVOKE_PATH):
+    for path in (ENROLL_PATH, JOIN_PATH, HEARTBEAT_PATH, REVOKE_PATH, DESTROYED_PATH):
         assert path in registered
     assert f"POST   {ENROLL_PATH}" in api_md
     assert f"POST   {JOIN_PATH}" in api_md
     assert "POST   /api/machines/<uuid>/heartbeat" in api_md
     assert "POST   /api/machines/<name>/revoke" in api_md
+    assert "POST   /api/machines/<name>/destroyed" in api_md
+
+
+def test_machine_request_paths_are_registered_and_documented() -> None:
+    """The machine request routes exist and appear in ``docs/api.md``."""
+    registered = registered_paths(app)
+    api_md = (_CWD.parents[1] / "docs" / "api.md").read_text()
+    for path in (
+        MACHINE_REQUESTS_PATH,
+        MACHINE_REQUEST_PATH,
+        MACHINE_REQUEST_RESULT_PATH,
+    ):
+        assert path in registered
+    assert "POST   /api/machines/<name>/requests" in api_md
+    assert "GET    /api/machines/<name>/requests" in api_md
+    assert "GET    /api/machines/<name>/requests/<uuid>" in api_md
+    assert "POST   /api/machines/<name>/requests/<uuid>/result" in api_md
 
 
 def test_derived_read_routes_are_registered_and_documented() -> None:

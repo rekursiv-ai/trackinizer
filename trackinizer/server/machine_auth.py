@@ -10,19 +10,21 @@ cache: a lookup is one indexed read, and a revoke applies on the next request.
 :func:`current_machine` is separate from :func:`auth.require_role` and shares no
 state with it. A machine credential never authenticates a user route (``auth``
 answers 401 before any lookup), and an API key never authenticates a host route.
+:func:`named_machine_or_admin` is the one dependency that takes either, for a
+route both the machine and an admin read.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Final, Protocol, cast
+from typing import TYPE_CHECKING, Annotated, Final, Protocol, cast
 from uuid import UUID, uuid4
 
 import hashlib
 import re
 import secrets
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Path, Request
 from treekle import from_plain
 
 from trackinizer.server import auth
@@ -32,6 +34,7 @@ from trackinizer.wire.wire_machine_host import (
     CREDENTIAL_PREFIX,
     ENROLLMENT_PREFIX,
 )
+from trackinizer.wire.wire_machines import NAME_PATTERN
 
 
 if TYPE_CHECKING:
@@ -45,6 +48,8 @@ __all__ = [
     "current_machine",
     "machine_revoked",
     "mint_secret",
+    "named_machine",
+    "named_machine_or_admin",
     "parse_credential",
     "parse_enrollment",
     "should_bump_last_used",
@@ -87,6 +92,8 @@ _CREDENTIAL: Final = re.compile(
 _ENROLLMENT: Final = re.compile(
     rf"{re.escape(ENROLLMENT_PREFIX)}([0-9a-f]{{32}})_([A-Za-z0-9_-]{{43}})",
 )
+
+_PathName = Annotated[str, Path(pattern=NAME_PATTERN)]
 
 
 def mint_secret(prefix: str) -> MintedSecret:
@@ -168,6 +175,72 @@ async def current_machine(request: Request, machine_id: UUID) -> MachineIdentity
       NotFoundError: The credential belongs to another machine.
 
     """
+    return await _authenticate(request, machine_id)
+
+
+async def named_machine(request: Request, name: _PathName) -> MachineIdentity:
+    """Authenticate a route that names its machine, as :func:`current_machine` does.
+
+    Args:
+      request: Request carrying the database engine and the Authorization header.
+      name: The machine named in the route's path.
+
+    Returns:
+      identity: The machine and credential the request authenticated as.
+
+    Raises:
+      HTTPException: 401 for an unknown credential; 410 for a revoked one.
+      NotFoundError: The credential belongs to another machine.
+
+    """
+    return await _authenticate(request, name)
+
+
+async def named_machine_or_admin(
+    request: Request,
+    name: _PathName,
+) -> MachineIdentity | auth.AuthIdentity:
+    """Authenticate the named machine's own credential, or an admin.
+
+    A machine credential goes through :func:`named_machine`, so it never reaches
+    another machine's path. Any other credential goes through
+    :func:`auth.current_user`, which refuses a machine or enrollment secret before
+    any lookup, and must hold the admin role.
+
+    Args:
+      request: Request carrying the database engine and the Authorization header.
+      name: The machine named in the route's path.
+
+    Returns:
+      caller: The machine, or the admin.
+
+    Raises:
+      HTTPException: 401 for an unknown credential; 403 for a user below admin;
+        410 for a revoked machine credential.
+      NotFoundError: A machine credential for another machine.
+
+    """
+    if (auth.extract_bearer(request) or "").startswith(CREDENTIAL_PREFIX):
+        return await _authenticate(request, name)
+    identity = await auth.current_user(request)
+    if identity.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail=f"role {identity.role!r} insufficient; need 'admin'",
+        )
+    return identity
+
+
+def machine_revoked() -> HTTPException:
+    """Return the 410 a host gets for a credential that was revoked."""
+    return HTTPException(status_code=410, detail="machine_revoked")
+
+
+# ``path`` is the machine the route names, by id or by name. The comparison is the
+# last check before ``last_used`` is written, so a credential on another machine's
+# path changes nothing.
+async def _authenticate(request: Request, path: UUID | str) -> MachineIdentity:
+    """Authenticate the bearer credential as the machine ``path`` names."""
     parsed = parse_credential(auth.extract_bearer(request) or "")
     if parsed is None:
         raise _unknown()
@@ -185,7 +258,12 @@ async def current_machine(request: Request, machine_id: UUID) -> MachineIdentity
             raise _unknown()
         if row["revoked_at"] is not None:
             raise machine_revoked()
-        if from_plain(row["machine_id"], UUID) != machine_id:
+        identity = MachineIdentity(
+            machine_id=from_plain(row["machine_id"], UUID),
+            name=from_plain(row["name"], str),
+            credential_id=parsed.id,
+        )
+        if path != (identity.machine_id if isinstance(path, UUID) else identity.name):
             raise NotFoundError("machine is not registered")
         if should_bump_last_used(
             _bumped(request),
@@ -193,16 +271,7 @@ async def current_machine(request: Request, machine_id: UUID) -> MachineIdentity
             now=auth.monotonic_clock(),
         ):
             await _touch(conn, parsed.id)
-    return MachineIdentity(
-        machine_id=machine_id,
-        name=from_plain(row["name"], str),
-        credential_id=parsed.id,
-    )
-
-
-def machine_revoked() -> HTTPException:
-    """Return the 410 a host gets for a credential that was revoked."""
-    return HTTPException(status_code=410, detail="machine_revoked")
+    return identity
 
 
 def _parse(pattern: re.Pattern[str], text: str) -> ParsedSecret | None:

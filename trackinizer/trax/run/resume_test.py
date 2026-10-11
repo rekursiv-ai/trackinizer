@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, cast, override
 from uuid import UUID, uuid4
 
 from treekle import PlainTree, immutable
@@ -20,10 +21,12 @@ from trackinizer.lib.agent.sessions import (
 from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import (
     IncompleteRecord,
+    ShellCommandResult,
     Thinking,
     UncategorizedRecord,
     UserMessage,
 )
+from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.errors import (
     CiphertextDroppedError,
     LossyConversionError,
@@ -33,6 +36,12 @@ from trackinizer.trax.run.resume import (
     _read_part,
     _undroppable,
     prepare_resume,
+)
+from trackinizer.trax.run.sink import _record_body
+from trackinizer.trax.run.truncate import (
+    MAX_RECORD_BYTES,
+    MAX_TOOL_RESULT_BYTES,
+    NOTE,
 )
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_session_ir import PartBody, RecordBody
@@ -336,6 +345,82 @@ class TestLossyConversion:
             prepare_resume(cast(Client, client), uuid4(), "claude")
 
         assert client.stamped == []
+
+
+class _CapturedClient(_FakeClient):
+    """Serves each record as capture uploaded it: bounded, so a huge one arrives cut.
+
+    Inflates the fixture's one shell result past the tool-result budget and one
+    uncategorized line past every record's, the two places a cut leaves its note.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("claude_main.jsonl", session_format="claude")
+        line = next(
+            index
+            for index, record in enumerate(self.records)
+            if isinstance(record, UncategorizedRecord)
+        )
+        self.records = [
+            _inflated(record)
+            if index == line or isinstance(record, ShellCommandResult)
+            else record
+            for index, record in enumerate(self.records)
+        ]
+
+    @override
+    def read_session_records(
+        self,
+        session_id: UUID,
+        *,
+        part: int = 0,
+        **_: object,
+    ) -> list[RecordBody]:
+        del session_id, part
+        return [
+            _record_body(idx, Event(record=record, path=Path("s.jsonl")), redactor=None)
+            for idx, record in enumerate(self.records)
+        ]
+
+
+class TestTruncatedAtCapture:
+    """A record capture cut is a transcript the model never saw."""
+
+    def test_resuming_it_is_refused_without_the_flag(self) -> None:
+        client = _CapturedClient()
+
+        with pytest.raises(LossyConversionError, match="truncated at capture"):
+            prepare_resume(cast(Client, client), uuid4(), "claude")
+
+        assert client.stamped == []
+
+    def test_the_flag_resumes_it_with_the_marker_and_without_the_note(self) -> None:
+        """The note is Trackinizer's, never the CLI's; the marker is what the model reads."""
+        client = _CapturedClient()
+
+        written = prepare_resume(cast(Client, client), uuid4(), "claude", lossy=True)
+
+        text = written.path.read_text(encoding="utf-8")
+        assert text.count("Trackinizer capture truncated") >= 2
+        assert NOTE not in text
+
+    def test_a_session_nothing_was_cut_from_needs_no_flag(self) -> None:
+        client = _CapturedClient()
+        client.records = _records("claude_main.jsonl")[0]
+
+        assert prepare_resume(cast(Client, client), uuid4(), "claude").path.exists()
+
+
+def _inflated(record: TraxRecord) -> TraxRecord:
+    """Return ``record`` grown past its budget, if it is one this suite cuts."""
+    if isinstance(record, ShellCommandResult):
+        return replace(record, stdout="x" * MAX_TOOL_RESULT_BYTES)
+    if isinstance(record, UncategorizedRecord):
+        return replace(
+            record,
+            payload=immutable({**record.payload, "content": "y" * MAX_RECORD_BYTES}),
+        )
+    return record
 
 
 if __name__ == "__main__":

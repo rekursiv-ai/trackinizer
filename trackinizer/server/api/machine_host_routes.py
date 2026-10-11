@@ -1,10 +1,11 @@
-"""Routes a machine host uses to enroll, join and stay connected, and the revoke route.
+"""Routes a machine host uses to enroll, join and stay connected; revoke and destroyed.
 
 An admin enrolls a machine by name and hands the host a one-use, 15-minute token.
 The host joins with it, once, and receives a machine credential. It then heartbeats
 with that credential, and its machine reads online until it has been silent for 180
-seconds. An admin revokes the machine; the credential's row is kept, so every host
-route then answers it 410 instead of 401.
+seconds. An admin revokes the machine, or marks it destroyed when its provider has
+destroyed the host; the credential's row is kept, so every host route then answers
+it 410 instead of 401.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from trackinizer.server.notify import tx
 from trackinizer.types.errors import ConflictError
 from trackinizer.wire.wire_machine_host import (
     CREDENTIAL_PREFIX,
+    DESTROYED_PATH,
     ENROLL_PATH,
     ENROLL_TTL_SEC,
     ENROLLMENT_PREFIX,
@@ -59,9 +61,11 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AnotherHostConnectedError",
+    "MachineDestroyedError",
     "enroll_machine_route",
     "heartbeat_machine_route",
     "join_machine_route",
+    "mark_machine_destroyed_route",
     "revoke_machine_route",
     "router",
 ]
@@ -76,6 +80,12 @@ class AnotherHostConnectedError(ConflictError):
     code = "another_host_connected"
 
 
+class MachineDestroyedError(ConflictError):
+    """The machine was destroyed, so no host may join it again."""
+
+    code = "machine_destroyed"
+
+
 @router.post(ENROLL_PATH, response_model=EnrollResponse, status_code=201)
 async def enroll_machine_route(
     body: EnrollRequest,
@@ -85,7 +95,8 @@ async def enroll_machine_route(
 ) -> EnrollResponse:
     """Register the machine if it is new and issue a one-use enrollment token.
 
-    A new token supersedes any open one for the same machine.
+    A new token supersedes any open one for the same machine. A destroyed machine
+    never takes a token, so it never comes back.
 
     Args:
       body: The machine's name.
@@ -98,6 +109,7 @@ async def enroll_machine_route(
 
     Raises:
       ValidationError: The name is reserved.
+      MachineDestroyedError: The machine was destroyed.
 
     """
     refuse_reserved(body.name)
@@ -108,13 +120,20 @@ async def enroll_machine_route(
         # which a delete commits: the lock then finds no row, the enrollment is
         # inserted with a NULL machine, and the route answers 500. The lock also
         # serialises two enrollments of one machine, so the later one always
-        # supersedes the earlier.
-        machine_id = await conn.fetchval(
+        # supersedes the earlier. The update returns the newest row, so a destroy
+        # that committed while this waited for the lock is seen.
+        (machine,) = await conn.fetch(
             "INSERT INTO machines (name, updated_by) VALUES ($1, $2) "
-            "ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id",
+            "ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name "
+            "RETURNING id, destroyed_at",
             body.name,
             identity.email,
         )
+        if machine["destroyed_at"] is not None:
+            raise MachineDestroyedError(
+                f"machine {body.name!r} was destroyed; it takes no new host",
+            )
+        machine_id = from_plain(machine["id"], UUID)
         await conn.execute(
             "UPDATE machine_enrollments SET used_at = now() "
             "WHERE machine_id = $1 AND used_at IS NULL",
@@ -147,9 +166,10 @@ async def join_machine_route(
     """Exchange an enrollment token for a machine credential.
 
     The token is the credential, so the route has no other authentication. It is
-    valid once, within 15 minutes, for the machine name it was issued for, and only
-    while the admin who issued it is still an active admin. Joining a machine that
-    already has a live credential revokes that credential first.
+    valid once, within 15 minutes, for the machine name it was issued for, only
+    while the admin who issued it is still an active admin, and only while the
+    machine is not destroyed. Joining a machine that already has a live credential
+    revokes that credential first.
 
     Args:
       body: The machine name, the token, and the host's instance, version and facts.
@@ -161,7 +181,8 @@ async def join_machine_route(
 
     Raises:
       HTTPException: 401 when the token is malformed, unknown, used, expired, issued
-        for another machine, or issued by an account that is no longer an active admin.
+        for another machine, issued by an account that is no longer an active admin,
+        or issued for a machine since destroyed.
 
     """
     parsed = parse_enrollment(body.token)
@@ -186,13 +207,17 @@ async def join_machine_route(
                 raise _refused()
             # The claim checks everything again, because the read above held no lock:
             # a concurrent join or revoke may have used the token since, and two joins
-            # that both passed the read would otherwise each get a credential.
+            # that both passed the read would otherwise each get a credential. It
+            # starts after the lock is granted, so it also sees a destroy that
+            # committed meanwhile, and a destroyed machine gets no credential.
             claimed = await conn.fetchval(
                 "UPDATE machine_enrollments SET used_at = now() "
                 "WHERE id = $1 AND used_at IS NULL AND expires_at > now() "
                 "AND secret_sha256 = $2 AND machine_id = $3 "
                 "AND EXISTS (SELECT 1 FROM users WHERE email = created_by "
                 "AND status = 'active' AND role = 'admin') "
+                "AND EXISTS (SELECT 1 FROM machines WHERE id = $3 "
+                "AND destroyed_at IS NULL) "
                 "RETURNING id",
                 parsed.id,
                 parsed.digest,
@@ -308,20 +333,44 @@ async def revoke_machine_route(
     del identity
     refuse_reserved(name)
     async with engine_of(request).acquire() as conn, tx(conn):
-        machine_id = await conn.fetchval(
-            "SELECT id FROM machines WHERE name = $1 FOR UPDATE",
-            name,
-        )
-        if machine_id is None:
-            raise absent_machine(name)
-        await _revoke_credentials(conn, from_plain(machine_id, UUID))
-        await conn.execute(
-            "UPDATE machine_enrollments SET used_at = now() "
-            "WHERE machine_id = $1 AND used_at IS NULL",
-            machine_id,
-        )
+        machine_id = await _close_host(conn, name)
         await conn.execute(
             "UPDATE machines SET host_instance = NULL WHERE id = $1",
+            machine_id,
+        )
+    return Response(status_code=204)
+
+
+@router.post(DESTROYED_PATH, status_code=204)
+async def mark_machine_destroyed_route(
+    name: MachineName,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("admin"))],
+) -> Response:
+    """Record that a machine's host was destroyed, and take it out of service.
+
+    Revokes the credential and closes any unused token, as a revoke does, and
+    keeps the first ``destroyed_at``, so marking it again is a no-op.
+
+    Args:
+      name: The machine's name.
+      request: Request carrying the database engine.
+      identity: Admin principal: the provider's key.
+
+    Returns:
+      empty: 204 with no body.
+
+    Raises:
+      NotFoundError: No such machine.
+
+    """
+    del identity
+    refuse_reserved(name)
+    async with engine_of(request).acquire() as conn, tx(conn):
+        machine_id = await _close_host(conn, name)
+        await conn.execute(
+            "UPDATE machines SET host_instance = NULL, "
+            "destroyed_at = COALESCE(destroyed_at, now()) WHERE id = $1",
             machine_id,
         )
     return Response(status_code=204)
@@ -333,7 +382,7 @@ async def _token_is_usable(conn: Conn, *, parsed: ParsedSecret, name: str) -> bo
         "SELECT e.secret_sha256 FROM machine_enrollments e "
         "JOIN machines m ON m.id = e.machine_id "
         "WHERE e.id = $1 AND m.name = $2 AND e.used_at IS NULL "
-        "AND e.expires_at > now() "
+        "AND e.expires_at > now() AND m.destroyed_at IS NULL "
         "AND EXISTS (SELECT 1 FROM users u WHERE u.email = e.created_by "
         "AND u.status = 'active' AND u.role = 'admin')",
         parsed.id,
@@ -343,6 +392,25 @@ async def _token_is_usable(conn: Conn, *, parsed: ParsedSecret, name: str) -> bo
         from_plain(stored, bytes),
         parsed.digest,
     )
+
+
+# The machine row first, as in every route that writes a machine, so a join racing
+# this waits for it and then finds its token closed.
+async def _close_host(conn: Conn, name: str) -> UUID:
+    """Lock the machine, revoke its credential and close its unused tokens."""
+    machine_id = await conn.fetchval(
+        "SELECT id FROM machines WHERE name = $1 FOR UPDATE",
+        name,
+    )
+    if machine_id is None:
+        raise absent_machine(name)
+    await _revoke_credentials(conn, from_plain(machine_id, UUID))
+    await conn.execute(
+        "UPDATE machine_enrollments SET used_at = now() "
+        "WHERE machine_id = $1 AND used_at IS NULL",
+        machine_id,
+    )
+    return from_plain(machine_id, UUID)
 
 
 async def _revoke_credentials(conn: Conn, machine_id: UUID) -> None:

@@ -5,6 +5,10 @@ how to use it, and labels. The registry never reaches a machine; a machine that
 runs a host reports in by heartbeat (``wire_machine_host``), and its status is
 derived from that. The writer role reads it and the admin role changes it.
 
+A writer may also provision a machine: the server names it after the provider
+that will create its host, records the spec, the requester and an expiry, and a
+provider outside the server reconciles the host against the row.
+
 This package is part of the publishable client distribution, so it must
 not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 """
@@ -24,14 +28,20 @@ from pydantic import (
     field_validator,
 )
 
+from trackinizer.wire.json_types import JSON, storable_object
+
 
 __all__ = [
     "MACHINES_PATH",
+    "MACHINE_DOWN_PATH",
     "MACHINE_LABELS_PATH",
     "MACHINE_PATH",
     "MAX_FACTS_BYTES",
     "MAX_HOW_CHARS",
+    "MAX_SPEC_BYTES",
+    "MIN_TTL_SEC",
     "NAME_PATTERN",
+    "PROVIDER_PATTERN",
     "RESERVED_NAMES",
     "ROLE_PATTERN",
     "Facts",
@@ -39,8 +49,10 @@ __all__ = [
     "MachineDetail",
     "MachineLabels",
     "MachineList",
+    "MachineProvision",
     "MachinePut",
     "MachineStatus",
+    "Spec",
 ]
 
 NAME_PATTERN: Final = r"^[a-z0-9][a-z0-9-]{0,62}$"
@@ -49,16 +61,36 @@ NAME_PATTERN: Final = r"^[a-z0-9][a-z0-9-]{0,62}$"
 ROLE_PATTERN: Final = r"^(?:[a-z][a-z0-9-]{0,31})?$"
 """A machine role; the empty string means none."""
 
+PROVIDER_PATTERN: Final = r"^[a-z][a-z0-9-]{0,31}$"
+"""The provider that creates a provisioned machine's host; it starts the name."""
+
 MAX_HOW_CHARS: Final = 2_000
 """Longest ``how`` line a machine may hold, in characters."""
 
 RESERVED_NAMES: Final = frozenset(
-    {"enroll", "join", "init", "import", "check", "connect", "leave", "top"},
+    {
+        "enroll",
+        "join",
+        "init",
+        "import",
+        "check",
+        "connect",
+        "leave",
+        "top",
+        "up",
+        "request",
+    },
 )
 """Names no machine may take: they are, or will be, route segments and CLI words."""
 
 MAX_FACTS_BYTES: Final = 4_096
 """Largest ``facts`` object, as compact JSON; the table's limit is twice this."""
+
+MAX_SPEC_BYTES: Final = 8_192
+"""Largest ``spec`` object, as compact JSON; the table's limit is twice this."""
+
+MIN_TTL_SEC: Final = 60
+"""Shortest lifetime a provisioned machine may ask for, in seconds."""
 
 type FactValue = (
     Annotated[str, StringConstraints(max_length=256, pattern=r"^[^\x00]*$")]
@@ -77,6 +109,11 @@ def _small(value: dict[str, FactValue]) -> dict[str, FactValue]:
     return value
 
 
+def _storable_spec(value: JSON) -> JSON:
+    """Refuse a spec the table cannot hold."""
+    return storable_object(value, max_bytes=MAX_SPEC_BYTES)
+
+
 type Facts = Annotated[
     dict[
         Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,31}$")],
@@ -87,13 +124,27 @@ type Facts = Annotated[
 ]
 """What a host reports about itself: OS, CPUs, memory, CLIs found, and so on."""
 
-type MachineStatus = Literal["revoked", "never", "online", "offline"]
-"""Derived, never stored: ``revoked`` when every credential was revoked, ``never``
-before a first heartbeat, ``online`` within 180 s of the last one, else ``offline``."""
+type Spec = Annotated[JSON, AfterValidator(_storable_spec)]
+"""What a provisioned machine was asked for, for its provider to read: a JSON object
+of at most 8 KiB with no NUL and no non-finite number."""
+
+type MachineStatus = Literal[
+    "destroyed",
+    "revoked",
+    "provisioning",
+    "never",
+    "online",
+    "offline",
+]
+"""Derived, never stored, the first that holds: ``destroyed`` once its provider
+destroyed it, ``revoked`` when every credential was revoked, ``provisioning`` for a
+provisioned machine whose host never joined, ``never`` for a registered one before
+a first heartbeat, ``online`` within 180 s of the last one, else ``offline``."""
 
 MACHINES_PATH: Final = "/api/machines"
 MACHINE_PATH: Final = "/api/machines/{name}"
 MACHINE_LABELS_PATH: Final = "/api/machines/{name}/labels"
+MACHINE_DOWN_PATH: Final = "/api/machines/{name}/down"
 
 
 class Machine(BaseModel):
@@ -125,6 +176,21 @@ class Machine(BaseModel):
     last_heartbeat: datetime | None = None
     """When the host last heartbeat, or ``None`` before the first."""
 
+    provider: str = Field(default="", pattern=r"^(?:[a-z][a-z0-9-]{0,31})?$")
+    """The provider that creates its host; empty for a hand-registered machine."""
+
+    requested_by: str = ""
+    """Who provisioned it; empty for a hand-registered machine."""
+
+    expires_at: datetime | None = None
+    """When its provider destroys it; ``None`` for a hand-registered machine."""
+
+    down_at: datetime | None = None
+    """When it was first taken down, or ``None``."""
+
+    destroyed_at: datetime | None = None
+    """When its provider destroyed it, or ``None``."""
+
 
 class MachineDetail(Machine):
     """One machine with what its host reported about itself."""
@@ -134,6 +200,9 @@ class MachineDetail(Machine):
 
     facts: Facts = Field(default_factory=dict)
     """What the host reported: OS, CPUs, memory, CLIs found, and so on."""
+
+    spec: Spec = Field(default_factory=dict)
+    """What it was provisioned with; empty for a hand-registered machine."""
 
 
 class MachineList(BaseModel):
@@ -174,3 +243,21 @@ class MachineLabels(BaseModel):
 
     remove: list[str] = Field(default_factory=list)
     """Labels to remove."""
+
+
+class MachineProvision(BaseModel):
+    """Provision a machine: which provider creates its host, and with what."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider: str = Field(pattern=PROVIDER_PATTERN)
+    """The provider that creates the host; the server names the machine after it."""
+
+    ttl_sec: int | None = Field(default=None, ge=MIN_TTL_SEC)
+    """Seconds until the provider destroys it; ``None`` asks for the server's most."""
+
+    spec: Spec = Field(default_factory=dict)
+    """What the provider should set up, for it to read."""
+
+    labels: list[str] = Field(default_factory=list)
+    """Labels to start with, as the Issue label rules canonicalise them."""

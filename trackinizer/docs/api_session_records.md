@@ -509,6 +509,23 @@ sink (default)   TrackinizerSink -> start / append_records (batch) / end
 sink (--no-sync) FileSink -> local JSONL (also --out PATH, --dry-run)
 ```
 
+A record too large for one upload is cut at capture, after redaction and
+before either sink sees it (`trax/run/truncate.py`): a tool result over
+256 KiB on the wire, search text included, and any other record over 1 MiB.
+Each long string keeps its beginning and end around the marker
+
+```
+[Trackinizer capture truncated: kept beginning/end; omitted N UTF-8 bytes]
+```
+
+and the search text is derived from what was kept. The record says it was
+cut: its `extra` -- an `UncategorizedRecord`'s `payload` -- carries
+`"$trackinizer_truncated": {"omitted_bytes": N}`. A record of bare text
+(`IncompleteRecord`, a stream line) has no field for a note, so the marker is
+its note. A record that fits is sent byte for byte. Uploads are also split so
+no request carries more than 4 MiB of records: the proxy refuses a body over
+8 MB.
+
 ### 9.2 Resume
 
 ```
@@ -536,6 +553,12 @@ its filename names the new one.
 Loss is MEASURED, not predicted from the format pair: the conversion is
 performed, re-read, and the record-kind counts compared. `--lossy` gates
 proceeding when they differ.
+
+A part holding a record truncated at capture (§9.1) is lossy too: the stored
+transcript is not the one the model saw, so resume refuses it without
+`--lossy`, before stamping anything. With `--lossy` the written file keeps
+each marker and drops the `$trackinizer_truncated` note, which is
+Trackinizer's, not the CLI's.
 
 ### 9.3 Which targets resume
 

@@ -30,7 +30,7 @@ into the TUI and never written to the log -- so it travels its own way
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import IO, TYPE_CHECKING, Protocol, cast, override
@@ -45,6 +45,7 @@ from treekle import PlainTree, immutable
 
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.redact import redact_body
+from trackinizer.trax.run.truncate import bounded, encoded_size
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_session_ir import (
     MAX_RECORD_BATCH,
@@ -411,11 +412,16 @@ class TrackinizerSink(Sink):
     rather than the first event means taking an event never needs the server,
     so a run that could not open its session buffers until it can. A caller
     that captures no events still leaves no empty Session row. Events
-    flush on two triggers: the
-    buffer reaching ``batch_size`` (a busy burst), or :meth:`flush` finding
+    flush on three triggers: the
+    buffer reaching ``batch_size`` records or ``batch_bytes`` of wire bytes (a
+    busy burst), or :meth:`flush` finding
     the buffer older than ``flush_interval_sec`` (a quiet session the drain
     loop ticks). ``close`` flushes the remainder and ends the session. Retry
     and idempotency live in the :class:`Client`.
+
+    ``batch_bytes`` also caps each request a flush sends: the proxy refuses a
+    body over 8 MB, so a batch of records each well within its own bound could
+    still fail as a whole. 4 MiB leaves the rest for the request's own fields.
 
     Without the time trigger a short session would withhold every event until
     ``close`` (Ctrl-D), so the live viewer saw nothing stream; the interval
@@ -435,6 +441,7 @@ class TrackinizerSink(Sink):
         rooms: tuple[str, ...] = (),
         redactor: Redactor | None = None,
         batch_size: int = 50,
+        batch_bytes: int = 4 << 20,
         flush_interval_sec: float = 1.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -444,6 +451,7 @@ class TrackinizerSink(Sink):
         self._actor = actor
         self._rooms = rooms
         self._batch_size = batch_size
+        self._batch_bytes = batch_bytes
         self._flush_interval_sec = flush_interval_sec
         self._clock = clock
         # When the run began. A session that could not open then (the server was
@@ -454,7 +462,8 @@ class TrackinizerSink(Sink):
         # The CLI's own session id, discovered mid-run and backfilled at close
         # so a fresh run becomes resumable on its next ``--resume``.
         self._cli_session_id: str | None = None
-        self._buffer: list[tuple[Path, RecordBody]] = []
+        # Each body with its wire size, measured once: both batch bounds read it.
+        self._buffer: list[tuple[Path, RecordBody, int]] = []
         # Typed commands awaiting the next flush. Not in ``_buffer``: they
         # belong to the session rather than to any file, so they cannot be
         # grouped by path.
@@ -495,10 +504,13 @@ class TrackinizerSink(Sink):
         self._next_idx[event.path] = idx + 1
         if not self._buffer:
             self._oldest_buffered_at = self._clock()
-        self._buffer.append(
-            (event.path, _record_body(idx, event, redactor=self._redactor)),
-        )
-        if len(self._buffer) >= self._batch_size:
+        body = _record_body(idx, event, redactor=self._redactor)
+        # Buffered before any send, so a send that fails leaves it in ``pending``.
+        self._buffer.append((event.path, body, encoded_size(body)))
+        if (
+            len(self._buffer) >= self._batch_size
+            or sum(size for _, _, size in self._buffer) >= self._batch_bytes
+        ):
             self._flush()
 
     @override
@@ -599,7 +611,7 @@ class TrackinizerSink(Sink):
         buffered here, to be sent once it does. Each carries its own position, so
         the file stores them verbatim.
         """
-        return list(self._buffer)
+        return [(path, body) for path, body, _ in self._buffer]
 
     @override
     def positions(self) -> dict[Path, int]:
@@ -611,8 +623,9 @@ class TrackinizerSink(Sink):
 
     # One part per request: the server resolves a part from the file's basename, so
     # records from two files cannot share a request without one of them landing under
-    # the wrong part. A part holding more than one request may carry -- a backlog a
-    # server outage built up -- goes in several, each a restart if the batch is.
+    # the wrong part. A part holding more than one request may carry -- by count, or
+    # by bytes the proxy would refuse; a backlog a server outage built up -- goes in
+    # several, each a restart if the batch is.
     #
     # Buffered slash commands ride the FIRST request, so they commit in the same
     # transaction as the turns around them. A batch with no records at all still sends
@@ -624,11 +637,15 @@ class TrackinizerSink(Sink):
             return
         self._ensure_session()
         session_id = cast("UUID", self._session_id)
-        by_path: dict[Path, list[RecordBody]] = {}
-        for path, body in self._buffer:
-            by_path.setdefault(path, []).append(body)
+        by_path: dict[Path, list[tuple[RecordBody, int]]] = {}
+        for path, body, size in self._buffer:
+            by_path.setdefault(path, []).append((body, size))
         for path, bodies in by_path.items():
-            for start in range(0, len(bodies), MAX_RECORD_BATCH):
+            for records in _batches(
+                bodies,
+                max_records=MAX_RECORD_BATCH,
+                max_bytes=self._batch_bytes,
+            ):
                 self._client.append_records(
                     session_id,
                     name=path.name,
@@ -639,7 +656,7 @@ class TrackinizerSink(Sink):
                         format=self._cli,
                         records=self._next_idx.get(path, 0),
                     ),
-                    records=bodies[start : start + MAX_RECORD_BATCH],
+                    records=records,
                     restart=path in self._restarted,
                     slash_commands=self._slash,
                 )
@@ -707,6 +724,11 @@ class TrackinizerSink(Sink):
 # Built through :class:`SessionRecordRow` rather than field by field, so the ciphertext
 # split and the search projection are computed in ONE place and the stored row cannot
 # disagree with what the wire carried.
+#
+# The one place local and server capture share, so the bound applies to both and a
+# local file holds what the server would. Bounded AFTER redaction: a cut can split a
+# secret, and the redactor recognizes a value's beginning but never its end -- the
+# end left at the start of the kept tail would go out unmasked.
 def _record_body(idx: int, event: Event, *, redactor: Redactor | None) -> RecordBody:
     """Return the wire body for one captured record at position ``idx``."""
     # ``session_id`` is the server's to assign; the row type needs one, and
@@ -717,7 +739,7 @@ def _record_body(idx: int, event: Event, *, redactor: Redactor | None) -> Record
         idx=idx,
         record=event.record,
     )
-    return redact_body(RecordBody.of(row), redactor=redactor)
+    return bounded(redact_body(RecordBody.of(row), redactor=redactor))
 
 
 def _redacted(text: str, *, redactor: Redactor | None) -> str:
@@ -1090,3 +1112,24 @@ class _Held:
     taken_before_sending: bool
     """Whether the primary keeps the call even if it then fails to send: true for
     anything it only buffers, false for a restart, which sends first."""
+
+
+# A body larger than ``max_bytes`` by itself goes in a request of its own.
+def _batches(
+    bodies: Sequence[tuple[RecordBody, int]],
+    *,
+    max_records: int,
+    max_bytes: int,
+) -> Iterator[list[RecordBody]]:
+    """Split one file's ``(body, wire size)`` pairs into requests under both bounds."""
+    batch: list[RecordBody] = []
+    size = 0
+    for body, body_size in bodies:
+        if batch and (len(batch) == max_records or size + body_size > max_bytes):
+            yield batch
+            batch = []
+            size = 0
+        batch.append(body)
+        size += body_size
+    if batch:
+        yield batch

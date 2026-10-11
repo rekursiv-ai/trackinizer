@@ -522,6 +522,24 @@ def test_a_validation_error_outside_variables_keeps_its_input(
     assert detail[0]["input"] == "not-a-uuid"
 
 
+def test_a_validation_error_whose_input_json_cannot_carry_is_422_not_500(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    """``Infinity`` parses, but cannot be echoed back, so its 422 drops the input."""
+    client, _, _ = route_client
+
+    response = client.post(
+        "/api/inquiries/lookup",
+        content="[Infinity]",
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 422
+    detail = from_plain(response.json(), dict[str, list[dict[str, object]]])["detail"]
+    assert detail
+    assert all(set(error) == {"type", "loc", "msg"} for error in detail)
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

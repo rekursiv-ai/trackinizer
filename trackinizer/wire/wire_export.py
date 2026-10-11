@@ -91,5 +91,7 @@ Left out on purpose, and why:
   value is not in the database at all.
 * ``machine_enrollments``, ``machine_credentials`` -- hashes of the secrets a
   host joins and authenticates with: access control, like ``api_keys``.
+* ``machine_requests`` -- what a machine asked its provider to do; deployment
+  operations, like ``machines``, not graph records.
 * ``applied_migrations`` -- carried in the header instead.
 """

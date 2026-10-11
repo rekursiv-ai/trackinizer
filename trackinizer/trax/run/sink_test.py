@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeGuard, cast, override
+from typing import TYPE_CHECKING, Final, TypeGuard, cast, override
 from uuid import UUID, uuid4
 
 import asyncio
@@ -14,14 +14,40 @@ import io
 import json
 import threading
 
-from treekle import from_plain, json_loads
+from treekle import from_plain, immutable, json_loads
 
+import httpx2
 import pytest
 
 from trackinizer.client.client import Client
-from trackinizer.lib.agent.types.sessions import AssistantMessage, ToolCall, UserMessage
+from trackinizer.lib.agent.types.sessions import (
+    AgentStatusResult,
+    AgentToAgentMessage,
+    AssistantMessage,
+    ContextClear,
+    ContextCompaction,
+    ContextState,
+    FileEditResult,
+    FileReadResult,
+    FileWriteResult,
+    IncompleteRecord,
+    ShellCommandResult,
+    Splice,
+    SystemMessage,
+    Thinking,
+    TokenUsage,
+    ToolCall,
+    TurnContext,
+    UncategorizedRecord,
+    UncategorizedToolResult,
+    UserMessage,
+    WebFetchResult,
+    WebSearchResult,
+    WebSearchResults,
+)
 from trackinizer.lib.posix.follow import follow_tree
 from trackinizer.trax.run.adapters.claude import ClaudeAdapter
+from trackinizer.trax.run.adapters.codex import CodexAdapter
 from trackinizer.trax.run.adapters.iostream import IOStreamAdapter, LineCapture
 from trackinizer.trax.run.custom_types import Event
 from trackinizer.trax.run.redact import Redactor
@@ -33,7 +59,15 @@ from trackinizer.trax.run.sink import (
     TrackinizerSink,
 )
 from trackinizer.trax.run.slash import SlashCommand
+from trackinizer.trax.run.truncate import (
+    MAX_TOOL_RESULT_BYTES,
+    encoded_size,
+    was_truncated,
+)
+from trackinizer.types.session_records import _BY_KIND, SessionRecordRow
+from trackinizer.types.streams import Stderr, Stdin, Stdout
 from trackinizer.wire.wire_session_ir import (
+    AppendRecordsRequest,
     AppendRecordsResponse,
     ManifestBody,
     RecordBody,
@@ -55,6 +89,65 @@ if TYPE_CHECKING:
 _PART = Path("/sessions/a.jsonl")
 _OTHER = Path("/sessions/b.jsonl")
 _AT = datetime(2026, 6, 1, tzinfo=UTC)
+
+_PROXY_LIMIT: Final = 8_000_000
+"""The live proxy's request-body cap: Caddy's ``8MB`` counts decimal megabytes."""
+
+_WORKER_LOG: Final = (
+    '\x1b[2K\r\x1b[36m[w3]\x1b[0m \x1b[2m22:45:01\x1b[0m\t{"step":120,"loss":0.25}'
+    " \x1b[32m━━━━\x1b[0m\x1b[1A" + "\x00" * 28 + "\n"
+)
+"""One line of the worker logs a scientist read in bulk: a progress bar, then the
+NUL padding of a preallocated log. Each control character takes six bytes on the
+wire, which is how ~1 MB of output became an 11.39 MB record."""
+
+_OVER_THE_LIMIT: Final = '\x00\x1b[0m"' * 500_000
+"""Text one copy of which is over 8 MB on the wire: each control character
+encodes as six bytes."""
+
+_OVERSIZED: Final[dict[str, Callable[[str], TraxRecord]]] = {
+    "AgentStatusResult": lambda text: AgentStatusResult(call_id="c", content=text),
+    "AgentToAgentMessage": lambda text: AgentToAgentMessage(content=text),
+    "AssistantMessage": lambda text: AssistantMessage(content=text),
+    "ContextClear": lambda text: ContextClear(history=(UserMessage(content=text),)),
+    "ContextCompaction": lambda text: ContextCompaction(summary=text),
+    "ContextState": lambda text: ContextState(content=text),
+    "FileEditResult": lambda text: FileEditResult(
+        call_id="c",
+        edits=(Splice(before=text, after=text),),
+    ),
+    "FileReadResult": lambda text: FileReadResult(call_id="c", content=text),
+    "FileWriteResult": lambda text: FileWriteResult(call_id="c", content=text),
+    "IncompleteRecord": lambda text: IncompleteRecord(text=text),
+    "ShellCommandResult": lambda text: ShellCommandResult(call_id="c", stdout=text),
+    "Stderr": lambda text: Stderr(text=text),
+    "Stdin": lambda text: Stdin(text=text),
+    "Stdout": lambda text: Stdout(text=text),
+    "SystemMessage": lambda text: SystemMessage(content=text),
+    "Thinking": lambda text: Thinking(content=text),
+    "TokenUsage": lambda text: TokenUsage(info=immutable({"note": text})),
+    "ToolCall": lambda text: ToolCall(
+        call_id="c",
+        name="Write",
+        arguments=immutable({"content": text}),
+    ),
+    "TurnContext": lambda text: TurnContext(extra=immutable({"instructions": text})),
+    "UncategorizedRecord": lambda text: UncategorizedRecord(
+        kind="k",
+        payload=immutable({"text": text}),
+    ),
+    "UncategorizedToolResult": lambda text: UncategorizedToolResult(
+        call_id="c",
+        content=text,
+    ),
+    "UserMessage": lambda text: UserMessage(content=text),
+    "WebFetchResult": lambda text: WebFetchResult(call_id="c", content=text),
+    "WebSearchResults": lambda text: WebSearchResults(
+        call_id="c",
+        content=(WebSearchResult(snippet=text),),
+    ),
+}
+"""One record of each stored kind, holding ``text`` where that kind holds prose."""
 
 
 def _event(content: str, *, path: Path = _PART, restart: bool = False) -> Event:
@@ -2083,6 +2176,123 @@ class TestRedaction:
         sink.emit("claude", _event(_carrying_the_secret()))
         assert _VALUE_ESCAPED in buf.getvalue()
 
+    def test_a_secret_cut_in_two_by_truncation_is_still_redacted(self) -> None:
+        """Redacted BEFORE the cut: the redactor knows a value's prefix, not its tail.
+
+        Cutting first leaves the end of a value at the start of the kept tail,
+        where no redactor pattern reaches it.
+        """
+        secret = "".join(f"{n:05d}" for n in range(400))
+        client = _FakeClient()
+        sink = _instant_sink(client, redactor=Redactor({"K": secret}))
+        # Mostly secret, so a cut lands inside one; still over budget once masked.
+        shell = ShellCommandResult(call_id="c", stdout=f"{secret} {'x' * 300}\n" * 420)
+        sink.emit("claude", Event(record=shell, path=_PART))
+        sink.close()
+        stored = _stored_by(client)
+        assert "Trackinizer capture truncated" in stored
+        leaked = [n for n in range(len(secret) - 16) if secret[n : n + 16] in stored]
+        assert not leaked
+
+
+class TestOneRecordOverTheProxyLimit:
+    """One captured record larger than the proxy accepts must still upload.
+
+    Uploaded through the real :class:`Client` to a transport that refuses what
+    the live proxy refuses, so the bytes measured are the bytes sent.
+    """
+
+    @pytest.mark.compute_large_fixture
+    def test_the_record_that_hit_413_uploads_with_its_marker(self) -> None:
+        """~1 MB of shell output, stated three times by codex and once for search."""
+        line = _codex_shell_line((_WORKER_LOG * 10_000)[:1_050_000])
+        reader = CodexAdapter().reader()
+        (failing,) = [
+            r for r in reader.feed(line.decode()) if isinstance(r, ShellCommandResult)
+        ]
+        assert encoded_size(_uncut(failing)) > _PROXY_LIMIT
+        server = _Server()
+        sink = TrackinizerSink(server.client(), "codex")
+
+        _ = sink.feed(CodexAdapter(), _PART, line)
+        sink.close()
+
+        assert server.uploads
+        assert max(len(upload) for upload in server.uploads) <= _PROXY_LIMIT
+        (shell,) = [r for r in server.read_back() if isinstance(r, ShellCommandResult)]
+        assert was_truncated(shell)
+        item = from_plain(shell.extra["item"], dict[str, object])
+        for kept in (shell.stdout, item["aggregated_output"], item["formatted_output"]):
+            assert isinstance(kept, str)
+            assert (
+                "[Trackinizer capture truncated: kept beginning/end; omitted " in kept
+            )
+
+    @pytest.mark.compute_large_fixture
+    @pytest.mark.parametrize("kind", sorted(_OVERSIZED))
+    def test_a_record_of_every_kind_uploads(self, kind: str) -> None:
+        """Tool results are the usual culprit, but any kind can hold 8 MB."""
+        record = _OVERSIZED[kind](_OVER_THE_LIMIT)
+        assert encoded_size(_uncut(record)) > _PROXY_LIMIT
+        server = _Server()
+        sink = TrackinizerSink(server.client(), "claude")
+
+        sink.emit("claude", Event(record=record, path=_PART))
+        sink.close()
+
+        assert max(len(upload) for upload in server.uploads) <= _PROXY_LIMIT
+        (stored,) = server.read_back()
+        assert type(stored) is type(record)
+        assert was_truncated(stored)
+
+    def test_every_kind_has_an_oversized_example(self) -> None:
+        """A kind added to the store must be proven to upload, too."""
+        assert set(_OVERSIZED) == set(_BY_KIND)
+
+
+class TestTheBatchBytesBound:
+    """A batch is bounded by its bytes, not only by its count."""
+
+    def test_mid_size_records_go_in_requests_under_4_mib(self) -> None:
+        """Twelve 400 KiB records: no count trigger fires, and no one record is cut."""
+        server = _Server()
+        sink = TrackinizerSink(server.client(), "claude", batch_size=50)
+        for n in range(12):
+            sink.emit("claude", _event(f"{n}" * (200 << 10)))
+        assert server.uploads, "nothing was sent before the count trigger"
+
+        sink.close()
+
+        assert len(server.uploads) > 1
+        assert max(len(upload) for upload in server.uploads) <= (4 << 20) + (1 << 10)
+        assert [body.idx for body in server.records()] == list(range(12))
+
+    def test_a_record_larger_than_a_batch_goes_alone(self) -> None:
+        client = _FakeClient()
+        sink = TrackinizerSink(cast(Client, client), "claude", batch_bytes=1_000)
+        sink.emit("claude", _event("small"))
+        sink.emit("claude", _event("x" * 2_000))
+        sink.emit("claude", _event("small"))
+        sink.close()
+
+        assert _sent_positions(client) == [[0], [1], [2]]
+
+
+def test_the_out_file_holds_the_bounded_record() -> None:
+    """Local capture and upload share one bound: the file is what the server gets."""
+    buf = io.StringIO()
+    sink = FileSink(buf)
+    shell = ShellCommandResult(call_id="c", stdout="x" * MAX_TOOL_RESULT_BYTES)
+
+    sink.emit("codex", Event(record=shell, path=_PART))
+
+    (line,) = buf.getvalue().splitlines()
+    assert "Trackinizer capture truncated" in from_plain(
+        json_loads(line, dict[str, object])["text"],
+        str,
+    )
+    assert len(line) < 2 * MAX_TOOL_RESULT_BYTES
+
 
 def _carrying_the_secret() -> str:
     return f"raw {_VALUE} escaped {_VALUE_ESCAPED}"
@@ -2101,6 +2311,82 @@ def _stored_by(client: _FakeClient) -> str:
     bodies = [body for _, _, batch, _ in client.appended for body in batch]
     return "".join(body.model_dump_json() for body in bodies) + "".join(
         body.model_dump_json() for body in client.slash
+    )
+
+
+class _Server:
+    """Answers as Trackinizer does, behind a proxy that refuses a body over 8 MB."""
+
+    def __init__(self) -> None:
+        self.session_id = uuid4()
+        self.uploads: list[bytes] = []
+
+    def client(self) -> Client:
+        """Return a real client whose requests reach this server and nothing else."""
+        client = Client("http://server")
+        client._http.close()
+        client._http = httpx2.Client(
+            base_url=client.base_url,
+            transport=httpx2.MockTransport(self._answer),
+        )
+        return client
+
+    def records(self) -> list[RecordBody]:
+        """Return every record body uploaded, in order."""
+        return [
+            body
+            for upload in self.uploads
+            for body in AppendRecordsRequest.model_validate_json(upload).records
+        ]
+
+    def read_back(self) -> list[TraxRecord]:
+        """Return every uploaded record as a server reader decodes it."""
+        return [body.row(self.session_id, 0).record() for body in self.records()]
+
+    def _answer(self, request: httpx2.Request) -> httpx2.Response:
+        if len(request.content) > _PROXY_LIMIT:
+            return httpx2.Response(413, text="Request Entity Too Large")
+        path = request.url.path
+        if path.endswith("/records"):
+            self.uploads.append(request.content)
+            return httpx2.Response(200, json={"written": 0, "skipped": 0})
+        if path.endswith("/start"):
+            return httpx2.Response(200, json={"id": str(self.session_id), "seq": 0})
+        return httpx2.Response(200, json={"id": str(self.session_id)})
+
+
+# Codex states the output three times -- ``stdout``, ``aggregated_output`` and
+# ``formatted_output`` -- and capture adds a fourth copy for search.
+def _codex_shell_line(output: str) -> bytes:
+    """Return one codex rollout line for a shell command that printed ``output``."""
+    item = {
+        "type": "CommandExecution",
+        "id": "exec-1",
+        "command": [
+            "/bin/bash",
+            "-lc",
+            "find runs -name '*.log' -exec sed -n '1,180p' {} \\;",
+        ],
+        "status": "completed",
+        "stdout": output,
+        "stderr": "",
+        "aggregated_output": output,
+        "exit_code": 0,
+        "duration": {"secs": 3, "nanos": 0},
+        "formatted_output": output,
+    }
+    event = {
+        "timestamp": "2026-09-17T22:45:02.000Z",
+        "type": "event_msg",
+        "payload": {"type": "item_completed", "item": item},
+    }
+    return (json.dumps(event) + "\n").encode()
+
+
+def _uncut(record: TraxRecord) -> RecordBody:
+    """Return the wire body ``record`` had before capture bounded records."""
+    return RecordBody.of(
+        SessionRecordRow.of(session_id=uuid4(), part=0, idx=0, record=record),
     )
 
 

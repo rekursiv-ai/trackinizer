@@ -223,8 +223,9 @@ class Kind(Command):
             "--lossy",
             action="store_true",
             help=(
-                "accept a resume conversion that drops records the target "
-                "format cannot express (trax agentsession 42 run codex --lossy)"
+                "accept a resume that drops records the target format cannot "
+                "express, or replays records truncated at capture to fit an "
+                "upload (trax agentsession 42 run codex --lossy)"
             ),
         )
         add_write_flags(parser)

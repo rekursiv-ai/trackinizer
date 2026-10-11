@@ -942,7 +942,9 @@ CREATE TABLE IF NOT EXISTS variables (
 );
 
 -- The machines a campaign may run on: a name, a role, one line telling an agent
--- how to use the machine, and labels. Added in 035.
+-- how to use the machine, and labels. Added in 035. A provisioned machine (039)
+-- names the provider that creates its host, with its spec, requester, expiry, and
+-- when it was taken down and destroyed; a hand-registered one has no provider.
 CREATE TABLE IF NOT EXISTS machines (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name        TEXT NOT NULL UNIQUE CHECK (name ~ '^[a-z0-9][a-z0-9-]{0,62}$'),
@@ -957,7 +959,15 @@ CREATE TABLE IF NOT EXISTS machines (
     host_instance  UUID,
     host_version   TEXT NOT NULL DEFAULT '' CHECK (char_length(host_version) <= 64),
     facts          JSONB NOT NULL DEFAULT '{}'
-                   CHECK (jsonb_typeof(facts) = 'object' AND octet_length(facts::text) <= 8192)
+                   CHECK (jsonb_typeof(facts) = 'object' AND octet_length(facts::text) <= 8192),
+    provider       TEXT NOT NULL DEFAULT ''
+                   CHECK (provider = '' OR provider ~ '^[a-z][a-z0-9-]{0,31}$'),
+    spec           JSONB NOT NULL DEFAULT '{}'
+                   CHECK (jsonb_typeof(spec) = 'object' AND octet_length(spec::text) <= 16384),
+    requested_by   TEXT NOT NULL DEFAULT '',
+    expires_at     TIMESTAMPTZ,
+    down_at        TIMESTAMPTZ,
+    destroyed_at   TIMESTAMPTZ
 );
 
 -- One-use tokens that let a host join as a machine, and the credentials it joins
@@ -985,6 +995,25 @@ CREATE TABLE IF NOT EXISTS machine_credentials (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_machine_credentials_live
     ON machine_credentials (machine_id) WHERE revoked_at IS NULL;
+
+-- What a machine asks its provider for and may not do itself, and the provider's
+-- one answer. Added in 039.
+CREATE TABLE IF NOT EXISTS machine_requests (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    machine_id  UUID NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL CHECK (kind ~ '^[a-z][a-z0-9-]{0,31}$'),
+    body        JSONB NOT NULL DEFAULT '{}'
+                CHECK (jsonb_typeof(body) = 'object' AND octet_length(body::text) <= 131072),
+    result      JSONB NOT NULL DEFAULT '{}'
+                CHECK (jsonb_typeof(result) = 'object' AND octet_length(result::text) <= 131072),
+    status      TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'done', 'failed')),
+    created_by  TEXT NOT NULL,
+    created     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_machine_requests_machine
+    ON machine_requests (machine_id, created);
 
 -- Per-user canvas state. The companion receipt table makes retried operations
 -- return the original result without applying them twice. Added in 026.

@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+import re
 import uuid
 
 from treekle import from_plain
@@ -16,13 +17,16 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import executed_sql
+from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     install_identity,
     make_test_identity,
 )
+from trackinizer.server.config import Config
 from trackinizer.wire.wire_machine_host import OFFLINE_AFTER_SEC
 from trackinizer.wire.wire_machines import (
+    MACHINE_DOWN_PATH,
     MACHINE_LABELS_PATH,
     MACHINE_PATH,
     MACHINES_PATH,
@@ -56,6 +60,12 @@ def _row(name: str, *, role: str = "", how: str = "") -> dict[str, object]:
         "status": "never",
         "host_version": "",
         "facts": {},
+        "provider": "",
+        "spec": {},
+        "requested_by": "",
+        "expires_at": None,
+        "down_at": None,
+        "destroyed_at": None,
     }
 
 
@@ -440,8 +450,208 @@ def test_deleting_an_absent_machine_is_not_found(
     assert _detail(response) == "machine 'nope' is not registered"
 
 
+def test_the_status_sql_checks_destroyed_first_and_provisioning_before_never(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _, engine = route_client
+    engine.conn.fetch.return_value = []
+
+    client.get(MACHINES_PATH)
+
+    sql = " ".join(from_plain(engine.conn.fetch.call_args.args[0], str).split())
+    order = [
+        sql.index(f"THEN '{status}'")
+        for status in ("destroyed", "revoked", "provisioning", "never", "online")
+    ]
+    assert order == sorted(order)
+    assert "WHEN destroyed_at IS NOT NULL THEN 'destroyed'" in sql
+    assert "WHEN last_heartbeat IS NULL AND provider <> '' THEN 'provisioning'" in sql
+
+
+def test_provision_locks_counts_live_provisioned_machines_then_inserts(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _, engine = route_client
+    engine.conn.fetchval.side_effect = [3, "cloud-ab12cd34"]
+    engine.conn.fetch.return_value = [
+        {
+            **_row("cloud-ab12cd34"),
+            "status": "provisioning",
+            "provider": "cloud",
+            "spec": {"repos": []},
+            "requested_by": TEST_USER_EMAIL,
+            "expires_at": _UPDATED,
+        },
+    ]
+
+    response = client.post(
+        MACHINES_PATH,
+        json={"provider": "cloud", "ttl_sec": 600, "spec": {"repos": []}},
+    )
+
+    assert response.status_code == 201
+    body = from_plain(response.json(), dict[str, object])
+    assert (body["name"], body["status"], body["spec"]) == (
+        "cloud-ab12cd34",
+        "provisioning",
+        {"repos": []},
+    )
+    sent = executed_sql(engine.conn)
+    assert sent[:2] == [
+        "BEGIN",
+        "SELECT pg_advisory_xact_lock(hashtext('machine_limit'))",
+    ]
+    assert sent[-1] == "COMMIT"
+    count, insert = engine.conn.fetchval.call_args_list
+    assert "WHERE provider <> '' AND destroyed_at IS NULL" in from_plain(
+        count.args[0],
+        str,
+    )
+    assert "ON CONFLICT (name) DO NOTHING" in from_plain(insert.args[0], str)
+    name, labels, requested_by, provider, spec, ttl_sec = insert.args[1:]
+    assert re.fullmatch(r"cloud-[a-z0-9]{8}", from_plain(name, str))
+    assert (labels, requested_by, provider, spec, ttl_sec) == (
+        [],
+        TEST_USER_EMAIL,
+        "cloud",
+        {"repos": []},
+        600,
+    )
+
+
+def test_provision_at_the_limit_is_409_and_inserts_nothing(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _, engine = route_client
+    engine.conn.fetchval.return_value = 64
+
+    response = client.post(MACHINES_PATH, json={"provider": "cloud"})
+
+    assert response.status_code == 409
+    assert from_plain(response.json(), dict[str, str])["code"] == "machine_limit"
+    assert engine.conn.fetchval.call_count == 1
+    assert executed_sql(engine.conn)[-1] == "ROLLBACK"
+
+
+def test_provision_draws_another_name_after_a_clash(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _, engine = route_client
+    engine.conn.fetchval.side_effect = [0, None, None, "cloud-twice000"]
+    engine.conn.fetch.return_value = [{**_row("cloud-twice000"), "provider": "cloud"}]
+
+    response = client.post(MACHINES_PATH, json={"provider": "cloud"})
+
+    assert response.status_code == 201
+    names = [c.args[1] for c in engine.conn.fetchval.call_args_list[1:]]
+    assert len(set(names)) == 3
+
+
+def test_provision_that_never_draws_a_free_name_is_409(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _, engine = route_client
+    engine.conn.fetchval.side_effect = [0, None, None, None, None]
+
+    response = client.post(MACHINES_PATH, json={"provider": "cloud"})
+
+    assert response.status_code == 409
+    assert executed_sql(engine.conn)[-1] == "ROLLBACK"
+
+
+def test_provision_without_a_ttl_gets_the_most_and_a_longer_one_is_422(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _, engine = route_client
+    monkeypatch.setattr(
+        app.state,
+        "config",
+        Config(machine_max_ttl_sec=3_600),
+        raising=False,
+    )
+    engine.conn.fetchval.side_effect = [0, "cloud-ab12cd34"]
+    engine.conn.fetch.return_value = [{**_row("cloud-ab12cd34"), "provider": "cloud"}]
+
+    defaulted = client.post(MACHINES_PATH, json={"provider": "cloud"})
+    too_long = client.post(MACHINES_PATH, json={"provider": "cloud", "ttl_sec": 3_601})
+
+    assert (defaulted.status_code, too_long.status_code) == (201, 422)
+    assert engine.conn.fetchval.call_args_list[1].args[-1] == 3_600
+    assert _detail(too_long) == "ttl_sec must be at most 3600"
+
+
+def test_provision_needs_the_writer_role_and_a_valid_body(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _, engine = route_client
+
+    bad = [
+        client.post(MACHINES_PATH, json={"provider": "Cloud"}),
+        client.post(MACHINES_PATH, json={"provider": "cloud", "ttl_sec": 59}),
+        client.post(MACHINES_PATH, json={"provider": "cloud", "labels": [" "]}),
+    ]
+    _as("viewer")
+    refused = client.post(MACHINES_PATH, json={"provider": "cloud"})
+
+    assert [r.status_code for r in bad] == [422] * 3
+    assert refused.status_code == 403
+    _assert_untouched(engine)
+
+
+def test_down_sets_down_at_once_on_a_provisioned_machine(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _, engine = route_client
+    engine.conn.fetchval.return_value = "cloud-ab12cd34"
+
+    response = client.post(_down_path("cloud-ab12cd34"))
+
+    assert (response.status_code, response.content) == (204, b"")
+    sql, *args = engine.conn.fetchval.call_args.args
+    assert "down_at = COALESCE(down_at, now())" in from_plain(sql, str)
+    assert "AND provider <> ''" in from_plain(sql, str)
+    assert args == ["cloud-ab12cd34"]
+
+
+@pytest.mark.parametrize(
+    ("exists", "status", "code"),
+    [(True, 409, "not_provisioned"), (False, 404, "not_found")],
+)
+def test_down_of_a_hand_registered_or_absent_machine_is_refused(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    exists: bool,
+    status: int,
+    code: str,
+) -> None:
+    client, _, engine = route_client
+    engine.conn.fetchval.side_effect = [None, exists]
+
+    response = client.post(_down_path("dev-1"))
+
+    assert response.status_code == status
+    assert from_plain(response.json(), dict[str, str])["code"] == code
+
+
+def test_down_needs_the_writer_role_and_a_good_name(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _, engine = route_client
+
+    reserved = client.post(_down_path("up"))
+    _as("viewer")
+    refused = client.post(_down_path("dev-1"))
+
+    assert (reserved.status_code, refused.status_code) == (422, 403)
+    _assert_untouched(engine)
+
+
 def _as(role: Role) -> None:
     install_identity(make_test_identity(role=role))
+
+
+def _down_path(name: str) -> str:
+    return MACHINE_DOWN_PATH.format(name=name)
 
 
 def _path(name: str) -> str:

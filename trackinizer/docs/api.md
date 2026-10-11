@@ -777,6 +777,13 @@ POST   /api/machines/enroll
 POST   /api/machines/join
 POST   /api/machines/<uuid>/heartbeat
 POST   /api/machines/<name>/revoke
+POST   /api/machines
+POST   /api/machines/<name>/down
+POST   /api/machines/<name>/destroyed
+POST   /api/machines/<name>/requests
+GET    /api/machines/<name>/requests
+GET    /api/machines/<name>/requests/<uuid>
+POST   /api/machines/<name>/requests/<uuid>/result
 ```
 
 The registry of machines a campaign may run on: a name, a role, a `how`
@@ -794,8 +801,8 @@ stripped and deduplicated, as an Issue's are, and a blank label answers 422.
 `PATCH` and `DELETE` answer 404 for an unregistered name, as does `GET`.
 
 A name must match `^[a-z0-9][a-z0-9-]{0,62}$` and must not be `enroll`, `join`,
-`init`, `import`, `check`, `connect`, `leave` or `top`, which are, or will be,
-route segments and CLI words. A role is empty or matches
+`init`, `import`, `check`, `connect`, `leave`, `top`, `up` or `request`, which
+are, or will be, route segments and CLI words. A role is empty or matches
 `^[a-z][a-z0-9-]{0,31}$`; `how` is at most 2000 characters with no NUL.
 Anything else, on any of the five registry routes, answers 422.
 
@@ -804,9 +811,10 @@ with the machine's name, which registers the machine if it is new and returns a
 one-use enrollment token (`enr_...`) valid for 15 minutes; a new `enroll`
 supersedes any open token. The host calls `join` with the token, once, and
 receives the machine's id and its machine credential (`trax_machine_...`).
-A token that is malformed, unknown, used, expired, issued for another name, or
-issued by an account that is no longer an active admin answers 401 with one
-body. Joining a machine that already has a live credential revokes that
+A token that is malformed, unknown, used, expired, issued for another name,
+issued by an account that is no longer an active admin, or issued for a machine
+since destroyed answers 401 with one body. Joining a machine that already has a
+live credential revokes that
 credential first. Both responses are `Cache-Control: no-store`, and a 422 on
 `join` never echoes the token, not even as a body key.
 
@@ -815,10 +823,13 @@ every 15 seconds, naming its `instance` (its own id, kept across restarts). One
 instance holds a machine at a time: a different instance answers 409 until the
 first has been silent for 180 seconds, and then takes over. A heartbeat whose
 credential was revoked while it was in flight answers 410 and writes nothing.
-A machine's `status` is derived, never stored: `online` within 180 seconds of
-its last heartbeat, `offline` after, `never` before the first, and `revoked`
-once every credential it had was revoked. `GET /api/machines/<name>` adds
-`last_heartbeat`, `host_version` and `facts`.
+A machine's `status` is derived, never stored, as the first of these that
+holds: `destroyed` once its provider marked it destroyed, `revoked` once every
+credential it had was revoked, `provisioning` for a provisioned machine whose
+host never joined, `never` for a registered one before its first heartbeat,
+`online` within 180 seconds of its last heartbeat, and `offline` after.
+`GET /api/machines/<name>` adds `last_heartbeat`, `host_version`, `facts` and
+`spec`.
 
 A machine credential is checked by its own dependency, not by the user roles. It
 never authenticates any other route (those answer 401), and an API key never
@@ -829,6 +840,40 @@ credential answers 401, so only a holder of a once-valid secret learns of the
 revoke. Revoking a revoked machine, or one that never joined, is a no-op.
 `DELETE` answers 409 `machine_in_service` while the machine holds a live
 credential; revoke it first.
+
+A writer provisions a machine with `POST /api/machines`, naming the `provider`
+that will create its host. The server names the machine
+`<provider>-<8 random [a-z0-9]>`, records the `spec`, the caller as
+`requested_by`, and `expires_at`, `ttl_sec` seconds away: at least 60 and at
+most `TRACKINIZER_MACHINE_MAX_TTL_SEC` (default 86400, also the lifetime when
+`ttl_sec` is left out; more answers 422). It answers 201 with the machine at
+once, reading `provisioning`. At most `TRACKINIZER_MACHINE_LIMIT` (default 64)
+provisioned machines are alive at once, counting every one not yet destroyed;
+past that, `POST` answers 409 `machine_limit`, exactly, however many race. A
+provider, running outside the server with an admin key, reads the rows,
+enrolls each new machine and starts its host, which joins as above.
+
+`down` (writer) records `down_at` the first time and is a no-op after; it asks
+the provider to take the machine down, and answers 409 `not_provisioned` for a
+hand-registered machine. `destroyed` (admin, the provider's key) records
+`destroyed_at` the first time, revokes the credential and closes any unused
+token as `revoke` does, and is idempotent; the machine then reads `destroyed`
+and stops counting against the limit. Both answer 204, and 404 for an
+unregistered name; `down` on a destroyed machine is still a 204. A destroyed
+machine never comes back: `enroll` on it answers 409 `machine_destroyed`, and a
+`join` with a token issued before the destroy answers 401, even when the destroy
+commits while the join waits for the machine.
+
+A machine asks its provider for what it may not do itself through requests.
+`POST .../requests` takes only that machine's own credential and answers 201
+with the request, `pending`, recording the machine's name as `created_by`. The
+two `GET`s take that machine's credential or an admin (a writer answers 403);
+the list is oldest first, and `?status=pending|done|failed` filters it. A
+machine credential on another machine's name, or on a request of another
+machine, answers 404. `POST .../result` (admin) records `done` or `failed` with
+a `result` once; any later answer, the same one included, is 409
+`request_finished`. A destroyed machine's credential answers 410 on every
+request route, and its requests stay readable by an admin.
 
 ## 2. Glossary
 
@@ -1347,9 +1392,42 @@ Every `PUT` field is optional; `add` and `remove` default to empty. The list
 is sorted by name in byte order and labels keep the order they were added in.
 `PUT`, `PATCH` and `DELETE` answer `204` with no body. `updated_by` is the
 email of the principal who last changed the machine. Each listed machine also
-carries `"status": "never|online|offline|revoked"` and `"last_heartbeat":
-"<timestamp>"` (`null` before the first); `GET /api/machines/<name>` adds
-`"host_version": "<text>"` and `"facts": {"<key>": <value>, ...}`.
+carries `"status": "destroyed|revoked|provisioning|never|online|offline"`,
+`"last_heartbeat": "<timestamp>"` (`null` before the first), `"provider":
+"<provider>"` and `"requested_by": "<email>"` (both `""` for a hand-registered
+machine), and `"expires_at"`, `"down_at"` and `"destroyed_at"`, each a
+`"<timestamp>"` or `null`; `GET /api/machines/<name>` adds `"host_version":
+"<text>"`, `"facts": {"<key>": <value>, ...}` and `"spec": {...}`.
+
+```
+POST /api/machines                    {"provider": "<provider>", "ttl_sec": <int>,
+                                       "spec": {...}, "labels": ["<label>"]}
+                                      -> 201 <the machine, as GET /api/machines/<name>>
+POST /api/machines/<name>/down        -> 204 with no body
+POST /api/machines/<name>/destroyed   -> 204 with no body
+```
+
+`provider` matches `^[a-z][a-z0-9-]{0,31}$`; `ttl_sec` (at least 60), `spec`
+(default `{}`) and `labels` (default `[]`) are optional. `spec` is a JSON
+object of at most 8192 bytes as compact JSON, with no NUL in any key or string
+and no non-finite number. Anything else answers 422.
+
+```
+POST /api/machines/<name>/requests                {"kind": "<kind>", "body": {...}}
+                                                  -> 201 <request>
+GET  /api/machines/<name>/requests[?status=<s>]   -> {"requests": [<request>, ...]}
+GET  /api/machines/<name>/requests/<uuid>         -> <request>
+POST /api/machines/<name>/requests/<uuid>/result  {"status": "done|failed", "result": {...}}
+                                                  -> 200 <request>
+<request> = {"id": "<uuid>", "kind": "<kind>", "body": {...},
+             "status": "pending|done|failed", "result": {...},
+             "created_by": "<machine>", "created": "<timestamp>",
+             "updated": "<timestamp>"}
+```
+
+`kind` matches `^[a-z][a-z0-9-]{0,31}$`. `body` and `result` default to `{}`
+and are JSON objects of at most 65536 bytes as compact JSON, with no NUL and
+no non-finite number; `result` reads `{}` while the request is pending.
 
 ```
 POST /api/machines/enroll             {"name": "<name>"}
@@ -1382,15 +1460,15 @@ with no NUL. Anything else answers 422.
 401  missing or invalid auth; an unusable enrollment token or machine credential
 403  role too low
 404  row not found
-409  idempotency conflict, expected mismatch, immutable field, edge cycle, citation kind mismatch, plain value for a secret variable, machine in service, another host connected
-410  machine credential revoked
+409  idempotency conflict, expected mismatch, immutable field, edge cycle, citation kind mismatch, plain value for a secret variable, machine in service, another host connected, machine limit, machine not provisioned, machine destroyed, request already finished
+410  machine credential revoked (or its machine destroyed)
 422  well-formed body rejected by domain validation (e.g. self-loop edge, priority on a non-priority edge kind)
 500  server fault
 503  secret variable requested and no secret backend is configured
 ```
 
-Variable and machine `PUT`, `PATCH` and `DELETE`, and machine `revoke`, return `204`
-with no body.
+Variable and machine `PUT`, `PATCH` and `DELETE`, and machine `revoke`, `down`
+and `destroyed`, return `204` with no body.
 
 Inquiry and edge mutations -- including `DELETE` (field unset, inquiry
 purge, edge remove) -- return `200` with a body carrying the `change_id`
@@ -1404,12 +1482,17 @@ viewer  GET /api/** except GET /api/variables and GET /api/machines/**, GET /api
         PUT /api/me/visual-workspace,
         POST /api/workspaces, POST /api/workspaces/<uuid>/operations
 writer  viewer + inquiry/edge create/mutate/delete, GET /api/variables,
-        GET /api/machines/**
+        GET /api/machines and /api/machines/<name>, POST /api/machines,
+        POST /api/machines/<name>/down
 admin   writer + /api/admin/**, PUT/DELETE /api/variables/<name>,
         PUT/PATCH/DELETE /api/machines/**, POST /api/machines/enroll,
-        POST /api/machines/<name>/revoke
+        POST /api/machines/<name>/revoke, POST /api/machines/<name>/destroyed,
+        GET /api/machines/<name>/requests/**,
+        POST /api/machines/<name>/requests/<uuid>/result
 none    POST /api/machines/join, POST /api/machines/<uuid>/heartbeat (the
         enrollment token or machine credential in the request is the credential)
+machine POST /api/machines/<uuid>/heartbeat, POST /api/machines/<name>/requests,
+        GET /api/machines/<name>/requests/** (its own credential, its own name)
 ```
 
 ### 4.3 Filters and pagination

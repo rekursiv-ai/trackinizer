@@ -39,6 +39,7 @@ from trackinizer.trax.run.materialize import (
     materialize,
     prepared,
 )
+from trackinizer.trax.run.truncate import was_truncated, without_note
 from trackinizer.types.streams import Stderr, Stdin, Stdout
 
 
@@ -65,9 +66,10 @@ def prepare_resume(
       session_id: The AgentSession to re-enter.
       target: The CLI to resume AS, independent of what captured it.
       lossy: Whether to accept a conversion that DROPS records the target
-        format cannot express. Refused by default: a silently shortened
-        transcript is a conversation the model never had, and the caller
-        cannot tell from the file that anything is missing.
+        format cannot express, or a part holding records capture truncated to
+        fit an upload. Refused by default: a silently shortened transcript is
+        a conversation the model never had, and the caller cannot tell from
+        the file that anything is missing.
 
     Returns:
       written: The file's path and the id ``--resume`` takes.
@@ -75,7 +77,8 @@ def prepare_resume(
     Raises:
       NotResumableError: The target cannot be re-entered, or the session has no
         part carrying a native format.
-      LossyConversionError: The conversion drops records and ``lossy`` is false.
+      LossyConversionError: The conversion drops records, or the part holds
+        truncated ones, and ``lossy`` is false.
 
     """
     if target not in RESUMABLE_TARGETS:
@@ -97,6 +100,14 @@ def prepare_resume(
         )
     part = native[-1]
     records, sealed = _read_part(client, session_id, part.part)
+    if not lossy and (cut := sum(map(was_truncated, records))):
+        raise LossyConversionError(
+            f"{cut} record(s) of session {session_id} were truncated at capture "
+            "to fit an upload; pass --lossy to accept a shortened transcript",
+        )
+    # The note is Trackinizer's, not the CLI's: a writer replays an uncategorized
+    # record's payload verbatim, note and all.
+    records = [without_note(record) for record in records]
     # MEASURED, not predicted from the format pair: the same two formats can
     # be lossless for one session and lossy for another, depending on which
     # record kinds it actually holds. ``convert`` decides losses the same way.

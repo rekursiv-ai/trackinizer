@@ -3581,6 +3581,42 @@
         "additionalProperties": false,
         "description": "One registered machine, as listed.",
         "properties": {
+          "destroyed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destroyed At"
+          },
+          "down_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Down At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
           "how": {
             "maxLength": 2000,
             "title": "How",
@@ -3608,6 +3644,17 @@
           "name": {
             "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
             "title": "Name",
+            "type": "string"
+          },
+          "provider": {
+            "default": "",
+            "pattern": "^(?:[a-z][a-z0-9-]{0,31})?$",
+            "title": "Provider",
+            "type": "string"
+          },
+          "requested_by": {
+            "default": "",
+            "title": "Requested By",
             "type": "string"
           },
           "role": {
@@ -3644,6 +3691,42 @@
         "additionalProperties": false,
         "description": "One machine with what its host reported about itself.",
         "properties": {
+          "destroyed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destroyed At"
+          },
+          "down_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Down At"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
           "facts": {
             "$ref": "#/components/schemas/Facts"
           },
@@ -3681,10 +3764,24 @@
             "title": "Name",
             "type": "string"
           },
+          "provider": {
+            "default": "",
+            "pattern": "^(?:[a-z][a-z0-9-]{0,31})?$",
+            "title": "Provider",
+            "type": "string"
+          },
+          "requested_by": {
+            "default": "",
+            "title": "Requested By",
+            "type": "string"
+          },
           "role": {
             "pattern": "^(?:[a-z][a-z0-9-]{0,31})?$",
             "title": "Role",
             "type": "string"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/Spec-Output"
           },
           "status": {
             "$ref": "#/components/schemas/MachineStatus",
@@ -3751,6 +3848,44 @@
         "title": "MachineList",
         "type": "object"
       },
+      "MachineProvision": {
+        "additionalProperties": false,
+        "description": "Provision a machine: which provider creates its host, and with what.",
+        "properties": {
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Labels",
+            "type": "array"
+          },
+          "provider": {
+            "pattern": "^[a-z][a-z0-9-]{0,31}$",
+            "title": "Provider",
+            "type": "string"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/Spec-Input"
+          },
+          "ttl_sec": {
+            "anyOf": [
+              {
+                "minimum": 60.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl Sec"
+          }
+        },
+        "required": [
+          "provider"
+        ],
+        "title": "MachineProvision",
+        "type": "object"
+      },
       "MachinePut": {
         "additionalProperties": false,
         "description": "Create a machine or change its fields; a field left out keeps its value.",
@@ -3783,9 +3918,116 @@
         "title": "MachinePut",
         "type": "object"
       },
+      "MachineRequest": {
+        "additionalProperties": false,
+        "description": "One request, as stored.",
+        "properties": {
+          "body": {
+            "$ref": "#/components/schemas/Payload-Output"
+          },
+          "created": {
+            "format": "date-time",
+            "title": "Created",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "pattern": "^[a-z][a-z0-9-]{0,31}$",
+            "title": "Kind",
+            "type": "string"
+          },
+          "result": {
+            "$ref": "#/components/schemas/Payload-Output"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RequestStatus"
+          },
+          "updated": {
+            "format": "date-time",
+            "title": "Updated",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "body",
+          "status",
+          "result",
+          "created_by",
+          "created",
+          "updated"
+        ],
+        "title": "MachineRequest",
+        "type": "object"
+      },
+      "MachineRequestCreate": {
+        "additionalProperties": false,
+        "description": "A request a machine writes for its provider.",
+        "properties": {
+          "body": {
+            "$ref": "#/components/schemas/Payload-Input"
+          },
+          "kind": {
+            "pattern": "^[a-z][a-z0-9-]{0,31}$",
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "MachineRequestCreate",
+        "type": "object"
+      },
+      "MachineRequestList": {
+        "additionalProperties": false,
+        "description": "A machine's requests, oldest first.",
+        "properties": {
+          "requests": {
+            "items": {
+              "$ref": "#/components/schemas/MachineRequest"
+            },
+            "title": "Requests",
+            "type": "array"
+          }
+        },
+        "required": [
+          "requests"
+        ],
+        "title": "MachineRequestList",
+        "type": "object"
+      },
+      "MachineRequestResult": {
+        "additionalProperties": false,
+        "description": "The provider's one answer to a request.",
+        "properties": {
+          "result": {
+            "$ref": "#/components/schemas/Payload-Input"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RequestOutcome"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "MachineRequestResult",
+        "type": "object"
+      },
       "MachineStatus": {
         "enum": [
+          "destroyed",
           "revoked",
+          "provisioning",
           "never",
           "online",
           "offline"
@@ -4349,6 +4591,12 @@
         ],
         "type": "string"
       },
+      "Payload-Input": {
+        "$ref": "#/components/schemas/JSON-Input"
+      },
+      "Payload-Output": {
+        "$ref": "#/components/schemas/JSON-Output"
+      },
       "PlaceVisual": {
         "additionalProperties": false,
         "description": "Move one instance between the primary and secondary pane.",
@@ -4721,6 +4969,21 @@
         ],
         "title": "RecordBody",
         "type": "object"
+      },
+      "RequestOutcome": {
+        "enum": [
+          "done",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "RequestStatus": {
+        "enum": [
+          "pending",
+          "done",
+          "failed"
+        ],
+        "type": "string"
       },
       "RoleChangeBody": {
         "description": "Request body carrying a new role for a user.",
@@ -5591,6 +5854,12 @@
         },
         "title": "Snapshot",
         "type": "object"
+      },
+      "Spec-Input": {
+        "$ref": "#/components/schemas/JSON-Input"
+      },
+      "Spec-Output": {
+        "$ref": "#/components/schemas/JSON-Output"
       },
       "Status": {
         "enum": [
@@ -13650,11 +13919,48 @@
           }
         },
         "summary": "List Machines Route"
+      },
+      "post": {
+        "description": "Provision a machine for a provider to create, and return it at once.\n\nThe server names it ``<provider>-<8 random [a-z0-9]>`` and records who asked\nand when it expires. It reads ``provisioning`` until its host joins.\n\nArgs:\n  body: The provider, and optionally the lifetime, spec and labels.\n  request: Request carrying the database engine and the server's Config.\n  identity: Writer-role principal, recorded as who asked.\n\nReturns:\n  machine: The new machine.\n\nRaises:\n  ValidationError: The lifetime exceeds the server's most, or a label is blank.\n  MachineLimitError: As many provisioned machines are alive as allowed.",
+        "operationId": "provision_machine_route_api_machines_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MachineProvision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MachineDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Provision Machine Route"
       }
     },
     "/api/machines/enroll": {
       "post": {
-        "description": "Register the machine if it is new and issue a one-use enrollment token.\n\nA new token supersedes any open one for the same machine.\n\nArgs:\n  body: The machine's name.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n  identity: Admin principal, recorded as who enrolled the machine.\n\nReturns:\n  enrolled: The token, shown once, and when it expires.\n\nRaises:\n  ValidationError: The name is reserved.",
+        "description": "Register the machine if it is new and issue a one-use enrollment token.\n\nA new token supersedes any open one for the same machine. A destroyed machine\nnever takes a token, so it never comes back.\n\nArgs:\n  body: The machine's name.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n  identity: Admin principal, recorded as who enrolled the machine.\n\nReturns:\n  enrolled: The token, shown once, and when it expires.\n\nRaises:\n  ValidationError: The name is reserved.\n  MachineDestroyedError: The machine was destroyed.",
         "operationId": "enroll_machine_route_api_machines_enroll_post",
         "requestBody": {
           "content": {
@@ -13693,7 +13999,7 @@
     },
     "/api/machines/join": {
       "post": {
-        "description": "Exchange an enrollment token for a machine credential.\n\nThe token is the credential, so the route has no other authentication. It is\nvalid once, within 15 minutes, for the machine name it was issued for, and only\nwhile the admin who issued it is still an active admin. Joining a machine that\nalready has a live credential revokes that credential first.\n\nArgs:\n  body: The machine name, the token, and the host's instance, version and facts.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n\nReturns:\n  joined: The machine's id and its credential, shown once.\n\nRaises:\n  HTTPException: 401 when the token is malformed, unknown, used, expired, issued\n    for another machine, or issued by an account that is no longer an active admin.",
+        "description": "Exchange an enrollment token for a machine credential.\n\nThe token is the credential, so the route has no other authentication. It is\nvalid once, within 15 minutes, for the machine name it was issued for, only\nwhile the admin who issued it is still an active admin, and only while the\nmachine is not destroyed. Joining a machine that already has a live credential\nrevokes that credential first.\n\nArgs:\n  body: The machine name, the token, and the host's instance, version and facts.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n\nReturns:\n  joined: The machine's id and its credential, shown once.\n\nRaises:\n  HTTPException: 401 when the token is malformed, unknown, used, expired, issued\n    for another machine, issued by an account that is no longer an active admin,\n    or issued for a machine since destroyed.",
         "operationId": "join_machine_route_api_machines_join_post",
         "requestBody": {
           "content": {
@@ -13896,6 +14202,74 @@
         "summary": "Put Machine Route"
       }
     },
+    "/api/machines/{name}/destroyed": {
+      "post": {
+        "description": "Record that a machine's host was destroyed, and take it out of service.\n\nRevokes the credential and closes any unused token, as a revoke does, and\nkeeps the first ``destroyed_at``, so marking it again is a no-op.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine.\n  identity: Admin principal: the provider's key.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  NotFoundError: No such machine.",
+        "operationId": "mark_machine_destroyed_route_api_machines__name__destroyed_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mark Machine Destroyed Route"
+      }
+    },
+    "/api/machines/{name}/down": {
+      "post": {
+        "description": "Ask a provisioned machine's provider to take it down; again is a no-op.\n\nThe first call records ``down_at``; the provider reads it, tears the host down\nand marks the machine destroyed.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine.\n  identity: Writer-role principal.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  NotFoundError: No such machine.\n  NotProvisionedError: The machine was registered by hand.",
+        "operationId": "down_machine_route_api_machines__name__down_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Down Machine Route"
+      }
+    },
     "/api/machines/{name}/labels": {
       "patch": {
         "description": "Add labels, then remove labels; each is a no-op when already so.\n\nLabels follow the Issue label rules: stripped, deduplicated, never blank.\n\nArgs:\n  name: The machine's name.\n  body: The labels to add and to remove.\n  request: Request carrying the database engine.\n  identity: Admin principal, recorded as who changed it.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  ValidationError: A label is blank or holds a NUL.\n  NotFoundError: No such machine.",
@@ -13938,6 +14312,224 @@
           }
         },
         "summary": "Change Machine Labels Route"
+      }
+    },
+    "/api/machines/{name}/requests": {
+      "get": {
+        "description": "List the machine's requests, oldest first, as an admin or the machine.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine.\n  caller: The machine itself, or an admin.\n  status: Only requests in this status; every request when absent.\n\nReturns:\n  requests: The machine's requests, oldest first.\n\nRaises:\n  NotFoundError: No such machine.",
+        "operationId": "list_machine_requests_route_api_machines__name__requests_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RequestStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MachineRequestList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Machine Requests Route"
+      },
+      "post": {
+        "description": "Write a request for the machine's provider, as the machine.\n\nArgs:\n  name: The machine's name; the credential must be its own.\n  body: What is asked for, and what the provider needs to do it.\n  request: Request carrying the database engine.\n  machine: The machine the credential authenticated as.\n\nReturns:\n  created: The request, ``pending``.\n\nRaises:\n  HTTPException: 410 when the credential was revoked after it authenticated.",
+        "operationId": "create_machine_request_route_api_machines__name__requests_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MachineRequestCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MachineRequest"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Machine Request Route"
+      }
+    },
+    "/api/machines/{name}/requests/{request_id}": {
+      "get": {
+        "description": "Return one of the machine's requests, as an admin or the machine.\n\nArgs:\n  name: The machine's name.\n  request_id: The request's id.\n  request: Request carrying the database engine.\n  caller: The machine itself, or an admin.\n\nReturns:\n  found: The request.\n\nRaises:\n  NotFoundError: No such machine, or no such request of it.",
+        "operationId": "get_machine_request_route_api_machines__name__requests__request_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MachineRequest"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Machine Request Route"
+      }
+    },
+    "/api/machines/{name}/requests/{request_id}/result": {
+      "post": {
+        "description": "Record the provider's one answer to a pending request.\n\nArgs:\n  name: The machine's name.\n  request_id: The request's id.\n  body: ``done`` or ``failed``, and what the provider reports.\n  request: Request carrying the database engine.\n  identity: Admin principal: the provider's key.\n\nReturns:\n  finished: The request with its result.\n\nRaises:\n  NotFoundError: No such machine, or no such request of it.\n  RequestFinishedError: The request already has its result.",
+        "operationId": "finish_machine_request_route_api_machines__name__requests__request_id__result_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MachineRequestResult"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MachineRequest"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finish Machine Request Route"
       }
     },
     "/api/machines/{name}/revoke": {

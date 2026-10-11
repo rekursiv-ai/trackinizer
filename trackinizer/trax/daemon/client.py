@@ -57,8 +57,9 @@ _STDIN_SENTINEL: Final = "-"
 """``field to -`` reads the value from stdin, which the daemon does not share."""
 
 # Operators after which a bare ``-`` is the stdin sentinel rather than an
-# ordinary value. ``parser._parse_scalar_action`` only honors it after ``to``.
-_VALUE_OPERATORS: Final[frozenset[str]] = frozenset({"to"})
+# ordinary value. ``parser._parse_scalar_action`` only honors it after ``to``;
+# ``machine up ... spec -`` and ``machine NAME request KIND body -`` read it too.
+_VALUE_OPERATORS: Final[frozenset[str]] = frozenset({"to", "spec", "body"})
 
 # Verbs that must run in the calling process. ``run`` spawns a CLI on a PTY
 # whose master fd it holds and mirrors the terminal both ways, so it cannot
@@ -67,7 +68,7 @@ _VALUE_OPERATORS: Final[frozenset[str]] = frozenset({"to"})
 _LOCAL_ONLY_VERBS: Final[frozenset[str]] = frozenset({"run", "helper"})
 
 # The verbs after ``machine NAME`` that must run in the calling process.
-_MACHINE_HOST_VERBS: Final[frozenset[str]] = frozenset({"enroll", "connect"})
+_MACHINE_HOST_VERBS: Final[frozenset[str]] = frozenset({"enroll", "connect", "request"})
 
 # Global flags that take a separate value token, so the scan for the verb
 # knows to skip past it. Mirrors ``cli._VALUE_FLAGS``.
@@ -89,7 +90,7 @@ def should_delegate(argv: Sequence[str]) -> bool:
 
     Refuses the daemon's own serve flag, anything that SPAWNS a CLI on a PTY,
     any command whose value is the ``-`` stdin sentinel, and ``machine NAME
-    enroll`` / ``machine NAME connect``. Each is judged by POSITION rather than
+    enroll`` / ``connect`` / ``request``. Each is judged by POSITION rather than
     by presence, so a row whose title happens to be "run" still gets the
     daemon. An invocation with both ``TRACKINIZER_TOKEN`` and
     ``TRACKINIZER_URL`` non-empty runs in this process: the key must not cross
@@ -195,11 +196,12 @@ def _spawns_a_terminal(argv: Sequence[str]) -> bool:
     )
 
 
-# ``machine NAME enroll`` prints a secret on stdout and ``machine NAME connect`` is a
-# long-running loop, so neither belongs in a daemon request. The verbs are the third
-# token, so ``machine NAME role to connect`` still delegates.
+# ``machine NAME enroll`` prints a secret on stdout, ``machine NAME connect`` is a
+# long-running loop, and ``connect`` and ``request`` read the machine credential saved
+# for the CALLER, so none belongs in a daemon request. The verbs are the third token,
+# so ``machine NAME role to connect`` still delegates.
 def _hosts_a_machine(argv: Sequence[str]) -> bool:
-    """Whether ``argv`` is ``machine NAME enroll`` or ``machine NAME connect``."""
+    """Whether ``argv`` is ``machine NAME`` followed by a host verb."""
     start = _verb_index(argv)
     tail = [token.lower() for token in argv[start : start + 3]]
     return len(tail) == 3 and tail[0] == "machine" and tail[2] in _MACHINE_HOST_VERBS

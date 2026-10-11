@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Final, cast
@@ -37,6 +37,7 @@ from trackinizer.server.api import (
     locks,
     logout_routes,
     machine_host_routes,
+    machine_requests_routes,
     machines_routes,
     meta_routes,
     metrics_routes,
@@ -321,6 +322,7 @@ ROUTERS: Final = (
     locks.router,
     logout_routes.router,
     machine_host_routes.router,
+    machine_requests_routes.router,
     machines_routes.router,
     meta_routes.router,
     metrics_routes.router,
@@ -508,7 +510,8 @@ async def request_validation_handler(
     route it is an enrollment token, so the answer there names only each error's
     type, location and message. An unexpected body key is also the rejected input,
     so its location names the field as ``extra``. The route is the matched one, not
-    the URL, which a path prefix changes.
+    the URL, which a path prefix changes. An input that JSON cannot carry back, such
+    as the ``Infinity`` Python's encoder writes, is dropped the same way on any route.
 
     Args:
       request: FastAPI Request object.
@@ -523,7 +526,10 @@ async def request_validation_handler(
         isinstance(route, APIRoute)
         and (route.path.startswith(VARIABLES_PATH) or route.path == JOIN_PATH)
     ):
-        return await request_validation_exception_handler(request, exc)
+        # Rendering refuses a non-finite number with ValueError, which would make
+        # the refusal of a bad body a 500.
+        with suppress(ValueError):
+            return await request_validation_exception_handler(request, exc)
     errors = from_plain(exc.errors(), list[dict[str, object]])
     return JSONResponse(
         status_code=422,

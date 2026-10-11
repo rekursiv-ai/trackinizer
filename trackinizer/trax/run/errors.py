@@ -36,4 +36,4 @@ class CiphertextDroppedError(Exception):
 
 
 class LossyConversionError(Exception):
-    """The rewrite would drop records the target format cannot express."""
+    """The rewrite would drop records, or replay records capture truncated."""

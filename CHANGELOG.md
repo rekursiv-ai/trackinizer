@@ -23,6 +23,15 @@ All notable trackinizer changes are documented here. This project follows
 - Machine credentials: an admin enrolls a machine for a one-use, 15-minute
   token; the host joins once, heartbeats, and reads online until 180 s of
   silence. A revoked credential answers 410, an unknown one 401.
+- Provisioned machines: `trax machine up PROVIDER` (`POST /api/machines`,
+  `Client.provision_machine`) asks a provider outside the server for a
+  machine, up to `TRACKINIZER_MACHINE_LIMIT` alive at once, each living at
+  most `TRACKINIZER_MACHINE_MAX_TTL_SEC`. `down` asks the provider to end it,
+  and the provider marks it `destroyed`, which revokes its credential.
+- `trax machine NAME connect` hosts a machine: it joins with the enrollment
+  token on stdin, saves the credential for this user, and heartbeats until
+  revoked. `trax machine NAME request KIND` asks the machine's provider for
+  something, through the new machine request routes and `Client` methods.
 - `trax` takes its server and key from `TRACKINIZER_URL` and
   `TRACKINIZER_TOKEN`. A malformed token is refused, and a lone token is
   ignored.
@@ -38,6 +47,12 @@ All notable trackinizer changes are documented here. This project follows
   a configured PEM value are still masked.
 - **Breaking:** `Redactor.redact_json` and `redact_mapping` take `PlainTree`;
   `redact_mapping` returns `Mapping[str, PlainTree]`.
+
+### Fixed
+
+- `trax run` no longer fails an upload with HTTP 413: a record too large to
+  send keeps its beginning and end around a marker, notes the cut in
+  `$trackinizer_truncated`, and resuming its session needs `--lossy`.
 
 ## 0.1.6 - 2026-10-07
 
