@@ -141,12 +141,12 @@ class TestWhichTargetsResume:
         client = _FakeClient("claude_sidechain.jsonl", session_format="claude")
 
         with pytest.raises(NotResumableError, match=target):
-            prepare_resume(cast_client(client), uuid4(), target)
+            prepare_resume(cast(Client, client), uuid4(), target)
 
     def test_claude_resumes(self) -> None:
         client = _FakeClient("claude_sidechain.jsonl", session_format="claude")
 
-        written = prepare_resume(cast_client(client), uuid4(), "claude")
+        written = prepare_resume(cast(Client, client), uuid4(), "claude")
 
         assert written.path.exists()
 
@@ -155,7 +155,7 @@ class TestWhichTargetsResume:
         """``codex resume <uuid>`` re-enters a rollout, so codex is a target."""
         client = _FakeClient("codex_main.jsonl", session_format="codex")
 
-        written = prepare_resume(cast_client(client), uuid4(), "codex")
+        written = prepare_resume(cast(Client, client), uuid4(), "codex")
 
         assert written.path.exists()
         assert written.path.name.startswith("rollout-")
@@ -169,7 +169,7 @@ class TestWhichTargetsResume:
         """
         client = _FakeClient("claude_sidechain.jsonl", session_format="claude")
 
-        written = prepare_resume(cast_client(client), uuid4(), "codex", lossy=True)
+        written = prepare_resume(cast(Client, client), uuid4(), "codex", lossy=True)
 
         assert written.path.exists()
         assert client.stamped == [str(written.cli_session_id)]
@@ -179,7 +179,7 @@ class TestWhichTargetsResume:
         client = _FakeClient("claude_sidechain.jsonl", session_format="")
 
         with pytest.raises(NotResumableError, match="no part with a native format"):
-            prepare_resume(cast_client(client), uuid4(), "claude")
+            prepare_resume(cast(Client, client), uuid4(), "claude")
 
 
 class TestTheStampPrecedesTheRun:
@@ -189,7 +189,7 @@ class TestTheStampPrecedesTheRun:
         """Without it the resumed run forks a second AgentSession."""
         client = _FakeClient("claude_sidechain.jsonl", session_format="claude")
 
-        written = prepare_resume(cast_client(client), uuid4(), "claude")
+        written = prepare_resume(cast(Client, client), uuid4(), "claude")
 
         assert client.stamped == [str(written.cli_session_id)]
 
@@ -197,7 +197,7 @@ class TestTheStampPrecedesTheRun:
         """``--resume <id>`` and the file on disk have to agree."""
         client = _FakeClient("claude_sidechain.jsonl", session_format="claude")
 
-        written = prepare_resume(cast_client(client), uuid4(), "claude")
+        written = prepare_resume(cast(Client, client), uuid4(), "claude")
 
         assert written.path.stem == client.stamped[0]
 
@@ -218,28 +218,28 @@ class TestLossyConversion:
         client = _FakeClient("claude_sidechain.jsonl", session_format=source)
         client.records = [UserMessage(content="kept"), IncompleteRecord(text=text)]
         with pytest.raises(LossyConversionError, match="IncompleteRecord"):
-            prepare_resume(cast_client(client), uuid4(), target)
+            prepare_resume(cast(Client, client), uuid4(), target)
         assert client.stamped == []
 
     def test_missing_seal_stamps_nothing(self) -> None:
         client = _FakeClient("claude_sidechain.jsonl", session_format="claude")
         client.records = [Thinking(encrypted="")]
         with pytest.raises(CiphertextDroppedError, match="no longer stored"):
-            prepare_resume(cast_client(client), uuid4(), "claude")
+            prepare_resume(cast(Client, client), uuid4(), "claude")
         assert client.stamped == []
 
     def test_failed_file_write_stamps_nothing(self, tmp_path: Path) -> None:
         client = _FakeClient("claude_sidechain.jsonl", session_format="claude")
         (tmp_path / "claude").write_text("not a directory")
         with pytest.raises(NotADirectoryError):
-            prepare_resume(cast_client(client), uuid4(), "claude")
+            prepare_resume(cast(Client, client), uuid4(), "claude")
         assert client.stamped == []
 
     def test_a_claude_session_is_never_lossy(self) -> None:
         """Same format in and out: nothing to drop, no flag needed."""
         client = _FakeClient("claude_sidechain.jsonl", session_format="claude")
 
-        assert prepare_resume(cast_client(client), uuid4(), "claude").path.exists()
+        assert prepare_resume(cast(Client, client), uuid4(), "claude").path.exists()
 
     @pytest.mark.compute_large_fixture
     def test_a_lossy_cross_format_resume_is_refused_without_the_flag(self) -> None:
@@ -251,13 +251,13 @@ class TestLossyConversion:
         client = _FakeClient("codex_main.jsonl", session_format="codex")
 
         with pytest.raises(LossyConversionError, match="--lossy"):
-            prepare_resume(cast_client(client), uuid4(), "claude")
+            prepare_resume(cast(Client, client), uuid4(), "claude")
 
     @pytest.mark.compute_large_fixture
     def test_the_flag_accepts_the_loss(self) -> None:
         client = _FakeClient("codex_main.jsonl", session_format="codex")
 
-        written = prepare_resume(cast_client(client), uuid4(), "claude", lossy=True)
+        written = prepare_resume(cast(Client, client), uuid4(), "claude", lossy=True)
 
         assert written.path.exists()
 
@@ -273,7 +273,7 @@ class TestLossyConversion:
         """
         client = _FakeClient("claude_sidechain.jsonl", session_format="claude")
 
-        written = prepare_resume(cast_client(client), uuid4(), "codex", lossy=True)
+        written = prepare_resume(cast(Client, client), uuid4(), "codex", lossy=True)
 
         rebuilt = Counter(
             type(record).__name__
@@ -281,7 +281,7 @@ class TestLossyConversion:
                 StringIO(written.path.read_text(encoding="utf-8")),
             )
         )
-        records, _ = _read_part(cast_client(client), uuid4(), 0)
+        records, _ = _read_part(cast(Client, client), uuid4(), 0)
         dropped = _undroppable(records, "claude", "codex")
 
         assert "ContextClear" not in dropped, (
@@ -299,7 +299,7 @@ class TestLossyConversion:
         and demand ``--lossy`` for a transcript that loses no turn at all.
         """
         client = _FakeClient("claude_sidechain.jsonl", session_format="claude")
-        records, _ = _read_part(cast_client(client), uuid4(), 0)
+        records, _ = _read_part(cast(Client, client), uuid4(), 0)
 
         dropped = _undroppable(records, "claude", "codex")
 
@@ -333,14 +333,9 @@ class TestLossyConversion:
         client = _FakeClient("codex_main.jsonl", session_format="codex")
 
         with pytest.raises(LossyConversionError):
-            prepare_resume(cast_client(client), uuid4(), "claude")
+            prepare_resume(cast(Client, client), uuid4(), "claude")
 
         assert client.stamped == []
-
-
-def cast_client(fake: _FakeClient) -> Client:
-    """Return the fake, as the ``Client`` the resume path declares."""
-    return cast(Client, fake)
 
 
 if __name__ == "__main__":

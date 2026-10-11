@@ -204,7 +204,7 @@ class _Reader:
                 (
                     _str(c.get("id")),
                     _str(c.get("name")),
-                    _dict(c.get("args")),
+                    from_plain(c.get("args"), dict[str, object], default={}),
                 )
                 for c in _mappings(record.get("tool_calls"))
             ]
@@ -258,8 +258,8 @@ class _Reader:
                     ),
                 ),
             )
-        tokens = _dict(record.get("tokens"))
-        spend = _dict(record.get("spend"))
+        tokens = from_plain(record.get("tokens"), dict[str, object], default={})
+        spend = from_plain(record.get("spend"), dict[str, object], default={})
         total_cost = from_plain(record.get("total_cost_usd"), float, default=0.0)
         cost = total_cost or sum(
             from_plain(v, float, default=0.0) for v in spend.values()
@@ -415,7 +415,7 @@ class _Reader:
                 kind = _str(part.get("descriptor"))
                 body = part.get("content")
                 if kind.startswith("application/x-thinking"):
-                    block = _dict(body)
+                    block = from_plain(body, dict[str, object], default={})
                     thoughts.append(
                         (
                             _str(block.get("thinking")),
@@ -470,7 +470,11 @@ class _Reader:
                 (
                     _str(c.get("id")),
                     _str(c.get("name")),
-                    _dict(c.get("input") or c.get("args")),
+                    from_plain(
+                        (c.get("input") or c.get("args")),
+                        dict[str, object],
+                        default={},
+                    ),
                 )
                 for c in _mappings(record.get("tool_calls"))
             ]
@@ -517,7 +521,7 @@ def _legacy_call(
         elif kind.startswith("application/x-tool-"):
             tail = kind.removeprefix("application/x-tool-")
             name = compound.get(tail, tail.capitalize())
-            arguments = _dict(part.get("content"))
+            arguments = from_plain(part.get("content"), dict[str, object], default={})
     return call_id, name, arguments
 
 
@@ -556,10 +560,6 @@ def _bool(value: object) -> bool:
 
 def _int(value: object) -> int:
     return from_plain(value, int, default=0)
-
-
-def _dict(value: object) -> dict[str, object]:
-    return from_plain(value, dict[str, object], default={})
 
 
 def _mappings(value: object) -> list[dict[str, object]]:

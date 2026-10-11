@@ -172,7 +172,7 @@ class _Recorder:
 
         A keyed request carries an ``Idempotency-Key`` header, as every edit does.
         """
-        headers = {"Idempotency-Key": _key(name)} if keyed else {}
+        headers = {"Idempotency-Key": str(_uuid_key(name))} if keyed else {}
         response = self.http.request(
             method,
             path,
@@ -307,23 +307,27 @@ def _build_graph(rec: _Recorder) -> dict[str, str]:
     """Make Issues with parents and a prerequisite, and a Belief with evidence."""
     root = _create(rec, "issue", title="Web app fixtures", priority=10, owner="dan")
     prereq = _create(rec, "issue", title="Prerequisite", priority=20)
-    child = _id(
-        rec.call(
-            "inquiries/createInquiry",
-            "POST",
-            "/api/inquiries/issue",
-            body={
-                "title": "Child",
-                "description": "Narrows **Issue#1** and requires Issue#2.",
-                "priority": 0,
-                "issue_kind": ["bug"],
-                "narrows": [[root, 0]],
-                "requires": [prereq],
-                "subscribers": ["Agent"],
-                "labels": ["fixture"],
-                "idempotency_key": _key("inquiries/createInquiry"),
-            },
-        ),
+    child = from_plain(
+        from_plain(
+            rec.call(
+                "inquiries/createInquiry",
+                "POST",
+                "/api/inquiries/issue",
+                body={
+                    "title": "Child",
+                    "description": "Narrows **Issue#1** and requires Issue#2.",
+                    "priority": 0,
+                    "issue_kind": ["bug"],
+                    "narrows": [[root, 0]],
+                    "requires": [prereq],
+                    "subscribers": ["Agent"],
+                    "labels": ["fixture"],
+                    "idempotency_key": str(_uuid_key("inquiries/createInquiry")),
+                },
+            ),
+            dict[str, object],
+        ).get("id"),
+        str,
     )
     _ = rec.row(child)
     question = _create(
@@ -400,7 +404,7 @@ def _add_evidence(
                     "kind": "Artifact",
                     "title": "Answer: newest first",
                     "subscribers": ["Agent"],
-                    "idempotency_key": _key("inquiries/createBatch"),
+                    "idempotency_key": str(_uuid_key("inquiries/createBatch")),
                 },
             ],
             "edges": [
@@ -733,13 +737,17 @@ def _account(rec: _Recorder, graph: dict[str, str]) -> None:
         body={"rules_version": from_plain(shown["rules_version"], str)},
     )
     _ = rec.setup("PUT", lock, body={"locked": False})
-    token = _id(
-        rec.call(
-            "me/createToken",
-            "POST",
-            "/api/me/tokens",
-            body={"name": "fixtures", "role": "viewer"},
-        ),
+    token = from_plain(
+        from_plain(
+            rec.call(
+                "me/createToken",
+                "POST",
+                "/api/me/tokens",
+                body={"name": "fixtures", "role": "viewer"},
+            ),
+            dict[str, object],
+        ).get("id"),
+        str,
     )
     _ = rec.call("me/listTokens", "GET", "/api/me/tokens")
     _ = rec.call(
@@ -761,7 +769,7 @@ def _admin(rec: _Recorder) -> None:
         )["users"],
         list[dict[str, object]],
     )
-    user = f"/api/admin/users/{next(_id(u) for u in users if u.get('email') == _OTHER_ADMIN)}"
+    user = f"/api/admin/users/{next(from_plain(from_plain(u, dict[str, object]).get('id'), str) for u in users if u.get('email') == _OTHER_ADMIN)}"
     entry = "/api/admin/allowlist/ada%40example.com"
     added = {"email_or_pattern": " Ada@Example.com ", "role": "viewer"}
     for name, method, path, body in (
@@ -801,23 +809,18 @@ def _stream(rec: _Recorder, *, target: str) -> None:
 def _create(rec: _Recorder, kind: str, **body: PlainTree) -> str:
     """Create one ``kind`` row as setup, labelled ``fixture``; return its id."""
     return rec.row(
-        _id(
-            rec.setup(
-                "POST",
-                f"/api/inquiries/{kind}",
-                body={"labels": ["fixture"], **body},
-            ),
+        from_plain(
+            from_plain(
+                rec.setup(
+                    "POST",
+                    f"/api/inquiries/{kind}",
+                    body={"labels": ["fixture"], **body},
+                ),
+                dict[str, object],
+            ).get("id"),
+            str,
         ),
     )
-
-
-def _id(body: object) -> str:
-    return from_plain(from_plain(body, dict[str, object]).get("id"), str)
-
-
-def _key(name: str) -> str:
-    """Return fixture ``name``'s idempotency key, the same in every run."""
-    return str(_uuid_key(name))
 
 
 def _uuid_key(name: str) -> uuid.UUID:

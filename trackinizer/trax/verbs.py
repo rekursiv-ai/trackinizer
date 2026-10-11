@@ -411,7 +411,7 @@ class Kind(Command):
         target, *runner_args = tail
         boundary = runner_args.index("--") if "--" in runner_args else len(runner_args)
         options, native = runner_args[:boundary], runner_args[boundary:]
-        lossy = _arg_bool(args, "lossy") or "--lossy" in options
+        lossy = bool(_arg_values(args).get("lossy", False)) or "--lossy" in options
         forwarded = [arg for arg in options if arg != "--lossy"] + native
         ref, consumed = consume_ref(before, 0, kind_hint="AgentSession")
         if before[consumed:]:
@@ -460,7 +460,7 @@ class Kind(Command):
                 client,
                 exp_id,
                 action,
-                bulk_ok=_arg_bool(args, "makeitso"),
+                bulk_ok=bool(_arg_values(args).get("makeitso", False)),
             )
             echo(f"written: {written}")
             return
@@ -528,7 +528,7 @@ class Kind(Command):
             client,
             exp_id,
             action,
-            bulk_ok=_arg_bool(args, "makeitso"),
+            bulk_ok=bool(_arg_values(args).get("makeitso", False)),
         )
         echo(f"written: {written}")
 
@@ -665,7 +665,10 @@ class Kind(Command):
             echo(render.format_json(edge_payload), nl=False)
         else:
             echo(
-                render.format_edge(edge_payload, changes=_arg_bool(args, "changes")),
+                render.format_edge(
+                    edge_payload,
+                    changes=bool(_arg_values(args).get("changes", False)),
+                ),
                 nl=False,
             )
 
@@ -1596,7 +1599,11 @@ def run_list_query(
 
     """
     print_rows(
-        _query_rows(query, client_factory(), limit=_arg_int(args, "limit")),
+        _query_rows(
+            query,
+            client_factory(),
+            limit=from_plain(_arg_values(args).get("limit"), int, default=0),
+        ),
         _arg_str(args, "format_"),
         width=_arg_width(args),
     )
@@ -1638,7 +1645,7 @@ def run_bulk_apply(
     # The guard is keyed on match count, not command shape: a single-row match
     # is as safe as a seq-targeted edit, so only a genuinely multi-row write
     # demands explicit confirmation. This is intentional (reviewed).
-    if len(rows) > 1 and not _arg_bool(args, "makeitso"):
+    if len(rows) > 1 and not bool(_arg_values(args).get("makeitso", False)):
         echo(f"would apply to {len(rows)} rows; pass --makeitso to proceed:")
         print_rows(rows, _arg_str(args, "format_"), width=_arg_width(args))
         return
@@ -1670,7 +1677,7 @@ def run_show(
         echo(
             render.format_show(
                 payload,
-                changes=_arg_bool(args, "changes"),
+                changes=bool(_arg_values(args).get("changes", False)),
                 include_id=show_ids(),
             ),
             nl=False,
@@ -1903,7 +1910,9 @@ class Recent(Command):
         client_factory: Callable[[], Client],
     ) -> None:
         del verb
-        rows = client_factory().recent_changes(limit=_arg_int(args, "limit"))
+        rows = client_factory().recent_changes(
+            limit=from_plain(_arg_values(args).get("limit"), int, default=0),
+        )
         if _arg_str(args, "format_") == "json":
             echo(render.format_json(list(rows)), nl=False)
         else:
@@ -1975,7 +1984,7 @@ class Search(Command):
         body = client_factory().search_sessions(
             _arg_str(args, "query"),
             semantic=bool(getattr(args, "semantic", True)),
-            limit=_arg_int(args, "limit"),
+            limit=from_plain(_arg_values(args).get("limit"), int, default=0),
         )
         if _arg_str(args, "format_") == "json":
             echo(render.format_json(body), nl=False)
@@ -2253,7 +2262,7 @@ Options:
         # COMPLETE -- a single capped fetch would silently drop issues past the
         # ceiling, rendering a partial tree with no warning.
         rows = client_factory().list_kind_all("Issue")
-        if _arg_bool(args, "open_only"):
+        if bool(_arg_values(args).get("open_only", False)):
             rows = [r for r in rows if str(r.get("status") or "") == "active"]
         cls.render(rows)
 
@@ -2483,13 +2492,19 @@ Options:
     ) -> None:
         del verb
         client = client_factory()
-        ref = SeqRef(kind=KIND_LOWER[_arg_str(args, "kind")], seq=_arg_int(args, "seq"))
+        ref = SeqRef(
+            kind=KIND_LOWER[_arg_str(args, "kind")],
+            seq=from_plain(_arg_values(args).get("seq"), int, default=0),
+        )
         _, target_id = client.resolve_id(ref)
-        payload = client.cost_for(target_id, deep=_arg_bool(args, "deep"))
+        payload = client.cost_for(
+            target_id,
+            deep=bool(_arg_values(args).get("deep", False)),
+        )
         if _arg_str(args, "format_") == "json":
             echo(render.format_json(payload), nl=False)
             return
-        scope = "subtree" if _arg_bool(args, "deep") else "self"
+        scope = "subtree" if bool(_arg_values(args).get("deep", False)) else "self"
         echo(f"scope:    {scope}")
         echo(f"agent:    ${payload.get('agent_usd', 0):.6f}")
         echo(f"resource: ${payload.get('resource_usd', 0):.6f}")
@@ -2545,7 +2560,10 @@ Options:
     ) -> None:
         del verb
         client = client_factory()
-        ref = SeqRef(kind=KIND_LOWER[_arg_str(args, "kind")], seq=_arg_int(args, "seq"))
+        ref = SeqRef(
+            kind=KIND_LOWER[_arg_str(args, "kind")],
+            seq=from_plain(_arg_values(args).get("seq"), int, default=0),
+        )
         _, target_id = client.resolve_id(ref)
         confidence = client.confidence_for(target_id)
         if _arg_str(args, "format_") == "json":
@@ -2598,7 +2616,10 @@ Options:
     ) -> None:
         del verb
         client = client_factory()
-        ref = SeqRef(kind=KIND_LOWER[_arg_str(args, "kind")], seq=_arg_int(args, "seq"))
+        ref = SeqRef(
+            kind=KIND_LOWER[_arg_str(args, "kind")],
+            seq=from_plain(_arg_values(args).get("seq"), int, default=0),
+        )
         _, target_id = client.resolve_id(ref)
         scores = client.authority_for(target_id)
         if _arg_str(args, "format_") == "json":
@@ -3360,17 +3381,9 @@ def _arg_values(args: argparse.Namespace) -> Mapping[str, object]:
     return vars(args)
 
 
-def _arg_int(args: argparse.Namespace, name: str) -> int:
-    return from_plain(_arg_values(args).get(name), int, default=0)
-
-
 def _arg_text(args: argparse.Namespace) -> list[str]:
     value = from_plain(_arg_values(args).get("text"), list[object], default=[])
     return [str(item) for item in value]
-
-
-def _arg_bool(args: argparse.Namespace, name: str) -> bool:
-    return bool(_arg_values(args).get(name, False))
 
 
 def _arg_width(args: argparse.Namespace) -> int | None:
